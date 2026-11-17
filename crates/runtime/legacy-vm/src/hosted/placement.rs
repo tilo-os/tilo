@@ -126,7 +126,7 @@ pub type ReadVms = Box<dyn Fn(&str) -> Option<Vec<String>> + Send + Sync>;
 
 /// Places VMs on the hosts [`Scale`] names, and scales them.
 pub struct Placer {
-    record_path: PathBuf,
+    resource_path: PathBuf,
     record: std::sync::Mutex<Record>,
     waiting: std::sync::Mutex<BTreeMap<String, Waiting>>,
     max: usize,
@@ -143,23 +143,23 @@ fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl Placer {
-    /// A placer keeping its record at `record_path`, on the hosts `scale`
+    /// A placer keeping its record at `resource_path`, on the hosts `scale`
     /// names, whose loads `read` reads, starting at most `max` of them.
     pub fn new(
-        record_path: &Path,
+        resource_path: &Path,
         max: usize,
         scale: Box<dyn Scale>,
         read: ReadLoad,
         clock: super::vm::Clock,
     ) -> Result<Self, String> {
-        let record = match std::fs::read(record_path) {
+        let record = match std::fs::read(resource_path) {
             Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|e| format!("{}: {e}", record_path.display()))?,
+                .map_err(|e| format!("{}: {e}", resource_path.display()))?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Record::default(),
-            Err(e) => return Err(format!("{}: {e}", record_path.display())),
+            Err(e) => return Err(format!("{}: {e}", resource_path.display())),
         };
         Ok(Self {
-            record_path: record_path.to_path_buf(),
+            resource_path: resource_path.to_path_buf(),
             record: std::sync::Mutex::new(record),
             waiting: std::sync::Mutex::new(BTreeMap::new()),
             max,
@@ -275,8 +275,8 @@ impl Placer {
 
     fn save(&self, record: &Record) -> Result<(), String> {
         let bytes = serde_json::to_vec_pretty(record).map_err(|e| e.to_string())?;
-        tilo_files::native::atomic::write_creating_parent(&self.record_path, &bytes)
-            .map_err(|e| format!("{}: {e}", self.record_path.display()))
+        tilo_files::native::atomic::write_creating_parent(&self.resource_path, &bytes)
+            .map_err(|e| format!("{}: {e}", self.resource_path.display()))
     }
 
     pub fn handle(&self, request: Request) -> Reply {

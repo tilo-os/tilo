@@ -35,7 +35,7 @@ use crate::voice;
 /// nothing of it read, which is no answer about its grant, and is judged when
 /// it asks again. An admitted session is bounded by the authority that
 /// admitted it (one per participation of a member device), never by a count
-/// here, so a call has no participant limit.
+/// here, so a call has no device limit.
 ///
 /// These places are for endpoints a roster names, and for every endpoint of
 /// an authority that cannot tell ([`RelayAuthority::stranger`]). Anyone who
@@ -223,7 +223,7 @@ struct Counters {
 }
 
 /// Content-free lifecycle counters. These are not packet or audio-quality
-/// measurements, and never expose the proof or participant namespace.
+/// measurements, and never expose the proof or device namespace.
 /// `rejected` counts sessions that were judged and not admitted, or that sent
 /// no usable preface; `busy` counts the ones closed unread because the places
 /// of their kind in admission were taken, or their endpoint held as many as
@@ -252,7 +252,60 @@ struct Revocation(tokio::sync::Notify);
 
 /// Live publishing sessions by exact namespace. Holds no strong reference, so
 /// a finished session never outlives its task through this index.
-type Publications = Arc<Mutex<HashMap<String, Vec<Weak<Revocation>>>>>;
+#[derive(Clone, Default)]
+struct Publications(Arc<Mutex<HashMap<String, Vec<Weak<Revocation>>>>>);
+
+impl Publications {
+    /// Register a session publishing `name`, waking every older session that publishes it.
+    ///
+    /// One publication is served by one session, its newest: a device that connects again takes
+    /// the place of the session it left, as its newest connection is the one it publishes on.
+    /// Left both live, the newer one's broadcast shadows the older's, and a subscriber of the
+    /// device hears the older one's cached group and then silence.
+    fn register(&self, name: &str) -> Arc<Revocation> {
+        let revocation = Arc::new(Revocation::default());
+        let Ok(mut index) = self.0.lock() else {
+            return revocation;
+        };
+        let entries = index.entry(name.to_owned()).or_default();
+        entries.retain(|entry| entry.strong_count() > 0);
+        for older in entries.drain(..).filter_map(|entry| entry.upgrade()) {
+            older.0.notify_one();
+        }
+        entries.push(Arc::downgrade(&revocation));
+        revocation
+    }
+
+    /// Wake every session publishing `name`, that each closes its publication.
+    fn revoke(&self, name: &str) {
+        let Ok(index) = self.0.lock() else {
+            return;
+        };
+        for revocation in index
+            .get(name)
+            .into_iter()
+            .flatten()
+            .filter_map(Weak::upgrade)
+        {
+            revocation.0.notify_one();
+        }
+    }
+
+    /// Forget `revocation`'s session, which published `name` and is ending.
+    fn forget(&self, name: &str, revocation: &Arc<Revocation>) {
+        let Ok(mut index) = self.0.lock() else {
+            return;
+        };
+        if let Some(entries) = index.get_mut(name) {
+            entries.retain(|entry| {
+                entry.strong_count() > 0 && !std::ptr::eq(entry.as_ptr(), Arc::as_ptr(revocation))
+            });
+            if entries.is_empty() {
+                index.remove(name);
+            }
+        }
+    }
+}
 
 struct Publication {
     index: Publications,
@@ -261,18 +314,7 @@ struct Publication {
 }
 impl Drop for Publication {
     fn drop(&mut self) {
-        let Ok(mut index) = self.index.lock() else {
-            return;
-        };
-        if let Some(entries) = index.get_mut(&self.name) {
-            entries.retain(|entry| {
-                entry.strong_count() > 0
-                    && !std::ptr::eq(entry.as_ptr(), Arc::as_ptr(&self.revocation))
-            });
-            if entries.is_empty() {
-                index.remove(&self.name);
-            }
-        }
+        self.index.forget(&self.name, &self.revocation);
     }
 }
 
@@ -418,7 +460,7 @@ impl Relay {
             origin,
             counters: Arc::default(),
             admitting: Arc::new(Admitting::new()),
-            publications: Arc::default(),
+            publications: Publications::default(),
             _origin: Arc::new(task),
         }
     }
@@ -619,32 +661,16 @@ impl Relay {
     }
 
     fn register_publication(&self, name: &str) -> Publication {
-        let revocation = Arc::new(Revocation::default());
-        if let Ok(mut index) = self.publications.lock() {
-            let entries = index.entry(name.to_owned()).or_default();
-            entries.retain(|entry| entry.strong_count() > 0);
-            entries.push(Arc::downgrade(&revocation));
-        }
         Publication {
             index: self.publications.clone(),
             name: name.to_owned(),
-            revocation,
+            revocation: self.publications.register(name),
         }
     }
 
     /// Close every live session publishing exactly `name`.
     fn revoke_publication(&self, name: &str) {
-        let Ok(index) = self.publications.lock() else {
-            return;
-        };
-        for revocation in index
-            .get(name)
-            .into_iter()
-            .flatten()
-            .filter_map(Weak::upgrade)
-        {
-            revocation.0.notify_one();
-        }
+        self.publications.revoke(name);
     }
 
     async fn run_session<S: carrier::Carrier>(
@@ -1076,7 +1102,7 @@ fn scopes_well_formed(authorization: &dyn SessionAuthorization) -> bool {
         // A whole path whose every segment is checked, so the scope is exact
         // rather than a partial segment; the publication lies beneath it,
         // where the scheme's own naming puts it (a call's `call/device`, the
-        // live plane's `scope/participant/device`).
+        // live plane's `scope/device/device`).
         return subscriptions.is_empty()
             && valid_namespace(prefix)
             && publication.is_none_or(|name| {
@@ -1209,5 +1235,37 @@ mod status_all_tests {
                 _ => AuthorizationStatus::Current,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod publication_tests {
+    use super::Publications;
+    use std::time::Duration;
+
+    /// Two sessions publishing one namespace never live at once: the second takes the first's
+    /// place and the first is woken to close its publication, so no session shadows another's
+    /// broadcast.
+    #[tokio::test]
+    async fn a_second_publisher_of_a_namespace_replaces_the_first() {
+        let publications = Publications::default();
+        let first = publications.register("device/workspace");
+        tokio::time::timeout(Duration::from_millis(50), first.0.notified())
+            .await
+            .expect_err("the first session hears nothing while it is the one publishing");
+        let second = publications.register("device/workspace");
+        tokio::time::timeout(Duration::from_secs(1), first.0.notified())
+            .await
+            .expect("the first session is woken to close its publication");
+        // Another namespace is another publication: its session is left alone.
+        let other = publications.register("device/other");
+        tokio::time::timeout(Duration::from_millis(50), other.0.notified())
+            .await
+            .expect_err("a session of another namespace is not woken");
+        // The second is the one publishing now, and it is woken to close by the relay.
+        publications.revoke("device/workspace");
+        tokio::time::timeout(Duration::from_secs(1), second.0.notified())
+            .await
+            .expect("the live session is woken to close its publication");
     }
 }

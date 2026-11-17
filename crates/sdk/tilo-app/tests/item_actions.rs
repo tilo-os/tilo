@@ -103,12 +103,12 @@ fn item_actions_are_offered_on_the_item() {
     let set_done = item.actions.first().unwrap();
     let params: Vec<_> = set_done.params().iter().map(|p| p.name.as_ref()).collect();
     assert_eq!(params, ["done"], "the item is bound, not asked for");
-    let on_record = root
+    let on_resource = root
         .actions
         .iter()
         .find(|spec| spec.id == "remove")
         .unwrap();
-    assert!(!on_record.reaches_people(), "no id prompt in the palette");
+    assert!(!on_resource.reaches_people(), "no id prompt in the palette");
 
     // The row's context menu offers them too: focus the row, open its menu
     // from the keyboard and choose "Remove a todo".

@@ -142,7 +142,7 @@ fn factory(
     _: RestoreInput,
 ) -> Result<AppComponent, crate::launch::LaunchError> {
     context
-        .initialize_new_record(|doc| doc.put(ROOT, "body", "").map_err(|error| error.to_string()))
+        .initialize_new_resource(|doc| doc.put(ROOT, "body", "").map_err(|error| error.to_string()))
         .map_err(crate::launch::LaunchError::Record)?;
     let observed = OBSERVED.with_borrow(Clone::clone);
     *observed.local.borrow_mut() = Some(crate::LocalState::new("construction".into()));
@@ -163,7 +163,7 @@ fn prepared() -> (
     ProbeHost,
     FrameHarness,
     Observations,
-    crate::record::DocumentCheckout,
+    crate::resource::DocumentCheckout,
 ) {
     let host = ProbeHost::new();
     let definition = definition(factory);

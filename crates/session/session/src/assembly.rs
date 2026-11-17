@@ -515,6 +515,11 @@ pub struct Session {
     /// to it, and a session that ends without doing so comes back locked.
     #[cfg(target_os = "linux")]
     pub(crate) recovery: Option<crate::recovery::Recovery>,
+    /// The login's record that this desktop is usable, published once every
+    /// output draws and the windows are being restored; it is removed with
+    /// the session that wrote it.
+    #[cfg(target_os = "linux")]
+    pub(crate) ready: Option<crate::ready::Desktop>,
     /// The clock on finishing the staged system update.
     #[cfg(target_os = "linux")]
     pub(crate) update_finish: crate::update_finish::Finish,

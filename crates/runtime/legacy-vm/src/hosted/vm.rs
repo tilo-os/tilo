@@ -192,7 +192,7 @@ impl HostedVm {
         std::fs::create_dir_all(&files.state)?;
         let mut meter = Meter::load(&files.meter()).unwrap_or_else(|| Meter::new(identity));
         kill_stray(&files, settings.jail.as_deref());
-        record_in(ledger.as_ref(), meter.recover().as_ref())?;
+        resource_in(ledger.as_ref(), meter.recover().as_ref())?;
         meter.save(&files.meter())?;
         let mut life = Lifecycle::new(settings.idle_suspend.as_secs());
         let disk = files.disk().is_file();
@@ -792,7 +792,7 @@ impl HostedVm {
         snapshot.complete()?;
         let now = (self.clock)();
         let record = self.meter.snapshot_taken(now, snapshot.bytes_on_disk());
-        record_in(self.ledger.as_ref(), record.as_ref())?;
+        resource_in(self.ledger.as_ref(), record.as_ref())?;
         self.meter.save(&self.files.meter())?;
         self.life.suspended();
         self.link = None;
@@ -803,7 +803,7 @@ impl HostedVm {
         let _ = std::fs::remove_file(self.pid_file());
         self.link = None;
         let record = self.meter.stopped((self.clock)(), how);
-        record_in(self.ledger.as_ref(), record.as_ref())?;
+        resource_in(self.ledger.as_ref(), record.as_ref())?;
         self.meter.save(&self.files.meter())?;
         Ok(record)
     }
@@ -811,7 +811,7 @@ impl HostedVm {
     fn drop_snapshot(&mut self) -> Result<(), VmError> {
         self.files.snapshot().discard()?;
         let record = self.meter.snapshot_dropped((self.clock)());
-        record_in(self.ledger.as_ref(), record.as_ref())?;
+        resource_in(self.ledger.as_ref(), record.as_ref())?;
         self.meter.save(&self.files.meter())?;
         Ok(())
     }
@@ -957,7 +957,7 @@ pub fn forget_source_argv() -> Vec<String> {
         .to_vec()
 }
 
-fn record_in(ledger: Option<&Ledger>, record: Option<&UsageRecord>) -> Result<(), VmError> {
+fn resource_in(ledger: Option<&Ledger>, record: Option<&UsageRecord>) -> Result<(), VmError> {
     match (ledger, record) {
         (Some(ledger), Some(record)) => Ok(ledger.append(record)?),
         _ => Ok(()),

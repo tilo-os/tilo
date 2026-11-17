@@ -823,7 +823,7 @@ impl MainPanel {
     /// A title edit is this person's own gesture — their New note, their
     /// rename — and is never reopened by the window being presented again:
     /// following someone brings this window forward, and another
-    /// participant's action changes the note under it, neither of which may
+    /// member's action changes the note under it, neither of which may
     /// put the person's keyboard in a field they did not open. A saved view
     /// that names the title (`NotesFocus::Title`, which this window no longer
     /// writes) gives back the note's body instead, which is where the person

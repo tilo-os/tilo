@@ -38,7 +38,7 @@ mod native_input_isolation;
 pub mod animation_schedule;
 
 mod action_directory_snapshot;
-mod bound_record_sync;
+mod bound_document_sync;
 mod close_admission;
 mod follow_ups;
 mod handoff;
@@ -52,7 +52,7 @@ mod report_point_tests;
 mod window_box;
 
 mod model_lifecycle;
-mod participants;
+mod presences;
 mod published_invocations;
 mod retirement_assembly;
 #[cfg(test)]
@@ -122,31 +122,8 @@ struct ActionDirectoryCursor {
 }
 
 #[cfg(test)]
-mod record_index_launch_tests {
-    use super::App;
-    use crate::record::{DocumentCheckout, DocumentId, RecordSet, ResourceType, index};
-    use crate::{State, widget::Text};
-    use automerge::AutoCommit;
-
-    #[test]
-    fn launch_reads_the_existing_index_without_opening_its_records() {
-        let entry = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("annotations"));
-        let mut workspace_index = AutoCommit::new();
-        assert!(index::reference(
-            &mut workspace_index,
-            &entry.id,
-            &entry.kind
-        ));
-
-        let app = App::new(State::new(), Box::new(Text::new("PDF"))).with_records(
-            RecordSet::in_memory().with_home("workspace-a"),
-            workspace_index,
-        );
-        let records = app.records().expect("record-aware launch installs the set");
-        assert_eq!(records.known_records(), vec![entry]);
-        assert!(records.open_records().is_empty());
-    }
-}
+#[path = "app/resource_index_launch_tests.rs"]
+mod resource_index_launch_tests;
 
 const ACTION_DIRECTORY_MAX_RESULTS: usize = ::collaboration::action_directory::MAX_RESULTS;
 const ACTION_DIRECTORY_MAX_WORK: usize = ::collaboration::action_directory::MAX_WORK;
@@ -645,7 +622,7 @@ impl AppConstructionInputs {
             binding,
             Self::production(
                 crate::collaboration::native_initial::take_manager()
-                    .unwrap_or_else(|| CollaborationManager::for_record(&binding.checkout)),
+                    .unwrap_or_else(|| CollaborationManager::for_resource(&binding.checkout)),
             ),
         )
     }
@@ -972,7 +949,7 @@ impl App {
         self.mark_semantic_tree_stale();
         self.retire_semantic_root();
         self.control_domain.close();
-        self.actions.bound_record_sync = None;
+        self.actions.bound_document_sync = None;
         self.component_close_reports
             .extend(crate::component_lifecycle::close_components(
                 self.root_widget.as_mut(),
@@ -2744,64 +2721,50 @@ fn humanize_ident(ident: &str) -> String {
 }
 
 #[cfg(test)]
-#[path = "app/window_targets_tests.rs"]
 mod window_targets_tests;
 
 #[cfg(test)]
-#[path = "app/sideways_wheel_tests.rs"]
 mod sideways_wheel_tests;
 
 #[cfg(test)]
-#[path = "app/motion_source_tests.rs"]
 mod motion_source_tests;
 
 #[cfg(test)]
-#[path = "app/manual_composition_tests.rs"]
 mod manual_composition_tests;
 
 #[cfg(test)]
-#[path = "app/number_input_layout_tests.rs"]
 mod number_input_layout_tests;
 
 #[cfg(test)]
-#[path = "app/committed_document_tests.rs"]
 mod committed_document_tests;
 #[cfg(test)]
-#[path = "app/context_menu_input_tests.rs"]
 mod context_menu_input_tests;
 #[cfg(test)]
 #[path = "app/history_tests.rs"]
 pub(crate) mod framework_history_tests;
 #[cfg(test)]
-#[path = "app/tree_record_tests.rs"]
 mod tree_record_tests;
 
 #[cfg(test)]
-#[path = "app/person_record_tests.rs"]
-mod person_record_tests;
+mod person_resource_tests;
 
 #[path = "app/history.rs"]
 mod framework_history;
 
 mod committed_document;
 
-#[path = "app/document_routes.rs"]
 mod document_routes;
 
 #[cfg(test)]
-#[path = "app/focus_selection_tests.rs"]
 mod focus_selection_tests;
 
 #[cfg(test)]
-#[path = "app/participant_invocation_tests.rs"]
-mod participant_invocation_tests;
+mod presence_invocation_tests;
 
 #[cfg(test)]
-#[path = "app/large_document_tests.rs"]
 mod large_document_tests;
 
 #[cfg(all(test, feature = "native"))]
-#[path = "app/scroll_cost_tests.rs"]
 mod scroll_cost_tests;
 
 #[cfg(test)]
@@ -2878,7 +2841,7 @@ mod private_continuity_route_tests {
             app_id: route.app_id,
             cluster_id: route.cluster_id,
             record: route.record,
-            record_kind: None,
+            resource_type: None,
             handle: None,
         }));
         manager.poll();
@@ -2946,7 +2909,7 @@ mod private_continuity_route_tests {
             app_id: route.app_id.clone(),
             cluster_id: route.cluster_id,
             record: route.record.clone(),
-            record_kind: None,
+            resource_type: None,
             handle: None,
         }));
         app.collaboration.manager.poll();
@@ -2972,7 +2935,7 @@ mod private_continuity_route_tests {
             app_id: route.app_id.clone(),
             cluster_id: route.cluster_id,
             record: route.record.clone(),
-            record_kind: None,
+            resource_type: None,
             handle: None,
         }));
         app.collaboration.manager.poll();

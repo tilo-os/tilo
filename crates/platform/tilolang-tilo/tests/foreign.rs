@@ -141,7 +141,7 @@ tilo_test_env::scenario! {
                 action,
                 args,
                 author,
-                subject,
+                target,
                 ..
             },
         ] = sent.as_slice()
@@ -149,7 +149,7 @@ tilo_test_env::scenario! {
             panic!("one invocation of the app's verb: {sent:?}");
         };
         assert_eq!((app.as_str(), action.as_str()), (APP, "set-level"));
-        assert_eq!(subject.as_ref(), Some(&player()));
+        assert_eq!(target.as_ref(), Some(&player()));
         assert_eq!(author.as_ref(), Some(&module), "the view's own code asked");
         assert_eq!(args.len(), 2, "{args:?}");
         assert_eq!(args[0].1, Value::resource(&player()), "the player, first");

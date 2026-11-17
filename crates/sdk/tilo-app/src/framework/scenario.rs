@@ -14,8 +14,8 @@
 //! page), a scratch directory, blobs in the content store, versions of the
 //! resource written by other people at other times, and members shown
 //! where they are in it. Views read the values with
-//! [`RecordEnv::fixture`](super::RecordEnv::fixture), surfaces with
-//! [`RecordEnv::fixture`](super::RecordEnv::fixture).
+//! [`ResourceEnv::fixture`](super::ResourceEnv::fixture), surfaces with
+//! [`ResourceEnv::fixture`](super::ResourceEnv::fixture).
 
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
@@ -68,6 +68,8 @@ pub(crate) struct Run {
     pub(crate) launched: Rc<Launched>,
     /// A private window: a profile thrown away with the process.
     pub(crate) private: bool,
+    /// A view another app's window embeds, not a window of its own.
+    pub(crate) embedded: bool,
     /// The file whose history History shows beside the resource's, for an
     /// app that declares [`ResourceApp::FILE_HISTORY`](super::ResourceApp::FILE_HISTORY),
     /// and the History scope the root witnesses it under.
@@ -80,7 +82,7 @@ pub(crate) struct Run {
         ui_core::history_mode::folder::FolderHistorySource,
         &'static HistoryDefinition,
     )>,
-    /// The names of the participants, as the host's roster has them.
+    /// The names of the members, as the host's roster has them.
     pub(crate) people: super::People,
     /// Opens another record in this window, in a window someone uses.
     pub(crate) opener: Option<super::launch::OpenHere>,
@@ -100,7 +102,7 @@ pub(crate) struct Run {
 #[derive(Default)]
 pub(crate) struct Launched {
     /// The record selected by the host for this launch.
-    pub(crate) record: Option<ui_core::record::DocumentId>,
+    pub(crate) record: Option<ui_core::resource::DocumentId>,
     pub(crate) arguments: Vec<String>,
     pub(crate) options: Vec<ui_core::application::LaunchOption>,
     pub(crate) file: Option<ui_core::application::OpenFile>,
@@ -149,6 +151,7 @@ impl Run {
             }),
             launched: Rc::default(),
             private: false,
+            embedded: false,
             file_history: None,
             folder_history: None,
             people: super::People::new(None),
@@ -161,6 +164,12 @@ impl Run {
     /// This run in a private window, when `private`.
     pub(crate) fn in_private(mut self, private: bool) -> Self {
         self.private = private;
+        self
+    }
+
+    /// This run as a view another app's window embeds, when `embedded`.
+    pub(crate) fn in_embedded(mut self, embedded: bool) -> Self {
+        self.embedded = embedded;
         self
     }
 
@@ -191,6 +200,7 @@ impl Run {
             fixtures: Rc::default(),
             launched: Rc::default(),
             private: false,
+            embedded: false,
             file_history: None,
             folder_history: None,
             people: super::People::new(None),
@@ -237,7 +247,7 @@ impl Run {
             .open(arguments))
     }
 
-    pub(crate) fn for_participant(mut self, me: Option<&tilo_resource::MemberId>) -> Self {
+    pub(crate) fn for_member(mut self, me: Option<&tilo_resource::MemberId>) -> Self {
         self.people = super::People::new(me);
         self
     }
@@ -303,8 +313,8 @@ struct Version<R: Resource> {
 /// the view is built.
 pub struct Fixture<R: Resource> {
     scenario: Option<String>,
-    /// The participant the capture's window reads as
-    /// ([`RecordEnv::me`](super::RecordEnv::me)), for a scene with
+    /// The member the capture's window reads as
+    /// ([`ResourceEnv::me`](super::ResourceEnv::me)), for a scene with
     /// something of their own in it.
     person: tilo_resource::MemberId,
     values: HashMap<TypeId, Rc<dyn Any>>,
@@ -342,8 +352,8 @@ impl<R: Resource> Fixture<R> {
         self.scenario.as_deref()
     }
 
-    /// Who the capture's window is for: the participant the view reads as
-    /// its own ([`RecordEnv::me`](super::RecordEnv::me)). A scene that holds
+    /// Who the capture's window is for: the member the view reads as
+    /// its own ([`ResourceEnv::me`](super::ResourceEnv::me)). A scene that holds
     /// something of the person's own — a seat at the table, an issue
     /// assigned to them — stages it for them.
     pub fn person(&self) -> &tilo_resource::MemberId {
@@ -358,7 +368,7 @@ impl<R: Resource> Fixture<R> {
     }
 
     /// Stand `value` in for what another provider's action at `target`
-    /// answers: a view's [`RecordEnv::query`](super::RecordEnv::query) of
+    /// answers: a view's [`ResourceEnv::query`](super::ResourceEnv::query) of
     /// it reads `value`, as the action's result, in this capture.
     pub fn answer(
         &mut self,
@@ -395,7 +405,7 @@ impl<R: Resource> Fixture<R> {
     }
 
     /// The content store the capture's views read from
-    /// ([`RecordEnv::content`](super::RecordEnv::content)), for the blobs a scene
+    /// ([`ResourceEnv::content`](super::ResourceEnv::content)), for the blobs a scene
     /// shows: photos, attachments, thumbnails. A private one when the host
     /// lent none.
     pub fn content(&mut self) -> &tilo_content::ContentStore {
@@ -500,6 +510,7 @@ fn capture_run(fixtures: Fixtures) -> Run {
         fixtures: Rc::new(fixtures),
         launched: Rc::default(),
         private: false,
+        embedded: false,
         file_history: None,
         folder_history: None,
         people: super::People::new(None),

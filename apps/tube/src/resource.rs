@@ -281,7 +281,7 @@ mod tests {
                 video: "vid_tea".into(),
             })
             .unwrap();
-            let watched = |history: &ui::framework::PersonRecord<WatchHistory>| {
+            let watched = |history: &ui::framework::PersonResource<WatchHistory>| {
                 let mut videos = history.with(WatchHistory::videos);
                 videos.sort();
                 videos

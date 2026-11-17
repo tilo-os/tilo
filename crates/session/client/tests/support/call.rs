@@ -333,7 +333,7 @@ impl GovernedCall {
                     1,
                     CallOperation::Start {
                         app_id: CHAT.into(),
-                        record_id: String::new(),
+                        document_id: String::new(),
                         channel_id: channel,
                         allowed: BOTH,
                     },

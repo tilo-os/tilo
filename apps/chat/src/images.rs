@@ -85,7 +85,7 @@ fn encode_png(w: u32, h: u32, rgba: &[u8]) -> Option<Vec<u8>> {
     ui::png::encode_rgba8(w, h, rgba).ok()
 }
 
-/// A tidy 2×2 call grid mockup: dark canvas, four participant tiles, the
+/// A tidy 2×2 call grid mockup: dark canvas, four member tiles, the
 /// top-left one lit as the active speaker. Reads unmistakably as a rendered
 /// design frame rather than a flat gradient.
 fn call_grid() -> (u32, u32, Vec<u8>) {

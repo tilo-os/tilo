@@ -522,6 +522,194 @@ view thread(c: Conversation) {{
             "a field the shape does not have is refused, naming its fields: {got:#?}"
         );
     }
+
+    phase a_drawing_sets_text_in_type_roles_and_answers_the_pointer;
+    // components.md §4.1: a text is a shape set in a theme's type role, and `hover` carries the
+    // index of the shape under the pointer, or none.
+    {
+        let c = compile_body(&with_note(
+            r#"view usage(n: Note) {
+    state over: Option<Int> = .none
+    ui.Drawing([
+        .arc(cx: 0.5, cy: 0.5, radius: 0.4, from: 0.0, to: 0.6, stroke: .accent),
+        .text(x: 0.5, y: 0.5, text: "60%", role: .title, strong: true),
+        .text(x: 0.5, y: 0.7, text: n.title, role: .caption, ink: .muted, anchor: .start),
+    ], meaning: .progress, value: .some(0.6), motion: .calm) {
+        on hover(at): set(over, at)
+    }
+}"#,
+        ));
+        validate(&c.wasm);
+        let got = errors(&with_note(
+            r#"view usage(n: Note) {
+    ui.Drawing([.text(x: 0.5, y: 0.5, text: "60%", font: "Comic Sans")], meaning: .picture)
+}"#,
+        ));
+        assert!(
+            got.iter().any(|(_, m)| m.contains("role")),
+            "a text names a type role, never a font: {got:#?}"
+        );
+    }
+
+    phase a_chart_and_a_graph_are_drawn_from_values;
+    // A chart's lines and a graph's connections are cases of the toolkit's `ui.Series` and
+    // `ui.Connection`; a graph's nodes are views of the caller's.
+    {
+        let c = compile_body(&with_note(
+            r#"view stats(n: Note) {
+    ui.Chart([
+        .series(values: [1.0, 3.0, 2.0], label: "Reads"),
+        .series(values: [0.0, 1.0, 1.0], label: "Writes", ink: .warning),
+    ], title: .some(n.title), area: true)
+    ui.GraphCanvas(connections: [.connection(from: "a", to: "b")]) {
+        ui.GraphNode("a", x: .some(0.0), y: .some(0.0)) {
+            ui.Text("Fetch")
+        }
+        ui.GraphNode("b", x: .some(200.0), y: .some(40.0)) {
+            ui.Text("Build")
+        }
+    }
+}"#,
+        ));
+        validate(&c.wasm);
+        let strings = String::from_utf8_lossy(&c.wasm).into_owned();
+        assert!(strings.contains("ui.Chart") && strings.contains("ui.GraphCanvas"));
+    }
+
+    phase a_list_maps_with_each_items_place;
+    // `map` and `flat_map` give the lambda the item's place from 0 as its second name, so a
+    // drawing lays its shapes out by where each reading stands.
+    {
+        let c = compile_body(&with_note(
+            r"fn bars(xs: List<Float>) -> List<ui.Shape> {
+    let width = 1.0 / xs.len().max(1).to_float()
+    xs.map((x, i) -> ui.Shape.rect(x: i.to_float() * width, y: 1.0 - x, w: width, h: x, fill: .some(.accent)))
+}
+view usage(n: Note) {
+    ui.Drawing(bars([0.2, 0.8, 0.5]), meaning: .chart)
+}",
+        ));
+        validate(&c.wasm);
+        let got = errors(&with_note(
+            r"fn odd(xs: List<Int>) -> Bool {
+    xs.any((x, i) -> i > 1)
+}",
+        ));
+        assert!(
+            got.iter().any(|(code, _)| code == "E051"),
+            "only `map` and `flat_map` take a place: {got:#?}"
+        );
+        let got = errors(&with_note(
+            r"fn twice(xs: List<Int>) -> List<Int> {
+    xs.map((x, i, j) -> x)
+}",
+        ));
+        assert!(
+            got.iter().any(|(code, m)| code == "E051" && m.contains("(x, i)")),
+            "a map's message names the place it can take: {got:#?}"
+        );
+    }
+}
+
+tilo_test_env::scenario! {
+    /// components.md §2: a view is a component its caller fills: named options with defaults, a
+    /// block that fills its view parameters, `on` clauses that answer its action parameters, and
+    /// view state of its own.
+    fn a_view_is_a_component_its_caller_fills;
+
+    phase options_take_their_defaults_and_the_block_fills_the_slots;
+    {
+        let c = compile_body(&with_note(
+            r#"view person(name: Text, role: Text = "Member", online: Bool = false, extra: View, aside: View, on_message: Option<Action> = .none) {
+    state open: Bool = false
+    ui.Card(title: name) {
+        ui.Text(role)
+        extra
+        aside
+        if let message = on_message {
+            ui.Button("Message") {
+                on press: message
+            }
+        }
+        ui.Button("More") {
+            on press: set(open, not open)
+        }
+    }
+}
+view people(n: Note) {
+    state last: Text = ""
+    stack {
+        person(n.title)
+        person(n.title, role: "Lead", online: true) {
+            ui.Badge("New")
+            aside: {
+                ui.Text("Beside")
+            }
+            on message: set(last, n.title)
+        }
+    }
+}"#,
+        ));
+        validate(&c.wasm);
+    }
+
+    phase an_event_answers_a_function_parameter_with_its_value;
+    {
+        let c = compile_body(&with_note(
+            r#"view picker(choices: List<Text>, on_pick: (Text) -> Action) {
+    stack {
+        for x in choices {
+            ui.Button(x) {
+                on press: on_pick(x)
+            }
+        }
+    }
+}
+view page_of(n: Note) {
+    state chosen: Text = ""
+    picker(["a", "b"]) {
+        on pick(x): set(chosen, x)
+    }
+}"#,
+        ));
+        validate(&c.wasm);
+    }
+
+    phase what_a_call_cannot_give_is_refused;
+    {
+        let (code, message) = one_error(&with_note(
+            r#"view plain(title: Text) {
+    ui.Text(title)
+}
+view page_of(n: Note) {
+    plain(n.title) {
+        ui.Text("child")
+    }
+}"#,
+        ));
+        assert_eq!(code, "E063");
+        assert!(message.contains("View"), "{message}");
+        let got = errors(&with_note(
+            r"view card_of(title: Text, extra: View) {
+    ui.Text(title)
+    extra
+}
+view page_of(n: Note) {
+    card_of(n.title) {
+        on vanish: open(n)
+    }
+}",
+        ));
+        assert!(
+            got.iter().any(|(_, m)| m.contains("vanish") || m.contains("no parameter")),
+            "an event no parameter answers is refused: {got:#?}"
+        );
+        let got = errors("fn f(x: Int = 2) -> Int {\n    x\n}");
+        assert!(
+            got.iter().any(|(code, _)| code == "E028"),
+            "a function's parameters still take no default: {got:#?}"
+        );
+    }
 }
 
 const REACTED: &str = r"type Post {

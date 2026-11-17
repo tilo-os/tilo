@@ -331,7 +331,7 @@ fn a_members_picture_is_drawn_when_its_bytes_arrive_and_not_looked_for_before() 
     // the process's lane for the record.
     let lane = app
         .harness()
-        .component_record_content_lane()
+        .component_document_content_lane()
         .expect("the window keeps a lane for its record's content");
     assert_eq!(
         lane.take_requests().wants,

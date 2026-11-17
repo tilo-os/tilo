@@ -10,4 +10,5 @@ pub mod material;
 pub mod network;
 pub mod seal;
 pub mod token;
+pub mod tpm;
 pub mod unlock;

@@ -1,7 +1,7 @@
 //! The content plane: a mount's blobs served to the peers that hydrate from it, and the signed
 //! workspace ACL a joiner reads.
 //!
-//! A workspace's tree travels as the workspace's Files record ([`crate::tree_record`]); only file
+//! A workspace's tree travels as the workspace's Files record ([`crate::tree_document`]); only file
 //! bytes and the ACL come over this plane, and every connection is authenticated as a certified
 //! device of a person before it is served.
 use std::collections::HashMap;
@@ -162,7 +162,7 @@ impl Ticket {
     /// Stable public identifier used by record-scoped grants and repositories.
     ///
     /// Older tickets carry only the random 256-bit topic; deriving the UUID keeps them compatible
-    /// while every participant computes the same record namespace.
+    /// while every peer computes the same record namespace.
     pub fn workspace_id(&self) -> uuid::Uuid {
         Self::workspace_id_for_topic(self.workspace)
     }

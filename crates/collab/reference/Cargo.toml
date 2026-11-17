@@ -10,7 +10,7 @@ name = "tilo_reference"
 path = "src/lib.rs"
 
 # Pure state layer — no `ui`, `winit` or render deps — so the toolkit, any app
-# and an out-of-process participant can all build on it.
+# and an out-of-process member can all build on it.
 
 [dependencies]
 tilo-actions = { path = "../actions" }

@@ -1,6 +1,6 @@
 //! Reading another provider's action result, kept current.
 //!
-//! [`RecordEnv::query`](super::RecordEnv::query) invokes a view action of
+//! [`ResourceEnv::query`](super::ResourceEnv::query) invokes a view action of
 //! any provider through the session's action API, as the person using the
 //! app, and shows its answer as data that arrives
 //! ([`Arriving`](ui_core::arriving::Arriving)): the view says what shows
@@ -79,7 +79,7 @@ fn answered<T: DeserializeOwned>(
     }
 }
 
-/// One read [`RecordEnv::query`](super::RecordEnv::query) follows. Clones
+/// One read [`ResourceEnv::query`](super::ResourceEnv::query) follows. Clones
 /// share it. It is followed while the view scope that asked for it lives,
 /// or a clone of it does; then it is cancelled.
 pub struct Query<T> {

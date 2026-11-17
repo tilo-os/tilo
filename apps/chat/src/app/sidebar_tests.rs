@@ -6,10 +6,7 @@ use tilo_actions::policy::MemberId;
 
 /// A direct conversation row as the record projects it, named `name`.
 fn conversation(app: &ChatApp, key: &str, name: &str) -> crate::model::Channel {
-    let id = crate::record::Chat::direct_id([
-        app.me.id.clone(),
-        MemberId::person(key),
-    ]);
+    let id = crate::record::Chat::direct_id([app.me.id.clone(), MemberId::person(key)]);
     crate::model::Channel {
         id: id.to_string(),
         category: String::new(),
@@ -21,10 +18,7 @@ fn conversation(app: &ChatApp, key: &str, name: &str) -> crate::model::Channel {
         mentions: 0,
         archived: false,
         direct: true,
-        participants: vec![
-            app.me.id.clone(),
-            MemberId::person(key),
-        ],
+        members: vec![app.me.id.clone(), MemberId::person(key)],
     }
 }
 
@@ -79,7 +73,7 @@ tilo_test_env::scenario! {
                 mentions: 0,
                 archived: false,
                 direct: true,
-                participants: Vec::new(),
+                members: Vec::new(),
             }
         };
         let ada = row(100, "Ada");

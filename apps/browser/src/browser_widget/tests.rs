@@ -209,7 +209,7 @@ fn a_page_waiting_on_permission_names_the_request_in_what_it_reads() {
         image: None,
         navigation: ui::webview::page::PageNavigation::None,
         loading: false,
-        record: ui::webview::PageRecordNote::default(),
+        record: ui::webview::PageResourceNote::default(),
     };
     let update = widget.page_success(
         ui::tilo_actions::InvocationId::new(),
@@ -474,7 +474,7 @@ pub(super) fn bookmarked(pages: &[(&str, &str)]) -> crate::resource::Browser {
 
 pub(super) fn person_history() -> (
     ui::framework::testing::TestApp<crate::BrowserShell>,
-    ui::framework::PersonRecord<crate::history::BrowsingHistory>,
+    ui::framework::PersonResource<crate::history::BrowsingHistory>,
 ) {
     let mut app = ui::framework::testing::TestApp::<crate::BrowserShell>::capture(None).unwrap();
     let record = app

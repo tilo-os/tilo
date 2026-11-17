@@ -16,7 +16,7 @@ fn policy() -> WorkspaceMediaV1 {
             CallV1 {
                 binding: ChatCallBindingV1 {
                     app_id: "so.tilo.chat".into(),
-                    record_id: String::new(),
+                    document_id: String::new(),
                     channel_id: "voice".into(),
                     channel_object: "1@01".into(),
                     chat_workspace_id: "main".into(),
@@ -272,8 +272,8 @@ tilo_test_env::scenario! {
 
 // Literal pre-extraction oracle, retained independently of the production helper.
 use super::super::{
-    MAX_CALLS, MAX_CHANNEL_BYTES, MAX_DENIED_PER_CALL, MAX_DENIED_TOTAL, MAX_OBJECT_BYTES,
-    MAX_POLICY_BYTES, MAX_RECORD_BYTES, lower_hex, preflight_policy, text_valid,
+    MAX_CALLS, MAX_CHANNEL_BYTES, MAX_DENIED_PER_CALL, MAX_DENIED_TOTAL, MAX_DOCUMENT_BYTES,
+    MAX_OBJECT_BYTES, MAX_POLICY_BYTES, lower_hex, preflight_policy, text_valid,
 };
 use automerge::{ReadDoc, Value};
 use std::collections::BTreeSet;
@@ -339,7 +339,7 @@ fn historical_validate(value: &WorkspaceMediaV1) -> Result<(), MediaPolicyError>
         historical_binding(&call.binding)?;
         if !bindings.insert((
             &call.binding.app_id,
-            &call.binding.record_id,
+            &call.binding.document_id,
             &call.binding.channel_object,
         )) {
             return Err(MediaPolicyError::Binding);
@@ -366,7 +366,7 @@ fn historical_validate(value: &WorkspaceMediaV1) -> Result<(), MediaPolicyError>
 
 fn historical_binding(value: &ChatCallBindingV1) -> Result<(), MediaPolicyError> {
     if value.app_id != "so.tilo.chat"
-        || !text_valid(&value.record_id, MAX_RECORD_BYTES, true)
+        || !text_valid(&value.document_id, MAX_DOCUMENT_BYTES, true)
         || !text_valid(&value.channel_id, MAX_CHANNEL_BYTES, false)
         || !text_valid(&value.chat_workspace_id, MAX_CHANNEL_BYTES, false)
         || !text_valid(&value.channel_object, MAX_OBJECT_BYTES, false)

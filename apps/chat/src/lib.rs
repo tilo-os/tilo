@@ -83,6 +83,8 @@ pub mod permissions;
 pub mod picker;
 pub mod preferences;
 pub mod projection;
+pub mod question;
+pub mod question_card;
 pub mod record;
 pub mod render_call;
 pub mod render_chat;
@@ -91,6 +93,7 @@ mod scrollback;
 mod share_grants;
 mod shared_resources;
 mod sidebar;
+pub mod summons;
 mod timeline;
 pub mod transcript;
 pub mod views;
@@ -115,6 +118,8 @@ mod live_share_tests;
 mod native_models_tests;
 #[cfg(all(test, not(target_family = "wasm")))]
 mod page_models_tests;
+#[cfg(test)]
+mod question_tests;
 #[cfg(test)]
 mod testing;
 

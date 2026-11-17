@@ -1701,8 +1701,8 @@ fn desktop_running(app: &str) -> (DesktopHandle, tilo_desktop_model::TabId) {
 }
 
 /// The record `app`'s window shows, as presence names records to the others.
-fn record_of(app: &str) -> tilo_relay_protocol::live::LiveRecord {
-    tilo_relay_protocol::live::LiveRecord {
+fn resource_of(app: &str) -> tilo_relay_protocol::live::LiveResource {
+    tilo_relay_protocol::live::LiveResource {
         app: app.to_owned(),
         record: "0f1e2d3c4b5a6978".to_owned(),
     }
@@ -1752,7 +1752,7 @@ tilo_test_env::scenario! {
             "Claude Code",
             [0x80, 0xa8, 0xff],
             Some("Writing a note".to_owned()),
-            Some(&record_of("so.tilo.notes")),
+            Some(&resource_of("so.tilo.notes")),
             None,
         );
         sync.speak_for(&[(WORKSPACE.to_owned(), run.to_owned(), face)]);
@@ -1778,7 +1778,7 @@ tilo_test_env::scenario! {
             from,
             frame: tilo_relay_protocol::live::LiveFrame::Ops(
                 tilo_relay_protocol::live::OpsFrame::Semantic {
-                    record: record_of("so.tilo.notes"),
+                    record: resource_of("so.tilo.notes"),
                     event: event.clone(),
                 },
             )

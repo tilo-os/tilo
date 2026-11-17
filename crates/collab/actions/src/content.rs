@@ -99,7 +99,7 @@ pub(crate) fn recording_store() -> Option<ContentStore> {
 /// alive for as long as records are written.
 #[cfg(any(test, feature = "test-support"))]
 #[must_use]
-pub fn register_for_records() -> tilo_wake::WakeScope {
+pub fn register_for_resources() -> tilo_wake::WakeScope {
     let window = tilo_wake::WakeScope::new();
     register(&window.handle(), ContentStore::memory());
     window

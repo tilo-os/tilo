@@ -175,7 +175,7 @@ pub struct MenuButtonProps {
     pub actions: Vec<OfferedAction>,
     /// The resource whose published actions this menu lists, which the host fills: a bar that
     /// lists the window in front's commands names the window and leaves the commands to it.
-    pub subject: Option<ResourceId>,
+    pub target: Option<ResourceId>,
     /// The commands, in order.
     #[component(part(default))]
     pub items: Vec<MenuItemProps>,
@@ -239,7 +239,7 @@ impl Described for MenuButton {
             faces,
             role,
             actions,
-            subject: _,
+            target: _,
             items,
         } = props;
         face(key, label, icon, icon_only, faces, role).with_menu(rows(items, actions))
@@ -256,7 +256,7 @@ impl Described for MenuButton {
             faces,
             role,
             actions,
-            subject: _,
+            target: _,
             items,
         } = props;
         let fresh = face("", label, icon, icon_only, faces, role);

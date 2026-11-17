@@ -754,6 +754,7 @@ impl ChatApp {
             } else {
                 0.0
             },
+            question_h: self.row_question_height(m, editing, text_w, tr, theme),
             att_h,
             react_h,
             edited_h,
@@ -827,7 +828,7 @@ impl ChatApp {
                 .is_some()
         {
             // The body as written: paragraphs, formatting, and mentions in
-            // their participants' colours, drawn by the editor that wrote it.
+            // their members' colours, drawn by the editor that wrote it.
             self.layout_body(
                 &m,
                 Point::new(column.text_x, *y),
@@ -866,6 +867,10 @@ impl ChatApp {
         }
         if rm.resource_h > 0.0 {
             self.draw_message_resource(PaintCtx::new(scene, tf, tr, theme), &m, column, y, hits);
+        }
+        if rm.question_h > 0.0 {
+            let place = (column.text_x, f64::from(column.text_width));
+            self.draw_question(PaintCtx::new(scene, tf, tr, theme), &m, place, y, hits);
         }
         self.draw_row_footer(PaintCtx::new(scene, tf, tr, theme), rm, &m, column, y, hits);
         *y += rm.pad;
@@ -1402,7 +1407,7 @@ impl ChatApp {
         let sp = &theme.tokens.spacing;
         let MessageColumn { text_x, .. } = column;
         let count = model::reply_count(&self.messages, &m.id);
-        let parts = model::thread_participants(&self.messages, &m.id);
+        let parts = model::thread_members(&self.messages, &m.id);
         let bar_h = thread_bar_h(theme);
         let pad = f64::from(sp.s2);
         let avatar = AvatarSize::Small.side(theme);

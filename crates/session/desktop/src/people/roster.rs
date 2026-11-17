@@ -20,7 +20,7 @@ pub fn roster_rows(desktop: &Layout, local_user: &str) -> Vec<RosterRow> {
     roster_rows_named(desktop, local_user, None).0
 }
 
-/// [`roster_rows`], with people who share a name numbered ([`ui::presence::ParticipantLabels`]) —
+/// [`roster_rows`], with people who share a name numbered ([`ui::presence::MemberLabels`]) —
 /// `own_name`, this person's own, among them — and what this person is shown as.
 pub fn roster_rows_named(
     desktop: &Layout,
@@ -44,7 +44,7 @@ fn names_of(
     workspace: &Workspace,
     local_user: &str,
     own_name: Option<&str>,
-) -> ui::presence::ParticipantLabels {
+) -> ui::presence::MemberLabels {
     let mut people: Vec<(String, String, Option<u64>)> = workspace
         .members
         .iter()
@@ -67,7 +67,7 @@ fn names_of(
         .iter()
         .map(|(id, name, joined)| (id.as_str(), name.as_str(), *joined))
         .collect();
-    ui::presence::ParticipantLabels::by_joining(people)
+    ui::presence::MemberLabels::by_joining(people)
 }
 
 /// What each member in the active workspace is called, exactly as the roster calls them (numbered
@@ -113,7 +113,7 @@ impl PeopleNames {
 fn rows_of(
     workspace: &Workspace,
     present: &[Present],
-    labels: &ui::presence::ParticipantLabels,
+    labels: &ui::presence::MemberLabels,
 ) -> Vec<RosterRow> {
     workspace
         .members
@@ -131,7 +131,7 @@ fn row_of(
     workspace: &Workspace,
     member: &Member,
     here: &Present,
-    labels: &ui::presence::ParticipantLabels,
+    labels: &ui::presence::MemberLabels,
 ) -> RosterRow {
     let is_agent = !member.id.is_person();
     let is_bot = matches!(member.id, MemberId::Bot(_));

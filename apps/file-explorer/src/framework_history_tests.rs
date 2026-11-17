@@ -261,7 +261,7 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
             .namespace
             .lock()
             .unwrap()
-            .record_history(record)
+            .document_history(record)
             .unwrap()
             .versions
             .len(),
@@ -286,7 +286,7 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
             .namespace
             .lock()
             .unwrap()
-            .record_history(record)
+            .document_history(record)
             .unwrap()
             .versions
             .len(),
@@ -306,7 +306,7 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
             .namespace
             .lock()
             .unwrap()
-            .record_history(record)
+            .document_history(record)
             .unwrap()
             .versions
             .len(),
@@ -319,7 +319,7 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
             .namespace
             .lock()
             .unwrap()
-            .record_history(record)
+            .document_history(record)
             .unwrap()
             .versions
             .len(),
@@ -333,7 +333,7 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
             .namespace
             .lock()
             .unwrap()
-            .record_history(record)
+            .document_history(record)
             .unwrap()
             .versions
             .len(),
@@ -346,7 +346,7 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
             .namespace
             .lock()
             .unwrap()
-            .record_history(record)
+            .document_history(record)
             .unwrap()
             .versions
             .len(),

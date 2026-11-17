@@ -30,7 +30,7 @@ fn record(record: String) -> DocumentRoute {
 }
 
 fn part(index: u64) -> DocumentRoute {
-    record(neighbour_wire::record_part("chat", index))
+    record(neighbour_wire::document_part("chat", index))
 }
 
 /// Each record's document as its author writes it, by record.
@@ -78,9 +78,9 @@ impl Received {
                     let landed = self.documents.entry(route.record).or_default();
                     *landed = landed.saturating_add(1);
                 }
-                Event::RecordOpened {
+                Event::DocumentOpened {
                     route: Some(route),
-                    answer: tilo_session_client::RecordAnswer::Sent { frames },
+                    answer: tilo_session_client::DocumentAnswer::Sent { frames },
                     ..
                 } => {
                     self.opened.push((route.record, frames));
@@ -142,7 +142,7 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
         .unwrap();
     ready(&[&author]).await;
     let note = route();
-    let archive = record(neighbour_wire::on_demand_record("uuid:archive"));
+    let archive = record(neighbour_wire::on_demand_document("uuid:archive"));
     let mut writes = Author::default();
     author
         .write(note.clone(), &writes.first(&note, "note"))
@@ -182,13 +182,13 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
     // The reader opens the earlier part and the archive: their history
     // arrives, and then their changes.
     reader
-        .send(Cmd::OpenRecordAt(workspace(), part(0)))
+        .send(Cmd::OpenDocumentAt(workspace(), part(0)))
         .unwrap();
     reader
-        .send(Cmd::OpenRecordAt(workspace(), archive.clone()))
+        .send(Cmd::OpenDocumentAt(workspace(), archive.clone()))
         .unwrap();
     // The host's answer comes once it sent the history; the history opens
-    // once a participant admitted the page to each record.
+    // once a member admitted the page to each record.
     until("the opened records", &mut at_reader, |received| {
         received.opened.len() == 2 && received.of(&part(0)) > 0 && received.of(&archive) > 0
     })
@@ -216,7 +216,7 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
         .unwrap();
     durable(&author).await;
     for (page, received) in [(&early, &mut at_early), (&reader, &mut at_reader)] {
-        // The new part opens once a participant admitted the page to it; a
+        // The new part opens once a member admitted the page to it; a
         // change that reached a page it should not have would have opened
         // by then too.
         until("the marker and the new part", received, |received| {

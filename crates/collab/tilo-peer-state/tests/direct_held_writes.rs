@@ -121,7 +121,7 @@ fn sealed(key: &SigningKey) -> NeighbourMsg {
         peer: peer_handle(&key.verifying_key().to_bytes()),
         app_id: APP.into(),
         cluster_id: WORKSPACE.into(),
-        record_id: RECORD.into(),
+        document_id: RECORD.into(),
         envelope: Box::new(op),
         own: None,
     }
@@ -158,7 +158,7 @@ async fn a_write_before_the_change_it_builds_on_merges_once_that_change_comes() 
                 workspace_changes: seed_workspace(WORKSPACE, &host_cert, &devices).unwrap(),
                 documents: vec![SeedDocument {
                     app_id: APP.into(),
-                    record_id: RECORD.into(),
+                    document_id: RECORD.into(),
                     kind: "test".into(),
                     bytes: document.save(),
                 }],

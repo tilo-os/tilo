@@ -8,9 +8,9 @@ license.workspace = true
 
 [features]
 default = []
-# One participant's sealed session in one scope: the namespace of one device
+# One device's sealed session in one scope: the namespace of one device
 # in one scope, the tracks within it and their delivery, the sealing under
-# the scope's channel keys, and the admission a participant runs on it.
+# the scope's channel keys, and the admission a device runs on it.
 # Builds for the page, which publishes and reads them itself.
 plane = ["dep:moq-net", "dep:hex", "dep:n0-future"]
 # The relay: the copying and admitting half, which runs on the device that

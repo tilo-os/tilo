@@ -1,5 +1,5 @@
 /**
- * A browser participant's pictures in a call: the camera (`getUserMedia`) or
+ * A browser member's pictures in a call: the camera (`getUserMedia`) or
  * a shared screen (`getDisplayMedia`) encoded here as one H.264 stream per
  * layer of its source, and the pictures the call sends for this page waiting
  * in an inbox until the app collects them.

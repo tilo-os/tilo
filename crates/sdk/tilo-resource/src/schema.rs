@@ -740,13 +740,13 @@ fn declared_operation(id: &str, params: &[ActionParam], description: &str) -> Va
 /// The replayable action of a `#[resource]` record, as the generic
 /// [`APPLY`](crate::APPLY) takes it: `{"op": {"action": id, "args": {..}},
 /// "at": ms}`, one alternative per declaration.
-pub fn record_action_schema<R: crate::Resource>() -> Value {
-    record_action_schema_of(crate::vocabulary::<R>(), R::seed().is_some())
+pub fn resource_action_schema<R: crate::Resource>() -> Value {
+    resource_action_schema_of(crate::vocabulary::<R>(), R::seed().is_some())
 }
 
-/// [`record_action_schema`] of the resource `vocabulary`, which `seeds` its
+/// [`resource_action_schema`] of the resource `vocabulary`, which `seeds` its
 /// first content or not.
-fn record_action_schema_of(vocabulary: &crate::Vocabulary, seeds: bool) -> Value {
+fn resource_action_schema_of(vocabulary: &crate::Vocabulary, seeds: bool) -> Value {
     let mut operations: Vec<Value> = Vec::new();
     for decl in vocabulary.declarations().iter() {
         operations.push(declared_operation(

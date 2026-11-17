@@ -510,12 +510,12 @@ fn call_params() -> Vec<ActionParam> {
         ActionParam::optional(
             "publish",
             ParamType::Boolean,
-            "Start, set-directions: participants may send audio. Set-denial: the person may not. False when omitted.",
+            "Start, set-directions: members may send audio. Set-denial: the person may not. False when omitted.",
         ),
         ActionParam::optional(
             "subscribe",
             ParamType::Boolean,
-            "Start, set-directions: participants hear each other. Set-denial: the person may not. False when omitted.",
+            "Start, set-directions: members hear each other. Set-denial: the person may not. False when omitted.",
         ),
         ActionParam::optional(
             "person",
@@ -547,7 +547,7 @@ impl Publisher {
             provider: self.provider.into(),
             app_id: self.provider.into(),
             workspace: workspace.to_owned(),
-            record_id: String::new(),
+            document_id: String::new(),
             browsable: false,
         }
     }
@@ -785,7 +785,7 @@ impl Args {
         match self.required_text("operation")? {
             "start" => Ok(CallOperation::Start {
                 app_id: self.required_text("app")?.to_owned(),
-                record_id: self.required_text("record")?.to_owned(),
+                document_id: self.required_text("record")?.to_owned(),
                 channel_id: self.required_text("channel")?.to_owned(),
                 allowed: self.directions()?,
             }),
@@ -1073,6 +1073,7 @@ impl Workspaces {
             #[cfg(not(target_arch = "wasm32"))]
             (person_models::PROVIDER, _) => {
                 self.person_models_invoke(workspace_id, caller, certificate, request)
+                    .await
             }
             (host_account::PROVIDER, _)
                 if request.target == host_account::target(host_account::ACCOUNT) =>
@@ -1380,7 +1381,7 @@ impl Workspaces {
             .filter(|member| !member.removed)
             .map(|member| {
                 json!({
-                    "person": member.id.key(),
+                    "member": member.id,
                     "name": (!member.name.is_empty()).then_some(&member.name),
                     "role": member.role.map(Role::key),
                     "owner": member.root().is_some_and(owns),
@@ -2250,6 +2251,8 @@ impl AppServingPlane for GovernedPlane {
     }
 }
 
+#[cfg(test)]
+mod person_model_tests;
 #[cfg(test)]
 mod share_tests;
 #[cfg(test)]

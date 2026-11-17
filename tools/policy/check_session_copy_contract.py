@@ -2,7 +2,7 @@
 """Audit Tilo's public collaboration vocabulary.
 
 Protocol and implementation types may continue to use ``peer``.
-Ordinary copy uses Workspace, People, Member and Participant. The audit
+Ordinary copy uses Workspace, People and Member. The audit
 covers the session modules that own public collaboration copy and stops at each
 file's test module so assertion prose may describe implementation details.
 """

@@ -38,7 +38,7 @@ use crate::platform::authors::{People, Writers};
 use crate::platform::pane::Pane;
 #[cfg(target_os = "linux")]
 use tilo_actions::remote::workspace_activity as wire;
-use ui::record::{DocumentCheckout, DocumentId, ResourceType};
+use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
 
 #[cfg(target_os = "linux")]
 use crate::platform::fabric::SharedLink;
@@ -560,7 +560,7 @@ impl Activity {
 
     /// The records `workspace_id` holds: read when the change stream says one of them moved, on a
     /// worker where this host has threads, so a workspace's records never hold up a frame.
-    fn records_of(&self, workspace_id: WorkspaceId) -> Vec<DetachedRecordHistory> {
+    fn resources_of(&self, workspace_id: WorkspaceId) -> Vec<DetachedRecordHistory> {
         self.records_held(workspace_id).as_ref().clone()
     }
 
@@ -676,7 +676,7 @@ impl HistorySource for Activity {
     ) -> Vec<DetachedRecordHistory> {
         let mut records = Vec::new();
         if let Some(workspace_id) = Self::id_of(tree, workspace) {
-            records.extend(self.records_of(workspace_id));
+            records.extend(self.resources_of(workspace_id));
         }
         records.extend(self.service_records());
         // What the person's devices answered when one of them asked to be unlocked is theirs and
@@ -696,7 +696,7 @@ impl HistorySource for Activity {
         // Who this host's own mounts write as: a record's changes by the person who made them.
         (self.0.writers.register)(authors);
         // A change of a workspace's layout is the person's: the record is written as them, so it
-        // reads as presence shows them here and never as another participant.
+        // reads as presence shows them here and never as another member.
         authors.register_local_identity(
             &automerge::ActorId::from(self.0.person.as_bytes()).to_hex_string(),
         );
@@ -784,7 +784,7 @@ fn read_workspace_records(
     let mut seen = BTreeSet::new();
     for (package, index_room) in workspace_packages(store, workspace) {
         let Some((checkouts, primary)) =
-            crate::platform::records::workspace_records(store, &package, &index_room)
+            crate::platform::records::workspace_resources(store, &package, &index_room)
         else {
             continue;
         };
@@ -822,7 +822,7 @@ fn read_workspace_records(
     // The workspace's folder is a record of its own, and its changes belong in
     // the history beside the apps': a page holds it without listing it among
     // the packages it opened, and a computer's folder writes are its versions.
-    let tree_id = collab_types::person_record_id(fs_protocol::tree::TREE_KIND);
+    let tree_id = collab_types::person_document_id(fs_protocol::tree::TREE_KIND);
     if seen.insert((fs_protocol::tree::FILES_APP.to_owned(), tree_id.clone()))
         && let Some(document_id) = DocumentId::parse(&tree_id)
         && let Some(document) = crate::platform::records::document(
@@ -894,7 +894,7 @@ impl ActivityHost for Host {
     }
 
     #[cfg(target_os = "linux")]
-    fn record_content(&self, workspace: &str, app: &str, hash: &str) -> Option<Vec<u8>> {
+    fn document_content(&self, workspace: &str, app: &str, hash: &str) -> Option<Vec<u8>> {
         self.0.content.borrow().as_ref()?.read(workspace, app, hash)
     }
 
@@ -1033,7 +1033,7 @@ impl OwnRead {
         // The held record is shared with every other reader of it; the copy is this read's.
         let mut doc = doc.clone();
         self.entries = ui::HistorySource::new()
-            .without_record_genesis()
+            .without_resource_genesis()
             .with_authors(authors.clone())
             .with_max_entries(MAX_OWN_ACTIONS)
             .made_since(i64::try_from(since_ms).unwrap_or(i64::MAX))
@@ -1071,7 +1071,7 @@ impl Activity {
             .documents(tree)
             .into_iter()
             .find(|(workspace_id, _)| *workspace_id == workspace)
-            .and_then(|(_, doc)| tilo_desktop_model::shared_record::read(&doc, None))
+            .and_then(|(_, doc)| tilo_desktop_model::shared_resource::read(&doc, None))
             .map(|layout| {
                 layout
                     .records
@@ -1440,11 +1440,11 @@ mod tests {
             store.flush(Some(key)).unwrap();
         };
         let mut index = ui::automerge::AutoCommit::new();
-        assert!(ui::record::index::reference(&mut index, &id, &kind));
+        assert!(ui::resource::index::reference(&mut index, &id, &kind));
         index.commit();
         write(&StorageKey::workspace_index(app, workspace), &mut index);
         let mut document = ui::automerge::AutoCommit::new();
-        ui::record::init(&mut document, &id, &kind, workspace);
+        ui::resource::init(&mut document, &id, &kind, workspace);
         write(
             &StorageKey::document(app, workspace, id.storage_key()),
             &mut document,
@@ -1592,7 +1592,7 @@ mod tests {
         /// change.
         fn keep(&self, workspace: &tilo_desktop_model::Workspace) {
             use tilo_desktop_model::projection::{WORKSPACE_ID_KEY, WORKSPACE_NAME_KEY};
-            use tilo_desktop_model::shared_record;
+            use tilo_desktop_model::shared_resource;
             use ui::automerge::ReadDoc as _;
             let layout = tilo_desktop_model::ownership::SharedDesktop {
                 tree: Layout {
@@ -1604,9 +1604,9 @@ mod tests {
             };
             let commit = |doc: &mut ui::automerge::AutoCommit, housekeeping: bool| {
                 let message = if housekeeping {
-                    shared_record::housekeeping_message("ada")
+                    shared_resource::housekeeping_message("ada")
                 } else {
-                    shared_record::step_message("ada")
+                    shared_resource::step_message("ada")
                 };
                 doc.commit_with(
                     automerge::transaction::CommitOptions::default()
@@ -1630,7 +1630,7 @@ mod tests {
             let id = workspace.id();
             let was = crate::layout::arranged(&kept.layout, id);
             let founding = kept.layout.get_heads().is_empty();
-            if shared_record::write(&mut kept.layout, &layout).unwrap_or(false) {
+            if shared_resource::write(&mut kept.layout, &layout).unwrap_or(false) {
                 let step = !founding && crate::layout::arranged(&kept.layout, id) != was;
                 commit(&mut kept.layout, !step);
             }
@@ -1976,7 +1976,7 @@ mod tests {
         assert_eq!(action.changes, 2, "its two writes: {action:?}");
         assert_eq!(
             action.record,
-            ui::record::DocumentId::package_primary().as_str(),
+            ui::resource::DocumentId::package_primary().as_str(),
             "{action:?}"
         );
         let finished = tilo_desktop::here::AgentFinished {
@@ -2141,7 +2141,7 @@ mod tests {
     /// takes it back by their name, and another person's undo never reaches it.
     #[test]
     fn a_change_of_the_layout_is_one_step_of_the_persons_in_its_history() {
-        use tilo_desktop_model::shared_record;
+        use tilo_desktop_model::shared_resource;
         use ui::permissions::MemberId;
         use ui::state::UndoLog;
 
@@ -2157,10 +2157,10 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            shared_record::write(&mut doc, &layout).expect("a record that takes the layout"),
+            shared_resource::write(&mut doc, &layout).expect("a record that takes the layout"),
             "the layout holds the window"
         );
-        shared_record::commit_change(&mut doc, "ada", now_seconds(), None);
+        shared_resource::commit_change(&mut doc, "ada", now_seconds(), None);
         assert!(log.record_committed_action_authored(
             &mut doc,
             before,
@@ -2184,7 +2184,7 @@ mod tests {
             "the step is one change of the layout"
         );
         // Undoing the change that founded the layout leaves none: an empty one.
-        let left = shared_record::read(&doc, None).map_or(0, |undone| windows(&undone.tree));
+        let left = shared_resource::read(&doc, None).map_or(0, |undone| windows(&undone.tree));
         assert_eq!(left, 0, "the window the step opened is gone");
     }
 

@@ -105,9 +105,9 @@ impl LayoutActions {
         // made to wait for themselves.
         let person = Actor::from(MemberId::person(self.person()));
         let asked = actor.unwrap_or(&person).clone();
-        // What a `place` or a `show` names no view of stands as content, through the view its app
-        // declares for a place of it, wherever it ends up standing: beside a turn it was aimed at
-        // too.
+        // What a `place`, a `show` or an `open` names no view of stands as content, through the
+        // view its app declares for a place of it, wherever it ends up standing: beside a turn it
+        // was aimed at too.
         self.place_as_content(&mut action);
         if self.kept_turn(&asked, arguments, &action)? {
             return Ok(self.shown(&action));
@@ -343,14 +343,15 @@ impl LayoutActions {
         self.invoke_by(Some(actor), address, arguments)
     }
 
-    /// A `place` or a `show` that names no view stands its resource as content, through the view its app
-    /// declares for a place of it (`place view`), never through the app's whole window: an agent,
-    /// the REPL and a reference's activation place the thing, as text typed on the canvas does
-    /// (canvas.md §7, "The thing, never the app"). The app's window is `open-app`'s, or the view a
-    /// caller names.
+    /// A `place`, a `show` or an `open` that names no view stands its resource as content, through
+    /// the view its app declares for a place of it (`place view`), never through the app's whole
+    /// window: an agent, the REPL and a reference's activation place the thing, as text typed on
+    /// the canvas does (canvas.md §7, "The thing, never the app"). The app's window is
+    /// `open-app`'s, or the view a caller names.
     fn place_as_content(&self, action: &mut LayoutAction) {
         let (LayoutAction::Place { resource, view, .. }
-        | LayoutAction::Show { resource, view, .. }) = action
+        | LayoutAction::Show { resource, view, .. }
+        | LayoutAction::Open { resource, view, .. }) = action
         else {
             return;
         };

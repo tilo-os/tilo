@@ -107,7 +107,7 @@ pub(super) fn snapshot(
     {
         return Err(SemanticReadError::InvalidOwner);
     }
-    if ui::record::workspace_scope(&document)
+    if ui::resource::workspace_scope(&document)
         .is_some_and(|workspace| workspace != destination.workspace)
     {
         return Err(SemanticReadError::InvalidOwner);

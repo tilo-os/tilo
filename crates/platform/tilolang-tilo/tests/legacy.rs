@@ -538,7 +538,7 @@ tilo_test_env::scenario! {
         let columns = listed(&replica, &board, &columns_field);
         assert_eq!(columns.len(), 1, "the column the new version added");
 
-        // A migration runs once on each record of its subject type, on a record the same version
+        // A migration runs once on each record of its target type, on a record the same version
         // made as on an older one: the board the new version made is migrated once, and the
         // migration leaves it as it was, nothing of the older form being there to move.
         assert_eq!(replica.host.migrate(), 1);

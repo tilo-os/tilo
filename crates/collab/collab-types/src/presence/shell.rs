@@ -20,7 +20,7 @@ pub struct ShellWindow {
     /// The app the window shows, as its stable id.
     pub app: String,
     /// The window's document, as its short digest
-    /// ([`LiveRecord::short_digest`](tilo_relay_protocol::live::LiveRecord::short_digest)):
+    /// ([`LiveResource::short_digest`](tilo_relay_protocol::live::LiveResource::short_digest)):
     /// a receiver knows which of its own windows shows the same document
     /// without ever seeing the sender's local id.
     pub document: [u8; 8],

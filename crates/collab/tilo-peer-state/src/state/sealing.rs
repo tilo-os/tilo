@@ -44,7 +44,7 @@ impl StatePeer {
         for document in seed.documents {
             self.publication_mut().publish_document(
                 &document.app_id,
-                &document.record_id,
+                &document.document_id,
                 document.bytes,
                 key,
                 now,
@@ -115,7 +115,7 @@ impl StatePeer {
             peer: peer_handle(author.as_bytes()),
             app_id: app.into(),
             cluster_id: self.core.workspace.clone(),
-            record_id: record.into(),
+            document_id: record.into(),
             envelope: Box::new(op),
             own: self.core.own_write(app, record, author.as_bytes()),
         };
@@ -222,7 +222,7 @@ impl StatePeer {
     }
     /// Whether this replica holds a record in the clear: one a catch-up hands
     /// on as a snapshot this device signs, taking a number of its sequence.
-    pub(crate) fn holds_clear_records(&self) -> bool {
+    pub(crate) fn holds_clear_documents(&self) -> bool {
         self.core
             .documents
             .keys()

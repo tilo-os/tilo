@@ -129,7 +129,7 @@ tilo_test_env::scenario! {
         snapshot.publishers.clear();
         assert!(snapshot.encode().is_ok());
         snapshot.publication = None;
-        // A call has no participant limit.
+        // A call has no member limit.
         snapshot.publishers = (1..=200).map(person).collect();
         assert!(snapshot.encode().is_ok());
         snapshot.publishers = vec![remote];
@@ -415,10 +415,10 @@ tilo_test_env::scenario! {
 tilo_test_env::scenario! {
     fn volume_and_deafening;
 
-    phase a_volume_is_a_local_bounded_query_for_one_participant;
+    phase a_volume_is_a_local_bounded_query_for_one_member;
     {
         let request = Request::new(Command::SetVolume {
-            participant: person(1),
+            member: person(1),
             percent: MAX_VOLUME_PERCENT,
         });
         assert!(request.dispatch_valid(), "it changes nobody else's call");
@@ -427,14 +427,14 @@ tilo_test_env::scenario! {
             Request::decode(&request.encode().unwrap()).unwrap(),
             request
         );
-        for (participant, percent) in [
+        for (member, percent) in [
             (person(1), MAX_VOLUME_PERCENT + 1),
             ("ana".to_owned(), 100),
             (String::new(), 100),
         ] {
             assert!(
                 Request::new(Command::SetVolume {
-                    participant,
+                    member,
                     percent
                 })
                 .encode()

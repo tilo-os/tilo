@@ -142,7 +142,7 @@ try {
     await action(tab, 'join-call');
   }
   for (const tab of pages) {
-    await tab.waitFor('peer.voice.call.state.phase === "live" && peer.voice.call.state.participants.length === 2', {timeout:30_000});
+    await tab.waitFor('peer.voice.call.state.phase === "live" && peer.voice.call.state.members.length === 2', {timeout:30_000});
     const value = await waitReported(tab, value => value.reported.state === 'live');
     assert.equal(value.reported.muted, true);
     assert.equal(value.reported.capture_active, false);
@@ -160,7 +160,7 @@ try {
   assert.equal(refused.clientIssue, null, 'Chat keeps the call: nothing failed');
   assert.equal(await second.evaluate('peer.voice.call.state.phase'), 'live');
   assert.equal(await second.evaluate('voiceEvidence.streams.length'), 0, 'no microphone was handed over');
-  assert.equal(await first.evaluate('peer.voice.call.state.participants.length'), 2, 'the other person still hears the call');
+  assert.equal(await first.evaluate('peer.voice.call.state.members.length'), 2, 'the other person still hears the call');
   stage('actual-chat-refused-microphone-stays-in-the-call-muted');
   await microphone(second.browser, 'granted');
   await action(first, 'unmute', true);
@@ -185,11 +185,11 @@ try {
   await waitReported(second, value => value.reported.capture_active);
   await action(second, 'leave-call');
   await second.waitFor('peer.voice.call.state.phase === "idle" && !peer.voice.call.stats().captureActive');
-  await first.waitFor('peer.voice.call.state.participants.length === 1');
+  await first.waitFor('peer.voice.call.state.members.length === 1');
   assert.equal(await resourcesClosed(second), true, 'Leave closes every real browser audio resource');
   stage('actual-chat-leave-closes-tracks-worklets-and-carrier');
   await action(second, 'join-call');
-  await second.waitFor('peer.voice.call.state.phase === "live" && peer.voice.call.state.participants.length === 2');
+  await second.waitFor('peer.voice.call.state.phase === "live" && peer.voice.call.state.members.length === 2');
   assert.equal(await inactive(second), true, 'rejoin requires fresh consent');
   await action(second, 'unmute', true);
   await waitReported(second, value => value.reported.capture_active);

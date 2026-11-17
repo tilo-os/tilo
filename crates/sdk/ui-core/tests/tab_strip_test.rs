@@ -97,7 +97,7 @@ tilo_test_env::scenario! {
         tabs[0].presence = vec![tilo_ui::widget::PresenceFaceProps {
             key: "mia".to_owned(),
             who: Some(Person {
-                identity: "mia".to_owned(),
+                identity: tilo_actions::MemberId::person("mia").into(),
                 name: "Mia".to_owned(),
                 hue: PresenceHue::of_identity("mia"),
             }),

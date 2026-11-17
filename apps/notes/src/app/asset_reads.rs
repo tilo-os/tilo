@@ -85,7 +85,7 @@ impl super::NotesApp {
             self.take_asset_read(read);
         }
         let manifest = self.workspace.images.clone();
-        let looked = ui::collaboration::record_content::arrivals();
+        let looked = ui::collaboration::document_content::arrivals();
         let retry = self
             .canonical_assets_waiting
             .is_some_and(|seen| seen != looked);

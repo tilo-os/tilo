@@ -612,7 +612,7 @@ fn actions(
             .selected(open == Some(index));
         if let Some(offer) = &action.undo {
             let records = records.clone();
-            let query = wire::RecordQuery {
+            let query = wire::ResourceQuery {
                 range: session.range.clone(),
                 task: None,
                 app_id: action.app_id.clone(),

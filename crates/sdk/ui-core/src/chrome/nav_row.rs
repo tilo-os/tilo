@@ -88,7 +88,7 @@ pub struct NavRowFace<'a> {
     pub badge_column: Option<f64>,
     /// The content colour the row is (a calendar, a project), in the icon's place.
     pub swatch: Option<Color>,
-    /// The person the row is (a participant in a call), as a small avatar in the icon's place.
+    /// The person the row is (a member in a call), as a small avatar in the icon's place.
     pub avatar: Option<AvatarFace<'a>>,
     /// `Some(checked)`: a checkbox in the leading slot.
     pub checked: Option<bool>,

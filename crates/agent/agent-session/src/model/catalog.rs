@@ -279,7 +279,7 @@ const MIN_TITLE_CHARS: usize = 3;
 /// - those of a record the request names by its title, or a tag
 ///   (`#logins`) the record holds;
 /// - those of the records the task made, touched, read or has open (the
-///   participant offers only those of the open ones) and those a step
+///   member offers only those of the open ones) and those a step
 ///   would start a new record of;
 /// - every one of an item's agent's, which are the item's own.
 ///

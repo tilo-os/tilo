@@ -19,7 +19,7 @@ use tilo_actions::surface::Surface;
 use tilo_lock::MutexRecover;
 
 use crate::claim::{ClaimedAction, UnitPath};
-use crate::receipt::{ReceiptSurface, Record, SurfaceSource};
+use crate::receipt::{ReceiptSurface, SurfaceSource, WrittenDocument};
 
 /// The item step standing for any item in a footprint.
 pub const ANY_ITEM: &str = "*";
@@ -150,7 +150,7 @@ impl ReceiptSurface for KindSurface {
 }
 
 /// Reads content by lowercase hex hash, from the record's workspace and app.
-type ReadContent = dyn Fn(&Record<'_>, &str) -> Option<Vec<u8>> + Send + Sync;
+type ReadContent = dyn Fn(&WrittenDocument<'_>, &str) -> Option<Vec<u8>> + Send + Sync;
 
 /// Surfaces read from a content store by the hash each op names, parsed
 /// once per hash.
@@ -163,7 +163,7 @@ impl ContentSurfaces {
     /// Surfaces whose bytes `read` returns by lowercase hex hash, wherever
     /// the record's workspace and app keep content.
     pub fn new(
-        read: impl Fn(&Record<'_>, &str) -> Option<Vec<u8>> + Send + Sync + 'static,
+        read: impl Fn(&WrittenDocument<'_>, &str) -> Option<Vec<u8>> + Send + Sync + 'static,
     ) -> Self {
         Self {
             read: Box::new(read),
@@ -171,12 +171,12 @@ impl ContentSurfaces {
         }
     }
 
-    fn file(&self, record: &Record<'_>, hash: &[u8; 32]) -> Option<Arc<SurfaceFile>> {
+    fn file(&self, document: &WrittenDocument<'_>, hash: &[u8; 32]) -> Option<Arc<SurfaceFile>> {
         if let Some(file) = self.parsed.lock_recover().get(hash) {
             return Some(Arc::clone(file));
         }
         let hex = hex::encode(hash);
-        let bytes = (self.read)(record, &hex)?;
+        let bytes = (self.read)(document, &hex)?;
         // Only the bytes the hash names are the surface.
         if blake3::hash(&bytes).as_bytes() != hash {
             return None;
@@ -190,11 +190,11 @@ impl ContentSurfaces {
 impl SurfaceSource for ContentSurfaces {
     fn surface(
         &self,
-        record: &Record<'_>,
+        document: &WrittenDocument<'_>,
         kind: Option<&str>,
         named: Option<&[u8; 32]>,
     ) -> Option<Arc<dyn ReceiptSurface>> {
-        let file = self.file(record, named?)?;
+        let file = self.file(document, named?)?;
         let surface = file.resource(kind)?.clone();
         Some(Arc::new(KindSurface(surface)))
     }
@@ -288,7 +288,7 @@ kind = "undoable"
 label = "Comment"
 field = "comments"
 params = []
-writes = ["record", "comments.*"]
+writes = ["document", "comments.*"]
 "#;
 
     fn surfaces() -> (ContentSurfaces, [u8; 32]) {
@@ -315,21 +315,21 @@ writes = ["record", "comments.*"]
         // footprints; other bytes under that hash are not it.
         {
             let (source, hash) = surfaces();
-            let record = Record {
+            let document = WrittenDocument {
                 workspace: "r",
                 app: "notes",
-                record: "p1",
+                document: "p1",
             };
             assert!(
-                source.surface(&record, None, None).is_none(),
+                source.surface(&document, None, None).is_none(),
                 "named nothing"
             );
             assert!(
-                source.surface(&record, None, Some(&[0; 32])).is_none(),
+                source.surface(&document, None, Some(&[0; 32])).is_none(),
                 "not here"
             );
             let surface = source
-                .surface(&record, Some("notes.page"), Some(&hash))
+                .surface(&document, Some("notes.page"), Some(&hash))
                 .unwrap();
             assert_eq!(surface.kind(), "notes.page");
             assert_eq!(
@@ -380,14 +380,14 @@ writes = ["record", "comments.*"]
             ];
             assert!(footprint.iter().any(|unit| covers(unit, &c1)));
             assert!(!footprint.iter().any(|unit| covers(unit, &c2)));
-            let whole = surface.footprint(&ClaimedAction::whole_record_edit(String::new()));
+            let whole = surface.footprint(&ClaimedAction::whole_resource_edit(String::new()));
             assert!(
                 whole.iter().any(|unit| covers(unit, &c2)),
-                "a whole-record edit writes any unit"
+                "a whole-document edit writes any unit"
             );
 
             let forged = ContentSurfaces::new(|_, _| Some(b"[[resources]]".to_vec()));
-            assert!(forged.surface(&record, None, Some(&hash)).is_none());
+            assert!(forged.surface(&document, None, Some(&hash)).is_none());
         }
 
         phase every_committed_surface_parses;

@@ -122,14 +122,14 @@ fn said(
             emoji,
             reactors: people
                 .into_iter()
-                .map(|person| {
-                    let reactor = Reactor {
-                        by: tilo_resource::MemberId::person(person.identity),
+                .filter_map(|person| {
+                    let by = person.identity.member_id()?.clone();
+                    names.insert(by.clone(), person.name);
+                    Some(Reactor {
+                        by,
                         persona: None,
                         name: None,
-                    };
-                    names.insert(reactor.by.clone(), person.name);
-                    reactor
+                    })
                 })
                 .collect(),
             first_at: i64::try_from(at).unwrap_or(i64::MAX),
@@ -492,6 +492,34 @@ fn draw_line(
 }
 
 impl Widget for QuoteLines {
+    /// The words it quotes over who said them.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        use crate::composition::TextLook;
+        let theme = cx.theme();
+        cx.element("blockquote");
+        let caption = theme.text(TextRole::Caption);
+        let body = theme.text(TextRole::Body);
+        let mut y = self.rect.y0;
+        if let Some(head) = self.head() {
+            let height = f64::from(caption.line_height_px());
+            let look = TextLook::new(head, &caption, Some(theme.text_dim)).with_max_lines(Some(1));
+            cx.words(
+                "head",
+                "footer",
+                Rect::new(self.rect.x0, y, self.rect.x1, y + height),
+                look,
+            );
+            y += height + Self::gap(theme);
+        }
+        let look = TextLook::new(self.excerpt.clone(), &body, Some(theme.text_primary));
+        cx.words(
+            "excerpt",
+            "p",
+            Rect::new(self.rect.x0, y, self.rect.x1, self.rect.y1),
+            look,
+        );
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,

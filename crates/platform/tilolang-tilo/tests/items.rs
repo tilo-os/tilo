@@ -107,9 +107,9 @@ impl Workspace {
         }
     }
 
-    /// `who` invokes `name` on the resource `subject` (of the type `ty`), as the API plans it,
+    /// `who` invokes `name` on the resource `target` (of the type `ty`), as the API plans it,
     /// and commits it; returns what it recorded.
-    fn act(&mut self, who: &str, (ty, subject): (&str, &str), name: &str, args: Json) -> DynAction {
+    fn act(&mut self, who: &str, (ty, target): (&str, &str), name: &str, args: Json) -> DynAction {
         let action = self
             .meta
             .actions
@@ -127,7 +127,7 @@ impl Workspace {
                 app: APP,
                 kind: &kind,
                 action_id: &action,
-                resource: Some(subject),
+                resource: Some(target),
                 args: &args,
                 caller: None,
                 from: None,

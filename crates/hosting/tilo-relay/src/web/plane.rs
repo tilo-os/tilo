@@ -1,7 +1,7 @@
 //! The relay's live plane: one `moq-lite` relay every carrier of a workspace's
 //! live tracks reaches, and the authority that admits them to it.
 //!
-//! The plane belongs to the relay, not to a listener: every participant dials
+//! The plane belongs to the relay, not to a listener: every device dials
 //! it over the relay's iroh endpoint ([`tilo_live::native`]) as its own
 //! certificate says it may. A page dials it the same way: its device
 //! certificate is the grant, and the delegation it carries names the endpoint
@@ -31,17 +31,17 @@ use crate::host::RelayProtocol;
 use crate::workspace_access::{self, WorkspaceOperation};
 use collab_types::WorkspaceId;
 
-/// One participant's live session: whose it is, the scope it publishes in, and
+/// One device's live session: whose it is, the scope it publishes in, and
 /// whether the workspace still admits it.
 struct Grant {
     workspace: WorkspaceId,
     peer: AuthenticatedPeer,
-    /// The namespace the participant publishes its own tracks under: one
-    /// participant of the workspace scope, as every device's is.
+    /// The namespace the device publishes its own tracks under: one
+    /// device of the workspace scope, as every device's is.
     namespace: String,
-    /// The subtree every participant of the same scope publishes in.
+    /// The subtree every device of the same scope publishes in.
     scope: String,
-    /// Whether this participant is a hosted browser environment's device: it
+    /// Whether this device is a hosted browser environment's device: it
     /// publishes its window's page and is offered nobody else's tracks, so no
     /// call, camera, screen or other window of the workspace reaches it.
     environment: bool,
@@ -70,7 +70,7 @@ impl Grant {
         }
     }
 
-    /// Whether the workspace admits this participant now.
+    /// Whether the workspace admits this device now.
     fn admitted(&self) -> bool {
         self.admitted.load(Ordering::Acquire)
     }
@@ -113,7 +113,7 @@ impl SessionAuthorization for Grant {
                     !self.environment
                         && namespace
                             .strip_prefix(&self.scope)
-                            .is_some_and(|rest| rest.starts_with("/participant/"))
+                            .is_some_and(|rest| rest.starts_with("/device/"))
                 }
             }
     }
@@ -173,7 +173,7 @@ struct DeviceKey {
 type Members = BTreeMap<DeviceKey, Arc<Grant>>;
 
 /// The live plane's authority: the devices the workspaces' governance admits,
-/// and nothing else — a participant that never opened a plane session is
+/// and nothing else — a device that never opened a plane session is
 /// nobody here.
 pub(crate) struct Authority {
     relay: RelayProtocol,
@@ -193,11 +193,11 @@ impl Authority {
         }
     }
 
-    /// Who the plane carries now: every person with an admitted participant,
+    /// Who the plane carries now: every person with an admitted device,
     /// with the devices they are here on. One person on two devices is one
     /// entry. A plane is the one account of who is here: a native device and a
     /// page alike reach it, and nothing counts a page that never joined.
-    pub(crate) fn participants(&self) -> BTreeMap<[u8; 32], BTreeSet<[u8; 32]>> {
+    pub(crate) fn devices(&self) -> BTreeMap<[u8; 32], BTreeSet<[u8; 32]>> {
         let mut people: BTreeMap<[u8; 32], BTreeSet<[u8; 32]>> = BTreeMap::new();
         for grant in self.carried() {
             if grant.admitted() {
@@ -215,7 +215,7 @@ impl Authority {
         self.members.lock_recover().values().cloned().collect()
     }
 
-    /// Re-answer every participant: does its workspace admit its device now?
+    /// Re-answer every device: does its workspace admit its device now?
     /// Called on each relay-wide authority change, never on a timer.
     async fn refresh(&self) {
         let members: Vec<Arc<Grant>> = self.members.lock_recover().values().cloned().collect();
@@ -323,7 +323,7 @@ impl Authority {
 
 impl RelayAuthority for Authority {
     fn admit<'a>(&'a self, peer: Peer, proof: &'a [u8]) -> Admission<'a> {
-        // Every participant reaches this plane over iroh, a page included: it
+        // Every device reaches this plane over iroh, a page included: it
         // proves itself with the certificate its grant carries.
         let Peer(device) = peer;
         Box::pin(self.admit_member(device, proof))
@@ -442,7 +442,7 @@ mod tests {
     tilo_test_env::scenario! {
         fn a_grant_names_what_its_holder_publishes_and_hears;
 
-        phase a_member_hears_every_participant_of_its_workspace;
+        phase a_member_hears_every_device_of_its_workspace;
         {
             let grant = Grant::new(WorkspaceId::from_u128(7), "ws-1", peer([1; 32]), false);
             assert_eq!(grant.subscription_prefix(), Some(grant.scope.as_str()));
@@ -450,7 +450,7 @@ mod tests {
             assert!(grant.current(Direction::Publish, &names([1; 32]).path()));
             assert!(
                 !grant.current(Direction::Publish, &names([2; 32]).path()),
-                "nobody publishes in another participant's name"
+                "nobody publishes in another device's name"
             );
         }
 

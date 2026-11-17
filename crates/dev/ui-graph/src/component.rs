@@ -403,7 +403,7 @@ pub enum Type {
     Int,
     Float,
     Bool,
-    /// A participant: a person or an agent.
+    /// A member: a person or an agent.
     Actor,
     /// A resource the component presents.
     Resource,
@@ -480,9 +480,9 @@ pub enum Value {
     Int(i64),
     Float(f64),
     Bool(bool),
-    /// A participant: their identity, and what the room calls them.
+    /// Who acted, and what the workspace calls them.
     Actor {
-        identity: String,
+        identity: tilo_action_policy::Actor,
         name: String,
     },
     /// A resource, by its id.

@@ -1,6 +1,6 @@
 //! End-to-end encryption of workspaces on this device: one MLS group per workspace, whose members are
 //! exactly the devices that hold the workspace's keys ([`KeyDirectory::allowed_devices`]), and
-//! every participant commits the group to that set. Every record of the workspace seals under the
+//! every key holder commits the group to that set. Every record of the workspace seals under the
 //! group's content keys; read permission inside a workspace is not a key boundary.
 //!
 //! [`WorkspaceKeys::pump`] runs the protocol over the workspace transport: inbound frames
@@ -77,7 +77,7 @@ const MAX_HELD_FRAMES: usize = 8;
 const FOUNDING_SPREAD_MS: u64 = 2_000;
 
 /// The longest a device that holds no state for a group waits for its genesis
-/// (from the workspace's retained frames, or a participant answering its
+/// (from the workspace's retained frames, or a key holder answering its
 /// request) before it creates the group itself: [`REQUEST_FIRST`] plus the
 /// widest spread between devices. Whoever waits for a fresh group's keys
 /// waits longer than this, or it gives up on a group about to be created.
@@ -183,7 +183,7 @@ fn give_up_welcome(entry: &mut PeerEntry, store: &KeysConfig, now: Instant) {
 pub enum KeyAccess {
     /// Admitted: seal new content and open history with these keys.
     Ready(ContentKeys),
-    /// Asked the participants for access and not admitted yet. Nothing can
+    /// Asked the key holders for access and not admitted yet. Nothing can
     /// be sealed or opened; the endpoint shows a waiting state.
     Waiting,
     Removed,
@@ -204,7 +204,7 @@ pub enum InboundGovernance {
         workspace: WorkspaceId,
         frame: Box<collab_types::MlsGovernanceFrame>,
     },
-    /// A device asking the workspace's participants for membership.
+    /// A device asking the workspace's key holders for membership.
     AccessRequest {
         workspace: WorkspaceId,
         request: Box<collab_types::MlsAccessRequestV1>,
@@ -390,7 +390,7 @@ impl KeyStorage for KeyDir {
 }
 
 /// Durable location and keys of this device's own group state: what a
-/// participant of a group needs, and only workspaces this device's own workspace
+/// key holder of a group needs, and only workspaces this device's own workspace
 /// host does not take part in need it.
 pub struct KeysConfig {
     /// Where this host keeps each workspace's group state.
@@ -657,7 +657,7 @@ impl WorkspaceKeys {
     }
 
     /// What an endpoint of this device may do with `workspace`'s group. The
-    /// first call starts taking part in it: this device asks the participants
+    /// first call starts taking part in it: this device asks the key holders
     /// for access, and creates the group when no genesis arrives. The caller
     /// has already decided the endpoint may read the workspace.
     pub fn access(&mut self, workspace: WorkspaceId, now: Instant) -> KeyAccess {
@@ -1194,7 +1194,7 @@ impl WorkspaceKeys {
         tracing::debug!(%workspace, epoch, ?signer, ?event, access = ?entry.peer.access(), "key frame taken in");
         if !entry.wanted && entry.peer.access() == Access::Waiting && entry.peer.knows_group() {
             // Taken up only to create the group if no one had: someone has,
-            // and its participants admit whoever asked.
+            // and its key holders admit whoever asked.
             self.peers.remove(&workspace);
             self.groups_seen.insert(workspace);
             if let Err(error) = store.state.peers().forget(workspace) {
@@ -1214,7 +1214,7 @@ impl WorkspaceKeys {
                 if let PeerEvent::WelcomeRefused(refusal) = &event {
                     tracing::warn!(%refusal, %workspace, ?signer, "key Welcome refused");
                 }
-                // Ask again with a fresh member key; any participant admits
+                // Ask again with a fresh member key; any key holder admits
                 // a member asking with another key than it joined with (the
                 // members that took a refused Welcome's commit hold this
                 // device admitted with the key it asked with).
@@ -1224,7 +1224,7 @@ impl WorkspaceKeys {
                 true
             }
             PeerEvent::AdmittedWithAnotherKey => {
-                // The participants admit it again with the key it asks with
+                // The key holders admit it again with the key it asks with
                 // now: ask at once, not on the backoff.
                 entry.retry = Backoff::now(now, REQUEST_FIRST);
                 false
@@ -1422,7 +1422,7 @@ impl WorkspaceKeys {
         }
     }
 
-    /// Ask the participants for access on the request backoff, while waiting.
+    /// Ask the key holders for access on the request backoff, while waiting.
     fn ask(
         &mut self,
         workspace: WorkspaceId,

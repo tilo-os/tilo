@@ -220,5 +220,5 @@ pub fn channel(app: &str, cluster: &str, kind: &str) -> String {
 
 /// The record of the person's own that `kind` names.
 pub fn record(kind: &str) -> String {
-    collab_types::person_record_id(kind)
+    collab_types::person_document_id(kind)
 }

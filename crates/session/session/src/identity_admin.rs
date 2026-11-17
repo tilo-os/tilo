@@ -786,7 +786,7 @@ mod tests {
             serde_json::from_value(entry.clone()).expect("Settings reads the answer back");
         let text = listed.to_string();
         assert!(
-            !text.contains("secret") && !text.contains("record_path"),
+            !text.contains("secret") && !text.contains("resource_path"),
             "no secret or record path leaves the host: {text}"
         );
 

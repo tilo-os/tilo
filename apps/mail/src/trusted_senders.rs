@@ -1,12 +1,12 @@
 //! The senders whose remote images load without asking: a record Mail
 //! keeps beside its own in the workspace it is open in
-//! ([`RecordEnv::person`](ui::framework::RecordEnv::person)), synced with
+//! ([`ResourceEnv::person`](ui::framework::ResourceEnv::person)), synced with
 //! the workspace. Trusting a sender is the person's edit, in its history
 //! and undone like any of theirs.
 
 use std::collections::BTreeSet;
 
-use ui::framework::PersonRecord;
+use ui::framework::PersonResource;
 use ui::prelude::{Model, resource, tilo_resource};
 use ui::tilo_resource::Set;
 
@@ -57,13 +57,13 @@ impl TrustedSenders {
 /// The trusted senders record a live window follows, and the set as the
 /// window last read or wrote it.
 pub(crate) struct Followed {
-    record: PersonRecord<TrustedSenders>,
+    record: PersonResource<TrustedSenders>,
     seen: BTreeSet<String>,
 }
 
 impl MailApp {
     /// Follow the person's trusted senders in this window.
-    pub(crate) fn follow_trusted_senders(&mut self, record: PersonRecord<TrustedSenders>) {
+    pub(crate) fn follow_trusted_senders(&mut self, record: PersonResource<TrustedSenders>) {
         let seen = record.with(TrustedSenders::addresses);
         self.shared.borrow_mut().remote_senders.clone_from(&seen);
         self.trusted_senders = Some(Followed { record, seen });

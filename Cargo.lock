@@ -9811,6 +9811,7 @@ dependencies = [
 name = "messages"
 version = "0.1.0"
 dependencies = [
+ "chat",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -17553,6 +17554,7 @@ dependencies = [
  "tilo-files",
  "tilo-mcp",
  "tilo-net",
+ "tilo-peer-state",
  "tilo-relay-client",
  "tilo-relay-protocol",
  "tilo-relay-session",
@@ -17678,6 +17680,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-app-keeper"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rustix 1.1.6",
+ "serde",
+ "serde_json",
+ "smithay",
+ "tempfile",
+ "tilo-app-keeper",
+ "tilo-compositor",
+ "tilo-files",
+ "tracing",
+ "tracing-subscriber",
+ "wayland-client",
+ "wayland-protocols",
+ "wire-frame",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-app-launch"
 version = "0.1.0"
 dependencies = [
@@ -17701,9 +17724,11 @@ dependencies = [
  "tilo-action-policy",
  "tilo-actions",
  "tilo-app-id",
+ "tilo-app-keeper",
  "tilo-app-package",
  "tilo-app-state",
  "tilo-automerge-fork",
+ "tilo-compositor",
  "tilo-desktop-entry",
  "tilo-files",
  "tilo-lock",
@@ -19255,6 +19280,8 @@ dependencies = [
  "tilo-files",
  "tilo-net",
  "tilo-nm",
+ "tilo-paths",
+ "tilo-process",
  "tilo-pycompat",
  "tilo-test-env",
  "tokio",
@@ -21160,6 +21187,8 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "socket2",
+ "tasks",
+ "tasks-model",
  "tempfile",
  "test-http",
  "test-relay",
@@ -21186,6 +21215,8 @@ dependencies = [
  "tilo-identity-host",
  "tilo-live",
  "tilo-lock",
+ "tilo-mcp",
+ "tilo-model-gateway",
  "tilo-moderation",
  "tilo-net",
  "tilo-paths",
@@ -21203,6 +21234,7 @@ dependencies = [
  "tilo-thumbnail",
  "tilo-ui",
  "tilo-user-identity",
+ "tilo-workspace-agent",
  "tilo-workspace-emoji",
  "tilo-workspace-host",
  "tokio",
@@ -21263,6 +21295,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-files",
  "tilo-paths",
+ "tilo-process",
  "tilo-test-env",
  "tilo-user-identity",
  "tilo-workspace-join",
@@ -21884,6 +21917,7 @@ dependencies = [
  "tilo-polkit-agent",
  "tilo-portal",
  "tilo-power-mgmt",
+ "tilo-process",
  "tilo-projector",
  "tilo-quick-settings",
  "tilo-reference",
@@ -22176,6 +22210,7 @@ dependencies = [
  "tilo-files",
  "tilo-nm",
  "tilo-seal",
+ "tilo-test-env",
  "tilo-unlock-protocol",
  "tokio",
  "workspace-hack",
@@ -22676,6 +22711,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "tilo-action-policy",
  "workspace-hack",
 ]
 
@@ -22756,6 +22792,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "ed25519-dalek 3.0.0",
+ "hex",
  "p256 0.14.0",
  "postcard",
  "serde",
@@ -22865,6 +22902,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "tilo-actions",
  "tilo-render-protocol",
  "tilo-ui-graph",
  "tilo-view-macros",
@@ -23278,6 +23316,7 @@ dependencies = [
  "settings-store",
  "sha2 0.11.0",
  "tempfile",
+ "test-http",
  "thiserror 2.0.21",
  "tilo-account-probe",
  "tilo-action-policy",
@@ -23298,6 +23337,7 @@ dependencies = [
  "tilo-history",
  "tilo-lock",
  "tilo-mail-session",
+ "tilo-net",
  "tilo-peer-state",
  "tilo-relay-client",
  "tilo-relay-protocol",
@@ -28874,6 +28914,7 @@ dependencies = [
  "tilo-app",
  "tilo-app-cli",
  "tilo-app-id",
+ "tilo-app-keeper",
  "tilo-app-launch",
  "tilo-app-module",
  "tilo-app-package",

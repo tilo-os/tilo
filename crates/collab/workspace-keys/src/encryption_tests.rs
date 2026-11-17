@@ -313,11 +313,11 @@ fn a_later_member_reads_old_records_and_a_removed_device_no_new_ones() {
     assert!(held.open_content(artifact, &metadata, &payload).is_err());
 }
 
-/// A participant that cannot tell who holds the workspace's keys (its
+/// A key holder that cannot tell who holds the workspace's keys (its
 /// governance is unknown here) removes no one. Once it can tell again, the
 /// group follows the policy once more.
 #[test]
-fn a_participant_that_cannot_tell_who_holds_the_keys_removes_no_one() {
+fn a_key_holder_that_cannot_tell_who_holds_the_keys_removes_no_one() {
     let workspace = Arc::new(Workspace::default());
     let workspace_id = WorkspaceId::new();
     let policy = Policy::default();
@@ -1120,7 +1120,7 @@ fn a_key_is_written_before_it_is_handed_out() {
 /// person's identity backup on a replacement machine brings back the
 /// root identity, not the lost device key; onboarding certifies a new
 /// device key. Once the workspace's directory names that certificate, the
-/// policy allows the new device, a participant admits it, and its key
+/// policy allows the new device, a key holder admits it, and its key
 /// history opens everything written before the loss. The lost device is
 /// removed, so it cannot read what is written afterwards.
 #[test]
@@ -1218,7 +1218,7 @@ fn copy_tree(from: &Path, to: &Path) {
 /// A machine copied from another re-keys its device. Its copied group
 /// state names the source's member, so it is dropped rather than used: the
 /// branch takes no leaf of the source's. Once the person's new device is a
-/// reader, a participant admits it, its key history opens what was written
+/// reader, a key holder admits it, its key history opens what was written
 /// before, and what either writes afterwards the other reads, while the
 /// source stays the member it was.
 #[test]
@@ -1700,10 +1700,10 @@ impl DeviceSigner for LaterSigner {
     }
 }
 
-/// A reader whose key signs later is admitted by a participant and opens what it seals; alone it
+/// A reader whose key signs later is admitted by a key holder and opens what it seals; alone it
 /// never founds a group, and it commits nothing when the policy moves.
 #[test]
-fn a_reader_with_custody_that_signs_later_reads_a_participants_group() {
+fn a_reader_with_custody_that_signs_later_reads_a_key_holders_group() {
     let workspace = Arc::new(Workspace::default());
     let workspace_id = WorkspaceId::new();
     let artifact = collab_types::ArtifactId::new();
@@ -1803,7 +1803,7 @@ fn requests(device: &Device) -> usize {
 /// A device waiting for access whose request went unanswered asks again as
 /// soon as the policy moves, rather than waiting out a backoff that has
 /// doubled since: the workspace's governance arriving is what lets the
-/// participants answer a request they could not decide before, and the
+/// key holders answer a request they could not decide before, and the
 /// caller that waits on the keys gives up long before the backoff does.
 #[test]
 fn a_waiting_request_is_asked_again_when_the_policy_moves() {

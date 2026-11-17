@@ -1604,7 +1604,7 @@ fn a_history_row_names_the_person_as_the_avatar_does_and_an_agent_as_its_name_an
         !labels(&section)
             .iter()
             .any(|label| label == "ada" || label == AGENT),
-        "no row shows a participant's id"
+        "no row shows a member's id"
     );
 }
 

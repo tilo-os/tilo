@@ -31,7 +31,8 @@ impl HostActions {
             | RemoteActionMessage::ContentGetRequest { .. }
             | RemoteActionMessage::ContentLinkRequest { .. }
             | RemoteActionMessage::SearchRequest { .. }
-            | RemoteActionMessage::ChangesRequest { .. } => false,
+            | RemoteActionMessage::ChangesRequest { .. }
+            | RemoteActionMessage::ChangedRequest { .. } => false,
             RemoteActionMessage::CatalogueRequest { query, .. } => {
                 query.provider.as_deref() == Some(AGENTS_PROVIDER)
             }
@@ -43,10 +44,10 @@ impl HostActions {
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }
-            | RemoteActionMessage::RecordRead { .. }
-            | RemoteActionMessage::RecordReading { .. }
-            | RemoteActionMessage::RetiredRecordRequest
-            | RemoteActionMessage::RetiredRecordResponse
+            | RemoteActionMessage::ResourceRead { .. }
+            | RemoteActionMessage::ResourceReading { .. }
+            | RemoteActionMessage::RetiredResourceRequest
+            | RemoteActionMessage::RetiredResourceResponse
             | RemoteActionMessage::ConfirmationRequest { .. }
             | RemoteActionMessage::ConfirmationResponse { .. }
             | RemoteActionMessage::Confirm { .. }
@@ -58,6 +59,7 @@ impl HostActions {
             | RemoteActionMessage::ContentLinkResponse { .. }
             | RemoteActionMessage::SearchResponse { .. }
             | RemoteActionMessage::ChangesResponse { .. }
+            | RemoteActionMessage::ChangedResponse { .. }
             | RemoteActionMessage::CatalogueChanged { .. } => return None,
         };
         if supervisor {

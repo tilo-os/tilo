@@ -567,7 +567,7 @@ fn build_meta(
                 .args
                 .iter()
                 .map(|arg| match arg {
-                    crate::resolve::TriggerArg::Subject => crate::meta::TriggerArgMeta::Subject,
+                    crate::resolve::TriggerArg::Target => crate::meta::TriggerArgMeta::Target,
                     crate::resolve::TriggerArg::Root(ty) => {
                         crate::meta::TriggerArgMeta::Root(ty.clone())
                     }
@@ -1082,17 +1082,17 @@ fn is_ui_head(env: &Env, e: &ast::Expr) -> bool {
     }
 }
 
-/// The id of the subject's `Bool` field an action's `on:` names (`on: n.pinned`, `n` its first
+/// The id of the target's `Bool` field an action's `on:` names (`on: n.pinned`, `n` its first
 /// parameter): the state it toggles.
 fn toggled_field(env: &Env, action: &ast::ActionDecl, params: &[ParamInfo]) -> Option<String> {
     let on = action.opts.iter().find(|opt| opt.name.name == "on")?;
     let ast::ExprKind::Field { base, name } = &on.value.kind else {
         return None;
     };
-    let ast::ExprKind::Ident(subject) = &base.kind else {
+    let ast::ExprKind::Ident(target) = &base.kind else {
         return None;
     };
-    let first = params.first().filter(|first| first.name == *subject)?;
+    let first = params.first().filter(|first| first.name == *target)?;
     let Ty::Record(key) = &first.ty else {
         return None;
     };

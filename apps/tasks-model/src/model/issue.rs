@@ -362,6 +362,16 @@ pub struct Issue {
     /// changes it.
     #[model(readonly)]
     pub assignee: Option<Atom>,
+    /// Assigned by
+    ///
+    /// Who gave the issue to the agent it is assigned to, by member key: the
+    /// person the agent works on it for. None while it is with a person or
+    /// nobody.
+    #[model(readonly)]
+    pub assigned_by: Option<MemberId>,
+    /// When it was given to that agent, in milliseconds since the epoch.
+    #[model(readonly)]
+    pub assigned_ms: i64,
     /// Labels
     pub labels: Set<String>,
     /// Parent

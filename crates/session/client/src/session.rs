@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use crate::remote::{Heard, NOT_CONNECTED};
 use crate::{
-    CallPicture, CallShown, Closed, Cmd, Event, Failure, FailureSubject, Link, Outbox, PageShown,
+    CallPicture, CallShown, Closed, Cmd, Event, Failure, FailureKind, Link, Outbox, PageShown,
     PeerStatus, Reports, TransportPhase, content::Kept,
 };
 use std::time::Duration;
@@ -169,7 +169,7 @@ enum Command {
 enum Sealing {
     Sealed(Vec<u8>),
     /// This device holds no keys for the record yet.
-    NoKeys(tilo_relay_protocol::live::LiveRecord),
+    NoKeys(tilo_relay_protocol::live::LiveResource),
     /// Names no record, or does not seal: never sent.
     Dropped,
 }
@@ -371,7 +371,7 @@ impl std::fmt::Debug for Commands {
     }
 }
 
-/// The session carries the client's commands: what a participant says to its workspaces goes
+/// The session carries the client's commands: what a member says to its workspaces goes
 /// through the relay session it keeps with its host.
 impl Outbox for Commands {
     fn send(&self, command: Cmd) -> Result<(), Closed> {
@@ -448,8 +448,8 @@ struct Task {
     /// ([`crate::session::plane`]).
     planes: plane::Planes,
     record: PeerRecord,
-    /// This device's side of the workspaces' encrypted channels: the engine every participant runs,
-    /// here as a reader that asks for access and follows the participants' commits.
+    /// This device's side of the workspaces' encrypted channels: the engine every member runs,
+    /// here as a reader that asks for access and follows the members' commits.
     workspace_keys: tilo_workspace_keys::SharedKeys,
     /// What the channels say to and hear from the host: `None` when the device's own key service
     /// settles [`Self::workspace_keys`] ([`start_session_lent`]).
@@ -613,11 +613,11 @@ impl Task {
             }
             Envelope::Ready {
                 workspace_id,
-                records_when_opened,
+                documents_when_opened,
                 ..
             } => {
-                if *records_when_opened {
-                    self.records_when_opened(*workspace_id, Some(client));
+                if *documents_when_opened {
+                    self.documents_when_opened(*workspace_id, Some(client));
                 }
                 self.announce(client, *workspace_id)
             }
@@ -627,7 +627,7 @@ impl Task {
 
     /// Tell the host this device's certificate as soon as it subscribed this
     /// connection to `workspace_id`, which its bootstrap ahead of the replay
-    /// says: the workspace's channel participants take a device's access
+    /// says: the workspace's channel members take a device's access
     /// request only once they hold its certificate, so a page told only at
     /// `Ready` got its keys a whole replay late. Returns `false` when the
     /// session could not take it.
@@ -731,7 +731,7 @@ impl Task {
         match self
             .replicas
             .owner()
-            .compact_record(
+            .compact_document(
                 workspace,
                 (&route.app_id, &route.record),
                 self.signer.as_ref(),
@@ -818,24 +818,24 @@ impl Task {
     }
 
     fn fail(&self, code: &'static str, message: impl Into<String>) {
-        self.fail_on(FailureSubject::Session, code, message);
+        self.fail_on(FailureKind::Session, code, message);
     }
 
-    fn fail_on(&self, subject: FailureSubject, code: &'static str, message: impl Into<String>) {
+    fn fail_on(&self, kind: FailureKind, code: &'static str, message: impl Into<String>) {
         let message = message.into();
         self.reports.change(|status| {
             status.upsert(Failure {
                 code,
                 message,
                 at_ms: tilo_clock::unix_now_ms(),
-                subject,
+                kind,
             });
         });
     }
 
     fn persist(&self) {
         if let Err(error) = self.store.save(&self.record) {
-            self.fail_on(FailureSubject::Storage, "storage-transaction-failed", error);
+            self.fail_on(FailureKind::Storage, "storage-transaction-failed", error);
         }
     }
 
@@ -882,7 +882,7 @@ impl Task {
                 if status
                     .failures
                     .iter()
-                    .any(|failure| failure.subject == FailureSubject::Admission)
+                    .any(|failure| failure.kind == FailureKind::Admission)
                 {
                     self.clear_admission_failure();
                 }
@@ -891,7 +891,7 @@ impl Task {
             Admission::Overdue => {
                 self.admission_since = None;
                 self.fail_on(
-                    FailureSubject::Admission,
+                    FailureKind::Admission,
                     "admission-timeout",
                     "Shared state is still catching up. Refresh it to ask the host again.",
                 );
@@ -903,7 +903,7 @@ impl Task {
         self.reports.change(|status| {
             status
                 .failures
-                .retain(|failure| failure.subject != FailureSubject::Admission);
+                .retain(|failure| failure.kind != FailureKind::Admission);
         });
     }
 
@@ -1466,7 +1466,7 @@ impl Task {
         let Some(client) = client else {
             return;
         };
-        let _ = client.send(Envelope::RecordContentWant {
+        let _ = client.send(Envelope::DocumentContentWant {
             workspace_id,
             from_device_public_key: self.config.cert.device_public_key,
             frame: request,
@@ -1518,8 +1518,8 @@ impl Task {
                     true
                 }
             }
-            Command::Client(Cmd::OpenRecordAt(workspace_id, route)) => {
-                self.open_record(workspace_id, route, client)
+            Command::Client(Cmd::OpenDocumentAt(workspace_id, route)) => {
+                self.open_resource(workspace_id, route, client)
             }
             #[cfg(not(target_arch = "wasm32"))]
             Command::PlaneJoined(workspace_id, joined) => {
@@ -1686,7 +1686,7 @@ impl Task {
         let (Some(client), Ok(frame)) = (client, postcard::to_allocvec(msg)) else {
             return;
         };
-        let _ = client.send(Envelope::RecordContent {
+        let _ = client.send(Envelope::DocumentContent {
             workspace_id,
             to_device_public_key: *target.as_bytes(),
             from_device_public_key: self.config.cert.device_public_key,
@@ -1957,7 +1957,7 @@ impl Task {
         let Ok(workspace_id) = route.workspace_id() else {
             return;
         };
-        let record = tilo_relay_protocol::live::LiveRecord {
+        let record = tilo_relay_protocol::live::LiveResource {
             app: route.app_id.clone(),
             record: route.record.clone(),
         };
@@ -1977,7 +1977,7 @@ impl Task {
             return Sealing::Dropped;
         };
         let keys = self.keyed_routes().find_map(|route| {
-            let names = tilo_relay_protocol::live::LiveRecord {
+            let names = tilo_relay_protocol::live::LiveResource {
                 app: route.app_id.clone(),
                 record: route.record.clone(),
             };
@@ -2005,7 +2005,7 @@ impl Task {
             return Opening::Dropped;
         };
         let bound = self.keyed_routes().find_map(|route| {
-            let record = tilo_relay_protocol::live::LiveRecord {
+            let record = tilo_relay_protocol::live::LiveResource {
                 app: route.app_id.clone(),
                 record: route.record.clone(),
             };
@@ -2036,7 +2036,7 @@ impl Task {
     /// Whether `envelope` is a member's ask for a workspace's record content, answered to that
     /// member alone from what this device keeps of it; a workspace it keeps nothing of is left.
     fn content_wanted(&self, envelope: &Envelope, client: &RelayClient) -> bool {
-        let Envelope::RecordContentWant {
+        let Envelope::DocumentContentWant {
             workspace_id,
             from_device_public_key: from,
             frame,
@@ -2053,7 +2053,7 @@ impl Task {
                 kept.read(app, workspace, hash)
             });
         for piece in pieces {
-            let _ = client.send(Envelope::RecordContent {
+            let _ = client.send(Envelope::DocumentContent {
                 workspace_id: *workspace_id,
                 to_device_public_key: *from,
                 from_device_public_key: device,
@@ -2063,7 +2063,7 @@ impl Task {
         true
     }
 
-    /// Take this device into `route`'s channel, with the participants its
+    /// Take this device into `route`'s channel, with the members its
     /// workspace's governance admits.
     fn open_channel(&mut self, route: &DocumentRoute) {
         if !self.route_keys.contains_key(route) {
@@ -2142,7 +2142,7 @@ impl Task {
             );
         }
         if let Err(error) = self.key_state.save(self.store.as_ref()) {
-            self.fail_on(FailureSubject::Storage, "storage-transaction-failed", error);
+            self.fail_on(FailureKind::Storage, "storage-transaction-failed", error);
         }
     }
 

@@ -78,13 +78,13 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     /// was not read, on the UI thread. The host decides it as this effect's
     /// caller, as it decides [`Self::call`]: continuing the invocation it
     /// delivered for someone, it is their read, by their grants.
-    pub fn read_record(
+    pub fn read_resource(
         &mut self,
-        read: tilo_actions::remote::RecordReadRequest,
+        read: tilo_actions::remote::ResourceReadRequest,
         then: impl FnOnce(&mut H, Result<serde_json::Value, String>, &mut Self) -> EffectAnswer
         + 'static,
     ) -> Effected {
-        let answer = self.env.dispatch.read_record(self.inv.delivered, read);
+        let answer = self.env.dispatch.read_resource(self.inv.delivered, read);
         self.wait_answer(
             answer,
             |reading| match reading {

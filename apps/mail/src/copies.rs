@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use tilo_content::{ContentState, ContentStore};
-use ui::framework::PersonRecord;
+use ui::framework::PersonResource;
 use ui::tilo_resource::{self, Collection, Id, JsonSchema, Model, Refusal};
 
 use crate::model::{Folder, Message, MessageId, ServerPlace};
@@ -185,7 +185,7 @@ impl MailCopies {
 /// fetches is kept there, and what another of their devices kept is taken
 /// from there.
 pub(crate) struct Copies {
-    record: PersonRecord<MailCopies>,
+    record: PersonResource<MailCopies>,
     /// The record's content: kept with the record on the person's devices
     /// and carried on its route.
     content: ContentStore,
@@ -201,7 +201,7 @@ pub(crate) struct Copies {
 }
 
 impl Copies {
-    pub(crate) fn new(record: PersonRecord<MailCopies>, content: ContentStore) -> Self {
+    pub(crate) fn new(record: PersonResource<MailCopies>, content: ContentStore) -> Self {
         Self {
             record,
             content,
@@ -303,7 +303,7 @@ impl Copies {
 
     fn now(&self) -> (u64, u64) {
         (
-            ui::collaboration::record_content::arrivals(),
+            ui::collaboration::document_content::arrivals(),
             self.record.revision(),
         )
     }

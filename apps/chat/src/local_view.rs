@@ -22,7 +22,7 @@ struct LocalView {
     attachments: bool,
     call_expanded: bool,
     call_offset: [f64; 2],
-    participants: bool,
+    members: bool,
 }
 impl ui::application_view::ApplicationViewState for crate::ChatApp {
     fn capture_application_view(&self) -> Result<Option<ApplicationLocalView>, ThawError> {
@@ -42,7 +42,7 @@ impl ui::application_view::ApplicationViewState for crate::ChatApp {
             attachments: self.attach_open,
             call_expanded: self.call.expanded,
             call_offset,
-            participants: self.call.participants_expanded,
+            members: self.call.members_expanded,
         };
         Ok(Some(ApplicationLocalView {
             app_id: <crate::resource::ChatShell as ui::framework::ResourceApp>::ID.into(),
@@ -99,7 +99,7 @@ impl ui::application_view::ApplicationViewState for crate::ChatApp {
         self.history_open = view.history.filter(|id| self.message(id).is_some());
         self.attach_open = view.attachments;
         self.call.expanded = view.call_expanded;
-        self.call.participants_expanded = view.participants;
+        self.call.members_expanded = view.members;
         self.call
             .placement
             .restore_local_offset(vello::kurbo::Vec2::new(

@@ -439,7 +439,7 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
         let mut state = InboundState::default();
         state.artifacts.insert(artifact, ArtifactKind::Note);
         state.artifact_apps.insert(artifact, "so.tilo.notes".into());
-        state.artifact_records.insert(artifact, "shared".into());
+        state.artifact_resources.insert(artifact, "shared".into());
 
         let mut peer_doc = AutoCommit::new();
         let t = peer_doc.put_object(&ROOT, "text", ObjType::Text).unwrap();

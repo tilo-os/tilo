@@ -368,6 +368,12 @@ impl Reserve {
 }
 
 impl Widget for Reserve {
+    /// The shape of what is coming: nothing to read yet.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("div");
+        cx.attr("aria-hidden", "true");
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -899,6 +905,12 @@ fn layered(
 }
 
 impl Widget for ArrivingView {
+    /// What stands there now: the reserved shape, or the view that answered.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("div");
+        cx.children();
+    }
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.reconcile(crate::motion::frame_now());
         self.respeak();

@@ -185,7 +185,7 @@ fn payload(
 }
 fn saved_view(
     f: &NotebookFixture,
-    checkout: &ui::record::DocumentCheckout,
+    checkout: &ui::resource::DocumentCheckout,
     local: ui::application_view::ApplicationLocalView,
 ) -> ui::application_view::SavedInstanceView {
     let mut component = component(f, 11, existing(checkout));
@@ -202,7 +202,7 @@ fn saved_view(
 }
 fn fingerprint(
     f: &NotebookFixture,
-    checkout: &ui::record::DocumentCheckout,
+    checkout: &ui::resource::DocumentCheckout,
 ) -> (Vec<automerge::ChangeHash>, usize, Vec<u8>, u64) {
     let (heads, pending, bytes) = f
         .records
@@ -214,7 +214,7 @@ fn fingerprint(
 }
 fn stamp_current_runs(
     f: &NotebookFixture,
-    checkout: &ui::record::DocumentCheckout,
+    checkout: &ui::resource::DocumentCheckout,
     page: notes::PageId,
     index: usize,
 ) {
@@ -257,7 +257,7 @@ fn stamp_current_runs(
 }
 fn app_from_payload(
     f: &NotebookFixture,
-    checkout: &ui::record::DocumentCheckout,
+    checkout: &ui::resource::DocumentCheckout,
     local: &ui::application_view::ApplicationLocalView,
 ) -> notes::NotesApp {
     use ui::application_view::ApplicationViewState;
@@ -774,7 +774,7 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
         unknown.application.as_mut().unwrap().app_id = "other.app".into();
         envelopes.push(unknown);
         let mut foreign = saved;
-        foreign.record_id = "foreign-record".into();
+        foreign.document_id = "foreign-record".into();
         envelopes.push(foreign);
         for bad in envelopes {
             let error =

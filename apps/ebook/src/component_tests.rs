@@ -8,7 +8,7 @@ use ui::application_view::InstanceViewStore;
 use ui::headless::FrameHarness;
 use ui::permissions::{MemberId, PermissionContext, Role, SharedPermissions};
 use ui::portable_storage::PortableStorage;
-use ui::record::{DocumentCheckout, RecordStore};
+use ui::resource::{DocumentCheckout, ResourceStore};
 
 use ui::framework::{LaunchInput, ResourceApp, SeedCx, ViewCx};
 use ui::tilo_resource::Invoke;
@@ -52,7 +52,7 @@ const DEVICE: &str = "books-device";
 const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
 struct Fixture {
-    records: RecordStore,
+    records: ResourceStore,
     views: Rc<InstanceViewStore>,
     authority: SharedPermissions,
 }
@@ -61,7 +61,7 @@ impl Fixture {
     fn new(profile: &str) -> Self {
         let cache = PortableStorage::new(profile, DEVICE).unwrap();
         Self {
-            records: ui::record::RecordOwners::portable(cache.clone())
+            records: ui::resource::ResourceOwners::portable(cache.clone())
                 .open(crate::definition().app_id(), WORKSPACE)
                 .unwrap(),
             views: Rc::new(InstanceViewStore::portable(cache, WORKSPACE).unwrap()),

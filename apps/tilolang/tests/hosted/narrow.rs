@@ -28,7 +28,7 @@ fn chat_at_a_phones_width(messages: usize) -> Session {
     });
     for said in 0..messages {
         let written = session.invoke_as(
-            "bo",
+            &ui::tilo_actions::MemberId::person("bo").into(),
             &send,
             &serde_json::json!({ "to": to, "body": format!("Message {said}") }),
         );

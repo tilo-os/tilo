@@ -292,7 +292,7 @@ mod tests {
                         .unwrap(),
                         documents: vec![SeedDocument {
                             app_id: "test.app".into(),
-                            record_id: String::new(),
+                            document_id: String::new(),
                             kind: "test.record".into(),
                             bytes: automerge::AutoCommit::new().save(),
                         }],

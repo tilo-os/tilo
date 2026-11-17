@@ -571,20 +571,45 @@ export async function launch({args = [], media = false} = {}) {
       for (;;) {
         const left = deadline - Date.now();
         if (left <= 0) throw new Error(`timed out waiting for ${expression}`);
-        const document = documents;
-        const value = await evaluate(untilTruthy(expression, left), {timeout: left + 5_000})
-          .catch(() => undefined);
-        if (value) return value;
-        // The document went away under the wait (a navigation, a reload):
-        // the next one is waited on once it is there.
-        if (documents === document) await nextDocument(deadline - Date.now());
+        if (dead) throw new Error(`${expression}: ${dead}`);
+        // A wait asked of a document that goes away (a navigation, a reload)
+        // may never be answered: the browser can leave it with the old
+        // document's process. So it lasts until the tab starts its next
+        // document too, and is asked again of that one.
+        const next = nextDocument(left);
+        const LOST = Symbol('lost');
+        const value = await Promise.race([
+          evaluate(untilTruthy(expression, left), {timeout: left + 5_000}).catch(() => LOST),
+          next.started.then(() => undefined),
+        ]);
+        // A document that could not be asked (none between two, or it went
+        // away as it was asked): the next one is asked once it is there.
+        if (value === LOST) await next.started;
+        next.cancel();
+        if (value && value !== LOST) return value;
       }
     };
-    const nextDocument = within => new Promise(resolve => {
-      const done = () => { clearTimeout(timer); loaded.delete(done); resolve(); };
+    /** The tab's next document starting, or `within` ms: `started` resolves
+     * then, and `cancel` stops listening for it. */
+    const nextDocument = within => {
+      let done;
+      const started = new Promise(resolve => {
+        done = () => { clearTimeout(timer); loaded.delete(done); resolve(); };
+      });
+      // Never what keeps the run going: a wait that lost its race (a flow
+      // that failed or finished meanwhile) ends with the process.
       const timer = setTimeout(done, Math.max(0, within));
+      timer.unref?.();
       loaded.add(done);
-    });
+      return {started, cancel: done};
+    };
+    /** Resolves on the page's next change (`globalThis.tiloChanges`), the tab's
+     * next document, or after `within` ms, whichever comes first. */
+    const changed = async within => {
+      const next = nextDocument(within);
+      await Promise.race([evaluate(nextChange(within)).catch(() => undefined), next.started]);
+      next.cancel();
+    };
     // One capture at a time: Chromium answers two overlapping
     // `Page.captureScreenshot`s (a recording's frame and a shot) with frames
     // of each other's size, so a shot came back as the page tiled 2x2.
@@ -621,7 +646,10 @@ export async function launch({args = [], media = false} = {}) {
        * the same read the tab's current document. */
       documents: () => documents,
       /** Resolves once the tab started its next document, or `within` ms. */
-      nextDocument,
+      nextDocument: within => nextDocument(within).started,
+      /** Resolves on the page's next change, its next document, or `within`
+       * ms: the pause between a wait's reads. */
+      changed,
       /** Bring the tab to the front: the browser answers a passkey or a
        * permission prompt in the tab the person is looking at, and puts a tab
        * nobody looks at to sleep. A tab already closed has nothing to bring. */

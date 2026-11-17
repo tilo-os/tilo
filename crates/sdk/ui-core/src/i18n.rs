@@ -532,7 +532,7 @@ fn report_unformatted(key: &str) {
 /// Note that `key` showed in `locale`, when that is a language other than the window's (`speaking`):
 /// one window speaks one language, and every other is a word it should not say
 /// ([`I18nManager::foreign_words`]).
-fn record_foreign(key: &str, locale: &LanguageIdentifier, speaking: &LanguageIdentifier) {
+fn resource_foreign(key: &str, locale: &LanguageIdentifier, speaking: &LanguageIdentifier) {
     if locale.language == speaking.language {
         return;
     }
@@ -1121,7 +1121,7 @@ impl I18nManager {
                 .get(locale)
                 .and_then(|loaded| resolution.attempt(&loaded.bundle))
             {
-                record_foreign(resolution.key, locale, current);
+                resource_foreign(resolution.key, locale, current);
                 return Some(value);
             }
         }
@@ -1152,13 +1152,13 @@ impl I18nManager {
                 .as_ref()
                 .and_then(|localized| resolution.attempt(&localized.bundle));
             if said.is_some() {
-                record_foreign(resolution.key, &self.source_locale, current);
+                resource_foreign(resolution.key, &self.source_locale, current);
             }
             return said;
         }
         let said = resolution.attempt(&source.bundle);
         if said.is_some() {
-            record_foreign(resolution.key, &self.source_locale, current);
+            resource_foreign(resolution.key, &self.source_locale, current);
         }
         said
     }
@@ -2466,7 +2466,7 @@ mod tests {
         phase relative_times_follow_the_host_locale_and_its_plural_rules;
         {
             use crate::format::relative;
-            use crate::history_source::participant_display_label;
+            use crate::history_source::member_display_label;
             use crate::time::{Duration, SystemTime};
             use crate::widget::format_relative_time;
             let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
@@ -2496,10 +2496,10 @@ mod tests {
                 assert_eq!(relative(400 * 86_400), "vor 1 Jahr");
 
                 assert_eq!(
-                    participant_display_label("agent:"),
+                    member_display_label("agent:"),
                     "Unbekannter Agent · Agent"
                 );
-                assert_eq!(participant_display_label("Ada"), "Ada");
+                assert_eq!(member_display_label("Ada"), "Ada");
             }
         }
 
@@ -2520,9 +2520,9 @@ mod tests {
                 "relative-ago-weeks",
                 "relative-ago-months",
                 "relative-ago-years",
-                "participant-agent",
-                "participant-unknown-agent",
-                "participant-shortcut",
+                "member-agent",
+                "member-unknown-agent",
+                "member-shortcut",
             ] {
                 let mut args = FluentArgs::new();
                 args.set("count", FluentValue::from(2));

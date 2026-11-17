@@ -125,7 +125,7 @@ impl PresenceSession {
     }
 }
 
-/// Another participant's presence as the wire carries it; `None` for what
+/// Another member's presence as the wire carries it; `None` for what
 /// no app receives or what does not fit the wire.
 pub(in crate::collab_app_broker) fn presence_event(envelope: PresenceEnvelope) -> Option<Event> {
     if !envelope.payload.reaches_apps() {

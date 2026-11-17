@@ -1,5 +1,5 @@
 //! Books' application definition, the one every host mounts: the native
-//! launcher, the web desktop and an agent's participant.
+//! launcher, the web desktop and an agent's member.
 use ui::application::ApplicationDefinition;
 
 /// What Books opens when a host hands it a file.

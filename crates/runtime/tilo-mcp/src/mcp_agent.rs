@@ -67,6 +67,9 @@ const LEVEL_PAGES: usize = 4;
 /// Times a name not found is looked for again, after pauses that double from 5 ms to 200 ms:
 /// about seven tenths of a second in all.
 const LOOKS_AGAIN: u32 = 8;
+/// The moment those looks come to. A level that was read on past its bound is looked through
+/// again only within it: one that takes longer to read whole is not read whole eight times.
+const LOOKS_MOMENT: std::time::Duration = std::time::Duration::from_millis(700);
 /// Rows asked per page.
 const PAGE_ROWS: u32 = 128;
 /// Containers at an app's top level whose contents the app's root also
@@ -155,7 +158,7 @@ fn tools() -> Vec<Value> {
         ),
         (
             "tilo",
-            "Run a tilolang program as this task: `notes.notebook.notes.filter(.pinned)`. Lets persist; answers' refs (n3) can be reused. A bulk or destructive program previews: resend with confirm: true. `undo` and `undo task` take back this task's steps; `history task` shows what this agent changed in the workspace, its tilo_do calls and earlier sessions included.",
+            "Run a tilolang program as this task: `notes.notebook.notes.filter(.pinned)`. Lets and refs (n3) persist. Bulk or destructive programs preview: resend with confirm: true. `undo`, `undo task`, `history task` (across sessions).",
             json!({"program":string,"confirm":{"type":"boolean"}}),
             json!(["program"]),
             json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":false}),
@@ -1099,7 +1102,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         // A record a device serves whoever has it open (a host serving its
         // workspace's records) is the app, live, as a window of it is.
         let is_window = |provider: &str| {
-            provider.parse::<u64>().is_ok() || tilo_actions::remote::is_record_provider(provider)
+            provider.parse::<u64>().is_ok() || tilo_actions::remote::is_resource_provider(provider)
         };
         let ids_where = |window: bool| {
             running
@@ -1251,9 +1254,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .collect();
         for node in containers {
             let inside = self.level(provider, &node.id, levels).await?;
-            for child in inside.children {
+            for child in inside.whole_children() {
                 if !root.children.iter().any(|seen| seen.id == child.id) {
-                    root.children.push(child);
+                    root.children.push(child.clone());
                 }
             }
             root.own.extend(inside.own);
@@ -1391,20 +1394,31 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         // An app's directory is rebuilt whenever its document changes, and for an instant it
         // lists less than it has. A name not found is looked for again for a moment, the
         // levels read anew, before the app is said not to have it.
+        let began = tokio::time::Instant::now();
         let mut looks: u32 = 0;
         loop {
-            let here = match parent {
-                Some(owner) => self.level(provider, &owner.id, levels).await?,
-                None => self.app_children(provider, levels).await?,
+            // A level is read as far as its bound, and a directory that holds more goes on
+            // past it. A name the pages read first do not carry is looked for on the pages
+            // after them, to the directory's end, before it is looked for anywhere else: what
+            // a resource holds is found under it wherever it falls in the directory, and
+            // only a name no page carries is not there.
+            let (picked, here) = if let Some(owner) = parent {
+                self.level_holding(provider, &owner.id, levels, |level| {
+                    Ok(pick(segment, level.whole_children(), forms)?.cloned())
+                })
+                .await?
+            } else {
+                let here = self.app_children(provider, levels).await?;
+                (pick(segment, &here.children, forms)?.cloned(), here)
             };
-            let found = match pick(segment, &here.children, forms)? {
-                Some(node) => Some(node.clone()),
+            let found = match picked {
+                Some(node) => Some(node),
                 None => self.deep(provider, segment, parent, levels, forms).await?,
             };
             if let Some(found) = found {
                 return Ok((found, here));
             }
-            if looks >= LOOKS_AGAIN {
+            if looks >= LOOKS_AGAIN || (here.read_on() && began.elapsed() >= LOOKS_MOMENT) {
                 let names: Vec<_> = (here.children.iter())
                     .map(|node| node.name(&here.children))
                     .collect();
@@ -1434,7 +1448,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         for _ in 0..=DEEP_READS {
             let pool: Vec<Node> = levels
                 .values()
-                .flat_map(|level| level.children.iter())
+                .flat_map(|level| level.whole_children().iter())
                 .filter(|node| {
                     within.is_none_or(|owner| {
                         node.key.contains(owner.token()) || Self::below(node, owner, levels)
@@ -1813,7 +1827,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// whose resource no record provider answers leaves the last one named:
     /// the agent still acts there.
     fn acted_in(&self, resolved: &Resolved) {
-        let Some((app, record)) = tilo_actions::remote::record_parts(&resolved.provider) else {
+        let Some((app, record)) = tilo_actions::remote::resource_parts(&resolved.provider) else {
             return;
         };
         if app != resolved.app_id {
@@ -1980,7 +1994,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 entries.push((line, Some(row)));
             }
             let (mut lines, mut rows) = (Vec::new(), Vec::new());
-            (self.other_records(&parsed, &resolved, (&mut lines, &mut rows))).await;
+            (self.other_resources(&parsed, &resolved, (&mut lines, &mut rows))).await;
             entries.extend(lines.into_iter().zip(rows.into_iter().map(Some)));
         }
         if want_actions {
@@ -2110,7 +2124,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             // and has no window.
             let windowed = running.iter().any(|(provider, app)| {
                 (provider.parse::<u64>().is_ok()
-                    || tilo_actions::remote::is_record_provider(provider))
+                    || tilo_actions::remote::is_resource_provider(provider))
                     && app["app_id"].as_str() == Some(app_id)
             });
             let name = app_names(std::slice::from_ref(app_id)).join("");
@@ -2183,7 +2197,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 
     async fn agent_read(&self, args: ReadArgs, structured: bool) -> Result<Reply, Failure> {
-        if let Some((app, record)) = tilo_actions::remote::record_parts(&args.path) {
+        if let Some((app, record)) = tilo_actions::remote::resource_parts(&args.path) {
             // Boxed: the wait it holds is no part of every agent call's future.
             return Box::pin(self.agent_record((app, record), args.parts, args.after)).await;
         }
@@ -2859,7 +2873,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                         value
                             .pointer("/update/output/value/provider")
                             .and_then(Value::as_str)
-                            .filter(|provider| tilo_actions::remote::is_record_provider(provider))
+                            .filter(|provider| tilo_actions::remote::is_resource_provider(provider))
                             .map(str::to_owned)
                     })
                     .ok_or_else(|| format!("{app_id} started, but named no instance of it"))
@@ -2919,6 +2933,10 @@ mod tests;
 #[cfg(test)]
 #[path = "mcp_agent_link_tests.rs"]
 mod link_tests;
+
+#[cfg(test)]
+#[path = "mcp_watch_tests.rs"]
+mod watch_tests;
 
 #[cfg(test)]
 #[path = "mcp_agent_publisher_tests.rs"]

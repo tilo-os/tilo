@@ -689,7 +689,7 @@ impl Session {
                 },
             )?;
             let settled = self.run_task_step(run, index, action, &arguments)?;
-            self.record_action(run, action, settled.as_ref())?;
+            self.resource_action(run, action, settled.as_ref())?;
             match settled {
                 Ok(outcome) => {
                     self.chooser

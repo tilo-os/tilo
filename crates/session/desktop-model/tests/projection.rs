@@ -14,7 +14,7 @@ use automerge::AutoCommit;
 use tilo_automerge::ApplyIncoming as _;
 use tilo_desktop_model::ownership::{Act, claimed, foreign_acts};
 use tilo_desktop_model::projection::{project_workspace_shortcuts, workspace_shortcuts_of};
-use tilo_desktop_model::shared_record::device::{Writer, write};
+use tilo_desktop_model::shared_resource::device::{Writer, write};
 use tilo_desktop_model::{
     AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
     compose_id,
@@ -58,7 +58,7 @@ fn write_as(doc: &mut AutoCommit, workspace: &Workspace, person: &str, salt: u16
         &Writer {
             person: Some(person),
             mine: &mine,
-            records: tilo_desktop_model::shared_record::device::Writer::NOTHING_NOTED,
+            records: tilo_desktop_model::shared_resource::device::Writer::NOTHING_NOTED,
         },
     )
     .unwrap();
@@ -66,8 +66,8 @@ fn write_as(doc: &mut AutoCommit, workspace: &Workspace, person: &str, salt: u16
 }
 
 fn acts(before: &AutoCommit, after: &AutoCommit, writer: &str) -> Vec<(u64, Act)> {
-    let before = tilo_desktop_model::shared_record::read(before, None).unwrap_or_default();
-    let after = tilo_desktop_model::shared_record::read(after, None).unwrap_or_default();
+    let before = tilo_desktop_model::shared_resource::read(before, None).unwrap_or_default();
+    let after = tilo_desktop_model::shared_resource::read(after, None).unwrap_or_default();
     foreign_acts(&before, &after, writer, None)
         .into_iter()
         .chain(claimed(&before, &after, writer))

@@ -32,7 +32,7 @@ impl ResourceApp for WindowMenuApp {
     };
     // Nothing is kept: there is nothing to look back on.
     const DOCUMENT_HISTORY: bool = false;
-    // The menu shows this device's shell: it is nobody's workspace participant.
+    // The menu shows this device's shell: it is nobody's workspace member.
     const ATTACHES_RUNTIME: bool = false;
 
     fn view(cx: &mut ViewCx<WindowMenu>) -> Element {

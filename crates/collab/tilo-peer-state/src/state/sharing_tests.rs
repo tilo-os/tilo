@@ -1,7 +1,7 @@
 //! A copy of a peer costs what its admissions change, not the workspace.
 use super::*;
 use crate::TransportOrigin;
-use crate::admission_tests::copy_on_write::{incremental, two_records};
+use crate::admission_tests::copy_on_write::{incremental, two_documents};
 
 tilo_test_env::scenario! {
     fn a_write_shares_every_part_it_did_not_change;
@@ -11,7 +11,7 @@ tilo_test_env::scenario! {
     // record it joins, and leaves the roster, receipts and every other record
     // shared with the original.
     {
-        let (committed, key, now) = two_records();
+        let (committed, key, now) = two_documents();
         let mut author = committed.clone();
         let message = incremental(&mut author, &key, now);
         let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
@@ -54,7 +54,7 @@ tilo_test_env::scenario! {
     // record's part and the governance around it are new, and the parts
     // restore what the whole bytes restore.
     {
-        let (committed, key, now) = two_records();
+        let (committed, key, now) = two_documents();
         let mut author = committed.clone();
         let message = incremental(&mut author, &key, now);
         let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());

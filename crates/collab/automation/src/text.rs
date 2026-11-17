@@ -1949,7 +1949,7 @@ impl Reader<'_> {
                 input,
             }
         } else if phrase.starts_with("read record ") {
-            read_record(body.strip_prefix("read record ").unwrap_or_default())
+            read_resource(body.strip_prefix("read record ").unwrap_or_default())
                 .map_err(|message| TextParseError::at(number, message))?
         } else if phrase.starts_with("tell SaaSy ") {
             let told = body.strip_prefix("tell SaaSy ").unwrap_or_default();
@@ -1970,7 +1970,7 @@ impl Reader<'_> {
 
 /// A record read as its line writes it after `read record`: `"record" of
 /// "app"`, then `with its parts` for a chain read joined.
-fn read_record(read: &str) -> Result<StepKind, String> {
+fn read_resource(read: &str) -> Result<StepKind, String> {
     let (record, after) = text_at(read)?;
     let after = after.trim_start().strip_prefix("of ").ok_or_else(|| {
         "say whose record it is, as `read record \"\" of \"so.tilo.chat\"`".to_owned()

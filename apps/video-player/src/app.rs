@@ -51,7 +51,7 @@ use ui::widget::{
 
 use ui::framework::{
     Dispatcher, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, LaunchInput, Live,
-    PersonRecord, RunMode, Setting, ViewCx,
+    PersonResource, RunMode, Setting, ViewCx,
 };
 use ui::tilo_resource::{ActionDecl, Id};
 
@@ -312,7 +312,7 @@ pub(crate) struct PlayerState {
     setting: Option<Setting<PlayerSettings>>,
     /// The recent videos record and this device's id; `None` for a capture or a past
     /// version.
-    recents: Option<(PersonRecord<RecentVideos>, String)>,
+    recents: Option<(PersonResource<RecentVideos>, String)>,
     /// Where each video left off on this device, by its opaque identity.
     resume: ResumePoints,
     /// The resume point last written, so a playing video writes every few seconds and a

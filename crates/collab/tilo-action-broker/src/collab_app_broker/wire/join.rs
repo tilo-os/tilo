@@ -6,7 +6,7 @@ use super::*;
 impl AppConnection {
     /// Admit `join` and hold its channel for this connection: the identity
     /// is verified, a workspace still being joined or placed is waited for, the
-    /// route's access and the participant's delegation are decided, and the
+    /// route's access and the member's delegation are decided, and the
     /// route is held and published.
     #[expect(
         clippy::too_many_lines,
@@ -21,7 +21,7 @@ impl AppConnection {
             identity,
             member,
             handle: announced,
-            record_kind,
+            resource_type,
         } = join;
         let route = CrdtRoute::from_channel_key(&channel_id);
         // Decoded first, so the match scrutinizes a plain value: the join
@@ -72,10 +72,10 @@ impl AppConnection {
                 return Err(BrokerError::failed(reason));
             }
         }
-        // A renamed app keeps using the record of an id it had before (`kept_record`).
-        let record_route = route.clone();
+        // A renamed app keeps using the record of an id it had before (`kept_document`).
+        let resource_route = route.clone();
         let (route, as_app) =
-            kept_record::working_route(self.lease.local_media.as_deref(), &record_route);
+            kept_document::working_route(self.lease.local_media.as_deref(), &resource_route);
         // An attested launch joins its own route; another app's only to
         // read a record whose kinds it declared it reads.
         let route_access = match self.lease.local_media.as_ref() {
@@ -85,7 +85,7 @@ impl AppConnection {
                     .owns_personal_cluster(&route.cluster_id);
                 let now = state.policy_now_ns().map_err(BrokerError::failed)? / 1_000_000_000;
                 attested_route_access(&app.app_id, &route, personal_cluster, || {
-                    identity_reads_record(
+                    identity_reads_document(
                         state.membership.as_ref(),
                         &verified_identity,
                         &route,
@@ -122,7 +122,7 @@ impl AppConnection {
             })
             .flatten();
         if let Some(worker) = &self.worker {
-            if record_route != worker.route
+            if resource_route != worker.route
                 || verified_identity.verified.user_public_key != worker.root
                 || verified_identity.verified.device_public_key != worker.device
             {
@@ -144,15 +144,15 @@ impl AppConnection {
             && !route.app_id.is_empty()
             && matches!(route_access, RouteAccess::Own)
             && packaged_app.is_none()
-            && !kept_for_every_app_of_the_workspace(&record_route)
+            && !kept_for_every_app_of_the_workspace(&resource_route)
         {
             return Err(BrokerError::failed(
                 "application requires host-owned worker descriptor admission".into(),
             ));
         }
-        let record_kind = route_record_kind(
-            &record_route,
-            joined_record_kind(record_kind.as_deref().unwrap_or_default())?,
+        let resource_type = route_resource_type(
+            &resource_route,
+            joined_resource_type(resource_type.as_deref().unwrap_or_default())?,
         )?;
         let launcher_attested = packaged_app.is_some();
         if let Some(registration) = packaged_app {
@@ -184,28 +184,28 @@ impl AppConnection {
                     verified_identity.display_handle = Some(announced);
                 }
             }
-            Some(MemberId::Agent(participant_handle)) if verified_identity.agent_cert.is_some() => {
+            Some(MemberId::Agent(member_handle)) if verified_identity.agent_cert.is_some() => {
                 // A certified agent acts in its session alone, while the
                 // workspace lists it and its session goes.
                 state
-                    .admit_agent_join(&route.cluster_id, &participant_handle, &verified_identity)
+                    .admit_agent_join(&route.cluster_id, &member_handle, &verified_identity)
                     .map_err(BrokerError::failed)?;
             }
-            Some(MemberId::Agent(participant_handle)) => {
+            Some(MemberId::Agent(member_handle)) => {
                 // Unlike a display handle, this names the exact workspace
                 // actor. Normalize as enrollment does, then validate
                 // its byte bound; truncation can silently select another
                 // admitted Agent that shares the same display prefix.
-                let participant_handle = participant_handle.trim();
+                let member_handle = member_handle.trim();
                 // Bound allocation before Unicode case normalization;
                 // every normalized character consumes at least one byte.
-                if participant_handle.chars().take(129).count() > 128 {
+                if member_handle.chars().take(129).count() > 128 {
                     return Err(BrokerError::failed(
                         "invalid canonical workspace agent identifier".into(),
                     ));
                 }
-                let participant_handle = participant_handle.to_lowercase();
-                tilo_peer_state::workspace_membership::valid_agent_id(&participant_handle)
+                let member_handle = member_handle.to_lowercase();
+                tilo_peer_state::workspace_membership::valid_agent_id(&member_handle)
                     .map_err(BrokerError::failed)?;
                 let roster = state.services.agents.as_deref().ok_or_else(|| {
                     BrokerError::failed("agent session has no workspace record to join on".into())
@@ -214,7 +214,7 @@ impl AppConnection {
                     roster,
                     &route.cluster_id,
                     &mut verified_identity,
-                    &participant_handle,
+                    &member_handle,
                 )
                 .map_err(|error| {
                     BrokerError::failed(format!("agent collaboration join rejected: {error}"))
@@ -255,7 +255,7 @@ impl AppConnection {
             peer_id: hold_id,
             connection_id: peer_id,
             verified_identity,
-            record_kind,
+            resource_type,
             route_access,
             lease: Some(Rc::clone(&self.lease)),
             _hold: Some(hold),
@@ -280,5 +280,5 @@ impl AppConnection {
 /// [`attested_route_access`] lets it change the record as the workspace's grants on the
 /// owner decide.
 fn kept_for_every_app_of_the_workspace(route: &CrdtRoute) -> bool {
-    collab_types::workspace_document(&route.app_id, &route.record_id).is_some()
+    collab_types::workspace_document(&route.app_id, &route.document_id).is_some()
 }

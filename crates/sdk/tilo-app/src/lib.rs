@@ -232,7 +232,7 @@ macro_rules! dev_reload_entry {
 
 /// The definition of the [`framework::ResourceApp`] `$app` for a host that
 /// runs it in its own process (the shell's built-in apps, the web desktop, an
-/// agent's participant host), naming the app crate's committed `surface.toml`
+/// agent's member host), naming the app crate's committed `surface.toml`
 /// as its surface: such a host runs no package whose payload names one. An
 /// app's library defines its `definition()` with it; the app's own binary
 /// uses [`framework::definition`], so it does not carry the file.
@@ -307,8 +307,9 @@ pub mod prelude {
     pub use crate::framework::{
         ActionControl, Actions, Bindable, Command, Dispatcher, Each, EditsText, EffectCx,
         EffectStatus, Effected, Fixture, Form, Jobs, LaunchInput, Live, LiveRow, PersonKind,
-        PersonRecord, Query, ReadFailure, Records, ResourceApp, ResourceSelection, ResourceSurface,
-        RunMode, SeedCx, Setting, Submit, SurfaceCx, TextControl, ViewCx, WorkspaceRecord,
+        PersonResource, Query, ReadFailure, Records, ResourceApp, ResourceSelection,
+        ResourceSurface, RunMode, SeedCx, Setting, Submit, SurfaceCx, TextControl, ViewCx,
+        WorkspaceResource,
     };
     pub use tilo_resource::{
         self, ActionCx, ActionDecl, ActionKind, Atom, Collection, Counter, Delta, Demand, Edit,
@@ -325,8 +326,8 @@ pub mod prelude {
     pub use ui_core::application_view::{InstanceViewStore, SavedInstanceView};
     pub use ui_core::arriving::{Arrival, Arriving};
     pub use ui_core::launch::ComponentHostPreparer;
-    pub use ui_core::record::{
-        DOCUMENT_ID_XATTR, DocumentCheckout, DocumentId, RecordSaveStatus, ResourceType,
+    pub use ui_core::resource::{
+        DOCUMENT_ID_XATTR, DocumentCheckout, DocumentId, ResourceSaveStatus, ResourceType,
         WorkspaceAnswer,
     };
     pub use ui_core::storage::{DeviceClass, Scope, SettingsSchema};

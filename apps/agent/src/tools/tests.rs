@@ -1236,3 +1236,31 @@ fn a_web_search_without_its_query_is_told_what_it_sent_and_what_it_takes() {
         "{described}"
     );
 }
+
+/// "Put my notes next to the inbox" is done in both apps by the one place: what it shows and
+/// what it stands next to, so a part named for either is done.
+#[test]
+fn a_place_beside_another_app_is_done_in_both() {
+    let place = offer(
+        "so.tilo.session",
+        canvas::LAYOUT,
+        "shell.layout",
+        canvas::PLACE,
+        "Place",
+        InputSpec::None,
+    );
+    let catalogue = Catalogue {
+        held: Vec::new(),
+        offers: vec![place.clone()],
+        facts: Vec::new(),
+    };
+    let shown = canvas::apps_shown(
+        &catalogue,
+        &place,
+        &serde_json::json!({
+            "resource": "tl:so.tilo.lang.notes:root-v7cub7aw",
+            "beside": "tl:so.tilo.lang.mail:root-su4h67i5",
+        }),
+    );
+    assert_eq!(shown, ["so.tilo.lang.notes", "so.tilo.lang.mail"]);
+}

@@ -238,7 +238,7 @@ pub struct ApiTesterApp {
     dispatcher: Option<Dispatcher<Workspace>>,
     read_only: Option<LocalState<bool>>,
     shown_read_only: bool,
-    /// Mounted on a record another participant created: its content is theirs to seed, so
+    /// Mounted on a record another member created: its content is theirs to seed, so
     /// an empty document is left untouched.
     dirty: bool,
 }

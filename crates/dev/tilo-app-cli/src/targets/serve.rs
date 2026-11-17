@@ -273,7 +273,7 @@ fn handle(server: &Server, mut stream: TcpStream) -> Result<()> {
 }
 
 /// Write the app's `surface.toml` from its code. The workspace's devices
-/// decide every change a participant sends against the surface the change
+/// decide every change a member sends against the surface the change
 /// names, so with a surface from before the last edit of the resource the
 /// others refuse moves the code makes. `tilo-app check` fails on a stale
 /// file; a shared workspace keeps it current instead.

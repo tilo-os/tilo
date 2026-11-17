@@ -858,6 +858,54 @@ impl Avatar {
 }
 
 impl Widget for Avatar {
+    /// A person's mark: their picture where a page can load its address, their initials
+    /// otherwise, and their name for a reader.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        use crate::composition::Ground;
+        if self.placeholder {
+            cx.element("div");
+            cx.attr("aria-hidden", "true");
+            return;
+        }
+        let rect = Widget::get_rect(self);
+        if let Picture::Lazy { url, .. } = &self.picture
+            && let Some(src) = crate::composition::web_picture(url)
+        {
+            cx.element("img");
+            cx.attr("src", src.to_owned());
+            cx.attr("alt", self.name.clone());
+            return;
+        }
+        cx.element("span");
+        let theme = cx.theme();
+        if self.image.is_some() || self.glyph.is_some() {
+            cx.picture();
+            return;
+        }
+        let initials = self.initials();
+        if initials.is_empty() {
+            return;
+        }
+        // The mark is a tinted disc with the initials on it; the initials are its picture, not
+        // its name, so a reader hears the person.
+        let fill = theme.tokens.colors.surfaces.raised;
+        cx.ground(Ground {
+            fill: Some(crate::composition::rgba8(fill)),
+            edge: None,
+            radius: if self.square {
+                f64::from(theme.tokens.radii.control)
+            } else {
+                self.side / 2.0
+            },
+        });
+        let style = initials_style(theme, self.side);
+        let ink = initials_fill(fill, theme);
+        let look =
+            crate::composition::TextLook::new(initials, &style, Some(ink)).with_max_lines(Some(1));
+        let part = cx.words("initials", "span", rect, look);
+        part.attrs.push(("aria-hidden", "true".into()));
+    }
+
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }

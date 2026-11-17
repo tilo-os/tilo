@@ -135,8 +135,13 @@ pub struct Agent {
     /// drawn in ([`PresenceHue`]); `None` follows its identity.
     pub colour: Option<u8>,
     /// Who keeps it: the member whose devices run it and whose credentials pay, and
-    /// who alone chooses its model.
+    /// who alone chooses its model and what it may spend. For an agent the workspace's
+    /// host runs ([`Self::on_host`]) the keeper still decides both.
     pub keeper: String,
+    /// Whether the host that governs the workspace runs it, around the clock and on the
+    /// host's model, rather than its keeper's own devices: what a workspace a page
+    /// works in (a page runs no agent) gives a new agent.
+    pub on_host: bool,
     /// The model it plans with as `provider/model`; `None` follows the keeper's
     /// default.
     pub model: Option<String>,
@@ -170,13 +175,11 @@ impl Agent {
     }
 
     /// Its presence colour's slot: the one its keeper chose, or the one the rule every
-    /// surface draws software by gives it, clear of the colour of the person who keeps
-    /// it ([`PresenceHue::of_member`]).
+    /// surface draws a member by gives it ([`PresenceHue::of_member`]).
     #[must_use]
     pub fn slot(&self) -> u8 {
         self.colour.unwrap_or_else(|| {
-            let keeper = Some(self.keeper.as_str()).filter(|keeper| !keeper.is_empty());
-            let hue = PresenceHue::of_member(&collab_types::MemberId::agent(&self.id.0), keeper);
+            let hue = PresenceHue::of_member(&collab_types::MemberId::agent(&self.id.0));
             u8::try_from(hue.slot()).unwrap_or(0)
         })
     }
@@ -329,6 +332,7 @@ impl WorkspaceAgents {
             id: Atom(id),
             name,
             colour,
+            on_host: false,
             keeper,
             model,
             mcp_client,
@@ -379,7 +383,7 @@ impl WorkspaceAgents {
         #[param("The day counted, YYYY-MM-DD by its keeper's clock")] day: String,
         #[param("What it spent that day, in millionths of the currency")] cost_micros: u64,
     ) -> Result<(), Refusal> {
-        let me = author(cx)?;
+        let me = keeping(cx)?;
         let day = checked_day(&day)?;
         let found = self
             .agents
@@ -399,6 +403,35 @@ impl WorkspaceAgents {
             _ => Some(Spent { day, cost_micros }),
         };
         found.spent = counted;
+        Ok(())
+    }
+
+    /// Choose where an agent runs: on the workspace's host, around the clock and on the host's
+    /// model, or on its keeper's own devices. Its keeper's to choose, as its model is; an agent an
+    /// MCP client connects as runs where that client does.
+    #[action(item = agents)]
+    pub fn set_agent_on_host(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The agent")] agent: Id,
+        #[param("Whether the workspace's host runs it")] on_host: bool,
+    ) -> Result<(), Refusal> {
+        let me = keeping(cx)?;
+        let found = self
+            .agents
+            .find_mut(&agent)
+            .ok_or_else(|| no_such(&agent))?;
+        if found.keeper != me {
+            return Err(Refusal::new(
+                "only the agent's keeper chooses where it runs",
+            ));
+        }
+        if on_host && found.mcp_client.is_some() {
+            return Err(Refusal::new(
+                "an agent an MCP client connects as runs where that client does",
+            ));
+        }
+        found.on_host = on_host;
         Ok(())
     }
 
@@ -641,6 +674,15 @@ fn author(cx: &ActionCx) -> Result<String, Refusal> {
         .and_then(|acting| acting.people().first().map(|person| (*person).to_owned()))
         .filter(|person| !person.is_empty() && person.len() <= MAX_KEEPER)
         .ok_or_else(|| Refusal::new("an agent is always made by someone"))
+}
+
+/// The person invoking, when they act themselves: an agent acting for its keeper never counts its
+/// own spending nor moves itself, so what its keeper set holds against it.
+fn keeping(cx: &ActionCx) -> Result<String, Refusal> {
+    if cx.invoked_by().is_some_and(|acting| acting.is_agent()) {
+        return Err(Refusal::new("only the agent's keeper does this"));
+    }
+    author(cx)
 }
 
 fn person(id: &str) -> Result<String, Refusal> {

@@ -136,7 +136,7 @@ impl AppServingPlane for Routing {
                 provider: HOST_PROVIDER.into(),
                 app_id: String::new(),
                 workspace: String::new(),
-                record_id: String::new(),
+                document_id: String::new(),
                 browsable: false,
             }],
             ..CataloguePage::default()
@@ -895,7 +895,7 @@ async fn the_host_lists_the_window_and_hands_its_listing_to_it() {
         .unwrap_or_else(|| panic!("the window is listed: {:?}", page.providers));
     assert_eq!(window.app_id, "so.tilo.browser");
     assert_eq!(
-        window.record_id, "record-1",
+        window.document_id, "record-1",
         "on the record it was opened on"
     );
     assert_eq!(
@@ -1553,11 +1553,11 @@ const NOTES_RECORD: &str = "notes-1";
 /// The channel the window's own record lives on, and the one a customer's
 /// document lives on: what every plane of the workspace tells a record by.
 fn window_channel() -> [u8; 32] {
-    tilo_relay::environment::record_channel(tilo_relay::hosted_browser::APP, "record-1")
+    tilo_relay::environment::document_channel(tilo_relay::hosted_browser::APP, "record-1")
 }
 
 fn notes_channel() -> [u8; 32] {
-    tilo_relay::environment::record_channel(NOTES, NOTES_RECORD)
+    tilo_relay::environment::document_channel(NOTES, NOTES_RECORD)
 }
 
 /// One change of `channel`'s record, as a device writes it.
@@ -1612,7 +1612,7 @@ async fn the_relay_confines_an_environments_device_to_the_record_it_placed() {
     assert_eq!(
         tilo_relay::environment::environment_of(&fixture.relay.relay.environments(), &device),
         Some(tilo_relay::environment::Environment::Placed(
-            tilo_relay::environment::EnvironmentScope::for_record(
+            tilo_relay::environment::EnvironmentScope::for_resource(
                 WS,
                 tilo_relay::hosted_browser::APP,
                 "record-1"
@@ -1635,7 +1635,7 @@ async fn a_relay_that_restarts_still_confines_the_environment_it_placed() {
     assert_eq!(
         tilo_relay::environment::environment_of(&restarted, &device),
         Some(tilo_relay::environment::Environment::Placed(
-            tilo_relay::environment::EnvironmentScope::for_record(
+            tilo_relay::environment::EnvironmentScope::for_resource(
                 WS,
                 tilo_relay::hosted_browser::APP,
                 "record-1"
@@ -1744,7 +1744,7 @@ async fn an_environment_opens_its_own_record_and_no_other() {
     fixture.list_environment().await;
     let environment = fixture.environment_session().await;
     environment
-        .send(Envelope::OpenRecord {
+        .send(Envelope::OpenDocument {
             workspace_id: WS,
             channel: notes_channel(),
             own: None,
@@ -1756,7 +1756,7 @@ async fn an_environment_opens_its_own_record_and_no_other() {
         "another record does not open for it: {refusal:?}"
     );
     environment
-        .send(Envelope::OpenRecord {
+        .send(Envelope::OpenDocument {
             workspace_id: WS,
             channel: window_channel(),
             own: None,
@@ -1764,7 +1764,7 @@ async fn an_environment_opens_its_own_record_and_no_other() {
         .unwrap();
     let answer = next(&environment, "environment").await;
     assert!(
-        matches!(answer, Envelope::RecordOpened { channel, .. } if channel == window_channel()),
+        matches!(answer, Envelope::DocumentOpened { channel, .. } if channel == window_channel()),
         "its own record opens: {answer:?}"
     );
 }

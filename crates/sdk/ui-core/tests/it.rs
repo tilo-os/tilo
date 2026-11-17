@@ -60,6 +60,8 @@ mod design_token_audit;
 #[cfg(unix)]
 #[path = "diagnostics_outlive_a_closed_log_pipe.rs"]
 mod diagnostics_outlive_a_closed_log_pipe;
+#[path = "document_content_route.rs"]
+mod document_content_route;
 #[path = "file_picker_render_test.rs"]
 mod file_picker_render_test;
 #[path = "filled_control_labels_are_readable.rs"]
@@ -123,8 +125,6 @@ mod real_socket_n_peer;
 #[cfg(unix)]
 #[path = "real_socket_two_peer.rs"]
 mod real_socket_two_peer;
-#[path = "record_content_route.rs"]
-mod record_content_route;
 #[path = "remote_cursor_presence.rs"]
 mod remote_cursor_presence;
 #[path = "resize_reflow_test.rs"]
@@ -179,7 +179,7 @@ mod window_group_test;
 #[path = "window_group_visual_journey.rs"]
 mod window_group_visual_journey;
 
-mod canonical_record_owner;
+mod canonical_resource_owner;
 
 #[path = "finish_render.rs"]
 mod finish_render;

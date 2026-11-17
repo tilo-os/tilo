@@ -35,7 +35,7 @@ const LIST_ITEM: &str = "ui.ListItem";
 const SHELL: &str = "ui.NavShell";
 /// The menu a view opens onto a resource, its commands filled here.
 const MENU_BUTTON: &str = "ui.MenuButton";
-/// A place on a canvas, whose menu is its subject's actions as a menu button's is.
+/// A place on a canvas, whose menu is its target's actions as a menu button's is.
 const PLACE: &str = "ui.Place";
 /// The part a menu's commands go in.
 const ITEMS: &str = "items";
@@ -124,19 +124,19 @@ const ID: usize = 13;
 impl Core {
     /// The host's surfaces for the tree a boundary rendered: each item's menu, and the window's
     /// own bar, or for the page of one item the "…" beside its title. `args` are the boundary's,
-    /// so the window's subject is the resource the view was opened on.
+    /// so the window's target is the resource the view was opened on.
     pub(crate) fn surfaces(
         &self,
         root: usize,
         args: &[Value],
         shown: &str,
     ) -> Result<(), RuntimeError> {
-        let subject = match args.first() {
-            Some(Value::Ref(subject)) => Some(subject.clone()),
+        let target = match args.first() {
+            Some(Value::Ref(target)) => Some(target.clone()),
             _ => None,
         };
         self.item_surfaces(root)?;
-        self.subject_menus(root)?;
+        self.target_menus(root)?;
         self.list_selections(root)?;
         // The window's shell, wherever the view's own frames put it: a window that draws itself
         // through `std.page` or `std.list` keeps its shell one boundary down. What the view
@@ -147,7 +147,7 @@ impl Core {
             Some(shell) => self.take_placement(shell)?,
             None => None,
         };
-        let Some(subject) = subject else {
+        let Some(target) = target else {
             return Ok(());
         };
         let Some(shell) = shell else {
@@ -156,10 +156,10 @@ impl Core {
         // Only what the window's own place offers: an action that reads a row over it has
         // none on a window's page. What the view already drew in the window's bar with its own
         // controls — the "+" that makes the thing the sidebar lists, the page's own button for
-        // what it shows — stands there alone, not again beside them as the subject's action.
+        // what it shows — stands there alone, not again beside them as the target's action.
         let headed = self.header_actions(shell)?;
         let acted: Vec<Value> = self
-            .actions_on(&subject, &Value::none())
+            .actions_on(&target, &Value::none())
             .map_err(trapped)?
             .into_iter()
             .filter(|action| flag(action, APPLIES))
@@ -174,15 +174,15 @@ impl Core {
             .is_some_and(|kind| kind == "list");
         let overview = self.part(shell, OVERVIEW)?.is_some();
         // A choice of more than one item is the window's own while it holds: the bar offers
-        // what the items offer, once over all of them, and nothing of the window's own subject
+        // what the items offer, once over all of them, and nothing of the window's own target
         // takes its place until the choice is put away.
         let chosen = self.chosen_items()?;
         if chosen.len() > 1 {
             let offered = self.selection_actions(&chosen)?;
             if overview {
                 self.fill_selection_bar(shell, OVERVIEW_ACTIONS, &offered, chosen.len())?;
-            } else if self.has_title(shell, &subject) {
-                self.put_under_title(shell, &subject, &offered, None, None)?;
+            } else if self.has_title(shell, &target) {
+                self.put_under_title(shell, &target, &offered, None, None)?;
             } else {
                 self.fill_selection_bar(shell, ACTIONS, &offered, chosen.len())?;
             }
@@ -190,7 +190,7 @@ impl Core {
         }
         let entry = self.declare_entry_key(shell, &acted)?;
         if overview {
-            if let Some(switch) = self.view_switch(&subject, shown)? {
+            if let Some(switch) = self.view_switch(&target, shown)? {
                 self.put_at_in_part(shell, OVERVIEW_ACTIONS, switch)?;
             }
             self.fill_bar(
@@ -201,11 +201,11 @@ impl Core {
                 entry.as_deref(),
                 placed.as_deref(),
             )?;
-        } else if self.has_title(shell, &subject) {
-            let switch = self.view_switch(&subject, shown)?;
-            self.put_under_title(shell, &subject, &acted, switch, placed.as_deref())?;
+        } else if self.has_title(shell, &target) {
+            let switch = self.view_switch(&target, shown)?;
+            self.put_under_title(shell, &target, &acted, switch, placed.as_deref())?;
         } else {
-            if let Some(switch) = self.view_switch(&subject, shown)? {
+            if let Some(switch) = self.view_switch(&target, shown)? {
                 self.put_at_in_part(shell, ACTIONS, switch)?;
             }
             self.fill_bar(
@@ -393,7 +393,7 @@ impl Core {
     /// The actions the view's own controls already offer where the window's navigation and
     /// headers stand: the sidebar's head and its places (a section's add), and the controls the
     /// view draws in its columns' header rows. A control the view drew stands where the view put
-    /// it, alone: the subject's action of the same name is not placed again in a header row, so
+    /// it, alone: the target's action of the same name is not placed again in a header row, so
     /// the person finds each action once.
     fn header_actions(&self, shell: usize) -> Result<Vec<String>, RuntimeError> {
         let mut ids = Vec::new();
@@ -573,13 +573,13 @@ impl Core {
     /// Each menu a view opened onto a resource gets that resource's actions: a bar naming the
     /// window in front draws the commands the window's own menu would, and a place on a canvas
     /// offers its resource's on a right-click, without the view reading them back.
-    fn subject_menus(&self, at: usize) -> Result<(), RuntimeError> {
+    fn target_menus(&self, at: usize) -> Result<(), RuntimeError> {
         let kind = self.kind(at)?;
-        let subject = if kind == MENU_BUTTON || kind == PLACE {
-            match self.props(at)?.get("subject").cloned() {
-                Some(Value::Ref(subject)) => Some(subject),
+        let target = if kind == MENU_BUTTON || kind == PLACE {
+            match self.props(at)?.get("target").cloned() {
+                Some(Value::Ref(target)) => Some(target),
                 Some(Value::Opt(Some(held))) => match *held {
-                    Value::Ref(subject) => Some(subject),
+                    Value::Ref(target) => Some(target),
                     _ => None,
                 },
                 _ => None,
@@ -587,9 +587,9 @@ impl Core {
         } else {
             None
         };
-        if let Some(subject) = subject {
+        if let Some(target) = target {
             let acted = self
-                .actions_on(&subject, &Value::none())
+                .actions_on(&target, &Value::none())
                 .map_err(trapped)?
                 .into_iter()
                 .filter(|action| flag(action, APPLIES));
@@ -602,7 +602,7 @@ impl Core {
             }
             self.costs.publish(published);
         }
-        self.each_child(at, |child| self.subject_menus(child))
+        self.each_child(at, |child| self.target_menus(child))
     }
 
     /// Visit each child of `at`, in order.
@@ -625,23 +625,23 @@ impl Core {
     /// `shown` is the view the window draws the resource through now, so the switch shows what
     /// is on screen whatever chose it. The type's name names the strip, and each tab says only
     /// what the view adds to it: a Project's views read "List" and "Board".
-    fn view_switch(&self, subject: &RefValue, shown: &str) -> Result<Option<usize>, RuntimeError> {
-        let views = { self.registry.borrow().views_of_type(&subject.target.ty) };
+    fn view_switch(&self, target: &RefValue, shown: &str) -> Result<Option<usize>, RuntimeError> {
+        let views = { self.registry.borrow().views_of_type(&target.target.ty) };
         if views.len() < 2 {
             return Ok(None);
         }
         let (window, viewer) = self
             .with_view(|vs| Ok((vs.window.clone(), vs.viewer.clone())))
             .map_err(trapped)?;
-        let state = format!("{VIEW_STATE}{}", subject.target.id_string());
-        let chosen = self.chosen_index(&window, &viewer, &state, &subject.target.ty, &views, shown);
+        let state = format!("{VIEW_STATE}{}", target.target.id_string());
+        let chosen = self.chosen_index(&window, &viewer, &state, &target.target.ty, &views, shown);
         let base = format!("{window}~views");
         let mut tabs = empty("ui.ViewTabs", &base);
         tabs.props.insert(
             "selected".to_owned(),
             Value::Opt(Some(Box::new(Value::Int(chosen)))),
         );
-        let type_label = self.type_label(&subject.target.ty);
+        let type_label = self.type_label(&target.target.ty);
         if let Some(label) = &type_label {
             tabs.props.insert("label".to_owned(), Value::text(label));
         }
@@ -661,7 +661,7 @@ impl Core {
         for (index, (id, name)) in views.iter().enumerate() {
             let (label, icon) = {
                 let registry = self.registry.borrow();
-                registry.view_shown(&subject.target.ty, id)
+                registry.view_shown(&target.target.ty, id)
             };
             let full = self.word_args(
                 &tilolang::messages::key_of(id),
@@ -738,7 +738,7 @@ impl Core {
     }
 
     /// The window's bar's controls: what the shell searches with, then the primary action, the
-    /// commands that toggle a state of the window's subject, and the rest where the bar's own
+    /// commands that toggle a state of the window's target, and the rest where the bar's own
     /// overflow button lists them. A view that placed the window's actions (`actions:`) has the ones it
     /// named in its bar, in its order, and the rest behind a "More" the bar keeps itself.
     fn fill_bar(
@@ -817,7 +817,7 @@ impl Core {
     /// The window's bar while a choice of many items holds: how many items the person chose,
     /// then what can be done with them once. Every command stands labelled, in the order the
     /// items' own actions are offered; the shell's own layout folds the ones that do not fit
-    /// into its overflow button. Nothing of the window's own subject stands beside them: the choice is
+    /// into its overflow button. Nothing of the window's own target stands beside them: the choice is
     /// what the person is working on.
     fn fill_selection_bar(
         &self,
@@ -885,9 +885,9 @@ impl Core {
         Ok(false)
     }
 
-    /// Whether the content under `shell` edits the title of `subject` as its large title.
-    fn has_title(&self, shell: usize, subject: &RefValue) -> bool {
-        self.finds_title(shell, &subject.target.id_string())
+    /// Whether the content under `shell` edits the title of `target` as its large title.
+    fn has_title(&self, shell: usize, target: &RefValue) -> bool {
+        self.finds_title(shell, &target.target.id_string())
             .is_some()
     }
 
@@ -901,7 +901,7 @@ impl Core {
     fn put_under_title(
         &self,
         shell: usize,
-        subject: &RefValue,
+        target: &RefValue,
         acted: &[Value],
         switch: Option<usize>,
         placed: Option<&Placed>,
@@ -909,8 +909,7 @@ impl Core {
         if acted.is_empty() && switch.is_none() {
             return Ok(());
         }
-        let Some((parent, index, key)) = self.finds_title(shell, &subject.target.id_string())
-        else {
+        let Some((parent, index, key)) = self.finds_title(shell, &target.target.id_string()) else {
             return Ok(());
         };
         let (line, after) = self.title_line(parent, index, &key)?;
@@ -979,7 +978,7 @@ impl Core {
         Ok((line, 1))
     }
 
-    /// The control under `shell` that edits `subject`'s title: its parent, its place among the
+    /// The control under `shell` that edits `target`'s title: its parent, its place among the
     /// parent's children, and its key.
     fn finds_title(&self, at: usize, resource: &str) -> Option<(usize, usize, String)> {
         for (index, child) in self.children(at).ok()?.into_iter().enumerate() {

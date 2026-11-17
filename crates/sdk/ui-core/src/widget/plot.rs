@@ -312,6 +312,12 @@ impl<M: PlotMarks> InteractiveChart for Plot<M> {
 }
 
 impl<M: PlotMarks> Widget for Plot<M> {
+    /// Its frame and marks: a picture, named by its title and its items.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("figure");
+        cx.picture();
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,

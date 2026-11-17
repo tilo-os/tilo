@@ -18,8 +18,7 @@ use std::sync::{Arc, Mutex};
 use crate::common::catalogue;
 use tilo_actions::api::ActionAddress;
 use tilo_agent_session::{
-    AgentControl, AgentIdentity, AgentParticipant, ParticipantConfig, PlanContext, Planner, Step,
-    StepAction,
+    AgentControl, AgentIdentity, AgentMember, MemberConfig, PlanContext, Planner, Step, StepAction,
 };
 use tilo_relay_protocol::agents::{AgentStatus, TaskState};
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
@@ -120,8 +119,8 @@ async fn a_check_is_shown_the_facts_of_the_record_its_task_changed() {
         .unwrap();
     let control = AgentControl::new(delegation.clone());
     let plans = Arc::new(Mutex::new(Vec::new()));
-    let mut agent = AgentParticipant::start(
-        ParticipantConfig {
+    let mut agent = AgentMember::start(
+        MemberConfig {
             host: host.iroh(),
             host_cert: host_device.cert.clone(),
             workspace: WORKSPACE.into(),
@@ -281,7 +280,7 @@ async fn ed_planning_with(
 ) -> (
     crate::support::TestHost,
     tempfile::TempDir,
-    AgentParticipant,
+    AgentMember,
     Arc<AgentControl>,
 ) {
     let (root, _) = UserIdentity::generate("Ada", 1);
@@ -322,8 +321,8 @@ async fn ed_planning_with(
         .await
         .unwrap();
     let control = AgentControl::new(delegation.clone());
-    let mut agent = AgentParticipant::start(
-        ParticipantConfig {
+    let mut agent = AgentMember::start(
+        MemberConfig {
             host: host.iroh(),
             host_cert: host_device.cert.clone(),
             workspace: WORKSPACE.into(),

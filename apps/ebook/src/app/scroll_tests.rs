@@ -74,7 +74,7 @@ fn prose_book(chapters: usize, paragraphs: usize, words: usize) -> Book {
 }
 
 /// A record holding the reader's settings in `mode`.
-fn record_in(mode: ReadMode) -> ui::State {
+fn resource_in(mode: ReadMode) -> ui::State {
     let mut state = ui::State::new();
     let mut doc = crate::resource::doc_with(&[], &[]);
     let before: Settings = crate::resource::read_doc(&doc).settings;
@@ -97,7 +97,7 @@ fn record_in(mode: ReadMode) -> ui::State {
 /// run.
 fn reader(book: Book, mode: ReadMode, (w, h): (u32, u32)) -> Framed<BooksApp> {
     let app = BooksApp::with_library(crate::resource::library_dispatcher_for_test(), vec![book]);
-    Framed::new(record_in(mode), app, viewport((w, h)), Theme::dark())
+    Framed::new(resource_in(mode), app, viewport((w, h)), Theme::dark())
 }
 
 /// How a person scrolls.
@@ -546,7 +546,7 @@ fn write_layout_shots(dir: &std::path::Path) {
     for (name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
         let book = prose_book(2, 120, 40);
         let opening = Framed::new(
-            record_in(ReadMode::Paged),
+            resource_in(ReadMode::Paged),
             BooksApp::with_library(
                 crate::resource::library_dispatcher_for_test(),
                 vec![book.clone()],
@@ -557,7 +557,7 @@ fn write_layout_shots(dir: &std::path::Path) {
         shoot(&opening, &theme, &dir.join(format!("opening-{name}.png")));
         for mode in [ReadMode::Paged, ReadMode::Continuous] {
             let mut app = Framed::new(
-                record_in(mode),
+                resource_in(mode),
                 BooksApp::with_library(
                     crate::resource::library_dispatcher_for_test(),
                     vec![book.clone()],

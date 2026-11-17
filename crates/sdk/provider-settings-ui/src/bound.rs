@@ -14,7 +14,7 @@
 //! here sits in a group beside any other.
 
 use ui::LocalState;
-use ui::framework::{ActionControl, Actions, OtherRecord, ViewCx};
+use ui::framework::{ActionControl, Actions, OtherResource, ViewCx};
 use ui::tilo_resource::{Binds, Effect, Model, Path, Resource, Settable};
 use ui::widget::{
     Button, Dropdown, Picture, PictureChoice, PictureOption, Segment, Slider, Toggle, ToggleGroup,
@@ -391,9 +391,9 @@ impl<R: Resource<State = R> + Model> Setting<'_, R> {
 
     /// `item`, a row built over another record than this one (`record`), as
     /// a part of the view over that record.
-    pub fn of_record<P: Resource>(
+    pub fn of_resource<P: Resource>(
         &self,
-        record: &impl OtherRecord<P>,
+        record: &impl OtherResource<P>,
         item: impl FnOnce(&ViewCx<P>) -> Item,
     ) -> Option<Item> {
         record_item(self.cx, record, item)
@@ -500,7 +500,7 @@ impl<R: Resource<State = R> + Model> Setting<'_, R> {
 /// `None` where the record cannot be held (a view of a past version).
 pub fn record_item<R: Resource, T: 'static, P: Resource>(
     cx: &ViewCx<R, T>,
-    record: &impl OtherRecord<P>,
+    record: &impl OtherResource<P>,
     item: impl FnOnce(&ViewCx<P>) -> Item,
 ) -> Option<Item> {
     let shape = std::cell::Cell::new(ItemShape::Row);

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 pub const SCHEMA_VERSION: u16 = 2;
 pub const FILE_NAME: &str = "continuity-provenance.json";
-const MAX_RECORDS: usize = 512;
+const MAX_DOCUMENTS: usize = 512;
 const MAX_ORIGINS: usize = 32;
 const MAX_TEXT_BYTES: usize = 512;
 
@@ -195,8 +195,8 @@ impl RoamingProvenance {
 
     fn normalise(&mut self) -> Result<(), ProvenanceError> {
         if self.schema_version != SCHEMA_VERSION
-            || self.settings.len() > MAX_RECORDS
-            || self.wifi.len() > MAX_RECORDS
+            || self.settings.len() > MAX_DOCUMENTS
+            || self.wifi.len() > MAX_DOCUMENTS
         {
             return Err(ProvenanceError::Invalid);
         }

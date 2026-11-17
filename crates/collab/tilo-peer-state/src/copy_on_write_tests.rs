@@ -8,7 +8,7 @@ use crate::{AdmissionError, InputDisposition};
 const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 /// A native peer holding a small record and a large untouched one.
-pub(crate) fn two_records() -> (StatePeer, SigningKey, SystemTime) {
+pub(crate) fn two_documents() -> (StatePeer, SigningKey, SystemTime) {
     let (a, ac, b, bc, now) = fixtures();
     let mut native = StatePeer::new(
         WORKSPACE,
@@ -26,7 +26,7 @@ pub(crate) fn two_records() -> (StatePeer, SigningKey, SystemTime) {
     };
     let seed = |record: &str, bytes| SeedDocument {
         app_id: "test.app".into(),
-        record_id: record.into(),
+        document_id: record.into(),
         kind: "test".into(),
         bytes,
     };
@@ -71,7 +71,7 @@ tilo_test_env::scenario! {
 
     phase admitting_one_document_copies_and_saves_only_that_document;
     {
-        let (committed, key, now) = two_records();
+        let (committed, key, now) = two_documents();
         let mut author = committed.clone();
         let message = incremental(&mut author, &key, now);
         let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
@@ -127,7 +127,7 @@ tilo_test_env::scenario! {
 
     phase refused_message_leaves_state_identical;
     {
-        let (mut receiver, key, now) = two_records();
+        let (mut receiver, key, now) = two_documents();
         let mut author = receiver.clone();
         let message = incremental(&mut author, &key, now);
         let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
@@ -168,7 +168,7 @@ tilo_test_env::scenario! {
 #[test]
 fn a_restored_replica_knows_each_members_own_record() {
     let (a, ac, _, bc, now) = fixtures();
-    let own = collab_types::OwnRecord::new("settings.root", [9; 32]).unwrap();
+    let own = collab_types::OwnResource::new("settings.root", [9; 32]).unwrap();
     let mut peer = StatePeer::new(
         WORKSPACE,
         ac.clone(),
@@ -185,7 +185,7 @@ fn a_restored_replica_knows_each_members_own_record() {
             workspace_changes: seed_workspace(WORKSPACE, &ac, &[ac.clone(), bc]).unwrap(),
             documents: vec![SeedDocument {
                 app_id: "so.tilo.settings".into(),
-                record_id: own.record_id(),
+                document_id: own.document_id(),
                 kind: "settings.root".into(),
                 bytes: doc.save(),
             }],
@@ -196,7 +196,7 @@ fn a_restored_replica_knows_each_members_own_record() {
     .unwrap();
     peer.select_exact_admissions().unwrap();
     let before = peer.durable().unwrap();
-    peer.keep_own_record("so.tilo.settings", &own);
+    peer.keep_own_document("so.tilo.settings", &own);
     let durable = peer.durable().unwrap();
     assert_ne!(
         durable, before,
@@ -212,7 +212,7 @@ fn a_restored_replica_knows_each_members_own_record() {
     )
     .unwrap();
     assert_eq!(
-        restored.own_record("so.tilo.settings", &own.record_id()),
+        restored.own_resource("so.tilo.settings", &own.document_id()),
         Some(own),
         "the restored replica knows whose record it is"
     );

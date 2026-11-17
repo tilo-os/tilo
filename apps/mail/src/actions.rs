@@ -586,7 +586,7 @@ impl IngestBaseline {
 /// A message as people tell it apart: its subject, who sent it and when.
 pub fn message_label_of(message: &crate::model::Message) -> String {
     let subject = if message.subject.trim().is_empty() {
-        crate::i18n::no_subject()
+        crate::i18n::untitled()
     } else {
         message.subject.trim().to_owned()
     };

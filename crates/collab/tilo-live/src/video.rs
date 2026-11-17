@@ -3,7 +3,7 @@
 //!
 //! # Tracks
 //!
-//! A participant's broadcast carries its voice on [`crate::relay::VOICE_TRACK`]
+//! A device's broadcast carries its voice on [`crate::relay::VOICE_TRACK`]
 //! and, while it shows them, one track per picture [`Source`] and [`Layer`]
 //! (`camera/low`, `camera/mid`, `camera/high`, `screen/low`, `screen/high`).
 //! A layer is a complete stream of its own (simulcast), so a subscriber picks
@@ -56,7 +56,7 @@ pub const MAX_SIDE: u16 = 4096;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Source {
     Camera,
-    /// A screen or window the participant shares.
+    /// A screen or window the device shares.
     Screen,
 }
 

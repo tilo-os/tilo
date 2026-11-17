@@ -143,8 +143,11 @@ impl Signatures {
         let Some((route, envelope)) = self.payloads.open_document(&entry.body) else {
             return opaque(None);
         };
-        let artifact =
-            collab_types::document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
+        let artifact = collab_types::document_artifact_id(
+            &route.app_id,
+            &route.cluster_id,
+            &route.document_id,
+        );
         if *envelope.author.as_bytes() != entry.author || envelope.artifact != artifact {
             return opaque(Some(route));
         }

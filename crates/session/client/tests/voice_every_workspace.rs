@@ -149,7 +149,7 @@ async fn a_call_is_joined_in_every_kind_of_workspace() {
         };
         let open = || CallOperation::Open {
             app_id: CHAT.into(),
-            record_id: String::new(),
+            document_id: String::new(),
             channel_id: channel.clone(),
         };
         let opened = wait_for("the host to open the voice channel's call", || {
@@ -178,7 +178,7 @@ async fn a_call_is_joined_in_every_kind_of_workspace() {
         }
         let heard = native(&first, |envelope| match envelope {
             Envelope::VoiceRefused { reason, .. } => panic!("{kind:?}: join refused: {reason}"),
-            envelope => granted(envelope).filter(|grant| grant.participants.len() == 2),
+            envelope => granted(envelope).filter(|grant| grant.members.len() == 2),
         })
         .await;
         assert!(
@@ -186,7 +186,7 @@ async fn a_call_is_joined_in_every_kind_of_workspace() {
             "{kind:?}: a member speaks and hears"
         );
         assert_eq!(
-            heard.participants.len(),
+            heard.members.len(),
             2,
             "{kind:?}: each device sees the other in the call"
         );

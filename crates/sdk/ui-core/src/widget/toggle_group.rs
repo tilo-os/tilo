@@ -1988,6 +1988,48 @@ impl ToggleGroup {
 }
 
 impl Widget for ToggleGroup {
+    /// A segmented strip as a page's own radio group: each label a choice, the
+    /// one the setting holds checked.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        use crate::composition::{Control, ControlOption};
+        let theme = cx.theme();
+        let colors = &theme.tokens.colors;
+        let options = self
+            .segments
+            .iter()
+            .enumerate()
+            .map(|(index, segment)| {
+                let chosen = match &self.chosen {
+                    Some(chosen) => chosen.get(index).copied().unwrap_or(false),
+                    None => index == self.selected,
+                };
+                let mut option = ControlOption::new(segment.label.clone())
+                    .selected(chosen)
+                    .with_target(self.segment_id(index))
+                    .disabled(segment.disabled || !self.is_enabled());
+                if let Some(icon) = segment.icon {
+                    option = option.with_icon_opt(crate::composition::glyph(
+                        icon,
+                        16.0,
+                        if chosen {
+                            colors.text_primary
+                        } else {
+                            colors.text_dim
+                        },
+                        false,
+                    ));
+                }
+                option
+            })
+            .collect();
+        cx.control(Control::Choices {
+            list: "radiogroup",
+            item: "radio",
+            label: None,
+            options,
+        });
+    }
+
     crate::described!();
 
     crate::provides!(

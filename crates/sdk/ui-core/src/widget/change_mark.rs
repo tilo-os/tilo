@@ -114,7 +114,7 @@ impl ChangeMarkProps {
                 }
             });
         Some(RowMark {
-            identity: by.identity,
+            identity: by.identity.id().to_owned(),
             name: by.name,
             spoken,
             said,
@@ -189,12 +189,12 @@ impl ChangeMarkProps {
         }
         let faces: Vec<(String, String)> = if window {
             who.iter()
-                .map(|person| (person.name.clone(), person.identity.clone()))
+                .map(|person| (person.name.clone(), person.identity.id().to_owned()))
                 .collect()
         } else {
             who.iter()
                 .take(1)
-                .map(|person| (person.name.clone(), person.identity.clone()))
+                .map(|person| (person.name.clone(), person.identity.id().to_owned()))
                 .collect()
         };
         let count = count.max(1);

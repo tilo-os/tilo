@@ -358,7 +358,7 @@ impl HistoryLog {
             .checked_sub(source.max_entries)
             .and_then(|first| self.counted.get(first).copied())
             .unwrap_or(0);
-        let genesis_actor = crate::record::genesis_actor(doc).map(|actor| actor.to_hex_string());
+        let genesis_actor = crate::resource::genesis_actor(doc).map(|actor| actor.to_hex_string());
         let schema_genesis = tilo_doc::model::schema_genesis_actor_hex();
         let mut out: Vec<HistoryEntry> =
             Vec::with_capacity(self.changes.len().saturating_sub(start));
@@ -393,7 +393,7 @@ impl HistoryLog {
             let genesis = genesis_actor.as_deref() == Some(logged.actor.as_str())
                 || reading.store_genesis
                 || framework == Some(tilo_actions::FrameworkChange::Genesis);
-            if (genesis && !source.record_genesis)
+            if (genesis && !source.resource_genesis)
                 || reading.marker
                 || framework.is_some_and(is_bookkeeping)
             {

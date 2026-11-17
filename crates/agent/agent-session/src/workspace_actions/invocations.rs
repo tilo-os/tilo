@@ -48,10 +48,10 @@ use tilo_relay_protocol::WorkspaceId;
 use ui::history_source::words::HistoryWords;
 
 use super::ledger::Entry;
-use super::{Job, Needs, Worker, WorkspaceActions, record_of};
+use super::{Job, Needs, Worker, WorkspaceActions, resource_of};
 
 /// One record of a workspace: its app and its id there.
-type RecordKey = (String, String);
+type DocumentKey = (String, String);
 
 /// What one record's history says of one run (one step).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -86,7 +86,7 @@ type Read = ([u8; 32], Vec<(String, Share)>);
 /// a record only once it changed.
 #[derive(Default)]
 pub(super) struct Index {
-    records: HashMap<RecordKey, Read>,
+    records: HashMap<DocumentKey, Read>,
 }
 
 impl Index {
@@ -96,11 +96,11 @@ impl Index {
     /// The records that could not be read.
     fn take_in(
         &mut self,
-        records: &[RecordKey],
-        revision: impl Fn(&RecordKey) -> Option<[u8; 32]>,
-        document: impl Fn(&RecordKey) -> Option<Vec<u8>>,
+        records: &[DocumentKey],
+        revision: impl Fn(&DocumentKey) -> Option<[u8; 32]>,
+        document: impl Fn(&DocumentKey) -> Option<Vec<u8>>,
         words: &dyn HistoryWords,
-    ) -> Vec<RecordKey> {
+    ) -> Vec<DocumentKey> {
         let mut unread = Vec::new();
         for key in records {
             let Some(now) = revision(key) else {
@@ -120,7 +120,7 @@ impl Index {
             self.records
                 .insert(key.clone(), (now, shares(&key.0, &key.1, &entries)));
         }
-        let listed: HashSet<&RecordKey> = records.iter().collect();
+        let listed: HashSet<&DocumentKey> = records.iter().collect();
         self.records.retain(|key, _| listed.contains(key));
         unread
     }
@@ -312,7 +312,7 @@ struct Call {
     action: String,
     /// The record it addressed, by its app and its id there; `None` for a
     /// call on no record (the workspace's own actions).
-    addressed: Option<RecordKey>,
+    addressed: Option<DocumentKey>,
     /// The changes it handed to the session: app, record, short hash.
     written: Vec<(String, String, String)>,
 }
@@ -354,7 +354,7 @@ fn call_of(id: String, entry: &Entry) -> (Option<String>, Call) {
         })
         .unwrap_or_else(|| "someone".to_owned());
     let target = &entry.request.target;
-    let addressed = record_of(&target.provider, "").map(|route| (route.app_id, route.record));
+    let addressed = resource_of(&target.provider, "").map(|route| (route.app_id, route.record));
     let action = match &addressed {
         Some((app_id, _)) => format!("{}#{}", app_path(app_id), target.address.action),
         None => format!("{}#{}", target.address.resource, target.address.action),
@@ -598,8 +598,8 @@ fn join_written(recorded: &BTreeMap<String, Vec<Share>>, calls: &mut [(Option<St
         let found = call
             .written
             .iter()
-            .filter(|(written_app, written_record, _)| {
-                written_app == app && written_record == record
+            .filter(|(written_app, written_document, _)| {
+                written_app == app && written_document == record
             })
             .find_map(|(_, _, change)| {
                 by_change.get(&(app.as_str(), record.as_str(), change.as_str()))
@@ -704,7 +704,7 @@ impl Worker {
             Some(cluster_id) => self.records(&state, &cluster_id),
             None => Vec::new(),
         };
-        let records: Vec<RecordKey> = routes
+        let records: Vec<DocumentKey> = routes
             .iter()
             .map(|route| (route.app_id.clone(), route.record.clone()))
             .collect();
@@ -715,7 +715,7 @@ impl Worker {
             &records,
             |(app, record)| {
                 engine
-                    .record_revision(&cluster_id, app, record)
+                    .document_revision(&cluster_id, app, record)
                     .ok()
                     .flatten()
             },
@@ -740,12 +740,12 @@ impl Worker {
         // Of it all, what the caller may read now, each record asked once.
         let owner = self.serves_as_owner(caller);
         let who = if owner { None } else { self.bounded(caller) };
-        let mut reads: HashMap<RecordKey, bool> = HashMap::new();
+        let mut reads: HashMap<DocumentKey, bool> = HashMap::new();
         // A bounded caller reads a record as a read decides it: the record's
         // policy for their person, held to their own bound (an agent's
         // grants, a device's cap, the workspace's sandbox), answering Read at
         // the record's node; Ask is no read.
-        let mut may_read = |key: &RecordKey| {
+        let mut may_read = |key: &DocumentKey| {
             *reads.entry(key.clone()).or_insert_with(|| {
                 owner
                     || who.as_ref().is_some_and(|who| {

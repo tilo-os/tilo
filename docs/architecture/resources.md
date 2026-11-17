@@ -516,7 +516,7 @@ live, and the action runs through that view, exactly as a person's click does.
   next to where that actor already is, so everyone keeps their place. It may be
   a strip the person is not looking at. A person invoking from the palette gets
   it where they are.
-- **Presence.** Whoever acts is a participant with presence in the view: a
+- **Presence.** Whoever acts is a member with presence in the view: a
   person, a member, an agent, a Shortcut. Presence names the actor and on
   whose behalf it acts ("Claude, for Ada"), shows where it works and what it
   just changed.

@@ -3,7 +3,7 @@
 //! (`open-direct-conversation`, `send-direct-message`); its messages are read
 //! from the record, as every conversation's are.
 //!
-//! A direct conversation is not created: its id names its participants
+//! A direct conversation is not created: its id names its members
 //! ([`Chat::direct_id`]), so every device that opens the same conversation
 //! opens the same one, and neither has to write anything first. Its messages
 //! are the chat's messages in the chat's parts, beside every channel's; its
@@ -180,11 +180,11 @@ impl ChatApp {
                 .map(|(id, _)| id.clone())
                 .ok_or_else(|| crate::i18n::t("chat-send-needs-recipient"));
         }
-        let mut participants = vec![self.me.id.clone()];
+        let mut members = vec![self.me.id.clone()];
         for recipient in to {
             match recipient.kind {
                 RecipientKind::Person | RecipientKind::Agent => {
-                    participants.push(self.member_named(recipient, chat)?);
+                    members.push(self.member_named(recipient, chat)?);
                 }
                 // What a box holds of a new agent is made before it sends
                 // ([`crate::effects::ChatEffect::Send`]): an agent still
@@ -196,10 +196,10 @@ impl ChatApp {
                 }
             }
         }
-        if participants.len() < 2 {
+        if members.len() < 2 {
             return Err(crate::i18n::t("chat-send-needs-recipient"));
         }
-        Ok(Chat::direct_id(participants))
+        Ok(Chat::direct_id(members))
     }
 
     /// The member `recipient` names: by its id, or, named by its name alone (as an agent's send
@@ -254,7 +254,7 @@ impl ChatApp {
     /// person with exactly one other person: what the app's direct operations are asked on. A
     /// conversation with an agent, or one of more than two people, is not one of them.
     fn direct_peer(&self, channel: &crate::model::Channel) -> Option<String> {
-        self.conversation_peer(&channel.participants)
+        self.conversation_peer(&channel.members)
             .filter(|peer| channel.direct && peer.is_person())
             .map(|peer| peer.id().to_owned())
     }

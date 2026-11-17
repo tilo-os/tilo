@@ -2,7 +2,7 @@
 //! commit after which words, the words they kept as typed when corrected,
 //! and where they tend to hit each letter.
 //!
-//! It is a record of the keyboard's ([`ui::framework::PersonRecord`]),
+//! It is a record of the keyboard's ([`ui::framework::PersonResource`]),
 //! kept in the workspace the keyboard is open in and synced with it.
 //! Nothing typed into a secret field, and nothing at all while
 //! personalization is off, is learned.

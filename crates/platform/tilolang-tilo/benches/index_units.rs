@@ -140,8 +140,8 @@ fn main() {
             let path = file_of(&dir, APP);
             let index = open(&path);
             let started = Instant::now();
-            for record_index in 0..n {
-                write_record(&index, record_index);
+            for resource_index in 0..n {
+                write_record(&index, resource_index);
             }
             writes.push(ms(started.elapsed()));
             index.persist().expect("the index reaches the disk");
@@ -154,9 +154,9 @@ fn main() {
 
             let started = Instant::now();
             let snapshot = reopened.snapshot().expect("a snapshot");
-            for record_index in 0..n {
+            for resource_index in 0..n {
                 let title = snapshot
-                    .text(&record(record_index), "title")
+                    .text(&record(resource_index), "title")
                     .expect("a read");
                 assert!(title.is_some());
             }

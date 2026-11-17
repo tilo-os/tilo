@@ -22,7 +22,7 @@ fn app_id_for(
     let definition = catalogue
         .get(app)
         .ok_or_else(|| CollaborationError::new("application is not registered on this host"))?;
-    if record.is_empty() && !definition.keeps_workspace_record() {
+    if record.is_empty() && !definition.keeps_workspace_resource() {
         return Err(CollaborationError::new(
             "application has no primary workspace record",
         ));
@@ -42,7 +42,7 @@ fn bot_base(
 ) -> Result<(automerge::AutoCommit, Vec<automerge::ChangeHash>, bool), CollaborationError> {
     let Some(bytes) = existing else {
         let part =
-            ui::record::DocumentId::parse(record).is_some_and(|id| id.chain_part().is_some());
+            ui::resource::DocumentId::parse(record).is_some_and(|id| id.chain_part().is_some());
         return if part {
             Ok((automerge::AutoCommit::new(), Vec::new(), true))
         } else {
@@ -66,7 +66,7 @@ fn bot_base(
 /// members write sealed. The heads after it.
 fn start_part(
     candidate: &mut tilo_peer_state::StatePeer,
-    keys: Option<&super::sealed_records::RecordKeys>,
+    keys: Option<&super::sealed_documents::DocumentKeys>,
     (app, record): (&str, &str),
     document: &mut automerge::AutoCommit,
     (key, at): (&ed25519_dalek::SigningKey, std::time::SystemTime),
@@ -78,7 +78,7 @@ fn start_part(
         .map(|change| (change.hash(), change.raw_bytes().to_vec()))
         .ok_or_else(|| CollaborationError::new("the new part has no genesis"))?;
     if let Some(keys) = keys {
-        super::sealed_records::start_sealed(candidate, keys, (app, record), genesis, key, at)?;
+        super::sealed_documents::start_sealed(candidate, keys, (app, record), genesis, key, at)?;
     } else {
         let mut started = automerge::AutoCommit::new();
         tilo_automerge::ApplyIncoming::load_incoming(&mut started, &genesis)
@@ -96,7 +96,7 @@ impl Workspaces {
     /// trusted host code. This host-local API accepts no incoming member
     /// snapshot or factory. It keeps the existing graph and publishes only
     /// its admitted incremental changes, sealed for a record members write
-    /// sealed (`super::sealed_records`).
+    /// sealed (`super::sealed_documents`).
     ///
     /// # Errors
     /// Refuses other certificates, stale custody, undeclared apps, a primary
@@ -187,7 +187,7 @@ impl Workspaces {
             return Ok(result);
         }
         let mut candidate = governed.peer().clone();
-        super::sealed_records::publish_changes(
+        super::sealed_documents::publish_changes(
             &mut candidate,
             keys.as_ref(),
             (app, record),
@@ -218,7 +218,7 @@ impl Workspaces {
         clippy::significant_drop_tightening,
         reason = "the governor record stays locked through durable signed publication"
     )]
-    pub async fn author_workspace_record<R>(
+    pub async fn author_workspace_document<R>(
         &self,
         workspace: &str,
         governor: &DeviceCert,
@@ -391,7 +391,7 @@ impl Workspaces {
         }
         match &keys {
             Some(keys) => {
-                super::sealed_records::publish_changes_for(
+                super::sealed_documents::publish_changes_for(
                     &mut candidate,
                     keys,
                     bot,
@@ -497,7 +497,7 @@ impl Workspaces {
             if record.is_empty() {
                 Seed::New
             } else {
-                Seed::NewAt(ui::record::DocumentId::parse(record).ok_or_else(|| {
+                Seed::NewAt(ui::resource::DocumentId::parse(record).ok_or_else(|| {
                     CollaborationError::new("application record is not a record id")
                 })?)
             };
@@ -506,12 +506,12 @@ impl Workspaces {
                 catalogue,
                 app,
                 workspace,
-                &hex::encode(governor.user_public_key),
+                &tilo_actions::MemberId::person(hex::encode(governor.user_public_key)),
                 &tilo_agent_session::ReplicaActor::Owner,
                 seed,
             )
             .map_err(|error| CollaborationError::new(error.to_string()))?;
-            if record.is_empty() != source.record_id().is_package_primary() {
+            if record.is_empty() != source.document_id().is_package_primary() {
                 return Err(CollaborationError::new(
                     "factory primary route differs from its declaration",
                 ));
@@ -556,7 +556,7 @@ impl Workspaces {
 /// when it holds nothing new.
 fn publish_authored(
     candidate: &mut tilo_peer_state::StatePeer,
-    keys: Option<&super::sealed_records::RecordKeys>,
+    keys: Option<&super::sealed_documents::DocumentKeys>,
     (app, record): (&str, &str),
     (document, heads): (
         &mut automerge::AutoCommit,
@@ -579,7 +579,7 @@ fn publish_authored(
     }
     match (heads, keys) {
         (Some(_), keys) => {
-            super::sealed_records::publish_changes(
+            super::sealed_documents::publish_changes(
                 candidate,
                 keys,
                 (app, record),
@@ -589,7 +589,7 @@ fn publish_authored(
             )?;
         }
         (None, Some(keys)) => {
-            super::sealed_records::start_sealed(candidate, keys, (app, record), bytes, key, now)?;
+            super::sealed_documents::start_sealed(candidate, keys, (app, record), bytes, key, now)?;
         }
         (None, None) => {
             candidate
@@ -605,7 +605,7 @@ fn publish_authored(
 /// nothing it holds is ever written in the clear.
 fn publish_genesis(
     candidate: &mut tilo_peer_state::StatePeer,
-    keys: Option<&super::sealed_records::RecordKeys>,
+    keys: Option<&super::sealed_documents::DocumentKeys>,
     (app, record): (&str, &str),
     genesis: Vec<u8>,
     (key, now): (&ed25519_dalek::SigningKey, std::time::SystemTime),
@@ -614,7 +614,7 @@ fn publish_genesis(
         let changes = automerge::AutoCommit::load(&genesis)
             .map_err(|error| CollaborationError::new(error.to_string()))?
             .save_after(&[]);
-        super::sealed_records::start_sealed(candidate, keys, (app, record), changes, key, now)?;
+        super::sealed_documents::start_sealed(candidate, keys, (app, record), changes, key, now)?;
     } else {
         // Establish the record's ownership first, then merge the standard
         // factory onto it: two writes of the same device, in order.

@@ -25,7 +25,7 @@ pub fn desktop_navigation_snapshot(id: u64) -> Result<Option<String>, JsValue> {
                 let snapshot = d
                     .handle
                     .snapshot(&d.generation, crate::desktop::catalogue());
-                let records = d.handle.read(|tree| d.shared.window_records(tree));
+                let records = d.handle.read(|tree| d.shared.window_resources(tree));
                 let mut value = serde_json::to_value(&snapshot).map_err(error)?;
                 name_records(&mut value, &records);
                 serde_json::to_string(&value).map_err(error)

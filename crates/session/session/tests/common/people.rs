@@ -348,7 +348,7 @@ impl Site {
     /// people wrote there, as their host keeps it.
     pub fn records(&self) -> Vec<(String, String)> {
         self.runtime
-            .block_on(self.workspaces.record_routes(&self.workspace))
+            .block_on(self.workspaces.document_routes(&self.workspace))
             .expect("the site's records")
     }
 
@@ -359,7 +359,7 @@ impl Site {
         self.runtime
             .block_on(
                 self.workspaces
-                    .record_document(&self.workspace, app, record),
+                    .resource_document(&self.workspace, app, record),
             )
             .ok()
             .flatten()
@@ -386,10 +386,10 @@ impl Site {
     pub fn desktop(&self) -> Option<tilo_desktop_model::Layout> {
         let bytes = self.record(
             tilo_desktop_model::ownership::DESKTOP_APP,
-            tilo_desktop_model::ownership::DESKTOP_RECORD,
+            tilo_desktop_model::ownership::DESKTOP_DOCUMENT,
         )?;
         let document = automerge::AutoCommit::load(&bytes).ok()?;
-        tilo_desktop_model::shared_record::read(&document, None).map(|shell| shell.tree)
+        tilo_desktop_model::shared_resource::read(&document, None).map(|shell| shell.tree)
     }
 
     /// The verdicts the workspace holds on writes, as the site keeps them
@@ -1998,7 +1998,7 @@ impl Chat<'_> {
     fn held(&self, after: Option<&str>) -> HeldChat {
         let wait = tilo_test_env::hang_bound();
         let answer = self.device.ask(&json!({
-            "op": "record_read",
+            "op": "resource_read",
             "app": "so.tilo.chat",
             "records": ["", chat::parts::part(0).to_string()],
             "after": after,
@@ -2141,15 +2141,19 @@ impl HeldChat {
         let Some(people) = people else {
             return Err("the workspace's people are not in Chat's record yet".into());
         };
-        if peer == self.me || people.get(peer).is_none() {
+        let me = tilo_actions::policy::MemberId::person(self.me.clone());
+        let them = tilo_actions::policy::MemberId::person(peer);
+        let slot = |member: &tilo_actions::policy::MemberId| {
+            chat::record::member_slot(member).as_str().to_owned()
+        };
+        if peer == self.me || people.get(&slot(&them)).is_none() {
             return Err(format!("Chat knows no person {peer}"));
         }
-        let channel = Chat::direct_id([
-            tilo_actions::policy::MemberId::person(self.me.clone()),
-            tilo_actions::policy::MemberId::person(peer),
-        ])
-        .to_string();
-        let mark = &self.chat["read"][&self.me][&channel];
+        // A message keeps its author as the member's JSON, in a string.
+        let author = Value::String(serde_json::to_string(&me).expect("a member serializes"));
+        let mark = &self.chat["read"][&slot(&me)];
+        let channel = Chat::direct_id([me, them]).to_string();
+        let mark = &mark[&channel];
         let (from, seen) = (
             mark["part"].as_u64().unwrap_or(0),
             mark["seen"].as_u64().unwrap_or(0),
@@ -2170,7 +2174,7 @@ impl HeldChat {
                 .filter(|(_, entry)| entry["v"]["parent"].is_null());
             let past = top
                 .skip(usize::try_from(skip).unwrap_or(usize::MAX))
-                .filter(|(_, entry)| index >= from && entry["v"]["author"] != self.me.as_str())
+                .filter(|(_, entry)| index >= from && entry["v"]["author"] != author)
                 .count();
             unread = unread.saturating_add(u64::try_from(past).unwrap_or(u64::MAX));
             messages.extend(held.into_iter().map(|(id, entry)| {

@@ -55,8 +55,10 @@ impl ResourceApp for PasswordsShell {
         } else if cx.fixture::<DemoVault>().is_some() {
             PasswordsWindow::demo()
         } else if let Some(owner) = cx.take_lent::<accounts::CredentialOwner>() {
-            let model = if cx.me().and_then(ui::tilo_resource::MemberId::person_id)
-                == Some(owner.actor())
+            let model = if cx
+                .me()
+                .and_then(ui::tilo_resource::MemberId::as_person)
+                .is_some_and(|me| me.as_str() == owner.actor())
                 && cx.device() == Some(owner.device())
             {
                 crate::PasswordsModel::shared(owner)

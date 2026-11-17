@@ -1,5 +1,5 @@
 //! A workspace's layout: its strips, groups and windows, which every member shows and changes
-//! ([`tilo_desktop_model::shared_record`]), and each person's view of it, where they are looking
+//! ([`tilo_desktop_model::shared_resource`]), and each person's view of it, where they are looking
 //! and how wide their windows are ([`tilo_desktop_model::person_view`]).
 //! The layout is the workspace's, so it is where the live layout is kept: the tree this session draws
 //! is what the layout and the person's view say, and every change a window makes is written there
@@ -28,9 +28,9 @@ use std::sync::Arc;
 
 use automerge::ChangeHash;
 use automerge::transaction::Transactable as _;
-use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, OpenedBy};
+use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT, OpenedBy};
 use tilo_desktop_model::person_view::{self, PersonView};
-use tilo_desktop_model::shared_record::{self, device};
+use tilo_desktop_model::shared_resource::{self, device};
 use tilo_desktop_model::{Layout, TileContent, Workspace, WorkspaceId, peer_salt_of};
 use ui::permissions::MemberId;
 use ui::state::UndoLog;
@@ -73,7 +73,7 @@ impl Route {
     fn layout() -> Self {
         Self {
             app: DESKTOP_APP,
-            record: DESKTOP_RECORD.to_owned(),
+            record: DESKTOP_DOCUMENT.to_owned(),
         }
     }
 
@@ -81,7 +81,7 @@ impl Route {
     fn view(person: &str) -> Self {
         Self {
             app: DESKTOP_APP,
-            record: person_view::record_of(person),
+            record: person_view::resource_of(person),
         }
     }
 }
@@ -369,8 +369,8 @@ impl Save {
         let step = acted.is_some() || arranged(&candidate, workspace_id) != was;
         let message = match acted {
             Some(acted) => acted.message,
-            None if step => shared_record::step_message(person),
-            None => shared_record::housekeeping_message(person),
+            None if step => shared_resource::step_message(person),
+            None => shared_resource::housekeeping_message(person),
         };
         candidate.commit_with(
             automerge::transaction::CommitOptions::default()
@@ -384,9 +384,9 @@ impl Save {
         let changes = candidate.save_after(&heads);
         // A write on no history is the whole record: the one that founds it.
         let took = engine
-            .write_record(
+            .write_resource(
                 workspace_id,
-                (DESKTOP_APP, DESKTOP_RECORD),
+                (DESKTOP_APP, DESKTOP_DOCUMENT),
                 &changes,
                 founding,
                 sealed.keys(),
@@ -769,7 +769,7 @@ impl Layouts {
             let Some(doc) = folding else {
                 continue;
             };
-            let layout = shared_record::read(&doc, None).unwrap_or_default();
+            let layout = shared_resource::read(&doc, None).unwrap_or_default();
             self.opened_by
                 .borrow_mut()
                 .insert(workspace_id, layout.opened_by);
@@ -1320,7 +1320,7 @@ impl Layouts {
                 .iter_mut()
                 .find(|held| held.id() == workspace_id)
             {
-                let layout = shared_record::read(&doc, None).unwrap_or_default();
+                let layout = shared_resource::read(&doc, None).unwrap_or_default();
                 self.fold_into(workspace_id, &doc, &layout.tree, workspace, salt, &device);
             }
             handle.replace_tree(tree);
@@ -1361,7 +1361,7 @@ impl Layouts {
         let message = tilo_session_core::layout::step_context(asked, action)
             .change_message()
             .unwrap_or_else(|| {
-                shared_record::change_message(
+                shared_resource::change_message(
                     asked
                         .member_id()
                         .and_then(tilo_actions::MemberId::person_id),
@@ -1441,7 +1441,7 @@ impl Layouts {
         if doc.pending_ops() == 0 {
             return false;
         }
-        shared_record::commit_change(&mut doc, person, crate::activity::now_seconds(), None);
+        shared_resource::commit_change(&mut doc, person, crate::activity::now_seconds(), None);
         let heads = doc.committed_heads();
         let notes = self.notes.of_workspace(workspace_id);
         self.held(&key, |held| held.folded = Some(heads.clone()));
@@ -1628,7 +1628,7 @@ impl Layouts {
             let author = self.person.borrow().clone();
             candidate.commit_with(
                 automerge::transaction::CommitOptions::default()
-                    .with_message(shared_record::change_message(author.as_deref())),
+                    .with_message(shared_resource::change_message(author.as_deref())),
             );
         }
         let changes = candidate.save_after(heads);
@@ -1637,7 +1637,7 @@ impl Layouts {
         let (engine, record) = (Arc::clone(engine), route.record.clone());
         let mut writing = crate::engine_write::Writing::write(self.wake.handle(), async move {
             engine
-                .write_record(
+                .write_resource(
                     workspace_id,
                     (route.app, &record),
                     &changes,
@@ -1814,11 +1814,11 @@ fn found(
     for strip in &mut strips.strips {
         strip.window_groups.clear();
     }
-    shared_record::found(doc)?;
+    shared_resource::found(doc)?;
     device::write(doc, workspace_id, &strips, writer)?;
     doc.commit_with(
         automerge::transaction::CommitOptions::default()
-            .with_message(shared_record::housekeeping_message(
+            .with_message(shared_resource::housekeeping_message(
                 writer.person.unwrap_or_default(),
             ))
             .with_time(crate::activity::now_seconds()),
@@ -2058,7 +2058,7 @@ fn view_written(
     {
         doc.commit_with(
             automerge::transaction::CommitOptions::default()
-                .with_message(shared_record::change_message(Some(person))),
+                .with_message(shared_resource::change_message(Some(person))),
         );
     }
     let step = doc.get_heads();
@@ -2233,7 +2233,7 @@ impl tilo_session_core::layout::Layouts for Steps {
         let mut shown: BTreeMap<u64, String> = workspaces
             .into_iter()
             .filter_map(|workspace_id| self.layouts.layout(workspace_id))
-            .filter_map(|doc| shared_record::read(&doc, None))
+            .filter_map(|doc| shared_resource::read(&doc, None))
             .flat_map(|layout| layout.records)
             .collect();
         for (tab, record) in self.layouts.placed.borrow().iter() {
@@ -2362,7 +2362,7 @@ mod tests {
 
     /// Write `strips` as the layout of the workspace into `doc`, as another device does.
     fn lay_out(doc: &mut automerge::AutoCommit, strips: Vec<tilo_desktop_model::Strip>) {
-        laid_out_as(doc, strips, shared_record::change_message(None));
+        laid_out_as(doc, strips, shared_resource::change_message(None));
     }
 
     /// [`lay_out`], committed with `message`.
@@ -2381,13 +2381,13 @@ mod tests {
             },
             ..tilo_desktop_model::ownership::SharedDesktop::default()
         };
-        shared_record::write(doc, &desktop).expect("the layout is written");
+        shared_resource::write(doc, &desktop).expect("the layout is written");
         doc.commit_with(automerge::transaction::CommitOptions::default().with_message(message));
     }
 
     /// The windows of each strip of the layout `doc` holds, by the strip's name.
     fn strips_in(doc: &automerge::AutoCommit) -> Vec<(String, BTreeSet<u64>)> {
-        let layout = shared_record::read(doc, None).expect("a layout");
+        let layout = shared_resource::read(doc, None).expect("a layout");
         let workspace = layout.tree.workspaces.first().expect("the workspace");
         let strips = workspace.strips.iter();
         strips
@@ -2411,17 +2411,17 @@ mod tests {
         let mut adas = tilo_desktop_model::IdMinter::new(7);
         let main = tilo_desktop_model::Strip::new(tilo_desktop_model::StripId(adas.mint()), "Main");
         let mut doc = automerge::AutoCommit::new().with_actor(as_person("ada", 1));
-        shared_record::found(&mut doc).expect("the record's maps stand");
+        shared_resource::found(&mut doc).expect("the record's maps stand");
         laid_out_as(
             &mut doc,
             vec![main.clone()],
-            shared_record::housekeeping_message("ada"),
+            shared_resource::housekeeping_message("ada"),
         );
         let (made, hers) = strip_of(&mut adas, "Made");
         laid_out_as(
             &mut doc,
             vec![main.clone(), made.clone()],
-            shared_record::step_message("ada"),
+            shared_resource::step_message("ada"),
         );
 
         let mut bobs = doc.fork().with_actor(as_person("bob", 2));
@@ -2431,7 +2431,7 @@ mod tests {
         laid_out_as(
             &mut bobs,
             vec![main, shared],
-            shared_record::step_message("bob"),
+            shared_resource::step_message("bob"),
         );
         tilo_desktop_model::merge::merge_into(&mut doc, &bobs).expect("Bob's change merges");
         assert_eq!(
@@ -2475,7 +2475,7 @@ mod tests {
         layout.strips = vec![notes];
         let desktops = Layouts::default();
         let fold = |layout: &mut Workspace, doc: &automerge::AutoCommit| {
-            let record = shared_record::read(doc, None).expect("the layout");
+            let record = shared_resource::read(doc, None).expect("the layout");
             desktops.fold_into(workspace_id(), doc, &record.tree, layout, here, "");
         };
         fold(&mut layout, &doc);
@@ -2801,7 +2801,7 @@ mod tests {
             .layout(workspace)
             .expect("the record this device holds");
         assert_eq!(
-            shared_record::read(&record, None).map(|layout| windows_of(
+            shared_resource::read(&record, None).map(|layout| windows_of(
                 layout
                     .tree
                     .workspaces

@@ -15,7 +15,7 @@ impl crate::collaboration::PeerTransport for PublicationTransport {
     fn join_route(
         &mut self,
         _: crate::collaboration::RouteSpec,
-        _: crate::record::ResourceType,
+        _: crate::resource::ResourceType,
     ) -> Result<(), String> {
         Ok(())
     }

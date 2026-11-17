@@ -2,7 +2,7 @@
 //! the call site.
 //!
 //! Every record names the kind of resource it holds (`ResourceType`, the
-//! `record_kind` of an app's definition, [`Resource::KIND`]). A host that
+//! `resource_type` of an app's definition, [`Resource::KIND`]). A host that
 //! works with whatever a workspace holds — an agent, a service, a script
 //! runner — looks the kind up here and gets everything the typed [`Resource`]
 //! offers, with the type erased: read a document's state, publish the tree
@@ -220,7 +220,7 @@ fn search<R: Resource>(state: &dyn Any) -> Option<Vec<SearchEntry>> {
 /// A record's state as JSON, through its own model table
 /// ([`Model::to_json`](crate::Model::to_json)): what a view of it is offered.
 fn to_json<R: Resource>(state: &dyn Any) -> Option<serde_json::Value> {
-    let table = R::RECORD_TABLE?;
+    let table = R::RESOURCE_TABLE?;
     state
         .downcast_ref::<R::State>()
         .map(|state| crate::table::Run(table).to_json(state))
@@ -239,7 +239,7 @@ fn content<R: Resource>(
 }
 
 fn reads_item<R: Resource>(item: &str) -> bool {
-    R::RECORD_TABLE.is_some_and(|table| crate::table::reads_item(table, R::KIND, item))
+    R::RESOURCE_TABLE.is_some_and(|table| crate::table::reads_item(table, R::KIND, item))
 }
 
 /// Whether the published resource `id` is an item a window of `R` shows
@@ -249,7 +249,7 @@ fn reads_item<R: Resource>(item: &str) -> bool {
 /// record's table says which; a resource without one counts
 /// `<kind>/<field>/<item>`.
 pub fn opens_as_item<R: Resource>(id: &str) -> bool {
-    match R::RECORD_TABLE {
+    match R::RESOURCE_TABLE {
         Some(table) => crate::table::names_item(table, R::KIND, id),
         None => crate::items::item_of_resource::<R>(id)
             .is_some_and(|(_, item)| !item.as_str().contains('/')),
@@ -444,7 +444,7 @@ impl ResourceKind {
     }
 
     /// Where `action` of this kind, just applied to `doc`, leaves the
-    /// participant who took it ([`Resource::lands`]); `None` for an action
+    /// member who took it ([`Resource::lands`]); `None` for an action
     /// of another type or one that lands nowhere in particular. A group
     /// lands where its last member does.
     pub fn lands(&self, doc: &Doc, action: &EncodedAction) -> Option<Place> {

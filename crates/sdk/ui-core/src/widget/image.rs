@@ -593,6 +593,26 @@ fn decode_png(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), ImageDecodeError> {
 }
 
 impl Widget for Image {
+    /// The picture itself where a page can load its address, and its paint otherwise.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        let alt = self.alt.clone().or_else(|| {
+            Widget::accessibility(self).and_then(|node| node.name.or(node.description))
+        });
+        if let Source::Loading { picture, .. } = &self.source
+            && let Some(src) = crate::composition::web_picture(&picture.src)
+        {
+            cx.element("img");
+            cx.attr("src", src.to_owned());
+            cx.attr("alt", alt.unwrap_or_default());
+            return;
+        }
+        cx.element("span");
+        if let Some(alt) = alt {
+            cx.attr("aria-label", alt);
+        }
+        cx.picture();
+    }
+
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }

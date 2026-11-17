@@ -52,6 +52,8 @@ mod i18n {
 }
 
 pub mod instance;
+#[cfg(target_os = "linux")]
+pub mod kept;
 pub mod launch;
 mod memory;
 pub mod output;
@@ -68,7 +70,9 @@ pub use instance::{Answer, Instance, Shown, Windows, package_identities};
 pub use launch::{Launch, Open};
 pub use links::{Connects, HeldLink, HostedWindow, Links, Opens, Routed, StartAlone};
 pub use plan::{Kind, PlanContext, PlanError, Planned};
-pub use spawner::{Cause, End, Event, Spawner, Started};
+#[cfg(target_os = "linux")]
+pub use spawner::Adopted;
+pub use spawner::{Cause, End, Event, Spawner, Started, Teardown};
 pub use workspace::Workspace;
 
 /// Name the surface the package `planned` runs ships, before its process

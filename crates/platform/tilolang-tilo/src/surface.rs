@@ -155,7 +155,7 @@ fn schema_of(meta: &Meta, ty: &Ty) -> Json {
         Ty::Time => json!({"type": "string", "format": "date-time"}),
         // An account of some service, as its URI (`mailto:jane@x.com`).
         Ty::Identifier => json!({"type": "string", "format": "uri"}),
-        Ty::Actor => subject_schema(),
+        Ty::Actor => actor_schema(),
         Ty::Record(key) => tilo_actions::picked_resource_schema(&record_kind(key)),
         Ty::Enum(key) => match plain_cases(meta, key) {
             Some(cases) => {
@@ -189,9 +189,9 @@ fn schema_of(meta: &Meta, ty: &Ty) -> Json {
     }
 }
 
-/// The schema of a workspace subject as `tilo_action_policy::Grantee` writes it: a person by
+/// The schema of a workspace's actor as `tilo_action_policy::Grantee` writes it: a person by
 /// their key, an agent by its id.
-fn subject_schema() -> Json {
+fn actor_schema() -> Json {
     let one = |tag: &str| {
         json!({
             "type": "object",
@@ -256,7 +256,7 @@ pub fn published_param(meta: &Meta, param: &ParamMeta) -> ActionParam {
                 .with_labelled_choices(cases),
             None => built.with_schema(schema_of(meta, &Ty::Enum(key.clone()))),
         },
-        Some(Ty::Actor) => built.with_schema(subject_schema()).picking(Pick::Grantee),
+        Some(Ty::Actor) => built.with_schema(actor_schema()).picking(Pick::Grantee),
         // Rich text is given as its text, or encoded whole when it holds more than text
         // (`host::argument_json`).
         Some(Ty::RichText) => built.with_schema(json!({"oneOf": [
@@ -316,7 +316,7 @@ fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet) -> VerbSurface {
 }
 
 /// The record unit, where an action writes unless it says otherwise.
-pub const RECORD_UNIT: &str = tilo_actions::surface::RECORD_UNIT;
+pub const RECORD_UNIT: &str = tilo_actions::surface::RESOURCE_UNIT;
 
 /// The names of the fields of `ty` that `edit-text` and `edit-flag` can set, from the type's
 /// metadata: a text (or rich-text) field the first, a flag field the second, in declaration
@@ -479,9 +479,9 @@ pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
         verbs.extend(
             meta.offered_actions()
                 .filter(|action| {
-                    meta.subjects_of(&action.params)
+                    meta.targets_of(&action.params)
                         .iter()
-                        .any(|subject| subject.id == ty.id)
+                        .any(|target| target.id == ty.id)
                 })
                 .map(|action| verb(meta, action, &mut types)),
         );
@@ -501,7 +501,7 @@ pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
     let mut types = TypeSet::new();
     let loose: Vec<VerbSurface> = meta
         .offered_actions()
-        .filter(|action| meta.subject_of(&action.params).is_none())
+        .filter(|action| meta.target_of(&action.params).is_none())
         .map(|action| verb(meta, action, &mut types))
         .collect();
     surfaces.push(Surface {

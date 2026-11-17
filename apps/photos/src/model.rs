@@ -694,9 +694,9 @@ impl OpenImage {
     /// The picture whose bytes `content` names, opened from `origin`.
     ///
     /// Only the file name of `origin` is kept: a path is true on one machine,
-    /// and the record's reference is what every participant resolves. Create
+    /// and the record's reference is what every member resolves. Create
     /// one wherever the bytes are put into the content store, because a
-    /// reference to content no participant can reach names no picture at all.
+    /// reference to content no member can reach names no picture at all.
     pub fn new(origin: &str, width: u32, height: u32, content: Bytes) -> Self {
         let name = std::path::Path::new(origin)
             .file_name()
@@ -764,7 +764,7 @@ pub fn content_hex(hash: &[u8; 32]) -> String {
 ///
 /// Resolving the hash is what turns "a photograph a member opened" into
 /// pixels here rather than into an empty canvas; a shared record never causes
-/// this device to probe another participant's filesystem.
+/// this device to probe another member's filesystem.
 ///
 /// Missing bytes are not an error to report: content a member imported
 /// may simply not have reached this device's store yet, so the honest answer
@@ -772,7 +772,7 @@ pub fn content_hex(hash: &[u8; 32]) -> String {
 ///
 /// Public, and the only answer to this question, because the app is not the
 /// only thing that asks it. Anything acting on the open photograph — the
-/// editor drawing it, a participant with no window rendering the crop it was
+/// editor drawing it, a member with no window rendering the crop it was
 /// asked for — needs the same bytes.
 pub fn bytes_of(open: &OpenImage, store: &tilo_content::ContentStore) -> Option<Vec<u8>> {
     if let Some(bytes) = open.content.inline() {

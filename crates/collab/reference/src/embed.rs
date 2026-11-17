@@ -2,7 +2,7 @@
 //!
 //! A reference is a run of rich text marked [`MARK`] (`@Ada`, `#general`, `Fix the build`):
 //! the run is what the text says, the mark's value names what it refers to. A person is named
-//! by their participant id; any other resource by the catalogue's resource reference
+//! by their member id; any other resource by the catalogue's resource reference
 //! ([`ResourceAt`]: the app that keeps it, its record when not the app's record of the
 //! workspace, its kind and its id), the same reference an action parameter that picks a
 //! resource takes ([`tilo_actions::Pick::Resource`]). It names no workspace: a reference is
@@ -15,7 +15,7 @@
 
 use serde_json::{Map, Value as Json};
 
-use crate::link::{Link, RecordSegment};
+use crate::link::{Link, ResourceSegment};
 use crate::{ResourceAt, ResourceRef};
 
 /// The mark a reference's run carries, valued with what it refers to ([`Embed::mark_value`]).
@@ -29,7 +29,7 @@ const PUBLISHED_PREFIX: &str = "tl:";
 /// What a reference refers to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Embed {
-    /// A person (or agent), by participant id.
+    /// A person (or agent), by member id.
     Person(String),
     /// A resource of the workspace, by the catalogue's reference to it. Its label is empty:
     /// the run is what the text calls it, and its app's title is what a reader sees.
@@ -77,7 +77,7 @@ impl Embed {
         Some(Self::Person(value.to_owned()))
     }
 
-    /// The [`MARK`] mark's value naming it, in the one form: a person's participant id, or a
+    /// The [`MARK`] mark's value naming it, in the one form: a person's member id, or a
     /// resource's reference as JSON (`{"app":…,"id":…,"kind":…}`, with its record and span
     /// when it has them).
     #[must_use]
@@ -211,8 +211,8 @@ fn resource_of_link(value: &str) -> Option<ResourceAt> {
     Some(ResourceAt {
         app: app.as_str().to_owned(),
         record: match target.record {
-            Some(RecordSegment::Id(id)) => Some(id),
-            Some(RecordSegment::Primary) | None => None,
+            Some(ResourceSegment::Id(id)) => Some(id),
+            Some(ResourceSegment::Primary) | None => None,
         },
         reference: resource.into_ref(String::new()),
     })
@@ -250,7 +250,7 @@ mod tests {
     }
 
     #[test]
-    fn a_person_is_named_by_participant_id() {
+    fn a_person_is_named_by_member_id() {
         let ada = Embed::Person("u-ada".into());
         assert_eq!(ada.mark_value(), "u-ada");
         assert!(!names_resource("u-ada"));
@@ -320,12 +320,12 @@ mod tests {
                 "chat.channel:general"
             ))
         );
-        let in_record = Embed::of_mark("tilo://open#/me/so.tilo.notes/note:plan/notes.block/b7")
+        let in_resource = Embed::of_mark("tilo://open#/me/so.tilo.notes/note:plan/notes.block/b7")
             .and_then(|e| e.as_resource().cloned())
             .expect("a resource");
-        assert_eq!(in_record.record.as_deref(), Some("note:plan"));
-        assert_eq!(in_record.reference.kind, "notes.block");
-        assert_eq!(in_record.reference.id, "b7");
+        assert_eq!(in_resource.record.as_deref(), Some("note:plan"));
+        assert_eq!(in_resource.reference.kind, "notes.block");
+        assert_eq!(in_resource.reference.id, "b7");
         // A link that names no item, and malformed references, refer to nothing.
         assert_eq!(Embed::of_mark("tilo://open#/me/so.tilo.notes"), None);
         assert_eq!(Embed::of_mark("tl:nothing"), None);

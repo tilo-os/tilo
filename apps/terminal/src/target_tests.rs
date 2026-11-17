@@ -241,7 +241,7 @@ fn on_tab<T>(app: &mut App, visit: impl FnOnce(&mut TerminalWidget) -> T) -> T {
 #[test]
 fn a_new_tab_opens_the_most_recent_environment_and_records_it() {
     let mut app = App::new().unwrap();
-    let recent = RecentTarget::in_record(
+    let recent = RecentTarget::in_resource(
         app.person::<crate::target::RecentEnvironments>().unwrap(),
         "test-device",
     );

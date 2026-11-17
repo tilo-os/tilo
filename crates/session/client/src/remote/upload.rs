@@ -264,7 +264,7 @@ impl Landed {
     pub fn of(value: &serde_json::Value) -> Option<Self> {
         let provider = value.get("provider")?.as_str()?;
         let (app, record) = provider
-            .strip_prefix(tilo_actions::remote::RECORD_PROVIDER)?
+            .strip_prefix(tilo_actions::remote::RESOURCE_PROVIDER)?
             .strip_prefix(':')?
             .split_once(':')?;
         Some(Self {

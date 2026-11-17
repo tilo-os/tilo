@@ -32,7 +32,7 @@ tilo_test_env::scenario! {
             .find(|a| a.name == "check")
             .expect("the action");
         assert_eq!(check.params.len(), 2);
-        assert!(check.params[0].default.is_none(), "the subject has none");
+        assert!(check.params[0].default.is_none(), "the target has none");
         let done = check.params[1]
             .default
             .as_ref()
@@ -52,7 +52,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase the_static_label_is_what_a_subject_at_rest_is_offered;
+    phase the_static_label_is_what_a_target_at_rest_is_offered;
     {
         let c = compile(&body(CHECK));
         let check = c
@@ -103,14 +103,18 @@ tilo_test_env::scenario! {
         assert_eq!(codes_of(&time), vec!["E049"]);
     }
 
-    phase only_an_action_takes_defaults;
+    phase a_default_is_an_actions_parameter_or_a_component_views_option;
     {
-        for src in [
-            "fn f(x: Int = 1) -> Int {\n    x\n}",
-            "view v(item: Todo, x: Int = 1) {\n    text(item.title)\n}",
-        ] {
-            assert_eq!(codes_of(&body(src)), vec!["E028"], "{src}");
-        }
+        // A view whose parameter takes a default is a component, and a call that leaves the option
+        // out gets it. A `fn`'s parameters take none.
+        let component = body("view v(item: Todo, x: Int = 1) {\n    text(item.title)\n}");
+        assert!(
+            codes_of(&component).is_empty(),
+            "{:?}",
+            codes_of(&component)
+        );
+        let func = body("fn f(x: Int = 1) -> Int {\n    x\n}");
+        assert_eq!(codes_of(&func), vec!["E028"], "{func}");
     }
 
     phase a_call_may_leave_out_a_defaulted_argument;

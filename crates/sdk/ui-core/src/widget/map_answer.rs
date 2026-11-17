@@ -18,7 +18,6 @@ impl Map {
     pub(super) fn point_at(&mut self, at: Point) {
         self.asked = Some(at);
         self.answer = None;
-        self.framing_answer = false;
         self.asked_among = self.pins.iter().map(|(key, _, _)| key.clone()).collect();
         if let Some(seen) = self.seen_rect() {
             self.seen.fire(Some(crate::component::Value::List(
@@ -92,11 +91,13 @@ impl Map {
         ))
     }
 
-    /// Keep the person's answer whole in view as it grows, framed with what arrived beside it
-    /// since they pointed (`canvas.md` §7): an agent's turn and the inbox it opened stand
-    /// together, as visible as the viewport lets them. Never a zoom; nothing while the person's
-    /// own hand is on the canvas, and nothing once they moved the lens themselves
-    /// ([`Map::set_camera`] lets the answer go).
+    /// Keep the person's answer whole in view as it grows, with what arrived beside it since they
+    /// pointed (`canvas.md` §7): an agent's turn and the inbox it opened stand in view together.
+    /// The camera moves only when something of them is not in view, and then pans the least that
+    /// brings them in, keeping every place the person could see whole as far as that allows; a
+    /// turn that stands in view moves nothing, whatever margin it keeps from the edge. Never a
+    /// zoom; nothing while the person's own hand is on the canvas, and nothing once they moved
+    /// the lens themselves ([`Map::set_camera`] lets the answer go).
     pub(super) fn keep_answer(&mut self) {
         if self.pan.is_some() || self.edge_drag.is_some() || self.free_press.is_some() {
             return;
@@ -114,15 +115,22 @@ impl Map {
         };
         let margin = ARRIVAL_MARGIN / self.camera.zoom.max(f64::EPSILON);
         let group = self.answer_group(&key, answer, margin);
-        // Already in view as a whole, and the camera never moved for it: the person's view stays
-        // their own. A place put far off, that cannot stand in view beside the answer, is not in
-        // the group, so it is never chased at the answer's cost.
-        if !self.framing_answer && self.shows(self.camera, group, margin) {
+        // Everything new is in view: the person's view stays their own. A place put far off,
+        // that cannot stand in view beside the answer, is not in the group, so it is never
+        // chased at the answer's cost.
+        if self.shows(self.camera, group, 0.0) {
             return;
         }
-        // Once moved for it, the camera keeps the group framed as its places settle their sizes.
-        self.framing_answer = true;
-        if let Some(camera) = self.framing(group, answer, margin) {
+        // What the person was looking at: every place that stood before they pointed and stands
+        // whole in view now. The least pan keeps them where they are as far as the group allows.
+        let kept: Vec<Rect> = self
+            .pins
+            .iter()
+            .filter(|(held, _, _)| self.asked_among.contains(held))
+            .filter_map(|(held, _, _)| self.area_of(held))
+            .filter(|rect| self.shows(self.camera, *rect, 0.0))
+            .collect();
+        if let Some(camera) = self.revealing_with(group, margin, &kept) {
             self.pan_to(camera);
         }
     }
@@ -159,47 +167,6 @@ impl Map {
         let zoom = self.camera.zoom.max(f64::EPSILON);
         let span = Vec2::new(self.rect.width(), self.rect.height()) / zoom;
         area.width() + 2.0 * margin <= span.x + 0.5 && area.height() + 2.0 * margin <= span.y + 0.5
-    }
-
-    /// Where the camera frames `group` (canvas pixels) at its zoom: centred top to bottom when it
-    /// fits, so it never hangs at an edge with the viewport empty opposite it, else its top
-    /// `margin` under the viewport's; across, the least pan that shows it, or the answer
-    /// (`answer`) when the group is wider than the viewport. `None` when the camera is there.
-    pub(super) fn framing(&self, group: Rect, answer: Rect, margin: f64) -> Option<MapCamera> {
-        let (width, height) = (self.rect.width(), self.rect.height());
-        if width <= 0.0 || height <= 0.0 {
-            return None;
-        }
-        let zoom = self.camera.zoom.max(f64::EPSILON);
-        let span = Vec2::new(width, height) / zoom;
-        let origin = self.camera.origin;
-        let across = if group.width() + 2.0 * margin <= span.x + 0.5 {
-            group
-        } else {
-            answer
-        };
-        let (low, high) = (across.x0 - margin, across.x1 + margin);
-        let x = if high - low > span.x || low < origin.x {
-            low
-        } else if high > origin.x + span.x {
-            high - span.x
-        } else {
-            origin.x
-        };
-        let y = if group.height() + 2.0 * margin <= span.y + 0.5 {
-            group.center().y - span.y / 2.0
-        } else {
-            group.y0 - margin
-        };
-        let x = crate::widget::layout::snap_to_device_pixels(x * zoom) / zoom;
-        let y = crate::widget::layout::snap_to_device_pixels(y * zoom) / zoom;
-        if (x - origin.x).abs() < 0.5 && (y - origin.y).abs() < 0.5 {
-            return None;
-        }
-        Some(MapCamera {
-            origin: Point::new(x, y),
-            zoom: self.camera.zoom,
-        })
     }
 
     /// Whether `camera` shows `area` (canvas pixels) whole, `margin` inside the viewport's edges.

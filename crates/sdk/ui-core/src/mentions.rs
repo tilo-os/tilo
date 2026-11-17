@@ -1,13 +1,13 @@
 //! Mentions as a workspace fact: who a record's rich text names, read from the record itself. A mention
-//! is a run of rich text marked `mention` with the participant's id, whichever app wrote it: a
+//! is a run of rich text marked `mention` with the member's id, whichever app wrote it: a
 //! paragraph of a note (an Automerge text mark, as `tilo-doc` keeps them) or a block of a chat message
 //! (a stored mark span, as `tilo_document::ClipBlock` keeps them).
 
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
-use crate::record::DocumentId;
+use crate::resource::DocumentId;
 
-/// The mark a mention's run carries, valued with the participant's id.
+/// The mark a mention's run carries, valued with the member's id.
 pub const MARK: &str = "mention";
 
 /// Whether a `mention` mark's value names a resource rather than a person, in any form it was written
@@ -26,8 +26,8 @@ const STR_FIELD_FLAT: &str = "0";
 /// The key and value slot of an item of a stored collection (`tilo_resource::Collection`): `{ <id>: {
 /// k: <order>, v: <item> } }`.
 const ITEM_VALUE: &str = "v";
-/// The record's identity map (`crate::record`), never content.
-const RECORD_META: &str = "tilo:record";
+/// The record's identity map (`crate::resource`), never content.
+const RESOURCE_META: &str = "tilo:record";
 
 /// Deepest a mention is looked for, and most objects read in one record: the document is replicated
 /// input, not a request to walk it without end.
@@ -38,7 +38,7 @@ const EXCERPT_CHARS: usize = 160;
 /// One mention in a record: who is named, by whom, and where.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mention {
-    /// The participant named.
+    /// The member named.
     pub person: String,
     /// Who wrote it, when the record says: the run's author mark, or the item's author.
     pub by: Option<String>,
@@ -127,13 +127,13 @@ pub fn touched_by(changes: &[u8], people: &std::collections::BTreeSet<String>) -
 /// Every mention in `doc`, in document order, each excerpt read for someone whose holdings nobody here
 /// can tell ([`reading_nothing`]).
 #[must_use]
-pub fn in_record(doc: &AutoCommit) -> Vec<Mention> {
-    in_record_for(doc, &reading_nothing)
+pub fn in_resource(doc: &AutoCommit) -> Vec<Mention> {
+    in_resource_for(doc, &reading_nothing)
 }
 
 /// Every mention in `doc`, in document order, each excerpt as `read` reads the references in it.
 #[must_use]
-pub fn in_record_for(doc: &AutoCommit, read: Reader<'_>) -> Vec<Mention> {
+pub fn in_resource_for(doc: &AutoCommit, read: Reader<'_>) -> Vec<Mention> {
     let mut walk = Walk {
         doc,
         found: Vec::new(),
@@ -171,7 +171,7 @@ impl Walk<'_> {
             ObjType::Map | ObjType::Table => {
                 self.stored_mark(obj, path, cx);
                 for key in self.doc.keys(obj).collect::<Vec<_>>() {
-                    if path.is_empty() && key == RECORD_META {
+                    if path.is_empty() && key == RESOURCE_META {
                         continue;
                     }
                     let Ok(Some((Value::Object(child_kind), child))) = self.doc.get(obj, &key)
@@ -288,10 +288,7 @@ impl Walk<'_> {
             .and_then(|(_, up)| self.object_at(up))
             .map(|marks| self.stored_references(&marks))
             .unwrap_or_default();
-        let by = cx
-            .item_obj
-            .as_ref()
-            .and_then(|item| self.author(item));
+        let by = cx.item_obj.as_ref().and_then(|item| self.author(item));
         let excerpt = self.read_around(&text, &references, start);
         self.push(person, by, None, excerpt, cx);
     }
@@ -324,10 +321,7 @@ impl Walk<'_> {
     ) {
         let item = cx.item_obj.as_ref();
         let by = by.or_else(|| {
-            item.and_then(|item| {
-                self.author(item)
-                    .or_else(|| self.string(item, "creator"))
-            })
+            item.and_then(|item| self.author(item).or_else(|| self.string(item, "creator")))
         });
         let title = item.and_then(|item| {
             self.string(item, "title")
@@ -346,7 +340,7 @@ impl Walk<'_> {
         });
     }
 
-    /// The participant a stored mark names: a plain string, or the string of the `Str` variant it is
+    /// The member a stored mark names: a plain string, or the string of the `Str` variant it is
     /// stored as.
     fn mark_value(&self, obj: &ObjId) -> Option<String> {
         if let Some(value) = self.string(obj, "value") {

@@ -120,7 +120,7 @@ impl ActionHost for Tracker {
             provider: PROVIDER.into(),
             app_id: APP.into(),
             workspace: "workspace".into(),
-            record_id: String::new(),
+            document_id: String::new(),
             browsable: true,
         }];
         Pending::ready(Ok(page))

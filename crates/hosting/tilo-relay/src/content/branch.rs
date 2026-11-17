@@ -87,7 +87,7 @@ fn tree_of(records: &[((String, String), Vec<u8>)]) -> Option<fs_protocol::tree:
     records
         .iter()
         .find(|((app, record), _)| app == fs_protocol::tree::FILES_APP && *record == tree)
-        .and_then(|(_, document)| fs_protocol::tree::Tree::of_record(document).ok())
+        .and_then(|(_, document)| fs_protocol::tree::Tree::of_document(document).ok())
 }
 
 /// How many pieces of the files the tree among `records` names now `store`

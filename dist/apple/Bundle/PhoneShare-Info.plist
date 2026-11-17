@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The share extension of the iPhone app: words and one web link. -->
+<plist version="1.0"><dict>
+  <key>CFBundleDevelopmentRegion</key><string>en</string>
+  <key>CFBundleDisplayName</key><string>Tilo Assistant</string>
+  <key>CFBundleExecutable</key><string>TiloShare</string>
+  <key>CFBundleIdentifier</key><string>so.tilo.assistant.shell.share</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundleName</key><string>Tilo Assistant</string>
+  <key>CFBundlePackageType</key><string>XPC!</string>
+  <key>CFBundleShortVersionString</key><string>0.0.0</string>
+  <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
+  <key>CFBundleVersion</key><string>0.0.0</string>
+  <key>MinimumOSVersion</key><string>26.4</string>
+  <key>UIDeviceFamily</key><array><integer>1</integer></array>
+  <key>NSExtension</key><dict>
+    <key>NSExtensionAttributes</key><dict>
+      <key>NSExtensionActivationRule</key><dict>
+        <key>NSExtensionActivationSupportsText</key><true/>
+        <key>NSExtensionActivationSupportsWebURLWithMaxCount</key><integer>1</integer>
+      </dict>
+    </dict>
+    <key>NSExtensionPointIdentifier</key><string>com.apple.share-services</string>
+    <key>NSExtensionPrincipalClass</key><string>ShareViewController</string>
+  </dict>
+  <key>TiloTeam</key><string></string>
+</dict></plist>

@@ -1,6 +1,6 @@
 //! A table's own row actions: a check box turned, a row clicked. Each is published as the table's view
 //! action and answered by the table itself, so a caller speaks to the table the same way whether the
-//! press happened on this device or came from another participant.
+//! press happened on this device or came from another member.
 
 pub(super) const CHECK_ROW: &str = "tilo.ui.table.check";
 pub(super) const CLICK_ROW: &str = "tilo.ui.table.row_click";

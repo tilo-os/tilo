@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use tilo_contact_directory::ContactDirectory;
 use ui::LocalState;
-use ui::framework::{Actions, Dispatcher, Effected, LiveRow, PersonRecord, ViewCx};
+use ui::framework::{Actions, Dispatcher, Effected, LiveRow, PersonResource, ViewCx};
 use ui::tilo_resource::{self, Effect, Id};
 use ui::widget::{
     Button, Column, Dropdown, Element, ModelView, Property, PropertyList, Row, Scrollable, Text,
@@ -95,7 +95,7 @@ struct Selection {
 
 #[derive(Clone)]
 pub(crate) struct Editor {
-    directory: Option<PersonRecord<ContactDirectory>>,
+    directory: Option<PersonResource<ContactDirectory>>,
     selection: LocalState<Selection>,
     pub(crate) visible: LocalState<bool>,
 }
@@ -114,7 +114,7 @@ impl Editor {
     fn current(&self) -> Result<Rc<ContactDirectory>, String> {
         self.directory
             .as_ref()
-            .map(PersonRecord::get)
+            .map(PersonResource::get)
             .ok_or_else(|| CATALOG.t("contacts-accounts-unavailable"))
     }
 
@@ -378,7 +378,7 @@ pub(crate) fn build(cx: &ViewCx<Contacts>) -> Element {
                 observed
                     .directory
                     .as_ref()
-                    .map_or(0, PersonRecord::revision),
+                    .map_or(0, PersonResource::revision),
                 observed.selection.get(),
             )
         },

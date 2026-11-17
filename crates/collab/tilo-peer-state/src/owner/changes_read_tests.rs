@@ -64,7 +64,7 @@ fn changes(
     joined.owner.with_current(joined.workspace, |view| {
         let history = History {
             open: &mut |_| Err("the record is not sealed".into()),
-            kept: &mut crate::KeptRecord::default(),
+            kept: &mut crate::KeptDocument::default(),
         };
         view.read_document_with_history(reader, (APP, ""), holding, maximum, joined.now, history)
     })

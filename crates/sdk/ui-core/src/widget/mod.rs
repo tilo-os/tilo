@@ -1546,11 +1546,11 @@ impl EventCtx<'_> {
     }
 }
 
-/// One remote participant's live presence (caret/selection), published by a multi-
-/// participant widget under that participant's identity.
+/// One remote presence's live presence (caret/selection), published by a multi-
+/// presence widget under that presence's identity.
 #[derive(Clone, Debug, PartialEq)]
-pub struct ParticipantPresence {
-    pub participant: tilo_actions::ParticipantId,
+pub struct ViewPresence {
+    pub presence: tilo_actions::PresenceId,
     pub label: Option<String>,
     pub key: PresenceKey,
     pub payload: crate::collaboration::PresencePayload,
@@ -1910,7 +1910,7 @@ pub(crate) fn take_collab_requests(
     };
     let mut requests = capability::capability_mut::<dyn Collaborative>(&mut *widget)
         .map_or_else(Vec::new, Collaborative::take_collab_requests);
-    for child in crate::collaboration::participants::collaboration_children(widget) {
+    for child in crate::collaboration::presences::collaboration_children(widget) {
         requests.extend(take_collab_requests(child));
     }
     requests
@@ -1928,7 +1928,7 @@ pub(crate) fn handle_collab_event(
     if let Some(collaborative) = capability::capability_mut::<dyn Collaborative>(&mut *widget) {
         collaborative.handle_collab_event(event);
     }
-    for child in crate::collaboration::participants::collaboration_children(widget) {
+    for child in crate::collaboration::presences::collaboration_children(widget) {
         handle_collab_event(child, event);
     }
 }
@@ -2055,6 +2055,9 @@ pub use remount::Remount;
 mod reach;
 pub(crate) use reach::find;
 pub use reach::find_mut;
+#[cfg(test)]
+#[path = "html_content_tests.rs"]
+mod html_content_tests;
 #[cfg(debug_assertions)]
 mod paint_pass;
 #[cfg(test)]
@@ -2326,7 +2329,7 @@ pub use overlay_scrollbar::OverlayScrollbar;
 pub mod panic_scope;
 mod tile_host;
 pub use tile_host::{
-    AppKind, TileContent, TileHost, hold_windows, record_unavailable_title, release_windows,
+    AppKind, TileContent, TileHost, hold_windows, release_windows, resource_unavailable_title,
 };
 mod app_widget;
 pub(crate) use app_widget::BoundAppWidget;
@@ -2794,7 +2797,10 @@ pub use keyboard_map::{KeyboardMap, KeyboardMapInput, KeyboardMapKey, KeyboardMa
 /// Logical screen topology canvas shared by local and native peer displays.
 pub mod display_placement;
 mod graph_canvas;
-pub use graph_canvas::{GraphCanvas, GraphCanvasConnection, GraphCanvasNode};
+pub use graph_canvas::{
+    Connection, GraphCanvas, GraphCanvasConnection, GraphCanvasNode, GraphCanvasProps,
+    GraphNodeProps, connection_description,
+};
 
 #[cfg(test)]
 mod keyboard_entry_tests {

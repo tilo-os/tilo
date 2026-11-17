@@ -8,7 +8,7 @@
 //! founded a fresh document, and its first publication overwrote or forked the
 //! workspace's own.
 //!
-//! The store's side of that is [`RecordStore::ask_workspace_for_missing`];
+//! The store's side of that is [`ResourceStore::ask_workspace_for_missing`];
 //! this is the page's, so what it opens can be read here without a window.
 
 use std::cell::RefCell;
@@ -16,7 +16,9 @@ use std::rc::Rc;
 
 use ui::application::{ApplicationDefinition, LaunchTarget};
 use ui::permissions::MemberId;
-use ui::record::{DocumentCheckout, DocumentId, RecordOpenError, RecordOwners, RecordStore};
+use ui::resource::{
+    DocumentCheckout, DocumentId, ResourceOpenError, ResourceOwners, ResourceStore,
+};
 
 /// What a page showing one app opens now.
 pub(crate) enum Opening {
@@ -37,7 +39,7 @@ pub(crate) enum Unopened {
     /// The record id the page names is not one.
     InvalidRecord,
     /// The store refused it, saying why.
-    Records(RecordOpenError),
+    Records(ResourceOpenError),
 }
 
 /// Why a window's app was not built on the record it shows.
@@ -55,7 +57,7 @@ impl Unbuilt {
     /// What preparing or building the app answered, as the window shows it.
     pub(crate) fn of(error: ui::launch::LaunchError) -> Self {
         match error {
-            ui::launch::LaunchError::Record(RecordOpenError::Arriving) => Self::Arriving,
+            ui::launch::LaunchError::Record(ResourceOpenError::Arriving) => Self::Arriving,
             ui::launch::LaunchError::Record(error) => Self::Failed(error.to_string()),
             other => Self::Failed(other.to_string()),
         }
@@ -76,12 +78,12 @@ impl From<String> for Unbuilt {
 /// # Errors
 /// Rejects a package or workspace the records cannot be named in.
 pub(crate) fn store(
-    owners: &mut RecordOwners,
+    owners: &mut ResourceOwners,
     definition: &ApplicationDefinition,
     workspace: &str,
     replicated: bool,
-    stores: &Rc<RefCell<Vec<RecordStore>>>,
-) -> Result<RecordStore, RecordOpenError> {
+    stores: &Rc<RefCell<Vec<ResourceStore>>>,
+) -> Result<ResourceStore, ResourceOpenError> {
     if let Some(store) = stores.borrow().first() {
         return Ok(store.clone());
     }
@@ -99,7 +101,7 @@ pub(crate) fn store(
 /// workspace.
 pub(crate) fn opening(
     definition: &ApplicationDefinition,
-    records: &RecordStore,
+    records: &ResourceStore,
     record: Option<&str>,
     new_document: bool,
     instance: u64,
@@ -114,14 +116,14 @@ pub(crate) fn opening(
     // same document, as a native launch does.
     let default = DocumentCheckout::new(
         DocumentId::derived("default", &DocumentId::for_tab(instance)),
-        definition.record_kind.clone(),
+        definition.resource_type.clone(),
     );
     match record {
         // The workspace's own document of an app that keeps one: opened as a
         // launch naming nothing opens it, so a link to it works before anyone
         // wrote it (the first write founds it), as it does natively.
         Some(existing)
-            if definition.keeps_workspace_record()
+            if definition.keeps_workspace_resource()
                 && existing == DocumentId::package_primary().as_str() =>
         {
             unsaved(definition, records)
@@ -129,52 +131,57 @@ pub(crate) fn opening(
         Some(existing) => Ok(Opening::Target(LaunchTarget::Record {
             checkout: DocumentCheckout::new(
                 DocumentId::parse(existing).ok_or(Unopened::InvalidRecord)?,
-                definition.record_kind.clone(),
+                definition.resource_type.clone(),
             ),
             reveal: None,
         })),
-        None if new_document || definition.keeps_workspace_record() => unsaved(definition, records),
-        None => match records.try_open_record(&default) {
+        None if new_document || definition.keeps_workspace_resource() => {
+            unsaved(definition, records)
+        }
+        None => match records.try_open_resource(&default) {
             Ok(_) => Ok(Opening::Target(LaunchTarget::Record {
                 checkout: default,
                 reveal: None,
             })),
-            Err(RecordOpenError::MissingRecord) => Ok(Opening::New(default.id)),
-            Err(RecordOpenError::Arriving) => Ok(Opening::Arriving),
+            Err(ResourceOpenError::MissingResource) => Ok(Opening::New(default.id)),
+            Err(ResourceOpenError::Arriving) => Ok(Opening::Arriving),
             Err(error) => Err(Unopened::Records(error)),
         },
     }
 }
 
 /// `author`'s own record of `definition`, when the app keeps one per member
-/// ([`ApplicationDefinition::member_record`]): theirs alone, which they start
+/// ([`ApplicationDefinition::member_resource`]): theirs alone, which they start
 /// and change whatever their role in the workspace, so a window of it never
 /// waits for someone who writes there. It is still the workspace's to send
 /// when another device of theirs wrote it. `None` for an app whose records
 /// are the workspace's.
 pub(crate) fn own_opening(
     definition: &ApplicationDefinition,
-    records: &RecordStore,
+    records: &ResourceStore,
     author: &MemberId,
 ) -> Option<Result<Opening, Unopened>> {
-    let own = definition.member_record_of(author)?;
-    Some(match records.try_open_record(&own) {
+    let own = definition.member_resource_of(author)?;
+    Some(match records.try_open_resource(&own) {
         Ok(_) => Ok(Opening::Target(LaunchTarget::Record {
             checkout: own,
             reveal: None,
         })),
-        Err(RecordOpenError::MissingRecord) => Ok(Opening::New(own.id)),
-        Err(RecordOpenError::Arriving) => Ok(Opening::Arriving),
+        Err(ResourceOpenError::MissingResource) => Ok(Opening::New(own.id)),
+        Err(ResourceOpenError::Arriving) => Ok(Opening::Arriving),
         Err(error) => Err(Unopened::Records(error)),
     })
 }
 
 /// What a page naming no record opens where the application decides: the
 /// workspace's own document of it while it is here, else a new one.
-fn unsaved(definition: &ApplicationDefinition, records: &RecordStore) -> Result<Opening, Unopened> {
+fn unsaved(
+    definition: &ApplicationDefinition,
+    records: &ResourceStore,
+) -> Result<Opening, Unopened> {
     match definition.unsaved_target(records) {
         Ok(target) => Ok(Opening::Target(target)),
-        Err(RecordOpenError::Arriving) => Ok(Opening::Arriving),
+        Err(ResourceOpenError::Arriving) => Ok(Opening::Arriving),
         Err(error) => Err(Unopened::Records(error)),
     }
 }

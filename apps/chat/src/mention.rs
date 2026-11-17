@@ -1,7 +1,7 @@
-//! Structured `@mention`s: a reference to a workspace participant, not styled text.
+//! Structured `@mention`s: a reference to a workspace member, not styled text.
 //!
 //! A mention is **not** a string that happens to start with `@`. It is a
-//! resolved pointer to one participant of the workspace, minted when the message is
+//! resolved pointer to one member of the workspace, minted when the message is
 //! authored and stored in the shared CRDT next to the body (see
 //! [`crate::record`]). That is what lets anything else — the person mentioned, an
 //! agent watching the workspace, a notification badge, a search index — ask a
@@ -14,10 +14,10 @@
 //!
 //! ```text
 //! Mention {
-//!     user:     Id,     // the participant id — authoritative
+//!     user:     Id,     // the member id — authoritative
 //!     start:    usize,  // byte offset of the `@` within Message::text
 //!     len:      usize,  // byte length of the `@label` run
-//!     is_agent: bool,   // what the workspace said this participant was, at authoring
+//!     is_agent: bool,   // what the workspace said this member was, at authoring
 //! }
 //! ```
 //!
@@ -31,12 +31,12 @@
 //! about where the mention is. `is_agent` is a **snapshot** so a consumer
 //! reading the saved document offline can still tell a person from an agent; a
 //! live consumer that has the roster should prefer the roster, because `user`
-//! is the authoritative half and a participant's kind is the workspace's to say.
+//! is the authoritative half and a member's kind is the workspace's to say.
 //!
 //! ## Binding
 //!
 //! Mentions are resolved once, at send, by [`resolve`]: every `@` in the body is
-//! matched against the workspace's participants, longest display name first. Binding
+//! matched against the workspace's members, longest display name first. Binding
 //! at send (rather than tracking offsets while the composer is edited) means a
 //! mention typed by hand, pasted, or completed from the picker all arrive as the
 //! same structure, and no edit can leave an offset pointing at the wrong run.
@@ -45,20 +45,20 @@ use serde::{Deserialize, Serialize};
 #[allow(unused_imports, reason = "the `JsonSchema` derive names the crate")]
 use ui::tilo_resource::{self, Atom, JsonSchema};
 
-/// A structured reference to one workspace participant inside a message body.
+/// A structured reference to one workspace member inside a message body.
 ///
 /// See the [module docs](self) for the full contract. `user` is authoritative;
 /// `start`/`len` locate the run inside [`crate::model::Message::text`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, tilo_resource::Model)]
 pub struct Mention {
-    /// The participant referred to — the same id used for message attribution,
+    /// The member referred to — the same id used for message attribution,
     /// the workspace roster and presence.
     pub user: ui::tilo_resource::MemberId,
     /// Byte offset of the `@` that opens the mention within the message text.
     pub start: usize,
     /// Byte length of the `@label` run within the message text.
     pub len: usize,
-    /// What the workspace said this participant was when the message was written:
+    /// What the workspace said this member was when the message was written:
     /// `true` for an agent, `false` for a person. A snapshot for consumers with
     /// no live roster — `user` remains the authoritative half.
     pub is_agent: bool,
@@ -77,7 +77,7 @@ impl Mention {
     }
 }
 
-/// Resolve every `@`-run in `text` against the workspace's `participants`.
+/// Resolve every `@`-run in `text` against the workspace's `members`.
 ///
 /// This is the binding step: it runs once, when a message is sent, and its
 /// output is what the document stores. Matching is case-insensitive and
@@ -198,9 +198,9 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn resolve_maps_whole_word_workspace_names_to_participant_ids;
+        fn resolve_maps_whole_word_workspace_names_to_member_ids;
 
-        phase a_mention_is_a_participant_id_not_a_string;
+        phase a_mention_is_a_member_id_not_a_string;
         {
             let m = resolve("morning @Ada", &workspace());
             assert_eq!(m.len(), 1);

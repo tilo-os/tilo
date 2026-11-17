@@ -52,11 +52,11 @@ pub mod schema_ops;
 pub mod sentence;
 pub(crate) use authors::workspace_agents_revision;
 pub use authors::{
-    AuthorDirectory, HistoryAgent, ParticipantNames, RosterAgent, UNKNOWN_AUTHOR_NAME, WriterPlace,
+    AuthorDirectory, HistoryAgent, MemberNames, RosterAgent, UNKNOWN_AUTHOR_NAME, WriterPlace,
     actor_handle, actor_name, agent_actor_name, agent_display_label, app_name, app_words,
-    author_coloured, author_for_identity, local_identity_author, name_words, note_mount_actor,
-    note_record_mount, participant_display_label, participant_name, set_installed_apps,
-    set_workspace_agents, short_id, software_name, stable_hue,
+    author_coloured, author_for_identity, local_identity_author, member_display_label, member_name,
+    name_words, note_mount_actor, note_resource_mount, set_installed_apps, set_workspace_agents,
+    short_id, software_name, stable_hue,
 };
 /// What changed in a workspace's records, as a host's replica took it in.
 pub use collaboration::history_source::feed;
@@ -145,7 +145,7 @@ pub struct HistorySource {
     authors: AuthorDirectory,
     artifact_kind: ArtifactKind,
     max_entries: usize,
-    record_genesis: bool,
+    resource_genesis: bool,
     pass_over: Option<PassOver>,
     /// Only changes made at or after this (Unix milliseconds) make rows.
     made_since: Option<i64>,
@@ -162,13 +162,13 @@ impl Default for HistorySource {
 }
 
 impl HistorySource {
-    /// Every actor resolves to an unknown participant until registered.
+    /// Every actor resolves to an unknown member until registered.
     pub fn new() -> Self {
         Self {
             authors: AuthorDirectory::new(),
             artifact_kind: ArtifactKind::File,
             max_entries: DEFAULT_MAX_ENTRIES,
-            record_genesis: true,
+            resource_genesis: true,
             pass_over: None,
             made_since: None,
         }
@@ -219,8 +219,8 @@ impl HistorySource {
     /// that starts it). A document's own history keeps it as the version to
     /// restore to; a feed of what people did has no one to name for it.
     #[must_use]
-    pub fn without_record_genesis(mut self) -> Self {
-        self.record_genesis = false;
+    pub fn without_resource_genesis(mut self) -> Self {
+        self.resource_genesis = false;
         self
     }
 

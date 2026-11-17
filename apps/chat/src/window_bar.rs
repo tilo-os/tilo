@@ -175,27 +175,25 @@ impl ChatApp {
     pub(crate) fn location_lead(&self) -> (Option<String>, Option<LocationAvatar>) {
         let channel = self.channel(&self.active_channel);
         // A direct conversation not listed yet (no message in it) is named by its id.
-        let participants = match channel {
-            Some(channel) => channel.direct.then(|| channel.participants.clone()),
-            None => crate::record::Chat::direct_participants(&ui::tilo_resource::Id::from_raw(
+        let members = match channel {
+            Some(channel) => channel.direct.then(|| channel.members.clone()),
+            None => crate::record::Chat::direct_members(&ui::tilo_resource::Id::from_raw(
                 self.active_channel.clone(),
             )),
         };
-        if let Some(participants) = participants {
-            let Some(other) = self.conversation_peer(&participants) else {
+        if let Some(members) = members {
+            let Some(other) = self.conversation_peer(&members) else {
                 return (Some("users".to_owned()), None);
             };
-            let presence = self
-                .user(&other)
-                .map(|user| match self.live_status(user) {
-                    Presence::Online => LocationPresence::Online,
-                    Presence::Idle => LocationPresence::Away,
-                    Presence::Dnd => LocationPresence::Busy,
-                    Presence::Offline => LocationPresence::Offline,
-                });
+            let presence = self.user(&other).map(|user| match self.live_status(user) {
+                Presence::Online => LocationPresence::Online,
+                Presence::Idle => LocationPresence::Away,
+                Presence::Dnd => LocationPresence::Busy,
+                Presence::Offline => LocationPresence::Offline,
+            });
             let avatar = LocationAvatar {
                 name: self.display_name(&other),
-                hue: Some(self.participant_hue(&other)),
+                hue: Some(self.member_hue(&other)),
                 identity: other.id().to_owned(),
                 agent: !other.is_person(),
                 presence,

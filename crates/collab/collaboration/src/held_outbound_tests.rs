@@ -76,7 +76,7 @@ fn an_edit_held_for_channel_keys_goes_out_when_the_keys_arrive() {
         SdkConnectSource::Fd(fd),
         Some(SdkJoinIdentity {
             presentation: Vec::new(),
-            participant_kind: "person",
+            member_kind: "person",
             signer: SdkDocumentSigner::Certified(Arc::clone(&identity) as _),
         }),
     )
@@ -87,7 +87,7 @@ fn an_edit_held_for_channel_keys_goes_out_when_the_keys_arrive() {
         app_id: app_id.into(),
         cluster_id: cluster,
         record: None,
-        record_kind: None,
+        resource_type: None,
         handle: None,
     }));
     manager.await_primary_route().unwrap();

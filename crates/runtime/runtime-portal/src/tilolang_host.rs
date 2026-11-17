@@ -93,7 +93,7 @@ pub struct InstanceRequest {
     /// publisher signed it. The broker admits the instance's connection to that record only on
     /// the same belief.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub records_under: Option<String>,
+    pub documents_under: Option<String>,
     /// The instance applies one change to the record at its origin instead of running a
     /// window: an agent task's invocation the broker admitted (`docs/designs/app-language/agents.md`,
     /// "Reading records outside their app"). The descriptor in the window's place is the change's
@@ -158,7 +158,7 @@ pub struct TaskRequest {
     pub person: Option<String>,
     pub apps_len: u64,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub records_under: std::collections::BTreeMap<String, String>,
+    pub documents_under: std::collections::BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub changed_at_record: std::collections::BTreeSet<String>,
 }
@@ -701,7 +701,7 @@ mod tests {
                 instance: 7,
                 person: "ada".into(),
                 module_len: 12,
-                records_under: Some("so.tilo.lang.older-notes".into()),
+                documents_under: Some("so.tilo.lang.older-notes".into()),
                 applies_change: true,
                 formats: RegionFormats {
                     time: tilo_formats::TimeStyle::H12,
@@ -837,7 +837,7 @@ mod tests {
                 workspace: "7a110d00-0000-4000-8000-000000000001".into(),
                 person: Some("ada".into()),
                 apps_len: 3,
-                records_under: [("so.tilo.lang.tasks".into(), "so.tilo.lang.todo".into())].into(),
+                documents_under: [("so.tilo.lang.tasks".into(), "so.tilo.lang.todo".into())].into(),
                 changed_at_record: ["so.tilo.shell".into()].into(),
             };
             let fds = TaskFds {

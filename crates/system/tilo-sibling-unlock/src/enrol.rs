@@ -70,6 +70,13 @@ pub struct Args {
     /// Refuse enrollment unless the device factor can be sealed to the TPM.
     #[arg(long)]
     pub require_tpm: bool,
+    /// Accept this machine's current boot chain, so the owner's other devices
+    /// release its sibling half without asking them: an unattended unlock,
+    /// for a server that reboots with nobody there. Needs a TPM, and covers
+    /// the chain measured now, so it is chosen again after an OS update that
+    /// changes PCR 4.
+    #[arg(long)]
+    pub unattended: bool,
 }
 
 /// Hands an [`EnrolRequest`] to the sibling service.
@@ -242,6 +249,8 @@ fn for_early_boot(keyfile: &str, mac_of: impl Fn(&str) -> Option<String>) -> Str
 /// When any step fails; the slot is removed again.
 pub fn run(args: &Args) -> Result<()> {
     let sealing = enrollment_sealing(seal::available(), args.require_tpm)?;
+    let tpm = crate::tpm::Tpm::system();
+    crate::tpm::require(&tpm, args.unattended)?;
     let enrolled = luks::token(&args.device)?.is_some();
     match (enrolled, args.replace_networks) {
         (true, false) => bail!(
@@ -269,6 +278,8 @@ pub fn run(args: &Args) -> Result<()> {
         networks,
         &registrar,
         sealing,
+        &tpm,
+        args.unattended,
     )
 }
 
@@ -289,7 +300,15 @@ pub fn enrol(
     networks: Vec<material::Network>,
     registrar: &impl Registrar,
 ) -> Result<()> {
-    enrol_with_sealing(device, key_file, networks, registrar, seal::available())
+    enrol_with_sealing(
+        device,
+        key_file,
+        networks,
+        registrar,
+        seal::available(),
+        &crate::tpm::Tpm::system(),
+        false,
+    )
 }
 
 fn enrol_with_sealing(
@@ -298,7 +317,10 @@ fn enrol_with_sealing(
     networks: Vec<material::Network>,
     registrar: &impl Registrar,
     sealing: Sealing,
+    tpm: &crate::tpm::Tpm,
+    unattended: bool,
 ) -> Result<()> {
+    crate::tpm::require(tpm, unattended)?;
     let volume_uuid = luks::uuid_bytes(device)?;
     let device_half = Half::generate().map_err(|error| anyhow!("{error}"))?;
     let sibling_half = Half::generate().map_err(|error| anyhow!("{error}"))?;
@@ -310,13 +332,34 @@ fn enrol_with_sealing(
     let passphrase = derive_slot_key(&device_half, &sibling_half, &volume_uuid);
     let keyslot = luks::add_slot(device, key_file, &passphrase)?;
     drop(passphrase);
+    // Everything after the slot exists can still fail, and the slot is
+    // removed again when it does. That includes the TPM: an unattended
+    // enrolment whose attestation key cannot be made fails rather than
+    // leaving a machine that silently falls back to a prompt.
     let finish = || -> Result<Token> {
+        let (attestation, attestation_key, unattended_chain) = if tpm.available() {
+            let (attestation, point) = crate::tpm::create_attestation_key(tpm)?;
+            let chain = if unattended {
+                Some(crate::tpm::current_chain(tpm)?)
+            } else {
+                None
+            };
+            (Some(attestation), Some(point), chain)
+        } else {
+            (None, None, None)
+        };
         let slot = SlotId {
             volume_uuid,
             keyslot: u16::try_from(keyslot).context("key slot out of range")?,
         };
-        let request = EnrolRequest::new(&boot_key, slot, None, sibling_half)
-            .map_err(|error| anyhow!("{error}"))?;
+        let request = EnrolRequest::new(
+            &boot_key,
+            slot,
+            attestation_key.clone(),
+            unattended_chain,
+            sibling_half,
+        )
+        .map_err(|error| anyhow!("{error}"))?;
         let response = registrar.register(&request)?;
         drop(request);
         let cert = &response.cert;
@@ -325,10 +368,13 @@ fn enrol_with_sealing(
         if cert.boot_public_key != boot_key.verifying_key().to_bytes() || cert.slot != slot {
             bail!("the issued certificate is for another boot key or slot");
         }
+        if cert.attestation_key != attestation_key {
+            bail!("the issued certificate is for another attestation key");
+        }
         if response.siblings.is_empty() {
             bail!("none of your other devices holds the sibling half");
         }
-        let material = Material::new(&device_half, &boot_key, networks);
+        let material = Material::new(&device_half, &boot_key, networks, attestation);
         let token = Token {
             kind: TOKEN_TYPE.into(),
             keyslots: vec![keyslot.to_string()],

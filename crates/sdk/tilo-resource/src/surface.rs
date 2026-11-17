@@ -246,7 +246,7 @@ pub fn effect_verbs(rows: &[crate::effect::EffectRow], types: &mut TypeSet) -> V
 /// what `#[derive(Model)]` publishes for a struct, its fields read from its
 /// shape.
 #[doc(hidden)]
-pub fn record_type(
+pub fn resource_type(
     types: &mut TypeSet,
     identity: &str,
     name: &str,
@@ -277,7 +277,7 @@ pub type FieldTypeOf = fn(&mut TypeSet) -> FieldType;
 /// fields `fields`, their names and types: what `#[derive(JsonSchema)]`
 /// publishes for a struct.
 #[doc(hidden)]
-pub fn record_of(
+pub fn resource_of(
     types: &mut TypeSet,
     identity: &str,
     name: &str,

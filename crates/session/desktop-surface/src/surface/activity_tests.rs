@@ -22,7 +22,7 @@ fn stamp(doc: &mut AutoCommit, tree: &Layout, time: i64) {
     tilo_desktop_model::desktop_doc::seed(doc, tree);
     doc.commit_with(
         automerge::transaction::CommitOptions::default()
-            .with_message(tilo_desktop_model::shared_record::change_message(Some(
+            .with_message(tilo_desktop_model::shared_resource::change_message(Some(
                 "Ada",
             )))
             .with_time(time),

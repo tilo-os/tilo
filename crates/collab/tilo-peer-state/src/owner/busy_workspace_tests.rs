@@ -108,7 +108,7 @@ fn message(
         peer: crate::peer_handle(&author_key),
         app_id: APP.into(),
         cluster_id: WORKSPACE.into(),
-        record_id: String::new(),
+        document_id: String::new(),
         envelope: Box::new(envelope),
         own: None,
     }
@@ -174,7 +174,7 @@ fn busy_workspace(messages_each: u64) -> BusyWorkspace {
             .unwrap(),
             documents: vec![SeedDocument {
                 app_id: APP.into(),
-                record_id: String::new(),
+                document_id: String::new(),
                 kind: "chat".into(),
                 bytes: chat.save(),
             }],

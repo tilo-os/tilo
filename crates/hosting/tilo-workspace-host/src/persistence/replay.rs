@@ -48,7 +48,7 @@ pub(crate) struct Authority {
     released: OnceLock<std::time::Instant>,
     /// The replay includes on-demand records: the subscriber is a peer
     /// relay, which keeps all of the workspace.
-    every_record: bool,
+    every_document: bool,
     /// The replay covers only these record channels: a browser environment's
     /// device reaches its own record and nothing else of the workspace.
     channels: Option<std::collections::BTreeSet<[u8; 32]>>,
@@ -133,8 +133,8 @@ impl Authority {
     }
     /// Whether the replay carries all of the workspace: its subscriber is a
     /// peer relay, which keeps every frame it is sent.
-    pub(crate) const fn every_record(&self) -> bool {
-        self.every_record
+    pub(crate) const fn every_document(&self) -> bool {
+        self.every_document
     }
 }
 /// How long a subscription waits for one of the host's replay slots before
@@ -171,9 +171,9 @@ impl ReplayTicket {
         Ok(Self::with_permit(device, connection, permit))
     }
     /// Replay on-demand records too: the subscriber keeps all of the workspace.
-    pub(crate) fn with_every_record(mut self) -> Self {
+    pub(crate) fn with_every_document(mut self) -> Self {
         if let Some(authority) = Arc::get_mut(&mut self.authority) {
-            authority.every_record = true;
+            authority.every_document = true;
         }
         self
     }
@@ -200,7 +200,7 @@ impl ReplayTicket {
                 reclaim: OnceLock::new(),
                 reserved: crate::timing::start(),
                 released: OnceLock::new(),
-                every_record: false,
+                every_document: false,
                 channels: None,
                 slot: Mutex::new(Some(permit)),
             }),
@@ -500,14 +500,14 @@ impl State {
             let build = if let Some(held) = held {
                 self.store
                     .start_pending_replay_capture(authority.id, authority.device, held)
-                    .map(|build| build.with_every_record(authority.every_record))
+                    .map(|build| build.with_every_document(authority.every_document))
             } else {
                 self.store
                     .start_replay_capture(authority.id, authority.device)
                     .map(|build| {
                         build
                             .skipping(skip)
-                            .with_every_record(authority.every_record)
+                            .with_every_document(authority.every_document)
                             .with_channels(channels)
                     })
             };

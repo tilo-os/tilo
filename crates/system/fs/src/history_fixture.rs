@@ -8,7 +8,7 @@ use fs_protocol::FileDocumentId;
 use tilo_lock::MutexRecover as _;
 
 use crate::Namespace;
-use crate::namespace::history::RecordHistorySnapshot;
+use crate::namespace::history::DocumentHistorySnapshot;
 
 pub(crate) struct History(Arc<Mutex<Namespace>>);
 
@@ -17,7 +17,7 @@ impl History {
         Self(namespace)
     }
 
-    pub(crate) fn snapshot(&self, document_id: FileDocumentId) -> Option<RecordHistorySnapshot> {
-        self.0.lock_recover().record_history(document_id)
+    pub(crate) fn snapshot(&self, document_id: FileDocumentId) -> Option<DocumentHistorySnapshot> {
+        self.0.lock_recover().document_history(document_id)
     }
 }

@@ -25,10 +25,10 @@ pub(crate) struct Moderation {
     pub(crate) refused: Option<String>,
 }
 
-/// Whether `participant` names a person by their root key, the only id a
+/// Whether `member` names a person by their root key, the only id a
 /// ban can name.
-pub(crate) fn bannable(participant: &ui::tilo_resource::MemberId) -> bool {
-    participant
+pub(crate) fn bannable(member: &ui::tilo_resource::MemberId) -> bool {
+    member
         .person_id()
         .is_some_and(|root| root.len() == 64 && root.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }

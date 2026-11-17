@@ -94,7 +94,7 @@ fn edit(
         tilo_actions::ActionSpec::immediate("text", "Edit text", "burst.text", &action).unwrap();
     let resource = tilo_actions::ResourceSpec::new("burst", "burst", "Text");
     binding
-        .with_record_frame(outer, false, |doc, path| {
+        .with_resource_frame(outer, false, |doc, path| {
             let mut operation =
                 BoundOperation::enter(binding, doc, tilo_actions::OperationKind::Document).unwrap();
             let input = if physical {
@@ -135,7 +135,7 @@ fn edit(
         })
         .unwrap();
 }
-fn value(records: &RecordStore, checkout: &DocumentCheckout, field: &str) -> String {
+fn value(records: &ResourceStore, checkout: &DocumentCheckout, field: &str) -> String {
     records
         .read(&checkout.id, |doc| {
             doc.get(ROOT, field)
@@ -161,16 +161,16 @@ tilo_test_env::scenario! {
 
     phase native_text_keeps_first_compensation_latest_redo_and_different_field_boundaries;
     {
-        let records = crate::record::RecordOwners::portable(
+        let records = crate::resource::ResourceOwners::portable(
             crate::portable_storage::PortableStorage::new("burst", "device").unwrap(),
         )
         .open("so.tilo.test", "workspace")
         .unwrap();
         let checkout = DocumentCheckout::new(
-            crate::record::DocumentId::minted(),
-            crate::record::ResourceType::new("text"),
+            crate::resource::DocumentId::minted(),
+            crate::resource::ResourceType::new("text"),
         );
-        records.create_record(&checkout).unwrap();
+        records.create_resource(&checkout).unwrap();
         let (binding, _scope, _owner) =
             super::author_writer_tests::mount(&records, &checkout, "You", 1, true);
         let mut outer = AutoCommit::new();
@@ -205,16 +205,16 @@ tilo_test_env::scenario! {
     phase native_text_does_not_cross_member_instance_or_programmatic_edits;
     {
         for author in ["You", "Member"] {
-            let records = crate::record::RecordOwners::portable(
+            let records = crate::resource::ResourceOwners::portable(
                 crate::portable_storage::PortableStorage::new("burst", "device").unwrap(),
             )
             .open("so.tilo.test", "workspace")
             .unwrap();
             let checkout = DocumentCheckout::new(
-                crate::record::DocumentId::minted(),
-                crate::record::ResourceType::new("text"),
+                crate::resource::DocumentId::minted(),
+                crate::resource::ResourceType::new("text"),
             );
-            records.create_record(&checkout).unwrap();
+            records.create_resource(&checkout).unwrap();
             let (one, _one_scope, _one_owner) =
                 super::author_writer_tests::mount(&records, &checkout, "You", 1, true);
             let (two, _two_scope, _two_owner) =
@@ -248,16 +248,16 @@ tilo_test_env::scenario! {
 
     phase physical_text_provenance_is_captured_in_the_exact_owned_queue_entry;
     {
-        let records = crate::record::RecordOwners::portable(
+        let records = crate::resource::ResourceOwners::portable(
             crate::portable_storage::PortableStorage::new("burst", "device").unwrap(),
         )
         .open("so.tilo.test", "workspace")
         .unwrap();
         let checkout = DocumentCheckout::new(
-            crate::record::DocumentId::minted(),
-            crate::record::ResourceType::new("text"),
+            crate::resource::DocumentId::minted(),
+            crate::resource::ResourceType::new("text"),
         );
-        records.create_record(&checkout).unwrap();
+        records.create_resource(&checkout).unwrap();
         let (binding, _scope, _owner) =
             super::author_writer_tests::mount(&records, &checkout, "You", 1, true);
         let domain = crate::ControlDomain::new();
@@ -286,16 +286,16 @@ tilo_test_env::scenario! {
             crate::widget::ActionEmitter::new(crate::widget::test_string_action_binding());
         with_physical_text(true, || initial.emit("same".into())).unwrap();
         initial.emit("same".into()).unwrap();
-        let records = crate::record::RecordOwners::portable(
+        let records = crate::resource::ResourceOwners::portable(
             crate::portable_storage::PortableStorage::new("burst", "device").unwrap(),
         )
         .open("so.tilo.test", "workspace")
         .unwrap();
         let checkout = DocumentCheckout::new(
-            crate::record::DocumentId::minted(),
-            crate::record::ResourceType::new("text"),
+            crate::resource::DocumentId::minted(),
+            crate::resource::ResourceType::new("text"),
         );
-        records.create_record(&checkout).unwrap();
+        records.create_resource(&checkout).unwrap();
         let (binding, _scope, _owner) =
             super::author_writer_tests::mount(&records, &checkout, "You", 1, true);
         let domain = crate::ControlDomain::new();

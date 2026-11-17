@@ -74,7 +74,7 @@ fn application_action_handoff_requires_workspace_admission_and_routes_exact_dest
         app_id: "so.tilo.settings".into(),
         cluster_id: workspace,
         record: None,
-        record_kind: None,
+        resource_type: None,
         handle: None,
     }));
     app.collaboration.manager.poll();

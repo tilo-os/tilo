@@ -6,8 +6,8 @@ use proptest::prelude::*;
 use serde::Deserialize;
 use tilo_reference::Span;
 use tilo_reference::link::{
-    AppId, HostOrigin, Link, LinkSecrets, LinkTarget, Mode, RecordSegment, ResourceAddress, Scope,
-    Slug, TargetJson, WebEntries, WebEntry,
+    AppId, HostOrigin, Link, LinkSecrets, LinkTarget, Mode, ResourceAddress, ResourceSegment,
+    Scope, Slug, TargetJson, WebEntries, WebEntry,
 };
 
 #[derive(Deserialize)]
@@ -193,8 +193,8 @@ fn scope() -> impl Strategy<Value = Scope> {
 fn target() -> impl Strategy<Value = LinkTarget> {
     let app = "[a-z]{1,8}(\\.[a-z0-9-]{1,8}){1,3}";
     let record = prop_oneof![
-        Just(RecordSegment::Primary),
-        "[a-z]{1,6}:\\PC{0,40}".prop_map(RecordSegment::Id),
+        Just(ResourceSegment::Primary),
+        "[a-z]{1,6}:\\PC{0,40}".prop_map(ResourceSegment::Id),
     ];
     let resource = (
         "[a-z_.]{1,12}",

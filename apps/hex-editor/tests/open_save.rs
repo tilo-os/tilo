@@ -18,7 +18,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 use ui::a11y::Action as A11yAction;
 use ui::framework::testing::TestApp;
 use ui::portal::PortalOutcome;
-use ui::record::DocumentId;
+use ui::resource::DocumentId;
 use ui::tilo_resource::Effect as _;
 
 fn file(name: &str, bytes: &[u8]) -> (tempfile::TempDir, String) {

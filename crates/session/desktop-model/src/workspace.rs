@@ -10,7 +10,7 @@ use collab_types::caps::{
 };
 use tilo_action_policy::{
     Acting, ActionKind, Answer, Authority, Change, Context, Grant, GrantId, Grantee, KindSet,
-    Lifetime, MemberId, Preset, PresetError, Refusal, Role, TreePath, WorkspacePolicy, roles,
+    Lifetime, Preset, PresetError, Refusal, Role, TreePath, WorkspacePolicy, roles,
 };
 
 use crate::app::AppId;
@@ -778,22 +778,6 @@ impl Workspace {
             }
         }
         agents
-    }
-
-    /// The person who admitted the agent `agent` to the workspace: the one it acts for, whose
-    /// colour it is painted clear of.
-    #[must_use]
-    pub fn agent_keeper(&self, agent: &str) -> Option<&str> {
-        self.policy
-            .grants
-            .iter()
-            .find_map(|grant| match (&grant.grantee, &grant.granted_by) {
-                (
-                    Grantee::Member(MemberId::Agent(held)),
-                    Grantee::Member(MemberId::Person(person)),
-                ) if held == agent => Some(person.as_str()),
-                _ => None,
-            })
     }
 
     /// What a launch into this workspace hands its apps: the workspace's

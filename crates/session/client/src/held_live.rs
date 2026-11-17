@@ -9,7 +9,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-use tilo_relay_protocol::live::LiveRecord;
+use tilo_relay_protocol::live::LiveResource;
 
 use crate::session::LiveCompletion;
 use tilo_relay_protocol::WorkspaceId;
@@ -88,7 +88,7 @@ impl<K: Ord + Clone> Bounded<K> {
 /// Live frames waiting for keys: outbound by the record they name, inbound
 /// by the record digest they carry.
 pub(crate) struct HeldLive {
-    outbound: Bounded<(WorkspaceId, LiveRecord)>,
+    outbound: Bounded<(WorkspaceId, LiveResource)>,
     inbound: Bounded<(WorkspaceId, [u8; 32])>,
 }
 
@@ -104,7 +104,7 @@ impl HeldLive {
     pub(crate) fn hold_outbound(
         &mut self,
         workspace_id: WorkspaceId,
-        record: LiveRecord,
+        record: LiveResource,
         frame: Waiting,
     ) {
         self.outbound.hold((workspace_id, record), frame);
@@ -126,7 +126,7 @@ impl HeldLive {
     pub(crate) fn release(
         &mut self,
         workspace_id: WorkspaceId,
-        record: LiveRecord,
+        record: LiveResource,
     ) -> impl Iterator<Item = Waiting> {
         let digest = record.digest();
         self.outbound
@@ -140,8 +140,8 @@ impl HeldLive {
 mod tests {
     use super::*;
 
-    fn record(name: &str) -> LiveRecord {
-        LiveRecord {
+    fn record(name: &str) -> LiveResource {
+        LiveResource {
             app: "so.tilo.notes".into(),
             record: name.into(),
         }

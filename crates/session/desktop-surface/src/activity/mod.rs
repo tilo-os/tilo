@@ -80,7 +80,7 @@ enum Shape {
     /// The device's whole layout, as [`tilo_desktop_model::desktop_doc`] keeps it.
     Devices,
     /// One workspace's layout, as the workspace's
-    /// [`tilo_desktop_model::shared_record`] holds it.
+    /// [`tilo_desktop_model::shared_resource`] holds it.
     Layout,
 }
 
@@ -206,7 +206,7 @@ impl ActivityTree for ActivitySnapshot {
                 // The layout one workspace holds, and no other: what it says is what the window
                 // showed then.
                 Shape::Layout => {
-                    let Some(layout) = tilo_desktop_model::shared_record::read(&self.doc, None)
+                    let Some(layout) = tilo_desktop_model::shared_resource::read(&self.doc, None)
                     else {
                         return Ok(());
                     };
@@ -317,7 +317,7 @@ pub trait ActivityHost {
     }
     /// The bytes `app` keeps in `workspace` under the content hash `hash` (lower-case hex), when
     /// this device holds them: what a command run's record names as its output.
-    fn record_content(&self, _workspace: &str, _app: &str, _hash: &str) -> Option<Vec<u8>> {
+    fn document_content(&self, _workspace: &str, _app: &str, _hash: &str) -> Option<Vec<u8>> {
         None
     }
     /// The devices that refused writes in `workspace` , each with what it refused: one verdict per
@@ -415,14 +415,14 @@ mod admitted_history_tests {
         let write = |doc: &mut AutoCommit, strips: &[Strip]| {
             let mut layout = workspace.clone();
             layout.strips = strips.to_vec();
-            tilo_desktop_model::shared_record::device::write(
+            tilo_desktop_model::shared_resource::device::write(
                 doc,
                 workspace.id(),
                 &layout,
-                &tilo_desktop_model::shared_record::device::Writer {
+                &tilo_desktop_model::shared_resource::device::Writer {
                     person: Some("ada"),
                     mine: &|id| id >> 48 == 5,
-                    records: tilo_desktop_model::shared_record::device::Writer::NOTHING_NOTED,
+                    records: tilo_desktop_model::shared_resource::device::Writer::NOTHING_NOTED,
                 },
             )
             .unwrap();

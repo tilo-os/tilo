@@ -2,7 +2,7 @@
 //! endpoint, the live plane, the workspaces this session holds and their channels, the person's
 //! device fabric, the transfers between their devices, and the roster the bar draws.
 //!
-//! The participant itself is `tilo_session_client::Client`, which every host links. [`Client`] here
+//! The member itself is `tilo_session_client::Client`, which every host links. [`Client`] here
 //! is that client plus this desktop's host. The endpoint keeps number 0's directory behind a gate
 //! and its relays held back ([`tilo_endpoint_reachability`]): a desktop with nobody else in its
 //! workspaces publishes nothing and keeps no relay.
@@ -57,7 +57,7 @@ use crate::platform::fabric::{Continuity, SessionFabric};
 #[cfg(target_os = "linux")]
 use crate::workspace_keys::KeyLink;
 #[cfg(target_os = "linux")]
-use tilo_action_broker::record_content::ContentSources;
+use tilo_action_broker::document_content::ContentSources;
 #[cfg(target_os = "linux")]
 use tilo_endpoint_reachability::{Need, Reachability};
 #[cfg(target_os = "linux")]
@@ -419,13 +419,13 @@ impl Local {
                 // for the ones they lack.
                 Event::SiblingMsg { peer, msg } => link.heard_from_sibling(*peer.as_bytes(), msg),
                 Event::Sibling { .. } => link.sibling_arrived(),
-                Event::RecordOpened {
+                Event::DocumentOpened {
                     ws,
                     channel,
                     answer,
                     ..
                 } => {
-                    link.record_opened(*ws, *channel, *answer);
+                    link.resource_opened(*ws, *channel, *answer);
                 }
                 _ => {}
             }
@@ -1287,7 +1287,7 @@ impl GateShell for Gate {
     }
 }
 
-/// The session's client of the collaboration plane: the participant's own client, and the desktop
+/// The session's client of the collaboration plane: the member's own client, and the desktop
 /// host that carries it — the peer actor, the live plane, this device's workspaces and channels,
 /// its fabric and its transfers.
 pub struct Client {
@@ -2291,7 +2291,7 @@ pub struct PeerDocuments {
     channels: Arc<std::sync::Mutex<tilo_broker_core::collab_core::BrokerChannels>>,
     fanout: Arc<tilo_action_broker::collab_broker::FanoutState>,
     /// What search reads again of a record a peer wrote.
-    changes: Option<Arc<dyn tilo_action_broker::services::RecordIndexChanges>>,
+    changes: Option<Arc<dyn tilo_action_broker::services::DocumentIndexChanges>>,
     /// What wakes a read waiting for a record this device held none of until it lands.
     arrivals: Option<Arc<tilo_session_client::Arrivals>>,
 }
@@ -2304,7 +2304,7 @@ impl PeerDocuments {
     pub fn new(
         channels: Arc<std::sync::Mutex<tilo_broker_core::collab_core::BrokerChannels>>,
         fanout: Arc<tilo_action_broker::collab_broker::FanoutState>,
-        changes: Option<Arc<dyn tilo_action_broker::services::RecordIndexChanges>>,
+        changes: Option<Arc<dyn tilo_action_broker::services::DocumentIndexChanges>>,
         arrivals: Option<Arc<tilo_session_client::Arrivals>>,
     ) -> Self {
         Self {
@@ -2327,14 +2327,14 @@ impl PeerDocuments {
     /// Hand one app write to this device's apps on its route: another device's, or one the
     /// session wrote into the engine itself.
     pub(crate) fn deliver_write(&self, workspace: &str, write: tilo_peer_state::owner::AppWrite) {
-        let (app, record) = (write.app_id.clone(), write.record_id.clone());
+        let (app, record) = (write.app_id.clone(), write.document_id.clone());
         tilo_action_broker::collab_inbound::deliver(
             &self.channels,
             &self.fanout,
             tilo_action_broker::collab_inbound::RemoteDocument {
                 app_id: write.app_id,
                 cluster_id: write.cluster_id,
-                record_id: write.record_id,
+                document_id: write.document_id,
                 author: write.author,
                 replayed: write.replayed,
                 envelope: write.envelope,
@@ -2352,7 +2352,7 @@ impl PeerDocuments {
             arrivals.landed();
         }
         if let Some(state) = self.fanout.app_broker() {
-            state.wake_record_reads(workspace, &app, &record);
+            state.wake_document_reads(workspace, &app, &record);
         }
     }
 }

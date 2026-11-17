@@ -165,7 +165,7 @@ pub struct Join {
     /// The handle the endpoint announces for the person, when it announces one.
     pub handle: String,
     /// The resource kind of the record the channel names, if the app has one.
-    pub record_kind: Option<String>,
+    pub resource_type: Option<String>,
 }
 
 /// What an app says, or asks, of an invocation it was handed.
@@ -392,7 +392,7 @@ pub enum Read {
 /// What a subscription delivers.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Topic {
-    /// The workspace's other participants' presence.
+    /// The workspace's other members' presence.
     Presence,
     /// Every signed change to the channel's document from now on.
     Ops,
@@ -486,7 +486,7 @@ pub enum Receipt {
 /// One event a subscription delivers.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Event {
-    /// Another participant's presence, attributed by the host.
+    /// Another member's presence, attributed by the host.
     Presence {
         member: collab_types::MemberId,
         presence: PeerPresence,
@@ -547,7 +547,7 @@ pub enum ContextUpdate {
     /// The workspace's delegated agents the session verified, for history.
     HistoryAgents(Vec<RosterAgent>),
     /// Records of the application's trees a peer wrote and no window holds.
-    RecordsArrived(Vec<String>),
+    ResourcesArrived(Vec<String>),
     /// Retired: a conversation is an ordinary record of the workspace, which
     /// every window of it opens like any other. It keeps the updates after it
     /// at their encoded positions.

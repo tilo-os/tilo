@@ -18,7 +18,8 @@ fn history_privacy_effects_are_local_truthful_and_recoverable() {
         let engine = TestEngine::new();
         let mut w = BrowserWidget::with_engine(engine.clone(), true);
         let (mut doc, root) = synced(&mut w);
-        w.history.record_at("https://private.example", "Private", 1);
+        w.history
+            .document_at("https://private.example", "Private", 1);
         let resources = [w.published()];
         let browser = &resources[0];
         let history = browser
@@ -92,7 +93,7 @@ fn history_privacy_effects_are_local_truthful_and_recoverable() {
         let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
         let (mut doc, root) = synced(&mut w);
         w.history
-            .record_at("https://sensitive.example", "Sensitive", 1);
+            .document_at("https://sensitive.example", "Sensitive", 1);
         let resources = [w.published()];
         let pause = resources[0]
             .children
@@ -329,7 +330,7 @@ fn private_mode_is_empty_indicated_and_leaves_no_root() {
         assert_eq!(widget.settings, Settings::default());
         widget
             .history
-            .record_at("https://private.test", "Private", 1);
+            .document_at("https://private.test", "Private", 1);
         widget.clear_history_durably().unwrap();
         assert!(widget.history.is_empty());
         let mut document = AutoCommit::new();

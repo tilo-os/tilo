@@ -109,10 +109,10 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
 - **Dangling references.** A reference read from a field whose target is gone is still a reference
   (it compares equal); only a target of another type is refused. `ref_lit` stays strict.
 - **Set of Int/Float order.** Elements are keyed by their text form, so they iterate in text order.
-- **A delegated action's subject** is its first argument when the first parameter is of one of
+- **A delegated action's target** is its first argument when the first parameter is of one of
   its package's own types (`focus(window: Window)`, a union of them included): that is where
   the invocation is sent. A resource taken by another parameter (`place(resource:
-  host.Resource)`) is an argument, never the subject.
+  host.Resource)`) is an argument, never the target.
 - **A `.none` default needs no module.** `complete_args` and `default_argument` give `.none`
   for a default written `.none` without calling its export, so a package published without a
   module (a surface) may declare optional parameters.

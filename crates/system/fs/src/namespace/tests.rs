@@ -104,18 +104,18 @@ tilo_test_env::scenario! {
             let file = original
                 .create_file(ROOT_INO, "stable.txt", Some(&h(1)), 1, 1)
                 .unwrap();
-            let root_record = original.document_id_for(ROOT_INO).unwrap();
-            let file_record = original.document_id_for(file).unwrap();
-            assert_ne!(root_record, file_record);
+            let root_document = original.document_id_for(ROOT_INO).unwrap();
+            let file_document = original.document_id_for(file).unwrap();
+            assert_ne!(root_document, file_document);
 
             let bytes = original.save();
             let mut reloaded = Namespace::from_bytes("a", &bytes).unwrap();
             let reloaded_file = reloaded.lookup(ROOT_INO, "stable.txt").unwrap().ino.0;
-            assert_eq!(reloaded.document_id_for(ROOT_INO), Some(root_record));
-            assert_eq!(reloaded.document_id_for(reloaded_file), Some(file_record));
+            assert_eq!(reloaded.document_id_for(ROOT_INO), Some(root_document));
+            assert_eq!(reloaded.document_id_for(reloaded_file), Some(file_document));
             assert_eq!(
                 reloaded.entry_at("stable.txt").unwrap().document_id,
-                file_record
+                file_document
             );
         }
         {
@@ -157,10 +157,10 @@ tilo_test_env::scenario! {
         {
             let mut ns = Namespace::new("a").unwrap();
             let original = ns.create_file(ROOT_INO, "doc", Some(&h(1)), 1, 1).unwrap();
-            let original_record = ns.document_id_for(original).unwrap();
+            let original_document = ns.document_id_for(original).unwrap();
             assert!(ns.create_conflict_copy(ROOT_ID, "doc.sync-conflict", &h(2), 1, 2));
             let copy = ns.resolve_path_ino("doc.sync-conflict").unwrap();
-            assert_ne!(ns.document_id_for(copy), Some(original_record));
+            assert_ne!(ns.document_id_for(copy), Some(original_document));
             assert!(ns.document_id_for(copy).is_some());
         }
         {
@@ -181,9 +181,9 @@ tilo_test_env::scenario! {
             ns.set_field(&a_id, "parent", b_id.clone());
             ns.set_field(&b_id, "parent", a_id);
 
-            ns.rebuild_record_index();
+            ns.rebuild_document_index();
             assert_eq!(
-                ns.indexed_record_count(),
+                ns.indexed_document_count(),
                 0,
                 "unreachable cyclic nodes must be withheld rather than making a rebuild non-terminating"
             );
@@ -196,12 +196,12 @@ tilo_test_env::scenario! {
             let second = ns
                 .create_file(ROOT_INO, "second", Some(&h(9)), 4, 1)
                 .unwrap();
-            let first_record = ns.document_id_for(first).unwrap();
-            let second_record = ns.document_id_for(second).unwrap();
+            let first_document = ns.document_id_for(first).unwrap();
+            let second_document = ns.document_id_for(second).unwrap();
             assert!(ns.set_thumb(second, &h(1)));
             assert_eq!(
                 ns.live_document_ids_for_direct_blob(h(1), 8).unwrap(),
-                vec![first_record, second_record]
+                vec![first_document, second_document]
                     .into_iter()
                     .collect::<std::collections::BTreeSet<_>>()
                     .into_iter()
@@ -209,13 +209,13 @@ tilo_test_env::scenario! {
             );
             assert_eq!(
                 ns.live_document_ids_for_direct_blob(h(1), 1),
-                Err(LiveRecordBlobScanError::LimitExceeded { limit: 1 })
+                Err(LiveDocumentBlobScanError::LimitExceeded { limit: 1 })
             );
 
             assert!(ns.remove(first));
             assert_eq!(
                 ns.live_document_ids_for_direct_blob(h(1), 8).unwrap(),
-                vec![second_record]
+                vec![second_document]
             );
             assert!(
                 ns.live_document_ids_for_direct_blob(h(77), 8)
@@ -455,13 +455,13 @@ tilo_test_env::scenario! {
     {
         {
             let mut ns = Namespace::new("a").unwrap();
-            ns.record_index.clear();
-            ns.record_index_order.clear();
+            ns.document_index.clear();
+            ns.document_index_order.clear();
             for value in 1..=100_001_u128 {
                 let document_id = FileDocumentId(Uuid::from_u128(value));
-                ns.record_index.insert(
+                ns.document_index.insert(
                     document_id,
-                    IndexedRecord {
+                    IndexedDocument {
                         document_id,
                         node_id: format!("synthetic/{value}"),
                         parent_id: ROOT_ID.into(),
@@ -469,13 +469,13 @@ tilo_test_env::scenario! {
                         is_dir: false,
                     },
                 );
-                ns.record_index_order.push(document_id);
+                ns.document_index_order.push(document_id);
             }
-            let before = ns.record_index_rebuild_count();
-            let page = ns.indexed_record_page(100_000, 128);
+            let before = ns.document_index_rebuild_count();
+            let page = ns.indexed_document_page(100_000, 128);
             assert_eq!(page.len(), 1);
             assert_eq!(page[0].path, "/synthetic-100001");
-            assert_eq!(ns.record_index_rebuild_count(), before);
+            assert_eq!(ns.document_index_rebuild_count(), before);
         }
         {
             let mut a = Namespace::new("a").unwrap();
@@ -633,16 +633,16 @@ tilo_test_env::scenario! {
                 name: "occupied.txt".into(),
                 ..binding.clone()
             };
-            let file_record = ns.document_id_for(file).unwrap();
-            let occupied_record = ns.document_id_for(occupied).unwrap();
+            let file_document = ns.document_id_for(file).unwrap();
+            let occupied_document = ns.document_id_for(occupied).unwrap();
             assert_eq!(ns.apply_signed_binding(&occupied_binding), Ok(true));
-            let (winner, loser_record) = if file_record < occupied_record {
-                (file, occupied_record)
+            let (winner, loser_document) = if file_document < occupied_document {
+                (file, occupied_document)
             } else {
-                (occupied, file_record)
+                (occupied, file_document)
             };
             assert_eq!(ns.lookup(right, "occupied.txt").unwrap().ino.0, winner);
-            let conflict = structural_conflict_name(b"occupied.txt", loser_record);
+            let conflict = structural_conflict_name(b"occupied.txt", loser_document);
             assert!(ns.lookup(right, conflict.as_bytes()).is_some());
             assert_eq!(ns.apply_signed_binding(&occupied_binding), Ok(false));
 
@@ -659,7 +659,7 @@ tilo_test_env::scenario! {
             use ed25519_dalek::SigningKey;
             use fs_protocol::{
                 ContentHash, FILE_MUTATION_TRANSACTION_VERSION, FileMutationOperation,
-                FileMutationParticipant, FileMutationTransactionManifest, FileProvenance,
+                TransactionFile, FileMutationTransactionManifest, FileProvenance,
                 FileVersionId, FileVersionV1,
             };
             use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -671,14 +671,14 @@ tilo_test_env::scenario! {
             let victim_ino = ns
                 .create_file(ROOT_INO, "destination.txt", Some(&h(2)), 1, 1)
                 .unwrap();
-            let source_record = ns.document_id_for(source_ino).unwrap();
-            let victim_record = ns.document_id_for(victim_ino).unwrap();
-            let root_record = ns.document_id_for(ROOT_INO).unwrap();
+            let source_document = ns.document_id_for(source_ino).unwrap();
+            let victim_document = ns.document_id_for(victim_ino).unwrap();
+            let root_document = ns.document_id_for(ROOT_INO).unwrap();
             let source_expected = FileVersionId::new();
             let victim_expected = FileVersionId::new();
             for (ino, document_id, version_id, byte) in [
-                (source_ino, source_record, source_expected, 1_u8),
-                (victim_ino, victim_record, victim_expected, 2_u8),
+                (source_ino, source_document, source_expected, 1_u8),
+                (victim_ino, victim_document, victim_expected, 2_u8),
             ] {
                 assert!(ns.set_content_revision(
                     ino,
@@ -698,7 +698,7 @@ tilo_test_env::scenario! {
                 person: collab_types::Ed25519PublicKey([9; 32]),
                 device: collab_types::Ed25519PublicKey(key.verifying_key().to_bytes()),
             };
-            let participant = |document_id, expected_version, role, content_byte| {
+            let transaction_file = |document_id, expected_version, role, content_byte| {
                 let version = FileVersionV1 {
                     id: FileVersionId::new(),
                     document_id,
@@ -708,22 +708,22 @@ tilo_test_env::scenario! {
                     content_hash: Some(ContentHash([content_byte; 32])),
                     metadata_hash: ContentHash([content_byte + 2; 32]),
                     provenance: match role {
-                        FileMutationParticipantRole::Source => FileProvenance::Rename,
-                        FileMutationParticipantRole::Replaced => FileProvenance::Delete,
+                        TransactionFileRole::Source => FileProvenance::Rename,
+                        TransactionFileRole::Replaced => FileProvenance::Delete,
                         _ => unreachable!("replacement fixture role"),
                     },
                 };
-                let mut participant = FileMutationParticipant {
+                let mut transaction_file = TransactionFile {
                     document_id,
                     role,
                     expected_version,
                     proposed_binding: FileBindingV1 {
                         schema_version: FILE_BINDING_VERSION,
                         document_id,
-                        parent: Some(root_record),
+                        parent: Some(root_document),
                         name: "destination.txt".into(),
                         kind: FileNodeKind::File,
-                        tombstoned: role == FileMutationParticipantRole::Replaced,
+                        tombstoned: role == TransactionFileRole::Replaced,
                         actor,
                         observed_at_ms: 2,
                     },
@@ -738,24 +738,24 @@ tilo_test_env::scenario! {
                     proposed_version: version,
                     projection_hash: ContentHash([0; 32]),
                 };
-                participant.projection_hash = participant.computed_projection_hash().unwrap();
-                participant
+                transaction_file.projection_hash = transaction_file.computed_projection_hash().unwrap();
+                transaction_file
             };
-            let mut participants = vec![
-                participant(
-                    source_record,
+            let mut files = vec![
+                transaction_file(
+                    source_document,
                     source_expected,
-                    FileMutationParticipantRole::Source,
+                    TransactionFileRole::Source,
                     1,
                 ),
-                participant(
-                    victim_record,
+                transaction_file(
+                    victim_document,
                     victim_expected,
-                    FileMutationParticipantRole::Replaced,
+                    TransactionFileRole::Replaced,
                     2,
                 ),
             ];
-            participants.sort_by_key(|participant| participant.document_id);
+            files.sort_by_key(|transaction_file| transaction_file.document_id);
             let transaction = fs_protocol::FileMutationTransaction::signed(
                 FileMutationTransactionManifest {
                     schema_version: FILE_MUTATION_TRANSACTION_VERSION,
@@ -764,14 +764,14 @@ tilo_test_env::scenario! {
                     actor,
                     timestamp_ms: 2,
                     operation: FileMutationOperation::ReplacementRename {
-                        source_parent: root_record,
+                        source_parent: root_document,
                         source_name: "source.txt".into(),
-                        destination_parent: root_record,
+                        destination_parent: root_document,
                         destination_name: "destination.txt".into(),
-                        source_record,
-                        replaced_record: victim_record,
+                        source_document,
+                        replaced_document: victim_document,
                     },
-                    participants,
+                    files,
                 },
                 &key,
             )
@@ -786,7 +786,7 @@ tilo_test_env::scenario! {
                 source_ino
             );
             assert!(ns.lookup(ROOT_INO, "source.txt").is_none());
-            assert!(ns.ino_for_document_id(victim_record).is_none());
+            assert!(ns.ino_for_document_id(victim_document).is_none());
             assert_eq!(
                 ns.apply_replacement_transaction(&transaction.manifest),
                 Ok(None)
@@ -802,9 +802,9 @@ tilo_test_env::scenario! {
             ns.doc
                 .put(&duplicate_obj, DOCUMENT_ID_KEY, document_id.0.to_string())
                 .unwrap();
-            ns.rebuild_record_index();
+            ns.rebuild_document_index();
             assert!(
-                ns.indexed_record(document_id).is_none(),
+                ns.indexed_document(document_id).is_none(),
                 "an ambiguous durable record identity must be withheld, not routed to an arbitrary node"
             );
             assert_eq!(ns.hash_for(first), None);
@@ -841,19 +841,19 @@ tilo_test_env::scenario! {
             device: collab_types::Ed25519PublicKey([22; 32]),
         };
         let origin = Namespace::new("origin").unwrap();
-        let root_record = origin.document_id_for(ROOT_INO).unwrap();
+        let root_document = origin.document_id_for(ROOT_INO).unwrap();
         let root_binding = origin.signed_binding_for(ROOT_INO, actor, 1).unwrap();
 
         let mut rebuilt = Namespace::new("rebuilt").unwrap();
-        assert_ne!(rebuilt.document_id_for(ROOT_INO), Some(root_record));
+        assert_ne!(rebuilt.document_id_for(ROOT_INO), Some(root_document));
         assert_eq!(rebuilt.apply_signed_binding(&root_binding), Ok(true));
-        assert_eq!(rebuilt.document_id_for(ROOT_INO), Some(root_record));
+        assert_eq!(rebuilt.document_id_for(ROOT_INO), Some(root_document));
 
         let record = FileDocumentId::new();
         let binding = FileBindingV1 {
             schema_version: FILE_BINDING_VERSION,
             document_id: record,
-            parent: Some(root_record),
+            parent: Some(root_document),
             name: b"created.txt".to_vec().into(),
             kind: FileNodeKind::File,
             tombstoned: false,
@@ -875,14 +875,14 @@ tilo_test_env::scenario! {
         let unsigned_id = rebuilt.id_for_ino(unsigned).unwrap().to_string();
         let unsigned_obj = rebuilt.node(&unsigned_id).unwrap();
         rebuilt.doc.delete(&unsigned_obj, DOCUMENT_ID_KEY).unwrap();
-        rebuilt.rebuild_record_index();
+        rebuilt.rebuild_document_index();
         assert!(rebuilt.document_id_for(unsigned).is_none());
 
-        let signed_record = FileDocumentId::new();
+        let signed_document = FileDocumentId::new();
         let contested = FileBindingV1 {
             schema_version: FILE_BINDING_VERSION,
-            document_id: signed_record,
-            parent: Some(root_record),
+            document_id: signed_document,
+            parent: Some(root_document),
             name: b"contested.txt".to_vec().into(),
             kind: FileNodeKind::File,
             tombstoned: false,
@@ -901,8 +901,8 @@ tilo_test_env::scenario! {
             .find(|(_, _, name)| name.as_bytes() == b"contested.txt")
             .expect("unsigned node keeps its name");
         assert_eq!(*contested_ino, unsigned);
-        let signed_ino = rebuilt.ensure_ino_for_document_id(signed_record).unwrap();
-        let conflict = structural_conflict_name(b"contested.txt", signed_record);
+        let signed_ino = rebuilt.ensure_ino_for_document_id(signed_document).unwrap();
+        let conflict = structural_conflict_name(b"contested.txt", signed_document);
         let (conflict_ino, _, _) = entries
             .iter()
             .find(|(_, _, name)| name == &conflict)
@@ -1030,7 +1030,7 @@ tilo_test_env::scenario! {
             // host) reads the same file from it.
             let id = ns.id_for_ino(ino).unwrap().to_owned();
             let mut record = automerge::AutoCommit::load(&ns.save()).unwrap();
-            let tree = fs_protocol::tree::Tree::of_record(&record.save()).unwrap();
+            let tree = fs_protocol::tree::Tree::of_document(&record.save()).unwrap();
             let node = tree.node(&id).unwrap();
             assert_eq!(
                 (node.codec.as_deref(), node.hash.as_deref()),
@@ -1155,23 +1155,29 @@ tilo_test_env::scenario! {
 
 pub(super) fn assert_indexes_match_rebuild(ns: &Namespace) {
     let mut rebuilt = ns.clone();
-    rebuilt.rebuild_record_index();
+    rebuilt.rebuild_document_index();
     assert_eq!(ns.tree.placement, rebuilt.tree.placement, "placement");
     assert_eq!(ns.tree.children, rebuilt.tree.children, "children");
     assert_eq!(ns.tree.records, rebuilt.tree.records, "record bindings");
-    assert_eq!(ns.tree.record_of, rebuilt.tree.record_of, "record owners");
-    assert_eq!(ns.record_index, rebuilt.record_index, "rows");
-    assert_eq!(ns.record_index_order, rebuilt.record_index_order, "order");
     assert_eq!(
-        ns.record_index_digest, rebuilt.record_index_digest,
+        ns.tree.document_of, rebuilt.tree.document_of,
+        "record owners"
+    );
+    assert_eq!(ns.document_index, rebuilt.document_index, "rows");
+    assert_eq!(
+        ns.document_index_order, rebuilt.document_index_order,
+        "order"
+    );
+    assert_eq!(
+        ns.document_index_digest, rebuilt.document_index_digest,
         "digest"
     );
     assert_eq!(
-        ns.record_index_revision, rebuilt.record_index_revision,
+        ns.document_index_revision, rebuilt.document_index_revision,
         "revision"
     );
     assert_eq!(
-        ns.record_index_ambiguous, rebuilt.record_index_ambiguous,
+        ns.document_index_ambiguous, rebuilt.document_index_ambiguous,
         "ambiguity"
     );
 }
@@ -1235,7 +1241,7 @@ fn trees_founded_apart_merge_with_every_file_of_each() {
     // A page that put the first file into the workspace's empty record, before any computer
     // reached it: the record holds no tree yet, so the page's placing makes its map.
     let mut record = automerge::AutoCommit::new();
-    let mut tree = fs_protocol::tree::Tree::of_record(&record.save()).unwrap();
+    let mut tree = fs_protocol::tree::Tree::of_document(&record.save()).unwrap();
     fs_protocol::tree::place(
         &mut record,
         &mut tree,

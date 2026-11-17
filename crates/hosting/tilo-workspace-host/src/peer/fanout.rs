@@ -2,7 +2,7 @@
 //! sessions each frame reaches. A single state commit and a committed
 //! checkpoint batch publish through the same steps.
 
-use crate::store::record_sync::Reach;
+use crate::store::document_sync::Reach;
 
 use super::{
     Arc, Envelope, FanoutStamp, HashMap, Invariant, ReplayCatchup, StateDelivery, StateSession,
@@ -36,8 +36,8 @@ pub(super) struct LiveFrame<'a> {
     /// A device's request to be admitted to a channel's group, which a device
     /// that only follows its groups is not sent.
     asks_admission: bool,
-    /// Who holds the frame's record ([`crate::store::record_sync`]).
-    reach: crate::store::record_sync::Reach,
+    /// Who holds the frame's record ([`crate::store::document_sync`]).
+    reach: crate::store::document_sync::Reach,
     /// The person whose own record the frame changes: only their devices
     /// are sent it.
     owner: Option<[u8; 32]>,
@@ -85,7 +85,7 @@ impl<'a> LiveFrame<'a> {
 fn record_reach(
     runtime: &crate::workspace::WorkspaceRuntime,
     envelope: &Arc<Envelope>,
-) -> (crate::store::record_sync::Reach, Option<[u8; 32]>) {
+) -> (crate::store::document_sync::Reach, Option<[u8; 32]>) {
     use crate::coedit::CoeditPayload;
     let Envelope::Delta { delta, .. } = &**envelope else {
         return (Reach::Everyone, None);
@@ -172,9 +172,10 @@ impl LiveFanout<'_> {
         // keeps all of the workspace.
         let held = match self.frame.reach {
             Reach::Everyone | Reach::Head(_) => true,
-            Reach::Opened(channel) => runtime.holds_record(recipient, &channel),
+            Reach::Opened(channel) => runtime.holds_resource(recipient, &channel),
             Reach::ChainHead { head, chain } => {
-                runtime.holds_record(recipient, &head) || runtime.holds_record(recipient, &chain)
+                runtime.holds_resource(recipient, &head)
+                    || runtime.holds_resource(recipient, &chain)
             }
         };
         if !held && !runtime.attached(recipient) {
@@ -276,7 +277,7 @@ impl LiveFanout<'_> {
                 if let Reach::Head(channel) | Reach::ChainHead { head: channel, .. } =
                     self.frame.reach
                 {
-                    runtime.hold_record(recipient, channel);
+                    runtime.hold_document(recipient, channel);
                 }
             }
             // Ordinary live traffic retains replay coverage under

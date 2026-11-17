@@ -2,7 +2,7 @@
 //! to one that would: an answer names a resource whole
 //! (`tasks.tracker/issues/7`), and that is a path the next call takes.
 
-use super::{ActionHost, Levels, McpServer, Node, ROOT_PEEK, Resolved};
+use super::{ActionHost, Level, Levels, McpServer, Node, ROOT_PEEK, Resolved};
 
 /// The close matches an action no resource offers is told with.
 pub(super) const CLOSE_MATCHES: usize = 5;
@@ -90,10 +90,29 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 .take(ROOT_PEEK)
                 .cloned()
                 .collect();
+            let addressed = |level: &Level| -> Result<Option<Node>, String> {
+                Ok(level
+                    .whole_children()
+                    .iter()
+                    .find(|node| node.address_is(address))
+                    .cloned())
+            };
             for container in containers {
-                let inside = self.level(provider, &container.id, levels).await?;
-                if let Some(node) = inside.children.iter().find(|node| node.address_is(address)) {
-                    found = Some(node.clone());
+                // An address that begins with a container's key names one of the
+                // container's own, so its level is read on past its bound to find
+                // it; any other container is looked through as far as it was read.
+                let own = address
+                    .strip_prefix(container.key.as_str())
+                    .is_some_and(|rest| rest.starts_with('/'));
+                let node = if own {
+                    self.level_holding(provider, &container.id, levels, addressed)
+                        .await?
+                        .0
+                } else {
+                    addressed(&self.level(provider, &container.id, levels).await?)?
+                };
+                if let Some(node) = node {
+                    found = Some(node);
                     break;
                 }
             }

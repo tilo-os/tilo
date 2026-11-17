@@ -26,7 +26,7 @@ pub fn prepare_private_surface(
     lend: impl FnOnce(&mut HostContext),
 ) -> Result<AppComponent, LaunchError> {
     let store = Rc::new(durable_store::MemoryStore::new());
-    let records = crate::record::RecordOwners::with_store(store.clone())
+    let records = crate::resource::ResourceOwners::with_store(store.clone())
         .open(definition.app_id(), workspace)
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
     let views = Rc::new(

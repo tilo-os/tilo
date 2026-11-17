@@ -116,7 +116,7 @@ async fn a_page_and_the_other_persons_desktop_talk_in_their_conversations_record
     let route = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: workspace.workspace.clone(),
-        record: collab_types::direct_record(&pair),
+        record: collab_types::direct_resource(&pair),
     };
     let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.record);
     let alice_device = alice.key.verifying_key().to_bytes();
@@ -125,7 +125,7 @@ async fn a_page_and_the_other_persons_desktop_talk_in_their_conversations_record
     desktop.join().await;
     let bob_device = bob_cert.device_public_key;
 
-    bob.send(Cmd::OpenRecordAt(workspace.workspace_id, route.clone()))
+    bob.send(Cmd::OpenDocumentAt(workspace.workspace_id, route.clone()))
         .unwrap();
     bob.send(Cmd::OpenRoute(route.clone())).unwrap();
     let message = say(

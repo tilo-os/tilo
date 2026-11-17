@@ -280,7 +280,7 @@ impl TopBarChrome {
     }
 
     /// Glance text puts the privacy state before identity so elision can shorten a long display
-    /// name without ever hiding "controls"/"viewing" or whether the participant is an agent. A
+    /// name without ever hiding "controls"/"viewing" or whether the member is an agent. A
     /// viewer nothing of a window goes out to waits: the pill says it watches, or is in control,
     /// only of a window that goes out to it.
     pub(super) fn sharing_label(&self) -> Option<String> {

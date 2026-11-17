@@ -551,7 +551,7 @@ fn commands(menu: &tilolang_runtime::UiNode) -> Vec<String> {
         .collect()
 }
 
-/// The menus of `role` that hold a resource's commands (`subject`).
+/// The menus of `role` that hold a resource's commands (`target`).
 fn resource_menus(
     view: &tilolang_runtime::ViewInstance,
     role: &str,
@@ -559,7 +559,7 @@ fn resource_menus(
     nodes(view, "ui.MenuButton")
         .into_iter()
         .filter(|menu| menu.props.get("role") == Some(&Value::Text(role.to_owned())))
-        .filter(|menu| menu.props.contains_key("subject"))
+        .filter(|menu| menu.props.contains_key("target"))
         .collect()
 }
 
@@ -604,7 +604,7 @@ fn the_macos_bar_carries_the_focused_windows_own_commands() {
     let card = |view: &tilolang_runtime::ViewInstance| format!("{:?}", view.tree());
     let macos = open(&r, scenario(&r, APP, "a window of several places"));
     // The menu the bar names the window in front by: a button of the bar that holds commands,
-    // the shell filling them from the declarations of the resource the window shows (`subject`).
+    // the shell filling them from the declarations of the resource the window shows (`target`).
     // The bar carries the shell's own menus too (the workspace, the preset the shell shows).
     let bar = resource_menus(&macos, "bar");
     assert_eq!(
@@ -626,7 +626,7 @@ fn the_macos_bar_carries_the_focused_windows_own_commands() {
     let shell_menus: Vec<String> = nodes(&macos, "ui.MenuButton")
         .into_iter()
         .filter(|menu| menu.props.get("role") == Some(&Value::Text("bar".to_owned())))
-        .filter(|menu| !menu.props.contains_key("subject"))
+        .filter(|menu| !menu.props.contains_key("target"))
         .filter_map(|menu| match menu.props.get("label") {
             Some(Value::Text(label)) => Some(label.clone()),
             _ => None,
@@ -639,7 +639,7 @@ fn the_macos_bar_carries_the_focused_windows_own_commands() {
 
     // The canvas keeps only the time, the notices and the person on its bar; each note's place
     // carries the note's commands on its own handle, so none is out of reach.
-    let canvas = open(&r, scenario(&r, APP, "a canvas of spaces"));
+    let canvas = open(&r, scenario(&r, APP, "a canvas of clusters"));
     assert!(
         resource_menus(&canvas, "bar").is_empty(),
         "the canvas's bar holds no window menu: {}",
@@ -929,7 +929,7 @@ fn a_canvas_place_naming_a_resource_and_view_composes_that_view_and_a_window_kee
     let meta = r.host.package(APP).unwrap().meta;
     // The layout is the session's (`origin: session.layout`): the scenario writes it
     // in this host, as the session's reading would, and nothing of it goes to the workspace.
-    let layout = scenario(&r, APP, "a canvas of spaces");
+    let layout = scenario(&r, APP, "a canvas of clusters");
     let shell = meta
         .views
         .iter()
@@ -967,7 +967,7 @@ fn a_canvas_place_naming_a_resource_and_view_composes_that_view_and_a_window_kee
 }
 
 #[test]
-fn resources_standing_as_content_stand_on_the_spaces_canvas() {
+fn resources_standing_as_content_stand_on_the_frameless_canvas() {
     let mut r = workspace();
     r.host.root_of("so.tilo.lang.notes").unwrap();
     r.commit();

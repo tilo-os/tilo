@@ -22,7 +22,7 @@ use ui_core::launch::LaunchError;
 use ui_core::permissions::{MemberId, PermissionContext, Role, SharedPermissions};
 
 pub(super) const AUTHOR: &str = "test-author";
-use ui_core::record::{DocumentCheckout, DocumentId, RecordStore};
+use ui_core::resource::{DocumentCheckout, DocumentId, ResourceStore};
 
 use super::app::{
     ResourceApp, definition, hand_launch, prepare_on, role_permissions, settle_launch,
@@ -133,13 +133,13 @@ pub(crate) fn data_dir_host(
 /// (`collaboration::broker_key_fetch`).
 ///
 /// # Errors
-/// A record with no route ([`super::app::record_route`]).
+/// A record with no route ([`super::app::resource_route`]).
 pub(super) fn hold_workspace_keys(
     context: &HostContext,
     workspace: &str,
 ) -> Result<(), LaunchError> {
-    let route = super::app::record_route(context)?;
-    ui_core::collaboration::record_content::ContentLane::of(&route)
+    let route = super::app::resource_route(context)?;
+    ui_core::collaboration::document_content::ContentLane::of(&route)
         .hold_secret(workspace_secret(workspace));
     Ok(())
 }
@@ -213,7 +213,7 @@ pub struct HeadlessApp<A: ResourceApp> {
     harness: FrameHarness,
     /// Whether the app is closed: its record written and its components closed, once.
     closed: bool,
-    records: RecordStore,
+    records: ResourceStore,
     checkout: DocumentCheckout,
     instance: u64,
     profile: Profile,
@@ -255,7 +255,7 @@ fn serve_kept<A: ResourceApp>(
         }
     }
     for (provider, kept) in providers {
-        let records = super::SettingsRecords::in_document(
+        let records = super::SettingsResources::in_document(
             super::app::hooks::<A>().id(),
             &kept,
             settings.clone(),
@@ -306,7 +306,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         )
     }
 
-    /// The app as a participant with `role` opens it on a fresh profile.
+    /// The app as a member with `role` opens it on a fresh profile.
     pub fn with_role(role: Role) -> Result<Self, LaunchError> {
         Self::fresh(TEST_WORKSPACE, role, AUTHOR)
     }
@@ -329,7 +329,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// The app as `person` (the hex of a root public key) opens it on a
     /// fresh profile: one of that person's devices, whose shared records
-    /// ([`RecordEnv::shared_person`](super::RecordEnv::shared_person)) are
+    /// ([`ResourceEnv::shared_person`](super::ResourceEnv::shared_person)) are
     /// theirs.
     pub fn for_person(person: &str) -> Result<Self, LaunchError> {
         Self::fresh(TEST_WORKSPACE, Role::Owner, person)
@@ -370,7 +370,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// shows in its process (a session showing Settings).
     pub fn for_person_shown_by(
         person: &str,
-        held: &ui_core::record::person::PersonRecords,
+        held: &ui_core::resource::person::PersonResources,
     ) -> Result<Self, LaunchError> {
         let profile = Rc::new(profile_directory().map_err(operation)?);
         let held = held.clone();
@@ -383,8 +383,8 @@ impl<A: ResourceApp> HeadlessApp<A> {
             None,
             None,
             move |context| {
-                if let Some(own) = context.person_records().cloned() {
-                    context.provide_person_records(own.sharing(&held));
+                if let Some(own) = context.person_resources().cloned() {
+                    context.provide_person_resources(own.sharing(&held));
                 }
             },
         )
@@ -393,7 +393,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// How many of the person's records the window holds open, the records
     /// a settings section keeps among them: a section's opens only when it
     /// is first written or stepped.
-    pub fn open_person_records(&mut self) -> usize {
+    pub fn open_person_resources(&mut self) -> usize {
         self.harness()
             .with_widget_mut(|root: &mut ResourceRoot| root.storage.person_owners().len())
             .unwrap_or_default()
@@ -401,7 +401,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// The person's own record of `P` the running app keeps, as its views
     /// open it.
-    pub fn person<P: Resource>(&mut self) -> Option<super::PersonRecord<P>> {
+    pub fn person<P: Resource>(&mut self) -> Option<super::PersonResource<P>> {
         self.harness()
             .with_widget_mut(|root: &mut ResourceRoot| root.storage.person::<P>())
             .flatten()
@@ -412,27 +412,27 @@ impl<A: ResourceApp> HeadlessApp<A> {
     pub fn shared_workspace<P: Resource>(
         &mut self,
         owner: &'static str,
-    ) -> Option<super::WorkspaceRecord<P>> {
+    ) -> Option<super::WorkspaceResource<P>> {
         self.harness()
             .with_widget_mut(|root: &mut ResourceRoot| root.storage.shared_workspace::<P>(owner))
             .flatten()
     }
 
     /// The record `id` that `owner` keeps, as the app's views open it.
-    pub fn shared_record<P: Resource>(
+    pub fn shared_resource<P: Resource>(
         &mut self,
         owner: &'static str,
         id: &str,
-    ) -> Option<super::WorkspaceRecord<P>> {
+    ) -> Option<super::WorkspaceResource<P>> {
         self.harness()
-            .with_widget_mut(|root: &mut ResourceRoot| root.storage.shared_record::<P>(owner, id))
+            .with_widget_mut(|root: &mut ResourceRoot| root.storage.shared_resource::<P>(owner, id))
             .flatten()
     }
 
     /// The person's shared record `P`, as the app's views open it.
-    pub fn shared_person<P: tilo_resource::SharedRecord>(
+    pub fn shared_person<P: tilo_resource::SharedResource>(
         &mut self,
-    ) -> Option<super::PersonRecord<P>> {
+    ) -> Option<super::PersonResource<P>> {
         self.harness()
             .with_widget_mut(|root: &mut ResourceRoot| root.storage.shared_person::<P>())
             .flatten()
@@ -518,7 +518,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// The app launched by its owner with `arguments`, as `app ARGUMENTS`
-    /// on the command line: on the record [`ResourceApp::launch_record`]
+    /// on the command line: on the record [`ResourceApp::launch_resource`]
     /// names, after its [`ResourceApp::launch`] actions. The app's own
     /// [options](ResourceApp::OPTIONS) and [switches](ResourceApp::FLAGS)
     /// among them reach it as options.
@@ -548,7 +548,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let native =
             ui_core::application::NativeProfile::open(&profile.path().join("state"), None)?;
         // A test thread may wait: the record is on the disk once installed.
-        let _installed = ui_core::record::transfer::install(
+        let _installed = ui_core::resource::transfer::install(
             native.store(),
             super::app::hooks::<A>().id(),
             TEST_WORKSPACE,
@@ -572,13 +572,15 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// `documents`, each a record a window of the app kept in the test workspace
     /// (`window_record`): how an app that now keeps one record per workspace
     /// first opens where it used to keep one per window.
-    pub fn with_window_records(documents: &mut [tilo_resource::Doc]) -> Result<Self, LaunchError> {
+    pub fn with_window_resources(
+        documents: &mut [tilo_resource::Doc],
+    ) -> Result<Self, LaunchError> {
         let profile = Rc::new(profile_directory().map_err(operation)?);
         {
             let native =
                 ui_core::application::NativeProfile::open(&profile.path().join("state"), None)?;
             for document in documents {
-                let _installed = ui_core::record::transfer::install(
+                let _installed = ui_core::resource::transfer::install(
                     native.store(),
                     super::app::hooks::<A>().id(),
                     TEST_WORKSPACE,
@@ -610,18 +612,18 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// given from elsewhere — a window on another device, an agent in a
     /// hosted workspace — rather than started here. What a relay publishes
     /// reaches a reader this way.
-    pub fn with_named_records(
-        documents: &mut [(&str, ui_core::record::DocumentId, tilo_resource::Doc)],
+    pub fn with_named_resources(
+        documents: &mut [(&str, ui_core::resource::DocumentId, tilo_resource::Doc)],
     ) -> Result<Self, LaunchError> {
         let profile = Rc::new(profile_directory().map_err(operation)?);
         {
             let native =
                 ui_core::application::NativeProfile::open(&profile.path().join("state"), None)?;
             let app = super::app::hooks::<A>().id();
-            let kind = super::app::definition::<A>().record_kind.clone();
+            let kind = super::app::definition::<A>().resource_type.clone();
             let mut index = automerge::AutoCommit::new();
             for (name, id, document) in documents.iter_mut() {
-                if !ui_core::record::init_scoped(
+                if !ui_core::resource::init_scoped(
                     document,
                     id,
                     &kind,
@@ -630,17 +632,17 @@ impl<A: ResourceApp> HeadlessApp<A> {
                 ) {
                     return Err(operation("a record could not be stamped for the workspace"));
                 }
-                let (checkout, _landing) = ui_core::record::transfer::install(
+                let (checkout, _landing) = ui_core::resource::transfer::install(
                     native.store(),
                     app,
                     TEST_WORKSPACE,
                     document,
                 )
                 .map_err(operation)?;
-                ui_core::record::index::reference(&mut index, &checkout.id, &checkout.kind);
-                ui_core::record::index::set_name(&mut index, &checkout.id, Some(name));
+                ui_core::resource::index::reference(&mut index, &checkout.id, &checkout.kind);
+                ui_core::resource::index::set_name(&mut index, &checkout.id, Some(name));
             }
-            let _landing = ui_core::record::transfer::install_workspace_document(
+            let _landing = ui_core::resource::transfer::install_workspace_document(
                 native.store(),
                 app,
                 TEST_WORKSPACE,
@@ -665,15 +667,15 @@ impl<A: ResourceApp> HeadlessApp<A> {
         )
     }
 
-    /// A new window of an app that [keeps one record per workspace](ResourceApp::WORKSPACE_RECORD)
+    /// A new window of an app that [keeps one record per workspace](ResourceApp::WORKSPACE_RESOURCE)
     /// on a fresh profile whose workspace record is already `document`: how a
     /// workspace an earlier version of the app wrote opens.
-    pub fn with_workspace_record(document: &mut tilo_resource::Doc) -> Result<Self, LaunchError> {
+    pub fn with_workspace_resource(document: &mut tilo_resource::Doc) -> Result<Self, LaunchError> {
         let profile = Rc::new(profile_directory().map_err(operation)?);
         {
             let native =
                 ui_core::application::NativeProfile::open(&profile.path().join("state"), None)?;
-            let _installed = ui_core::record::transfer::install_workspace_document(
+            let _installed = ui_core::resource::transfer::install_workspace_document(
                 native.store(),
                 super::app::hooks::<A>().id(),
                 TEST_WORKSPACE,
@@ -856,7 +858,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .in_document(self.profile.settings())
     }
 
-    /// Change the participant's role while the app runs, as the record's
+    /// Change the member's role while the app runs, as the record's
     /// owner changing their access does. Takes effect on the next frame,
     /// which this runs.
     pub fn set_role(&mut self, role: Role) {
@@ -868,13 +870,13 @@ impl<A: ResourceApp> HeadlessApp<A> {
         self.harness().relayout();
     }
 
-    /// The participant's permissions in force now.
+    /// The member's permissions in force now.
     #[must_use]
     pub fn permissions(&self) -> PermissionContext {
         self.permissions.borrow().clone()
     }
 
-    /// Change the participant's permissions while the app runs, as the host
+    /// Change the member's permissions while the app runs, as the host
     /// does when the workspace's grants change. Takes effect on the next frame,
     /// which this runs.
     pub fn set_permissions(&mut self, permissions: PermissionContext) {
@@ -882,7 +884,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         self.harness().relayout();
     }
 
-    /// Take the participant out of the workspace while the app runs: no role and
+    /// Take the member out of the workspace while the app runs: no role and
     /// no grant left, as when the owner removes them.
     pub fn leave_workspace(&mut self) {
         self.permissions.set(PermissionContext::stranger(
@@ -924,7 +926,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// Close the app and open a new window of it on the same profile and in
     /// the same workspace, as the launcher opens one: an instance it never had,
     /// whose fallback record is a fresh record of that window's own unless
-    /// the app [keeps one per workspace](ResourceApp::WORKSPACE_RECORD).
+    /// the app [keeps one per workspace](ResourceApp::WORKSPACE_RESOURCE).
     pub fn another_window(mut self) -> Result<Self, LaunchError> {
         self.close()?;
         let window = self.instance.wrapping_add(1).max(INSTANCE + 1);
@@ -949,7 +951,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// Open another window of the app beside this one, on the same profile
     /// and in the same workspace, while this one stays open: two windows a
     /// person has open at once. Its fallback record is the workspace's when the
-    /// app [keeps one per workspace](ResourceApp::WORKSPACE_RECORD), so both show one
+    /// app [keeps one per workspace](ResourceApp::WORKSPACE_RESOURCE), so both show one
     /// record; [`Self::deliver_changes_to`] carries edits between them.
     pub fn open_window(&self) -> Result<Self, LaunchError> {
         let window = self.instance.wrapping_add(1).max(INSTANCE + 1);
@@ -1002,10 +1004,14 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// beside its own (a part of a chain), to `other`, which holds it too,
     /// as the workspace's record sync sends a device a record it opened: `other`
     /// takes it in and draws its next frame. Whether `other` changed.
-    pub fn deliver_record_to(&mut self, other: &mut Self, id: &DocumentId) -> Result<bool, String> {
+    pub fn deliver_resource_to(
+        &mut self,
+        other: &mut Self,
+        id: &DocumentId,
+    ) -> Result<bool, String> {
         let checkout = other
             .records
-            .open_records()
+            .open_resources()
             .into_iter()
             .find(|checkout| checkout.id == *id)
             .ok_or_else(|| format!("the other window does not hold {id}"))?;
@@ -1020,35 +1026,40 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// Take this window's records to come from its workspace's hosts, as a
-    /// page's do ([`ui_core::record::RecordStore::ask_workspace_for_missing`]):
+    /// page's do ([`ui_core::resource::ResourceStore::ask_workspace_for_missing`]):
     /// a record not here is asked for, and new only once they answered.
     pub fn asks_the_workspace(&mut self) {
         self.records.ask_workspace_for_missing();
     }
 
     /// What this window asks its workspace's hosts for
-    /// ([`ui_core::record::RecordStore::wanted_records`]).
+    /// ([`ui_core::resource::ResourceStore::wanted_resources`]).
     #[must_use]
-    pub fn wanted_records(&self) -> Vec<DocumentId> {
-        self.records.wanted_records()
+    pub fn wanted_resources(&self) -> Vec<DocumentId> {
+        self.records.wanted_resources()
     }
 
     /// The workspace's hosts sent everything they hold of `id`, a record this
     /// window asked for, or none is connected to ask
-    /// ([`ui_core::record::RecordStore::note_workspace_answered`]).
-    pub fn workspace_answered(&mut self, id: DocumentId, answer: ui_core::record::WorkspaceAnswer) {
+    /// ([`ui_core::resource::ResourceStore::note_workspace_answered`]).
+    pub fn workspace_answered(
+        &mut self,
+        id: DocumentId,
+        answer: ui_core::resource::WorkspaceAnswer,
+    ) {
         self.records.note_workspace_answer(id, answer);
     }
 
     /// The workspace's default records of the app's windows kept on this
-    /// profile, as [`SeedCx::window_records`](super::SeedCx::window_records)
+    /// profile, as [`SeedCx::window_resources`](super::SeedCx::window_resources)
     /// reads them.
-    pub fn window_records(&self) -> Vec<(DocumentId, tilo_resource::Doc)> {
-        self.records.window_records(&definition::<A>().record_kind)
+    pub fn window_resources(&self) -> Vec<(DocumentId, tilo_resource::Doc)> {
+        self.records
+            .window_resources(&definition::<A>().resource_type)
     }
 
     /// Open what a launch naming `arguments` opens in this window, as the
-    /// app's view does with [`RecordEnv::open_here`](super::RecordEnv::open_here),
+    /// app's view does with [`ResourceEnv::open_here`](super::ResourceEnv::open_here),
     /// and run the frame that shows it.
     ///
     /// # Errors
@@ -1071,9 +1082,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// The record the window shows now: the one it was opened on, or one
-    /// its view opened in its place ([`RecordEnv::open_here`](super::RecordEnv::open_here)).
+    /// its view opened in its place ([`ResourceEnv::open_here`](super::ResourceEnv::open_here)).
     fn checkout(&self) -> &DocumentCheckout {
-        self.harness.component_record().unwrap_or(&self.checkout)
+        self.harness.component_resource().unwrap_or(&self.checkout)
     }
 
     /// Consume the hosted window's explicit save-retry request, as its
@@ -1088,12 +1099,16 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// Make every edit so far durable, as closing the app does.
     pub fn flush(&mut self) -> Result<(), LaunchError> {
-        self.harness().flush_component_records().map_err(operation)
+        self.harness()
+            .flush_component_resources()
+            .map_err(operation)
     }
 
     fn close(&mut self) -> Result<(), LaunchError> {
         if !self.closed {
-            self.harness.flush_component_records().map_err(operation)?;
+            self.harness
+                .flush_component_resources()
+                .map_err(operation)?;
             self.harness.close_components();
             self.closed = true;
         }
@@ -1127,9 +1142,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// The records this window's store has open: what the app process opened
     /// itself, which an app the session serves opens none of.
-    pub fn open_records(&self) -> Vec<DocumentId> {
+    pub fn open_resources(&self) -> Vec<DocumentId> {
         self.records
-            .open_records()
+            .open_resources()
             .into_iter()
             .map(|checkout| checkout.id)
             .collect()
@@ -1137,7 +1152,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// The whole document of `id` as this window holds it: its own record,
     /// or one it keeps beside it (a part of a chain).
-    pub fn record_document(&self, id: &DocumentId) -> Option<Vec<u8>> {
+    pub fn resource_document(&self, id: &DocumentId) -> Option<Vec<u8>> {
         self.records.read(id, |doc| doc.clone().save())
     }
 
@@ -1218,7 +1233,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         self.invoke_as(invoke, true)
     }
 
-    /// Discover the actions this participant may invoke on the running app,
+    /// Discover the actions this member may invoke on the running app,
     /// including item and child resources. Descriptors include the complete
     /// parameter, permission, confirmation and result contracts; discovery
     /// never invokes an action. Addresses stay stable across relayouts.
@@ -1329,7 +1344,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// Any published action of `resource`, by id with JSON arguments,
     /// delivered for `invoker` as the host delivers an admitted execution's
-    /// invocation: what it builds is bound to the invoker's own participant
+    /// invocation: what it builds is bound to the invoker's own member
     /// view, and what it submits is applied as theirs.
     ///
     /// # Errors
@@ -1944,7 +1959,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .expect("record is open")
     }
 
-    /// A copy of the stored document written by another participant: a
+    /// A copy of the stored document written by another member: a
     /// member's replica, for a test to edit and [`Self::merge_peer`]
     /// back.
     pub fn peer_document(&self) -> tilo_resource::Doc {
@@ -1979,7 +1994,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     ) -> Result<bool, String> {
         let checkout = self
             .records
-            .open_records()
+            .open_resources()
             .into_iter()
             .find(|open| open.id == *record)
             .ok_or("the record is not open here")?;
@@ -2047,7 +2062,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// A member's edit arriving: `edit` writes on their own replica of
     /// the record as it stands now, under their own actor, and the change is
-    /// merged in as sync merges a peer's. It is not the local participant's
+    /// merged in as sync merges a peer's. It is not the local member's
     /// action, so it never lands on their undo stack.
     #[allow(
         clippy::expect_used,
@@ -2082,7 +2097,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .flatten()
     }
 
-    /// Undo the local participant's last action, as Ctrl+Z does.
+    /// Undo the local member's last action, as Ctrl+Z does.
     pub fn undo(&mut self) -> bool {
         let harness = self.harness();
         let undone = harness.perform_undo();
@@ -2150,7 +2165,7 @@ struct Opening {
     options: &'static [&'static str],
     flags: &'static [&'static str],
     private_windows: bool,
-    launch_record: fn(&LaunchInput<'_>) -> Option<DocumentId>,
+    launch_resource: fn(&LaunchInput<'_>) -> Option<DocumentId>,
     shot_viewport: fn(Option<&str>) -> (u32, u32),
 }
 
@@ -2162,7 +2177,7 @@ impl Opening {
             options: A::OPTIONS,
             flags: A::FLAGS,
             private_windows: A::PRIVATE_WINDOWS,
-            launch_record: A::launch_record,
+            launch_resource: A::launch_resource,
             shot_viewport: A::shot_viewport,
         }
     }
@@ -2182,7 +2197,7 @@ struct Launch<'a> {
 /// A headless app [`open_app`] opened.
 struct Opened {
     harness: FrameHarness,
-    records: RecordStore,
+    records: ResourceStore,
     checkout: DocumentCheckout,
     instance: u64,
     profile: Profile,
@@ -2241,8 +2256,9 @@ fn open_app(
     host_phase.end();
     let definition = opening.definition;
     let prepare_phase = tilo_resource::profiling::Phase::start("start.prepare");
-    let records = host.records_for(definition)?;
-    let named = (opening.launch_record)(&LaunchInput::new(arguments, None).with_options(&options));
+    let records = host.resources_for(definition)?;
+    let named =
+        (opening.launch_resource)(&LaunchInput::new(arguments, None).with_options(&options));
     let inputs = ComponentRunnerInputs::from_native_process();
     let mut prepared = match (&profile, named) {
         (Profile::Window(..), None) => host.prepare_default(
@@ -2250,7 +2266,7 @@ fn open_app(
             instance,
             DocumentCheckout::new(
                 DocumentId::window_default(instance),
-                definition.record_kind.clone(),
+                definition.resource_type.clone(),
             ),
             None,
             inputs,
@@ -2391,7 +2407,7 @@ fn split_command_line(
 /// What `A` publishes and how its view binds to it, as `tilo-app surface`
 /// commits it and `tilo-app check` compares it: the resource's
 /// [`Surface`](tilo_resource::Surface), those of the person's records it
-/// declares ([`ResourceApp::PERSON_RECORDS`]) and those of the records its
+/// declares ([`ResourceApp::PERSON_RESOURCES`]) and those of the records its
 /// views open beside its own (the parts of its chains, the settings
 /// sections), every control its view, built headless on an empty record,
 /// binds to something the resource does not publish, the ids of its effects
@@ -2402,7 +2418,7 @@ pub fn surface_report<A: ResourceApp>() -> serde_json::Value {
     report_surface(
         &Opening::of::<A>(),
         <A::Resource as Resource>::surface(),
-        A::PERSON_RECORDS,
+        A::PERSON_RESOURCES,
         &published_ids::<A>,
     )
 }

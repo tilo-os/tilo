@@ -132,6 +132,6 @@ pub(crate) fn answer(
 /// ([`tilo_resource::table::reads_item`]): what is read from the table when
 /// the resource's own read, which comes first, does not answer it.
 pub(super) fn reads_as_item(resource: &ResourceType, item: Option<&str>) -> bool {
-    item.zip(resource.record_table)
+    item.zip(resource.resource_table)
         .is_some_and(|(item, table)| tilo_resource::table::reads_item(table, resource.kind, item))
 }

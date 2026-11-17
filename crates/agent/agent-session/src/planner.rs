@@ -2,7 +2,7 @@
 //!
 //! A [`Planner`] turns a task into [`Step`]s, each one operation a record
 //! publishes. The planner sees only inert descriptors ([`PlanContext`]); it
-//! can name an operation but never perform one, and the participant checks
+//! can name an operation but never perform one, and the member checks
 //! every step against the delegation and the resource's API before it
 //! runs.
 //!

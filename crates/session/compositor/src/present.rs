@@ -66,6 +66,8 @@ pub struct Presentation {
     refresh: Refresh,
     /// The frame's serial, which the display's retirement of later frames includes.
     serial: u64,
+    /// The output the frame was drawn for, whose first frame says a display is showing.
+    output: String,
     /// The windows of a launch whose first frame this one is: the app's content reached a display
     /// with it.
     first_frames: Vec<u64>,
@@ -77,7 +79,7 @@ impl Presentation {
     pub(crate) fn shown(mut self, state: &State, shown: Shown) {
         let (time, sequence, flags) = shown.report(Clock::<Monotonic>::new().now());
         self.feedback.presented(time, self.refresh, sequence, flags);
-        state.frame_presented(self.serial);
+        state.frame_presented(self.serial, &self.output);
         for window in self.first_frames {
             tilo_startup_metrics::launch_first_present(window, self.serial);
         }
@@ -159,6 +161,7 @@ impl State {
             feedback,
             refresh,
             serial,
+            output: output.name(),
             first_frames,
         }
     }

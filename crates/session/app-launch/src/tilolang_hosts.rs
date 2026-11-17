@@ -77,7 +77,7 @@ pub fn runs_in_host(app: &str) -> bool {
 pub struct TaskPackage {
     pub app: String,
     pub module: runtime_portal::tilolang_host::Module,
-    pub records_under: Option<String>,
+    pub documents_under: Option<String>,
 }
 
 /// Every installed tilolang app a task's programs name, each verified as a launch verifies it.
@@ -100,7 +100,7 @@ pub fn task_packages() -> Vec<TaskPackage> {
             Ok(verified) => Some(TaskPackage {
                 app: app.app_id.to_string(),
                 module: verified.module,
-                records_under: Some(earlier.records_under(&app.app_id).to_owned())
+                documents_under: Some(earlier.documents_under(&app.app_id).to_owned())
                     .filter(|under| under.as_str() != app.app_id.as_str()),
             }),
             Err(error) => {
@@ -127,7 +127,7 @@ fn installed_apps() -> std::collections::BTreeMap<String, String> {
         .map(|app| {
             (
                 app.app_id.to_string(),
-                earlier.records_under(&app.app_id).to_owned(),
+                earlier.documents_under(&app.app_id).to_owned(),
             )
         })
         .collect()
@@ -220,7 +220,7 @@ pub struct Instance {
     pub workspace: String,
     /// The window's instance: the tab it takes.
     pub instance: u64,
-    /// The participant at the window, whose steps its undo takes back.
+    /// The member at the window, whose steps its undo takes back.
     pub person: String,
     /// The host's end of the window's patch connection.
     pub patch: OwnedFd,
@@ -417,9 +417,9 @@ impl Hosts {
         };
         let module_len = module.len() as u64;
         let module = tilo_render_protocol::shm::sealed_blob("tilolang-module", &module)?;
-        let records_under = Some(
+        let documents_under = Some(
             tilo_action_policy::earlier::held()
-                .records_under(&instance.app)
+                .documents_under(&instance.app)
                 .to_owned(),
         )
         .filter(|id| *id != instance.app);
@@ -428,7 +428,7 @@ impl Hosts {
             &self.data_home,
             &storage,
             &instance.app,
-            records_under.as_deref().unwrap_or(&instance.app),
+            documents_under.as_deref().unwrap_or(&instance.app),
             &instance.workspace,
         );
         let request = InstanceRequest {
@@ -437,7 +437,7 @@ impl Hosts {
             instance: instance.instance,
             person: instance.person,
             module_len,
-            records_under,
+            documents_under,
             applies_change: false,
             formats: ui::format::region::current(),
             // The person's language, as this session resolved it: their windows read every word in
@@ -1184,10 +1184,12 @@ mod tests {
             let documents: Rc<dyn durable_store::DurableStore> =
                 Rc::new(app_state::FsStore::new(root.to_path_buf()));
             let mut store = match member {
-                None => collaboration::record::save::workspace_document(&documents, APP, WORKSPACE),
-                Some(record) => {
-                    collaboration::record::save::record_document(&documents, APP, WORKSPACE, record)
+                None => {
+                    collaboration::document::save::workspace_document(&documents, APP, WORKSPACE)
                 }
+                Some(record) => collaboration::document::save::resource_document(
+                    &documents, APP, WORKSPACE, record,
+                ),
             }
             .unwrap();
             let mut doc = store.load_or_new();
@@ -1199,10 +1201,12 @@ mod tests {
             let documents: Rc<dyn durable_store::DurableStore> =
                 Rc::new(app_state::FsStore::provisioned(root.to_path_buf()));
             let mut store = match member {
-                None => collaboration::record::save::workspace_document(&documents, APP, WORKSPACE),
-                Some(record) => {
-                    collaboration::record::save::record_document(&documents, APP, WORKSPACE, record)
+                None => {
+                    collaboration::document::save::workspace_document(&documents, APP, WORKSPACE)
                 }
+                Some(record) => collaboration::document::save::resource_document(
+                    &documents, APP, WORKSPACE, record,
+                ),
             }
             .unwrap();
             let doc = store.load_or_new();

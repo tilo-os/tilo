@@ -36,7 +36,7 @@ impl TypeInfo {
         self.fields.iter().find(|f| f.name == name)
     }
 
-    /// The field a record of the type is named by: the one it says (`title: subject`), else its first
+    /// The field a record of the type is named by: the one it says (`title: target`), else its first
     /// `Text` or `RichText` field that merges as text. A register of text is a code or a label, never
     /// what the record is called. A type with no such field names its records by the type's name and
     /// the record's `created`.
@@ -202,7 +202,7 @@ pub struct Presentation {
     /// A kebab-case name of the platform's icon set.
     pub icon: Option<String>,
     pub role: Option<String>,
-    /// The id of the hidden view that presents the action's state for its subject.
+    /// The id of the hidden view that presents the action's state for its target.
     pub view: Option<String>,
     /// `label: "Move to {col.title}"` or `label: if pinned { "Pin" } else { "Unpin" }`: the label as
     /// written, read where the action is applied with its arguments, so it follows them as they change.

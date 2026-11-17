@@ -1,6 +1,6 @@
 //! The person's layout: what is open where, shared with the workspace and read off the layout
 //! itself, kept in its own record
-//! ([`tilo_desktop_model::shared_record`]) with history and undo, so every member
+//! ([`tilo_desktop_model::shared_resource`]) with history and undo, so every member
 //! of the workspace reads the same one. A place's view and its pin are the
 //! window's own ([`tilo_desktop_model::Tab`]).
 //! Each layout action ([`LayoutAction`]) is one change of the layout,
@@ -739,7 +739,7 @@ impl Layouts for LayoutDocument {
         action: &LayoutAction,
         shows: &[(TabId, String)],
     ) {
-        self.record_action(
+        self.resource_action(
             tree,
             ui::time::unix_now_i64(),
             &crate::layout::step_context(asked, action),
@@ -2206,7 +2206,7 @@ fn show_at(
     };
     let view = target.chosen_view(view);
     // The window the place is shows the resource from now on: its app, the record `Place` writes
-    // for it (`LayoutDocument::record_action`'s `shows`), and the view it shows it through. Everything
+    // for it (`LayoutDocument::resource_action`'s `shows`), and the view it shows it through. Everything
     // else the place keeps — its id, its strip, its place on the canvas, whether it is pinned.
     let window = Tab {
         id: place,

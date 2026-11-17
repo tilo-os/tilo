@@ -137,7 +137,7 @@ export async function settle({
 /** [`settle`] over the open search's own answer: it ends when the search owes
  * no rows (`searchSearching` false) as much as when the frames came. */
 export const settleSearch = (tab, {evaluate = tab.evaluate.bind(tab), ...rest} = {}) =>
-  settle({evaluate, owed: () => searching(tab), ...rest});
+  settle({evaluate, owed: () => searching(tab), ...(tab.changed ? {pause: ms => tab.changed(ms)} : {}), ...rest});
 
 /**
  * Reload `tab` and wait until the document that answers is the one it loaded,
@@ -157,7 +157,7 @@ export const settleSearch = (tab, {evaluate = tab.evaluate.bind(tab), ...rest} =
  * Between reads it waits for the page's next change (`pause`), or for the next
  * document when the one it waited in went away; never on a clock.
  *
- * `tab` answers `evaluate`, `reload`, `documents` and `nextDocument`; `pause`
+ * `tab` answers `evaluate`, `reload`, `documents` and `changed`; `pause`
  * and `now` are injectable so a test proves the wait ends on the new
  * document's own state.
  *
@@ -171,7 +171,7 @@ export async function reloaded(
   {
     evaluate = tab.evaluate.bind(tab),
     timeoutMs = stepLimit(8),
-    pause = ms => evaluate(nextChange(ms)).catch(() => tab.nextDocument?.(ms)),
+    pause = ms => (tab.changed ? tab.changed(ms) : evaluate(nextChange(ms))),
     documents = () => tab.documents?.() ?? 0,
     now = () => Date.now(),
   } = {},

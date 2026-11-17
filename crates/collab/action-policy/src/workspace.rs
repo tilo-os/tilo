@@ -431,6 +431,22 @@ impl WorkspacePolicy {
         })
     }
 
+    /// How many permissions the workspace gives `person` beyond their role. Being an
+    /// administrator, or whom the workspace is kept for, is their role's to say, and is not
+    /// counted.
+    #[must_use]
+    pub fn extra_grants(&self, person: &str) -> usize {
+        let grantee = Grantee::person(person.to_owned());
+        self.grants
+            .iter()
+            .filter(|grant| grant.grantee == grantee)
+            .filter(|grant| {
+                roles::administrator_named(&grant.id).is_none()
+                    && roles::keeper_named(&grant.id).is_none()
+            })
+            .count()
+    }
+
     /// The workspace's administrators, by person id, in id order.
     pub fn administrators(&self) -> impl Iterator<Item = &str> + '_ {
         self.members

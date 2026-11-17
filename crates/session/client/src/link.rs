@@ -47,15 +47,15 @@ pub struct Failure {
     pub message: String,
     /// When it happened (ms since the epoch).
     pub at_ms: u64,
-    /// What failed. A subject other than [`FailureSubject::Session`] holds at
+    /// What failed. A kind other than [`FailureKind::Session`] holds at
     /// most one failure at a time.
-    pub subject: FailureSubject,
+    pub kind: FailureKind,
 }
 
 /// What a [`Failure`] is about. It decides the `SessionHealth` scope and the
 /// recovery the failure offers.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum FailureSubject {
+pub enum FailureKind {
     /// The session itself: transport, identity, protocol.
     Session,
     /// The page's durable store (`retry-saving`).
@@ -72,7 +72,7 @@ pub enum FailureSubject {
     },
 }
 
-/// Failure codes the page may report for a subject it owns.
+/// Failure codes the page may report for a kind it owns.
 pub const PAGE_FAILURE_CODES: &[&str] = &[
     "storage-quota",
     "storage-denied",
@@ -207,14 +207,14 @@ pub enum Entry {
 }
 
 impl PeerStatus {
-    /// Take `failure` in: a subject other than [`FailureSubject::Session`] holds one failure at a
+    /// Take `failure` in: a kind other than [`FailureKind::Session`] holds one failure at a
     /// time, the session one per code, and the oldest goes once there are too many.
     pub fn upsert(&mut self, failure: Failure) {
         self.failures.retain(|existing| {
-            if failure.subject == FailureSubject::Session {
-                existing.subject != FailureSubject::Session || existing.code != failure.code
+            if failure.kind == FailureKind::Session {
+                existing.kind != FailureKind::Session || existing.code != failure.code
             } else {
-                existing.subject != failure.subject
+                existing.kind != failure.kind
             }
         });
         self.failures.push(failure);
@@ -251,6 +251,9 @@ struct Reported {
     /// Wakes that last as long as their consumer's event queue (an asker's), dropped
     /// with it.
     listeners: Vec<(Weak<Mutex<VecDeque<Event>>>, Wake)>,
+    /// Wakes for one queue, told only when that queue takes an event: a
+    /// reader that follows one kind of event and nothing else.
+    takers: Vec<(Weak<Mutex<VecDeque<Event>>>, Wake)>,
     /// The current session's bearer token for its host's fetch proxy (`tilo_net::proxy`, at
     /// `/peer/v1/fetch`); kept apart from [`PeerStatus`], which diagnostics show.
     fetch_proxy: Option<String>,
@@ -298,6 +301,7 @@ impl Reports {
             queues: Vec::new(),
             wakes: Vec::new(),
             listeners: Vec::new(),
+            takers: Vec::new(),
             fetch_proxy: None,
             live_note: None,
             inbound: None,
@@ -344,20 +348,35 @@ impl Reports {
 
     /// Hand `event` to every consumer's queue and wake them.
     pub fn emit(&self, event: &Event) {
-        let wakes = {
+        let (wakes, told) = {
             let mut reported = self.lock();
+            let mut took: Vec<Queue> = Vec::new();
             reported.queues.retain(|(queue, takes)| {
                 let Some(queue) = queue.upgrade() else {
                     return false;
                 };
                 if takes(event) {
                     queue.lock_recover().push_back(event.clone());
+                    took.push(queue);
                 }
                 true
             });
-            reported.wakes_now()
+            reported
+                .takers
+                .retain(|(queue, _)| queue.strong_count() > 0);
+            let told: Vec<Wake> = reported
+                .takers
+                .iter()
+                .filter(|(queue, _)| {
+                    queue
+                        .upgrade()
+                        .is_some_and(|queue| took.iter().any(|took| Arc::ptr_eq(took, &queue)))
+                })
+                .map(|(_, wake)| Arc::clone(wake))
+                .collect();
+            (reported.wakes_now(), told)
         };
-        for wake in &wakes {
+        for wake in wakes.iter().chain(told.iter()) {
             wake();
         }
     }
@@ -388,6 +407,13 @@ impl Reports {
     fn listen(&self, events: &Events, wake: Wake) {
         self.lock()
             .listeners
+            .push((Arc::downgrade(&events.queue), wake));
+    }
+
+    /// Call `wake` when `events` takes an event, for as long as it is read.
+    fn listen_taking(&self, events: &Events, wake: Wake) {
+        self.lock()
+            .takers
             .push((Arc::downgrade(&events.queue), wake));
     }
 
@@ -510,25 +536,25 @@ impl Link {
     #[must_use]
     pub fn snapshot(&self) -> crate::health::PeerSnapshot {
         let owner = self.engine.owner();
-        let writes =
-            self.engine
-                .workspaces()
-                .into_iter()
-                .flat_map(|workspace| {
-                    owner.record_writes(workspace).into_iter().map(
-                        move |((app_id, record), writes)| {
-                            (
-                                DocumentRoute {
-                                    app_id,
-                                    cluster_id: workspace.to_string(),
-                                    record,
-                                },
-                                writes,
-                            )
-                        },
-                    )
-                })
-                .collect();
+        let writes = self
+            .engine
+            .workspaces()
+            .into_iter()
+            .flat_map(|workspace| {
+                owner.document_writes(workspace).into_iter().map(
+                    move |((app_id, record), writes)| {
+                        (
+                            DocumentRoute {
+                                app_id,
+                                cluster_id: workspace.to_string(),
+                                record,
+                            },
+                            writes,
+                        )
+                    },
+                )
+            })
+            .collect();
         crate::health::PeerSnapshot::from_status(&self.status(), &writes)
     }
 
@@ -554,7 +580,7 @@ impl Link {
                     code: "storage-transaction-failed",
                     message: "Changes could not be saved on this device.".into(),
                     at_ms: tilo_clock::unix_now_ms(),
-                    subject: FailureSubject::Storage,
+                    kind: FailureKind::Storage,
                 });
             } else if state == LocalState::Durable
                 && !status
@@ -564,25 +590,25 @@ impl Link {
             {
                 status
                     .failures
-                    .retain(|failure| failure.subject != FailureSubject::Storage);
+                    .retain(|failure| failure.kind != FailureKind::Storage);
             }
         });
     }
 
     /// Report a failure of something the page owns: its store, a desktop surface, a surface's
-    /// asset. It replaces the subject's previous one.
+    /// asset. It replaces the previous one of its kind.
     ///
     /// # Errors
     ///
-    /// Rejects [`FailureSubject::Session`] and [`FailureSubject::Admission`], which only the
+    /// Rejects [`FailureKind::Session`] and [`FailureKind::Admission`], which only the
     /// session reports, and codes outside [`PAGE_FAILURE_CODES`].
     pub fn report_failure(
         &self,
-        subject: FailureSubject,
+        kind: FailureKind,
         code: &str,
         message: impl Into<String>,
     ) -> Result<(), String> {
-        if matches!(subject, FailureSubject::Session | FailureSubject::Admission) {
+        if matches!(kind, FailureKind::Session | FailureKind::Admission) {
             return Err("the session reports its own failures".into());
         }
         let code = PAGE_FAILURE_CODES
@@ -596,37 +622,35 @@ impl Link {
                 code,
                 message,
                 at_ms: tilo_clock::unix_now_ms(),
-                subject,
+                kind,
             });
         });
         Ok(())
     }
 
-    /// Clear every failure of `subject`.
-    pub fn clear_failure(&self, subject: &FailureSubject) {
-        self.clear(|failure| failure == subject);
+    /// Clear every failure of `kind`.
+    pub fn clear_failure(&self, kind: &FailureKind) {
+        self.clear(|failure| failure == kind);
     }
 
     /// Clear every failure of desktop surface `surface` and of its assets.
     pub fn clear_surface(&self, surface: &str) {
-        self.clear(|subject| match subject {
-            FailureSubject::Surface(id) | FailureSubject::Asset { surface: id, .. } => {
-                id == surface
-            }
+        self.clear(|kind| match kind {
+            FailureKind::Surface(id) | FailureKind::Asset { surface: id, .. } => id == surface,
             _ => false,
         });
     }
 
-    /// Clear the failures whose subject `of` names, waking the watchers only when there were any.
-    fn clear(&self, of: impl Fn(&FailureSubject) -> bool) {
+    /// Clear the failures whose kind `of` names, waking the watchers only when there were any.
+    fn clear(&self, of: impl Fn(&FailureKind) -> bool) {
         if !self
             .reports
-            .read(|status| status.failures.iter().any(|failure| of(&failure.subject)))
+            .read(|status| status.failures.iter().any(|failure| of(&failure.kind)))
         {
             return;
         }
         self.reports.change(|status| {
-            status.failures.retain(|failure| !of(&failure.subject));
+            status.failures.retain(|failure| !of(&failure.kind));
         });
     }
 
@@ -678,6 +702,13 @@ impl Link {
     /// Call `wake` whenever status or events change.
     pub fn on_change(&self, wake: Wake) {
         self.reports.lock().wakes.push(wake);
+    }
+
+    /// Call `wake` when `events` takes an event, and at no other time: a
+    /// reader that follows one kind of event, such as the person's workspace
+    /// list, rather than every change of the session.
+    pub fn on_event(&self, events: &Events, wake: Wake) {
+        self.reports.listen_taking(events, wake);
     }
 
     /// What `read` first answers of the session's status, woken by each change of it rather
@@ -852,28 +883,28 @@ impl crate::remote::RemoteSession for Asking {
 mod tests {
     use super::*;
 
-    fn failure(code: &'static str, subject: FailureSubject) -> Failure {
+    fn failure(code: &'static str, kind: FailureKind) -> Failure {
         Failure {
             code,
             message: String::new(),
             at_ms: 0,
-            subject,
+            kind,
         }
     }
 
     #[test]
-    fn a_subject_holds_one_failure_and_session_failures_one_per_code() {
+    fn a_kind_holds_one_failure_and_session_failures_one_per_code() {
         let mut status = PeerStatus::connecting([0; 32]);
-        for (code, subject) in [
-            ("transport-ended", FailureSubject::Session),
-            ("transport-unavailable", FailureSubject::Session),
-            ("transport-ended", FailureSubject::Session),
-            ("storage-transaction-failed", FailureSubject::Storage),
-            ("storage-quota", FailureSubject::Storage),
-            ("gpu-device-lost", FailureSubject::Surface("a".into())),
-            ("gpu-device-lost", FailureSubject::Surface("b".into())),
+        for (code, kind) in [
+            ("transport-ended", FailureKind::Session),
+            ("transport-unavailable", FailureKind::Session),
+            ("transport-ended", FailureKind::Session),
+            ("storage-transaction-failed", FailureKind::Storage),
+            ("storage-quota", FailureKind::Storage),
+            ("gpu-device-lost", FailureKind::Surface("a".into())),
+            ("gpu-device-lost", FailureKind::Surface("b".into())),
         ] {
-            status.upsert(failure(code, subject));
+            status.upsert(failure(code, kind));
         }
         let codes: Vec<_> = status.failures.iter().map(|failure| failure.code).collect();
         assert_eq!(
@@ -889,7 +920,7 @@ mod tests {
         for index in 0..MAX_FAILURES {
             status.upsert(failure(
                 "asset-unavailable",
-                FailureSubject::Asset {
+                FailureKind::Asset {
                     surface: "a".into(),
                     asset: index.to_string(),
                 },

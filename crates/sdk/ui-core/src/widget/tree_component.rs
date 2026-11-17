@@ -1345,7 +1345,7 @@ fn row_of(
         row = row.change(mark.identity, mark.name, mark.spoken, mark.said, mark.show);
     }
     if let Some(person) = &node.presence {
-        row = row.presence(person.identity.clone());
+        row = row.presence(person.identity.id());
     }
     let row = Box::new(row) as Element;
     if node.toolbar.is_empty() {
@@ -2355,7 +2355,7 @@ mod tests {
         let queue = crate::Intents::default();
         let mut props = node("a", None, false, &queue);
         props.presence = Some(Person {
-            identity: "bo".to_owned(),
+            identity: tilo_actions::MemberId::person("bo").into(),
             name: "Bo".to_owned(),
             hue: crate::tokens::PresenceHue::of_identity("bo"),
         });

@@ -467,14 +467,14 @@ pub fn person(chat: &ChatRead, id: &MemberId) -> Option<Person> {
 }
 
 /// The Tilo role of `person` in the workspace's own read (`{"members":
-/// [{"person", "role"}]}`), lower case.
+/// [{"member", "role"}]}`), lower case.
 #[must_use]
 pub fn workspace_role(workspace: &Value, person: &str) -> Option<String> {
     workspace
         .get("members")?
         .as_array()?
         .iter()
-        .find(|m| m.get("person").and_then(Value::as_str) == Some(person))
+        .find(|m| m.pointer("/member/person").and_then(Value::as_str) == Some(person))
         .and_then(|m| m.get("role")?.as_str())
         .map(str::to_ascii_lowercase)
 }
@@ -643,7 +643,7 @@ mod tests {
 
     #[test]
     fn workspace_roles_are_lower_case() {
-        let workspace = json!({"members": [{"person": "u_ada", "role": "Moderator"}]});
+        let workspace = json!({"members": [{"member": {"person": "u_ada"}, "role": "Moderator"}]});
         assert_eq!(
             workspace_role(&workspace, "u_ada").as_deref(),
             Some("moderator")

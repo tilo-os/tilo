@@ -544,7 +544,7 @@ impl<'a> Validator<'a> {
                 self.key(&resource.ty)
             }
             Value::Actor(who) => {
-                self.key(&who.id)?;
+                self.key(who.id.id())?;
                 self.string(&who.name)
             }
             Value::Map(entries) => {

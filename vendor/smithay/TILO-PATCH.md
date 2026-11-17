@@ -269,6 +269,22 @@ backend only creates atomic surfaces; the legacy surface keeps
 Remove this once upstream queues its state commits and tracks them, or reports
 which commit is still in flight.
 
+## A display can keep its last picture while the desktop restarts (`drm`)
+
+`DrmOutputManager::initialize_output` renders and commits one black frame per
+new output, to lock the primary plane's format in before later frames. A
+desktop that restarts in place inherits displays that are already scanning out
+its predecessor's last frame, and a black frame there is a flash between the
+old picture and the new one.
+
+- `src/backend/drm/output.rs`: `DrmOutputManager` gains `initial_frame`, with
+  `set_initial_frame`; when it is off, `initialize_output` skips that warming
+  frame and leaves the plane and its buffer alone. Default stays on, as
+  upstream.
+
+Remove this once upstream lets a caller create an output without the warming
+frame (or the backend composes the first frame itself).
+
 ## An X11 display that outlives its server (`XWaylandListener`)
 
 One display number serves one workspace, and a workspace runs an X server
@@ -366,3 +382,29 @@ the queue (`cleanup`) before they read, so at most the mappings still held
 stand.
 
 Remove this once upstream frees dropped mappings outside a frame.
+
+## The pool a shared-memory buffer lies in (`wl_shm`)
+
+A proxy between an app and the compositor (the app keeper) hands an app's
+buffers on to the compositor as they are, never copying pixels: it creates a
+pool upstream from the same descriptor and a buffer at the same place in it.
+smithay kept the pool's descriptor private. `src/wayland/shm/pool.rs`
+`Pool::fd` returns it, and `src/wayland/shm/mod.rs`
+`with_buffer_pool(buffer, |fd, pool_size, data| ..)` gives a buffer's pool
+descriptor, the pool's current size and the buffer's place in it without
+mapping or touching its contents.
+
+Remove this once upstream exposes a buffer's pool descriptor.
+
+## A parent surface's whole stack in drawing order
+
+`PrivateSurfaceData` keeps a surface's children in drawing order with the surface itself among
+them, so `wl_subsurface.place_above`/`place_below` can name the parent, but `get_children`
+filters the parent out and nothing exposes where it sits. A proxy that mirrors an app's
+surfaces (the app keeper) then cannot tell a subsurface above the parent from one below it, and
+recreates a tree with the wrong stacking. `src/wayland/compositor/tree.rs`
+`PrivateSurfaceData::children_in_stack_order` and the re-export
+`compositor::children_in_stack_order` return the list as it stands, parent included at its
+place.
+
+Remove this once upstream exposes the parent's place among its children.

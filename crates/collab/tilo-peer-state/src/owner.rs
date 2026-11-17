@@ -56,7 +56,7 @@ pub use join_service::OwnerJoinWorkspaces;
 pub use journaled::{JournalParts, Journaled};
 pub use limits::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES};
 pub use publication::{
-    HostAnswer, NativeOutgoing, NativeOutgoingEntry, RecordWrites, SealedHistoryKeys,
+    DocumentWrites, HostAnswer, NativeOutgoing, NativeOutgoingEntry, SealedHistoryKeys,
     custody_run_name, outgoing_bytes, validate_file_layout,
 };
 pub use record::{
@@ -235,9 +235,9 @@ struct SharedOwner {
     /// The channel keys that keep this device's sealed record histories within
     /// their bound ([`NativeWorkspaceOwner::keep_sealed_histories`]).
     history_keys: Mutex<Option<Arc<dyn SealedHistoryKeys>>>,
-    /// How many more passes each workspace takes before a compaction that
-    /// drafted nothing is tried again.
-    compaction_wait: Mutex<BTreeMap<WorkspaceId, usize>>,
+    /// The records a compaction of which drafted nothing, each resting a
+    /// while before it is tried again.
+    resting: publication::Resting,
 }
 #[derive(Default)]
 struct Current {
@@ -580,7 +580,7 @@ impl NativeWorkspaceOwner {
             listeners: Mutex::new(Vec::new()),
             kept_here: Mutex::new(Vec::new()),
             history_keys: Mutex::new(None),
-            compaction_wait: Mutex::new(BTreeMap::new()),
+            resting: publication::Resting::default(),
         }))
     }
     /// Restore every enrolled workspace of `authority`, the record `store` last
@@ -614,7 +614,7 @@ impl NativeWorkspaceOwner {
             listeners: Mutex::new(Vec::new()),
             kept_here: Mutex::new(Vec::new()),
             history_keys: Mutex::new(None),
-            compaction_wait: Mutex::new(BTreeMap::new()),
+            resting: publication::Resting::default(),
         })))
     }
     #[must_use]
@@ -915,7 +915,7 @@ impl NativeWorkspaceOwner {
         Ok(reports)
     }
     /// The workspace changes `message` carries, from any device of the workspace: each
-    /// participant admits every other's, and the workspace's governance that now
+    /// key holder admits every other's, and the workspace's governance that now
     /// carries what this device published retires it
     /// ([`publication::retire_member_changes`]). A delta that does not
     /// carry them all retires nothing.
@@ -988,7 +988,7 @@ impl NativeWorkspaceOwner {
     /// Publish `workspace`'s record as `change` leaves a copy of it, keeping
     /// this device's live replica: a change of this device's record alone.
     #[cfg(not(target_arch = "wasm32"))]
-    fn change_record<T>(
+    fn change_document<T>(
         &self,
         workspace: WorkspaceId,
         change: impl FnOnce(&NativeCommittedView, &mut record::StoredWorkspace) -> Result<T, String>,
@@ -996,13 +996,13 @@ impl NativeWorkspaceOwner {
         let view = self.view(workspace)?;
         let mut record = view.record.clone();
         let answer = change(&view, &mut record)?;
-        self.publish_record(workspace, &view, record, None)?;
+        self.publish_document(workspace, &view, record, None)?;
         Ok(answer)
     }
 
     /// Publish `record` for `workspace`, leaving this device's live replica as
     /// it is: a change of the record alone.
-    fn publish_record(
+    fn publish_document(
         &self,
         workspace: WorkspaceId,
         view: &NativeCommittedView,
@@ -1094,7 +1094,7 @@ impl NativeWorkspaceOwner {
                 }
             }
         };
-        limits::preflight_record(&record, limits::MAX_AUTHORITY_BYTES)
+        limits::preflight_document(&record, limits::MAX_AUTHORITY_BYTES)
             .map_err(|e| e.to_string())?;
         if changed {
             record.continuity = record
@@ -1173,13 +1173,13 @@ pub struct AppWrite {
     pub peer: u64,
     pub app_id: String,
     pub cluster_id: String,
-    pub record_id: String,
+    pub document_id: String,
     /// The author's standing in the workspace.
     pub author: tilo_action_policy::Standing,
     /// Whether the host replayed it from what it retains.
     pub replayed: bool,
     pub envelope: collab_types::SignedOp,
     /// The member's own record it changes, as the write said
-    /// ([`collab_types::OwnRecord`]).
-    pub own: Option<collab_types::OwnRecord>,
+    /// ([`collab_types::OwnResource`]).
+    pub own: Option<collab_types::OwnResource>,
 }

@@ -130,6 +130,13 @@ pub(crate) fn refused(error: &RelayError) -> Outcome {
             "ask the person whether their plan or workspace rules allow it, then try again",
         ),
         RelayError::Unavailable(_) => failed("unavailable", error.to_string(), "try again shortly"),
+        // Nothing that can read the workspace answered: the message says what
+        // to do.
+        RelayError::NoHolder => failed(
+            "unavailable",
+            error.to_string(),
+            "open Tilo on a device that holds the workspace, then try again",
+        ),
         RelayError::RateLimited { retry_after_ms } => Outcome::Failed {
             code: RATE_LIMITED,
             message: error.to_string(),
@@ -496,7 +503,7 @@ impl Server {
                 Outcome::Ok(listed) => ("account.keys", listed),
                 other => return answer(structured, path, other),
             },
-            "account/usage" => match self.relay.account(key).await {
+            "account/usage" => match key.relay().account(key).await {
                 Ok(account) => ("account.usage", account),
                 Err(error) => return answer(structured, path, refused(&error)),
             },
@@ -600,7 +607,7 @@ impl Server {
                         "pass args {workspace: \"<id>\"}; account/workspaces#list names them",
                     );
                 };
-                if let Err(error) = self.relay.delete(key, workspace).await {
+                if let Err(error) = key.relay().delete(key, workspace).await {
                     return refused(&error);
                 }
                 // Every key that reached only that workspace goes with it.
@@ -692,7 +699,7 @@ impl Server {
             Ok(labels) => labels,
             Err(refused) => return refused,
         };
-        match self.relay.create(key, name, &labels, id).await {
+        match key.relay().create(key, name, &labels, id).await {
             Ok(created) => Outcome::Ok(json!({"workspace": created})),
             Err(error) => refused(&error),
         }
@@ -737,7 +744,7 @@ impl Server {
             Ok(labels) => labels,
             Err(refused) => return refused,
         };
-        match self.relay.branch(key, source, name, &labels, id).await {
+        match key.relay().branch(key, source, name, &labels, id).await {
             Ok(branch) => Outcome::Ok(json!({"workspace": branch})),
             Err(error) => not_branched(&error).unwrap_or_else(|| refused(&error)),
         }
@@ -774,12 +781,12 @@ impl Server {
         key: &Connection,
         labels: &WorkspaceLabels,
     ) -> Outcome {
-        match self.relay.labelled(key, labels).await {
+        match key.relay().labelled(key, labels).await {
             Ok(mut workspaces) => Outcome::Ok({
                 workspaces.retain(|workspace| labelled(workspace, labels));
                 json!({
                     "workspaces": workspaces,
-                    "hosts": [{"name": self.relay.name(), "default": true}],
+                    "hosts": host_rows(self),
                 })
             }),
             Err(error) => refused(&error),
@@ -856,7 +863,7 @@ impl Server {
                 "account/workspaces#list names them",
             );
         };
-        let found = match self.relay.workspace(connection, workspace).await {
+        let found = match connection.relay().workspace(connection, workspace).await {
             Ok(found) => found,
             Err(error) => return refused(&error),
         };
@@ -892,7 +899,7 @@ impl Server {
         let kind = GrantKind::Minted {
             parent: grant.id.clone(),
         };
-        match self.store.record_key(&minted, &name, kind, None, now) {
+        match self.store.resource_key(&minted, &name, kind, None, now) {
             Ok((minted, token)) => Outcome::Ok(json!({
             "grant": minted.id,
             "name": minted.client_name,
@@ -911,6 +918,20 @@ impl Server {
 }
 
 /// Whether `workspace` is labelled with every one of `labels`.
+/// The hosts calls may be forwarded to, as an account lists them: the ones
+/// the front door knows, its first the default.
+fn host_rows(server: &crate::Server) -> Value {
+    Value::Array(
+        server
+            .hosts
+            .names()
+            .into_iter()
+            .enumerate()
+            .map(|(index, name)| json!({"name": name, "default": index == 0}))
+            .collect(),
+    )
+}
+
 pub(crate) fn labelled(workspace: &crate::relay::Workspace, labels: &WorkspaceLabels) -> bool {
     labels
         .iter()

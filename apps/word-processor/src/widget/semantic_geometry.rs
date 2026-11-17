@@ -10,7 +10,7 @@ const MAX_TEXT_RECTS: usize = 4096;
 
 impl Editor {
     /// Body text only: running-region layouts depend on the locally active
-    /// region, so observing them cannot reliably resolve another participant.
+    /// region, so observing them cannot reliably resolve another presence.
     /// Returned rectangles are content coordinates, clipped through the actual
     /// pan/zoom into the scene's canvas. No layout, input or state is changed.
     pub(super) fn semantic_text_rects(

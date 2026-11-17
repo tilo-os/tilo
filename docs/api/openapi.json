@@ -7660,7 +7660,7 @@
               "null"
             ]
           },
-          "participants": {
+          "members": {
             "items": {
               "oneOf": [
                 {
@@ -21232,7 +21232,7 @@
       "shell-views.bind.Arguments": {
         "type": "object",
         "properties": {
-          "slot": {
+          "part": {
             "type": "string"
           },
           "app": {
@@ -21249,7 +21249,7 @@
           }
         },
         "required": [
-          "slot",
+          "part",
           "app",
           "view"
         ],
@@ -21258,7 +21258,7 @@
       "shell-views.reset.Arguments": {
         "type": "object",
         "properties": {
-          "slot": {
+          "part": {
             "type": "string"
           },
           "on": {
@@ -21269,7 +21269,7 @@
           }
         },
         "required": [
-          "slot"
+          "part"
         ],
         "description": ""
       },

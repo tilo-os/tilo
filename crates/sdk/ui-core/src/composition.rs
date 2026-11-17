@@ -22,6 +22,7 @@ pub struct HtmlCode {
         &crate::theme::Theme,
         vello::peniko::Color,
     ) -> Option<Face>,
+    pub(crate) glyph: fn(crate::icons::Icon, f64, vello::peniko::Color, bool) -> Option<Glyph>,
 }
 
 /// The code this build links; only the HTML presenter names it.
@@ -31,7 +32,21 @@ pub fn builtin_html() -> HtmlCode {
         button: crate::widget::Button::composed_face,
         bar_control: |face, theme, ground| face.composed(theme, ground),
         bar_chip: |face, theme, ground| face.composed(theme, ground),
+        glyph: |icon, size, color, filled| icon.glyph(size, color, filled),
     }
+}
+
+/// An icon as a page shows it: its outlines as SVG path data in `size` pixels on a side, in
+/// `color`; `None` for a brand mark (a host paints those) or while the code that composes faces is
+/// still to come.
+#[must_use]
+pub fn glyph(
+    icon: crate::icons::Icon,
+    size: f64,
+    color: vello::peniko::Color,
+    filled: bool,
+) -> Option<Glyph> {
+    (HTML_CODE.get()?.glyph)(icon, size, color, filled)
 }
 
 /// A bar control's face as a page shows it, standing on `ground`; `None` while the code that composes
@@ -85,8 +100,210 @@ pub enum Own {
     },
     /// A control's face: its icon and words on the ground it sits on.
     Face(Face),
+    /// A control a page gives its own element: the box, the switch, the slider,
+    /// the entry, the chooser, the strip of choices or the link, with what it
+    /// holds (a widget paints several of its parts, a colour picker its swatches
+    /// beside its hex field). What the person does on that element comes back
+    /// through the semantic action the widget already performs.
+    Control(Vec<Control>),
     /// The widget paint is it: a host shows it as one picture of the widget's box.
     Painted { version: u64 },
+}
+
+/// The families of control a page gives its own element ([`Own::Control`]): one per kind of thing
+/// the browser and an assistive technology already know, carrying what it shows.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum Control {
+    /// A box, a switch or one of a set: what the person checks, and its label.
+    Check {
+        style: CheckStyle,
+        checked: bool,
+        /// Some of what it stands for is chosen.
+        mixed: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        label: Option<TextLook>,
+    },
+    /// A range: a slider from `min` to `max`, at `value`.
+    Range {
+        value: f64,
+        min: f64,
+        max: f64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        step: Option<f64>,
+        /// How the value is said ("50 percent"), where the app has its own words for it.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+    },
+    /// A typed entry: a number with its steppers, a date, a time, a colour or a search field.
+    Entry {
+        input: InputKind,
+        /// What the field shows.
+        text: String,
+        placeholder: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        min: Option<f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        max: Option<f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        step: Option<f64>,
+        /// The page puts a stepper button on each side of the field.
+        steppers: bool,
+        /// The steppers' names, in the app's words (`increase`, `decrease`).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        increase: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        decrease: Option<String>,
+        /// What it holds is a secret: the page shows its mask and never holds its
+        /// characters, which reach the widget as keys do.
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        secret: bool,
+    },
+    /// A chooser: a button showing the current value, its options while `open`.
+    Select {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        current: Option<TextLook>,
+        placeholder: String,
+        options: Vec<ControlOption>,
+        open: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        caption: Option<TextLook>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        icon: Option<Glyph>,
+    },
+    /// Choices shown together, each its own button: a tab bar, a segmented strip, a menu.
+    Choices {
+        /// The ARIA role of the set: `tablist`, `radiogroup`, `menu` or `group`.
+        list: &'static str,
+        /// The ARIA role of each choice: `tab`, `radio`, `menuitem` or `button`.
+        item: &'static str,
+        /// What the set itself says, above its choices (a dialog's question).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        label: Option<TextLook>,
+        options: Vec<ControlOption>,
+    },
+    /// A link: an anchor to `href`, or to the action it runs, showing its words.
+    Link {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        href: Option<String>,
+        label: TextLook,
+    },
+}
+
+/// What a [`Control::Entry`] holds, as the page's `<input>` says it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InputKind {
+    /// A number, stepped by the two buttons beside it.
+    Number,
+    /// A calendar date.
+    Date,
+    /// A time of day.
+    Time,
+    /// A colour.
+    Colour,
+    /// A search query.
+    Search,
+}
+
+/// What a [`Control::Check`] is, as a page's element says it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CheckStyle {
+    /// A box that is marked.
+    Checkbox,
+    /// A switch that is on.
+    Switch,
+    /// One of a set, only one of which is chosen.
+    Radio,
+}
+
+/// One choice of a control: a chooser's option, a tab, a menu row.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ControlOption {
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<Glyph>,
+    /// What choosing it sets, where the widget takes a value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    /// The semantic target choosing it acts on, where the widget names its rows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// Straight sRGB, 0–255: the colour it shows (a swatch), where it is one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub colour: Option<[u8; 4]>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub selected: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub disabled: bool,
+}
+
+impl ControlOption {
+    /// A choice showing `label` and nothing else.
+    #[must_use]
+    pub fn new(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            detail: None,
+            icon: None,
+            value: None,
+            target: None,
+            colour: None,
+            selected: false,
+            disabled: false,
+        }
+    }
+
+    #[must_use]
+    pub fn with_value(mut self, value: impl Into<String>) -> Self {
+        self.value = Some(value.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_target(mut self, target: impl Into<String>) -> Self {
+        self.target = Some(target.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_icon(mut self, icon: Glyph) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+
+    #[must_use]
+    pub fn with_icon_opt(mut self, icon: Option<Glyph>) -> Self {
+        self.icon = icon;
+        self
+    }
+
+    #[must_use]
+    pub fn with_colour(mut self, colour: vello::peniko::Color) -> Self {
+        self.colour = Some(rgba8(colour));
+        self
+    }
+
+    #[must_use]
+    pub fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    #[must_use]
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
 }
 
 /// A control's face ([`Own::Face`]): a leading icon, its words, a fact or shortcut after them and a
@@ -119,6 +336,19 @@ pub struct Face {
     pub spread: bool,
 }
 
+/// The ground a widget's element is filled with, under its words and its children: a card's, a
+/// banner's, a badge's. Colours are straight sRGB, 0–255.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Ground {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fill: Option<[u8; 4]>,
+    /// Its hairline edge, drawn inside the fill.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edge: Option<[u8; 4]>,
+    /// Its corners, logical pixels.
+    pub radius: f64,
+}
+
 /// An icon: Lucide-style outlines in a 24 × 24 box, as SVG path data.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Glyph {
@@ -140,6 +370,17 @@ pub struct Glyph {
 pub fn rgba8(color: vello::peniko::Color) -> [u8; 4] {
     let rgba = color.to_rgba8();
     [rgba.r, rgba.g, rgba.b, rgba.a]
+}
+
+/// `src` as an `<img>`'s: the address itself when a page can load it (a URL, a path, a `data:`
+/// URI), and `None` for a name only the host resolves, whose picture shows as its paint.
+#[must_use]
+pub fn web_picture(src: &str) -> Option<&str> {
+    const SCHEMES: [&str; 5] = ["data:", "blob:", "http://", "https://", "//"];
+    let src = src.trim();
+    (!src.is_empty()
+        && (SCHEMES.iter().any(|scheme| src.starts_with(scheme)) || src.starts_with('/')))
+    .then_some(src)
 }
 
 /// Where a document's text is in its box, logical pixels: the edge a paragraph's text starts at
@@ -404,6 +645,19 @@ fn composed_target(node: &Composed, target: &str) -> bool {
             .any(|child| composed_target(child, target))
 }
 
+/// The semantic target that reaches the synthetic child of a widget at `keys`, whose action routes
+/// are keyed `namespace`: what a page sends for a row the widget paints itself (a prompt's button, a
+/// swatch, a table cell).
+#[must_use]
+pub fn keyed_target(namespace: &str, keys: &[u64]) -> String {
+    let keys = keys
+        .iter()
+        .map(u64::to_string)
+        .collect::<Vec<_>>()
+        .join("/");
+    format!("tilo.key-action:{namespace}:{keys}")
+}
+
 /// One widget of a composition.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Composed {
@@ -431,6 +685,13 @@ pub struct Composed {
     pub scroll: Option<[f64; 3]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub semantics: Option<crate::a11y::AccessNode>,
+    /// The ground its element is filled with, under its words and children.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ground: Option<Ground>,
+    /// Attributes its element carries beyond what its role gives it: an `<img>`'s `src` and
+    /// `alt`, a `<time>`'s `datetime`, a `<progress>`'s value.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub attrs: Vec<(&'static str, String)>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub own: Option<Own>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -463,6 +724,8 @@ impl Composed {
             layout: None,
             scroll: None,
             semantics: None,
+            ground: None,
+            attrs: Vec::new(),
             own: None,
             focusable: false,
             flows: false,
@@ -473,8 +736,20 @@ impl Composed {
 }
 
 impl Composed {
-    /// The part shows as a picture of the widget's paint within its rect, fetched again when `version`
-    /// changes: for what is genuinely drawn (a face's ring, a battery gauge, a brand mark).
+    /// A part of it keyed `key` under its path, standing at `rect` in the window: a widget that
+    /// lays out and paints its own content composes it from parts of its own.
+    pub fn part(&mut self, key: &str, widget: &str, rect: vello::kurbo::Rect) -> &mut Composed {
+        let path = format!("{}#{key}", self.path);
+        let index = self.children.len();
+        self.children.push(Composed::new(
+            path,
+            widget,
+            [rect.x0, rect.y0, rect.width(), rect.height()],
+        ));
+        &mut self.children[index]
+    }
+
+    /// The part shows as a picture of the widget's paint within its rect.
     pub fn painted(&mut self, version: u64) {
         use std::hash::{Hash, Hasher};
         let mut hash = std::collections::hash_map::DefaultHasher::new();
@@ -536,7 +811,7 @@ pub struct HtmlCx<'a> {
     pub(crate) compose_children: &'a mut dyn FnMut() -> (Vec<Composed>, bool),
 }
 
-impl HtmlCx<'_> {
+impl<'a> HtmlCx<'a> {
     /// The widget is a `tag` element (`button`, `li`, `section`, `dialog`).
     pub fn element(&mut self, tag: &'static str) {
         self.composed.tag = Some(tag);
@@ -567,14 +842,32 @@ impl HtmlCx<'_> {
     /// One of the widget parts, which it lays out and paints itself rather than holding as a widget of
     /// it (a bar's controls): keyed `key` under the widget's path, standing at `rect` in the window.
     pub fn part(&mut self, key: &str, widget: &str, rect: vello::kurbo::Rect) -> &mut Composed {
-        let path = format!("{}#{key}", self.composed.path);
-        let index = self.composed.children.len();
-        self.composed.children.push(Composed::new(
-            path,
-            widget,
-            [rect.x0, rect.y0, rect.width(), rect.height()],
-        ));
-        &mut self.composed.children[index]
+        self.composed.part(key, widget, rect)
+    }
+
+    /// A part of it showing `look`'s words as a `tag` element (`h3`, `dt`, `td`) standing at `rect`.
+    pub fn words(
+        &mut self,
+        key: &str,
+        tag: &'static str,
+        rect: vello::kurbo::Rect,
+        look: TextLook,
+    ) -> &mut Composed {
+        let part = self.part(key, "Text", rect);
+        part.tag = Some(tag);
+        part.own = Some(Own::Text(look));
+        part
+    }
+
+    /// The widget's element is filled with `ground`, under its words and its children.
+    pub fn ground(&mut self, ground: Ground) {
+        self.composed.ground = Some(ground);
+    }
+
+    /// Its element carries `name` `value`: an `<img>`'s `alt`, a `<time>`'s `datetime`, a
+    /// `<progress>`'s `max`.
+    pub fn attr(&mut self, name: &'static str, value: impl Into<String>) {
+        self.composed.attrs.push((name, value.into()));
     }
 
     /// The part composed last ([`Self::part`]), to say what it shows.
@@ -586,12 +879,7 @@ impl HtmlCx<'_> {
     /// widget's path: what a widget that paints its controls tells a reader of is what a page
     /// shows as buttons, while the paint keeps the look.
     pub fn controls(&mut self, key: &str, access: &crate::a11y::AccessNode) {
-        fn walk(
-            cx: &mut HtmlCx<'_>,
-            node: &crate::a11y::AccessNode,
-            key: &str,
-            index: &mut usize,
-        ) {
+        fn walk(cx: &mut HtmlCx<'_>, node: &crate::a11y::AccessNode, key: &str, index: &mut usize) {
             for child in &node.children {
                 if let Some(bounds) = child.bounds
                     && (child.state.focusable || child.action_target.is_some())
@@ -615,6 +903,16 @@ impl HtmlCx<'_> {
     /// The widget is a control showing `face`.
     pub fn face(&mut self, face: Face) {
         self.composed.own = Some(Own::Face(face));
+    }
+
+    /// The widget is a control a page gives its own element, holding what `control` says; a
+    /// widget that shows several parts of one control (a colour's swatches beside its hex field)
+    /// adds them.
+    pub fn control(&mut self, control: Control) {
+        match &mut self.composed.own {
+            Some(Own::Control(controls)) => controls.push(control),
+            _ => self.composed.own = Some(Own::Control(vec![control])),
+        }
     }
 
     /// The widget is an editable field holding `value`.
@@ -720,8 +1018,9 @@ impl HtmlCx<'_> {
     }
 
     /// The theme the window is drawn in: the typography and colours a widget sets its words in.
+    /// It outlives the composition it is read in, so a widget can hold it while it composes.
     #[must_use]
-    pub fn theme(&self) -> &crate::Theme {
+    pub fn theme(&self) -> &'a crate::Theme {
         self.theme
     }
 
@@ -756,5 +1055,178 @@ impl HtmlCx<'_> {
     #[must_use]
     pub fn semantics(&self) -> Option<&crate::a11y::AccessNode> {
         self.composed.semantics.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Composed, Control, ControlOption, InputKind, Own};
+    use crate::a11y::Action;
+    use crate::headless::FrameHarness;
+
+    /// The composed widget named `widget`, depth first.
+    fn find<'a>(node: &'a Composed, widget: &str) -> Option<&'a Composed> {
+        if node.widget == widget {
+            return Some(node);
+        }
+        node.children.iter().find_map(|child| find(child, widget))
+    }
+
+    fn controls(node: &Composed) -> &[Control] {
+        match node.own.as_ref() {
+            Some(Own::Control(controls)) => controls,
+            other => panic!("{} composes {other:?}, not controls", node.widget),
+        }
+    }
+
+    #[test]
+    fn a_checkbox_is_a_label_around_its_box() {
+        let state = crate::LocalState::new(false);
+        let mut host = FrameHarness::new(
+            crate::State::new(),
+            Box::new(crate::widget::Checkbox::from_state(&state).with_label("Show hidden files")),
+            (420, 60),
+        );
+        let composition = host.composition();
+        let checkbox = find(&composition.root, "Checkbox").expect("the box is composed");
+        assert_eq!(checkbox.tag, Some("label"));
+        let [control] = controls(checkbox) else {
+            panic!("one box");
+        };
+        let Control::Check {
+            style,
+            checked,
+            mixed,
+            label,
+        } = control
+        else {
+            panic!("a check, not {control:?}");
+        };
+        assert_eq!(*style, super::CheckStyle::Checkbox);
+        assert!(!checked);
+        assert!(!mixed);
+        assert_eq!(label.as_ref().unwrap().text, "Show hidden files");
+
+        // What the page does on the box is the widget's own action: the next
+        // frame shows it marked.
+        host.perform_named(&checkbox.path, &Action::ToggleCheck)
+            .expect("the box takes the toggle");
+        let composition = host.composition();
+        let checkbox = find(&composition.root, "Checkbox").unwrap();
+        assert!(matches!(
+            controls(checkbox)[0],
+            Control::Check { checked: true, .. }
+        ));
+    }
+
+    #[test]
+    fn a_switch_is_a_switch_and_a_radio_is_one_of_a_set() {
+        let toggle = crate::widget::Toggle::from_state(&crate::LocalState::new(true));
+        let composed = super::compose_alone(&toggle, &crate::Theme::dark(), "switch");
+        assert_eq!(composed.tag, Some("label"));
+        assert!(matches!(
+            controls(&composed)[0],
+            Control::Check {
+                style: super::CheckStyle::Switch,
+                checked: true,
+                ..
+            }
+        ));
+
+        let radio = crate::widget::Checkbox::new("any", "path").radio();
+        let composed = super::compose_alone(&radio, &crate::Theme::dark(), "radio");
+        assert!(matches!(
+            controls(&composed)[0],
+            Control::Check {
+                style: super::CheckStyle::Radio,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_slider_is_a_range_and_the_page_sets_its_value() {
+        let state = crate::LocalState::new(0.25);
+        let mut host = FrameHarness::new(
+            crate::State::new(),
+            Box::new(crate::widget::Slider::from_state(&state).range(0.0, 2.0)),
+            (300, 80),
+        );
+        let composition = host.composition();
+        let slider = find(&composition.root, "Slider").expect("the slider is composed");
+        let [
+            Control::Range {
+                value, min, max, ..
+            },
+        ] = controls(slider)
+        else {
+            panic!("one range");
+        };
+        assert_eq!((*value, *min, *max), (0.25, 0.0, 2.0));
+        host.perform_named(&slider.path, &Action::SetValue("1.5".into()))
+            .expect("the range takes a value");
+        assert!((state.get() - 1.5).abs() < 1e-9, "the value reached it");
+        let composition = host.composition();
+        let slider = find(&composition.root, "Slider").unwrap();
+        assert!(
+            matches!(controls(slider)[0], Control::Range { value, .. } if (value - 1.5).abs() < 1e-9)
+        );
+    }
+
+    #[test]
+    fn a_number_is_an_entry_with_its_steppers() {
+        let input = crate::widget::NumberInput::new(12.0)
+            .with_range(0.0, 100.0)
+            .with_suffix("px");
+        let composed = super::compose_alone(&input, &crate::Theme::dark(), "number");
+        let [
+            Control::Entry {
+                input,
+                text,
+                steppers,
+                min,
+                max,
+                ..
+            },
+        ] = controls(&composed)
+        else {
+            panic!("one entry");
+        };
+        assert_eq!(*input, InputKind::Number);
+        assert_eq!(text, "12 px");
+        assert!(steppers);
+        assert_eq!((*min, *max), (Some(0.0), Some(100.0)));
+    }
+
+    #[test]
+    fn a_link_is_an_anchor() {
+        let link = crate::widget::Link::new("https://tilo.coffee").with_label("Tilo");
+        let composed = super::compose_alone(&link, &crate::Theme::dark(), "link");
+        assert_eq!(composed.tag, Some("a"));
+        let [Control::Link { href, label }] = controls(&composed) else {
+            panic!("one link");
+        };
+        assert_eq!(href.as_deref(), Some("https://tilo.coffee"));
+        assert_eq!(label.text, "Tilo");
+    }
+
+    #[test]
+    fn a_choice_shows_its_target_and_value_serialises_for_the_page() {
+        let option = ControlOption::new("Bold")
+            .with_target("toolbar.item.0")
+            .selected(true)
+            .with_detail("Ctrl+B");
+        let control = Control::Choices {
+            list: "menu",
+            item: "menuitem",
+            label: None,
+            options: vec![option],
+        };
+        let json = serde_json::to_value(&control).unwrap();
+        assert_eq!(json["kind"], "choices");
+        assert_eq!(json["list"], "menu");
+        assert_eq!(json["options"][0]["target"], "toolbar.item.0");
+        assert_eq!(json["options"][0]["selected"], true);
+        assert_eq!(json["options"][0]["detail"], "Ctrl+B");
     }
 }

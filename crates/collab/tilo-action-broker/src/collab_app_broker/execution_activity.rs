@@ -85,17 +85,14 @@ impl ExecutionScope {
         self.lifetime.clone()
     }
 
-    pub(super) fn participant(
-        &self,
-        actor: &BrokerActor,
-    ) -> Result<tilo_actions::ParticipantId, String> {
+    pub(super) fn presence(&self, actor: &BrokerActor) -> Result<tilo_actions::PresenceId, String> {
         if !self.lifetime.is_live() {
             return Err("execution session ended".into());
         }
         if *actor.member() != self.actor {
             return Err("execution actor mismatch".into());
         }
-        Ok(tilo_actions::ParticipantId::for_execution(self.execution))
+        Ok(tilo_actions::PresenceId::for_execution(self.execution))
     }
 }
 
@@ -464,7 +461,7 @@ impl ActivityTarget {
             actor.member().id(),
             &surface.route.app_id,
             &surface.route.cluster_id,
-            &surface.route.record_id,
+            &surface.route.document_id,
             &action.resource,
             &action.action,
         ]
@@ -910,7 +907,7 @@ mod anchor_tests {
                 ("title".into(), "7d2b".into(), 0, 14),
             );
             // Offered on the record, the item is its first parameter's id.
-            let (mut on_record, resource) = published(
+            let (mut on_resource, resource) = published(
                 "so.tilo.tasks",
                 "tasks.tracker",
                 "rename",
@@ -919,10 +916,10 @@ mod anchor_tests {
                     ActionParam::required_owned("title", ParamType::Text, "Title"),
                 ],
             );
-            on_record.contract.field = Some("title".into());
+            on_resource.contract.field = Some("title".into());
             let renamed_by_id = slot(&serde_json::json!({ "issue": "7d2b", "title": "Book" }));
             assert_eq!(
-                text_range(&anchor_of(&on_record, &resource, Some(&renamed_by_id))),
+                text_range(&anchor_of(&on_resource, &resource, Some(&renamed_by_id))),
                 ("title".into(), "7d2b".into(), 0, 4),
             );
             // Offered on the item under the alias its window bound it as (a note's rename

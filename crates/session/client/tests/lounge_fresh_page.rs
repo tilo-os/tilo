@@ -56,7 +56,7 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
 /// The shared desktop every member sees: the record the deployment refounds.
 const DESKTOP_APP: &str = "so.tilo.browser-desktop";
-const DESKTOP_RECORD: &str = "desktop";
+const DESKTOP_DOCUMENT: &str = "desktop";
 /// Chat's app.
 const CHAT_APP: &str = "so.tilo.chat";
 
@@ -471,7 +471,7 @@ fn chat_messages(page: &Link, workspace: &str, channel: &str) -> Vec<chat::model
         cluster_id: workspace.to_owned(),
         record: String::new(),
     };
-    let Some(chat_doc) = crate::support::record_of(page, &record) else {
+    let Some(chat_doc) = crate::support::resource_of(page, &record) else {
         println!("the page holds none of Chat's record");
         return Vec::new();
     };
@@ -492,7 +492,7 @@ fn chat_messages(page: &Link, workspace: &str, channel: &str) -> Vec<chat::model
             cluster_id: workspace.to_owned(),
             record: chat::parts::part(index).route().to_owned(),
         };
-        let Some(document) = crate::support::record_of(page, &part) else {
+        let Some(document) = crate::support::resource_of(page, &part) else {
             continue;
         };
         if let Ok(held) = tilo_app::tilo_resource::Reader::<chat::parts::ChatPart>::read(&document)
@@ -526,7 +526,7 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
     let desktop = DocumentRoute {
         app_id: DESKTOP_APP.to_owned(),
         cluster_id: lounge.workspace.clone(),
-        record: DESKTOP_RECORD.to_owned(),
+        record: DESKTOP_DOCUMENT.to_owned(),
     };
     let chat = DocumentRoute {
         app_id: CHAT_APP.to_owned(),
@@ -536,12 +536,12 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
     page.send(Cmd::OpenRoute(chat.clone())).unwrap();
     page.send(Cmd::OpenRoute(desktop.clone())).unwrap();
     // 1. The records' keys: each record's channel is the page's, ready.
-    // Their admission is the workspace's participants' (the host's own device
+    // Their admission is the workspace's members' (the host's own device
     // among them), not a note's, so this waits on the two routes themselves.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
     let channels = loop {
         let channels = page.status().key_state;
-        let ready = [(CHAT_APP, ""), (DESKTOP_APP, DESKTOP_RECORD)]
+        let ready = [(CHAT_APP, ""), (DESKTOP_APP, DESKTOP_DOCUMENT)]
             .into_iter()
             .all(|(app, record)| {
                 channels.lines().any(|line| {
@@ -554,7 +554,7 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
     println!("--- the page's channels:\n{channels}");
-    for (app, record) in [(CHAT_APP, ""), (DESKTOP_APP, DESKTOP_RECORD)] {
+    for (app, record) in [(CHAT_APP, ""), (DESKTOP_APP, DESKTOP_DOCUMENT)] {
         let prefix = format!("route {app}/{record}:");
         let line = channels
             .lines()
@@ -578,8 +578,8 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
     };
     let started = std::time::Instant::now();
     let wait = tokio::time::Instant::now() + Duration::from_secs(300);
-    while !(crate::support::record_of(&page, &chat).is_some()
-        && crate::support::record_of(&page, &part).is_some())
+    while !(crate::support::resource_of(&page, &chat).is_some()
+        && crate::support::resource_of(&page, &part).is_some())
         && tokio::time::Instant::now() < wait
     {
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -593,8 +593,8 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
 
     // 3. The layout: the members' windows, as the shared desktop record holds
     // them, read through the desktop model the window draws.
-    let layout = crate::support::record_of(&page, &desktop)
-        .and_then(|doc| tilo_desktop_model::shared_record::read(&doc, None));
+    let layout = crate::support::resource_of(&page, &desktop)
+        .and_then(|doc| tilo_desktop_model::shared_resource::read(&doc, None));
     let windows: Vec<String> = layout
         .as_ref()
         .map(|layout| {

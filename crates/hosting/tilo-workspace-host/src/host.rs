@@ -271,7 +271,7 @@ impl HostSessions {
             channels,
             workspaces: self.workspaces.clone(),
             access: self.access_writer(),
-            records: self.workspace_records(),
+            records: self.workspace_documents(),
             endpoint,
             cert: identity.device_cert.clone(),
             key: identity.device_signing_key.clone(),
@@ -299,8 +299,8 @@ impl HostSessions {
     }
 
     /// In-process access to the records of the workspaces this host holds.
-    pub fn workspace_records(&self) -> crate::workspace_records::WorkspaceRecords {
-        crate::workspace_records::WorkspaceRecords::new(
+    pub fn workspace_documents(&self) -> crate::workspace_documents::WorkspaceDocuments {
+        crate::workspace_documents::WorkspaceDocuments::new(
             self.workspaces.clone(),
             self.identity.cert.device_public_key,
             self.identity.user_public_key,
@@ -404,7 +404,7 @@ impl HostSessions {
 /// write next brings each record's fold.
 #[cfg(any(feature = "agents", feature = "web"))]
 fn take_part(compactor: &crate::compaction::Compactor, workspaces: &crate::workspaces::Workspaces) {
-    compactor.with_participant_keys(Arc::new(workspaces.clone()));
+    compactor.with_group_keys(Arc::new(workspaces.clone()));
     let (repairing, compactor) = (workspaces.clone(), compactor.clone());
     tokio::spawn(async move { repairing.fold_away_unsent(&compactor).await });
 }
@@ -645,8 +645,8 @@ impl WorkspaceHost {
     /// The durable records of the workspaces hosted here, for a service the
     /// embedder runs beside them.
     #[must_use]
-    pub fn workspace_records(&self) -> crate::workspace_records::WorkspaceRecords {
-        self.sessions.workspace_records()
+    pub fn workspace_documents(&self) -> crate::workspace_documents::WorkspaceDocuments {
+        self.sessions.workspace_documents()
     }
 
     /// The certificate this host proves itself with.

@@ -248,7 +248,7 @@ struct RowGroup {
     /// its hidden members do not erase where the work happened.
     scope_label: Option<String>,
     name: Option<String>,
-    record_id: Option<String>,
+    document_id: Option<String>,
     open: bool,
     depth: usize,
     first_entry: HistoryEntryId,
@@ -1135,7 +1135,7 @@ impl ActivityTimeline {
                     return false;
                 };
                 GroupNameRequest {
-                    record_id: rg.record_id.clone(),
+                    document_id: rg.document_id.clone(),
                     start: rg.first_entry,
                     end: rg.last_entry,
                     label,
@@ -1149,14 +1149,14 @@ impl ActivityTimeline {
                     return false;
                 };
                 GroupNameRequest {
-                    record_id: None,
+                    document_id: None,
                     start: first.id,
                     end: last.id,
                     label,
                 }
             }
         };
-        if req.label.is_empty() && req.record_id.is_none() {
+        if req.label.is_empty() && req.document_id.is_none() {
             return false;
         }
         if let Some(cb) = self.on_name_group.as_mut() {
@@ -1908,7 +1908,7 @@ impl ActivityTimeline {
             facts,
             scope_label: self.group_scope_label(g.start, g.end),
             name: g.name.clone(),
-            record_id: g.record_id.clone(),
+            document_id: g.document_id.clone(),
             open: g.open,
             depth: g.depth,
             first_entry: g.first_entry,
@@ -2242,7 +2242,7 @@ impl ActivityTimeline {
             facts: Vec::new(),
             scope_label: None,
             name: None,
-            record_id: None,
+            document_id: None,
             open: false,
             depth: 0,
             first_entry: HistoryEntryId([0; 16]),
@@ -3467,7 +3467,16 @@ impl ActivityTimeline {
     }
 }
 
+#[path = "activity_timeline_html.rs"]
+mod html;
+
 impl Widget for ActivityTimeline {
+    /// The history as a page's own list: each day or band a heading, each change its author,
+    /// its time and what it did.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        self.compose_html(cx);
+    }
+
     fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
         if !self.rect.contains(point) {
             return None;

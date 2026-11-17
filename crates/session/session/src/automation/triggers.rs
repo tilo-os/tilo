@@ -22,7 +22,7 @@ use settings_store::hardware::KeyChord;
 use sha2::{Digest as _, Sha256};
 use tilo_actions::params::ParamType;
 use tilo_automation::EVENT_INPUT;
-use tilo_automation::dispatch::{AppEvent, RecordEvent, app_event_object};
+use tilo_automation::dispatch::{AppEvent, DocumentEvent, app_event_object};
 use tilo_automation::{
     CatchUp, FOCUS_DO_NOT_DISTURB, FOCUS_SCHEDULE, FocusTransition, InvocationId, Schedule,
     ScheduleClaim, Shortcut, TriggerSpec,
@@ -243,7 +243,7 @@ pub enum TriggerEvent<'a> {
     /// Files changed inside watched folders since the last look.
     Files(&'a [FolderChange]),
     /// Changes committed to records of this device's workspaces since the last look.
-    Records(&'a [RecordEvent]),
+    Records(&'a [DocumentEvent]),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1055,7 +1055,7 @@ impl RecordElection {
 /// on this device.
 fn record_firings(
     armed: &[Armed],
-    event: &RecordEvent,
+    event: &DocumentEvent,
     wanted: fn(&TriggerSpec) -> bool,
 ) -> Vec<Firing> {
     use tilo_automation::dispatch::{self, Armed as DispatchArmed, Event, Firer};
@@ -1107,7 +1107,7 @@ impl TriggerSource for RecordChangedTriggers {
         context: TriggerContext<'_>,
     ) -> Vec<Firing> {
         self.election.observe(event, armed, context, |trigger| {
-            matches!(trigger, TriggerSpec::RecordChanged { .. })
+            matches!(trigger, TriggerSpec::ResourceChanged { .. })
         })
     }
 

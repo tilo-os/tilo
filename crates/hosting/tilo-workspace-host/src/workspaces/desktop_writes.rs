@@ -4,18 +4,18 @@
 //! Whoever may edit the workspace may write its desktop. What a write does to a
 //! strip or window someone else made (closing, moving, renaming it) is
 //! moderation, decided on that item's `moderation` node with the writer's
-//! own grants ([`tilo_desktop_model::shared_record::guard`]). Every path a member's write
+//! own grants ([`tilo_desktop_model::shared_resource::guard`]). Every path a member's write
 //! enters by asks [`Workspaces::decide_desktop_write`] first; a refused write is neither
 //! kept nor forwarded, like any change the workspace does not grant.
 
 use collab_types::DocumentMutation;
 use tilo_action_policy::ActionKind;
-use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, act_node};
+use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT, act_node};
 
 use super::{GovernedWorkspace, Workspaces};
-use tilo_desktop_model::shared_record::guard::{self, DesktopGuard};
+use tilo_desktop_model::shared_resource::guard::{self, DesktopGuard};
 
-pub(crate) use tilo_desktop_model::shared_record::guard::is_desktop;
+pub(crate) use tilo_desktop_model::shared_resource::guard::is_desktop;
 
 /// Whether `body`, a member's retained write, is one of the workspace's records of the desktop:
 /// its layout, or a person's view of it. What every write asks before taking the workspace's lock for
@@ -23,8 +23,8 @@ pub(crate) use tilo_desktop_model::shared_record::guard::is_desktop;
 pub(crate) fn writes_desktop(body: &[u8]) -> bool {
     matches!(
         postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body),
-        Ok(neighbour_wire::NeighbourMsg::AppDocument { app_id, record_id, .. })
-            if is_desktop(&app_id, &record_id)
+        Ok(neighbour_wire::NeighbourMsg::AppDocument { app_id, document_id, .. })
+            if is_desktop(&app_id, &document_id)
     )
 }
 
@@ -48,7 +48,7 @@ impl GovernedWorkspace {
     /// The governor's copy of the shared desktop, sealed or not.
     #[cfg(any(feature = "agents", feature = "web"))]
     async fn held_desktop(&self) -> Result<Option<Vec<u8>>, String> {
-        self.readable_document(DESKTOP_APP, DESKTOP_RECORD).await
+        self.readable_document(DESKTOP_APP, DESKTOP_DOCUMENT).await
     }
 
     /// The governor's copy of the shared desktop, written in the clear.
@@ -58,7 +58,7 @@ impl GovernedWorkspace {
         reason = "one signature with the build that opens sealed records"
     )]
     async fn held_desktop(&self) -> Result<Option<Vec<u8>>, String> {
-        Ok(self.peer().document(DESKTOP_APP, DESKTOP_RECORD))
+        Ok(self.peer().document(DESKTOP_APP, DESKTOP_DOCUMENT))
     }
 
     /// Take in a change the governor made to `(app, record)` itself, when it
@@ -115,7 +115,7 @@ impl GovernedWorkspace {
             // workspace's devices, which open it, decide it on receipt.
             #[cfg(any(feature = "agents", feature = "web"))]
             match self
-                .open_write(DESKTOP_APP, DESKTOP_RECORD, envelope)
+                .open_write(DESKTOP_APP, DESKTOP_DOCUMENT, envelope)
                 .await?
             {
                 Some(plaintext) => plaintext,
@@ -175,7 +175,7 @@ impl Workspaces {
         let host = author == self.inner.host.cert.device_public_key;
         let Ok(neighbour_wire::NeighbourMsg::AppDocument {
             app_id,
-            record_id,
+            document_id,
             envelope,
             ..
         }) = tilo_failure::ignored!(
@@ -185,7 +185,7 @@ impl Workspaces {
         else {
             return Ok(());
         };
-        if !is_desktop(&app_id, &record_id) || envelope.kind != collab_types::OpKind::Change {
+        if !is_desktop(&app_id, &document_id) || envelope.kind != collab_types::OpKind::Change {
             return Ok(());
         }
         let state = self
@@ -197,7 +197,7 @@ impl Workspaces {
             // What the host itself writes (a window an agent's action opened through the host's
             // own session) is the workspace's: not decided, but followed, so the members' writes
             // that build on it are decided against the desktop they saw.
-            if guard::is_shared_desktop(&app_id, &record_id) {
+            if guard::is_shared_desktop(&app_id, &document_id) {
                 return governed.absorb_host_desktop_write(&envelope).await;
             }
             return Ok(());
@@ -211,8 +211,8 @@ impl Workspaces {
             .person_id()
             .ok_or("the writer is no person's device")?;
         // A person's view of the layout is theirs to write: every member reads it.
-        guard::may_write(&app_id, &record_id, person).map_err(|refusal| refusal.to_string())?;
-        if !guard::is_shared_desktop(&app_id, &record_id) {
+        guard::may_write(&app_id, &document_id, person).map_err(|refusal| refusal.to_string())?;
+        if !guard::is_shared_desktop(&app_id, &document_id) {
             // Nothing of the workspace's own layout is judged where this record holds none: what a
             // view names is the person's, and it is theirs alone.
             return Ok(());

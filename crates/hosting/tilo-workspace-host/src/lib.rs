@@ -45,9 +45,9 @@ pub mod timing;
 pub mod workspace;
 #[doc(hidden)]
 pub mod workspace_access;
+pub mod workspace_documents;
 #[doc(hidden)]
 pub mod workspace_io;
-pub mod workspace_records;
 pub mod workspaces;
 
 #[cfg(test)]

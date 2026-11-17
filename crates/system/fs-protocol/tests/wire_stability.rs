@@ -9,9 +9,9 @@ use ed25519_dalek::SigningKey;
 use fs_protocol::{
     CONTENT_REVISION_VERSION, ContentHash, ContentRevisionV1, FILE_BINDING_VERSION,
     FILE_MUTATION_TRANSACTION_VERSION, FileActor, FileBindingV1, FileDocumentId, FileInviteSubject,
-    FileInviteV1, FileMutationOperation, FileMutationParticipant, FileMutationParticipantRole,
-    FileMutationTransaction, FileMutationTransactionManifest, FileNodeKind, FilePermission,
-    FileProvenance, FileVersionId, FileVersionV1,
+    FileInviteV1, FileMutationOperation, FileMutationTransaction, FileMutationTransactionManifest,
+    FileNodeKind, FilePermission, FileProvenance, FileVersionId, FileVersionV1, TransactionFile,
+    TransactionFileRole,
 };
 use uuid::Uuid;
 
@@ -56,9 +56,9 @@ fn signed_file_mutation_transaction_keeps_its_wire_bytes() {
     };
     let source_parent = record(0x101);
     let destination_parent = record(0x102);
-    let participants = [
-        (record(0x201), FileMutationParticipantRole::Source),
-        (record(0x202), FileMutationParticipantRole::Replaced),
+    let files = [
+        (record(0x201), TransactionFileRole::Source),
+        (record(0x202), TransactionFileRole::Replaced),
     ]
     .into_iter()
     .enumerate()
@@ -72,13 +72,13 @@ fn signed_file_mutation_transaction_keeps_its_wire_bytes() {
             timestamp_ms: 44,
             content_hash: None,
             metadata_hash: ContentHash([2; 32]),
-            provenance: if role == FileMutationParticipantRole::Source {
+            provenance: if role == TransactionFileRole::Source {
                 FileProvenance::Rename
             } else {
                 FileProvenance::Delete
             },
         };
-        let mut participant = FileMutationParticipant {
+        let mut file = TransactionFile {
             document_id,
             role,
             expected_version: version(0x401 + offset),
@@ -88,7 +88,7 @@ fn signed_file_mutation_transaction_keeps_its_wire_bytes() {
                 parent: Some(destination_parent),
                 name: "destination.txt".into(),
                 kind: FileNodeKind::File,
-                tombstoned: role == FileMutationParticipantRole::Replaced,
+                tombstoned: role == TransactionFileRole::Replaced,
                 actor,
                 observed_at_ms: 44,
             },
@@ -103,8 +103,8 @@ fn signed_file_mutation_transaction_keeps_its_wire_bytes() {
             proposed_version,
             projection_hash: ContentHash([0; 32]),
         };
-        participant.projection_hash = participant.computed_projection_hash().unwrap();
-        participant
+        file.projection_hash = file.computed_projection_hash().unwrap();
+        file
     })
     .collect();
     let manifest = FileMutationTransactionManifest {
@@ -118,10 +118,10 @@ fn signed_file_mutation_transaction_keeps_its_wire_bytes() {
             source_name: "source.txt".into(),
             destination_parent,
             destination_name: "destination.txt".into(),
-            source_record: record(0x201),
-            replaced_record: record(0x202),
+            source_document: record(0x201),
+            replaced_document: record(0x202),
         },
-        participants,
+        files,
     };
     let signed = FileMutationTransaction::signed(manifest, &key).unwrap();
     signed.verify().unwrap();
@@ -136,29 +136,29 @@ fn signed_file_mutation_transaction_keeps_its_wire_bytes() {
 fn atomic_save_appends_wire_variants_without_renumbering_legacy_roles() {
     use fs_protocol::files::FileNameV1;
     let roles = [
-        FileMutationParticipantRole::Source,
-        FileMutationParticipantRole::Replaced,
-        FileMutationParticipantRole::KeepBothSource,
-        FileMutationParticipantRole::KeepBothSibling,
-        FileMutationParticipantRole::MergeSource,
-        FileMutationParticipantRole::RestoreContent,
-        FileMutationParticipantRole::AtomicSaveDocument,
-        FileMutationParticipantRole::AtomicSaveTemporary,
+        TransactionFileRole::Source,
+        TransactionFileRole::Replaced,
+        TransactionFileRole::KeepBothSource,
+        TransactionFileRole::KeepBothSibling,
+        TransactionFileRole::MergeSource,
+        TransactionFileRole::RestoreContent,
+        TransactionFileRole::AtomicSaveDocument,
+        TransactionFileRole::AtomicSaveTemporary,
     ];
     for (role, index) in roles.into_iter().zip(0u8..8) {
         let bytes = postcard::to_allocvec(&role).unwrap();
         assert_eq!(bytes, [index], "legacy role ordinals remain wire ABI");
         assert_eq!(
-            postcard::from_bytes::<FileMutationParticipantRole>(&bytes).unwrap(),
+            postcard::from_bytes::<TransactionFileRole>(&bytes).unwrap(),
             role
         );
     }
     let operation = FileMutationOperation::AtomicSave {
-        parent_record: record(1),
+        parent_document: record(1),
         document_name: FileNameV1(b"document.txt".to_vec()),
         temporary_name: FileNameV1(b"temporary".to_vec()),
-        document_record: record(2),
-        temporary_record: record(3),
+        file_document: record(2),
+        temporary_document: record(3),
         prior_document_version: version(4),
     };
     let bytes = postcard::to_allocvec(&operation).unwrap();

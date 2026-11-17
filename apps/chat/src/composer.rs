@@ -17,7 +17,7 @@ use tilo_document::{RichTextAction, RichTextState};
 use tilo_rich_text::{
     Draft, FieldOutcome, PersonField, RichTextComposer, RichTextSource, RichTextSurface, SubmitKey,
 };
-use ui::framework::PersonRecord;
+use ui::framework::PersonResource;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_resource::EditOp;
@@ -34,7 +34,7 @@ use crate::drafts::ChatDrafts;
 /// workspace's chat record.
 pub struct DraftField {
     key: String,
-    record: Option<PersonRecord<ChatDrafts>>,
+    record: Option<PersonResource<ChatDrafts>>,
     read_only: bool,
     field: Option<PersonField<ChatDrafts>>,
 }
@@ -49,7 +49,7 @@ impl DraftField {
         }
     }
 
-    fn field(key: &str, record: &PersonRecord<ChatDrafts>) -> PersonField<ChatDrafts> {
+    fn field(key: &str, record: &PersonResource<ChatDrafts>) -> PersonField<ChatDrafts> {
         let located = key.to_owned();
         let edited = key.to_owned();
         let started = key.to_owned();
@@ -330,7 +330,7 @@ impl DraftComposer {
     }
 
     /// Keep drafts in the person's own `record` from now on.
-    pub fn attach_drafts(&mut self, record: PersonRecord<ChatDrafts>) {
+    pub fn attach_drafts(&mut self, record: PersonResource<ChatDrafts>) {
         let source = self.host.widget_mut().source_mut();
         source.shared.record = Some(record);
         source.shared.retarget();
@@ -388,7 +388,7 @@ impl DraftComposer {
             .collect()
     }
 
-    /// Whether the participant may only view.
+    /// Whether the member may only view.
     pub fn set_read_only(&mut self, read_only: bool) {
         self.host.widget_mut().source_mut().read_only = read_only;
     }
@@ -488,7 +488,7 @@ impl<S: RichTextSource + 'static> Composer<S> {
         }
     }
 
-    /// Paint mentions in each participant's colours, built from what
+    /// Paint mentions in each member's colours, built from what
     /// `fingerprint` names; unchanged colours are not applied again.
     pub fn set_mention_paint(
         &mut self,

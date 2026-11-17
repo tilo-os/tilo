@@ -1419,7 +1419,7 @@ enum ApiAsk {
     /// that app's record.
     Change {
         actor: tilo_action_policy::Acting,
-        change: tilo_actions::remote::RecordChange,
+        change: tilo_actions::remote::ResourceChange,
         done: tilo_actions::remote::Completer<Option<Result<serde_json::Value, ActionHostError>>>,
     },
 }
@@ -2068,10 +2068,17 @@ impl Host {
             return Pending::ready(Err(ActionHostError::NotPermitted));
         }
         // What the session offers people alone (ending an agent's session) is no agent's step: it
-        // is refused, never put to the person on a sheet that stands over the shell until they
-        // answer it.
-        if !person && own && !self.reaches_agents(&request) {
-            return Pending::ready(Err(ActionHostError::NotPermitted));
+        // is refused at once, saying why, never put to the person on a sheet that stands over the
+        // shell until they answer it.
+        if !person
+            && own
+            && self
+                .placed(&request)
+                .is_some_and(|placed| !placed.action.contract.reaches_agents())
+        {
+            return Pending::ready(Err(ActionHostError::Refused {
+                reason: "this action is for people only; ask the person to run it".to_owned(),
+            }));
         }
         if !person && let Some(session) = &self.agent_session {
             session.acting(&request);
@@ -2098,28 +2105,20 @@ impl Host {
         }
     }
 
+    /// The session's own step `request` names, as its services publish it.
+    fn placed(&self, request: &InvokeRequest) -> Option<tilo_actions::api::PlacedAction> {
+        self.session_actions
+            .as_ref()?
+            .offered()
+            .into_iter()
+            .find(|placed| placed.action.address == request.target.address)
+    }
+
     /// Whether the step `request` names reads what it acts on, as the session's own services
     /// describes it. A read changes nothing, so it needs neither a turn nor a durable admission.
     fn reads(&self, request: &InvokeRequest) -> bool {
-        let rows = match &self.session_actions {
-            Some(actions) => actions.offered(),
-            None => Vec::new(),
-        };
-        rows.into_iter()
-            .find(|placed| placed.action.address == request.target.address)
+        self.placed(request)
             .is_some_and(|placed| placed.action.kind == tilo_actions::OperationKind::View)
-    }
-
-    /// Whether agents are offered the session's own step `request` names. A step the session does
-    /// not publish is the broker's to refuse.
-    fn reaches_agents(&self, request: &InvokeRequest) -> bool {
-        let rows = match &self.session_actions {
-            Some(actions) => actions.offered(),
-            None => Vec::new(),
-        };
-        rows.into_iter()
-            .find(|placed| placed.action.address == request.target.address)
-            .is_none_or(|placed| placed.action.contract.reaches_agents())
     }
 
     /// An agent's read of the session's own actions: handed to the loop, which is where they
@@ -2235,14 +2234,10 @@ impl ActionHost for Host {
             };
             return page.map(move |page| {
                 page.map(|mut page| {
-                    // Nor is an action for people alone listed for it.
+                    // A step for people alone stays listed: asking for it is refused, saying why.
                     page.rows.retain(|row| {
                         !session.window_elsewhere(&row.resource.id, &workspace)
                             && !session.window_elsewhere(&row.parent_resource, &workspace)
-                            && row
-                                .action
-                                .as_ref()
-                                .is_none_or(|action| action.contract.reaches_agents())
                     });
                     if let Some(agent_session) = &agent_session {
                         agent_session.offered(&page.rows);
@@ -2363,16 +2358,31 @@ impl ActionHost for Host {
         Some(Arc::clone(&self.session.changes) as Arc<dyn tilo_actions::remote::ChangeFeed>)
     }
 
+    /// The next write landing in this device's replica of any of its workspaces, which is what
+    /// a watch of its records and of a resource's history reads. `None` for its roster: this
+    /// host keeps none to say who is in the workspace, so a watch of presence holds until its
+    /// own deadline.
+    fn changed(
+        &self,
+        _caller: &Caller,
+        scope: tilo_actions::remote::WatchScope,
+    ) -> Option<Pending<()>> {
+        match scope {
+            tilo_actions::remote::WatchScope::Records => self.session.changes.watching(),
+            tilo_actions::remote::WatchScope::Here => None,
+        }
+    }
+
     /// The records a connection reads outside their apps: the workspace's own, as the broker
     /// decides them, and the records of packages this session runs itself (the shell), which its
     /// services keep: a program reads them by the app, as it reads Notes', with no case of its own.
-    fn record_reads(&self) -> Option<Arc<dyn tilo_actions::remote::RecordReads>> {
+    fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
         Some(Arc::new(self.service_records()))
     }
 
     /// The changes a connection makes to those records: a package the session runs itself is
     /// changed through its own services, and any other app's at its record's origin.
-    fn record_changes(&self) -> Option<Arc<dyn tilo_actions::remote::RecordChanges>> {
+    fn resource_changes(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceChanges>> {
         Some(Arc::new(self.service_records()))
     }
 }

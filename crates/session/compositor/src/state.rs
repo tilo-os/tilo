@@ -71,6 +71,9 @@ pub struct ClientState {
     /// The client bound `wl_touch` : one that did not is typed on by the pointer where a finger
     /// goes down, so a tap still works.
     touch_bound: AtomicBool,
+    /// The session handed this connection to the process in [`Self::pid`] itself: a socket pair
+    /// names the session as its peer, so the pid it was handed to is the client's.
+    handed: bool,
 }
 
 impl ClientState {
@@ -325,6 +328,10 @@ pub struct State {
     frame_serial: std::sync::atomic::AtomicU64,
     /// The frames the displays presented since this session began.
     frames_presented: std::sync::atomic::AtomicU64,
+    /// The outputs that have presented at least one frame since this session began: a display
+    /// that is on and drawing. The session calls a restarted desktop usable only when every
+    /// enabled output is among them.
+    presented_outputs: std::sync::Mutex<std::collections::BTreeSet<String>>,
     /// The last frame a display presented: its serial and when it was shown.
     retired: std::sync::Mutex<Option<(u64, Instant)>>,
 }
@@ -459,6 +466,7 @@ impl State {
             committed: std::collections::HashMap::new(),
             frame_serial: std::sync::atomic::AtomicU64::new(1),
             frames_presented: std::sync::atomic::AtomicU64::new(0),
+            presented_outputs: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             retired: std::sync::Mutex::new(None),
         }
     }
@@ -2067,6 +2075,11 @@ fn root_surface(surface: &WlSurface) -> WlSurface {
 /// The process of a client, as `pid` .
 fn pid_of(client: Option<&Client>, display: &DisplayHandle) -> Option<u32> {
     let client = client?;
+    if let Some(data) = client.get_data::<ClientState>()
+        && data.handed
+    {
+        return Some(data.pid.load(Ordering::Relaxed));
+    }
     let pid = u32::try_from(client.get_credentials(display).ok()?.pid).ok()?;
     // Noted for the client, so the session hears when its process exits.
     if let Some(data) = client.get_data::<ClientState>() {
@@ -2452,6 +2465,19 @@ pub(crate) fn client_data(
     })
 }
 
+/// An untrusted client's data, for a connection the session hands to the process `pid`.
+pub(crate) fn handed_client_data(
+    pid: u32,
+    exited: Arc<std::sync::Mutex<Vec<u32>>>,
+) -> Arc<ClientState> {
+    Arc::new(ClientState {
+        exited,
+        pid: AtomicU32::new(pid),
+        handed: true,
+        ..ClientState::default()
+    })
+}
+
 impl State {
     /// The processes of the clients that disconnected since the last look.
     pub(crate) fn take_exited_pids(&self) -> Vec<u32> {
@@ -2678,6 +2704,13 @@ impl State {
             .saturating_sub(1)
     }
 
+    /// Whether `output` presented a frame since this session began.
+    pub(crate) fn output_has_presented(&self, output: &str) -> bool {
+        self.presented_outputs
+            .lock()
+            .is_ok_and(|presented| presented.contains(output))
+    }
+
     /// The last frame a display presented, and when: the presenter says so from wherever the
     /// display's completion arrives.
     pub(crate) fn take_retired(&self) -> Option<(u64, Instant)> {
@@ -2687,12 +2720,17 @@ impl State {
             .and_then(|mut retired| retired.take())
     }
 
-    /// The frame `serial` reached the display: answer the keys it carried,
-    /// and close a workspace switch when it was the resting frame.
-    pub(crate) fn frame_presented(&self, serial: u64) {
+    /// The frame `serial` of `output` reached the display: answer the keys it carried, and close a
+    /// workspace switch when it was the resting frame.
+    pub(crate) fn frame_presented(&self, serial: u64, output: &str) {
         let at = Instant::now();
         self.frames_presented
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(mut presented) = self.presented_outputs.lock()
+            && !presented.contains(output)
+        {
+            presented.insert(output.to_owned());
+        }
         if let Ok(mut retired) = self.retired.lock() {
             *retired = Some((serial, at));
         }

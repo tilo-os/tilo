@@ -1,6 +1,6 @@
-//! Who the participants are, by name: what a view or surface shows for an
+//! Who the members are, by name: what a view or surface shows for an
 //! id an action recorded ([`ActionCx::author`](tilo_resource::ActionCx::author))
-//! or the participant reading ([`RecordEnv::me`](super::RecordEnv::me)).
+//! or the member reading ([`ResourceEnv::me`](super::ResourceEnv::me)).
 //!
 //! The document records ids — the same on every replica, whatever anyone is
 //! called — and the host knows the names: the workspace's roster announces them
@@ -8,7 +8,7 @@
 //! so a renamed person, or one whose name arrived after their edit, reads
 //! correctly everywhere at once. Names are the workspace's labels: people who
 //! share a name carry the number presence tells them apart by
-//! ([`ui_core::presence::ParticipantLabels`]), and the participant reading
+//! ([`ui_core::presence::MemberLabels`]), and the member reading
 //! is shown their own name like anyone else's.
 
 use std::cell::RefCell;
@@ -26,13 +26,13 @@ use ui_core::widget::{Button, ButtonRole, Element, Stack, Tone};
 use super::ViewCx;
 use tilo_resource::MemberId;
 
-/// The names the host knows for the participants of the window's workspace.
+/// The names the host knows for the members of the window's workspace.
 /// Cloneable; clones read the same roster.
 #[derive(Clone)]
 pub struct People {
     roster: Rc<RefCell<Roster>>,
     revision: LocalState<u64>,
-    /// The participant this window is for, when someone edits it.
+    /// The member this window is for, when someone edits it.
     me: Option<MemberId>,
     /// The name this device knows its person by, for `me` until the workspace
     /// names them.
@@ -41,21 +41,21 @@ pub struct People {
 
 #[derive(Default, PartialEq)]
 struct Roster {
-    /// Each participant the workspace names, as presence labels them.
+    /// Each member the workspace names, as presence labels them.
     names: HashMap<MemberId, String>,
     /// The colour each of them wears, as presence paints them: the one they
     /// chose, or the one their identity derives.
     hues: HashMap<MemberId, PresenceHue>,
-    /// The label this session's participant goes by, when the workspace said.
+    /// The label this session's member goes by, when the workspace said.
     own: Option<String>,
     /// Everyone the workspace names, by name, as `@` offers them.
     members: Vec<MentionCandidate>,
-    /// The same participants as a history directory reads them: what a file
+    /// The same members as a history directory reads them: what a file
     /// version's person and device keys resolve through.
     registry: ui_core::history_source::AuthorDirectory,
 }
 
-/// A participant as a view shows them: what the workspace calls them, the id
+/// A member as a view shows them: what the workspace calls them, the id
 /// a face takes its photograph from, the colour it wears, and whether the
 /// workspace offers them as an agent.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,6 +68,17 @@ pub struct Actor {
 }
 
 impl Actor {
+    /// Someone outside the workspace, by `name`: what an item moved from elsewhere names
+    /// until they join.
+    #[must_use]
+    pub fn outside(name: &str) -> Self {
+        Self {
+            member: None,
+            name: name.trim().to_owned(),
+            hue: PresenceHue::of_identity(name),
+        }
+    }
+
     /// The id a face takes its photograph from.
     #[must_use]
     pub fn identity(&self) -> &str {
@@ -94,7 +105,7 @@ impl People {
     }
 
     /// The name to show for `member`: the roster's label; for the window's
-    /// own participant before the workspace names them, the name this device
+    /// own member before the workspace names them, the name this device
     /// knows its person by; else their id, which is what a capture's fixture
     /// people are called.
     pub fn name(&self, member: &MemberId) -> String {
@@ -119,10 +130,10 @@ impl People {
             .hues
             .get(member)
             .copied()
-            .unwrap_or_else(|| ui_core::presence::member_hue(member, None))
+            .unwrap_or_else(|| ui_core::tokens::PresenceHue::of_member(member))
     }
 
-    /// The workspace's people and agents, this window's own participant among
+    /// The workspace's people and agents, this window's own member among
     /// them, sorted by name: whom a picker of members offers
     /// ([`ViewCx::person_picker`]).
     pub fn members(&self) -> Vec<MentionCandidate> {
@@ -140,7 +151,7 @@ impl People {
             .cloned()
     }
 
-    /// The participants as a history directory reads them: what a file
+    /// The members as a history directory reads them: what a file
     /// version's person and device keys resolve through, and the hover that
     /// names the computer whose session vouched for the writer.
     pub fn registry(&self) -> ui_core::history_source::AuthorDirectory {
@@ -153,31 +164,6 @@ impl People {
             name: self.name(member),
             hue: self.hue(member),
             member: Some(member.clone()),
-        }
-    }
-
-    /// Who the id an action recorded names: a person by their bare root key (as
-    /// an assignee or a mention holds them), an agent as the action API names
-    /// it (`agent:<id>`), or someone outside the workspace by their name
-    /// (`outside:<name>`). A person is never spelled with a prefix, so an id
-    /// that has one names software or nobody, and reads as what it says.
-    pub fn actor(&self, id: &str) -> Actor {
-        // Someone outside the workspace, named where an item came from
-        // until they join: their name is all the record knows of them.
-        if let Some(name) = id.strip_prefix("outside:") {
-            return Actor {
-                member: None,
-                name: name.trim().to_owned(),
-                hue: PresenceHue::of_identity(id),
-            };
-        }
-        match MemberId::parse(id) {
-            Some(member) => self.actor_of(&member),
-            None => Actor {
-                member: None,
-                name: id.to_owned(),
-                hue: PresenceHue::of_identity(id),
-            },
         }
     }
 
@@ -212,7 +198,7 @@ impl People {
             .any(|member| !member.is_self && member.id.is_person())
     }
 
-    /// Whether `id` is the participant this window is for.
+    /// Whether `id` is the member this window is for.
     pub fn is_me(&self, member: &MemberId) -> bool {
         self.me.as_ref() == Some(member)
     }
@@ -286,7 +272,7 @@ impl People {
             .map(|(id, name)| MentionCandidate {
                 id: id.clone(),
                 name: (*name).to_owned(),
-                hue: ui_core::presence::member_hue(id, None),
+                hue: ui_core::tokens::PresenceHue::of_member(id),
                 is_self: me == Some(id),
             })
             .collect();
@@ -296,7 +282,7 @@ impl People {
 }
 
 impl<R: Resource, T: 'static> ViewCx<R, T> {
-    /// A chip showing whom the resource assigns `read` to — their avatar and
+    /// A chip showing whom the resource assigns (`read`, as the view shows them) — their avatar and
     /// name, or `nobody` while it names no one — that opens the workspace's
     /// people and agents, each with their avatar, and invokes `action` with
     /// the value the record stores for the one picked (`None` for nobody).
@@ -311,7 +297,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         label: String,
         nobody: String,
         value_of: impl Fn(&MentionCandidate) -> Option<String> + 'static,
-        read: impl Fn(&T) -> Option<String> + 'static,
+        read: impl Fn(&T) -> Option<Actor> + 'static,
         action: B,
     ) -> Element {
         let people = self.people();
@@ -326,12 +312,10 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                 let read = Rc::clone(&read);
                 cx.value(move |state: &T| read(state))
             };
-            let people = people.clone();
             let (label, nobody, value_of) =
                 (Rc::clone(&label), Rc::clone(&nobody), Rc::clone(&value_of));
             let held_action = action.clone();
-            cx.switch(&held, move |cx, held| {
-                let who = held.as_deref().map(|value| people.actor(value));
+            cx.switch(&held, move |cx, who| {
                 let mut choices = Stack::new();
                 choices = choices.push(cx.person_choice(
                     &format!("{id}-none"),
@@ -345,8 +329,13 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                     let Some(value) = value_of(member) else {
                         continue;
                     };
+                    let kind = match member.id {
+                        MemberId::Person(_) => "person",
+                        MemberId::Agent(_) => "agent",
+                        MemberId::Bot(_) => "bot",
+                    };
                     choices = choices.push(cx.person_choice(
-                        &format!("{id}-{}", member.id.id()),
+                        &format!("{id}-{kind}-{}", member.id.id()),
                         &member.name,
                         Some(value),
                         Some((&member.name, member.id.id(), member.hue)),
@@ -445,7 +434,7 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        fn a_participant_reads_as_the_name_the_workspace_gives;
+        fn a_member_reads_as_the_name_the_workspace_gives;
 
         phase an_id_reads_as_the_rosters_name_or_itself;
         {
@@ -460,7 +449,7 @@ mod tests {
 
             let mut presence = PresenceCtx::default();
             presence.set_display_name(peer.clone(), "Bob");
-            presence.set_self_participant(me.clone(), "Ada");
+            presence.set_self_member(me.clone(), "Ada");
             assert!(people.follow(&presence));
             assert!(
                 !people.follow(&presence),
@@ -475,28 +464,6 @@ mod tests {
             assert!(people.follow(&presence));
             assert_eq!(people.name(&me), "Ada (1)");
             assert_eq!(people.name(&peer), "ada (2)");
-        }
-
-        phase a_persons_bare_root_reads_as_the_name_the_workspace_gives;
-        {
-            let people = People::new(None);
-            let mut presence = PresenceCtx::default();
-            presence.set_display_name(MemberId::person("bob"), "Bob");
-            presence.set_display_name(MemberId::agent("scribe"), "Scribe");
-            assert!(people.follow(&presence));
-
-            let bob = people.actor("bob");
-            assert_eq!(bob.name, "Bob", "an assignee's bare root reads by its name");
-            assert_eq!(bob.member, Some(MemberId::person("bob")));
-            let scribe = people.actor("agent:scribe");
-            assert_eq!(scribe.name, "Scribe · Agent");
-            assert!(scribe.agent());
-            let old = people.actor("person:bob");
-            assert_eq!(
-                old.member, None,
-                "the old prefixed spelling names nobody the workspace knows"
-            );
-            assert_eq!(old.name, "person:bob", "and reads as what it says");
         }
     }
 }

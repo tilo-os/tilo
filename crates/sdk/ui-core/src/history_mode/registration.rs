@@ -326,7 +326,7 @@ impl HistoryRegistration {
         for source in &self.sources {
             // A raw path identity cannot establish that the outer State owns
             // that file. Path owners use the actual checkout custody adapter.
-            if matches!(source, HistorySourceRegistration::HostDocument { resource, .. } if resource.record_id.file_path().is_some())
+            if matches!(source, HistorySourceRegistration::HostDocument { resource, .. } if resource.document_id.file_path().is_some())
             {
                 return Err(HistoryRegistrationError::UnsupportedOwner);
             }

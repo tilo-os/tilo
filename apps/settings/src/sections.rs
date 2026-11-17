@@ -100,7 +100,7 @@ impl Sections {
 
 fn hold<T: Section>(cx: &ViewCx<Settings>, held: &mut HashMap<TypeId, Box<dyn Any>>) {
     let section = cx.settings::<T>();
-    if let Some(actions) = cx.record_actions(&section) {
+    if let Some(actions) = cx.resource_actions(&section) {
         held.insert(TypeId::of::<T>(), Box::new(actions));
     }
 }

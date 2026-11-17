@@ -104,6 +104,10 @@ fn default_state_name(p: &ast::Param) -> Option<&str> {
     }
 }
 
+/// Whether a call of `view` expands where it is written. A view whose parameters take view state,
+/// functions, views or a default is a component the caller fills: its block fills its view
+/// parameters (a named slot each, the rest its content), its `on` clauses its action parameters, and
+/// what the call leaves out takes the parameter's default.
 #[must_use]
 pub fn is_template(view: &ast::ViewDecl) -> bool {
     view.template
@@ -111,7 +115,7 @@ pub fn is_template(view: &ast::ViewDecl) -> bool {
         || view
             .params
             .iter()
-            .any(|p| !matches!(kind_of(&p.ty), Kind::Value(_) | Kind::View))
+            .any(|p| p.default.is_some() || !matches!(kind_of(&p.ty), Kind::Value(_)))
 }
 
 /// What a scope saved while code of another scope is checked.
@@ -360,10 +364,13 @@ impl Checker<'_> {
         // Each type parameter unbound until what a call passes binds it.
         let mut types: HashMap<String, Ty> =
             params.iter().map(|p| (p.clone(), Ty::Error)).collect();
-        // What each parameter is given: by position, by name, and the call's block.
+        // What each parameter is given: by position, by name, and the call's block. An `on` clause of
+        // the block gives the action parameter it names (`on open: ...` is `on_open:`), as a
+        // component's events are answered.
+        let events = events_of(c, view);
         let mut given: Vec<Option<&ast::Arg>> = vec![None; view.params.len()];
         let mut at = 0usize;
-        for a in args {
+        for a in args.iter().chain(&events) {
             let index = match &a.name {
                 Some(name) => view.params.iter().position(|p| p.name.name == name.name),
                 None => {
@@ -1367,6 +1374,8 @@ fn split_block(c: &UiCall) -> (Vec<(&ast::Ident, &Vec<UiStmt>)>, Content) {
             UiKind::Part {
                 name, body: inner, ..
             } => parts.push((name, inner)),
+            // An event the view answers is an argument ([`events_of`]), not content.
+            UiKind::On { .. } => {}
             _ => body.push(s.clone()),
         }
     }
@@ -1375,6 +1384,56 @@ fn split_block(c: &UiCall) -> (Vec<(&ast::Ident, &Vec<UiStmt>)>, Content) {
         body,
     };
     (parts, content)
+}
+
+/// The `on` clauses of a call's block, each as the argument of the action parameter it answers:
+/// `on open: show(x)` gives `on_open` (or a parameter called `open`). A clause no parameter answers
+/// gives an argument no parameter takes, which the call reports.
+fn events_of(c: &UiCall, view: &ast::ViewDecl) -> Vec<ast::Arg> {
+    c.block
+        .iter()
+        .flatten()
+        .filter_map(|s| match &s.kind {
+            UiKind::On {
+                event,
+                param,
+                at,
+                action,
+            } => {
+                // `on pick(p): choose(p)` answers a function parameter (`on_pick: (Person) -> Action`)
+                // with the lambda `p -> choose(p)`.
+                let value = if param.is_some() || at.is_some() {
+                    let span = action.span;
+                    ast::Expr {
+                        kind: ExprKind::Lambda {
+                            params: param.iter().chain(at).map(|p| p.name.clone()).collect(),
+                            body: action.clone(),
+                        },
+                        span,
+                    }
+                } else {
+                    (**action).clone()
+                };
+                let prefixed = format!("on_{}", event.name);
+                let name = view
+                    .params
+                    .iter()
+                    .map(|p| &p.name.name)
+                    .find(|p| **p == prefixed)
+                    .cloned()
+                    .unwrap_or_else(|| event.name.clone());
+                Some(ast::Arg {
+                    name: Some(ast::Ident {
+                        name,
+                        span: event.span,
+                        from_template_of: None,
+                    }),
+                    value,
+                })
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// Whether `p` is the view parameter a call's block fills when it names no part: the first `View`

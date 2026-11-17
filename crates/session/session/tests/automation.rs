@@ -341,9 +341,13 @@ fn write_index(home: &tilo_test_env::TestHome, rows: &[(&str, &str)]) {
     std::fs::create_dir_all(&staged).expect("the index's directory");
     let mut index = automerge::AutoCommit::new();
     for (id, kind) in rows {
-        let id = ui::record::DocumentId::parse(id).expect("a record id");
+        let id = ui::resource::DocumentId::parse(id).expect("a record id");
         assert!(
-            ui::record::index::reference(&mut index, &id, &ui::record::ResourceType::new(*kind)),
+            ui::resource::index::reference(
+                &mut index,
+                &id,
+                &ui::resource::ResourceType::new(*kind)
+            ),
             "the index names {id}"
         );
     }
@@ -352,8 +356,8 @@ fn write_index(home: &tilo_test_env::TestHome, rows: &[(&str, &str)]) {
 }
 
 /// Where the record document lives.
-fn record_path(home: &tilo_test_env::TestHome) -> std::path::PathBuf {
-    let key = ui::record::DocumentId::parse(RECORD)
+fn resource_path(home: &tilo_test_env::TestHome) -> std::path::PathBuf {
+    let key = ui::resource::DocumentId::parse(RECORD)
         .expect("a record id")
         .storage_key();
     app_state::DocStore::workspace_document_dir_at(home.data(), PACKAGE, WORKSPACE, &key)
@@ -362,17 +366,17 @@ fn record_path(home: &tilo_test_env::TestHome) -> std::path::PathBuf {
 }
 
 /// The record as an app of the workspace wrote it before the session started.
-fn seed_record(home: &tilo_test_env::TestHome) {
+fn seed_resource(home: &tilo_test_env::TestHome) {
     let mut doc = automerge::AutoCommit::new();
-    ui::record::init(
+    ui::resource::init(
         &mut doc,
-        &ui::record::DocumentId::parse(RECORD).expect("a record id"),
-        &ui::record::ResourceType::new(KIND),
+        &ui::resource::DocumentId::parse(RECORD).expect("a record id"),
+        &ui::resource::ResourceType::new(KIND),
         WORKSPACE,
     );
     doc.put(automerge::ROOT, "seed", 1).expect("a field");
     doc.commit();
-    let path = record_path(home);
+    let path = resource_path(home);
     std::fs::create_dir_all(path.parent().expect("the record's directory")).expect("the directory");
     std::fs::write(&path, doc.save()).expect("the record");
 }
@@ -393,7 +397,7 @@ fn a_posted_message_change() -> String {
 
 /// The app commits one message to the record, as the person's app does.
 fn post_a_message(home: &tilo_test_env::TestHome) {
-    let path = record_path(home);
+    let path = resource_path(home);
     let bytes = std::fs::read(&path).expect("the record");
     let mut doc = automerge::AutoCommit::load(&bytes).expect("the record document");
     let before = doc.length(&automerge::ROOT);
@@ -428,14 +432,14 @@ fn an_edit_that_matches_a_rule_fires_its_action_once() {
     let state = tempfile::tempdir().expect("a state directory");
     let socket = home.runtime().join("action.sock");
     write_index(&home, &[(RECORD, KIND)]);
-    seed_record(&home);
+    seed_resource(&home);
     let owner = held(state.path());
     found(&owner, &device, &cert);
     let tidy = save(
         &owner,
         &device,
         &cert,
-        tidy_with(&TriggerSpec::RecordChanged {
+        tidy_with(&TriggerSpec::ResourceChanged {
             kind: KIND.to_owned(),
             actions: Vec::new(),
             fields: Vec::new(),
@@ -475,7 +479,7 @@ fn a_shortcut_saved_by_someone_elses_device_fires_nothing_here() {
     let state = tempfile::tempdir().expect("a state directory");
     let socket = home.runtime().join("action.sock");
     write_index(&home, &[(RECORD, KIND)]);
-    seed_record(&home);
+    seed_resource(&home);
     let owner = held(state.path());
     let governor = found(&owner, &device, &cert);
 
@@ -493,7 +497,7 @@ fn a_shortcut_saved_by_someone_elses_device_fires_nothing_here() {
         &their_owner,
         &their_device,
         &theirs,
-        tidy_with(&TriggerSpec::RecordChanged {
+        tidy_with(&TriggerSpec::ResourceChanged {
             kind: KIND.to_owned(),
             actions: Vec::new(),
             fields: Vec::new(),

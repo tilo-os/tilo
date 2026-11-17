@@ -208,9 +208,9 @@ pub(super) fn is_governance(msg: &NeighbourMsg) -> bool {
 pub(super) fn is_record_content(msg: &NeighbourMsg) -> bool {
     matches!(
         msg,
-        NeighbourMsg::RecordContentWant { .. }
-            | NeighbourMsg::RecordContentPiece { .. }
-            | NeighbourMsg::RecordContentLacks { .. }
+        NeighbourMsg::DocumentContentWant { .. }
+            | NeighbourMsg::DocumentContentPiece { .. }
+            | NeighbourMsg::DocumentContentLacks { .. }
     )
 }
 
@@ -465,7 +465,7 @@ impl ActorState {
                 // This host keeps the workspace's records on its link's own session, which
                 // replays them all to this device as its history starts: nothing of a record
                 // waits for the record to be opened here.
-                records_when_opened: false,
+                documents_when_opened: false,
             },
         )
         .await;
@@ -834,7 +834,7 @@ mod tests {
         let device = ed25519_dalek::SigningKey::from_bytes(&[5; 32])
             .verifying_key()
             .to_bytes();
-        let want = NeighbourMsg::RecordContentWant {
+        let want = NeighbourMsg::DocumentContentWant {
             requester: 9,
             app_id: "so.tilo.chat".into(),
             cluster_id: "workspace".into(),
@@ -899,7 +899,7 @@ mod tests {
         };
         // A member's ask for a record's content reaches its host the same way:
         // the host answers it, or hands it to the member keeping it.
-        let want = NeighbourMsg::RecordContentWant {
+        let want = NeighbourMsg::DocumentContentWant {
             requester: 9,
             app_id: "so.tilo.notes".into(),
             cluster_id: "workspace".into(),

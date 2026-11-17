@@ -1,11 +1,11 @@
 //! Tiles name their app; tabs in a workspace document can name their record.
 
 use automerge::AutoCommit;
-use tilo_desktop_model::apps::{canonical_app_id, record_routes};
+use tilo_desktop_model::apps::{canonical_app_id, document_routes};
 use tilo_desktop_model::ownership::SharedDesktop;
 use tilo_desktop_model::{
     AppId, AppKind, Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-    WorkspaceId, compose_id, shared_record,
+    WorkspaceId, compose_id, shared_resource,
 };
 
 #[test]
@@ -63,13 +63,13 @@ fn app_tiles_have_one_canonical_id_that_routes_and_labels_them() {
             ..SharedDesktop::default()
         };
         let mut doc = AutoCommit::new();
-        shared_record::write(&mut doc, &desktop).unwrap();
-        assert!(record_routes(&doc).is_empty());
+        shared_resource::write(&mut doc, &desktop).unwrap();
+        assert!(document_routes(&doc).is_empty());
 
         desktop.records.push((tab_id, "rec-1".into()));
-        shared_record::write(&mut doc, &desktop).unwrap();
+        shared_resource::write(&mut doc, &desktop).unwrap();
         assert_eq!(
-            record_routes(&doc).get(&tab_id).map(String::as_str),
+            document_routes(&doc).get(&tab_id).map(String::as_str),
             Some("rec-1")
         );
     }

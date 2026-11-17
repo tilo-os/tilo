@@ -894,7 +894,7 @@ impl WorkspaceActivityPane {
                 let named = self.apply_name(
                     tree,
                     &GroupNameRequest {
-                        record_id: name.record,
+                        document_id: name.record,
                         start,
                         end,
                         label: name.label,
@@ -952,7 +952,7 @@ impl WorkspaceActivityPane {
     /// back as that one step.
     fn serve_undo_record(
         &mut self,
-        query: &wire::RecordQuery,
+        query: &wire::ResourceQuery,
     ) -> Result<WorkspaceActivityOutcome, String> {
         // Named by its task, the run is the one recorded for it, if it changed anything.
         if let Some(task) = query.task.as_deref() {

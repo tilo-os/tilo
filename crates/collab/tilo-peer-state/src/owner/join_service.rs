@@ -1,6 +1,6 @@
 //! The workspace-join exchange answered by this device's own engine.
 //!
-//! Every participant's device holds the workspace's admitted governance, its
+//! Every key holder's device holds the workspace's admitted governance, its
 //! documents and its join ledger, so a join is answered by whichever device
 //! the joining one reaches: the same ledger, the same admission and the same
 //! bootstrap, published by this device like any other change it makes. No
@@ -284,7 +284,7 @@ impl NativeWorkspaceOwner {
     /// Issue an invitation into `workspace` as this device, signed by `signer`, its custody,
     /// outside the owner's turn, and
     /// publish it with the workspace's join ledger: the invitation's grant names
-    /// this device, which answers its redemption like any other participant.
+    /// this device, which answers its redemption like any other key holder.
     /// With `makes_administrator`, it also makes whoever redeems it an
     /// administrator: an Editor's invitation, which only someone who may make
     /// administrators can issue.
@@ -309,7 +309,7 @@ impl NativeWorkspaceOwner {
         getrandom::fill(&mut nonce).map_err(|error| error.to_string())?;
         crate::owner::write::signed_turn(signer, |key| {
             let _turn = self.0.mutation.lock();
-            self.change_record(workspace, |view, record| {
+            self.change_document(workspace, |view, record| {
                 if key.device_public_key() != record.device.device_public_key {
                     return Err("invitation is not signed by this device".into());
                 }
@@ -374,7 +374,7 @@ impl NativeWorkspaceOwner {
         now: SystemTime,
     ) -> Result<bool, String> {
         let _turn = self.0.mutation.lock();
-        self.change_record(workspace, |view, record| {
+        self.change_document(workspace, |view, record| {
             if key.device_public_key() != record.device.device_public_key {
                 return Err("invitation is not cancelled by this device".into());
             }

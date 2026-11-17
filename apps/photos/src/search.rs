@@ -503,7 +503,7 @@ impl LibraryIndex {
         let library = Arc::new(library.clone());
         before_publish();
         let mut state = self.state.write_recover();
-        state.catalog.sync_records(rows.iter().map(|(id, row)| {
+        state.catalog.sync_resources(rows.iter().map(|(id, row)| {
             SearchRecord::new(id, row.result()).field(row.searchable(), FieldWeight::UNRANKED)
         }))?;
         state.rows = kinds;
@@ -520,7 +520,7 @@ impl LibraryIndex {
     #[cfg(test)]
     fn reject_malformed_snapshot_for_test(&self) -> Result<(), SearchCatalogError> {
         let mut state = self.state.write_recover();
-        state.catalog.replace_all_records([SearchRecord::new(
+        state.catalog.replace_all_resources([SearchRecord::new(
             "photos.photo:malformed",
             SearchResult::new(PHOTO_SEARCH_KIND, "Malformed", "legacy-action"),
         )

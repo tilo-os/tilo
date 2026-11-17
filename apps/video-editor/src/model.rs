@@ -1032,7 +1032,7 @@ impl Track {
     /// This lane's fader as a linear multiplier, clamped to the range the
     /// control offers. A value outside it can only arrive from a peer running
     /// a build with a different ceiling, and honouring it would let one
-    /// participant hear a mix nobody else can reach.
+    /// member hear a mix nobody else can reach.
     pub fn gain(&self) -> f64 {
         db_to_linear(self.gain_db.clamp(MIN_GAIN_DB, MAX_GAIN_DB))
     }

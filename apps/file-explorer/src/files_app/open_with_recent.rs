@@ -263,7 +263,7 @@ impl FilesState {
         );
     }
 
-    fn recent_record(&self) -> Option<(&ui::framework::PersonRecord<RecentRecord>, &str)> {
+    fn recent_record(&self) -> Option<(&ui::framework::PersonResource<RecentRecord>, &str)> {
         self.recent_record.as_ref().zip(self.device.as_deref())
     }
 

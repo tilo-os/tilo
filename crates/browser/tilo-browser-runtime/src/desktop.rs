@@ -30,7 +30,7 @@ use ui::application::{
 use ui::application_view::InstanceViewStore;
 use ui::automerge::AutoCommit;
 use ui::permissions::{MemberId, SharedPermissions};
-use ui::record::{DocumentCheckout, DocumentId, RecordOwners, RecordStore};
+use ui::resource::{DocumentCheckout, DocumentId, ResourceOwners, ResourceStore};
 use ui::widget::TileHost;
 use ui::window_share::ResourceView;
 
@@ -128,9 +128,9 @@ pub(crate) fn catalogue() -> Vec<Application> {
 /// Everything a tab's component is prepared with.
 pub(crate) struct Inputs {
     pub feedback: Option<tilo_feedback_transport::Startup>,
-    pub owners: RecordOwners,
+    pub owners: ResourceOwners,
     /// The store [`Self::owners`] keep records in: the profile's, where the
-    /// person's own records are kept too ([`crate::person_records`]).
+    /// person's own records are kept too ([`crate::person_resources`]).
     pub store: Rc<dyn durable_store::DurableStore>,
     pub views: Rc<InstanceViewStore>,
     pub device: String,
@@ -325,7 +325,7 @@ pub(crate) struct Shared {
     /// desktop mounted before it did ([`Shared::adopt_feedback`]).
     late_feedback: Rc<RefCell<Option<LateFeedback>>>,
     /// Every package's record owner opened so far, flushed with the mount.
-    pub stores: Rc<RefCell<Vec<RecordStore>>>,
+    pub stores: Rc<RefCell<Vec<ResourceStore>>>,
     pub images: Rc<RefCell<Vec<ui::image_store::HostImageLoader>>>,
     /// The window each image loader draws for, by its place in `images`
     /// ([`crate::page_content::ImageOwners`]).
@@ -406,7 +406,7 @@ pub(crate) struct Shared {
     pub linked: tilo_app::linked_accounts::LinkedAccounts,
     /// The workspace's record actions, run by the host this page's session
     /// is with.
-    pub record_actions: RecordActions,
+    pub resource_actions: RecordActions,
     /// What the desktop asks of the page: the requests its host reads each
     /// frame (`crate::shell::HostRequests`).
     pub requests: HostRequests,
@@ -429,7 +429,7 @@ pub(crate) struct Shared {
 
 impl Shared {
     /// The record the window of `tab` shows, once its component opened one.
-    pub fn record_of(&self, tab: TabId) -> Option<DocumentCheckout> {
+    pub fn resource_of(&self, tab: TabId) -> Option<DocumentCheckout> {
         self.records.borrow().get(&tab).cloned()
     }
 
@@ -483,7 +483,7 @@ impl Shared {
         application(app).is_some_and(|definition| {
             !resource.is_empty()
                 && resource != record
-                && resource != definition.record_kind.as_str()
+                && resource != definition.resource_type.as_str()
         })
     }
 
@@ -493,8 +493,8 @@ impl Shared {
     /// page opens is its person's).
     pub fn tab_on(&self, app: &str, record: &str) -> Option<TabId> {
         let definition = application(app)?;
-        let kind = definition.record_kind.clone();
-        let own = definition.member_record;
+        let kind = definition.resource_type.clone();
+        let own = definition.member_resource;
         let shows = |route: &str| route == record || (record.is_empty() && own);
         self.records
             .borrow()
@@ -599,10 +599,10 @@ impl Shared {
     /// opened, or opened now and flushed and replicated with the mount's.
     fn workspace_store(
         &self,
-        owners: &RecordOwners,
+        owners: &ResourceOwners,
         workspace: &str,
         definition: &'static ApplicationDefinition,
-    ) -> Result<RecordStore, String> {
+    ) -> Result<ResourceStore, String> {
         let home = (definition.app_id().to_owned(), workspace.to_owned());
         if let Some(store) = self
             .stores
@@ -619,7 +619,7 @@ impl Shared {
             .map_err(|error| error.to_string())?;
         // A record not here is the workspace's to send or to say it has none
         // of, never a fresh one of this page's.
-        if self.record_actions.peer.is_some() {
+        if self.resource_actions.peer.is_some() {
             store.ask_workspace_for_missing();
         }
         self.stores.borrow_mut().push(store.clone());
@@ -690,7 +690,7 @@ impl Shared {
     /// The record each window of `tree` shows, in the spelling links and the shared shell use
     /// (empty for the app's primary record): bound, or still waiting for the record a link or a
     /// window named.
-    pub fn window_records(&self, tree: &Layout) -> Vec<(TabId, String)> {
+    pub fn window_resources(&self, tree: &Layout) -> Vec<(TabId, String)> {
         tilo_desktop_surface::host::records::live(
             &self.records.borrow(),
             &self.unbound.borrow(),
@@ -712,13 +712,13 @@ impl Shared {
         &self,
         tree: &Layout,
         tab: TabId,
-    ) -> Option<tilo_desktop::feedback::ShownRecord> {
+    ) -> Option<tilo_desktop::feedback::ShownResource> {
         if self.window_capture_protected(tree, tab) {
             return None;
         }
-        let workspace = crate::replicated::workspace_uuid(self.record_actions.peer?)?;
+        let workspace = crate::replicated::workspace_uuid(self.resource_actions.peer?)?;
         let (_, record) = self.live_record_of(tree, tab)?;
-        Some(tilo_desktop::feedback::ShownRecord { workspace, record })
+        Some(tilo_desktop::feedback::ShownResource { workspace, record })
     }
 
     /// Whether the app window `tab` shows declares itself withheld from what
@@ -817,7 +817,7 @@ impl RecordActions {
     }
 }
 
-impl tilo_app::linked_accounts::WorkspaceRecordActions for RecordActions {
+impl tilo_app::linked_accounts::WorkspaceResourceActions for RecordActions {
     fn apps(&self) -> Vec<String> {
         let workspace_apps = self
             .peer
@@ -861,7 +861,7 @@ impl tilo_app::linked_accounts::WorkspaceRecordActions for RecordActions {
         host.invoke(&caller, request).then(move |answered_| {
             answered.lock_recover().push((
                 invocation,
-                tilo_app::linked_accounts::record_answer(answered_),
+                tilo_app::linked_accounts::resource_answer(answered_),
             ));
             if let Some(wake) = &wake {
                 wake();
@@ -889,7 +889,7 @@ fn linked_accounts(
     let (woken, notify) = (shared.clone(), Arc::clone(notify));
     tilo_app::linked_accounts::LinkedAccounts::new(Rc::new(
         tilo_app::linked_accounts::WorkspaceAccounts::new(
-            Rc::new(shared.record_actions.clone()),
+            Rc::new(shared.resource_actions.clone()),
             Rc::new(move || {
                 woken.wake();
                 notify();
@@ -901,12 +901,15 @@ fn linked_accounts(
 struct Tiles {
     inputs: Inputs,
     shared: Shared,
-    stores: HashMap<&'static str, RecordStore>,
+    stores: HashMap<&'static str, ResourceStore>,
     notify: Arc<dyn Fn() + Send + Sync>,
 }
 
 impl Tiles {
-    fn store(&mut self, definition: &'static ApplicationDefinition) -> Result<RecordStore, String> {
+    fn store(
+        &mut self,
+        definition: &'static ApplicationDefinition,
+    ) -> Result<ResourceStore, String> {
         if let Some(store) = self.stores.get(definition.app_id()) {
             return Ok(store.clone());
         }
@@ -952,7 +955,7 @@ impl Tiles {
         let unbound = self.shared.unbound.borrow().get(&tab.id).cloned();
         if let Some(id) = unbound.as_deref().and_then(DocumentId::from_route) {
             self.shared.unbound.borrow_mut().remove(&tab.id);
-            let checkout = DocumentCheckout::new(id, definition.record_kind.clone());
+            let checkout = DocumentCheckout::new(id, definition.resource_type.clone());
             self.shared.records.borrow_mut().insert(tab.id, checkout);
         }
         if definition.app_id() == tilo_desktop::feedback::PACKAGE {
@@ -962,7 +965,7 @@ impl Tiles {
         let (target, named_new) = self.launch_target(definition, &store, tab.id)?;
         // A member's own record is theirs to start whatever their role; the
         // workspace's record waits for someone who writes there.
-        let own = definition.member_record && named_new.is_some();
+        let own = definition.member_resource && named_new.is_some();
         if !own && (named_new.is_some() || matches!(target, LaunchTarget::PrimaryNew)) {
             self.may_start_record(tab)?;
         }
@@ -973,7 +976,13 @@ impl Tiles {
             .map_err(|error| error.to_string())?
             .map_or(RestoreInput::None, RestoreInput::Local);
         let component = self
-            .instantiate(definition, store, (target, named_new), tab.id, restore)
+            .instantiate(
+                definition,
+                store,
+                (target, named_new),
+                (tab.id, false),
+                restore,
+            )
             .map_err(|unbuilt| match unbuilt {
                 // The record the window shows is still on its way from the workspace: it is
                 // loading, not broken, and the window is built again once it is here.
@@ -1001,9 +1010,9 @@ impl Tiles {
     fn instantiate(
         &self,
         definition: &'static ApplicationDefinition,
-        store: RecordStore,
+        store: ResourceStore,
         (target, named_new): (LaunchTarget, Option<DocumentId>),
-        instance: TabId,
+        (instance, embedded): (TabId, bool),
         restore: RestoreInput,
     ) -> Result<AppComponent, Unbuilt> {
         let inputs = HostContextInputs {
@@ -1016,12 +1025,16 @@ impl Tiles {
             action_context: tilo_actions::ActionContext::default(),
         };
         let mut context = match named_new {
-            Some(id) => HostContext::prepare_new_record(definition, inputs, id),
+            Some(id) => HostContext::prepare_new_resource(definition, inputs, id),
             None => HostContext::prepare(definition, inputs, &target),
         }
         .map_err(Unbuilt::of)?;
         context.provide_models(self.inputs.models.clone());
         context.provide_content(self.inputs.content.clone());
+        if embedded {
+            // A view another app's window embeds: its app shows the one thing asked for.
+            context.provide_embedded();
+        }
         // What another window handed this one to open, from the desktop's
         // content, where that window keeps it.
         let handed = self.shared.opened_content.borrow_mut().remove(&instance);
@@ -1031,14 +1044,14 @@ impl Tiles {
                 crate::content_open::opened_file(&hash, &self.inputs.content, name.as_deref())?;
             context.provide_open_file(file);
         }
-        context.provide_workspace_records(crate::workspace_records::in_page(
+        context.provide_workspace_resources(crate::workspace_resources::in_page(
             &self.inputs.owners,
             &self.shared.stores,
             &self.inputs.workspace,
             self.inputs.author.clone(),
-            self.shared.record_actions.peer.is_some(),
+            self.shared.resource_actions.peer.is_some(),
         ));
-        crate::person_records::provide(&mut context, &self.inputs.store)?;
+        crate::person_resources::provide(&mut context, &self.inputs.store)?;
         crate::host_services::provide_provider_admin(
             &mut context,
             self.inputs.provider_admin.clone(),
@@ -1091,11 +1104,12 @@ impl Tiles {
             .ok_or_else(|| not_in_the_browser(&view.app))?;
         let id = DocumentId::from_route(&view.record).ok_or("It is no longer there")?;
         let store = self.store(definition)?;
-        let checkout = DocumentCheckout::new(id, definition.record_kind.clone());
-        match store.try_open_record(&checkout) {
+        let checkout = DocumentCheckout::new(id, definition.resource_type.clone());
+        match store.try_open_resource(&checkout) {
             Ok(_) => {}
             Err(
-                ui::record::RecordOpenError::MissingRecord | ui::record::RecordOpenError::Arriving,
+                ui::resource::ResourceOpenError::MissingResource
+                | ui::resource::ResourceOpenError::Arriving,
             ) => {
                 return Err("It shows once it reaches you".into());
             }
@@ -1115,7 +1129,7 @@ impl Tiles {
                 definition,
                 store,
                 (target, None),
-                embed_instance(view),
+                (embed_instance(view), true),
                 RestoreInput::None,
             )
             .map_err(|unbuilt| match unbuilt {
@@ -1202,7 +1216,7 @@ impl Tiles {
     /// record (it opens once it arrives, or once the workspace says they write)
     /// instead of showing a fresh one of its own as if it were the workspace's.
     fn may_start_record(&self, tab: &Tab) -> Result<(), Unready> {
-        if self.shared.record_actions.peer.is_none() {
+        if self.shared.resource_actions.peer.is_none() {
             return Ok(());
         }
         let notice = match self.shared.standing.role() {
@@ -1223,7 +1237,7 @@ impl Tiles {
     fn launch_target(
         &self,
         definition: &'static ApplicationDefinition,
-        store: &RecordStore,
+        store: &ResourceStore,
         tab: TabId,
     ) -> Result<(LaunchTarget, Option<DocumentId>), Unready> {
         let saved = self.shared.records.borrow().get(&tab).cloned();
@@ -1246,7 +1260,7 @@ impl Tiles {
     fn own_target(
         &self,
         definition: &'static ApplicationDefinition,
-        store: &RecordStore,
+        store: &ResourceStore,
         tab: TabId,
     ) -> Option<Result<(LaunchTarget, Option<DocumentId>), Unready>> {
         let author = MemberId::person(self.inputs.author.clone());
@@ -1255,7 +1269,7 @@ impl Tiles {
             Ok(crate::app_page::Opening::Target(target)) => Ok((target, None)),
             Ok(crate::app_page::Opening::New(id)) => Ok((LaunchTarget::New, Some(id))),
             Ok(crate::app_page::Opening::Arriving) => {
-                Err(self.unopened(tab, &ui::record::RecordOpenError::Arriving))
+                Err(self.unopened(tab, &ui::resource::ResourceOpenError::Arriving))
             }
             Err(crate::app_page::Unopened::Records(error)) => Err(self.unopened(tab, &error)),
             Err(crate::app_page::Unopened::InvalidRecord) => {
@@ -1269,10 +1283,10 @@ impl Tiles {
     fn workspace_target(
         &self,
         definition: &'static ApplicationDefinition,
-        store: &RecordStore,
+        store: &ResourceStore,
         tab: TabId,
     ) -> Result<(LaunchTarget, Option<DocumentId>), Unready> {
-        if !definition.keeps_workspace_record() {
+        if !definition.keeps_workspace_resource() {
             return self.unbound_target(definition, store, tab);
         }
         let target = definition
@@ -1284,8 +1298,8 @@ impl Tiles {
     /// Why `tab`'s record did not open: one the workspace still sends (or
     /// still has to say it has none of) keeps the window waiting for it,
     /// built again once it is here, instead of starting one of its own.
-    fn unopened(&self, tab: TabId, error: &ui::record::RecordOpenError) -> Unready {
-        if matches!(error, ui::record::RecordOpenError::Arriving) {
+    fn unopened(&self, tab: TabId, error: &ui::resource::ResourceOpenError) -> Unready {
+        if matches!(error, ui::resource::ResourceOpenError::Arriving) {
             self.shared.waiting.borrow_mut().insert(tab);
             return Unready::Arriving;
         }
@@ -1299,12 +1313,12 @@ impl Tiles {
     fn unbound_target(
         &self,
         definition: &'static ApplicationDefinition,
-        store: &RecordStore,
+        store: &ResourceStore,
         tab: TabId,
     ) -> Result<(LaunchTarget, Option<DocumentId>), Unready> {
         let default = DocumentCheckout::new(
             DocumentId::workspace_default(),
-            definition.record_kind.clone(),
+            definition.resource_type.clone(),
         );
         let taken = self
             .shared
@@ -1315,7 +1329,7 @@ impl Tiles {
         if taken {
             return Ok((LaunchTarget::New, None));
         }
-        match store.try_open_record(&default) {
+        match store.try_open_resource(&default) {
             Ok(_) => Ok((
                 LaunchTarget::Record {
                     checkout: default,
@@ -1323,7 +1337,7 @@ impl Tiles {
                 },
                 None,
             )),
-            Err(ui::record::RecordOpenError::MissingRecord) => {
+            Err(ui::resource::ResourceOpenError::MissingResource) => {
                 Ok((LaunchTarget::New, Some(default.id)))
             }
             Err(error) => Err(self.unopened(tab, &error)),
@@ -1431,7 +1445,7 @@ impl TileSource for Tiles {
 
     fn showing(&self, app: &str) -> Option<TabId> {
         let (app, record) = tilo_desktop_search::launched_record(app)?;
-        let kind = application(app)?.record_kind.clone();
+        let kind = application(app)?.resource_type.clone();
         let bound = self
             .shared
             .records
@@ -1777,7 +1791,7 @@ fn adopted_records(
     desktop: &tilo_desktop_model::ownership::SharedDesktop,
 ) -> (HashMap<TabId, DocumentCheckout>, HashMap<TabId, String>) {
     tilo_desktop_surface::host::records::adopted(desktop, |app| {
-        application(app).map(|definition| definition.record_kind.clone())
+        application(app).map(|definition| definition.resource_type.clone())
     })
 }
 
@@ -1835,7 +1849,7 @@ fn shared_with_its_host(inputs: &Inputs, notify: &Arc<dyn Fn() + Send + Sync>) -
         let workspace = crate::peer::workspace_id(&inputs.workspace).ok()?;
         crate::peer_sync::actions_of(peer, workspace)
     });
-    let record_actions = RecordActions::new(
+    let resource_actions = RecordActions::new(
         host,
         inputs.peer,
         &inputs.workspace,
@@ -1844,7 +1858,7 @@ fn shared_with_its_host(inputs: &Inputs, notify: &Arc<dyn Fn() + Send + Sync>) -
         Arc::clone(notify),
     );
     let mut shared = Shared {
-        record_actions,
+        resource_actions,
         requests,
         peer: inputs.peer,
         workspace: inputs.workspace.clone(),
@@ -1888,9 +1902,9 @@ pub(crate) fn mount(
     // (`tilo_desktop_model::personal`); a shell no workspace shares is this person's alone, all of
     // it.
     let stored = if inputs.peer.is_some() {
-        tilo_desktop_model::shared_record::read(&document, None)
+        tilo_desktop_model::shared_resource::read(&document, None)
     } else {
-        tilo_desktop_model::shared_record::read_as_kept(&document, None)
+        tilo_desktop_model::shared_resource::read_as_kept(&document, None)
     };
     let tree = if let Some(stored) = stored {
         let (bound, unbound) = adopted_records(&stored);

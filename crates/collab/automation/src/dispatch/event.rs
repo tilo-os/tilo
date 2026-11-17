@@ -14,7 +14,7 @@ pub struct ItemRef {
 
 /// One committed change to a record in the workspace, as a trigger sees it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct RecordEvent {
+pub struct DocumentEvent {
     /// The workspace's id.
     pub workspace: String,
     /// The record's id.
@@ -54,7 +54,7 @@ pub struct RecordEvent {
     pub invocation: Option<String>,
 }
 
-impl RecordEvent {
+impl DocumentEvent {
     /// The Shortcut run this change belongs to, when it is one's.
     #[must_use]
     pub fn started_run(&self) -> Option<crate::InvocationId> {
@@ -76,7 +76,7 @@ pub fn event_of(
     kind: &str,
     change: &str,
     context: &ActionContext,
-) -> RecordEvent {
+) -> DocumentEvent {
     let facet = |key: &str| {
         context
             .facets
@@ -84,7 +84,7 @@ pub fn event_of(
             .find(|facet| facet.key == key)
             .map(|facet| facet.value.clone())
     };
-    RecordEvent {
+    DocumentEvent {
         workspace: workspace.to_owned(),
         record: record.to_owned(),
         kind: kind.to_owned(),
@@ -203,7 +203,7 @@ impl AppEvent {
     /// The prefix is the app whose action the change invoked, so one app
     /// cannot speak for another.
     #[must_use]
-    pub fn of_change(change: &RecordEvent) -> Option<Self> {
+    pub fn of_change(change: &DocumentEvent) -> Option<Self> {
         // The app id is read off the change, not off the kind: an id has dots
         // and a kind has dots, so the prefix decides which app spoke.
         let Did::Verb(call) = &change.did else {
@@ -271,7 +271,7 @@ pub struct ScheduleEvent {
 /// Either kind of event.
 #[derive(Clone, Copy, Debug)]
 pub enum Event<'a> {
-    Record(&'a RecordEvent),
+    Record(&'a DocumentEvent),
     Connector(&'a ConnectorEvent),
     AppEvent(&'a AppEvent),
     Schedule(&'a ScheduleEvent),

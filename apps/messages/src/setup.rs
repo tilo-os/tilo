@@ -39,7 +39,7 @@ impl SetupView {
     pub(crate) fn new(
         client: Option<MessagingClient>,
         first: Option<tilo_messaging::EnrollmentClient>,
-        actor: Option<&str>,
+        actor: Option<&ui::tilo_resource::PersonId>,
     ) -> Self {
         Self {
             client,

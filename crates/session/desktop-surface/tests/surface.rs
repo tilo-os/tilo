@@ -2612,7 +2612,7 @@ fn pointer_layout(handle: &DesktopHandle) -> tilo_relay_protocol::live::PointerL
                 let TileContent::LocalApp { app_id, .. } = &tab.tile else {
                     return None;
                 };
-                let record = tilo_relay_protocol::live::LiveRecord {
+                let record = tilo_relay_protocol::live::LiveResource {
                     app: app_id.clone(),
                     record: String::new(),
                 };

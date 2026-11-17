@@ -7,37 +7,34 @@
 //!   ask, and sharing brings it forward to ask where.
 //! - **The live views.** A window that embeds another app's view of a
 //!   resource (a shared window's message) gets that app, run here on this
-//!   desktop's own copy of the record, laid out at a window's size and drawn
-//!   scaled into the place the window gave it. It takes no input: opening
-//!   the resource is the embedding app's own action.
+//!   desktop's own copy of the record. A miniature is laid out at a window's
+//!   size and drawn scaled into the place the window gave it, and takes no
+//!   input. A view the window asks for to work in stands in the desktop's own
+//!   tree at its place's size, and takes the person's input there as a window
+//!   does.
 //!
-//! The menus, the asks and when a view starts, retries and ends are every
-//! desktop's ([`ui::window_share::host`]); this desktop runs each view's app
-//! beside its windows, as a [`TileHost`] it lays out and draws itself.
+//! The menus, the asks, when a view starts, retries and ends, and how a view
+//! is laid out, drawn and handed input are every desktop's
+//! ([`ui::window_share::host`]); this desktop says which windows ask and
+//! starts each view's app.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
-use ui::kurbo::{Affine, Point, Rect, Vec2};
-use ui::taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
+use ui::kurbo::{Affine, Vec2};
 use ui::time::Instant;
 use ui::vello::Scene;
-use ui::widget::{TileHost, Widget};
-use ui::window_share::host::{self, VIEW, Views};
-use ui::window_share::{self, Ask, OpenWindow, ResourceView};
+use ui::window_share::host::{self, Asking, Stage};
+use ui::window_share::{self, Ask, OpenWindow};
 use ui::{TextRenderer, Theme};
 
 use super::DesktopSurface;
 use crate::navigation::Admitted;
-use ui::widget::DrawChild;
 
 /// The views this desktop runs for the windows that embed them, and the windows its menus offer to
 /// share.
 #[derive(Default)]
 pub(super) struct LiveShares {
-    views: Views<TileHost>,
-    /// Where each view is drawn this frame, in the surface's coordinates: its place and what of it
-    /// may show.
-    placed: Vec<(ResourceView, Rect, Rect)>,
+    pub(super) stage: Stage,
     /// The windows a share item stands in the menu of.
     offered: HashSet<u64>,
     /// The windows on a record, as last listed.
@@ -175,7 +172,6 @@ impl DesktopSurface {
         if !self.tiles.draws_embeds() {
             return false;
         }
-        let mut placed = Vec::new();
         let mut asking = Vec::new();
         if let Some(row) = self.shown.and_then(|strip| self.rows.get_mut(&strip)) {
             for group in &mut row.groups {
@@ -190,59 +186,42 @@ impl DesktopSurface {
                 let Some(window) = tile.hosted_window().cloned() else {
                     continue;
                 };
-                for embed in window.embeds() {
-                    let (rect, clip) = host::placed(&embed, origin, content);
-                    placed.push((embed.view.clone(), rect, clip));
-                    asking.push((window.clone(), embed.key, embed.view));
-                }
+                asking.push(Asking::new(window, origin, content));
             }
         }
         let tiles = &mut self.tiles;
-        let followed = self.live_shares.views.follow(
-            placed.iter().map(|(view, ..)| view),
+        let embedded = &mut self.live_shares.stage;
+        embedded.set_workspace(tiles.workspace_id());
+        embedded.follow(
+            asking,
             ui::time::now(),
             |view| tiles.embed(view),
-        );
-        let mut changed = followed.changed;
-        for (window, key, view) in asking {
-            if let Some(state) = self.live_shares.views.state(&view) {
-                window.set_embed_state(&key, state);
-            }
-        }
-        for (_, host) in self.live_shares.views.running_mut() {
-            host.sync(state, path);
-            changed |= host.update(state, path);
-        }
-        self.live_shares.placed = placed;
-        changed
+            state,
+            path,
+        )
     }
 
     /// The soonest a view that could not show is tried again.
     pub(super) fn embed_retry_deadline(&self) -> Option<Instant> {
-        self.live_shares.views.retry_deadline()
+        self.live_shares.stage.retry_deadline()
     }
 
     /// Whether a running view is animating.
     pub(super) fn embeds_animate(&self) -> bool {
-        self.live_shares
-            .views
-            .running()
-            .any(|(_, host)| host.needs_animation_frame())
+        self.live_shares.stage.animating()
     }
 
-    /// What the running views wrote this frame goes to their records.
+    /// What the miniatures wrote this frame goes to their records; a view worked in settles with
+    /// the windows.
     pub(super) fn settle_embeds(
         &mut self,
         edits: &mut ui::widget::Edits<'_>,
         path: &ui::automerge::ObjId,
     ) {
-        for (_, host) in self.live_shares.views.running_mut() {
-            host.settle(edits, path);
-        }
+        self.live_shares.stage.settle(edits, path);
     }
 
-    /// Draw each view over the window that embeds it, laid out at a window's size and scaled into
-    /// its place, clipped to what of it may show.
+    /// Draw each view over the window that embeds it, clipped to what of its place may show.
     pub(super) fn draw_embeds(
         &mut self,
         scene: &mut Scene,
@@ -251,81 +230,10 @@ impl DesktopSurface {
         theme: &Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
-        let placed = std::mem::take(&mut self.live_shares.placed);
-        for (view, rect, clip) in &placed {
-            if clip.is_zero_area() || rect.is_zero_area() {
-                continue;
-            }
-            let Some(tile) = self.live_shares.views.get_mut(view) else {
-                continue;
-            };
-            if !lay_out(tile, theme, text) {
-                continue;
-            }
-            scene.push_layer(
-                ui::vello::peniko::Fill::NonZero,
-                ui::vello::peniko::BlendMode::default(),
-                1.0,
-                transform,
-                clip,
-            );
-            let outer = presence.push_viewport(Rect::new(0.0, 0.0, VIEW.0, VIEW.1));
-            tile.draw_child(
-                scene,
-                host::view_transform(transform, *rect),
-                text,
-                theme,
-                presence,
-            );
-            presence.pop_viewport(outer);
-            scene.pop_layer();
-        }
-        self.live_shares.placed = placed;
+        self.live_shares
+            .stage
+            .draw(scene, transform, text, theme, presence);
     }
-}
-
-/// Lay `host` out at [`VIEW`]'s size from the origin. Whether it could.
-fn lay_out(host: &mut TileHost, theme: &Theme, text: &mut TextRenderer) -> bool {
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let child = host.build_layout(&mut taffy, theme, &mut nodes);
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "the view's logical size is far inside f32's range"
-    )]
-    let size = Size {
-        width: ui::taffy::Dimension::length(VIEW.0 as f32),
-        height: ui::taffy::Dimension::length(VIEW.1 as f32),
-    };
-    let Ok(root) = taffy.new_with_children(
-        Style {
-            size,
-            ..Style::default()
-        },
-        &[child],
-    ) else {
-        return false;
-    };
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "the view's logical size is far inside f32's range"
-    )]
-    let available = Size {
-        width: AvailableSpace::Definite(VIEW.0 as f32),
-        height: AvailableSpace::Definite(VIEW.1 as f32),
-    };
-    let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
-    // SAFETY: the arena and node map were just built from `host` alone,
-    // which stays in place and unaliased for both calls.
-    let solved = unsafe {
-        bindings.rebuild(&*host, &taffy, child, &nodes);
-        ui::widget::compute_widget_layout(&mut taffy, root, available, &nodes, &bindings, text)
-    };
-    if solved.is_err() {
-        return false;
-    }
-    host.apply_layout(&taffy, child, Point::ORIGIN);
-    true
 }
 
 #[cfg(test)]

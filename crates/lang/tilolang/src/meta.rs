@@ -228,7 +228,7 @@ pub struct TriggerMeta {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TriggerArgMeta {
-    Subject,
+    Target,
     /// A root record, by its type's id (the platform keeps it as `root-<type id>`).
     Root(String),
 }
@@ -553,7 +553,7 @@ pub struct ProposalMeta {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each flag is one part of what a surface offers and is read on its own: whether the action is a scenario's, and the two conditions its subject and its place decide"
+    reason = "each flag is one part of what a surface offers and is read on its own: whether the action is a scenario's, and the two conditions its target and its place decide"
 )]
 pub struct ActionMeta {
     pub id: String,
@@ -580,12 +580,12 @@ pub struct ActionMeta {
     /// attribute of the action's message (`d-<id>.did`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub did: Option<String>,
-    /// The id of the view that presents the action's state for a subject, when its label or icon
-    /// follows the subject or it declares `on:`. `label` and `icon` above are what shows without
+    /// The id of the view that presents the action's state for a target, when its label or icon
+    /// follows the target or it declares `on:`. `label` and `icon` above are what shows without
     /// evaluating it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub present: Option<String>,
-    /// The id of the subject's `Bool` field whose state the action toggles (`on: n.pinned`). A
+    /// The id of the target's `Bool` field whose state the action toggles (`on: n.pinned`). A
     /// control bound to the field stands for the action.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub toggles: Option<String>,
@@ -601,7 +601,7 @@ pub struct ActionMeta {
     /// replay answers from ([`crate::effects::Effect`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub uses: Vec<String>,
-    /// Whether the action keeps a requirement its subject decides, exported as
+    /// Whether the action keeps a requirement its target decides, exported as
     /// [`crate::ir::guard_export`]: the first reason it cannot run, or empty while it can.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub guard: bool,
@@ -738,15 +738,15 @@ impl PackageMeta {
     }
 
     #[must_use]
-    pub fn subject_of(&self, params: &[ParamMeta]) -> Option<&TypeMeta> {
+    pub fn target_of(&self, params: &[ParamMeta]) -> Option<&TypeMeta> {
         params.first().and_then(|param| self.type_named(&param.ty))
     }
 
     /// Every type of this package the action whose parameters are `params` acts on: its
-    /// subject's, or each case of a union its first parameter takes (`to: TextChannel | Thread`),
+    /// target's, or each case of a union its first parameter takes (`to: TextChannel | Thread`),
     /// since a call acts on a resource of one of them.
     #[must_use]
-    pub fn subjects_of(&self, params: &[ParamMeta]) -> Vec<&TypeMeta> {
+    pub fn targets_of(&self, params: &[ParamMeta]) -> Vec<&TypeMeta> {
         params.first().map_or_else(Vec::new, |param| {
             param
                 .ty
@@ -756,10 +756,10 @@ impl PackageMeta {
         })
     }
 
-    /// The parameters beyond the subject that the address carries: what an invocation gives.
+    /// The parameters beyond the target that the address carries: what an invocation gives.
     #[must_use]
     pub fn arguments<'a>(&self, params: &'a [ParamMeta]) -> &'a [ParamMeta] {
-        match (self.subject_of(params), params.split_first()) {
+        match (self.target_of(params), params.split_first()) {
             (Some(_), Some((_, rest))) => rest,
             _ => params,
         }

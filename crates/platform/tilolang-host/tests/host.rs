@@ -291,7 +291,7 @@ fn instance_keeping(
         app_id: route.app_id.clone(),
         cluster_id: route.cluster_id,
         record: None,
-        record_kind: None,
+        resource_type: None,
         handle: Some(attributes.person.clone()),
     }));
     let _ = manager.poll();
@@ -392,7 +392,7 @@ fn opened_from_own_copy_in(
         app_id: route.app_id.clone(),
         cluster_id: route.cluster_id,
         record: None,
-        record_kind: None,
+        resource_type: None,
         handle: Some(person.to_owned()),
     }));
     let _ = manager.poll();
@@ -486,7 +486,7 @@ tilo_test_env::scenario! {
         // version, put on the root by the store that created it, and nothing else.
         let stamp = {
             use automerge::transaction::Transactable as _;
-            let mut store = collaboration::record::save::workspace_document(
+            let mut store = collaboration::document::save::workspace_document(
                 &documents,
                 APP,
                 &route.cluster_id.to_string(),
@@ -1249,7 +1249,7 @@ tilo_test_env::scenario! {
             app_id: route.app_id.clone(),
             cluster_id: route.cluster_id,
             record: None,
-            record_kind: None,
+            resource_type: None,
             handle: Some("grace".to_owned()),
         }));
         let (ours, theirs) = Channel::pair().unwrap();
@@ -2040,7 +2040,7 @@ fn applier_of(
         app_id: route.app_id.clone(),
         cluster_id: route.cluster_id,
         record: None,
-        record_kind: None,
+        resource_type: None,
         handle: Some(person.to_owned()),
     }));
     let _ = manager.poll();

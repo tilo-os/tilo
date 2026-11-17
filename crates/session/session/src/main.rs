@@ -778,11 +778,28 @@ fn start(
             }
         }
     }
+    // The wrapper announces an in-place restart in the login's private channel before it stops
+    // the compositor; the login's own desktop reads the marker once, so it knows it continues the
+    // login rather than starting one. Reading it consumes it, so only this run is the restart's. A
+    // session in a window or a headless one inherits the login's environment but is not what the
+    // wrapper restarts, so it leaves the channel alone.
+    let restarting = backend == Backend::Drm && tilo_session::restart::following_restart();
+    tracing::info!(
+        restarting,
+        "{}",
+        if restarting {
+            "the desktop starts again after an in-place restart"
+        } else {
+            "the desktop starts a login"
+        }
+    );
     let mcp_server = options.mcp_server.clone();
     let test_control = options.test_control.clone();
     let admin_control = options.admin_control.clone();
     tilo_startup_metrics::mark("session-open-start");
-    let mut session = match start_session(backend, options, size, headless, &connector, &outputs) {
+    let mut session = match start_session(
+        backend, options, size, headless, &connector, &outputs, restarting,
+    ) {
         Ok(session) => session,
         Err(error) => {
             eprintln!("tilo-session: {error}");
@@ -790,6 +807,17 @@ fn start(
         }
     };
     watch_the_loop(backend, &mut session);
+    // The apps that are not Tilo's start behind a keeper, which this desktop attaches; after an
+    // in-place restart the ones the run before left running are taken back.
+    if let Some(keeper) = tilo_app_launch::kept::find_keeper() {
+        let connector = session.compositor().client_connector();
+        launch.keep_behind(tilo_app_launch::kept::Keeping {
+            keeper,
+            root: tilo_app_launch::kept::root(),
+            desktop: std::sync::Arc::new(move |pid| connector.connect_for(pid)),
+        });
+    }
+    launch.take_up_kept(restarting);
     // The bus the session serves its desktop services on is the one its apps reach: a launch
     // starts with a cleared environment, and a sandboxed app without it has no accessibility tree
     // and no portals.
@@ -827,7 +855,8 @@ struct Sockets<'a> {
     admin: Option<&'a std::path::Path>,
 }
 
-/// The session on `backend` 's displays, at `size` where the backend runs in one.
+/// The session on `backend` 's displays, at `size` where the backend runs in one. `restart` is
+/// whether this run continues a login whose desktop the wrapper is restarting in place.
 #[cfg(target_os = "linux")]
 fn start_session(
     backend: Backend,
@@ -836,6 +865,7 @@ fn start_session(
     headless: HeadlessPanel,
     connector: &str,
     outputs: &[NamedOutput],
+    restart: bool,
 ) -> Result<tilo_session::Session, tilo_session::Error> {
     use tilo_compositor::{DisplayConfig, NestedConfig, OutputConfig};
 
@@ -864,7 +894,17 @@ fn start_session(
             }
             Session::headless(options, &displays)
         }
-        Backend::Drm => Session::drm(options, DisplayConfig::default()),
+        Backend::Drm => Session::drm(
+            options,
+            DisplayConfig {
+                following_restart: restart,
+                // The wrapper opens this and hands it to every run of the login's desktop: the run
+                // that ends writes nothing, the one that follows says its first frame is up, and
+                // the one that ended kept the old picture until then.
+                restart_handover: restart_handover(),
+                ..DisplayConfig::default()
+            },
+        ),
         Backend::Nested => Session::nested(
             options,
             // The window's size is in the host's logical pixels, the same apparent size on a
@@ -878,6 +918,30 @@ fn start_session(
                 ..NestedConfig::default()
             },
         ),
+    }
+}
+
+/// The descriptor the login's wrapper opened for the handover between a desktop that ends for an
+/// in-place restart and the one that follows, when it named one.
+fn restart_handover() -> Option<std::os::fd::RawFd> {
+    let value = std::env::var_os("TILO_SESSION_RESTART_HANDOVER")?;
+    let Some(text) = value.to_str() else {
+        tracing::warn!(
+            handover = %value.to_string_lossy(),
+            "the login's restart handover is not a descriptor number"
+        );
+        return None;
+    };
+    match text.parse() {
+        Ok(fd) => Some(fd),
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                handover = %text,
+                "the login's restart handover is not a descriptor number"
+            );
+            None
+        }
     }
 }
 

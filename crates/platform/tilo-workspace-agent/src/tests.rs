@@ -112,8 +112,7 @@ fn an_agent_is_made_with_a_name_keeper_colour_and_when() {
     );
 }
 
-/// Nothing chosen, an agent wears what the one rule gives it: what it is, clear of the colour
-/// of the person who keeps it, as the bar and every app draw it.
+/// Nothing chosen, an agent wears what the one rule gives it, as the bar and every app draw it.
 #[test]
 fn an_agents_colour_follows_the_rule_every_surface_draws_it_by() {
     let mut record = as_person(ADA);
@@ -122,17 +121,9 @@ fn an_agents_colour_follows_the_rule_every_surface_draws_it_by() {
         let state = record.state().unwrap();
         state.agents[0].clone()
     };
-    let hue = collab_types::presence::PresenceHue::of_member(
-        &collab_types::MemberId::agent(&agent.id.0),
-        Some(&agent.keeper),
-    );
+    let hue =
+        collab_types::presence::PresenceHue::of_member(&collab_types::MemberId::agent(&agent.id.0));
     assert_eq!(agent.colour, None, "nothing chosen, so the rule's");
-    let keeper = collab_types::presence::PresenceHue::of_identity(&agent.keeper);
-    assert_ne!(
-        usize::from(agent.slot()),
-        keeper.slot(),
-        "never its keeper's colour"
-    );
     assert_eq!(agent.slot(), u8::try_from(hue.slot()).unwrap());
     assert_eq!(agent.identity(), format!("agent:{}", agent.id.0));
 }
@@ -498,7 +489,7 @@ fn only_the_keeper_counts_what_an_agent_spends() {
         .apply(charge(&agent, "2026-01-01", 1_000))
         .unwrap_err();
     assert!(refused.to_string().contains("keeper"), "{refused}");
-    let mut itself = record.fork().as_author(&format!("agent:{agent}"));
+    let mut itself = record.fork().as_agent_for(&agent, ADA);
     let refused = itself
         .apply(charge(&agent, "2026-01-01", 1_000))
         .unwrap_err();
@@ -560,6 +551,7 @@ const GOLDEN: &str = r#"{
       "name": "Claude",
       "colour": 2,
       "keeper": "ada",
+      "on_host": false,
       "model": "anthropic/sonnet",
       "mcp_client": null,
       "bound": [
@@ -607,4 +599,40 @@ fn golden_state() -> WorkspaceAgents {
         ))
         .unwrap();
     record.state().unwrap()
+}
+
+fn on_host(agent: &str, on_host: bool) -> tilo_resource::Invoke<WorkspaceAgents> {
+    WorkspaceAgents::SET_AGENT_ON_HOST.with(workspace_agents::SetAgentOnHost {
+        agent: id(agent),
+        on_host,
+    })
+}
+
+/// A new agent runs on its keeper's devices until its keeper moves it to the workspace's host;
+/// nobody else may, and an agent an MCP client connects as stays where that client runs.
+#[test]
+fn only_the_keeper_moves_an_agent_to_the_host() {
+    let mut record = as_person(ADA);
+    record.apply(make("Scout")).unwrap();
+    let agent = record.state().unwrap().agents[0].id.0.clone();
+    assert!(!record.state().unwrap().agents[0].on_host);
+    let mut grace = record.fork().as_author(GRACE);
+    let refused = grace.apply(on_host(&agent, true)).unwrap_err();
+    assert!(refused.to_string().contains("keeper"), "{refused}");
+    record.apply(on_host(&agent, true)).unwrap();
+    assert!(record.state().unwrap().agents[0].on_host);
+
+    record
+        .apply(
+            WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                name: NonBlank::parse("Claude Code").expect("a name"),
+                keeper: None,
+                id: Some("claude-code".to_owned()),
+                model: None,
+                colour: None,
+                mcp_client: Some("Claude Code".to_owned()),
+            }),
+        )
+        .unwrap();
+    assert!(record.apply(on_host("claude-code", true)).is_err());
 }

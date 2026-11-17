@@ -5,9 +5,9 @@ import {runtimeFake} from './runtime-surface.mjs';
 const CALL = 'c'.repeat(64);
 function fixture() {
   const operations = [];
-  const state = {phase: 'idle', call: null, muted: true, inputId: null, participants: []};
+  const state = {phase: 'idle', call: null, muted: true, inputId: null, members: []};
   const call = {state, join(id, options) { operations.push(['join', id, options]); Object.assign(state, {phase: 'joining', call: id, muted: options.muted}); },
-    leave() {operations.push(['leave']); Object.assign(state, {phase: 'idle', call: null, participants: []});},
+    leave() {operations.push(['leave']); Object.assign(state, {phase: 'idle', call: null, members: []});},
     async setMuted(value) {operations.push(['mute', value]); state.muted = value;},
     async selectInput(id) {state.inputId = id;}, inputs: async () => [], stats: () => ({captureActive: false})};
   const opened = [];
@@ -218,10 +218,10 @@ test('a voice channel shows who is in its call before joining, each person once'
   const ben = 'b'.repeat(64);
   f.voice.calls = [
     {app: 'so.tilo.chat', record: '', channel: 'voice', call: CALL, active: true,
-      participants: [{user: ben, device: '1'}, {user: ana, device: '2'}, {user: ana, device: '3'}]},
-    {app: 'so.tilo.chat', record: '', channel: 'empty', call: CALL, active: true, participants: []},
-    {app: 'so.tilo.chat', record: '', channel: 'ended', call: CALL, active: false, participants: [{user: ana}]},
-    {app: 'so.tilo.chat', record: 'other', channel: 'voice', call: CALL, active: true, participants: [{user: ana}]},
+      members: [{user: ben, device: '1'}, {user: ana, device: '2'}, {user: ana, device: '3'}]},
+    {app: 'so.tilo.chat', record: '', channel: 'empty', call: CALL, active: true, members: []},
+    {app: 'so.tilo.chat', record: '', channel: 'ended', call: CALL, active: false, members: [{user: ana}]},
+    {app: 'so.tilo.chat', record: 'other', channel: 'voice', call: CALL, active: true, members: [{user: ana}]},
   ];
   const status = await f.controls.execute(f.request({op: 'status'}));
   assert.deepEqual(status.rosters, [{channel_id: 'voice', people: [ana, ben]}]);
@@ -230,12 +230,12 @@ test('a voice channel shows who is in its call before joining, each person once'
 
 test('a watch answers when someone joins the workspace\'s call, and holds while nothing changes', async () => {
   const ana = 'a'.repeat(64);
-  const voice = {call: {state: {phase: 'idle', participants: []}, stats: () => ({})}, calls: [], list: async () => []};
+  const voice = {call: {state: {phase: 'idle', members: []}, stats: () => ({})}, calls: [], list: async () => []};
   let looks = 0;
   const controls = createVoiceControls({voice, workspace: 'workspace-1', wait: async () => {
     looks++;
     // Ana joins the standup while the watch is held.
-    if (looks === 3) voice.calls = [{app: 'so.tilo.chat', record: '', channel: 'standup', call: CALL, active: true, participants: [{user: ana}]}];
+    if (looks === 3) voice.calls = [{app: 'so.tilo.chat', record: '', channel: 'standup', call: CALL, active: true, members: [{user: ana}]}];
   }});
   const request = command => ({app: 'so.tilo.chat', workspace: 'workspace-1', record: '', command: {version: 1, intent: 0, command}});
   const seen = await controls.execute(request({op: 'status'}));
@@ -270,15 +270,15 @@ test('the camera and a shared screen turn on in a live call from a gesture, and 
   const ana = 'a'.repeat(64);
   const ben = 'b'.repeat(64);
   f.voice.calls = [{app: 'so.tilo.chat', record: '', channel: 'standup', call: CALL, active: true,
-    participants: [{user: ana, camera: true}, {user: ben, screen: true}]}];
+    members: [{user: ana, camera: true}, {user: ben, screen: true}]}];
   assert.deepEqual(rostersOf(f.voice.calls, 'so.tilo.chat', ''), [{channel_id: 'standup', people: [ana, ben], cameras: [ana], screens: [ben]}], 'muted is written only when someone is');
-  f.voice.calls[0].participants[1].muted = true;
+  f.voice.calls[0].members[1].muted = true;
   assert.deepEqual(rostersOf(f.voice.calls, 'so.tilo.chat', ''), [{channel_id: 'standup', people: [ana, ben], cameras: [ana], screens: [ben], muted: [ben]}]);
-  f.voice.calls[0].participants.push({user: ben});
+  f.voice.calls[0].members.push({user: ben});
   assert.equal(rostersOf(f.voice.calls, 'so.tilo.chat', '')[0].muted, undefined, 'heard on another device: not muted');
-  f.voice.calls[0].participants = [{user: ana, muted: true, deafened: true}, {user: ben, muted: true}];
+  f.voice.calls[0].members = [{user: ana, muted: true, deafened: true}, {user: ben, muted: true}];
   assert.deepEqual(rostersOf(f.voice.calls, 'so.tilo.chat', '')[0].deafened, [ana], 'the deafened, among the muted');
-  f.voice.calls[0].participants.push({user: ana, muted: true});
+  f.voice.calls[0].members.push({user: ana, muted: true});
   assert.equal(rostersOf(f.voice.calls, 'so.tilo.chat', '')[0].deafened, undefined, 'hearing on another device: not deafened');
 });
 
@@ -324,25 +324,25 @@ test('the status names who the call hears talking, each person by id', async () 
   const f = fixture();
   await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
   const ana = 'a'.repeat(64);
-  const participants = [
+  const members = [
     {user: ana, self: true, speaking: true},
     {user: ana, speaking: true},
     {user: 'c'.repeat(64), speaking: false},
   ];
-  assert.deepEqual(speakingOf(participants), [ana]);
-  Object.assign(f.state, {phase: 'live', canPublish: true, participants});
+  assert.deepEqual(speakingOf(members), [ana]);
+  Object.assign(f.state, {phase: 'live', canPublish: true, members});
   assert.deepEqual((await f.controls.execute(f.request({op: 'status'}))).speaking, [ana]);
   Object.assign(f.state, {phase: 'idle'});
   assert.deepEqual((await f.controls.execute(f.request({op: 'status'}))).speaking, [], 'nobody talks outside a call');
 });
 
-test('a participant\'s volume reaches this device\'s playback only', async () => {
+test('a member\'s volume reaches this device\'s playback only', async () => {
   const f = fixture();
   const volumes = [];
   f.voice.call.setVolume = (id, gain) => volumes.push([id, gain]);
   await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
-  await f.controls.execute(f.request({op: 'set_volume', participant: 'b'.repeat(64), percent: 0}));
-  await f.controls.execute(f.request({op: 'set_volume', participant: 'a'.repeat(64), percent: 150}));
+  await f.controls.execute(f.request({op: 'set_volume', member: 'b'.repeat(64), percent: 0}));
+  await f.controls.execute(f.request({op: 'set_volume', member: 'a'.repeat(64), percent: 150}));
   assert.deepEqual(volumes, [['b'.repeat(64), 0], ['a'.repeat(64), 1.5]]);
 });
 
@@ -350,7 +350,7 @@ test('the status names who the call hears talking, so the app can ring them', as
   const f = fixture();
   await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
   const [ana, ben] = ['a'.repeat(64), 'b'.repeat(64)];
-  Object.assign(f.state, {phase: 'live', canPublish: true, participants: [
+  Object.assign(f.state, {phase: 'live', canPublish: true, members: [
     {user: ben, self: false, publishes: true, speaking: true},
     {user: ana, self: true, publishes: true, speaking: true},
     {user: ben, self: false, publishes: true, speaking: true},
@@ -360,7 +360,7 @@ test('the status names who the call hears talking, so the app can ring them', as
   assert.deepEqual(talking.speaking, [ana, ben], 'each person once, sorted');
   assert.deepEqual(talking.publishers, [ben, 'c'.repeat(64)], 'each person whose tile carries a stream once');
   assert.equal(talking.publication, ana, 'this device publishes under its person');
-  f.state.participants = f.state.participants.map(participant => ({...participant, speaking: false}));
+  f.state.members = f.state.members.map(member => ({...member, speaking: false}));
   const quiet = await f.controls.execute(f.request({op: 'status'}));
   assert.deepEqual(quiet.speaking, []);
   assert.notEqual(quiet.revision, talking.revision, 'a held watch wakes when who talks changes');

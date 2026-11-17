@@ -81,7 +81,7 @@ pub enum ProjectionError {
     #[error("invalid file record: {0}")]
     Record(#[from] FileDocumentError),
     #[error("projection names a different record")]
-    WrongRecord,
+    WrongDocument,
     #[error("projection exceeds its entry bound")]
     TooManyEntries,
     #[error("availability transfer error exceeds its wire bound")]
@@ -182,7 +182,7 @@ impl MetadataProjectionV1 {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RecordIndexEntryV1 {
+pub struct DocumentIndexEntryV1 {
     pub document_id: FileDocumentId,
     /// Absolute path within this mount, never global authority.
     pub path: String,
@@ -191,7 +191,7 @@ pub struct RecordIndexEntryV1 {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RecordIndexManifestV2 {
+pub struct DocumentIndexManifestV2 {
     pub schema_version: u16,
     /// Opaque content revision, derived from the namespace heads. It contains
     /// no host path or authority material.
@@ -202,25 +202,25 @@ pub struct RecordIndexManifestV2 {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RecordIndexPageV2 {
+pub struct DocumentIndexPageV2 {
     pub schema_version: u16,
     pub revision: String,
     pub offset: usize,
     pub next_offset: Option<usize>,
-    pub records: Vec<RecordIndexEntryV1>,
+    pub records: Vec<DocumentIndexEntryV1>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RecordIndexExactV2 {
+pub struct DocumentIndexExactV2 {
     pub schema_version: u16,
     pub revision: String,
-    pub record: RecordIndexEntryV1,
+    pub record: DocumentIndexEntryV1,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RecordIndexManifestV3 {
+pub struct DocumentIndexManifestV3 {
     pub schema_version: u16,
     pub revision: String,
     /// Fixed, opaque capability for exactly one bounded source window.
@@ -230,28 +230,28 @@ pub struct RecordIndexManifestV3 {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RecordIndexPageV3 {
+pub struct DocumentIndexPageV3 {
     pub schema_version: u16,
     pub revision: String,
     pub next_cursor: Option<String>,
-    pub records: Vec<RecordIndexEntryV1>,
+    pub records: Vec<DocumentIndexEntryV1>,
 }
 
-pub fn valid_record_index_revision(revision: &str) -> bool {
+pub fn valid_document_index_revision(revision: &str) -> bool {
     revision.len() == 64 && revision.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn valid_record_index_path(path: &str) -> bool {
+fn valid_document_index_path(path: &str) -> bool {
     path.starts_with('/') && !path.contains('\0')
 }
 
-fn strictly_ascending(records: &[RecordIndexEntryV1]) -> bool {
+fn strictly_ascending(records: &[DocumentIndexEntryV1]) -> bool {
     records
         .windows(2)
         .all(|pair| matches!(pair, [first, second] if first.document_id < second.document_id))
 }
 
-impl RecordIndexManifestV2 {
+impl DocumentIndexManifestV2 {
     /// Decode JSON through the shared protocol implementation. Callers still
     /// check their transport bounds and the expected authority generation.
     pub fn from_json(bytes: &[u8]) -> serde_json::Result<Self> {
@@ -260,7 +260,7 @@ impl RecordIndexManifestV2 {
 
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.schema_version != RECORD_INDEX_V2_VERSION
-            || !valid_record_index_revision(&self.revision)
+            || !valid_document_index_revision(&self.revision)
             || self.page_entries == 0
             || self.page_entries > RECORD_INDEX_PAGE_ENTRIES
         {
@@ -270,7 +270,7 @@ impl RecordIndexManifestV2 {
     }
 }
 
-impl RecordIndexPageV2 {
+impl DocumentIndexPageV2 {
     /// Decode JSON through the shared protocol implementation. Callers still
     /// check their transport bounds and the expected authority generation.
     pub fn from_json(bytes: &[u8]) -> serde_json::Result<Self> {
@@ -279,7 +279,7 @@ impl RecordIndexPageV2 {
 
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.schema_version != RECORD_INDEX_V2_VERSION
-            || !valid_record_index_revision(&self.revision)
+            || !valid_document_index_revision(&self.revision)
             || self.records.len() > RECORD_INDEX_PAGE_ENTRIES
             || !self.offset.is_multiple_of(RECORD_INDEX_PAGE_ENTRIES)
         {
@@ -288,7 +288,7 @@ impl RecordIndexPageV2 {
         if !self
             .records
             .iter()
-            .all(|record| valid_record_index_path(&record.path))
+            .all(|record| valid_document_index_path(&record.path))
         {
             return Err("record-index path is not an absolute mount path");
         }
@@ -304,7 +304,7 @@ impl RecordIndexPageV2 {
     }
 }
 
-impl RecordIndexExactV2 {
+impl DocumentIndexExactV2 {
     /// Decode JSON through the shared protocol implementation. Callers still
     /// check their transport bounds and the expected authority generation.
     pub fn from_json(bytes: &[u8]) -> serde_json::Result<Self> {
@@ -313,8 +313,8 @@ impl RecordIndexExactV2 {
 
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.schema_version != RECORD_INDEX_V2_VERSION
-            || !valid_record_index_revision(&self.revision)
-            || !valid_record_index_path(&self.record.path)
+            || !valid_document_index_revision(&self.revision)
+            || !valid_document_index_path(&self.record.path)
         {
             return Err("invalid exact record-index projection");
         }
@@ -322,7 +322,7 @@ impl RecordIndexExactV2 {
     }
 }
 
-impl RecordIndexManifestV3 {
+impl DocumentIndexManifestV3 {
     /// Decode JSON through the shared protocol implementation. Callers still
     /// check their transport bounds and the expected authority generation.
     pub fn from_json(bytes: &[u8]) -> serde_json::Result<Self> {
@@ -331,7 +331,7 @@ impl RecordIndexManifestV3 {
 
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.schema_version != RECORD_INDEX_V3_VERSION
-            || !valid_record_index_revision(&self.revision)
+            || !valid_document_index_revision(&self.revision)
             || self.initial_cursor.len() != 36
             || self.page_entries != RECORD_INDEX_PAGE_ENTRIES
         {
@@ -341,7 +341,7 @@ impl RecordIndexManifestV3 {
     }
 }
 
-impl RecordIndexPageV3 {
+impl DocumentIndexPageV3 {
     /// Decode JSON through the shared protocol implementation. Callers still
     /// check their transport bounds and the expected authority generation.
     pub fn from_json(bytes: &[u8]) -> serde_json::Result<Self> {
@@ -350,7 +350,7 @@ impl RecordIndexPageV3 {
 
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.schema_version != RECORD_INDEX_V3_VERSION
-            || !valid_record_index_revision(&self.revision)
+            || !valid_document_index_revision(&self.revision)
             || self.records.len() > RECORD_INDEX_PAGE_ENTRIES
             || self
                 .next_cursor
@@ -362,7 +362,7 @@ impl RecordIndexPageV3 {
         if !self
             .records
             .iter()
-            .all(|record| valid_record_index_path(&record.path))
+            .all(|record| valid_document_index_path(&record.path))
             || !strictly_ascending(&self.records)
         {
             return Err("invalid opaque record-index entry");
@@ -572,13 +572,13 @@ impl HistoryProjectionV1 {
         for version in &value.versions {
             version.validate()?;
             if version.document_id != value.document_id {
-                return Err(ProjectionError::WrongRecord);
+                return Err(ProjectionError::WrongDocument);
             }
         }
         for conflict in &value.conflicts {
             conflict.validate()?;
             if conflict.document_id != value.document_id {
-                return Err(ProjectionError::WrongRecord);
+                return Err(ProjectionError::WrongDocument);
             }
         }
         Ok(value)
@@ -598,7 +598,7 @@ mod tests {
 
     #[test]
     fn shared_record_index_decoders_keep_the_wire_schema() {
-        let record = RecordIndexEntryV1 {
+        let record = DocumentIndexEntryV1 {
             document_id: FileDocumentId(Uuid::from_u128(7)),
             path: "/Documents/report.txt".into(),
             is_dir: false,
@@ -617,8 +617,8 @@ mod tests {
             }};
         }
         round_trip!(
-            RecordIndexManifestV2,
-            RecordIndexManifestV2 {
+            DocumentIndexManifestV2,
+            DocumentIndexManifestV2 {
                 schema_version: 2,
                 revision: revision.clone(),
                 records: 1,
@@ -626,8 +626,8 @@ mod tests {
             }
         );
         round_trip!(
-            RecordIndexPageV2,
-            RecordIndexPageV2 {
+            DocumentIndexPageV2,
+            DocumentIndexPageV2 {
                 schema_version: 2,
                 revision: revision.clone(),
                 offset: 0,
@@ -636,16 +636,16 @@ mod tests {
             }
         );
         round_trip!(
-            RecordIndexExactV2,
-            RecordIndexExactV2 {
+            DocumentIndexExactV2,
+            DocumentIndexExactV2 {
                 schema_version: 2,
                 revision: revision.clone(),
                 record: record.clone(),
             }
         );
         round_trip!(
-            RecordIndexManifestV3,
-            RecordIndexManifestV3 {
+            DocumentIndexManifestV3,
+            DocumentIndexManifestV3 {
                 schema_version: 3,
                 revision: revision.clone(),
                 initial_cursor: Uuid::from_u128(11).to_string(),
@@ -653,8 +653,8 @@ mod tests {
             }
         );
         round_trip!(
-            RecordIndexPageV3,
-            RecordIndexPageV3 {
+            DocumentIndexPageV3,
+            DocumentIndexPageV3 {
                 schema_version: 3,
                 revision,
                 next_cursor: Some(Uuid::from_u128(13).to_string()),

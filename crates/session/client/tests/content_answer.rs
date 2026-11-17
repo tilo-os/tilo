@@ -77,7 +77,7 @@ async fn a_member_asking_for_content_a_page_keeps_is_answered_by_its_session() {
         .unwrap();
     let arrived = wait_for("the page's pieces", || {
         let whole = heard.drain().into_iter().find_map(|event| match event {
-            Event::RecordContent { from, frame, .. } if from == keeper.cert.device_public_key => {
+            Event::DocumentContent { from, frame, .. } if from == keeper.cert.device_public_key => {
                 wants.piece(&device, &frame, tilo_clock::unix_now_ms())
             }
             _ => None,

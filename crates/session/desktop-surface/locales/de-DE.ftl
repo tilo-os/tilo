@@ -578,6 +578,7 @@ workspace-settings-agent-yours = Deiner
 workspace-settings-agent-keeper-you = Von dir gehalten
 workspace-settings-agent-keeper = Gehalten von { $name }
 workspace-settings-agent-model-line = Modell: { $model }
+workspace-settings-agent-on-host = Läuft auf dem Server des Arbeitsbereichs
 workspace-settings-agents-unavailable = Die Agenten des Workspace lassen sich auf diesem Gerät nicht lesen
 workspace-settings-agent-name-needed = Benenne den Agenten zuerst
 workspace-settings-review-access = Zugriff prüfen

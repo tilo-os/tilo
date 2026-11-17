@@ -557,7 +557,7 @@ pub(crate) struct LibraryIndex {
     store: Option<tilo_content::ContentStore>,
     /// How many times content had reached this process when what was not
     /// here was last read again; see
-    /// [`ui::collaboration::record_content::arrivals`].
+    /// [`ui::collaboration::document_content::arrivals`].
     looked: u64,
     /// Books whose segment is being built here.
     building: HashSet<String>,
@@ -590,7 +590,7 @@ impl Default for LibraryIndex {
             background: ui::background::Background::current(),
             wake: ui::WakeHandle::new(),
             store: None,
-            looked: ui::collaboration::record_content::arrivals(),
+            looked: ui::collaboration::document_content::arrivals(),
             building: HashSet::new(),
             built_here: HashSet::new(),
             built_send,
@@ -711,7 +711,7 @@ impl LibraryIndex {
     /// Read again what was not here, once content has reached this process
     /// since it was last looked for: never on a timer.
     pub(crate) fn read_arrived(&mut self) {
-        let arrivals = ui::collaboration::record_content::arrivals();
+        let arrivals = ui::collaboration::document_content::arrivals();
         if arrivals == self.looked {
             return;
         }

@@ -8,7 +8,7 @@
 //! lock held every pre-admission, challenge and redemption of the workspace
 //! behind it for seconds. The publisher takes those admissions off the
 //! lock. A settle reserves each change's place with
-//! [`WorkspaceRecords::reserve`] (so whoever reads the workspace's retention waits for
+//! [`WorkspaceDocuments::reserve`] (so whoever reads the workspace's retention waits for
 //! it from then on) and hands the changes over in the workspace's publication
 //! order; one task per workspace admits them in that order and then waits for
 //! them to be durable.
@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use tokio::sync::{mpsc, watch};
 
-use crate::workspace_records::{HostCommit, Reservation, WorkspaceRecords};
+use crate::workspace_documents::{HostCommit, Reservation, WorkspaceDocuments};
 use tilo_lock::MutexRecover as _;
 use tilo_relay_protocol::WorkspaceId;
 
@@ -36,7 +36,7 @@ pub(super) struct Publication {
 
 impl Publication {
     pub(super) fn new(
-        records: &WorkspaceRecords,
+        records: &WorkspaceDocuments,
         workspace_id: WorkspaceId,
         position: Option<usize>,
         commit: HostCommit,
@@ -159,7 +159,7 @@ impl WorkspacePublisher {
     /// over before them, in their order. Returns at once.
     pub(super) fn push(
         &self,
-        records: &WorkspaceRecords,
+        records: &WorkspaceDocuments,
         workspace: &str,
         workspace_id: WorkspaceId,
         epoch: Epoch,
@@ -249,7 +249,7 @@ fn unretained(shared: &Shared, positions: impl IntoIterator<Item = Option<usize>
 
 async fn run(
     mut queue: mpsc::UnboundedReceiver<Batch>,
-    records: WorkspaceRecords,
+    records: WorkspaceDocuments,
     workspace: String,
     workspace_id: WorkspaceId,
     shared: Arc<Shared>,

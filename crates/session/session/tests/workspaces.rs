@@ -304,10 +304,10 @@ fn note_kept(data: &Path, workspace: &str, body: &str) -> std::path::PathBuf {
         .join("records/uuid-plan");
     std::fs::create_dir_all(&directory).expect("the note's directory");
     let mut doc = automerge::AutoCommit::new();
-    assert!(ui::record::init_scoped(
+    assert!(ui::resource::init_scoped(
         &mut doc,
-        &ui::record::DocumentId::minted(),
-        &ui::record::ResourceType::new("notes.page"),
+        &ui::resource::DocumentId::minted(),
+        &ui::resource::ResourceType::new("notes.page"),
         workspace,
         Some(workspace),
     ));
@@ -470,16 +470,16 @@ fn what_the_branch_keeps(data: &Path, source: &str, kept: &Path, branch: &str) {
         automerge::AutoCommit::load(&std::fs::read(path).expect("a note")).expect("a document")
     };
     assert_eq!(
-        ui::record::workspace_scope(&read(&copied)).as_deref(),
+        ui::resource::workspace_scope(&read(&copied)).as_deref(),
         Some(branch)
     );
     assert_eq!(
-        ui::record::workspace_scope(&read(kept)).as_deref(),
+        ui::resource::workspace_scope(&read(kept)).as_deref(),
         Some(source)
     );
     std::fs::write(&copied, b"").expect("the branch's note changes");
     assert_eq!(
-        ui::record::workspace_scope(&read(kept)).as_deref(),
+        ui::resource::workspace_scope(&read(kept)).as_deref(),
         Some(source),
         "the source's note stays"
     );

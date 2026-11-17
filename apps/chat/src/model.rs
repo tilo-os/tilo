@@ -158,7 +158,7 @@ pub struct Channel {
     /// than one of its named channels.
     pub direct: bool,
     /// Who a direct conversation is with; empty for a channel.
-    pub participants: Vec<MemberId>,
+    pub members: Vec<MemberId>,
 }
 
 /// One person currently connected to a voice channel, with their live
@@ -176,7 +176,7 @@ pub struct VoiceMember {
     pub talking: bool,
     pub muted: bool,
     pub deafened: bool,
-    /// Camera off / audio-only participant.
+    /// Camera off / audio-only member.
     pub audio_only: bool,
     /// True while this person is sharing their screen into the call (portal
     /// `ScreenCast` → the shared `TrackKind::Screen`). Shared truth in the CRDT so
@@ -273,6 +273,8 @@ pub struct Message {
     pub author_name: Option<String>,
     /// The window it shares live, and whether it still does.
     pub share: Option<crate::record::WindowShare>,
+    /// What it asks one person, and where that question stands.
+    pub question: Option<crate::question::Question>,
     /// How many times a person asked the agent again for an answer to this
     /// message (`retry`): the attempt the agent answers in now.
     pub attempts: u32,
@@ -677,7 +679,7 @@ pub fn reply_count(messages: &[Message], parent_id: &str) -> usize {
 
 /// Distinct authors who replied in a thread, in first-seen order. Used to
 /// render the stacked avatar cluster on the "N replies" affordance.
-pub fn thread_participants(messages: &[Message], parent_id: &str) -> Vec<MemberId> {
+pub fn thread_members(messages: &[Message], parent_id: &str) -> Vec<MemberId> {
     let mut seen: Vec<MemberId> = Vec::new();
     for m in messages {
         if m.parent.as_deref() == Some(parent_id) && !seen.contains(&m.author) {
@@ -731,6 +733,7 @@ mod tests {
             acting: None,
             author_name: None,
             share: None,
+            question: None,
             attempts: 0,
             sending: false,
         }
@@ -809,7 +812,7 @@ mod tests {
                 assert_eq!(groups.len(), 3);
                 assert_eq!(groups[1].message_indices, vec![1]);
             }
-            // Phase: reply_count_and_participants.
+            // Phase: reply_count_and_members.
             {
                 let msgs = vec![
                     msg("a", "u1", 0, None),
@@ -819,7 +822,7 @@ mod tests {
                 ];
                 assert_eq!(reply_count(&msgs, "a"), 3);
                 assert_eq!(
-                    thread_participants(&msgs, "a"),
+                    thread_members(&msgs, "a"),
                     vec![MemberId::person("u2"), MemberId::person("u3")]
                 );
             }

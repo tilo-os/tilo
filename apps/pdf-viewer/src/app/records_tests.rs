@@ -264,7 +264,7 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
             ui::framework::testing::dispatcher::<crate::PdfMarkup>(APP_ID).with_permissions(
                 ui::permissions::LivePermissions::fixed(
                     ui::permissions::PermissionContext::member(
-                        &ui::permissions::MemberId::person("participant"),
+                        &ui::permissions::MemberId::person("member"),
                         role,
                     ),
                 ),

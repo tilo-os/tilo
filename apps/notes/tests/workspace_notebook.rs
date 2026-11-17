@@ -8,7 +8,7 @@ use notes::actions::{
 };
 use notes::{MainPanel, NotesShell, PageId};
 use ui::framework::testing::{TestApp, window_record};
-use ui::record::DocumentId;
+use ui::resource::DocumentId;
 
 fn titles(app: &TestApp<NotesShell>) -> Vec<String> {
     shown(app)
@@ -107,7 +107,7 @@ fn the_workspace_notebook_adopts_each_window_notebook_exactly_once() {
     // Most windows were opened and closed without a note.
     let empty = window_record::<NotesShell>(0x43, &[]).unwrap();
     let originals = [&first, &second, &empty].map(|doc| doc.clone().get_heads());
-    let app = TestApp::<NotesShell>::with_window_records(&mut [second, empty, first]).unwrap();
+    let app = TestApp::<NotesShell>::with_window_resources(&mut [second, empty, first]).unwrap();
     assert!(app.record().is_package_primary());
 
     // Every page, in record order, with its tree, body and tag.
@@ -139,7 +139,7 @@ fn the_workspace_notebook_adopts_each_window_notebook_exactly_once() {
     assert_eq!(shown(&app).pages().len(), 3);
 
     // The per-window records are still there, untouched.
-    let windows = app.window_records();
+    let windows = app.window_resources();
     assert_eq!(
         windows.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
         [0x41, 0x42, 0x43].map(DocumentId::window_default)

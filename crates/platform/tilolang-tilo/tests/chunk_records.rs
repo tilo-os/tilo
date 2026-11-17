@@ -266,7 +266,7 @@ fn window(
         app_id: route.app_id.clone(),
         cluster_id: route.cluster_id,
         record: route.record.clone(),
-        record_kind: None,
+        resource_type: None,
         handle: Some(me.to_owned()),
     }));
     let _ = manager.poll();
@@ -1330,7 +1330,7 @@ fn opened_from_disk(
         app_id: route.app_id.clone(),
         cluster_id: route.cluster_id,
         record: route.record.clone(),
-        record_kind: None,
+        resource_type: None,
         handle: Some(me.to_owned()),
     }));
     let _ = manager.poll();
@@ -1418,7 +1418,7 @@ fn a_card_written_into_a_chunk_is_there_when_the_record_opens_again_from_disk() 
     record.flush();
     assert_eq!(
         record.save_status(),
-        collaboration::record::RecordSaveStatus::Saved
+        collaboration::document::ResourceSaveStatus::Saved
     );
     drop(record);
 

@@ -8,6 +8,7 @@ use crate::icons::Icon;
 use crate::widget::arrange::Stack;
 use crate::widget::binding::{BoxedBinding, Pulled, derived};
 use crate::widget::{AppModel, Button, ButtonRole, Decorator, ModelPath, PopoverButton, Widget};
+use tilo_actions::Actor;
 
 #[path = "person_field_component.rs"]
 mod component;
@@ -21,31 +22,31 @@ type Picked = Rc<Cell<Option<Option<Person>>>>;
 enum Waiting {
     /// The binding took nobody since the field last showed somebody.
     Nothing,
-    /// The identity to show now, `None` for nobody.
-    Whom(Option<String>),
+    /// Who to show now, `None` for nobody.
+    Whom(Option<Actor>),
 }
 
 pub struct PersonField {
     inner: PopoverButton<Stack>,
     id: String,
-    value: Option<String>,
+    value: Option<Actor>,
     people: Vec<Person>,
     me: Option<Person>,
     picked: Picked,
     on_change: Option<Box<dyn FnMut(Option<Person>)>>,
-    bound: Option<BoxedBinding<Option<String>>>,
+    bound: Option<BoxedBinding<Option<Actor>>>,
     waiting: Waiting,
 }
 
 impl PersonField {
-    /// A field holding `who` (an identity, none for nobody), offering `people` and `me`.
+    /// A field holding `who` (none for nobody), offering `people` and `me`.
     #[must_use]
-    pub fn new(id: &str, who: Option<&str>, people: Vec<Person>, me: Option<Person>) -> Self {
+    pub fn new(id: &str, who: Option<&Actor>, people: Vec<Person>, me: Option<Person>) -> Self {
         let picked: Picked = Rc::default();
         Self {
             inner: field(id, who, &people, me.as_ref(), &picked),
             id: id.to_owned(),
-            value: who.map(str::to_owned),
+            value: who.cloned(),
             people,
             me,
             picked,
@@ -55,18 +56,16 @@ impl PersonField {
         }
     }
 
-    /// A field following the identity `state` holds as its text (`""` for nobody): a person
-    /// set there shows in place.
+    /// A field following the actor `state` holds as its text ([`crate::component::actor_text`],
+    /// `""` for nobody): a person set there shows in place.
     pub(super) fn from_state(
         id: &str,
         state: &crate::LocalState<String>,
         people: Vec<Person>,
         me: Option<Person>,
     ) -> Self {
-        let (who, binding) = derived(state, |text: &String| {
-            (!text.is_empty()).then(|| text.clone())
-        });
-        let mut field = Self::new(id, who.as_deref(), people, me);
+        let (who, binding) = derived(state, |text: &String| crate::component::actor_of_text(text));
+        let mut field = Self::new(id, who.as_ref(), people, me);
         field.bound = Some(binding);
         field
     }
@@ -79,8 +78,8 @@ impl PersonField {
     }
 
     #[must_use]
-    pub fn value(&self) -> Option<&str> {
-        self.value.as_deref()
+    pub fn value(&self) -> Option<&Actor> {
+        self.value.as_ref()
     }
 
     #[must_use]
@@ -96,23 +95,23 @@ impl PersonField {
     /// What the field calls the person it holds: their name, or their identity when the
     /// workspace no longer names them.
     #[must_use]
-    pub fn who_name(&self, identity: Option<&str>) -> String {
+    pub fn who_name(&self, identity: Option<&Actor>) -> String {
         let Some(identity) = identity else {
             return crate::i18n::widget_format("person-field-none", &[]);
         };
         self.people
             .iter()
             .chain(self.me.iter())
-            .find(|who| who.identity == identity)
-            .map_or_else(|| identity.to_owned(), |who| who.name.clone())
+            .find(|who| who.identity == *identity)
+            .map_or_else(|| identity.id().to_owned(), |who| who.name.clone())
     }
 
     /// Show the person `who`, set elsewhere. An open list stays open on what it shows.
-    pub fn set_value(&mut self, who: Option<&str>) {
+    pub fn set_value(&mut self, who: Option<&Actor>) {
         if who == self.value() || self.inner.is_open() {
             return;
         }
-        self.value = who.map(str::to_owned);
+        self.value = who.cloned();
         self.inner = field(&self.id, who, &self.people, self.me.as_ref(), &self.picked);
     }
 
@@ -127,7 +126,7 @@ impl PersonField {
             self.value = identity;
             self.inner = field(
                 &self.id,
-                self.value.as_deref(),
+                self.value.as_ref(),
                 &self.people,
                 self.me.as_ref(),
                 &self.picked,
@@ -149,14 +148,14 @@ impl PersonField {
         if who == self.value {
             return false;
         }
-        self.set_value(who.as_deref());
+        self.set_value(who.as_ref());
         true
     }
 }
 
 fn field(
     id: &str,
-    who: Option<&str>,
+    who: Option<&Actor>,
     people: &[Person],
     me: Option<&Person>,
     picked: &Picked,
@@ -185,7 +184,7 @@ fn field(
             continue;
         }
         content = content.push(Box::new(entry(
-            &format!("{id}-{}", person.identity),
+            &format!("{id}-{}", person.identity.id()),
             &person.name,
             person,
             Some(person.clone()),
@@ -196,8 +195,8 @@ fn field(
         people
             .iter()
             .chain(me)
-            .find(|person| person.identity == identity)
-            .map_or_else(|| identity.to_owned(), |person| person.name.clone())
+            .find(|person| person.identity == *identity)
+            .map_or_else(|| identity.id().to_owned(), |person| person.name.clone())
     });
     let label = if name.is_empty() {
         crate::i18n::widget_format("person-field-none", &[])
@@ -210,15 +209,15 @@ fn field(
                 people
                     .iter()
                     .chain(me)
-                    .find(|person| person.identity == identity)
-                    .map_or(identity, |person| person.name.as_str()),
-                identity,
+                    .find(|person| person.identity == *identity)
+                    .map_or(identity.id(), |person| person.name.as_str()),
+                identity.id(),
                 people
                     .iter()
                     .chain(me)
-                    .find(|person| person.identity == identity)
+                    .find(|person| person.identity == *identity)
                     .map_or_else(
-                        || crate::tokens::PresenceHue::of_identity(identity),
+                        || crate::tokens::PresenceHue::of_actor(identity),
                         |person| person.hue,
                     ),
             )
@@ -235,7 +234,7 @@ fn entry(id: &str, label: &str, who: &Person, picked: Option<Person>, chosen: &P
     let on_pick = Rc::clone(chosen);
     Button::new(id, label)
         .role(ButtonRole::Plain)
-        .with_avatar(&who.name, &who.identity, who.hue)
+        .with_avatar(&who.name, who.identity.id(), who.hue)
         .on_view(move || on_pick.set(Some(picked.clone())))
 }
 
@@ -259,7 +258,7 @@ impl Decorator for PersonField {
             if self.inner.is_open() {
                 self.waiting = Waiting::Whom(who);
             } else {
-                self.set_value(who.as_deref());
+                self.set_value(who.as_ref());
             }
         }
         self.inner.sync(state, path);
@@ -281,14 +280,22 @@ impl Decorator for PersonField {
 mod tests {
     use super::*;
 
+    fn mia_id() -> Actor {
+        tilo_actions::MemberId::person("mia").into()
+    }
+
+    fn sam_id() -> Actor {
+        tilo_actions::MemberId::person("sam").into()
+    }
+
     fn people() -> (Vec<Person>, Person) {
         let mia = Person {
-            identity: "scenario:Mia".to_owned(),
+            identity: mia_id(),
             name: "Mia".to_owned(),
             hue: crate::tokens::PresenceHue::Violet,
         };
         let sam = Person {
-            identity: "scenario:Sam".to_owned(),
+            identity: sam_id(),
             name: "Sam".to_owned(),
             hue: crate::tokens::PresenceHue::Cyan,
         };
@@ -308,7 +315,7 @@ mod tests {
             assert_eq!(field.who_name(field.value()), "No one");
             field.picked.set(Some(Some(mia.clone())));
             assert!(field.take_pick());
-            assert_eq!(field.value(), Some("scenario:Mia"));
+            assert_eq!(field.value(), Some(&mia_id()));
             assert_eq!(field.who_name(field.value()), "Mia");
             assert_eq!(reported.take(), Some(Some(mia)));
             field.picked.set(Some(None));
@@ -325,8 +332,8 @@ mod tests {
             let seen = Rc::clone(&reported);
             let mut field = PersonField::new("assignee", None, people, Some(mia))
                 .on_change(move |_| seen.set(true));
-            field.set_value(Some("scenario:Sam"));
-            assert_eq!(field.value(), Some("scenario:Sam"));
+            field.set_value(Some(&sam_id()));
+            assert_eq!(field.value(), Some(&sam_id()));
             assert_eq!(field.who_name(field.value()), "Sam");
             assert!(!field.take_pick());
             assert!(!reported.get());
@@ -335,18 +342,18 @@ mod tests {
         phase a_bound_identity_shows_and_one_set_while_the_list_is_open_waits_for_it;
         {
             let (people, mia) = people();
-            let state = crate::LocalState::new("scenario:Mia".to_owned());
+            let state = crate::LocalState::new(crate::component::actor_text(&mia_id()));
             let mut field = PersonField::from_state("assignee", &state, people, Some(mia));
             assert_eq!(
                 field.value(),
-                Some("scenario:Mia"),
+                Some(&mia_id()),
                 "the person the binding holds is shown"
             );
-            state.set("scenario:Sam".to_owned());
+            state.set(crate::component::actor_text(&sam_id()));
             Decorator::sync(&mut field, &(), &());
             assert_eq!(
                 field.value(),
-                Some("scenario:Sam"),
+                Some(&sam_id()),
                 "a person set elsewhere shows in place"
             );
             field.inner_mut().open();
@@ -354,7 +361,7 @@ mod tests {
             Decorator::sync(&mut field, &(), &());
             assert_eq!(
                 field.value(),
-                Some("scenario:Sam"),
+                Some(&sam_id()),
                 "a change while the list is open is not shown yet"
             );
             field.inner_mut().close();

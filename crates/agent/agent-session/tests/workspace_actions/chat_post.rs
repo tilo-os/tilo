@@ -19,6 +19,7 @@ use super::{
     ReceiptStatus, enrol, record_provider, start,
 };
 use std::time::{Duration, Instant};
+use tilo_actions::MemberId;
 use tilo_agent_session::{ReplicaActor, Seed};
 use tilo_peer_state::join::Role;
 use tilo_session_client::Outbox as _;
@@ -182,7 +183,10 @@ async fn a_post_costs_the_same_however_long_the_chat_has_run() {
         record: String::new(),
     };
     let provider = record_provider(&chat);
-    let messages = ActionAddress::new(ui::record::chain_resource_id(&chat::parts::chain()), "post");
+    let messages = ActionAddress::new(
+        ui::resource::chain_resource_id(&chat::parts::chain()),
+        "post",
+    );
 
     // Into a chat holding nothing.
     let mut empty: Vec<Duration> = Vec::new();
@@ -196,7 +200,7 @@ async fn a_post_costs_the_same_however_long_the_chat_has_run() {
     let mut source = crate::common::open_in(
         &workspace.workspace,
         "so.tilo.chat",
-        "ada",
+        &MemberId::person("ada"),
         ReplicaActor::Owner,
         Seed::New,
     )
@@ -221,7 +225,7 @@ async fn a_post_costs_the_same_however_long_the_chat_has_run() {
             ),
         );
     }
-    let store = ui::record::RecordOwners::new(state.path().join("history"))
+    let store = ui::resource::ResourceOwners::new(state.path().join("history"))
         .open("so.tilo.chat", &workspace.workspace)
         .unwrap();
     let base = std::rc::Rc::new(chat::demo::Workspace::of(chat_doc.clone()).read());

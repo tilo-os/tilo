@@ -64,7 +64,7 @@ fn fixture_granting(
         route: CrdtRoute {
             app_id: "so.tilo.test".into(),
             cluster_id: workspace_id.clone(),
-            record_id: "record-a".into(),
+            document_id: "record-a".into(),
         },
         actions: vec![PublishedAction {
             did: None,
@@ -145,7 +145,7 @@ async fn only_admitted_execution_and_validated_terminal_emit_activity() {
         tilo_actions::MemberId::person("a1".repeat(32))
     );
     assert_eq!(accepted.peer_id, 7);
-    assert_eq!(accepted.route.record_id, "record-a");
+    assert_eq!(accepted.route.document_id, "record-a");
     assert_eq!(accepted.address, request.target.address);
     assert_eq!(accepted.status, ExecutionStatus::Accepted);
     assert!(matches!(
@@ -786,7 +786,7 @@ async fn eighty_synthetic_runs_keep_exact_record_and_invocation_identity() {
     let mut surfaces = state.published_surfaces();
     let mut second = surfaces[0].clone();
     second.peer_id = 8;
-    second.route.record_id = "record-b".into();
+    second.route.document_id = "record-b".into();
     surfaces.push(second);
     state.replace_published_surfaces_for_test(surfaces);
     let mut second_app = state.capture_invocations_for_test(8);
@@ -817,7 +817,7 @@ async fn eighty_synthetic_runs_keep_exact_record_and_invocation_identity() {
         assert_eq!(admitted.execution, run.execution_id().unwrap());
         assert_eq!(admitted.peer_id, peer);
         assert_eq!(
-            admitted.route.record_id,
+            admitted.route.document_id,
             if peer == 7 { "record-a" } else { "record-b" }
         );
         assert_eq!(admitted.invocation, request.invocation);
@@ -1094,7 +1094,7 @@ fn continuation_fixture() -> (
         route: CrdtRoute {
             app_id: "so.tilo.test".into(),
             cluster_id: workspace_id.clone(),
-            record_id: "record-a".into(),
+            document_id: "record-a".into(),
         },
         actions: vec![
             action("update", tilo_actions::OperationKind::Effect),
@@ -1244,16 +1244,16 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase same_actor_runs_receive_distinct_host_owned_participant_views;
+    phase same_actor_runs_receive_distinct_host_owned_presence_views;
     {
         let (state, first, mut app) = fixture();
         let second = first.clone().in_new_execution();
-        let forged = tilo_actions::ParticipantId::new("person-window-forged").unwrap();
-        let mut participants = Vec::new();
+        let forged = tilo_actions::PresenceId::new("person-window-forged").unwrap();
+        let mut presences = Vec::new();
         for caller in [&first, &second, &first] {
             let mut request = request();
             request.context = Some(tilo_actions::ActionContext::default().with_invoker(
-                tilo_actions::ActionInvoker::person("a1".repeat(32)).with_participant(forged.clone()),
+                tilo_actions::ActionInvoker::person("a1".repeat(32)).with_presence(forged.clone()),
             ));
             assert!(matches!(
                 state
@@ -1268,12 +1268,12 @@ tilo_test_env::scenario! {
                 invoker.acting.by,
                 tilo_actions::Actor::member(tilo_actions::MemberId::person("a1".repeat(32)))
             );
-            let participant = invoker.participant.expect("a run owns a participant view");
-            assert_ne!(participant, forged);
-            participants.push(participant);
+            let presence = invoker.presence.expect("a run owns a presence view");
+            assert_ne!(presence, forged);
+            presences.push(presence);
         }
-        assert_ne!(participants[0], participants[1]);
-        assert_eq!(participants[0], participants[2]);
+        assert_ne!(presences[0], presences[1]);
+        assert_eq!(presences[0], presences[2]);
         first.retire_execution();
         assert!(matches!(
             state

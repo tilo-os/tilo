@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use automerge::AutoCommit;
 use ed25519_dalek::SigningKey;
 use tilo_desktop_model::layout::{Strip, Tab, TileContent, WindowGroup};
-use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_KIND, DESKTOP_RECORD, SharedDesktop};
-use tilo_desktop_model::{Layout, StripId, WindowWidth, Workspace, WorkspaceId, shared_record};
+use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT, DESKTOP_KIND, SharedDesktop};
+use tilo_desktop_model::{Layout, StripId, WindowWidth, Workspace, WorkspaceId, shared_resource};
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
 use tilo_user_identity::{DeviceCert, RevocationList};
 
@@ -83,7 +83,7 @@ fn workspace_with(role: Role) -> (StatePeer, String, SigningKey, DeviceCert) {
     )
     .unwrap();
     let mut record = AutoCommit::new();
-    shared_record::write(&mut record, &desktop(&[(1, &owner_person)])).unwrap();
+    shared_resource::write(&mut record, &desktop(&[(1, &owner_person)])).unwrap();
     record.commit();
     peer.install_seed(
         SeedState {
@@ -91,7 +91,7 @@ fn workspace_with(role: Role) -> (StatePeer, String, SigningKey, DeviceCert) {
                 .unwrap(),
             documents: vec![SeedDocument {
                 app_id: DESKTOP_APP.into(),
-                record_id: DESKTOP_RECORD.into(),
+                document_id: DESKTOP_DOCUMENT.into(),
                 kind: DESKTOP_KIND.into(),
                 bytes: record.save(),
             }],
@@ -153,8 +153,8 @@ fn write(
     sequence: u64,
     desktop: &SharedDesktop,
 ) -> NeighbourMsg {
-    write_of(peer, key, sequence, DESKTOP_RECORD, |doc| {
-        shared_record::write(doc, desktop).unwrap();
+    write_of(peer, key, sequence, DESKTOP_DOCUMENT, |doc| {
+        shared_resource::write(doc, desktop).unwrap();
     })
 }
 
@@ -180,7 +180,7 @@ fn write_of(
     let person = hex::encode(key.verifying_key().to_bytes());
     doc.commit_with(
         automerge::transaction::CommitOptions::default()
-            .with_message(shared_record::change_message(Some(&person))),
+            .with_message(shared_resource::change_message(Some(&person))),
     );
     let mutation = if held.is_some() {
         collab_types::DocumentMutation::Incremental(doc.save_after(&heads))
@@ -202,7 +202,7 @@ fn write_of(
         peer: crate::peer_handle(author.as_bytes()),
         app_id: DESKTOP_APP.into(),
         cluster_id: WORKSPACE.into(),
-        record_id: record.into(),
+        document_id: record.into(),
         envelope: Box::new(envelope),
         own: None,
     }
@@ -215,14 +215,14 @@ tilo_test_env::scenario! {
     // A person's view of the workspace's layout is theirs to write: another member reads it and may
     // not write it, whatever the workspace lets them do to the layout itself.
     {
-        use tilo_desktop_model::person_view::{PersonView, record_of};
+        use tilo_desktop_model::person_view::{PersonView, resource_of};
 
         let (mut peer, owner, key, guest) = workspace_with(Role::Editor);
         let view = PersonView {
             front_strip: Some(StripId(10)),
             ..PersonView::default()
         };
-        let theirs = record_of(&owner);
+        let theirs = resource_of(&owner);
         let intrudes = write_of(&peer, &key, 1, &theirs, |doc| {
             view.write(doc).unwrap();
         });
@@ -335,8 +335,8 @@ tilo_test_env::scenario! {
 }
 
 fn windows(peer: &StatePeer) -> Vec<u64> {
-    let doc = AutoCommit::load(&peer.document(DESKTOP_APP, DESKTOP_RECORD).unwrap()).unwrap();
-    shared_record::read(&doc, None)
+    let doc = AutoCommit::load(&peer.document(DESKTOP_APP, DESKTOP_DOCUMENT).unwrap()).unwrap();
+    shared_resource::read(&doc, None)
         .unwrap()
         .tree
         .workspaces
@@ -387,8 +387,8 @@ struct Drawn {
 /// way a mount gives its shell one that arrived — through the surface's own
 /// reconcile of the tree, with the record each window is a page of beside it.
 fn drawn(shell: &DesktopHandle, peer: &StatePeer) -> Vec<Drawn> {
-    let doc = AutoCommit::load(&peer.document(DESKTOP_APP, DESKTOP_RECORD).unwrap()).unwrap();
-    let Some(shared) = shared_record::read(&doc, None) else {
+    let doc = AutoCommit::load(&peer.document(DESKTOP_APP, DESKTOP_DOCUMENT).unwrap()).unwrap();
+    let Some(shared) = shared_resource::read(&doc, None) else {
         return Vec::new();
     };
     let records: HashMap<u64, String> = shared.records.into_iter().collect();

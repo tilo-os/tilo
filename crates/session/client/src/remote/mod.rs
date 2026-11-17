@@ -19,7 +19,7 @@ use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, ChangePage, Completer,
     ConfirmedInvocation, ContentGetAnswer, ContentLink, ContentLinkAsk, ContentPutAnswer, Found,
     InvocationReceipt, InvocationState, InvokeRequest, MAX_REMOTE_WAIT, Pending, ReceiptStatus,
-    RemoteActionFrame, RemoteActionMessage, UpdateMark, pending, serve,
+    RemoteActionFrame, RemoteActionMessage, UpdateMark, WatchScope, pending, serve,
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_clock::time::Instant;
@@ -197,6 +197,8 @@ struct Waiting {
     confirms: HashMap<u64, Asked<Answered<ConfirmedInvocation>>>,
     searches: HashMap<u64, Asked<Answered<Vec<Found>>>>,
     changes: HashMap<u64, Asked<Answered<ChangePage>>>,
+    /// The waits for what a watch follows to change, by correlation.
+    watched: HashMap<u64, Asked<Answered<()>>>,
 }
 
 /// How many invocations a session's asker keeps following. An agent that invokes all day keeps
@@ -280,6 +282,9 @@ impl Waiting {
         for (_, asked) in self.changes.drain() {
             give.push(giving(asked, Err(error.clone())));
         }
+        for (_, asked) in self.watched.drain() {
+            give.push(giving(asked, Err(error.clone())));
+        }
     }
 
     /// The requests past their deadline, answered as unanswered.
@@ -313,6 +318,9 @@ impl Waiting {
             give.push(giving(asked, Err(late())));
         }
         for asked in expired(&mut self.changes, now) {
+            give.push(giving(asked, Err(late())));
+        }
+        for asked in expired(&mut self.watched, now) {
             give.push(giving(asked, Err(late())));
         }
     }
@@ -360,6 +368,7 @@ impl Waiting {
             && self.confirms.is_empty()
             && self.searches.is_empty()
             && self.changes.is_empty()
+            && self.watched.is_empty()
     }
 
     /// What every request still waiting asks: what is asked again on the
@@ -373,6 +382,7 @@ impl Waiting {
         again.extend(self.confirms.values().map(|asked| asked.again.clone()));
         again.extend(self.searches.values().map(|asked| asked.again.clone()));
         again.extend(self.changes.values().map(|asked| asked.again.clone()));
+        again.extend(self.watched.values().map(|asked| asked.again.clone()));
         again.extend(
             self.receipts
                 .values()
@@ -481,6 +491,14 @@ impl Waiting {
                     give.push(giving(asked, result));
                 }
             }
+            RemoteActionMessage::ChangedResponse {
+                correlation,
+                result,
+            } => {
+                if let Some(asked) = self.watched.remove(&correlation) {
+                    give.push(giving(asked, result));
+                }
+            }
             _ => {}
         }
     }
@@ -541,6 +559,43 @@ pub async fn ask<H: ActionHost + Clone + Send + Sync + 'static>(
 }
 
 impl SessionActions {
+    /// Wait on the device for the next change of what a watch of its workspace follows
+    /// ([`ActionHost::changed`]), asked as a held request: the device answers when a write
+    /// lands in the workspace's records, or when who is in it moves.
+    ///
+    /// A device that cannot tell answers a refusal, and a session that cannot carry the
+    /// request answers one too: either way nothing wakes this wait, and its caller holds until
+    /// its own deadline rather than reading again on a timer.
+    pub fn wait_for_change(&self, scope: WatchScope) -> Pending<()> {
+        let correlation = self.0.next_correlation.fetch_add(1, Ordering::Relaxed);
+        let message = RemoteActionMessage::ChangedRequest { correlation, scope };
+        let (answer, answered) = pending();
+        {
+            let mut waiting = self.0.waiting.lock_recover();
+            // A wait another source of its watch woke from is one nobody reads any more: forgotten
+            // here rather than kept until a change answers it.
+            waiting
+                .watched
+                .retain(|_, asked| !asked.answer.is_abandoned());
+            waiting
+                .watched
+                .insert(correlation, Asked::new(answer, message.clone()));
+        }
+        self.0.ask(message, |error| {
+            let asked = self.0.waiting.lock_recover().watched.remove(&correlation);
+            if let Some(asked) = asked {
+                asked.answer.complete(Err(error));
+            }
+        });
+        let (changed, change) = pending();
+        answered.then(move |result| {
+            if result.is_some_and(|result| result.is_ok()) {
+                changed.complete(());
+            }
+        });
+        change
+    }
+
     /// Ask the device for `step` of an upload: its answer, once it comes, or why none came within
     /// [`REPLY_DEADLINE`]. A page awaits it; a caller off one may block on it.
     pub fn put_step(
@@ -890,6 +945,17 @@ impl ActionHost for SessionActions {
         self.0.session.state_changed()
     }
 
+    /// The next change of what a watch of the device's workspace follows, asked of the device
+    /// that holds it: its records (`WatchScope::Records`) or who is in it (`WatchScope::Here`).
+    /// `None` for the roster: this device's session keeps no roster of its own to report one
+    /// from, so a watch of presence waits until its deadline instead.
+    fn changed(&self, _caller: &Caller, scope: WatchScope) -> Option<Pending<()>> {
+        match scope {
+            WatchScope::Records => Some(self.wait_for_change(scope)),
+            WatchScope::Here => None,
+        }
+    }
+
     /// The device's own search of its workspace, asked over the session.
     fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
         Some(Arc::new(workspace::SessionSearch(self.clone())))
@@ -1203,8 +1269,9 @@ mod tests {
         );
     }
 
-    /// A device that answers every ask at once, never holding an observe (as the host's actions
-    /// do), from the state it is told the invocation is in; it counts the observes it was asked.
+    /// A device that answers every ask at once, never holding an observe or a wait for a change
+    /// (as the host's actions do), from the state it is told the invocation is in; it counts the
+    /// observes it was asked.
     struct Device {
         state: Mutex<InvocationUpdate>,
         heard: Mutex<Vec<Heard>>,
@@ -1270,6 +1337,17 @@ mod tests {
                     self.say(RemoteActionMessage::Receipt(
                         InvocationState::new(request.invocation, state).receipt(),
                     ));
+                }
+                // A wait for what a watch follows: answered at once by a device that does not
+                // hold, and kept unanswered by one that does, as a change still to come.
+                RemoteActionMessage::ChangedRequest { correlation, .. } => {
+                    if self.holds {
+                        return Ok(());
+                    }
+                    self.say(RemoteActionMessage::ChangedResponse {
+                        correlation,
+                        result: Ok(()),
+                    });
                 }
                 RemoteActionMessage::Observe {
                     invocation,
@@ -1476,6 +1554,48 @@ mod tests {
             *device.observed.lock_recover(),
             observed,
             "the latest that ended is still read from what the device said"
+        );
+    }
+
+    /// A watch of a device's workspace is woken by the device's own change signal, and never by
+    /// looking again: the device holds the wait until a write lands there, and a device that
+    /// cannot tell leaves the wait to its caller's deadline instead of answering it early.
+    #[test]
+    fn a_watch_is_woken_by_the_devices_own_change_signal() {
+        let invocation = InvocationId::new();
+        // The device holds the wait, so nothing answers it until the change comes.
+        let holding = Device::new(invocation, true);
+        let actions = SessionActions::new(
+            Arc::clone(&holding) as Arc<dyn RemoteSession>,
+            WorkspaceId::from_u128(1),
+            DEVICE,
+        );
+        let changed = actions
+            .changed(&caller(), WatchScope::Records)
+            .expect("the device follows its records");
+        assert!(
+            changed.wait_timeout(Duration::from_millis(50)).is_err(),
+            "a wait is answered when the workspace changes, not before"
+        );
+
+        // A device that answers the wait says the workspace changed, which wakes its watch.
+        let answering = Device::new(invocation, false);
+        let actions = SessionActions::new(
+            Arc::clone(&answering) as Arc<dyn RemoteSession>,
+            WorkspaceId::from_u128(1),
+            DEVICE,
+        );
+        let changed = actions
+            .changed(&caller(), WatchScope::Records)
+            .expect("the device follows its records");
+        assert_eq!(
+            changed.wait_timeout(Duration::from_secs(5)).ok().flatten(),
+            Some(()),
+            "the change answers the wait"
+        );
+        assert!(
+            actions.changed(&caller(), WatchScope::Here).is_none(),
+            "a session that keeps no roster tells nothing of who is in the workspace"
         );
     }
 

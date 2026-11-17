@@ -240,7 +240,7 @@ mod tests {
             channel.resource(),
             "page",
             tilo_view::Actor {
-                id: "Pat".to_owned(),
+                id: ::ui::MemberId::person("Pat").into(),
                 name: "Pat".to_owned(),
             },
             std::collections::BTreeMap::new(),

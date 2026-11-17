@@ -14,7 +14,7 @@ use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_client::Host;
-use tilo_relay_protocol::{RecordAnswer, WorkspaceId};
+use tilo_relay_protocol::{DocumentAnswer, WorkspaceId};
 use tilo_session_client::device::{Entering, entry_request};
 use tilo_session_client::{Cmd, Event, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::UserIdentity;
@@ -63,16 +63,16 @@ async fn arrive(
 }
 
 /// What the workspace answered `page` for `route` once it opened it.
-async fn answer(page: &Link, route: &DocumentRoute) -> RecordAnswer {
+async fn answer(page: &Link, route: &DocumentRoute) -> DocumentAnswer {
     let events = page.events();
-    page.send(Cmd::OpenRecordAt(
+    page.send(Cmd::OpenDocumentAt(
         WorkspaceId::parse(&route.cluster_id).unwrap(),
         route.clone(),
     ))
     .unwrap();
     wait_for("the workspace answers the opened record", || {
         let answered = events.drain().into_iter().find_map(|event| match event {
-            Event::RecordOpened {
+            Event::DocumentOpened {
                 route: Some(opened),
                 answer,
                 ..
@@ -119,23 +119,23 @@ async fn a_page_names_its_own_record_and_another_member_is_told_it_is_not_theirs
     let adas = DocumentRoute {
         app_id: SETTINGS.into(),
         cluster_id: lounge.workspace.clone(),
-        record: collab_types::OwnRecord::new("settings.root", ada_root)
+        record: collab_types::OwnResource::new("settings.root", ada_root)
             .unwrap()
-            .record_id(),
+            .document_id(),
     };
 
     // Nothing of Ada's settings is written: her page opening them is sent nothing, and says
     // they are hers.
     assert_eq!(
         answer(&ada, &adas).await,
-        RecordAnswer::Sent { frames: 0 },
+        DocumentAnswer::Sent { frames: 0 },
         "her own record, of which nothing is written yet"
     );
     // Bo's page cannot name them, being nobody's but Ada's: the host knows whose they are from
     // her opening them, and tells Bo they are not his.
     assert_eq!(
         answer(&bo, &adas).await,
-        RecordAnswer::NotYours,
+        DocumentAnswer::NotYours,
         "another member's own record, written or not"
     );
 }

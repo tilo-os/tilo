@@ -32,7 +32,7 @@ pub mod present;
 pub mod projection;
 pub mod receipt;
 pub mod serde_ids;
-pub mod shared_record;
+pub mod shared_resource;
 pub mod shared_surfaces;
 pub mod topology;
 pub mod tree;

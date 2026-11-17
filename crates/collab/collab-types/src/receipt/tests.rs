@@ -10,11 +10,11 @@ const WORKSPACE: &str = "workspace-1";
 const APP: &str = "so.tilo.notes";
 const KIND: &str = "notes.page";
 
-fn record() -> Record<'static> {
-    Record {
+fn document() -> WrittenDocument<'static> {
+    WrittenDocument {
         workspace: WORKSPACE,
         app: APP,
-        record: "page-1",
+        document: "page-1",
     }
 }
 
@@ -110,7 +110,7 @@ fn decide(person: &str, claims: &[ChangeClaim]) -> Result<Receipt, ReceiptRefusa
     let allows = |node: &TreePath, kind: ActionKind| {
         party.decide(node, kind, &Context::at(0)).answer == Answer::Allow
     };
-    check_claims(claims, &record(), None, None, Some(&Page), &allows)
+    check_claims(claims, &document(), None, None, Some(&Page), &allows)
 }
 
 tilo_test_env::scenario! {
@@ -199,7 +199,7 @@ tilo_test_env::scenario! {
             assert_eq!(
                 check_claims(
                     &claims,
-                    &record(),
+                    &document(),
                     Some(changes),
                     None,
                     Some(&Page),
@@ -210,11 +210,11 @@ tilo_test_env::scenario! {
         }
         let twice = [claims[0].clone(), claims[0].clone()];
         assert_eq!(
-            check_claims(&twice, &record(), None, None, Some(&Page), &allows),
+            check_claims(&twice, &document(), None, None, Some(&Page), &allows),
             Err(ReceiptRefusal::Unclaimed)
         );
         assert_eq!(
-            check_claims(&claims, &record(), Some(&[[1; 32]]), None, None, &allows),
+            check_claims(&claims, &document(), Some(&[[1; 32]]), None, None, &allows),
             Ok(Receipt::Hold),
             "without the app's surface the change is held, never trusted"
         );
@@ -225,7 +225,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             check_claims(
                 &claims,
-                &record(),
+                &document(),
                 Some(&[[1; 32]]),
                 Some(&written),
                 Some(&Page),
@@ -294,7 +294,7 @@ tilo_test_env::scenario! {
             };
             let receipt = check_claims(
                 &claims,
-                &record(),
+                &document(),
                 Some(&hashes),
                 None,
                 Some(&Page),
@@ -339,7 +339,7 @@ tilo_test_env::scenario! {
         .with_surface(Some([1; 32]));
         let surfaces = Surfaces::from_source(std::sync::Arc::new(Channels));
         assert_eq!(
-            decide_op(&op, &record(), None, None, &surfaces, &|_, _| true),
+            decide_op(&op, &document(), None, None, &surfaces, &|_, _| true),
             Ok(Receipt::Admit)
         );
         // A claim to a verb its kind does not publish is still refused.
@@ -355,9 +355,9 @@ tilo_test_env::scenario! {
         doc.commit_with(CommitOptions::default().with_message(entry.change_message().unwrap()));
         let sealed_claims =
             claims_of(&parse_changes(&doc.save()).unwrap(), |_| vec![Vec::new()]).unwrap();
-        let surface_for = |kind: Option<&str>| Channels.surface(&record(), kind, None);
+        let surface_for = |kind: Option<&str>| Channels.surface(&document(), kind, None);
         assert!(matches!(
-            check_claims_by_kind(&sealed_claims, &record(), None, &surface_for, &|_, _| true),
+            check_claims_by_kind(&sealed_claims, &document(), None, &surface_for, &|_, _| true),
             Err(ReceiptRefusal::NotPublished(_))
         ));
     }
@@ -376,7 +376,7 @@ fn bot(installation: &str) -> tilo_actions::ActionInvoker {
 }
 
 tilo_test_env::scenario! {
-    /// Who may change how a participant appears.
+    /// Who may change how a member appears.
     fn an_appearance_is_admitted_only_valid_and_from_its_bot;
 
     phase an_appearance_is_admitted_only_from_the_bot_allowed_it;
@@ -489,7 +489,7 @@ fn calendar_read(
         wrote.map(|wrote| wrote(&units)).unwrap_or_default()
     };
     let written: Option<WrittenUnits<'_>> = wrote.is_some().then_some(&units as WrittenUnits<'_>);
-    check_claims(claims, &record(), None, written, Some(&Calendar), &allows)
+    check_claims(claims, &document(), None, written, Some(&Calendar), &allows)
 }
 
 tilo_test_env::scenario! {
@@ -540,7 +540,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             calendar_read(&synced, Some(&made)),
             Ok(Receipt::Admit),
-            "a new record's first event makes its outbox empty and queues nothing"
+            "a new document's first event makes its outbox empty and queues nothing"
         );
         let queued = |_: &[UnitPath]| crate::units::Written {
             units: vec![Vec::new(), uploads()],
@@ -597,7 +597,7 @@ struct Channels;
 impl SurfaceSource for Channels {
     fn surface(
         &self,
-        _: &Record<'_>,
+        _: &WrittenDocument<'_>,
         kind: Option<&str>,
         _: Option<&[u8; 32]>,
     ) -> Option<std::sync::Arc<dyn ReceiptSurface>> {

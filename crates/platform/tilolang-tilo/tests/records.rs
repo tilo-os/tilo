@@ -350,8 +350,5 @@ fn a_scenario_posts_as_two_people_and_the_stored_authors_differ() {
             tilolang_tilo::runtime::ids::MemberId::person(id),
         ))
     };
-    assert_eq!(
-        authors,
-        [who("scenario:Mia"), who("scenario:Leo"), who("ada")]
-    );
+    assert_eq!(authors, [who("Mia"), who("Leo"), who("ada")]);
 }

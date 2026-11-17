@@ -345,7 +345,7 @@ fn seeded_workspace(author: &TestDevice, reader: &TestDevice) -> (StatePeer, Aut
                     .unwrap(),
                 documents: vec![SeedDocument {
                     app_id: APP.into(),
-                    record_id: RECORD.into(),
+                    document_id: RECORD.into(),
                     kind: "text".into(),
                     bytes: seed.save(),
                 }],

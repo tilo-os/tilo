@@ -6,7 +6,7 @@ use std::collections::HashSet;
 
 use super::{
     ActionHost, CatalogueLimits, CatalogueQuery, CatalogueRow, DEFAULT_WAIT_MS, LEVEL_PAGES, Level,
-    McpServer, PAGE_ROWS, cannot_be_read_now, level_of, restart_pause,
+    Levels, McpServer, Node, PAGE_ROWS, cannot_be_read_now, level_of, restart_pause,
 };
 
 /// The rows a [`Level`] was read from, where each of its pages after the
@@ -35,6 +35,23 @@ impl Level {
     /// Whether the directory goes on past what was read.
     pub(super) fn unread(&self) -> bool {
         self.pages.rest.is_some()
+    }
+
+    /// The resources of the level every row of which was read. A read that stopped at its
+    /// bound may have stopped inside its last resource, whose other rows (the actions it
+    /// offers, the one that reads it among them) are on the page after: that one is no
+    /// resource to name or act on until the level is read on.
+    pub(super) fn whole_children(&self) -> &[Node] {
+        match self.children.split_last() {
+            Some((_, whole)) if self.unread() => whole,
+            _ => &self.children,
+        }
+    }
+
+    /// Whether the level was read on past the pages its first read is bound to
+    /// ([`LEVEL_PAGES`]): each page after the first leaves its mark.
+    pub(super) fn read_on(&self) -> bool {
+        self.pages.marks.len() >= LEVEL_PAGES
     }
 
     /// Where a read starting at the page holding `child`'s first row picks
@@ -152,6 +169,32 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 .ok_or("the app's directory kept changing while it was read; try again")?;
         }
         Ok(level)
+    }
+
+    /// The directory level under `parent`, and the resource `find` picks out of it: the
+    /// level is read on past its bound until `find` picks one or the directory ends. A read
+    /// that names one resource so finds it wherever it falls in the directory, where a level
+    /// read only to its bound would say a resource past it is not there. `find` picks among
+    /// [`Level::whole_children`], so the resource it finds has all its actions. The level,
+    /// as far as it was read, is kept in `levels`.
+    pub(super) async fn level_holding(
+        &self,
+        provider: &str,
+        parent: &str,
+        levels: &mut Levels,
+        find: impl Fn(&Level) -> Result<Option<Node>, String> + Send,
+    ) -> Result<(Option<Node>, Level), String> {
+        let mut level = self.level(provider, parent, levels).await?;
+        let mut found = find(&level)?;
+        while found.is_none() && level.unread() {
+            level = self
+                .read_level(provider, parent, Some(level))
+                .await?
+                .ok_or("the app's directory kept changing while it was read; try again")?;
+            levels.insert(parent.to_owned(), level.clone());
+            found = find(&level)?;
+        }
+        Ok((found, level))
     }
 
     /// The directory under `parent` from the page `mark` names on, until it

@@ -457,6 +457,52 @@ impl crate::widget::controls::ActionControls for Breadcrumb {
 }
 
 impl Widget for Breadcrumb {
+    /// The path as a page's own trail: every folder a link in its list, the page itself last.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        use crate::composition::TextLook;
+        let theme = cx.theme();
+        cx.element("nav");
+        let style = theme.text(self.role);
+        let trail = cx.part("trail", "Breadcrumb", self.rect);
+        trail.tag = Some("ol");
+        let labels: Vec<String> = if self.cached_visible.is_empty() {
+            self.segments.clone()
+        } else {
+            self.cached_visible.clone()
+        };
+        let last = self.segments.len().saturating_sub(1);
+        let measured = self.segment_rects.len() == labels.len()
+            && self.segment_rects.iter().all(|rect| rect.width() > 0.0);
+        for (index, label) in labels.iter().enumerate() {
+            let rect = if measured {
+                self.segment_rects[index]
+            } else {
+                let step = self.rect.width() / crate::num::f64_of_usize(labels.len().max(1));
+                let x0 = self.rect.x0 + step * crate::num::f64_of_usize(index);
+                Rect::new(x0, self.rect.y0, x0 + step, self.rect.y1)
+            };
+            let item = trail.part(&format!("segment:{index}"), "BreadcrumbSegment", rect);
+            item.tag = Some("li");
+            // The newest segment is the page; a trail no paint has laid out still says so.
+            let current = self
+                .visible_origin
+                .get(index)
+                .copied()
+                .flatten()
+                .map_or(index == last, |origin| origin == last);
+            let ink = if current {
+                theme.tokens.colors.text_primary
+            } else {
+                theme.tokens.colors.text_dim
+            };
+            let look = TextLook::new(label.clone(), &style, Some(ink)).with_max_lines(Some(1));
+            item.own = Some(crate::composition::Own::Text(look));
+            if current {
+                item.attrs.push(("aria-current", "page".into()));
+            }
+        }
+    }
+
     crate::described!();
 
     crate::provides!(

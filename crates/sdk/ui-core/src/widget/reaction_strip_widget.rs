@@ -87,7 +87,7 @@ impl ReactionStripWidget {
         }
     }
 
-    /// How a reactor is named in a pill's tooltip (a participant's display
+    /// How a reactor is named in a pill's tooltip (a member's display
     /// name); by default their id.
     #[must_use]
     pub fn with_names(mut self, names: impl Fn(&Reactor) -> String + 'static) -> Self {
@@ -251,6 +251,51 @@ impl ReactionStripWidget {
 }
 
 impl Widget for ReactionStripWidget {
+    /// Each reaction its own button with what it is and how many, then the one that adds more.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        use crate::composition::{Ground, TextLook, rgba8};
+        let theme = cx.theme();
+        cx.element("div");
+        let style = theme.text(crate::TextRole::Caption);
+        let raised = theme.tokens.colors.surfaces.raised;
+        for (index, pill) in self.strip.current().pills().iter().enumerate() {
+            let part = cx.words(
+                &format!("reaction:{index}"),
+                "button",
+                pill.rect,
+                TextLook::new(
+                    format!("{} {}", pill.emoji, pill.count),
+                    &style,
+                    Some(theme.text_primary),
+                )
+                .with_max_lines(Some(1)),
+            );
+            part.ground = Some(Ground {
+                fill: Some(rgba8(raised)),
+                edge: Some(rgba8(crate::surface::edge_on(raised))),
+                radius: pill.rect.height() / 2.0,
+            });
+            part.semantics = Some(
+                AccessNode::new(Role::ToggleButton)
+                    .with_name(format!("{} {}", pill.emoji, pill.count))
+                    .with_state(AccessState::new().checked(pill.mine)),
+            );
+        }
+        if let Some(add) = self.strip.current().add_rect() {
+            let part = cx.words(
+                "add",
+                "button",
+                add,
+                TextLook::new("+".to_owned(), &style, Some(theme.text_dim)),
+            );
+            part.semantics = Some(
+                AccessNode::new(Role::Button)
+                    .with_name(crate::i18n::widget_format("emoji-picker-add-reaction", &[])),
+            );
+        }
+    }
+
     crate::described!();
 
     crate::provides!(dyn crate::widget::controls::ActionControls);

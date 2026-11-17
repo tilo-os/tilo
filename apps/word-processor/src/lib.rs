@@ -271,24 +271,6 @@ impl Template {
     }
 }
 
-/// # Errors
-/// Why the document cannot be exported, or the file cannot be written.
-pub fn save_document(
-    doc: &AutoCommit,
-    path: &Path,
-    format: WpFormat,
-    content: &dyn tilo_content::ContentSource,
-) -> std::io::Result<()> {
-    let invalid = |e: String| std::io::Error::new(std::io::ErrorKind::InvalidData, e);
-    let doc = crate::model::export_copy(doc).map_err(invalid)?;
-    let bytes = format
-        .export(doc.as_ref(), content)
-        .map_err(|e| std::io::Error::other(e.to_string()))?;
-    tilo_files::file_at(path)
-        .and_then(|(dir, name)| tilo_files::blocking::save_document(&dir, &name, &bytes))
-        .map_err(std::io::Error::other)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,15 +289,14 @@ mod tests {
     }
 
     fn exported(doc: &AutoCommit, format: WpFormat, extension: &str) -> Vec<u8> {
-        let path = std::env::temp_dir().join(format!(
-            "editor-export-test-{}-{extension}.{extension}",
-            std::process::id()
-        ));
-        assert_eq!(WpFormat::from_path(&path), format);
-        save_document(doc, &path, format, &tilo_content::NoContent).expect("save");
-        let bytes = std::fs::read(&path).expect("read back");
-        let _ = std::fs::remove_file(&path);
-        bytes
+        assert_eq!(
+            WpFormat::from_path(std::path::Path::new(&format!("document.{extension}"))),
+            format
+        );
+        let copy = crate::model::export_copy(doc, &|_| String::new()).expect("export");
+        format
+            .export(copy.as_ref(), &tilo_content::NoContent)
+            .expect("export")
     }
 
     tilo_test_env::scenario! {

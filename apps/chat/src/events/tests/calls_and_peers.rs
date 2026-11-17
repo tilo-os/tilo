@@ -274,7 +274,7 @@ fn emoji_search_enter_picks_the_best_match() {
 
 // --- category + reorder + thread + workspace via the hit path -------
 
-// --- multi-participant collaboration (the real sync path) ------------
+// --- multi-member collaboration (the real sync path) ------------
 //
 // These drive two independent `ChatApp` instances against two Automerge
 // documents and shuttle the exact incremental deltas the compositor's
@@ -283,7 +283,7 @@ fn emoji_search_enter_picks_the_best_match() {
 // production event handlers do the writing and the real CRDT does the
 // merging, so this is a faithful test of live multi-peer chat.
 
-/// A distinct participant: a fresh app bound to the shared workspace
+/// A distinct member: a fresh app bound to the shared workspace
 /// starter, authoring under `id` — genuinely different from any other peer.
 fn peer(id: &str, name: &str, initials: &str, color: usize) -> ChatApp {
     let mut app = ChatApp::new_ephemeral();
@@ -320,9 +320,9 @@ tilo_test_env::scenario! {
         clippy::too_many_lines,
         reason = "one labelled phase per original scenario, each with its own fresh fixture"
     )]
-    fn two_participants_converge_on_messages_and_edits;
+    fn two_members_converge_on_messages_and_edits;
 
-    phase messages_channels_and_reactions_converge_across_two_participants;
+    phase messages_channels_and_reactions_converge_across_two_members;
     {
         // Alice opens the workspace's chat; Bob adopts her document (as a
         // late-joining peer does) and announces himself.
@@ -446,7 +446,7 @@ tilo_test_env::scenario! {
         assert_eq!(ids(&a), ids(&b), "both peers converge on the same timeline");
     }
 
-    phase an_edit_and_its_history_converge_across_two_participants;
+    phase an_edit_and_its_history_converge_across_two_members;
     {
         // The author edits a message; the *new* body AND the archived prior
         // version both reach the other peer. Drives the real inline-editor path
@@ -1531,14 +1531,14 @@ tilo_test_env::scenario! {
         let control = app
             .hits
             .iter()
-            .find_map(|(rect, hit)| matches!(hit, Hit::CallParticipantsToggle).then_some(*rect))
+            .find_map(|(rect, hit)| matches!(hit, Hit::CallMembersToggle).then_some(*rect))
             .expect("the docked call shows its controls");
         feed(
             &mut app,
             &mut doc,
             &cursor_moved(control.center().x, control.center().y),
         );
-        assert_eq!(app.call_hovered, Some(Hit::CallParticipantsToggle));
+        assert_eq!(app.call_hovered, Some(Hit::CallMembersToggle));
         // Over the shell the pointer leaves the app's surface altogether.
         feed(
             &mut app,

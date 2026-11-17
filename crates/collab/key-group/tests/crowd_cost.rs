@@ -1,4 +1,4 @@
-//! What admitting a device costs a workspace's committing participant and its
+//! What admitting a device costs a workspace's committing key holder and its
 //! members, counted rather than timed: the same in a group of 300 as in one of
 //! 30, and a crowd asking together is admitted in one commit.
 

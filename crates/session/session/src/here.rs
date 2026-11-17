@@ -43,102 +43,132 @@ impl Shared {
             .map(|sync| sync.calls())
             .unwrap_or_default();
         let joined = self.calls_this_person_is_in();
-        self.handle.read(|tree| {
-            let mut workspaces: Vec<WorkspaceHere> = tree
-                .workspaces
+        // The tree as the loop holds it lists nobody: who is here is placed into the copy a
+        // surface reads, as the bar places it into its own.
+        let tree = self.handle.read(Clone::clone);
+        #[cfg(target_os = "linux")]
+        let tree = {
+            let mut tree = tree;
+            if let Some(sync) = &self.sync {
+                sync.show(&mut tree, &self.notes, &|app: &str| {
+                    Some(crate::app_names::app_name(app))
+                });
+            }
+            tree
+        };
+        let mut workspaces: Vec<WorkspaceHere> = tree
+            .workspaces
+            .iter()
+            .map(|workspace| {
+                workspace_here(workspace, workspace.id() == tree.active, &calls, &joined)
+            })
+            .filter(|workspace| !workspace.people.is_empty() || !workspace.calls.is_empty())
+            .collect();
+        workspaces.sort_by_key(|workspace| !workspace.active);
+        workspaces
+    }
+}
+
+/// Who is in `workspace` now, the windows they are in and the calls in progress there that this
+/// person is not in (`joined`); `active` when it is the workspace in front.
+fn workspace_here(
+    workspace: &tilo_desktop_model::Workspace,
+    active: bool,
+    calls: &[crate::sync::LiveCall],
+    joined: &[String],
+) -> WorkspaceHere {
+    let workspace_id = workspace.id().to_string();
+    let here_person = |member: &collab_types::Member| {
+        let here = workspace
+            .present
+            .iter()
+            .find(|here| here.member == member.id);
+        PersonHere {
+            id: member.id.id().to_owned(),
+            name: member.name.clone(),
+            colour: collab_types::presence::identity_rgb(member.colour),
+            agent: !member.id.is_person(),
+            // Idle and away dim their face everywhere else; the launcher says it
+            // in words.
+            away: here.is_some_and(away),
+            tab: here.and_then(|here| here.tab),
+        }
+    };
+    // The members here now: the person at this desktop and those away from
+    // the workspace are not.
+    let mut people: Vec<PersonHere> = workspace
+        .members
+        .iter()
+        .filter(|member| {
+            workspace
+                .present
                 .iter()
-                .map(|workspace| {
-                    let workspace_id = workspace.id().to_string();
-                    let here_person = |member: &collab_types::Member| {
-                        let here = workspace
-                            .present
-                            .iter()
-                            .find(|here| here.member == member.id);
-                        PersonHere {
-                            id: here.map_or_else(
-                                || member.id.id().to_owned(),
-                                |here| here.device.clone(),
-                            ),
-                            name: member.name.clone(),
-                            colour: collab_types::presence::identity_rgb(member.colour),
-                            agent: !member.id.is_person(),
-                            // Idle and away dim their face everywhere else; the launcher says it
-                            // in words.
-                            away: here.is_some_and(away),
-                            tab: here.and_then(|here| here.tab),
-                        }
-                    };
-                    let mut people: Vec<PersonHere> =
-                        workspace.members.iter().map(&here_person).collect();
-                    people.sort_by_key(|person| person.agent);
-                    let mut windows: Vec<WindowHere> = Vec::new();
-                    for person in people.iter().filter(|person| person.tab.is_some()) {
-                        let Some(tab) = person.tab else { continue };
-                        let title = tab_title(workspace, tab);
-                        if title.is_empty() {
-                            continue;
-                        }
-                        match windows.iter_mut().find(|window| window.tab == tab) {
-                            Some(window) => window.people.push(person.clone()),
-                            None => windows.push(WindowHere {
-                                tab,
-                                title,
-                                people: vec![person.clone()],
-                            }),
-                        }
-                    }
-                    let calls = calls
-                        .iter()
-                        .filter(|call| !joined.contains(&call.channel))
-                        .filter(|call| call.workspace == workspace_id)
-                        .map(|call| CallHere {
-                            channel: call.channel.clone(),
-                            name: call.name.clone(),
-                            people: call
-                                .people
-                                .iter()
-                                .map(|caller| {
-                                    // Who they are on the shell, when it lists them: the same face
-                                    // and name.
-                                    workspace
-                                        .present
-                                        .iter()
-                                        .find(|here| here.device == caller.id)
-                                        .and_then(|here| {
-                                            workspace
-                                                .members
-                                                .iter()
-                                                .find(|member| member.id == here.member)
-                                        })
-                                        .map_or_else(
-                                            || PersonHere {
-                                                id: caller.id.clone(),
-                                                name: caller.label.clone(),
-                                                colour: ui::presence::user_color(&caller.id),
-                                                agent: false,
-                                                away: false,
-                                                tab: None,
-                                            },
-                                            &here_person,
-                                        )
-                                })
-                                .collect(),
-                        })
-                        .collect();
-                    WorkspaceHere {
-                        workspace: workspace_id,
-                        name: tilo_desktop_surface::names::workspace(&workspace.name),
-                        active: workspace.id() == tree.active,
-                        people,
-                        windows,
-                        calls,
-                    }
-                })
-                .filter(|workspace| !workspace.people.is_empty() || !workspace.calls.is_empty())
-                .collect();
-            workspaces.sort_by_key(|workspace| !workspace.active);
-            workspaces
+                .any(|here| here.member == member.id)
         })
+        .map(&here_person)
+        .collect();
+    people.sort_by_key(|person| person.agent);
+    let mut windows: Vec<WindowHere> = Vec::new();
+    for person in people.iter().filter(|person| person.tab.is_some()) {
+        let Some(tab) = person.tab else { continue };
+        let title = tab_title(workspace, tab);
+        if title.is_empty() {
+            continue;
+        }
+        match windows.iter_mut().find(|window| window.tab == tab) {
+            Some(window) => window.people.push(person.clone()),
+            None => windows.push(WindowHere {
+                tab,
+                title,
+                people: vec![person.clone()],
+            }),
+        }
+    }
+    let calls = calls
+        .iter()
+        .filter(|call| !joined.contains(&call.channel))
+        .filter(|call| call.workspace == workspace_id)
+        .map(|call| CallHere {
+            channel: call.channel.clone(),
+            name: call.name.clone(),
+            people: call
+                .people
+                .iter()
+                .map(|caller| {
+                    // Who they are on the shell, when it lists them: the same face
+                    // and name.
+                    workspace
+                        .present
+                        .iter()
+                        .find(|here| here.device == caller.id)
+                        .and_then(|here| {
+                            workspace
+                                .members
+                                .iter()
+                                .find(|member| member.id == here.member)
+                        })
+                        .map_or_else(
+                            || PersonHere {
+                                id: caller.id.clone(),
+                                name: caller.label.clone(),
+                                colour: ui::presence::user_color(&caller.id),
+                                agent: false,
+                                away: false,
+                                tab: None,
+                            },
+                            &here_person,
+                        )
+                })
+                .collect(),
+        })
+        .collect();
+    WorkspaceHere {
+        workspace: workspace_id,
+        name: tilo_desktop_surface::names::workspace(&workspace.name),
+        active,
+        people,
+        windows,
+        calls,
     }
 }
 

@@ -54,7 +54,7 @@ fn new_key() -> SigningKey {
 struct Asking {
     key: SigningKey,
     code: tokio::sync::oneshot::Receiver<String>,
-    answer: JoinHandle<Result<(DeviceCert, DeviceCert), CertifyError>>,
+    answer: JoinHandle<Result<(DeviceCert, DeviceCert, String), CertifyError>>,
 }
 
 fn ask_to_pair(host: &Host, person: [u8; 32], label: &str) -> Asking {
@@ -81,7 +81,7 @@ impl Asking {
             .expect("the host answered with a pairing code")
     }
 
-    async fn answer(self) -> Result<(DeviceCert, DeviceCert), CertifyError> {
+    async fn answer(self) -> Result<(DeviceCert, DeviceCert, String), CertifyError> {
         tilo_test_env::within("the certification answer", self.answer)
             .await
             .unwrap()
@@ -180,7 +180,7 @@ async fn a_paired_device_is_the_same_person_and_keeps_working_after_reconnecting
         .await
         .unwrap();
     let phone_key = phone.key.clone();
-    let (cert, host_cert) = phone.answer().await.unwrap();
+    let (cert, host_cert, _) = phone.answer().await.unwrap();
     assert_paired(&cert, &host_cert, user, &phone_key);
     assert_eq!(host_cert, host_device.cert);
     assert!(
@@ -431,7 +431,7 @@ async fn an_unanswered_request_expires_between_the_roots(process: tilo_clock::te
     assert_eq!(waiting_for(&approver, &bob).await, waiting);
     answer_pairing(&approver, &bob, digest, true).await.unwrap();
     let phone_key = phone.key.clone();
-    let (cert, host_cert) = phone.answer().await.unwrap();
+    let (cert, host_cert, _) = phone.answer().await.unwrap();
     assert_paired(&cert, &host_cert, person(&bob), &phone_key);
 
     // Dave's root is on no device here: a request naming him is queued,
@@ -563,7 +563,7 @@ async fn approvals_for_requests_that_do_not_wait_are_refused() {
         answer_pairing(&approver, &root, digest, false).await,
         Err(CertifyError::Denied(_))
     ));
-    let (cert, _) = phone.answer().await.unwrap();
+    let (cert, _, _) = phone.answer().await.unwrap();
     assert_eq!(cert, honest, "the device holds the first answer");
     host.relay.shutdown().await;
 }
@@ -615,7 +615,7 @@ async fn a_device_paired_through_the_entry_enters_the_workspace_as_the_person() 
         .await
         .unwrap();
     let phone_key = phone.key.clone();
-    let (cert, host_cert) = phone.answer().await.unwrap();
+    let (cert, host_cert, _) = phone.answer().await.unwrap();
     assert_paired(&cert, &host_cert, user, &phone_key);
     assert_eq!(
         host_cert, host_device.cert,

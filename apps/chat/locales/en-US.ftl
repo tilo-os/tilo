@@ -11,7 +11,7 @@ chat-send-empty = Write a message, or attach something to send.
 chat-send-needs-recipient = Choose who the message goes to.
 chat-send-one-conversation = A conversation goes on its own: choose it, or the people to send to.
 
-# Marker beside a participant in the `@` picker that is an agent rather than a
+# Marker beside a member in the `@` picker that is an agent rather than a
 # person, so somebody can tell at a glance that they are addressing software.
 chat-mention-agent-tag = agent
 
@@ -68,7 +68,7 @@ chat-call-status = Call status
 
 # The call window's connection line under its video.
 chat-call-connected = Connected
-chat-call-participant = { $name }: volume and mute for you
+chat-call-member = { $name }: volume and mute for you
 chat-call-silence = Mute for me
 chat-call-volume = Volume { $percent }%
 chat-call-reconnecting = Reconnecting
@@ -173,6 +173,10 @@ chat-share-stop = Stop sharing
 chat-share-loading = Loading the live view…
 chat-share-open-to-see = Open it to see it live
 chat-share-open = Open { $title }, shared by { $name }
+chat-share-work-here = Work on { $title } here, shared by { $name }
+chat-share-read-here = Read { $title } here, shared by { $name }
+chat-share-open-window = Open { $title } in a window
+chat-share-make-smaller = Make { $title } smaller
 chat-share-pick = Share { $title }
 chat-voice-unavailable = Calls can't start in this workspace yet
 chat-call-not-joined = Join the call first.
@@ -362,7 +366,7 @@ chat-call-untitled = Call
 chat-call-open-window = Open the call in Chat
 chat-call-expand = Expand
 chat-call-expand-restore = Expand or restore call
-chat-call-participants-show = Show call participants
+chat-call-members-show = Show call members
 chat-call-camera-off-caption = Camera off
 chat-call-camera-starting = Your camera is starting
 chat-call-no-video = No video
@@ -466,6 +470,32 @@ chat-messages-delete-message = Delete message
 chat-messages-remove-message = Remove message
 chat-messages-pin = Pin message
 chat-messages-retry = Ask again for an answer
+chat-messages-ask = Ask your person
+chat-messages-answer-question = Answer a question
+chat-messages-withdraw-question = Withdraw a question
+chat-messages-settle-question = Say what came of an answer
+# The question a message asks one person: what an action that asks first would
+# do, its answers, and how it stands once it no longer waits.
+chat-question-on = On “{ $resource }”
+chat-question-field = { $label }: { $value }
+chat-question-final = It can’t be undone.
+chat-question-allow = Allow once
+chat-question-always = Always allow for this event
+chat-question-deny = Don’t allow
+chat-question-allowed = allowed once
+chat-question-always-allowed = always allowed for this event
+chat-question-denied = not allowed
+chat-question-you-answered = You answered: { $answer }
+chat-question-answered = { $name } answered: { $answer }
+chat-question-waiting = Waiting for { $name }
+chat-question-waiting-someone = Waiting for an answer
+chat-question-someone-answered = Answered: { $answer }
+chat-question-started = Working on it
+chat-question-done = Done
+chat-question-dropped = Nothing was done
+chat-question-failed = It could not be done
+chat-question-withdrawn = No longer asked
+chat-question-withdrawn-why = No longer asked: { $why }
 chat-messages-record-work = Record agent work
 chat-messages-carry-counts = Carry the counts of the parts before
 chat-messages-stream-output = Record an answer as it arrives

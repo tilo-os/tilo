@@ -184,11 +184,38 @@ pub struct AgentArgs {
     /// policy lets ask, such as a member linking their own account on the
     /// workspace's Discord from their profile card. `--agents` serves them too.
     #[arg(long)]
-    pub workspace_records: bool,
+    pub workspace_documents: bool,
 }
 
 #[cfg(feature = "agents")]
 impl AgentArgs {
+    /// The model the agents this host runs for its workspaces work with: `--agent-model`, else
+    /// `$TILO_AGENT_MODEL`, read as `--agents` reads it. `None` when neither names one, or the one
+    /// named is not usable (said in the log): the agents then tell whoever asks that the host runs
+    /// no model.
+    fn host_model(&self) -> Option<tilo_agent_session::ModelChoice> {
+        let env = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
+        let spec = self.model.clone().or_else(|| env("TILO_AGENT_MODEL"))?;
+        let name = self
+            .model_name
+            .clone()
+            .or_else(|| env("TILO_AGENT_MODEL_NAME"));
+        match tilo_agent_session::ModelChoice::parse(
+            &spec,
+            name.as_deref(),
+            tilo_agent_session::ApiKey::from_env(
+                env("TILO_AGENT_API_KEY"),
+                env("TILO_AGENT_API_KEY_FILE"),
+            ),
+        ) {
+            Ok(model) => Some(model),
+            Err(error) => {
+                tracing::warn!(%error, "the workspaces' agents run without a model: --agent-model");
+                None
+            }
+        }
+    }
+
     fn options(
         &self,
         state_dir: PathBuf,
@@ -236,6 +263,9 @@ pub struct HostedRelay {
     pub relay: Relay,
     #[cfg(feature = "agents")]
     agents: Option<tilo_agent_session::AgentHost>,
+    /// The agents it runs for the workspaces it governs.
+    #[cfg(feature = "agents")]
+    host_agents: Option<tokio::task::JoinHandle<()>>,
     /// Its state's lock, released once it stopped.
     _lock: tilo_relay::state_lock::StateLock,
 }
@@ -246,6 +276,10 @@ impl HostedRelay {
         #[cfg(feature = "agents")]
         if let Some(agents) = self.agents {
             agents.shutdown();
+        }
+        #[cfg(feature = "agents")]
+        if let Some(host_agents) = self.host_agents {
+            host_agents.abort();
         }
         self.relay.shutdown().await;
     }
@@ -325,15 +359,16 @@ pub async fn start_relay_lending(
         return Ok(HostedRelay {
             relay,
             agents: Some(agents),
+            host_agents: None,
             _lock: lock,
         });
     }
     #[cfg(feature = "agents")]
-    if args.agents.workspace_records {
+    if args.agents.workspace_documents {
         let browsers = tilo_relay::hosted_browser::HostedBrowsers::from_env()
             .map_err(anyhow::Error::msg)?
             .map(std::sync::Arc::new);
-        let relay = tilo_relay::agents::start_serving_records(
+        let (relay, actions) = tilo_relay::agents::start_serving_documents(
             cfg,
             identity,
             None,
@@ -346,9 +381,26 @@ pub async fn start_relay_lending(
         )
         .await
         .context("start the relay serving its workspaces' records")?;
+        // The agents each workspace made to run here work around the clock, on the host's model.
+        let host_agents = relay.workspaces().cloned().map(|workspaces| {
+            let model = args.agents.host_model();
+            tracing::info!(
+                model = %model.as_ref().map_or_else(|| "none".to_owned(), tilo_agent_session::ModelChoice::describe),
+                "the workspaces' agents run on this host"
+            );
+            tokio::spawn(
+                tilo_relay::workspace_agents::HostAgents::new(
+                    workspaces,
+                    actions,
+                    model.map(tilo_relay::workspace_agents::model_of),
+                )
+                .run(),
+            )
+        });
         return Ok(HostedRelay {
             relay,
             agents: None,
+            host_agents,
             _lock: lock,
         });
     }
@@ -359,6 +411,8 @@ pub async fn start_relay_lending(
         relay,
         #[cfg(feature = "agents")]
         agents: None,
+        #[cfg(feature = "agents")]
+        host_agents: None,
         _lock: lock,
     })
 }

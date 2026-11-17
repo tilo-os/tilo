@@ -83,8 +83,8 @@ pub fn own_record(meta: &tilolang::PackageMeta, person: &str) -> Option<String> 
 /// person without a root identity.
 #[must_use]
 pub fn member_record_of(app: &str, person: &str) -> Option<String> {
-    collab_types::OwnRecord::of_person(&person.to_ascii_lowercase(), &format!("tl.{app}"))
-        .map(|own| own.record_id())
+    collab_types::OwnResource::of_person(&person.to_ascii_lowercase(), &format!("tl.{app}"))
+        .map(|own| own.document_id())
 }
 
 /// Whether the app `app`'s manifest declares its records each member's own (`records: .own`),

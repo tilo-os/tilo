@@ -188,7 +188,7 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         | Envelope::SyncResponse { workspace_id, .. }
         | Envelope::RemoteAction { workspace_id, .. }
         | Envelope::RemoteActionUndeliverable { workspace_id, .. }
-        | Envelope::RecordContent { workspace_id, .. }
+        | Envelope::DocumentContent { workspace_id, .. }
         | Envelope::Commit { workspace_id, .. }
         | Envelope::Committed { workspace_id, .. }
         | Envelope::CommitRefused { workspace_id, .. }
@@ -210,11 +210,11 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         | Envelope::VoiceCalls { workspace_id }
         | Envelope::VoiceCallList { workspace_id, .. }
         | Envelope::VoiceShow { workspace_id, .. }
-        | Envelope::OpenRecord { workspace_id, .. }
-        | Envelope::RecordOpened { workspace_id, .. }
-        | Envelope::RecordContentWant { workspace_id, .. }
+        | Envelope::OpenDocument { workspace_id, .. }
+        | Envelope::DocumentOpened { workspace_id, .. }
+        | Envelope::DocumentContentWant { workspace_id, .. }
         | Envelope::HostSaid { workspace_id, .. }
-        | Envelope::RecordContentRefused { workspace_id, .. }
+        | Envelope::DocumentContentRefused { workspace_id, .. }
         | Envelope::WorkspaceBootstrap { workspace_id, .. } => *workspace_id == scope.workspace_id,
         // The session's own word on itself, which concerns no other workspace.
         Envelope::Ping | Envelope::Pong | Envelope::KeyFollower => true,
@@ -230,7 +230,9 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         | Envelope::AgentSessionAnswer { .. }
         | Envelope::AgentSessionStopped
         | Envelope::Entered(_)
-        | Envelope::FetchGrant { .. } => false,
+        | Envelope::FetchGrant { .. }
+        // The person's list is the session's own, not one workspace's.
+        | Envelope::PersonalList { .. } => false,
     }
 }
 
@@ -1845,7 +1847,7 @@ mod scheduling_tests {
         let frame = |id: u128| Envelope::Ready {
             workspace_id: tilo_relay_protocol::WorkspaceId::from_u128(id),
             pending_deltas: 0,
-            records_when_opened: false,
+            documents_when_opened: false,
         };
         let first =
             tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::State(frame(256))).unwrap();

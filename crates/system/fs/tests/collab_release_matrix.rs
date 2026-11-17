@@ -110,7 +110,7 @@ fn concurrent_structural_conflicts_preserve_sources_and_converge_after_restart()
     let source = seed
         .create_file(left_dir, "source.txt", Some(&hash(1)), 1, 1)
         .unwrap();
-    let source_record = seed.document_id_for(source).unwrap();
+    let source_document = seed.document_id_for(source).unwrap();
     let baseline = seed.save();
     let mut left = Namespace::from_bytes("move-left", &baseline).unwrap();
     let mut right = Namespace::from_bytes("move-right", &baseline).unwrap();
@@ -120,18 +120,18 @@ fn concurrent_structural_conflicts_preserve_sources_and_converge_after_restart()
     assert!(left.rename(left_parent, "source.txt", left_destination, "moved.txt", 2));
     assert!(right.rename(right_parent, "source.txt", right_parent, "renamed.txt", 2));
     let (mut moved_left, mut moved_right) =
-        converge_structural_partition(&left.save(), &right.save(), &[source_record]);
-    assert!(moved_left.ino_for_document_id(source_record).is_some());
+        converge_structural_partition(&left.save(), &right.save(), &[source_document]);
+    assert!(moved_left.ino_for_document_id(source_document).is_some());
     assert_eq!(
-        structural_projection(&mut moved_left, &[source_record]),
-        structural_projection(&mut moved_right, &[source_record])
+        structural_projection(&mut moved_left, &[source_document]),
+        structural_projection(&mut moved_right, &[source_document])
     );
 
     let mut seed = Namespace::new("structural-seed-delete").unwrap();
     let source = seed
         .create_file(ROOT_INO, "delete-me.txt", Some(&hash(2)), 1, 1)
         .unwrap();
-    let source_record = seed.document_id_for(source).unwrap();
+    let source_document = seed.document_id_for(source).unwrap();
     let baseline = seed.save();
     let mut left = Namespace::from_bytes("delete-left", &baseline).unwrap();
     let mut right = Namespace::from_bytes("delete-right", &baseline).unwrap();
@@ -139,17 +139,17 @@ fn concurrent_structural_conflicts_preserve_sources_and_converge_after_restart()
     assert!(left.remove(left_source));
     assert!(right.rename(ROOT_INO, "delete-me.txt", ROOT_INO, "renamed.txt", 2));
     let (mut deleted_left, mut deleted_right) =
-        converge_structural_partition(&left.save(), &right.save(), &[source_record]);
-    assert!(deleted_left.ino_for_document_id(source_record).is_none());
+        converge_structural_partition(&left.save(), &right.save(), &[source_document]);
+    assert!(deleted_left.ino_for_document_id(source_document).is_none());
     let deleted_id = deleted_left
         .directly_trashed()
         .into_iter()
-        .find(|id| deleted_left.document_id_for_id(id) == Some(source_record))
+        .find(|id| deleted_left.document_id_for_id(id) == Some(source_document))
         .unwrap();
     assert_eq!(deleted_left.deleted_hash(&deleted_id), Some(hash(2)));
     assert_eq!(
-        structural_projection(&mut deleted_left, &[source_record]),
-        structural_projection(&mut deleted_right, &[source_record])
+        structural_projection(&mut deleted_left, &[source_document]),
+        structural_projection(&mut deleted_right, &[source_document])
     );
 
     let mut seed = Namespace::new("structural-seed-replace").unwrap();
@@ -160,15 +160,15 @@ fn concurrent_structural_conflicts_preserve_sources_and_converge_after_restart()
     let victim = seed
         .create_file(ROOT_INO, "target.txt", Some(&hash(4)), 1, 1)
         .unwrap();
-    let source_record = seed.document_id_for(source).unwrap();
-    let victim_record = seed.document_id_for(victim).unwrap();
+    let source_document = seed.document_id_for(source).unwrap();
+    let victim_document = seed.document_id_for(victim).unwrap();
     let baseline = seed.save();
     let mut left = Namespace::from_bytes("replace-left", &baseline).unwrap();
     let mut right = Namespace::from_bytes("replace-right", &baseline).unwrap();
     let right_archive = right.lookup(ROOT_INO, "archive").unwrap().ino.0;
     assert!(left.rename(ROOT_INO, "source.txt", ROOT_INO, "target.txt", 2));
     assert!(right.rename(ROOT_INO, "target.txt", right_archive, "saved.txt", 2));
-    let records = [source_record, victim_record];
+    let records = [source_document, victim_document];
     let (mut replaced_left, mut replaced_right) =
         converge_structural_partition(&left.save(), &right.save(), &records);
     let projection = structural_projection(&mut replaced_left, &records);
@@ -179,8 +179,8 @@ fn concurrent_structural_conflicts_preserve_sources_and_converge_after_restart()
     assert!(projection.iter().all(|(_, state)| {
         state.is_some()
             || replaced_left.directly_trashed().iter().any(|id| {
-                replaced_left.document_id_for_id(id) == Some(source_record)
-                    || replaced_left.document_id_for_id(id) == Some(victim_record)
+                replaced_left.document_id_for_id(id) == Some(source_document)
+                    || replaced_left.document_id_for_id(id) == Some(victim_document)
             })
     }));
 }

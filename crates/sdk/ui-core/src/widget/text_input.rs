@@ -284,7 +284,7 @@ pub struct TextInput {
     rect: Rect,
     is_hovered: bool,
     invalid: bool,
-    change: Option<(String, String)>,
+    change: Option<(crate::component::Person, String)>,
     change_before: Option<String>,
     is_focused: bool,
     caret_paint_suppressed: bool,
@@ -1425,7 +1425,7 @@ impl TextInput {
     }
 
     #[must_use]
-    pub fn with_change(mut self, change: Option<(String, String)>) -> Self {
+    pub fn with_change(mut self, change: Option<(crate::component::Person, String)>) -> Self {
         self.change = change;
         self
     }
@@ -4183,7 +4183,7 @@ impl TextInput {
         self.secret && !self.reveal.revealed()
     }
 
-    fn display_text(&self) -> String {
+    pub(crate) fn display_text(&self) -> String {
         if self.masked() {
             "•".repeat(self.text.chars().count())
         } else {
@@ -5188,11 +5188,9 @@ impl Widget for TextInput {
         let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.control));
         if !self.plain {
             self.draw_field_chrome(scene, transform, theme, &shape);
-        } else if let Some((identity, _)) = &self.change {
+        } else if let Some((by, _)) = &self.change {
             let colors = &theme.tokens.colors;
-            let tint = colors
-                .presence
-                .hue(crate::tokens::colors::PresenceHue::of_identity(identity));
+            let tint = colors.presence.hue(by.hue);
             let ground = colors.surfaces.content;
             let wash = crate::tokens::colors::mix8(ground, tint, crate::widget::chip::TINT_FILL);
             let edge = crate::tokens::colors::mix8(ground, tint, crate::widget::chip::TINT_EDGE);
@@ -6062,7 +6060,7 @@ impl crate::presence::capability::PublishesPresence for TextInput {
         if !self.is_focused || self.holds_secret() || self.text.trim().is_empty() {
             return None;
         }
-        let (app, id, kind) = self.submit_action.as_ref()?.binding().shared_record()?;
+        let (app, id, kind) = self.submit_action.as_ref()?.binding().shared_resource()?;
         Some((
             PresenceKey::resource(app, id, kind),
             std::hash::BuildHasher::hash_one(&rustc_hash::FxBuildHasher, &self.text),

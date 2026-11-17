@@ -436,7 +436,134 @@ fn add(
     added
 }
 
+/// The sessions of people's devices on this host, each sent its person's
+/// workspace list whenever it changes: what the peer, its folders and the page
+/// read as it happens, rather than asking the host again and again.
+pub(super) struct PersonalPushes {
+    /// What names each watch, so the session ending takes its own away.
+    next: std::sync::atomic::AtomicU64,
+    sessions: std::sync::Mutex<BTreeMap<u64, Watched>>,
+    /// Told whenever a list changed, so the sessions are sent the new ones.
+    changed: Arc<tokio::sync::Notify>,
+}
+
+/// One device's session here, and where the lists its person's host keeps are
+/// pushed to it: the session's own outbound queue.
+struct Watched {
+    cert: DeviceCert,
+    outbound: tokio::sync::mpsc::Sender<crate::transport::Envelope>,
+}
+
+impl PersonalPushes {
+    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<u64, Watched>> {
+        self.sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+impl Default for PersonalPushes {
+    fn default() -> Self {
+        Self {
+            next: std::sync::atomic::AtomicU64::new(1),
+            sessions: std::sync::Mutex::default(),
+            changed: Arc::default(),
+        }
+    }
+}
+
 impl Workspaces {
+    /// Send `device`'s person's workspace list to this session of theirs
+    /// whenever it changes, answering the watch to end with
+    /// [`Self::unwatch_personal`] as the session ends.
+    pub fn watch_personal(
+        &self,
+        device: &DeviceCert,
+        outbound: tokio::sync::mpsc::Sender<crate::transport::Envelope>,
+    ) -> u64 {
+        let watch = self
+            .inner
+            .personal_pushes
+            .next
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.inner.personal_pushes.lock().insert(
+            watch,
+            Watched {
+                cert: device.clone(),
+                outbound,
+            },
+        );
+        watch
+    }
+
+    /// Stop sending the list to the session `watch` names.
+    pub fn unwatch_personal(&self, watch: u64) {
+        self.inner.personal_pushes.lock().remove(&watch);
+    }
+
+    /// A person's workspace list changed: every session of their devices is
+    /// sent the new one.
+    pub(super) fn personal_changed(&self) {
+        self.inner.personal_pushes.changed.notify_one();
+    }
+
+    /// Follow the change of every person's list: each is sent the new one, as
+    /// often as it changes.
+    pub(super) fn follow_personal_changes(&self) {
+        let workspaces = Arc::downgrade(&self.inner);
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        runtime.spawn(async move {
+            let changed = workspaces
+                .upgrade()
+                .map(|inner| Arc::clone(&inner.personal_pushes.changed));
+            let Some(changed) = changed else { return };
+            loop {
+                changed.notified().await;
+                let Some(inner) = workspaces.upgrade() else {
+                    return;
+                };
+                Self { inner }.push_personal_lists().await;
+            }
+        });
+    }
+
+    /// Send every watched session its person's workspace list as it is now.
+    async fn push_personal_lists(&self) {
+        let watched: Vec<(u64, Watched)> = {
+            let sessions = self.inner.personal_pushes.lock();
+            sessions
+                .iter()
+                .map(|(watch, session)| {
+                    (
+                        *watch,
+                        Watched {
+                            cert: session.cert.clone(),
+                            outbound: session.outbound.clone(),
+                        },
+                    )
+                })
+                .collect()
+        };
+        for (watch, session) in watched {
+            let Ok(list) = serde_json::to_vec(&self.personal_of(&session.cert).await) else {
+                continue;
+            };
+            match session
+                .outbound
+                .try_send(crate::transport::Envelope::PersonalList { list })
+            {
+                // A session already busy with an older list reads the next
+                // change's; one whose connection ended holds nothing.
+                Ok(()) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                    self.inner.personal_pushes.lock().remove(&watch);
+                }
+            }
+        }
+    }
+
     /// Keep `list` as `device`'s person's list, already permitted to.
     pub(super) fn keep_personal(
         &self,
@@ -450,6 +577,8 @@ impl Workspaces {
         self.inner
             .personal
             .keep(device, list, tilo_clock::unix_now_ns())?;
+        // Every other device of theirs reads the list it kept.
+        self.personal_changed();
         Ok(count)
     }
 
@@ -466,13 +595,16 @@ impl Workspaces {
         }
         self.inner
             .personal
-            .name_device(&device.user_public_key, key, name)
+            .name_device(&device.user_public_key, key, name)?;
+        // What every list of theirs shows the device as.
+        self.personal_changed();
+        Ok(())
     }
 
     /// Whether another device of `person`'s reads by `label`: one their record
-    /// here holds, which a revocation this host keeps has not refused. What a
-    /// computer enrolling as them is told, so it enrolls under the next free
-    /// name instead (`DEVICE_LABEL_TAKEN`).
+    /// here holds, which a revocation this host keeps has not refused. What
+    /// the host reads as it names a device pairing with them, so no two
+    /// devices of one person read alike.
     #[must_use]
     pub fn device_label_taken(&self, person: &[u8; 32], label: &str) -> bool {
         let revocations = self.revocations();
@@ -583,7 +715,7 @@ impl Workspaces {
         if device.capabilities.agent.is_some() || device.capabilities.stand_in {
             return;
         }
-        self.keep_issued_device(device);
+        self.keep_issued_device(device, "");
     }
 
     /// Keep `browser`, the tab keys a page of `device`'s person names as it
@@ -607,15 +739,45 @@ impl Workspaces {
 
     /// Add `cert`, a key its person's root just certified through this host
     /// (a pairing the root answered here, an agent's grant), to their
-    /// record: the root that signed it is on a page, which keeps no record
-    /// of its own.
-    pub fn keep_issued_device(&self, cert: &DeviceCert) {
-        if let Err(error) = self
+    /// record, named `label`: the name the host gave it, so the person's
+    /// lists show two devices set up alike apart.
+    pub fn keep_issued_device(&self, cert: &DeviceCert, label: &str) {
+        let key = hex::encode(cert.device_public_key);
+        let held = self
             .inner
             .personal
-            .add_devices(&cert.user_public_key, vec![cert.clone()])
+            .of(&cert.user_public_key)
+            .devices
+            .iter()
+            .any(|known| known.device_public_key == cert.device_public_key);
+        if !held {
+            let added = self
+                .inner
+                .personal
+                .add_devices(&cert.user_public_key, vec![cert.clone()]);
+            match added {
+                Ok(()) => self.personal_changed(),
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "a key the person's root certified here is not in their record"
+                    );
+                    return;
+                }
+            }
+        }
+        if label.is_empty() || cert.capabilities.agent.is_some() || cert.capabilities.stand_in {
+            return;
+        }
+        match self
+            .inner
+            .personal
+            .name_device(&cert.user_public_key, &key, label)
         {
-            tracing::warn!(%error, "a key the person's root certified here is not in their record");
+            Ok(()) => self.personal_changed(),
+            Err(error) => {
+                tracing::warn!(%error, "a device the host named is not named in the person's record");
+            }
         }
     }
 

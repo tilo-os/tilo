@@ -1,7 +1,7 @@
 //! The workspace records the session itself reads and writes — Chat's record of a workspace's
 //! agents, its emoji and its conversations — held as the workspace's own copy of them: the
 //! engine's, which every app of the workspace, the person's other devices and the index read.
-//! The session opens them as any app's window opens a workspace record ([`WorkspaceRecords`]),
+//! The session opens them as any app's window opens a workspace record ([`WorkspaceResources`]),
 //! over stores kept in memory and replicated with the engine the way a page replicates its
 //! records with its workspace: what the engine holds is merged into the stores, and what the
 //! session changes in them is written into the engine — sealed where the workspace's records are
@@ -19,8 +19,8 @@ use tilo_automerge::ApplyIncoming as _;
 use tilo_broker_core::custody::OwnerCustody as _;
 use tilo_desktop_model::WorkspaceId;
 use ui::permissions::MemberId;
-use ui::record::workspace::WorkspaceRecords;
-use ui::record::{RecordOwners, RecordStore, RecordSync};
+use ui::resource::workspace::WorkspaceResources;
+use ui::resource::{DocumentSync, ResourceOwners, ResourceStore};
 
 use crate::engine::{Engine, SealKeys};
 use crate::engine_write::{Writing, Written};
@@ -32,15 +32,15 @@ pub(crate) struct EngineRecords(Rc<Inner>);
 
 struct Inner {
     store: Rc<MemoryStore>,
-    owners: RecordOwners,
+    owners: ResourceOwners,
     /// The workspaces' copy, once the session holds one.
     engine: RefCell<Option<Arc<Engine>>>,
     /// Where a write reaches this device's apps, as a member's write does.
     apps: RefCell<Option<crate::sync::PeerDocuments>>,
     /// The store of each app's records in each workspace, by workspace and app, as handed out.
-    stores: RefCell<BTreeMap<(String, String), RecordStore>>,
+    stores: RefCell<BTreeMap<(String, String), ResourceStore>>,
     /// Each record's replication with the engine, by workspace, app and wire record.
-    replicas: RefCell<HashMap<RecordKey, Replica>>,
+    replicas: RefCell<HashMap<DocumentKey, Replica>>,
     /// The workspaces whose records moved in the engine, told as each one does.
     moved: RefCell<Option<mpsc::Receiver<crate::platform::records::Changed>>>,
     /// The stores, by workspace and app, the session wrote to since their changes were last
@@ -53,18 +53,18 @@ struct Inner {
     keeping: Cell<bool>,
     /// The writes under way, by workspace, app and wire record, with the heads each one writes up
     /// to: a record is written again once its write is done.
-    writing: RefCell<HashMap<RecordKey, (Writing, Vec<automerge::ChangeHash>)>>,
+    writing: RefCell<HashMap<DocumentKey, (Writing, Vec<automerge::ChangeHash>)>>,
     /// The records the session's services keep as an app's window keeps them — a tilolang app's
     /// record, a document of the app's own — by workspace, app and wire record: each the one
     /// document the service runs over, replicated with the engine here.
-    documents: RefCell<HashMap<RecordKey, Document>>,
+    documents: RefCell<HashMap<DocumentKey, Document>>,
     /// Wakes the session's loop when the session wrote to a record, so the write reaches the
     /// engine on the next pass.
     wake: tilo_service::Wake,
 }
 
 /// A record, by workspace, app and wire record.
-type RecordKey = (String, String, String);
+type DocumentKey = (String, String, String);
 
 /// An app's record a service of the session runs over, as the engine and the service hold it.
 struct Document {
@@ -83,7 +83,7 @@ struct Document {
 
 /// One record as the engine and this copy hold it.
 struct Replica {
-    sync: RecordSync,
+    sync: DocumentSync,
     /// The revision of the engine's copy last merged here.
     revision: Option<[u8; 32]>,
 }
@@ -102,7 +102,7 @@ impl EngineRecords {
                 }
             })));
             Inner {
-                owners: RecordOwners::with_store(
+                owners: ResourceOwners::with_store(
                     Rc::clone(&store) as Rc<dyn durable_store::DurableStore>
                 ),
                 store,
@@ -198,10 +198,10 @@ impl EngineRecords {
     }
 
     /// The records of `workspace` , opened as `author` .
-    pub(crate) fn in_workspace(&self, workspace: &str, author: MemberId) -> WorkspaceRecords {
+    pub(crate) fn in_workspace(&self, workspace: &str, author: MemberId) -> WorkspaceResources {
         let inner = Rc::clone(&self.0);
         let workspace = workspace.to_owned();
-        WorkspaceRecords::new(author, move |app| inner.store_of(&workspace, app))
+        WorkspaceResources::new(author, move |app| inner.store_of(&workspace, app))
     }
 
     /// Take in what moved in the engine in the workspaces the session's copies hold, and what it
@@ -279,7 +279,7 @@ impl Inner {
         &self,
         workspace: &str,
         app: &str,
-    ) -> Result<RecordStore, ui::record::RecordOpenError> {
+    ) -> Result<ResourceStore, ui::resource::ResourceOpenError> {
         let key = (workspace.to_owned(), app.to_owned());
         if let Some(store) = self.stores.borrow().get(&key) {
             return Ok(store.clone());
@@ -322,7 +322,7 @@ impl Inner {
                 Ok(Some((bytes, revision))) => {
                     let mut replicas = self.replicas.borrow_mut();
                     let replica = replicas.entry(key.clone()).or_insert_with(|| Replica {
-                        sync: RecordSync::delivered(heads_of(&bytes)),
+                        sync: DocumentSync::delivered(heads_of(&bytes)),
                         revision: None,
                     });
                     replica.revision = Some(revision);
@@ -343,7 +343,7 @@ impl Inner {
                 }
             };
             let open = store
-                .open_records()
+                .open_resources()
                 .into_iter()
                 .find(|checkout| checkout.id.route() == record);
             let taken = if let Some(checkout) = open {
@@ -372,7 +372,7 @@ impl Inner {
     /// Take what the engine holds of the documents kept in `workspace` (every workspace's, `None`)
     /// into them.
     fn read_documents(&self, workspace: Option<&str>) {
-        let keys: Vec<RecordKey> = self
+        let keys: Vec<DocumentKey> = self
             .documents
             .borrow()
             .keys()
@@ -386,7 +386,7 @@ impl Inner {
 
     /// [`Self::read_documents`] of the documents the engine was never read for yet.
     fn read_documents_unsynced(&self) {
-        let keys: Vec<RecordKey> = self
+        let keys: Vec<DocumentKey> = self
             .documents
             .borrow()
             .iter()
@@ -401,12 +401,12 @@ impl Inner {
     /// Take what the engine holds of the document `key` into it: the first time, the record the
     /// workspace holds takes the place of what the document was handed over with, while nothing
     /// was written in it since; anything else is merged.
-    fn read_document(&self, key: &RecordKey) {
+    fn read_document(&self, key: &DocumentKey) {
         let Some(engine) = self.engine.borrow().clone() else {
             return;
         };
         let (workspace, app, record) = key;
-        if !engine.holds_record(workspace, app, record) {
+        if !engine.holds_resource(workspace, app, record) {
             return;
         }
         let known = self
@@ -459,7 +459,7 @@ impl Inner {
     /// wait for a later pass.
     fn write_documents(&self, engine: &Arc<Engine>) -> BTreeSet<(String, String)> {
         let mut unwritten = BTreeSet::new();
-        let keys: Vec<RecordKey> = self.documents.borrow().keys().cloned().collect();
+        let keys: Vec<DocumentKey> = self.documents.borrow().keys().cloned().collect();
         for key in keys {
             let (workspace, app, record) = &key;
             let Some(room) = WorkspaceId::parse(workspace) else {
@@ -480,7 +480,7 @@ impl Inner {
                     Some(synced) => (doc.save_after(synced), false, heads),
                     // A record the workspace holds is written once it was read here: one never
                     // read is founded by this write, never over what the workspace holds.
-                    None if engine.holds_record(workspace, app, record) => {
+                    None if engine.holds_resource(workspace, app, record) => {
                         unwritten.insert((workspace.clone(), app.clone()));
                         continue;
                     }
@@ -507,7 +507,7 @@ impl Inner {
             let mut writing = Writing::write(Arc::clone(&self.wake), async move {
                 let route = (route.0.as_str(), route.1.as_str());
                 engine
-                    .write_record(room, route, &changes, founding, sealed.as_ref())
+                    .write_resource(room, route, &changes, founding, sealed.as_ref())
                     .await
             });
             match writing.done() {
@@ -552,7 +552,7 @@ impl Inner {
         let mut written = std::mem::take(&mut *self.written.borrow_mut());
         written.extend(self.settle_writes());
         let mut unwritten = BTreeSet::new();
-        let stores: Vec<((String, String), RecordStore)> = self
+        let stores: Vec<((String, String), ResourceStore)> = self
             .stores
             .borrow()
             .iter()
@@ -563,7 +563,7 @@ impl Inner {
             let Some(room) = WorkspaceId::parse(&workspace) else {
                 continue;
             };
-            for checkout in store.open_records() {
+            for checkout in store.open_resources() {
                 let record = checkout.id.route().to_owned();
                 let key = (workspace.clone(), app.clone(), record.clone());
                 // One write of a record at a time: the next takes what it leaves.
@@ -574,12 +574,13 @@ impl Inner {
                 let mut replicas = self.replicas.borrow_mut();
                 // A record the engine holds is written once its copy was read here: one this copy
                 // never read is founded by this write, never over what the workspace holds.
-                if !replicas.contains_key(&key) && engine.holds_record(&workspace, &app, &record) {
+                if !replicas.contains_key(&key) && engine.holds_resource(&workspace, &app, &record)
+                {
                     unwritten.insert((workspace.clone(), app.clone()));
                     continue;
                 }
                 let replica = replicas.entry(key.clone()).or_insert_with(|| Replica {
-                    sync: RecordSync::new(),
+                    sync: DocumentSync::new(),
                     revision: None,
                 });
                 let next = match replica.sync.take_outbound(&store, &checkout.id) {
@@ -617,7 +618,7 @@ impl Inner {
                 let mut writing = Writing::write(Arc::clone(&self.wake), async move {
                     let route = (route.0.as_str(), route.1.as_str());
                     engine
-                        .write_record(room, route, &changes, founding, sealed.as_ref())
+                        .write_resource(room, route, &changes, founding, sealed.as_ref())
                         .await
                 });
                 match writing.done() {
@@ -664,7 +665,7 @@ impl Inner {
     /// the workspace took, and this device's apps hear it. Answers whether it took it.
     fn written(
         &self,
-        (workspace, app, record): &RecordKey,
+        (workspace, app, record): &DocumentKey,
         written: Written,
         heads: Vec<automerge::ChangeHash>,
     ) -> bool {
@@ -710,7 +711,7 @@ impl crate::Shared {
         }
         let earlier = tilo_action_policy::earlier::held();
         for record in records {
-            let under = earlier.records_under(&record.app);
+            let under = earlier.documents_under(&record.app);
             self.records
                 .keep_document(&workspace, (under, &record.id), record.document);
         }

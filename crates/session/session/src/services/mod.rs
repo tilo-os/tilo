@@ -29,7 +29,7 @@ use std::time::Duration;
 use serde_json::{Map, Value};
 use settings_sections::network_usage::{ConnectionKind, Reading};
 use tilo_identity_host::broker::{
-    GroupKeySource, IdentityBrokerHandle, PersonRecordKinds, WorkspaceMembership,
+    GroupKeySource, IdentityBrokerHandle, PersonResourceTypes, WorkspaceMembership,
 };
 use tilo_portal::PortalCaller;
 use tilo_service::{Questions, Services};
@@ -360,17 +360,17 @@ impl InstalledApps {
     }
 }
 
-impl PersonRecordKinds for InstalledApps {
-    fn person_record_kinds(&self, app_id: &str) -> Vec<String> {
-        tilo_action_broker::SurfacePersonRecords.person_record_kinds(app_id)
+impl PersonResourceTypes for InstalledApps {
+    fn person_resource_types(&self, app_id: &str) -> Vec<String> {
+        tilo_action_broker::SurfacePersonDocuments.person_resource_types(app_id)
     }
 
     fn earlier_ids(&self, app_id: &str) -> Vec<String> {
         self.earlier.of(app_id).to_vec()
     }
 
-    fn reads_records_of(&self, reader: &str, owner: &str) -> bool {
-        tilo_action_broker::SurfacePersonRecords.reads_records_of(reader, owner)
+    fn reads_documents_of(&self, reader: &str, owner: &str) -> bool {
+        tilo_action_broker::SurfacePersonDocuments.reads_documents_of(reader, owner)
     }
 }
 

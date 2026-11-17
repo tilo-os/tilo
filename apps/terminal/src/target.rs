@@ -177,7 +177,7 @@ impl RecentEnvironments {
 
 #[derive(Clone, Default)]
 pub struct RecentTarget {
-    record: Option<(ui::framework::PersonRecord<RecentEnvironments>, String)>,
+    record: Option<(ui::framework::PersonResource<RecentEnvironments>, String)>,
 }
 
 impl std::fmt::Debug for RecentTarget {
@@ -189,8 +189,8 @@ impl std::fmt::Debug for RecentTarget {
 }
 
 impl RecentTarget {
-    pub fn in_record(
-        record: ui::framework::PersonRecord<RecentEnvironments>,
+    pub fn in_resource(
+        record: ui::framework::PersonResource<RecentEnvironments>,
         device: impl Into<String>,
     ) -> Self {
         Self {
@@ -326,7 +326,7 @@ mod tests {
     fn a_new_tab_opens_the_most_recent_environment_and_never_the_host_by_habit() {
         let mut app = ui::framework::testing::TestApp::<crate::TerminalShell>::new().unwrap();
         let recent =
-            RecentTarget::in_record(app.person::<RecentEnvironments>().unwrap(), "test-device");
+            RecentTarget::in_resource(app.person::<RecentEnvironments>().unwrap(), "test-device");
         assert_eq!(recent.load(), None);
         assert_eq!(
             default_target(recent.load().as_ref(), true),

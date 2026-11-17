@@ -161,7 +161,7 @@ impl BrokerChannels {
     /// the op is still delivered live. The caller syncs what this wrote once
     /// it has released the channels' lock, and before it delivers the op
     /// ([`Unsynced`]).
-    pub fn record_history(&mut self, route: &crate::route::CrdtRoute, op: &SignedOp) -> Unsynced {
+    pub fn document_history(&mut self, route: &crate::route::CrdtRoute, op: &SignedOp) -> Unsynced {
         if self.routes.get(&op.artifact) != Some(route) {
             self.routes.insert(op.artifact, route.clone());
         }
@@ -170,11 +170,11 @@ impl BrokerChannels {
         };
         let mut unsynced = Unsynced::default();
         if crate::collab_history::CollabHistoryStore::retains(op) {
-            match history.bind_record(
+            match history.bind_document(
                 op.artifact,
                 &route.cluster_id,
                 &route.app_id,
-                &route.record_id,
+                &route.document_id,
             ) {
                 Ok(binding) => unsynced = unsynced.join(binding),
                 Err(error) => {
@@ -241,14 +241,14 @@ impl BrokerChannels {
     /// The records of trees ([`collab_types::document::DocumentId::tree`]: a chain's
     /// parts, a container's children) of the app `subscriber` names in its
     /// workspace that this device holds: ops of them were admitted here this
-    /// session ([`Self::record_history`]), or their history is kept on disk
+    /// session ([`Self::document_history`]), or their history is kept on disk
     /// from an earlier one. An app window that subscribes is told them, so
     /// it holds what its workspace held before it ran, such as a chat's messages
     /// a joining device was replayed before any Chat window was open. Empty
     /// for a route that is not an app's in a workspace.
     pub fn tree_records_held(&mut self, subscriber: &crate::route::CrdtRoute) -> Vec<String> {
         if subscriber.app_id.is_empty()
-            || !subscriber.record_id.is_empty()
+            || !subscriber.document_id.is_empty()
             || !crate::route::CrdtRoute::is_addressable(&subscriber.cluster_id)
         {
             return Vec::new();
@@ -258,7 +258,7 @@ impl BrokerChannels {
             .routes
             .values()
             .filter(|route| route.app_id == *app_id && route.cluster_id == *workspace)
-            .map(|route| route.record_id.clone());
+            .map(|route| route.document_id.clone());
         let kept = self
             .history
             .as_mut()

@@ -128,10 +128,12 @@ async fn root_holder_certifies_a_browser_device_through_the_host() {
     let CertificationOutcome::Issued {
         cert: issued,
         host_cert,
+        label,
     } = waiting.await.unwrap().unwrap()
     else {
         panic!("the browser was not certified");
     };
+    assert_eq!(label, "Browser", "the host keeps the name it was asked for");
     assert_eq!(issued, cert);
     assert!(host_cert.capabilities.can_own_workspaces);
     assert!(!issued.capabilities.can_admit_devices);
@@ -154,6 +156,57 @@ async fn root_holder_certifies_a_browser_device_through_the_host() {
     assert_eq!(
         client.relay_peer.device_public_key,
         host_cert.device_public_key
+    );
+    approver.close();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_devices_asking_under_one_name_are_named_apart() {
+    let user = TestUser::fresh("Ada");
+    let laptop = user.enrol("laptop", DeviceCapabilities::primary());
+    let (relay, _tmp) = start_relay(&user, RevocationList::new()).await;
+    let host = relay.node_addr();
+    let approver_endpoint = client_endpoint().await;
+    let mut approver = Approver::connect(
+        &approver_endpoint,
+        host.clone(),
+        laptop.cert.clone(),
+        &laptop.sk,
+        &RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    let mut named = Vec::new();
+    for _ in 0..2 {
+        let browser_key = SigningKey::generate(&mut UnwrapErr(SysRng));
+        let request = browser_request(user.user_pk, &browser_key);
+        let browser_endpoint = client_endpoint().await;
+        let waiting = tokio::spawn({
+            let host = host.clone();
+            async move { request_certification(&browser_endpoint, host, request, |_| {}).await }
+        });
+        let pending = one_pending(&mut approver).await;
+        let cert = issue_device_cert(
+            &pending.request,
+            &user.user_sk,
+            &CertificationPolicy::browser(),
+            &RevocationList::new(),
+            tilo_clock::unix_now_ns(),
+        )
+        .unwrap();
+        approver
+            .decide(pending.request_digest, ApproverDecision::Issue(cert))
+            .await
+            .unwrap();
+        let CertificationOutcome::Issued { label, .. } = waiting.await.unwrap().unwrap() else {
+            panic!("the browser was not certified");
+        };
+        named.push(label);
+    }
+    assert_eq!(
+        named,
+        vec!["Browser".to_owned(), "Browser 2".to_owned()],
+        "the host answers each device the name it gave it, two devices set up alike apart"
     );
     approver.close();
 }

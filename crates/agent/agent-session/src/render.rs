@@ -455,7 +455,7 @@ impl Snapshot {
             .ok_or("the record is not held")?;
         let project = project.map_err(|error| format!("the timeline does not read: {error}"))?;
         Ok(Self {
-            record: record.record_id().as_str().to_owned(),
+            record: record.document_id().as_str().to_owned(),
             heads,
             bytes,
             project,

@@ -7,7 +7,7 @@ use std::rc::{Rc, Weak};
 
 use tilo_resource::Resource;
 use ui_core::LocalState;
-use ui_core::record::RecordSaveStatus;
+use ui_core::resource::ResourceSaveStatus;
 
 use super::dispatch::Dispatcher;
 use super::effect::{EffectAnswer, EffectCx, Effects, Projection};
@@ -17,11 +17,11 @@ use super::settings::{Setting, ViewStorage};
 
 /// The record, run and storage a view or surface works in. See the module
 /// docs.
-pub struct RecordEnv<R: Resource> {
+pub struct ResourceEnv<R: Resource> {
     pub(crate) live: Live<R>,
     pub(crate) alive: Weak<()>,
     pub(crate) dispatch: Dispatcher<R>,
-    pub(crate) saved: LocalState<RecordSaveStatus>,
+    pub(crate) saved: LocalState<ResourceSaveStatus>,
     pub(crate) saves: super::saves::Saves,
     pub(crate) run: Run,
     pub(crate) storage: Rc<ViewStorage>,
@@ -29,10 +29,10 @@ pub struct RecordEnv<R: Resource> {
 }
 
 /// One of the documents the app's workspace holds, as the app's windows show
-/// them ([`RecordEnv::window_documents`]).
+/// them ([`ResourceEnv::window_documents`]).
 pub struct WindowDocument<R: Resource> {
     /// The record it is.
-    pub record: ui_core::record::DocumentId,
+    pub record: ui_core::resource::DocumentId,
     /// What it holds, as last kept.
     pub state: Rc<R::State>,
     /// What the workspace's index calls it, when it names it: a document an
@@ -45,7 +45,7 @@ pub struct WindowDocument<R: Resource> {
 }
 
 impl<R: Resource> WindowDocument<R> {
-    /// The launch argument naming it, for [`RecordEnv::open_here`].
+    /// The launch argument naming it, for [`ResourceEnv::open_here`].
     pub fn uri(&self) -> String {
         self.record.uri()
     }
@@ -62,7 +62,7 @@ impl<R: Resource> Clone for WindowDocument<R> {
     }
 }
 
-impl<R: Resource> Clone for RecordEnv<R> {
+impl<R: Resource> Clone for ResourceEnv<R> {
     fn clone(&self) -> Self {
         let Shared {
             alive,
@@ -88,11 +88,11 @@ impl<R: Resource> Clone for RecordEnv<R> {
     }
 }
 
-/// What a [`RecordEnv`] holds that does not name its resource type, cloned
+/// What a [`ResourceEnv`] holds that does not name its resource type, cloned
 /// here once rather than in every app's clone of it.
 struct Shared {
     alive: Weak<()>,
-    saved: LocalState<RecordSaveStatus>,
+    saved: LocalState<ResourceSaveStatus>,
     saves: super::saves::Saves,
     run: Run,
     storage: Rc<ViewStorage>,
@@ -102,7 +102,7 @@ impl Shared {
     #[inline(never)]
     fn of(
         alive: &Weak<()>,
-        status: &LocalState<RecordSaveStatus>,
+        status: &LocalState<ResourceSaveStatus>,
         (saves, run, storage): (&super::saves::Saves, &Run, &Rc<ViewStorage>),
     ) -> Self {
         Self {
@@ -115,7 +115,7 @@ impl Shared {
     }
 }
 
-impl<R: Resource> RecordEnv<R> {
+impl<R: Resource> ResourceEnv<R> {
     /// Wakes the app from another thread — a worker's result, a socket's
     /// message — so the window syncs and draws it without waiting for
     /// input.
@@ -135,7 +135,7 @@ impl<R: Resource> RecordEnv<R> {
 
     /// Open, in this window and in place of the record it shows, what a
     /// launch of the app naming `arguments` opens: the record
-    /// [`ResourceApp::launch_record`](super::ResourceApp::launch_record)
+    /// [`ResourceApp::launch_resource`](super::ResourceApp::launch_resource)
     /// names, with its launch actions — the document a person chose with
     /// the app's own Open. The window's view is rebuilt for that record on
     /// the next frame. Refused in a past version and a capture.
@@ -151,7 +151,7 @@ impl<R: Resource> RecordEnv<R> {
     /// The host-owned identity of the record this window shows. A durable
     /// activation link can name it without relying on the last-open window.
     /// Absent in a historical view that cannot launch live work.
-    pub fn record_id(&self) -> Option<&ui_core::record::DocumentId> {
+    pub fn document_id(&self) -> Option<&ui_core::resource::DocumentId> {
         self.run.launched.record.as_ref()
     }
 
@@ -181,10 +181,10 @@ impl<R: Resource> RecordEnv<R> {
         let Some(store) = self.storage.workspace_store() else {
             return Vec::new();
         };
-        let kind = ui_core::record::ResourceType::new(R::KIND);
+        let kind = ui_core::resource::ResourceType::new(R::KIND);
         let shown = self.run.launched.record.as_ref();
         let mut documents: Vec<WindowDocument<R>> = store
-            .workspace_records(&kind)
+            .workspace_resources(&kind)
             .into_iter()
             .filter(|(record, _, _)| Some(record) != shown)
             .filter_map(|(record, mut doc, name)| {
@@ -213,7 +213,7 @@ impl<R: Resource> RecordEnv<R> {
         documents
     }
 
-    /// The names of the participants, for showing the ids actions record
+    /// The names of the members, for showing the ids actions record
     /// ([`People::name`](super::People::name)).
     pub fn people(&self) -> super::People {
         self.run.people.clone()
@@ -252,7 +252,7 @@ impl<R: Resource> RecordEnv<R> {
     /// people share. `P`'s base is the type of `beside`'s record.
     pub fn chain_beside<P: super::Chained<Base = R>>(
         &self,
-        beside: &super::WorkspaceRecord<R>,
+        beside: &super::WorkspaceResource<R>,
     ) -> Option<super::Chain<P>> {
         let live = beside.live();
         let state = self
@@ -270,7 +270,7 @@ impl<R: Resource> RecordEnv<R> {
         let me = self.dispatch.me()?.clone();
         let dispatch = super::chain::dispatching(&state, &me, |apply| {
             self.dispatch
-                .for_workspace_record::<P>(state.id(), self.dispatch.is_past(), apply)
+                .for_workspace_resource::<P>(state.id(), self.dispatch.is_past(), apply)
         });
         Some(super::Chain::new(state, dispatch))
     }
@@ -279,14 +279,14 @@ impl<R: Resource> RecordEnv<R> {
     /// each a record of its own, read as they change, with the one
     /// lifecycle every container has. `None` in a view of a past version,
     /// or where `C`'s parent is not this record's resource.
-    pub fn children<C: super::ChildRecord<Parent = R>>(&self) -> Option<super::Children<C>> {
+    pub fn children<C: super::ChildResource<Parent = R>>(&self) -> Option<super::Children<C>> {
         let live = self.live.clone();
         let state = self.storage.children::<C>(move || live.get())?;
         let me = self.dispatch.me()?.clone();
         Some(super::Children::new(state, me).dispatching(&self.dispatch))
     }
 
-    /// Who this view is for: the participant reading and editing through
+    /// Who this view is for: the member reading and editing through
     /// it, the same id an action they invoke reads as its author
     /// ([`ActionCx::author`](tilo_resource::ActionCx::author)). Compare the
     /// authors the resource records with it ("your message", "you reacted")
@@ -304,9 +304,9 @@ impl<R: Resource> RecordEnv<R> {
         self.dispatch.is_past()
     }
 
-    /// Whether this participant may only view, when the view is built.
+    /// Whether this member may only view, when the view is built.
     /// Bound controls already follow permission changes on their own; to show
-    /// or disable something else while the participant may only view, bind to
+    /// or disable something else while the member may only view, bind to
     /// [`ViewCx::read_only_state`](super::ViewCx::read_only_state), which follows role changes while the app
     /// runs.
     pub fn read_only(&self) -> bool {
@@ -318,7 +318,7 @@ impl<R: Resource> RecordEnv<R> {
     /// says what there is to say (a save that stalls or fails, and the
     /// document's unsaved mark then): never show this as "Saving…" or
     /// "Saved", nor mark the document edited from it.
-    pub fn save_status(&self) -> LocalState<RecordSaveStatus> {
+    pub fn save_status(&self) -> LocalState<ResourceSaveStatus> {
         self.saved.clone()
     }
 
@@ -338,7 +338,7 @@ impl<R: Resource> RecordEnv<R> {
         }
         self.storage
             .workspace_store()
-            .map(ui_core::record::RecordStore::home)
+            .map(ui_core::resource::ResourceStore::home)
     }
 
     /// What the view is built for: a window someone uses, a past version in
@@ -437,6 +437,15 @@ impl<R: Resource> RecordEnv<R> {
         self.run.private
     }
 
+    /// Whether this is a view another app's window embeds
+    /// ([`ui_core::window_share`]) and not a window of its own: it stands
+    /// inside that window, which has the bar, so it shows the one thing it
+    /// was opened on and nothing to move elsewhere from (no list of the
+    /// record's other items, no title of its own).
+    pub fn is_embedded(&self) -> bool {
+        self.run.embedded
+    }
+
     /// The app's typed settings of type `S`, kept current while this scope
     /// lives. `S` declares whether they follow the person or stay on the
     /// device ([`Scope`](ui_core::storage::Scope)).
@@ -495,12 +504,12 @@ impl<R: Resource> RecordEnv<R> {
         }
     }
 
-    /// The app's record of `P` ([`PersonRecord`](super::PersonRecord)):
+    /// The app's record of `P` ([`PersonResource`](super::PersonResource)):
     /// one per kind, kept with the app's other records in the workspace it
     /// is open in and synced with it. `None` where the host keeps no such
     /// records (a view of a past version, a private window) or the record
     /// cannot be opened.
-    pub fn person<P: Resource>(&self) -> Option<super::PersonRecord<P>> {
+    pub fn person<P: Resource>(&self) -> Option<super::PersonResource<P>> {
         self.storage.person::<P>()
     }
 
@@ -512,7 +521,7 @@ impl<R: Resource> RecordEnv<R> {
     pub fn shared_workspace<P: Resource>(
         &self,
         owner: &'static str,
-    ) -> Option<super::WorkspaceRecord<P>> {
+    ) -> Option<super::WorkspaceResource<P>> {
         self.storage.shared_workspace::<P>(owner)
     }
 
@@ -523,21 +532,23 @@ impl<R: Resource> RecordEnv<R> {
     /// change. `None` where the host keeps no records in a workspace (a view
     /// of a past version), for an id that names no record, or where it
     /// cannot be opened.
-    pub fn shared_record<P: Resource>(
+    pub fn shared_resource<P: Resource>(
         &self,
         owner: &'static str,
         id: &str,
-    ) -> Option<super::WorkspaceRecord<P>> {
-        self.storage.shared_record::<P>(owner, id)
+    ) -> Option<super::WorkspaceResource<P>> {
+        self.storage.shared_resource::<P>(owner, id)
     }
 
     /// The person's record `P` that one app keeps for all of theirs — their
     /// accounts, which Settings keeps: the same record on every device, held
     /// here too and converging with the keeper's. Changed only by its owner
-    /// and editors ([`SharedRecord`](tilo_resource::SharedRecord),
-    /// [`PersonRecord::editable`](super::PersonRecord::editable)); its owner
+    /// and editors ([`SharedResource`](tilo_resource::SharedResource),
+    /// [`PersonResource::editable`](super::PersonResource::editable)); its owner
     /// opens it here too.
-    pub fn shared_person<P: tilo_resource::SharedRecord>(&self) -> Option<super::PersonRecord<P>> {
+    pub fn shared_person<P: tilo_resource::SharedResource>(
+        &self,
+    ) -> Option<super::PersonResource<P>> {
         self.storage.shared_person::<P>()
     }
 

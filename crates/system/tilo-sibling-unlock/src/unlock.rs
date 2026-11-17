@@ -157,6 +157,7 @@ mod tests {
             device_half: "11".repeat(HALF_LEN),
             boot_secret: "22".repeat(HALF_LEN),
             networks: vec![],
+            attestation: None,
         }
     }
 

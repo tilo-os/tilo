@@ -378,6 +378,12 @@ pub fn get_children(surface: &WlSurface) -> Vec<WlSurface> {
     PrivateSurfaceData::get_children(surface)
 }
 
+/// Retrieve a parent surface's whole stack in drawing order, the parent included at its place:
+/// everything before it draws below it, everything after above.
+pub fn children_in_stack_order(surface: &WlSurface) -> Vec<WlSurface> {
+    PrivateSurfaceData::children_in_stack_order(surface)
+}
+
 /// Check if this subsurface is a synchronized subsurface
 pub fn is_sync_subsurface(surface: &WlSurface) -> bool {
     self::handlers::is_effectively_sync(surface)

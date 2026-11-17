@@ -7,14 +7,14 @@ pub(in crate::state) fn document_read(
     authority: &Authority<'_>,
     workspace: &str,
     (app, record): (&str, &str),
-    own: Option<&collab_types::OwnRecord>,
+    own: Option<&collab_types::OwnResource>,
     now: SystemTime,
 ) -> bool {
     // A member's own record is read by its person alone.
-    let person = own.map(collab_types::OwnRecord::person);
+    let person = own.map(collab_types::OwnResource::person);
     let mut cx = tilo_action_policy::Context::at_time(now);
     if let Some(person) = &person {
-        cx = cx.with_own_record(record, person);
+        cx = cx.with_own_resource(record, person);
     }
     authority
         .decide(

@@ -10,8 +10,8 @@ use tilo_actions::InvocationUpdate;
 use tilo_actions::outcome::InvocationId;
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, Confirmation,
-    InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, ReceiptStatus, RecordReadRequest,
-    RemoteActionMessage, RemoteActionTarget, UpdateMark, serve,
+    InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, ReceiptStatus, RemoteActionMessage,
+    RemoteActionTarget, ResourceReadRequest, UpdateMark, serve,
 };
 
 use crate::arriving::{Arrival, ArrivalWriter, Arriving, Source};
@@ -66,7 +66,7 @@ pub type InvocationCall = Arriving<InvocationUpdate, ActionHostError>;
 pub type CancellationCall = Arriving<(), ActionHostError>;
 /// A record read: the readings as every reader is answered them (`{"revision", "records": [{"record",
 /// "value" | "absent" | "arriving"}]}`).
-pub type RecordReadCall = Arriving<serde_json::Value, ActionHostError>;
+pub type ResourceReadCall = Arriving<serde_json::Value, ActionHostError>;
 
 impl Arrival<InvocationUpdate, ActionHostError> {
     /// Whether the invocation can no longer change: refused, or finished.
@@ -424,11 +424,11 @@ impl RemoteActions {
     /// continuing `on_behalf_of`, an invocation the host delivered here: the host decides it as that
     /// invocation's caller.
     #[must_use]
-    pub fn read_record(
+    pub fn read_resource(
         &self,
         on_behalf_of: Option<InvocationId>,
-        read: RecordReadRequest,
-    ) -> RecordReadCall {
+        read: ResourceReadRequest,
+    ) -> ResourceReadCall {
         let answer = Arriving::pending(self.source());
         let correlation = {
             let mut inner = self.lock();
@@ -437,7 +437,7 @@ impl RemoteActions {
             inner.reads.insert(correlation, answer.writer());
             correlation
         };
-        self.send(RemoteActionMessage::RecordRead {
+        self.send(RemoteActionMessage::ResourceRead {
             correlation,
             on_behalf_of,
             read,
@@ -663,7 +663,7 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
             answer.writer().finish(result);
             None
         }
-        RemoteActionMessage::RecordReading {
+        RemoteActionMessage::ResourceReading {
             correlation,
             result,
         } => {
@@ -682,9 +682,9 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
         | RemoteActionMessage::Invoke(_)
         | RemoteActionMessage::Observe { .. }
         | RemoteActionMessage::Cancel { .. }
-        | RemoteActionMessage::RecordRead { .. }
-        | RemoteActionMessage::RetiredRecordRequest
-        | RemoteActionMessage::RetiredRecordResponse
+        | RemoteActionMessage::ResourceRead { .. }
+        | RemoteActionMessage::RetiredResourceRequest
+        | RemoteActionMessage::RetiredResourceResponse
         | RemoteActionMessage::FeedbackRequest { .. }
         | RemoteActionMessage::FeedbackResponse { .. }
         | RemoteActionMessage::ConfirmationRequest { .. }
@@ -703,6 +703,8 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
         | RemoteActionMessage::SearchResponse { .. }
         | RemoteActionMessage::ChangesRequest { .. }
         | RemoteActionMessage::ChangesResponse { .. }
+        | RemoteActionMessage::ChangedRequest { .. }
+        | RemoteActionMessage::ChangedResponse { .. }
         | RemoteActionMessage::CatalogueChanged { .. } => None,
     }
 }

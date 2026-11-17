@@ -287,7 +287,7 @@ impl CollabClient {
         self.join_channel_as(channel_id, identity, "").await
     }
 
-    /// Join a channel while announcing the participant's display handle.
+    /// Join a channel while announcing the member's display handle.
     ///
     /// # Errors
     ///
@@ -296,14 +296,14 @@ impl CollabClient {
         &self,
         channel_id: &str,
         identity: &[u8],
-        participant_handle: &str,
+        member_handle: &str,
     ) -> Result<ChannelHandle, NotAvailable> {
-        self.join_channel_as_kind(channel_id, identity, participant_handle, "person", "")
+        self.join_channel_as_kind(channel_id, identity, member_handle, "person", "")
             .await
     }
 
     /// Join as an explicitly typed member (`person`, or `agent` with the
-    /// agent's id as the handle). `record_kind` names the resource kind of the
+    /// agent's id as the handle). `resource_type` names the resource kind of the
     /// record the channel carries, or is empty.
     ///
     /// # Errors
@@ -313,12 +313,12 @@ impl CollabClient {
         &self,
         channel_id: &str,
         identity: &[u8],
-        participant_handle: &str,
-        participant_kind: &str,
-        record_kind: &str,
+        member_handle: &str,
+        member_kind: &str,
+        resource_type: &str,
     ) -> Result<ChannelHandle, NotAvailable> {
-        let handler = participant_handle.to_owned();
-        let member = match participant_kind {
+        let handler = member_handle.to_owned();
+        let member = match member_kind {
             "" | "person" => None,
             "agent" => Some(MemberId::Agent(handler.clone())),
             other => {
@@ -332,7 +332,7 @@ impl CollabClient {
             identity: identity.to_vec(),
             member,
             handle: handler,
-            record_kind: Some(record_kind.to_owned()).filter(|kind| !kind.is_empty()),
+            resource_type: Some(resource_type.to_owned()).filter(|kind| !kind.is_empty()),
         };
         match self
             .client
@@ -1677,7 +1677,7 @@ impl PresenceHandle {
         .await
     }
 
-    /// Whether the local participant is composing a message under `key_bytes` (a channel, a
+    /// Whether the local member is composing a message under `key_bytes` (a channel, a
     /// direct conversation): a draft is being typed, never what it says. `false` says they
     /// stopped, so no reader is left "typing" after the window closes.
     pub async fn publish_composing(
@@ -1787,7 +1787,7 @@ impl ContextStream {
                         .collect(),
                 );
             }
-            ContextUpdate::RecordsArrived(records) => context.records_arrived = records,
+            ContextUpdate::ResourcesArrived(records) => context.resources_arrived = records,
             // Retired: a conversation is an ordinary record, carried by the
             // workspace like any other and never named here.
             ContextUpdate::RetiredPersonPairs => {}

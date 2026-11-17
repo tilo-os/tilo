@@ -248,7 +248,7 @@ async fn a_session_beside_the_devices_own_dials_from_the_devices_endpoint() {
 
 /// A session beside its device's own holds no keys and asks for none. The device's member key in
 /// each workspace's group is its engine's: a second one, asked for as the same device, had the
-/// group's participants commit one in and the other out for as long as both sessions ran.
+/// group's members commit one in and the other out for as long as both sessions ran.
 #[tokio::test]
 async fn a_session_beside_the_devices_own_holds_no_keys() {
     let root = SigningKey::from_bytes(&[1; 32]);

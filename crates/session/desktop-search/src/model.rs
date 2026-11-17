@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use tilo_actions::remote::{
-    RemoteActionTarget, application_action_target, application_record_target,
+    RemoteActionTarget, application_action_target, application_resource_target,
 };
 use tilo_actions::{ActionAddress, ActionDescriptor, ActionSpec, ResourceId};
 
@@ -335,7 +335,7 @@ impl InvokeTarget {
         if self.record.is_empty() {
             application_action_target(&self.workspace, &self.app, resource, action)
         } else {
-            application_record_target(&self.workspace, &self.app, &self.record, resource, action)
+            application_resource_target(&self.workspace, &self.app, &self.record, resource, action)
         }
     }
 

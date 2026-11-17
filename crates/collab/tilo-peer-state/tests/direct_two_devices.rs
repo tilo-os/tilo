@@ -81,7 +81,7 @@ async fn two_devices_of_one_person_converge_directly() {
             workspace_changes: seed_workspace(WORKSPACE, &a_cert, &roster).unwrap(),
             documents: vec![SeedDocument {
                 app_id: APP.into(),
-                record_id: RECORD.into(),
+                document_id: RECORD.into(),
                 kind: "test".into(),
                 bytes: document.save(),
             }],
@@ -184,7 +184,7 @@ async fn a_second_device_is_entered_by_the_first_and_content_crosses_both_ways()
                 .unwrap(),
             documents: vec![SeedDocument {
                 app_id: APP.into(),
-                record_id: RECORD.into(),
+                document_id: RECORD.into(),
                 kind: "test".into(),
                 bytes: document.save(),
             }],
@@ -284,7 +284,7 @@ async fn a_device_that_hosts_its_own_workspace_syncs_with_it_in_process() {
             workspace_changes: seed_workspace(WORKSPACE, &cert, &roster).unwrap(),
             documents: vec![SeedDocument {
                 app_id: APP.into(),
-                record_id: RECORD.into(),
+                document_id: RECORD.into(),
                 kind: "test".into(),
                 bytes: document.save(),
             }],
@@ -342,7 +342,7 @@ fn two_devices() -> (DirectSync, SigningKey, DirectSync, SigningKey) {
             workspace_changes: seed_workspace(WORKSPACE, &a_cert, &roster).unwrap(),
             documents: vec![SeedDocument {
                 app_id: APP.into(),
-                record_id: RECORD.into(),
+                document_id: RECORD.into(),
                 kind: "test".into(),
                 bytes: document.save(),
             }],

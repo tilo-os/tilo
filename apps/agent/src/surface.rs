@@ -83,7 +83,7 @@ pub const RECORD_OPEN_PREFIX: &str = "record.";
 
 /// The address that opens `record`, a document of `app_id` the workspace
 /// already has.
-pub fn open_record_address(app_id: &str, record: &str) -> ActionAddress {
+pub fn open_document_address(app_id: &str, record: &str) -> ActionAddress {
     ActionAddress::new(
         format!("{RECORD_OPEN_PREFIX}{app_id}.{record}"),
         OPEN_ACTION,
@@ -91,13 +91,13 @@ pub fn open_record_address(app_id: &str, record: &str) -> ActionAddress {
 }
 
 /// The app and record an open of an existing document names
-/// ([`open_record_address`]), or `None` when `address` is no such open.
+/// ([`open_document_address`]), or `None` when `address` is no such open.
 ///
 /// An app id is dotted and never holds a `:`; a record id names its scheme
 /// before a `:` (`uuid:…`) and may hold dots after it. So the record starts
 /// at the last `.` before the first `:`, or, for a record id without a
 /// scheme, at the last `.`.
-pub fn opens_record(address: &ActionAddress) -> Option<(&str, &str)> {
+pub fn opens_document(address: &ActionAddress) -> Option<(&str, &str)> {
     if address.action != OPEN_ACTION {
         return None;
     }
@@ -110,12 +110,12 @@ pub fn opens_record(address: &ActionAddress) -> Option<(&str, &str)> {
 
 /// The app `address` would open, or `None` when it opens nothing: a new
 /// document of it (`app.<app id>#open`, `<namespace>.app#open`), or one the
-/// workspace already has ([`opens_record`]).
+/// workspace already has ([`opens_document`]).
 pub fn opens(address: &ActionAddress) -> Option<&str> {
     if address.action != OPEN_ACTION {
         return None;
     }
-    if let Some((app_id, _)) = opens_record(address) {
+    if let Some((app_id, _)) = opens_document(address) {
         return Some(app_id);
     }
     if let Some(app_id) = address.resource.strip_prefix("app.") {
@@ -866,7 +866,7 @@ mod tests {
                     "provider": format!("launch:workspace:so.tilo.notes:{record}"),
                     "app_id": "so.tilo.notes",
                     "cluster_id": "workspace",
-                    "record_id": record,
+                    "document_id": record,
                     "live": false,
                     "actions": [{
                         "resource": "notes.document",

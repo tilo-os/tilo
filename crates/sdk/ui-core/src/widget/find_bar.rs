@@ -1022,6 +1022,13 @@ impl FindBar {
 }
 
 impl Widget for FindBar {
+    /// A find bar as a page's own: its query and replacement fields and its
+    /// buttons, composed as it lays them out.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("search");
+        cx.children();
+    }
+
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
         self.platform = conventions;
         self.field.set_platform_conventions(conventions);
@@ -1442,6 +1449,12 @@ impl FindScope {
 }
 
 impl Widget for FindScope {
+    /// The find bar and what it searches, composed as they stand.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("div");
+        cx.children();
+    }
+
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
         self.platform = conventions;
         self.bar.set_platform_conventions(conventions);

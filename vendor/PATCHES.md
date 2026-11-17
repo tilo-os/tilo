@@ -948,7 +948,15 @@ method sends back through its virtual keyboard go through
 the person's own. A state commit — the one that sets a mode — is queued rather
 than waited for: the atomic ioctl asks for the frame's event and the compositor
 keeps that frame, and the one queued behind it, until it arrives, instead of
-blocking the event loop while the driver trains the display's link. Five
+blocking the event loop while the driver trains the display's link. A
+`DrmOutputManager` can create an output without putting up its warming black
+frame, so a desktop restarting in place keeps the displays' last picture until
+its own first frame. A
+shared-memory buffer names the pool it lies in (`shm::with_buffer_pool`), so
+the app keeper hands an app's pixels on to the compositor without copying them,
+and a parent surface's whole stack is readable in drawing order
+(`compositor::children_in_stack_order`), the parent included at its place, so
+the app keeper mirrors subsurfaces above and below it. Five
 imports and a cast are fixed so it builds without warnings. See
 `vendor/smithay/TILO-PATCH.md` for the details and when to drop each change.
 

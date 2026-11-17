@@ -69,7 +69,7 @@ fn activate_context_menu_action(
         MenuTarget::Category(_) => MenuAction::for_category().to_vec(),
         MenuTarget::Message(_) => MenuAction::for_message().to_vec(),
         MenuTarget::Workspace => MenuAction::for_workspace().to_vec(),
-        MenuTarget::CallParticipant(_) => MenuAction::for_call_participant().to_vec(),
+        MenuTarget::CallMember(_) => MenuAction::for_call_member().to_vec(),
     };
     let index = items
         .iter()
@@ -2098,11 +2098,10 @@ fn render_frame(app: &mut ChatApp, w: f64, h: f64) {
 
 fn stage_agent_work(app: &mut ChatApp, doc: &mut crate::testing::Workspace) {
     for (author, invoke) in crate::resource::agent_work_steps() {
-        let mut replica =
-            ui::tilo_resource::Replica::<crate::resource::Chat>::from_doc(std::mem::take(
-                &mut doc.chat,
-            ))
-            .as_member(author);
+        let mut replica = ui::tilo_resource::Replica::<crate::resource::Chat>::from_doc(
+            std::mem::take(&mut doc.chat),
+        )
+        .as_member(author);
         replica.apply_confirmed(invoke).unwrap();
         std::mem::swap(&mut doc.chat, replica.doc_mut());
     }
@@ -2496,8 +2495,8 @@ tilo_test_env::scenario! {
         assert_eq!(doc.save(), before);
     }
 
-    phase each_participant_in_an_expanded_call_gets_their_own_tile_and_volume;
-    // Every participant in the expanded call is their own tile, named as their
+    phase each_member_in_an_expanded_call_gets_their_own_tile_and_volume;
+    // Every member in the expanded call is their own tile, named as their
     // messages read, and opens how loud they play here.
     {
         use ui::native_media::Roster;
@@ -2514,30 +2513,30 @@ tilo_test_env::scenario! {
         let milo = app
             .semantic_hits()
             .into_iter()
-            .find(|(_, hit, ..)| matches!(hit, Hit::CallParticipant(id) if *id == MemberId::person("u_milo")))
+            .find(|(_, hit, ..)| matches!(hit, Hit::CallMember(id) if *id == MemberId::person("u_milo")))
             .expect("Milo has a tile of his own");
         assert_eq!(milo.2.text, "Milo Park: volume and mute for you");
         assert!(
             app.semantic_hits()
                 .iter()
-                .all(|(_, hit, ..)| !matches!(hit, Hit::CallParticipant(id) if app.is_me(id))),
+                .all(|(_, hit, ..)| !matches!(hit, Hit::CallMember(id) if app.is_me(id))),
             "this person's own tile has no volume"
         );
 
         app.on_hit(milo.1, &mut ui::widget::Edits::lend(&mut doc));
         let menu = app.menu.as_ref().expect("his tile opens the volume menu");
-        assert_eq!(menu.target, MenuTarget::CallParticipant(MemberId::person("u_milo")));
+        assert_eq!(menu.target, MenuTarget::CallMember(MemberId::person("u_milo")));
         activate_context_menu_action(
             &mut app,
             &mut doc,
-            MenuTarget::CallParticipant(MemberId::person("u_milo")),
+            MenuTarget::CallMember(MemberId::person("u_milo")),
             MenuAction::Silence,
         );
         assert!(app.call_listening("u_milo").silenced);
         activate_context_menu_action(
             &mut app,
             &mut doc,
-            MenuTarget::CallParticipant(MemberId::person("u_milo")),
+            MenuTarget::CallMember(MemberId::person("u_milo")),
             MenuAction::Volume(50),
         );
         let listening = app.call_listening("u_milo");
@@ -2886,11 +2885,9 @@ tilo_test_env::scenario! {
 #[test]
 fn the_bar_leads_the_conversation_with_who_it_is_with() {
     let (mut app, _doc) = app_with_doc();
-    app.active_channel = crate::record::Chat::direct_id([
-        app.me.id.clone(),
-        MemberId::agent("assistant"),
-    ])
-    .to_string();
+    app.active_channel =
+        crate::record::Chat::direct_id([app.me.id.clone(), MemberId::agent("assistant")])
+            .to_string();
     render_frame(&mut app, 360.0, 520.0);
     let location = ui::window_toolbar::declared()
         .and_then(|toolbar| toolbar.location)

@@ -31,14 +31,14 @@ use crate::disk_key::DiskKey;
 /// Refuses an invalid root identity or unencodable storage key.
 #[wasm_bindgen]
 pub fn browser_accounts_key(root: &str) -> Result<String, JsValue> {
-    let kind = ui::record::ResourceType::new("tilo.accounts");
-    if ui::record::DocumentId::of_member(root, kind.as_str()).is_none() {
+    let kind = ui::resource::ResourceType::new("tilo.accounts");
+    if ui::resource::DocumentId::of_member(root, kind.as_str()).is_none() {
         return Err(error("invalid root identity"));
     }
     let key = DiskKey::Document {
         app: accounts::person::ACCOUNTS_OWNER.into(),
-        workspace: ui::record::person::PERSONAL_SCOPE.into(),
-        document: ui::record::person::record_id(&kind).storage_key(),
+        workspace: ui::resource::person::PERSONAL_SCOPE.into(),
+        document: ui::resource::person::document_id(&kind).storage_key(),
     };
     serde_json::to_string(&key).map_err(error)
 }
@@ -60,11 +60,11 @@ pub fn project_browser_accounts(root: &str, origin: &str, bytes: &[u8]) -> Resul
         ui::automerge::LoadOptions::new().on_partial_load(ui::automerge::OnPartialLoad::Error),
     )
     .map_err(error)?;
-    let kind = ui::record::ResourceType::new("tilo.accounts");
-    let id = ui::record::person::record_id(&kind);
-    let home = ui::record::home(&doc);
-    if ui::record::identity(&doc).is_none_or(|found| found.id != id || found.kind != kind)
-        || home.as_deref() != Some(ui::record::person::PERSONAL_SCOPE)
+    let kind = ui::resource::ResourceType::new("tilo.accounts");
+    let id = ui::resource::person::document_id(&kind);
+    let home = ui::resource::home(&doc);
+    if ui::resource::identity(&doc).is_none_or(|found| found.id != id || found.kind != kind)
+        || home.as_deref() != Some(ui::resource::person::PERSONAL_SCOPE)
     {
         return Err(error(
             "account document belongs to another identity or record",

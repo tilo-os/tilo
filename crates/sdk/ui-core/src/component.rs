@@ -143,6 +143,35 @@ pub trait PropType: Sized {
     }
 }
 
+/// The field `name` of a case's `fields`, read as a `T`: `None` when the case leaves it out or holds
+/// nothing there, so a field with a default reads as its default.
+pub(crate) fn case_field<T: PropType>(
+    fields: &[(String, Value)],
+    name: &str,
+) -> Result<Option<T>, String> {
+    match fields.iter().find(|(field, _)| field == name) {
+        None | Some((_, Value::None)) => Ok(None),
+        Some((_, value)) => T::from_value(value)
+            .map(Some)
+            .map_err(|error| format!("`{name}` {error}")),
+    }
+}
+
+/// A field of a case as its set's description lists it.
+pub(crate) fn case_field_description(
+    name: &str,
+    ty: Type,
+    default: Option<Value>,
+    doc: &str,
+) -> tilo_ui_graph::component::FieldDescription {
+    tilo_ui_graph::component::FieldDescription {
+        name: name.to_owned(),
+        ty,
+        default,
+        doc: doc.to_owned(),
+    }
+}
+
 pub(crate) fn wrong(want: &Type, found: &Value) -> String {
     format!("takes {}, not {}", want.show(), found.kind())
 }
@@ -349,24 +378,39 @@ impl PropType for Icon {
     }
 }
 
-/// A participant, as a component shows one: their identity, what the workspace calls them, and the
+/// Who acted, as a component shows them: their identity, what the workspace calls them, and the
 /// presence hue they wear.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Person {
-    pub identity: String,
+    pub identity: tilo_actions::Actor,
     pub name: String,
     /// The hue their chip and avatar wear.
     pub hue: crate::tokens::PresenceHue,
 }
 
-impl Default for Person {
-    fn default() -> Self {
+impl Person {
+    /// `identity`, called `name`, in the hue their identity gives them.
+    #[must_use]
+    pub fn new(identity: impl Into<tilo_actions::Actor>, name: impl Into<String>) -> Self {
+        let identity = identity.into();
         Self {
-            identity: String::new(),
-            name: String::new(),
-            hue: crate::tokens::PresenceHue::from_slot(0),
+            hue: crate::tokens::PresenceHue::of_actor(&identity),
+            identity,
+            name: name.into(),
         }
     }
+}
+
+/// `actor` as a bound control's text holds it: its serde form, as the runtime reads it back.
+#[must_use]
+pub fn actor_text(actor: &tilo_actions::Actor) -> String {
+    serde_json::to_string(actor).unwrap_or_default()
+}
+
+/// The actor [`actor_text`] wrote, `None` for nobody.
+#[must_use]
+pub fn actor_of_text(text: &str) -> Option<tilo_actions::Actor> {
+    serde_json::from_str(text).ok()
 }
 
 impl PartialOrd for Person {
@@ -377,8 +421,8 @@ impl PartialOrd for Person {
 
 impl Ord for Person {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        (self.identity.as_str(), self.name.as_str(), self.hue.slot()).cmp(&(
-            other.identity.as_str(),
+        (&self.identity, self.name.as_str(), self.hue.slot()).cmp(&(
+            &other.identity,
             other.name.as_str(),
             other.hue.slot(),
         ))
@@ -392,11 +436,7 @@ impl PropType for Person {
 
     fn from_value(value: &Value) -> Result<Self, String> {
         match value {
-            Value::Actor { identity, name } => Ok(Self {
-                hue: crate::tokens::PresenceHue::of_identity(identity),
-                identity: identity.clone(),
-                name: name.clone(),
-            }),
+            Value::Actor { identity, name } => Ok(Self::new(identity.clone(), name.clone())),
             other => Err(wrong(&Self::ty(), other)),
         }
     }
@@ -1273,7 +1313,11 @@ pub fn catalogue() -> Catalogue {
             .map(|entry| (entry.describe)())
             .chain(parts().iter().map(|describe| describe()))
             .collect(),
-        enums: vec![crate::widget::drawing::shape_description()],
+        enums: vec![
+            crate::widget::drawing::shape_description(),
+            crate::widget::chart::series_description(),
+            crate::widget::connection_description(),
+        ],
     }
 }
 

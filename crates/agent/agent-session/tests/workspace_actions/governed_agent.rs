@@ -4,9 +4,9 @@
 //! part in its channels. Ada asks for an agent from her page and approves it on her
 //! laptop with a delegation naming the workspace; the agent runs on the node
 //! under its own device key. When it opens a sealed record it asks the
-//! channel's participants for it like any member: the governor admits
+//! channel's members for it like any member: the governor admits
 //! it to the workspace's roster through the one admission decision, bound to its
-//! delegation, and a participant admits it to the channel. Its change
+//! delegation, and a member admits it to the channel. Its change
 //! arrives at Bob, another member, sealed, signed by the agent's own key and
 //! named on the roster as Ada's agent. Withdrawing the grant takes it off.
 
@@ -128,12 +128,12 @@ fn json(value: &serde_json::Value) -> InvokeArgument {
 /// refuses what came before it.
 fn opened_sheets(member: &Browser, route: &DocumentRoute) -> Option<Vec<String>> {
     let changes = member.documents.get(route)?;
-    let record = ui::record::DocumentId::parse(&route.record)?;
+    let record = ui::resource::DocumentId::parse(&route.record)?;
     let replica = tilo_agent_session::Replica::open(
         &crate::common::catalogue(),
         &route.app_id,
         &route.cluster_id,
-        "bob",
+        &tilo_actions::MemberId::person("bob"),
         tilo_agent_session::ReplicaActor::Owner,
         tilo_agent_session::Seed::Existing {
             record,
@@ -182,7 +182,7 @@ async fn retained_by(
 ) -> Vec<String> {
     hosted
         .relay
-        .workspace_records()
+        .workspace_documents()
         .retained(workspace)
         .await
         .unwrap()
@@ -210,7 +210,7 @@ async fn retained_sealed(
 ) -> (usize, bool) {
     let bodies: Vec<bool> = hosted
         .relay
-        .workspace_records()
+        .workspace_documents()
         .retained(workspace)
         .await
         .unwrap()
@@ -220,10 +220,10 @@ async fn retained_sealed(
             |body| match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body.body) {
                 Ok(neighbour_wire::NeighbourMsg::AppDocument {
                     app_id,
-                    record_id,
+                    document_id,
                     envelope,
                     ..
-                }) if app_id == route.app_id && record_id == route.record => {
+                }) if app_id == route.app_id && document_id == route.record => {
                     Some(envelope.encryption.as_ref().is_some())
                 }
                 _ => None,

@@ -137,12 +137,16 @@ pub fn inline_view(
 ) -> tilo_render_protocol::patch::rich::InlineView {
     use crate::runtime::Store as _;
     use tilo_render_protocol::patch::rich::InlineView;
-    if let Some(person) = reference.as_person() {
+    if let Some(key) = reference.as_person() {
+        // A mention names a member by their key: a person's bare root key or an agent's
+        // `agent:<id>`. A key naming nobody reads as nobody known.
+        let who = crate::runtime::ids::MemberId::parse(key);
         return InlineView::Person {
-            identity: person.to_owned(),
-            name: names.name(&Actor::Member(crate::runtime::ids::MemberId::person(
-                person,
-            ))),
+            identity: key.to_owned(),
+            name: who.map_or_else(
+                || collaboration::history_source::authors::UNKNOWN_AUTHOR_NAME.to_owned(),
+                |who| names.name(&Actor::Member(who)),
+            ),
         };
     }
     let Some(mut target) = referenced_resource(host, reference) else {
@@ -401,7 +405,7 @@ pub(crate) fn toggles(
             .map(|action| action.toggles.clone())
     })??;
     match aref.args.first() {
-        Some(Value::Ref(subject)) => Some((ResourceRef::clone(&subject.target), field)),
+        Some(Value::Ref(target)) => Some((ResourceRef::clone(&target.target), field)),
         _ => None,
     }
 }
@@ -422,7 +426,7 @@ pub(crate) fn invokes(
         .iter()
         .position(|arg| *arg == Value::Missing)
         .unwrap_or(aref.args.len());
-    // As the app publishes it: by its name, on the records of its subject's type when its subject
+    // As the app publishes it: by its name, on the records of its target's type when its target
     // is one the app declares, and on the app's own resource when it takes a record of another
     // (`publish_package`): the one address the window, the API and an agent name it by.
     let (asks, published, on) = host.find_in_packages(|package| {
@@ -433,12 +437,12 @@ pub(crate) fn invokes(
             .find(|action| action.id == aref.action)
             .map(|action| {
                 // An action runs on a record it is given first; one that takes a record its app
-                // declares no subject of (Today's cleanup over Tasks' list) is published on the
+                // declares no target of (Today's cleanup over Tasks' list) is published on the
                 // app's own resource. An action given no record is the view's, run in the window.
                 let on = match aref.args.first() {
-                    Some(Value::Ref(subject)) => {
-                        Some(if package.meta.subject_of(&action.params).is_some() {
-                            subject.target.id_string()
+                    Some(Value::Ref(target)) => {
+                        Some(if package.meta.target_of(&action.params).is_some() {
+                            target.target.id_string()
                         } else {
                             crate::publish::package_resource_id(&package.meta.app)
                         })

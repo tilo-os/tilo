@@ -642,16 +642,16 @@ impl DownloadedProgram {
     /// written: what finds it again after a move or rename.
     #[must_use]
     pub fn record(&self) -> Option<[u8; 16]> {
-        parse_record(self.file.as_deref()?.strip_prefix(RECORD_PREFIX)?)
+        parse_document(self.file.as_deref()?.strip_prefix(RESOURCE_PREFIX)?)
     }
 }
 
-const RECORD_PREFIX: &str = "record:";
+const RESOURCE_PREFIX: &str = "record:";
 /// The extended attribute Tilo's filesystem serves each file's record id on (16
 /// bytes), the same through every move and rename.
 const DOCUMENT_ID_XATTR: &str = "user.tilo.document-id";
 
-fn parse_record(hex: &str) -> Option<[u8; 16]> {
+fn parse_document(hex: &str) -> Option<[u8; 16]> {
     let digits: Vec<u8> = hex.bytes().filter(|byte| *byte != b'-').collect();
     if digits.len() != 32 {
         return None;
@@ -676,7 +676,7 @@ fn format_record(id: &[u8; 16]) -> String {
 }
 
 #[cfg(target_os = "linux")]
-fn record_id(path: &Path) -> Option<[u8; 16]> {
+fn document_id(path: &Path) -> Option<[u8; 16]> {
     use std::os::unix::ffi::OsStrExt as _;
     let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
     let name = std::ffi::CString::new(DOCUMENT_ID_XATTR).ok()?;
@@ -695,7 +695,7 @@ fn record_id(path: &Path) -> Option<[u8; 16]> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn record_id(_path: &Path) -> Option<[u8; 16]> {
+fn document_id(_path: &Path) -> Option<[u8; 16]> {
     None
 }
 
@@ -1090,8 +1090,8 @@ fn existing_icon(entry: &Path) -> Option<String> {
 pub fn file_identity(path: &Path) -> Option<String> {
     use std::os::unix::fs::MetadataExt as _;
     let meta = std::fs::metadata(path).ok()?;
-    if let Some(id) = record_id(path) {
-        return Some(format!("{RECORD_PREFIX}{}", format_record(&id)));
+    if let Some(id) = document_id(path) {
+        return Some(format!("{RESOURCE_PREFIX}{}", format_record(&id)));
     }
     Some(format!("{}:{}", meta.dev(), meta.ino()))
 }

@@ -286,12 +286,12 @@ fn arguments(
     host: &Host,
     trigger: &TriggerMeta,
     app: &str,
-    subject: &ResourceRef,
+    target: &ResourceRef,
 ) -> Option<Vec<Value>> {
     let mut out = Vec::new();
     for arg in &trigger.args {
         match arg {
-            TriggerArgMeta::Subject => out.push(Value::resource(subject)),
+            TriggerArgMeta::Target => out.push(Value::resource(target)),
             TriggerArgMeta::Root(ty) => {
                 let root = host.root_record(app, ty).ok()?;
                 out.push(Value::resource(&root));

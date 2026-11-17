@@ -70,7 +70,7 @@ fn publish_notes(
                     notebook,
                     "retitle-mine",
                     Undoable,
-                    &[tilo_actions::OWN_RECORD_SCOPE],
+                    &[tilo_actions::OWN_RESOURCE_SCOPE],
                 ),
                 {
                     let mut clear = published(notebook, "clear-done", Undoable, &[]);

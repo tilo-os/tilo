@@ -14,30 +14,36 @@
 )]
 
 use collab_types::DocumentMutation;
+use tilo_actions::MemberId;
 use tilo_actions::api::ActionAddress;
 use tilo_agent_session::{ReplicaActor, Seed};
 
 /// The address the tracker publishes its issues under.
 fn issues() -> String {
-    ui::record::chain_resource_id(&ui::record::DocumentId::derived(
+    ui::resource::chain_resource_id(&ui::resource::DocumentId::derived(
         "issues",
-        &ui::record::DocumentId::workspace_default(),
+        &ui::resource::DocumentId::workspace_default(),
     ))
 }
 
 #[test]
 fn an_issue_filed_through_the_api_is_listed_with_what_runs_on_it() {
-    let mut page =
-        crate::common::open("so.tilo.tasks", "ada", ReplicaActor::Owner, Seed::New).unwrap();
+    let mut page = crate::common::open(
+        "so.tilo.tasks",
+        &MemberId::person("ada"),
+        ReplicaActor::Owner,
+        Seed::New,
+    )
+    .unwrap();
     let Some(DocumentMutation::Snapshot(changes)) = page.take_mutation().unwrap() else {
         panic!("a new record is published whole");
     };
     let held = crate::common::confined(
         "so.tilo.tasks",
-        "host",
+        &MemberId::person("host"),
         &ReplicaActor::Owner,
         Seed::Existing {
-            record: page.record_id().clone(),
+            record: page.document_id().clone(),
             changes: vec![changes],
         },
     )

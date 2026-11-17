@@ -4,7 +4,7 @@
 //! The action directory discloses a resource through its first view (a
 //! document read first, then another read of the record), else through a
 //! descendant's. A view that changes only what its caller sees, and is
-//! neither a read of the record nor the caller's own participant view, is
+//! neither a read of the record nor the caller's own presence view, is
 //! private: its resource's label and
 //! presentation are the publisher's, and the broker never lists that
 //! resource, nor anything below it, to an agent. A resource without a view
@@ -84,7 +84,7 @@ fn hide(
             reason: format!(
                 "an agent is never shown it: {} is disclosed only through the private view \
                  `{}`, which keeps the resource and everything on it from agents. Disclose it \
-                 through a document read or a participant view, or move that view off it",
+                 through a document read or a presence view, or move that view off it",
                 owner.id.as_str(),
                 view.id
             ),
@@ -169,7 +169,7 @@ mod tests {
                 ),
                 row(
                     "mine",
-                    vec![view("look", &[crate::PARTICIPANT_VIEW_TAG]), effect("act")],
+                    vec![view("look", &[crate::PRESENCE_VIEW_TAG]), effect("act")],
                 ),
                 // Only private views: nothing an agent could take is hidden.
                 row("panel", vec![view("show-panel", &[])]),
@@ -179,7 +179,7 @@ mod tests {
                     "session",
                     vec![
                         view("show-history", &[]),
-                        view("review", &[crate::RECORD_READ_TAG]),
+                        view("review", &[crate::RESOURCE_READ_TAG]),
                         effect("run"),
                     ],
                 ),

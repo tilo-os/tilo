@@ -263,6 +263,7 @@ impl PeerGovernance<'_> {
             let mut row = Member::of_person(&Person::new(hex::encode(root), ""), Some(held.role));
             row.removed = held.removed;
             row.administrator = held.administrator;
+            row.grants = u32::try_from(held.grants).unwrap_or(u32::MAX);
             // The name the person goes by here: the one the workspace keeps
             // under their root, which names them before any device of theirs
             // arrived and wherever they last renamed themselves, else the one
@@ -329,6 +330,7 @@ impl PeerGovernance<'_> {
                         .grants
                         .iter()
                         .any(|grant| grant.id == administrator_grant_id(root)),
+                grants: workspace_policy.extra_grants(person),
                 removed: false,
                 devices: Vec::new(),
             };
@@ -351,6 +353,7 @@ impl PeerGovernance<'_> {
                         .grants
                         .iter()
                         .any(|grant| grant.id == administrator_grant_id(root)),
+                    grants: 0,
                     removed: true,
                     devices: Vec::new(),
                 });
@@ -451,6 +454,8 @@ impl PeerGovernance<'_> {
 struct GovernedMember {
     role: Role,
     administrator: bool,
+    /// The permissions the workspace gives them beyond their role.
+    grants: usize,
     removed: bool,
     devices: Vec<[u8; 32]>,
 }

@@ -611,6 +611,23 @@ impl ModelChoice {
         }
     }
 
+    /// What carries a conversation's turns on this model, holding its credential: the gateway
+    /// for the Settings provider, the trusted host's own client for an endpoint it was given.
+    /// `None` for a choice no model answers (scripted, or Settings with no provider chosen).
+    #[must_use]
+    pub fn turns(&self) -> Option<Box<dyn super::PlanTurns>> {
+        match self {
+            Self::Scripted => None,
+            Self::OpenAi { .. } | Self::Anthropic { .. } => self
+                .endpoint_model(crate::profile::Profile::resolve)
+                .map(|(model, _)| Box::new(model.turns) as Box<dyn super::PlanTurns>),
+            Self::Decomposed { coordinator, .. } => coordinator.turns(),
+            Self::Settings => tilo_agent::providers::default_selection().map(|selection| {
+                Box::new(super::GatewayTurns::new(selection)) as Box<dyn super::PlanTurns>
+            }),
+        }
+    }
+
     /// The endpoint model this choice names, with the profile `resolve`
     /// makes of the process's settings for it; `None` for a choice that
     /// names no endpoint.

@@ -251,7 +251,7 @@ export function httpsPost(origin, fetcher = (...args) => globalThis.fetch(...arg
  * draws them, through the same path a native desktop does.
  */
 export function createLiveLayer(peer, runtime, workspace, {
-  participant, ready = Promise.resolve(),
+  member, ready = Promise.resolve(),
   setTimer = (callback, delay) => globalThis.setTimeout(callback, delay),
   clearTimer = handle => globalThis.clearTimeout(handle),
 } = {}) {
@@ -309,7 +309,7 @@ export function createLiveLayer(peer, runtime, workspace, {
   function start() {
     if (stopped) return;
     publisherId = peer.deviceKey?.() ?? publisherId;
-    if (participant) value.participant = {kind: 'person', profile_ms: 0, ...participant};
+    if (member) value.member = {kind: 'person', profile_ms: 0, ...member};
     say();
     setState('live');
   }
@@ -518,16 +518,19 @@ async function connect({
   let voice;
   let disposed = false;
   let drawName = null;
+  // The name the host gave this device where it said one: its answer to the
+  // pairing, which numbers a name another of the person's devices reads by.
+  let hostLabel = null;
   // When the person last changed their profile, as this page knows it: their
   // presence says it, so everyone here fetches it again when it moves.
   let profileMs = 0;
-  const publishParticipant = () => live?.publishPresence({participant: {kind: 'person',
-    label: (displayName || label).slice(0, 32), color: ownColor(), profile_ms: profileMs}});
+  const publishMember = () => live?.publishPresence({member: {kind: 'person',
+    label: (displayName || hostLabel || label).slice(0, 32), color: ownColor(), profile_ms: profileMs}});
   // The person's name, as history and presence show it from now on.
   const rename = name => {
     displayName = fitDisplayName(name);
     peer?.setDisplayName?.(displayName);
-    publishParticipant();
+    publishMember();
   };
   let snapshot = {phase: 'authenticating', records: []};
   /** The workspace's name as its host answered admission with it
@@ -761,6 +764,7 @@ async function connect({
       ? await runtime.certifyWithRoot(post, identity, custodyForWasm, label)
       : await runtime.certifyDevice(userPublicKey, label, null, custodyForWasm, code => onPairingCode?.(code),
         JSON.stringify(host.address));
+    if (!identity) hostLabel = JSON.parse(issued).label ?? null;
     await store.put(CERTIFICATE, issued);
     return issued;
   }
@@ -802,8 +806,8 @@ async function connect({
       // there under the workspace's name.
       peer.joinWorkspace(workspace, workspaceName);
       if (liveEnabled) {
-        live = createLiveLayer(peer, runtime, workspace, {ready, participant: {
-          kind: 'person', label: (displayName || label).slice(0, 32), color: ownColor(), profile_ms: profileMs,
+        live = createLiveLayer(peer, runtime, workspace, {ready, member: {
+          kind: 'person', label: (displayName || hostLabel || label).slice(0, 32), color: ownColor(), profile_ms: profileMs,
         }});
       }
       actions?.dispose();
@@ -1152,8 +1156,8 @@ async function connect({
      * (or did): a plane that could not be reached. */
     liveNote: () => { try { return peer?.liveNote?.() ?? null; } catch { return null; } },
     /** This person as their presence names them: `{label, color}`. */
-    get participant() {
-      return {label: (displayName || label).slice(0, 32), color: ownColor()};
+    get member() {
+      return {label: (displayName || hostLabel || label).slice(0, 32), color: ownColor()};
     },
     /** The person's profile was kept (or read) as of `at` (Unix ms): their
      * presence says so, and everyone here fetches it again. */
@@ -1161,7 +1165,7 @@ async function connect({
       const stamp = Number(at) || 0;
       if (stamp <= profileMs) return;
       profileMs = stamp;
-      publishParticipant();
+      publishMember();
     },
     /** The people here as their live presence names them (`[{user,
      * label}]`): someone else already going by this person's drawn name
@@ -1504,50 +1508,16 @@ export async function pairDevice(options) {
     const custodyForWasm = own.kind === 'sealed-seed' ? await own.unseal() : own;
     const info = siteHost(origin)?.info ?? JSON.parse(await runtime.hostInfo(httpsPost(origin, options.fetch)));
     if (!info.address) throw new Error('the host named no iroh endpoint to reach it at');
-    const {certified, enrolled} = await certifyUnderAFreeName(label, name => runtime.certifyDevice(userPublicKey, name,
-      options.invite ?? null, custodyForWasm, code => options.onPairingCode?.(code),
-      JSON.stringify(info.address)));
+    // The host names this device: the name asked for, or the next numbered one
+    // when another of the person's devices reads by it already.
+    const certified = await runtime.certifyDevice(userPublicKey, label, options.invite ?? null, custodyForWasm,
+      code => options.onPairingCode?.(code), JSON.stringify(info.address));
+    const enrolled = JSON.parse(certified).label ?? label;
     const common = {...options, identity: undefined, label: enrolled, profile, custody: own, runtime};
     if (!entry) return connect({...common, deviceCertificate: certified});
     return join({...common, origin, entry, certified});
   };
   return options.custody ? pairing() : withCustody(own, pairing, signal);
-}
-
-/** Why a host refuses a device name another of the person's devices reads by
- * (`DEVICE_LABEL_TAKEN` in the relay protocol). */
-const DEVICE_LABEL_TAKEN = 'that name is another of your devices';
-/** How many numbered names a device tries when the person has devices called
- * what it would be, as `tilo login` does. */
-const LABEL_ATTEMPTS = 10;
-
-/** `label` numbered `n`, as `tilo login` numbers a computer: the name itself
- * first, then `Chrome on Linux 2`, `3`, …, within 64 characters. */
-export function numberedLabel(label, n) {
-  if (n < 2) return label;
-  const suffix = ` ${n}`;
-  return `${[...label].slice(0, 64 - suffix.length).join('')}${suffix}`;
-}
-
-/**
- * Certify this device under the first name no other device of the person
- * reads by: `certify(name)` asks the host, which refuses a name another of
- * their devices has (a second browser of the same kind on the same system),
- * and the next number asks again. Resolves to `{certified, enrolled}`, the
- * host's answer and the name it enrolled under.
- */
-export async function certifyUnderAFreeName(label, certify) {
-  let refused;
-  for (let n = 1; n <= LABEL_ATTEMPTS; n++) {
-    const name = numberedLabel(label, n);
-    try {
-      return {certified: await certify(name), enrolled: name};
-    } catch (error) {
-      if (!String(error?.message ?? error).includes(DEVICE_LABEL_TAKEN)) throw error;
-      refused = error;
-    }
-  }
-  throw refused;
 }
 
 const hexOf = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');

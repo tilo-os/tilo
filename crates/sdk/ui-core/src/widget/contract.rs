@@ -77,8 +77,8 @@ pub trait Widget {
     }
 
     /// Records this widget keeps open beside the document it shows, each synced on its own route: a
-    /// framework app's records in the person's own workspace ([`crate::record::person`]).
-    fn record_owners(&self) -> Vec<crate::history_mode::HistoryOwner> {
+    /// framework app's records in the person's own workspace ([`crate::resource::person`]).
+    fn resource_owners(&self) -> Vec<crate::history_mode::HistoryOwner> {
         Vec::new()
     }
 

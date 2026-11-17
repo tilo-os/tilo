@@ -394,11 +394,11 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
         let ask = match invocation {
             Invocation::Action {
                 name,
-                subject: Some(subject),
+                target: Some(target),
                 from,
                 ..
             } => Ask {
-                resource: subject.id_string(),
+                resource: target.id_string(),
                 // As the resource's app publishes it.
                 action: name.clone(),
                 arguments: invocation.api_arguments().into_iter().collect(),

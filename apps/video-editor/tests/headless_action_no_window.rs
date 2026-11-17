@@ -4,7 +4,7 @@
     reason = "headless integration fixture asserts setup failures directly"
 )]
 
-//! End-to-end action test without a driving window. A participant with no
+//! End-to-end action test without a driving window. A member with no
 //! window — an agent, a script — holds the editor's view of the project,
 //! attached and never drawn, surveys what it may do, and edits it through the
 //! same api the editor's own window uses; the editor shows the result once
@@ -16,7 +16,7 @@ use ui::framework::testing::TEST_WORKSPACE;
 use ui::framework::{AttachedView, definition};
 use ui::permissions::PermissionContext;
 use ui::prelude::*;
-use ui::record::DocumentCheckout;
+use ui::resource::DocumentCheckout;
 use ui::tilo_resource::{FIELD_EDIT, Id, Resource};
 use video_editor::VideoEditor;
 use video_editor::model::{MediaItem, MediaKind, Project, Track, TrackKind};
@@ -66,7 +66,7 @@ fn an_action_invoked_with_no_window_reaches_the_app() {
     let mut agent = AttachedView::open(
         definition,
         TEST_WORKSPACE,
-        DocumentCheckout::new(app.record().clone(), definition.record_kind.clone()),
+        DocumentCheckout::new(app.record().clone(), definition.resource_type.clone()),
         app.read_document(|doc| doc.clone().save()),
         &ui::tilo_resource::MemberId::person("headless-driver"),
         PermissionContext::permissive(),

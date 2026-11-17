@@ -55,6 +55,9 @@ struct SealedChunk {
     ops: Vec<collab_types::SignedOp>,
     /// The concatenated postcard encoding of `ops`, once asked for.
     encoded: OnceLock<Arc<[u8]>>,
+    /// The length and digest of that encoding, once asked for: what a durable hash folds in,
+    /// taken without keeping the bytes.
+    digest: OnceLock<(u64, [u8; 32])>,
 }
 impl Clone for SealedChunk {
     /// A copy is only ever made to be changed: it starts unencoded.
@@ -62,6 +65,7 @@ impl Clone for SealedChunk {
         Self {
             ops: self.ops.clone(),
             encoded: OnceLock::new(),
+            digest: OnceLock::new(),
         }
     }
 }
@@ -129,11 +133,13 @@ impl SealedLog {
             Some(chunk) if chunk.ops.len() < SEALED_CHUNK => {
                 let chunk = Arc::make_mut(chunk);
                 chunk.encoded = OnceLock::new();
+                chunk.digest = OnceLock::new();
                 chunk.ops.push(op);
             }
             _ => self.chunks.push(Arc::new(SealedChunk {
                 ops: vec![op],
                 encoded: OnceLock::new(),
+                digest: OnceLock::new(),
             })),
         }
     }
@@ -141,6 +147,40 @@ impl SealedLog {
     /// route and count, then each chunk, encoded once per state of it and
     /// the same allocation while it lasts. A write changes the last chunk
     /// alone.
+    /// The lengths and digests of [`Self::encode_parts`], taken without keeping the parts: a
+    /// session that stores nothing hashes its records' histories instead of holding a second
+    /// copy of every one.
+    pub(super) fn digested_parts(
+        &self,
+        route: &Route,
+    ) -> Result<Vec<super::StretchDigest>, String> {
+        let head = postcard::to_allocvec(&(route, self.len)).map_err(err)?;
+        let mut parts = Vec::with_capacity(self.chunks.len().saturating_add(1));
+        parts.push((
+            u64::try_from(head.len()).unwrap_or(u64::MAX),
+            *blake3::hash(&head).as_bytes(),
+        ));
+        for chunk in &self.chunks {
+            if let Some(stretch) = chunk.digest.get() {
+                parts.push(*stretch);
+                continue;
+            }
+            let mut encoded = Vec::new();
+            for op in &chunk.ops {
+                encoded = postcard::to_extend(op, encoded).map_err(err)?;
+            }
+            let stretch = (
+                u64::try_from(encoded.len()).unwrap_or(u64::MAX),
+                *blake3::hash(&encoded).as_bytes(),
+            );
+            // The digest is the whole of what is kept here: a chunk's bytes are grown again
+            // whenever a hash asks, and kept only when something stores them.
+            let _ = chunk.digest.set(stretch);
+            parts.push(stretch);
+        }
+        Ok(parts)
+    }
+
     pub(super) fn encode_parts(&self, route: &Route) -> Result<Vec<Arc<[u8]>>, String> {
         let mut parts = Vec::with_capacity(self.chunks.len().saturating_add(1));
         parts.push(
@@ -157,6 +197,10 @@ impl SealedLog {
             for op in &chunk.ops {
                 encoded = postcard::to_extend(op, encoded).map_err(err)?;
             }
+            let _ = chunk.digest.set((
+                u64::try_from(encoded.len()).unwrap_or(u64::MAX),
+                *blake3::hash(&encoded).as_bytes(),
+            ));
             parts.push(Arc::clone(chunk.encoded.get_or_init(|| encoded.into())));
         }
         Ok(parts)
@@ -187,6 +231,10 @@ impl<'a> IntoIterator for &'a SealedLog {
 pub(super) struct StoredDocument {
     document: Arc<PeerDocument>,
     encoded: Arc<OnceLock<EncodedDocument>>,
+    /// The lengths and digests of this record's part of a durable encoding, once asked: what
+    /// [`StatePeer::durable_hash`] folds in, kept instead of the part itself, so a session that
+    /// stores nothing holds one copy of each record, not two.
+    digests: Arc<OnceLock<Vec<super::StretchDigest>>>,
 }
 /// A record's part of a durable peer encoding.
 pub(super) struct EncodedDocument {
@@ -202,6 +250,7 @@ impl Clone for StoredDocument {
         Self {
             document: Arc::clone(&self.document),
             encoded: Arc::clone(&self.encoded),
+            digests: Arc::clone(&self.digests),
         }
     }
 }
@@ -210,6 +259,7 @@ impl From<PeerDocument> for StoredDocument {
         Self {
             document: Arc::new(document),
             encoded: Arc::default(),
+            digests: Arc::default(),
         }
     }
 }
@@ -222,6 +272,7 @@ impl std::ops::Deref for StoredDocument {
 impl std::ops::DerefMut for StoredDocument {
     fn deref_mut(&mut self) -> &mut PeerDocument {
         self.encoded = Arc::default();
+        self.digests = Arc::default();
         Arc::make_mut(&mut self.document)
     }
 }
@@ -234,6 +285,7 @@ impl StoredDocument {
     /// the restore holds alone.
     pub(super) fn restore_sealed(&mut self, sealed: SealedLog) -> Result<(), String> {
         self.encoded = Arc::default();
+        self.digests = Arc::default();
         Arc::get_mut(&mut self.document)
             .ok_or("restored record is shared")?
             .sealed = sealed;
@@ -257,6 +309,35 @@ impl StoredDocument {
         let encoded = encode()?;
         debug_assert_eq!(&encoded.route, route);
         Ok(self.encoded.get_or_init(|| encoded))
+    }
+
+    /// The lengths and digests of the record's part of a durable encoding, as `digest` takes
+    /// them for `route`: made once per state of the record, and no part kept.
+    pub(super) fn digests(
+        &self,
+        digest: impl FnOnce() -> Result<Vec<super::StretchDigest>, String>,
+    ) -> Result<&[super::StretchDigest], String> {
+        if let Some(digests) = self.digests.get() {
+            return Ok(digests);
+        }
+        let digests = digest()?;
+        Ok(self.digests.get_or_init(|| digests))
+    }
+
+    /// The bytes a kept durable part holds, for accounting in tests.
+    #[cfg(test)]
+    pub(crate) fn encoded_bytes(&self) -> usize {
+        self.encoded.get().map_or(0, |encoded| {
+            encoded
+                .document
+                .iter()
+                .map(|piece| match piece {
+                    super::durable::Piece::Part(part) => part.len(),
+                    super::durable::Piece::Since(runs) => runs.iter().map(|run| run.len()).sum(),
+                    super::durable::Piece::Digested(..) => 0,
+                })
+                .sum()
+        })
     }
 }
 
@@ -295,10 +376,10 @@ pub(super) struct PeerCore {
     pub(super) native_cut_publisher: Option<[u8; 32]>,
     /// The members' own records among `documents`, each with its kind and
     /// person, as the writes that named them said
-    /// ([`collab_types::OwnRecord`]): what every write of one carries again.
+    /// ([`collab_types::OwnResource`]): what every write of one carries again.
     /// Learnt from the writes and from the apps that keep them; never
     /// persisted.
-    pub(super) own: BTreeMap<Route, collab_types::OwnRecord>,
+    pub(super) own: BTreeMap<Route, collab_types::OwnResource>,
 }
 impl Clone for PeerCore {
     fn clone(&self) -> Self {
@@ -339,7 +420,7 @@ impl std::fmt::Display for CertificateLookupError {
 impl PeerCore {
     /// The member's own record `app`'s `record` is, as a write of it said;
     /// `None` when none said so.
-    pub(super) fn own_of(&self, app: &str, record: &str) -> Option<collab_types::OwnRecord> {
+    pub(super) fn own_of(&self, app: &str, record: &str) -> Option<collab_types::OwnResource> {
         self.own
             .get(&Route {
                 app: app.to_owned(),
@@ -351,16 +432,16 @@ impl PeerCore {
     /// The member's own record `app`'s `record` is, for a write the device
     /// `author` signs: as a write of it said, or, for the author's person, of
     /// a kind the app's manifest declares each member's own
-    /// ([`collab_types::OwnRecord::recognise`]).
+    /// ([`collab_types::OwnResource::recognise`]).
     pub(super) fn own_write(
         &self,
         app: &str,
         record: &str,
         author: &[u8; 32],
-    ) -> Option<collab_types::OwnRecord> {
+    ) -> Option<collab_types::OwnResource> {
         self.own_of(app, record).or_else(|| {
             let person = self.certificates.get(author)?.as_ref().user_public_key;
-            collab_types::OwnRecord::recognise(app, record, person)
+            collab_types::OwnResource::recognise(app, record, person)
         })
     }
 
@@ -369,7 +450,7 @@ impl PeerCore {
         &mut self,
         app: &str,
         record: &str,
-        own: Option<&collab_types::OwnRecord>,
+        own: Option<&collab_types::OwnResource>,
     ) {
         if let Some(own) = own.filter(|own| own.names(record)) {
             let route = Route {

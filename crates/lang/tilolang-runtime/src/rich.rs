@@ -8,7 +8,7 @@
 //!
 //! A reference inside the text is a run marked `mention`, as native apps mark one: the run is
 //! what the text says (`@Ada`, `#general`), the mark's value names what it refers to. A person
-//! is named by their participant id, as native Chat always named one; any other resource by
+//! is named by their member id, as native Chat always named one; any other resource by
 //! its reference ([`Reference`]). Search, notifications and backlinks read the marks,
 //! never the prose.
 //!

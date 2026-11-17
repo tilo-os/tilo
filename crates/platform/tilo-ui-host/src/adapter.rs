@@ -1,7 +1,7 @@
 //! The one host adapter: a view's node of a described component (`ui.ListRow`) as the toolkit's
 //! widget. The adapter knows no widget. It reads each node through the component's description:
 //! - a **prop** is the node's prop of that name, converted to the description's type (a date reads
-//!   the person's way, a participant by what the workspace calls them);
+//!   the person's way, a member by what the workspace calls them);
 //! - an **event** the view gave the node is an intent queued for the window, which fires the action
 //!   reference the view attached through the action API, or applies its view-state update; a component
 //!   that presents a resource opens it when activated, unless the view says otherwise;

@@ -118,12 +118,12 @@ view frames(a: Layout) {
     }
 }
 
-/// Spaces
+/// Frameless
 ///
 /// The places at points, each drawn as its own view standing as content.
-view spaces(a: Layout) {
+view frameless(a: Layout) {
     style_shell(a, false) {
-        canvas(a, "Spaces", false, false, fill)
+        canvas(a, "Frameless", false, false, fill)
     }
 }
 

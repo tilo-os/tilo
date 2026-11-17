@@ -934,14 +934,14 @@ impl Core {
         {
             return None;
         }
-        let Value::Ref(subject) = aref.args.first()? else {
+        let Value::Ref(target) = aref.args.first()? else {
             return None;
         };
-        let id = subject.target.id_string();
+        let id = target.target.id_string();
         let published = self.published.borrow();
         let verb = published.get(&id, &aref.action)?;
         // The verb's parameters as its app declares them, after the resource the address names
-        // (`send(to: List, attached: List, text: Text)`); the resource is the subject, never an argument.
+        // (`send(to: List, attached: List, text: Text)`); the resource is the target, never an argument.
         let args: Vec<(String, Value)> = verb
             .params
             .iter()
@@ -956,7 +956,7 @@ impl Core {
             class: crate::meta::EffectClass::Undoable,
             destructive: false,
             author: aref.author.clone(),
-            subject: Some(ResourceRef::clone(&subject.target)),
+            target: Some(ResourceRef::clone(&target.target)),
             from: aref.from.clone(),
         }))
     }
@@ -1739,7 +1739,7 @@ impl Core {
             // The resource an action is on is its first parameter, when that is of one of its
             // package's own types (`focus(window: Window)`); a resource it takes otherwise
             // (`place(resource: host.Resource)`) is an argument, not where it is sent.
-            subject: meta
+            target: meta
                 .params
                 .first()
                 .filter(|first| match parse_ty(&first.ty, &pkg.meta.app) {
@@ -2032,7 +2032,7 @@ impl Core {
     }
 
     /// `withdraw(r)`: take back the outside effects `r`'s actions queued that nothing carried
-    /// out yet, so they never happen. Only an action asks for it, of its own subject, or the
+    /// out yet, so they never happen. Only an action asks for it, of its own target, or the
     /// undo of one: what a person wrote and took back before it went.
     fn withdraw(&self, primary_h: i32, reason_h: i32) -> HResult<Option<Wasm>> {
         let primary = self.ref_arg(primary_h)?;
@@ -2695,7 +2695,7 @@ impl Core {
                 let who = if imp == Imp::AgentNamed {
                     self.named_agent(&name)
                 } else {
-                    self.named_person(&name)
+                    self.named_person(&name)?
                 };
                 self.ret_h(Value::Actor(who))
             }

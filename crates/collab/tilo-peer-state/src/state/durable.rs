@@ -60,22 +60,27 @@ impl<'a> Durable<'a> {
     }
 }
 
-/// The digests of a replica's durable parts, each kept with its part: the
-/// part's allocation is alive while it is kept, so its address names it.
-#[derive(Clone, Default)]
-pub(crate) struct PartDigests(std::sync::Arc<parking_lot::Mutex<Digested>>);
-/// Each part's digest, by the part's address and length.
-type Digested = std::collections::HashMap<(usize, usize), (std::sync::Arc<[u8]>, [u8; 32])>;
-
 /// A stretch of the durable encoding ([`StatePeer::durable_parts`]).
 #[derive(Clone)]
 pub(super) enum Piece {
     /// A part with bytes of its own.
     Part(std::sync::Arc<[u8]>),
-    /// A document's changes since its base, in runs, and the digest of the
-    /// runs' bytes one after the other: digested as one stretch, as a
-    /// restored document holds them in one run.
-    Since(Vec<std::sync::Arc<[u8]>>, [u8; 32]),
+    /// A document's changes since its base, in runs: one stretch, as a restored document holds
+    /// them in one run.
+    Since(Vec<std::sync::Arc<[u8]>>),
+    /// The length and digest of a stretch whose bytes are not kept: what a session that stores
+    /// nothing makes of its records' parts to hash them.
+    Digested(u64, [u8; 32]),
+}
+
+/// Whether [`StatePeer::durable_pieces`] keeps the encoding's parts or only their digests.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Digests {
+    /// Keep the parts: a store writes them.
+    Kept,
+    /// Keep only lengths and digests: nothing here is stored, so a session pays for a hash, not
+    /// for a second copy of every record beside the replica it holds.
+    Taken,
 }
 
 impl StatePeer {
@@ -137,7 +142,7 @@ impl StatePeer {
         Ok(Some((receipt, accepted)))
     }
     /// The workspace's durable receipt for a route, as governance holds it:
-    /// written by any participant or store whose device this replica knows.
+    /// written by any key holder or store whose device this replica knows.
     pub(super) fn durable_receipt(
         &self,
         app: &str,
@@ -195,38 +200,61 @@ impl StatePeer {
             .is_some_and(|(_, current)| current))
     }
     /// A digest of [`Self::durable`]: of the length and digest of each of
-    /// its stretches ([`Piece`]), in order. A part an earlier call digested
-    /// and this state still holds is not read again, and a document's
-    /// changes since its base carry their digest, so a write pays for
-    /// digesting what it changed, not the record's whole history.
+    /// its stretches ([`Piece`]), in order. The stretches are digested as they are
+    /// encoded and only their lengths and digests are kept — per state of each document, so a
+    /// write pays for what it changed — because a session that stores nothing would otherwise
+    /// hold a second copy of every record beside the replica it holds.
     pub fn durable_hash(&self) -> Result<[u8; 32], String> {
-        let pieces = self.durable_pieces()?;
-        let mut kept = std::mem::take(&mut *self.durable_digests.0.lock());
-        let mut next = std::collections::HashMap::with_capacity(pieces.len());
         let mut hasher = blake3::Hasher::new();
-        for piece in pieces {
-            let (len, digest) = match piece {
-                Piece::Part(part) => {
-                    let at = (part.as_ptr() as usize, part.len());
-                    let digest = kept.remove(&at).map_or_else(
-                        || {
-                            crate::write_work::read(part.len());
-                            *blake3::hash(&part).as_bytes()
-                        },
-                        |(_, digest)| digest,
-                    );
-                    let len = part.len();
-                    next.insert(at, (part, digest));
-                    (len, digest)
-                }
-                Piece::Since(runs, digest) => (runs.iter().map(|run| run.len()).sum(), digest),
+        for piece in self.durable_pieces(Digests::Taken)? {
+            let Piece::Digested(len, digest) = piece else {
+                return Err("a durable hash was taken from parts".into());
             };
-            hasher.update(&(len as u64).to_le_bytes());
+            hasher.update(&len.to_le_bytes());
             hasher.update(&digest);
         }
-        *self.durable_digests.0.lock() = next;
         Ok(*hasher.finalize().as_bytes())
     }
+    /// [`Self::durable_hash`] over the parts themselves, as a store would write them: the same
+    /// digests, taken from the bytes. What the digest path must answer.
+    #[cfg(test)]
+    pub(crate) fn durable_hash_of_kept_parts(&self) -> Result<[u8; 32], String> {
+        let mut hasher = blake3::Hasher::new();
+        for piece in self.durable_pieces(Digests::Kept)? {
+            let (len, digest) = match piece {
+                Piece::Part(part) => (
+                    u64::try_from(part.len()).unwrap_or(u64::MAX),
+                    *blake3::hash(&part).as_bytes(),
+                ),
+                Piece::Since(runs) => {
+                    let mut digest = blake3::Hasher::new();
+                    for run in &runs {
+                        digest.update(run);
+                    }
+                    (
+                        u64::try_from(runs.iter().map(|run| run.len()).sum::<usize>())
+                            .unwrap_or(u64::MAX),
+                        *digest.finalize().as_bytes(),
+                    )
+                }
+                Piece::Digested(len, digest) => (len, digest),
+            };
+            hasher.update(&len.to_le_bytes());
+            hasher.update(&digest);
+        }
+        Ok(*hasher.finalize().as_bytes())
+    }
+
+    /// The bytes of durable parts kept beside the replica: zero while nothing stores them.
+    #[cfg(test)]
+    pub(crate) fn kept_encoded_bytes(&self) -> usize {
+        self.core
+            .documents
+            .values()
+            .map(backend::StoredDocument::encoded_bytes)
+            .sum()
+    }
+
     /// Encode this peer's durable state.
     pub fn durable(&self) -> Result<Vec<u8>, String> {
         let parts = self.durable_parts()?;
@@ -245,22 +273,32 @@ impl StatePeer {
         &self,
         mut head: Vec<u8>,
         parts: &mut Vec<Piece>,
+        digests: Digests,
     ) -> Result<Vec<u8>, String> {
         fn put<T: Serialize + ?Sized>(value: &T, out: Vec<u8>) -> Result<Vec<u8>, String> {
             postcard::to_extend(value, out).map_err(err)
         }
-        match self.core.workspace_doc.as_ref().map(CachedDocument::stored) {
-            Some((base, since, digest)) => {
-                let since_len = since.iter().map(|run| run.len()).sum::<usize>();
-                head = put(&1u8, head)?;
-                head = put(&base.len().saturating_add(since_len), head)?;
+        let Some(document) = self.core.workspace_doc.as_ref() else {
+            return put(&0u8, head);
+        };
+        let layout = document.stored_layout();
+        let since_len = layout.since_len;
+        head = put(&1u8, head)?;
+        head = put(&layout.base_len.saturating_add(since_len), head)?;
+        match digests {
+            Digests::Kept => {
+                let (base, since, _) = document.stored();
                 parts.push(Piece::Part(head.into()));
                 parts.push(Piece::Part(base));
-                parts.push(Piece::Since(since, digest));
-                Ok(Vec::new())
+                parts.push(Piece::Since(since));
             }
-            None => put(&0u8, head),
+            Digests::Taken => {
+                parts.push(digested(&head));
+                parts.push(Piece::Digested(layout.base_len as u64, layout.base_digest));
+                parts.push(Piece::Digested(since_len as u64, layout.since_digest));
+            }
         }
+        Ok(Vec::new())
     }
 
     /// [`Self::durable`] in parts, in order: concatenated, they are its
@@ -275,17 +313,19 @@ impl StatePeer {
     /// what changed.
     pub fn durable_parts(&self) -> Result<Vec<std::sync::Arc<[u8]>>, String> {
         Ok(self
-            .durable_pieces()?
+            .durable_pieces(Digests::Kept)?
             .into_iter()
             .flat_map(|piece| match piece {
                 Piece::Part(part) => vec![part],
-                Piece::Since(runs, _) => runs,
+                Piece::Since(runs) => runs,
+                Piece::Digested(..) => Vec::new(),
             })
             .collect())
     }
 
-    /// [`Self::durable_parts`] as the stretches [`Self::durable_hash`] digests.
-    fn durable_pieces(&self) -> Result<Vec<Piece>, String> {
+    /// [`Self::durable_parts`] as the stretches [`Self::durable_hash`] digests, keeping the
+    /// parts only when `digests` asks for them.
+    fn durable_pieces(&self, digests: Digests) -> Result<Vec<Piece>, String> {
         fn put<T: Serialize + ?Sized>(value: &T, out: Vec<u8>) -> Result<Vec<u8>, String> {
             postcard::to_extend(value, out).map_err(err)
         }
@@ -298,25 +338,19 @@ impl StatePeer {
         if sealed > 0 && !self.core.exact_selected {
             return Err("sealed record history requires exact admissions".into());
         }
-        let mut documents = Vec::with_capacity(self.core.documents.len());
-        for (route, entry) in &self.core.documents {
-            let own = self.core.own.get(route);
-            documents.push(entry.encoded(route, || encode_document(route, entry, own))?);
-        }
         // The fields of `Durable`, in order.
         let mut parts: Vec<Piece> = Vec::new();
         let mut head = put(
             &(DURABLE_VERSION, &self.core.workspace, &self.core.owner),
             Vec::new(),
         )?;
-        head = self.put_workspace_document(head, &mut parts)?;
-        head = put(&documents.len(), head)?;
-        parts.push(Piece::Part(head.into()));
-        parts.extend(
-            documents
-                .iter()
-                .flat_map(|encoded| encoded.document.iter().cloned()),
-        );
+        head = self.put_workspace_document(head, &mut parts, digests)?;
+        head = put(&self.core.documents.len(), head)?;
+        parts.push(match digests {
+            Digests::Kept => Piece::Part(head.into()),
+            Digests::Taken => digested(&head),
+        });
+        self.documents_into(digests, &mut parts)?;
         let mut revocations = self.core.revocations.iter().collect::<Vec<_>>();
         revocations.sort_by_key(|entry| entry.revoked_device_public_key);
         let certificates = self
@@ -335,27 +369,105 @@ impl StatePeer {
             ),
             Vec::new(),
         )?;
-        if self.core.exact_selected {
-            let (settled, rest) = self.core.exact_admissions.encode_parts().map_err(err)?;
-            tail = put(&1u8, tail)?;
-            tail = put(&settled.len().saturating_add(rest.len()), tail)?;
-            parts.push(Piece::Part(tail.into()));
-            parts.push(Piece::Part(settled));
-            tail = rest;
-        } else {
-            tail = put(&0u8, tail)?;
-        }
+        tail = self.exact_into(tail, digests, &mut parts)?;
         tail = put(&sealed, tail)?;
-        parts.push(Piece::Part(tail.into()));
-        parts.extend(
-            documents
-                .iter()
-                .filter_map(|encoded| encoded.sealed.as_ref())
-                .flatten()
-                .cloned()
-                .map(Piece::Part),
-        );
+        parts.push(match digests {
+            Digests::Kept => Piece::Part(tail.into()),
+            Digests::Taken => digested(&tail),
+        });
+        self.sealed_into(digests, &mut parts)?;
         Ok(parts)
+    }
+
+    /// Each record's part of the durable encoding, in route order: its document as a store
+    /// writes it, or the lengths and digests of that document.
+    fn documents_into(&self, digests: Digests, parts: &mut Vec<Piece>) -> Result<(), String> {
+        for (route, entry) in &self.core.documents {
+            match digests {
+                Digests::Kept => {
+                    let own = self.core.own.get(route);
+                    let encoded = entry.encoded(route, || encode_document(route, entry, own))?;
+                    parts.extend(encoded.document.iter().cloned());
+                }
+                Digests::Taken => {
+                    let own = self.core.own.get(route);
+                    let taken = entry.digests(|| digest_document(route, entry, own))?;
+                    parts.extend(
+                        taken
+                            .iter()
+                            .map(|(len, digest)| Piece::Digested(*len, *digest)),
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The exact admission index's stretches, appended to `tail`: its flag and the settled
+    /// entries, then what is left of the tail for the sealed writes after them.
+    fn exact_into(
+        &self,
+        mut tail: Vec<u8>,
+        digests: Digests,
+        parts: &mut Vec<Piece>,
+    ) -> Result<Vec<u8>, String> {
+        fn put<T: Serialize + ?Sized>(value: &T, out: Vec<u8>) -> Result<Vec<u8>, String> {
+            postcard::to_extend(value, out).map_err(err)
+        }
+        if !self.core.exact_selected {
+            return put(&0u8, tail);
+        }
+        match digests {
+            Digests::Kept => {
+                let (settled, rest) = self.core.exact_admissions.encode_parts().map_err(err)?;
+                tail = put(&1u8, tail)?;
+                tail = put(&settled.len().saturating_add(rest.len()), tail)?;
+                parts.push(Piece::Part(tail.into()));
+                parts.push(Piece::Part(settled));
+                Ok(rest)
+            }
+            Digests::Taken => {
+                let ((settled_len, settled_digest), rest) =
+                    self.core.exact_admissions.digested_parts().map_err(err)?;
+                tail = put(&1u8, tail)?;
+                tail = put(
+                    &settled_len.saturating_add(u64::try_from(rest.len()).unwrap_or(u64::MAX)),
+                    tail,
+                )?;
+                parts.push(digested(&tail));
+                parts.push(Piece::Digested(settled_len, settled_digest));
+                Ok(rest)
+            }
+        }
+    }
+
+    /// Each sealed record's history, after every other stretch: as its parts, or as their
+    /// lengths and digests.
+    fn sealed_into(&self, digests: Digests, parts: &mut Vec<Piece>) -> Result<(), String> {
+        for (route, entry) in &self.core.documents {
+            if entry.sealed.is_empty() {
+                continue;
+            }
+            match digests {
+                Digests::Kept => {
+                    let own = self.core.own.get(route);
+                    let encoded = entry.encoded(route, || encode_document(route, entry, own))?;
+                    if let Some(sealed) = &encoded.sealed {
+                        parts.extend(sealed.iter().cloned().map(Piece::Part));
+                    }
+                }
+                Digests::Taken => {
+                    parts.extend(
+                        entry
+                            .sealed
+                            .digested_parts(route)?
+                            .into_iter()
+                            .map(|(len, digest)| Piece::Digested(len, digest)),
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     /// The durable encoding as one `postcard` value, made whole each time:
@@ -481,7 +593,6 @@ impl StatePeer {
             missed: held::Missed::default(),
             gathering: super::compaction_set::Gathering::default(),
             workspace_host: false,
-            durable_digests: PartDigests::default(),
         };
         backend::validate_pending(&peer.core.pending, peer.core.pending_bytes).map_err(err)?;
         peer.core.revocations = backend::restore_revocation_union(
@@ -596,12 +707,12 @@ impl StatePeer {
 fn encode_document(
     route: &Route,
     entry: &Document,
-    own: Option<&collab_types::OwnRecord>,
+    own: Option<&collab_types::OwnResource>,
 ) -> Result<backend::EncodedDocument, String> {
     fn put<T: Serialize + ?Sized>(value: &T, out: Vec<u8>) -> Result<Vec<u8>, String> {
         postcard::to_extend(value, out).map_err(err)
     }
-    let (base, since, digest) = entry.doc.stored();
+    let (base, since, _) = entry.doc.stored();
     let since_len = since.iter().map(|run| run.len()).sum::<usize>();
     let head = put(&(route, base.len().saturating_add(since_len)), Vec::new())?;
     let rest = put(
@@ -632,11 +743,72 @@ fn encode_document(
         document: vec![
             Piece::Part(head.into()),
             Piece::Part(base),
-            Piece::Since(since, digest),
+            Piece::Since(since),
             Piece::Part(rest.into()),
         ],
         sealed,
     })
+}
+
+/// The length and digest of `bytes`, as a piece a durable hash folds in without keeping them.
+fn digested(bytes: &[u8]) -> Piece {
+    let (len, digest) = length_and_digest(bytes);
+    Piece::Digested(len, digest)
+}
+
+/// The length of `bytes` and its digest.
+fn length_and_digest(bytes: &[u8]) -> super::StretchDigest {
+    (
+        u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+        *blake3::hash(bytes).as_bytes(),
+    )
+}
+
+/// [`encode_document`] as the lengths and digests of its parts, taken without keeping the
+/// document's bytes: what a session that stores nothing folds into its durable hash.
+fn digest_document(
+    route: &Route,
+    entry: &Document,
+    own: Option<&collab_types::OwnResource>,
+) -> Result<Vec<super::StretchDigest>, String> {
+    fn put<T: Serialize + ?Sized>(value: &T, out: Vec<u8>) -> Result<Vec<u8>, String> {
+        postcard::to_extend(value, out).map_err(err)
+    }
+    let layout = entry.doc.stored_layout();
+    let head = put(
+        &(route, layout.base_len.saturating_add(layout.since_len)),
+        Vec::new(),
+    )?;
+    let rest = put(
+        &(
+            entry
+                .channel
+                .last_seq_per_author
+                .iter()
+                .map(|(key, seq)| (*key.as_bytes(), *seq))
+                .collect::<Vec<_>>(),
+            entry.encryption_required,
+            &entry.covered,
+            entry
+                .covered_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.0.bytes.as_slice()),
+            own,
+        ),
+        Vec::new(),
+    )?;
+    Ok(vec![
+        length_and_digest(&head),
+        (
+            u64::try_from(layout.base_len).unwrap_or(u64::MAX),
+            layout.base_digest,
+        ),
+        (
+            u64::try_from(layout.since_len).unwrap_or(u64::MAX),
+            layout.since_digest,
+        ),
+        length_and_digest(&rest),
+    ])
 }
 
 /// The workspace document a peer kept, loaded in isolation so it stays in a

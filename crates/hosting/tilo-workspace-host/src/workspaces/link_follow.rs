@@ -148,7 +148,7 @@ impl Workspaces {
         let Ok(body) = postcard::to_allocvec(message) else {
             return;
         };
-        let commit = crate::workspace_records::HostCommit {
+        let commit = crate::workspace_documents::HostCommit {
             body,
             channel,
             checkpoint: retention == neighbour_wire::Retention::Checkpoint,
@@ -254,11 +254,11 @@ impl Workspaces {
                 let Some(workspaces) = workspaces.upgrade() else {
                     return;
                 };
-                let asking = matches!(frame.message, NeighbourMsg::RecordContentWant { .. });
+                let asking = matches!(frame.message, NeighbourMsg::DocumentContentWant { .. });
                 let answering = matches!(
                     frame.message,
-                    NeighbourMsg::RecordContentPiece { .. }
-                        | NeighbourMsg::RecordContentLacks { .. }
+                    NeighbourMsg::DocumentContentPiece { .. }
+                        | NeighbourMsg::DocumentContentLacks { .. }
                 );
                 let Ok(body) = postcard::to_allocvec(&frame.message) else {
                     continue;
@@ -327,7 +327,7 @@ impl Workspaces {
     pub(super) fn recall_retained(
         &self,
         workspace: &mut GovernedWorkspace,
-        retained: Vec<crate::workspace_records::RetainedBody>,
+        retained: Vec<crate::workspace_documents::RetainedBody>,
     ) {
         let (mut changed, mut again) = (false, false);
         for retained in retained {

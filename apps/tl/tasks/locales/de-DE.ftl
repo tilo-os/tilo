@@ -333,6 +333,8 @@ d-rs3ubifz-assignee = Zuständig
 
 d-rs3ubifz-title = Titel
 
+d-rs3ubifz-remind = Erinnern
+
 d-vwgro4iv-done = Erledigt
 
 d-fykojijd-t = T

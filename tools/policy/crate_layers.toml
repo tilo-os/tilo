@@ -51,6 +51,10 @@ reason = "it is the Wayland protocol and buffer stack, and everything else talks
   why = "it implements Wayland protocol handlers, written against smithay's wayland dispatch traits and surface data map, with no renderer or backend"
 
   [[rule.allow]]
+  package = "tilo-app-keeper"
+  why = "the app keeper is a Wayland server of its own for one app, written on smithay's protocol state with no renderer or backend; it reaches the compositor only as a Wayland client"
+
+  [[rule.allow]]
   package = "tilo-window-share"
   why = "a shared window's client dmabuf is staged for the encoder as smithay's buffer type without a copy; it uses smithay's allocator types, no renderer or backend"
 
@@ -65,11 +69,11 @@ reason = "it is the sync engine, and everyone else acts on the workspace through
 
   [[rule.allow]]
   package = "tilo-session-client"
-  why = "the participant's client holds this device's own owner beside the shell: every workspace the person joined is a replica it opens, commits and enrolls into, and the governance its channels read is that owner's"
+  why = "the member's client holds this device's own owner beside the shell: every workspace the person joined is a replica it opens, commits and enrolls into, and the governance its channels read is that owner's"
 
   [[rule.allow]]
   package = "tilo-runtime"
-  why = "the shared runtime runs the engine for the apps attached to a participant"
+  why = "the shared runtime runs the engine for the apps attached to a member"
 
   [[rule.allow]]
   package = "tilo-action-broker"
@@ -89,15 +93,15 @@ reason = "it is the sync engine, and everyone else acts on the workspace through
 
   [[rule.allow]]
   package = "tilo-agent-session"
-  why = "a participant opens the document frame of the record it plans against, the framing every reader of a record's frames speaks"
+  why = "a member opens the document frame of the record it plans against, the framing every reader of a record's frames speaks"
 
   [[rule.allow]]
   package = "tilo-agent-session"
-  why = "an agent's participant names the engine's document-frame route — the address a frame names its place in a workspace's document by — and its join vocabulary; it holds no engine state and writes only through the actions it publishes"
+  why = "an agent's member names the engine's document-frame route — the address a frame names its place in a workspace's document by — and its join vocabulary; it holds no engine state and writes only through the actions it publishes"
 
   [[rule.allow]]
   package = "tilo-browser-runtime"
-  why = "the browser runtime coalesces the engine's document-frame route for the app it mounts; the engine itself stays in the participant's host"
+  why = "the browser runtime coalesces the engine's document-frame route for the app it mounts; the engine itself stays in the member's host"
 
   [[rule.allow]]
   package = "tilo-mcp"

@@ -10,7 +10,7 @@ use tilo_user_identity::DeviceCert;
 /// A member's write to a record of a governed workspace, after the governor's
 /// copy took it in: what wakes the workspace's installed bots.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RecordWrite {
+pub struct ResourceWrite {
     /// The workspace's UUID.
     pub workspace: String,
     /// The record's app.
@@ -18,12 +18,12 @@ pub struct RecordWrite {
     /// The record's id on the wire (`""` for the app's primary).
     pub record: String,
     /// What the write carried that the record's repair could take in
-    /// ([`super::repaired_records::Carried`]): the changes it carried, when the
+    /// ([`super::repaired_documents::Carried`]): the changes it carried, when the
     /// record's kept changes could wait for one of them. Nothing when the
     /// record's archive says nothing it keeps waits for a write like this, so
     /// reading the record for it would be work for nothing.
     #[cfg(feature = "agents")]
-    pub carried: super::repaired_records::Carried,
+    pub carried: super::repaired_documents::Carried,
 }
 
 /// What taking a member's write into the governor's copy did.
@@ -44,7 +44,7 @@ impl GovernedWorkspace {
     /// moves past them. Stops before a change that does not read, with why.
     pub(super) fn unpublished(
         &mut self,
-        records: &crate::workspace_records::WorkspaceRecords,
+        records: &crate::workspace_documents::WorkspaceDocuments,
     ) -> (Vec<publisher::Publication>, Result<(), String>) {
         let mut publications = Vec::new();
         while let Some(entry) = self.record.outgoing.get(self.record.published) {
@@ -65,7 +65,7 @@ impl GovernedWorkspace {
                 records,
                 self.record.workspace_id,
                 Some(self.record.published),
-                crate::workspace_records::HostCommit {
+                crate::workspace_documents::HostCommit {
                     body: entry.bytes.to_vec(),
                     channel,
                     checkpoint: entry.checkpoint,
@@ -109,14 +109,16 @@ impl GovernedWorkspace {
         message: neighbour_wire::NeighbourMsg,
     ) -> Followed {
         let neighbour_wire::NeighbourMsg::AppDocument {
-            app_id, record_id, ..
+            app_id,
+            document_id,
+            ..
         } = &message
         else {
             return Followed::default();
         };
         let received = {
             let mut peer = self.peer();
-            if !peer.holds_document(app_id, record_id) {
+            if !peer.holds_document(app_id, document_id) {
                 return Followed::default();
             }
             peer.receive_from(
@@ -163,7 +165,7 @@ impl GovernedWorkspace {
     ) -> Option<String> {
         let neighbour_wire::NeighbourMsg::AppDocument {
             app_id,
-            record_id,
+            document_id,
             envelope,
             ..
         } = message
@@ -182,7 +184,7 @@ impl GovernedWorkspace {
         }
         let mut decided = {
             let peer = self.peer();
-            if !peer.holds_document(app_id, record_id) {
+            if !peer.holds_document(app_id, document_id) {
                 return None;
             }
             peer.clone()

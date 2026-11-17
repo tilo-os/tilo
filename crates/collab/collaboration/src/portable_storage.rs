@@ -476,7 +476,7 @@ struct Cache {
     entries: BTreeMap<StorageKey, Entry>,
     revision: u64,
     /// The record store that owns each package's records in a workspace
-    /// (the toolkit's `ui::record::RecordSet`), so every opening shares it.
+    /// (the toolkit's `ui::resource::ResourceSet`), so every opening shares it.
     owners: BTreeMap<(String, String), std::rc::Weak<dyn std::any::Any>>,
     /// Who hears each time a key's durability may have changed without
     /// input ([`PortableStorage::watch_durability`]).
@@ -520,7 +520,7 @@ impl PortableStorage {
     }
     /// The live record store registered for `package` in `workspace`, if it
     /// is an `Owner`.
-    pub fn record_owner<Owner: 'static>(
+    pub fn resource_owner<Owner: 'static>(
         &self,
         package: &str,
         workspace: &str,
@@ -534,7 +534,7 @@ impl PortableStorage {
     }
     /// Register `owner` as the record store of `package` in `workspace`
     /// while it lives.
-    pub fn register_record_owner<Owner: 'static>(
+    pub fn register_resource_owner<Owner: 'static>(
         &self,
         package: &str,
         workspace: &str,

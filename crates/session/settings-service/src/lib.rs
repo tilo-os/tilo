@@ -30,7 +30,7 @@ use tilo_actions::{
 };
 use tilo_resource::Effect as _;
 use tilo_service::{Service, Started};
-use ui::framework::SettingsRecords;
+use ui::framework::SettingsResources;
 use ui::storage::{InvokingAction, SettingsDocument, SettingsRevision};
 
 use effects::SettingEffect;
@@ -123,7 +123,7 @@ fn shown(value: &Value) -> String {
 
 /// The settings service.
 pub struct SettingsService {
-    records: SettingsRecords,
+    records: SettingsResources,
     /// The person at this device, whose changes they are: the session hands
     /// the service the person at this device as it starts it ([`Service::own_person`]).
     invoker: Option<ActionInvoker>,
@@ -147,7 +147,7 @@ impl SettingsService {
     #[must_use]
     pub fn new() -> Self {
         let mut service = Self {
-            records: SettingsRecords::new(settings_sections::APP_ID, settings_sections::declare),
+            records: SettingsResources::new(settings_sections::APP_ID, settings_sections::declare),
             invoker: None,
             seen: None,
             published: Vec::new(),
@@ -162,7 +162,7 @@ impl SettingsService {
     /// changed under one of those ids is theirs to take back.
     pub fn own_person(&mut self, person: &str, earlier: &[String]) {
         let person = tilo_actions::MemberId::person(person);
-        self.records = SettingsRecords::of_person_named(
+        self.records = SettingsResources::of_person_named(
             settings_sections::APP_ID,
             settings_sections::APP_TITLE,
             &person,

@@ -212,9 +212,9 @@ def _history(control, person, services, deadline):
         if not isinstance(page, dict) or set(page) != {'scope', 'versions', 'total_versions', 'heads', 'current_revision', 'next_after'}:
             raise RuntimeError('actual native History page changed schema')
         scope = page.get('scope', {})
-        if not isinstance(scope, dict) or set(scope) != {'workspace_id', 'mount_lifetime', 'record_id', 'frontier'} or not _key(scope['frontier']):
+        if not isinstance(scope, dict) or set(scope) != {'workspace_id', 'mount_lifetime', 'document_id', 'frontier'} or not _key(scope['frontier']):
             raise RuntimeError('actual native History scope is invalid')
-        for name in ('workspace_id', 'mount_lifetime', 'record_id'):
+        for name in ('workspace_id', 'mount_lifetime', 'document_id'):
             _uuid(scope.get(name))
         current = (scope, page.get('total_versions'), page.get('heads'))
         if identity is not None and current != identity:
@@ -231,7 +231,7 @@ def _history(control, person, services, deadline):
         if not isinstance(items, list) or len(items) > 12:
             raise RuntimeError('actual History page exceeds canonical bound')
         for version in items:
-            if not isinstance(version, dict) or set(version) != {'id', 'record_id', 'parents', 'actor', 'timestamp_ms', 'content_hash', 'metadata_hash', 'provenance'}:
+            if not isinstance(version, dict) or set(version) != {'id', 'document_id', 'parents', 'actor', 'timestamp_ms', 'content_hash', 'metadata_hash', 'provenance'}:
                 raise RuntimeError('actual History version changed schema')
             actor = version['actor']
             if (not isinstance(actor, dict) or set(actor) != {'person', 'device'}
@@ -242,7 +242,7 @@ def _history(control, person, services, deadline):
                 raise RuntimeError('actual History version has invalid provenance fields')
             key = _uuid(version.get('id'))
             parents = version.get('parents')
-            if (key in versions or version.get('record_id') != scope['record_id']
+            if (key in versions or version.get('document_id') != scope['document_id']
                     or not isinstance(parents, list) or len(parents) > 8 or key in parents):
                 raise RuntimeError('native History duplicated or substituted a version')
             for parent in parents:

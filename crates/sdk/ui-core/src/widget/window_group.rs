@@ -2665,7 +2665,7 @@ impl Widget for WindowGroup {
     }
     crate::provides!(
         dyn crate::widget::FloatingSurfaceProvider,
-        dyn crate::collaboration::participants::CollaborationTopology,
+        dyn crate::collaboration::presences::CollaborationTopology,
         dyn crate::history_mode::capability::FrameworkHistoryTopology,
         dyn crate::widget::controls::ActionControls,
         dyn crate::component_lifecycle::ComponentLifecycle
@@ -3489,7 +3489,7 @@ impl crate::history_mode::capability::FrameworkHistoryTopology for WindowGroup {
     }
 }
 
-impl crate::collaboration::participants::CollaborationTopology for WindowGroup {
+impl crate::collaboration::presences::CollaborationTopology for WindowGroup {
     fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.hosts
             .iter_mut()

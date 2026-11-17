@@ -10,9 +10,9 @@
 //! and gets a grant naming its participation and the call's roster (see
 //! [`tilo_relay_protocol::voice`]).
 //!
-//! A call has no participant limit. A device takes part in one call at a
+//! A call has no member limit. A device takes part in one call at a
 //! time: joining another call ends its earlier participation, so a call's
-//! participants are bounded by the workspace's member devices, not by a constant.
+//! members are bounded by the workspace's member devices, not by a constant.
 //!
 //! What a participation may do is the workspace's current policy for its device:
 //! the call is active, the device is a member, and neither the call's
@@ -50,7 +50,7 @@ use tilo_peer_state::workspace::media::{self, CallPhaseV1, DirectionsV1, Workspa
 use tilo_peer_state::{GovernedAccess, StatePeer};
 use tilo_relay_protocol::voice::{
     CallOperation, CallState, CallSummary, Directions, PARTICIPATION_TTL, Showing, VoiceGrant,
-    VoiceParticipant,
+    VoiceMember,
 };
 use tilo_relay_protocol::{AuthenticatedPeer, Envelope};
 use tokio::sync::mpsc;
@@ -118,9 +118,9 @@ struct Watcher {
 }
 
 impl Participation {
-    /// It as the participants of its call see it.
-    fn participant(&self) -> VoiceParticipant {
-        VoiceParticipant {
+    /// It as the members of its call see it.
+    fn member(&self) -> VoiceMember {
+        VoiceMember {
             device_public_key: self.device,
             user_public_key: self.user,
             publishes: self.directions.publish,
@@ -156,7 +156,7 @@ impl State {
     }
 
     /// End the participations of `device` its join of `call` replaces. The
-    /// other calls it left, whose participants hear the change.
+    /// other calls it left, whose members hear the change.
     fn end_device(&mut self, device: [u8; 32], call: &[u8; 32]) -> Vec<[u8; 32]> {
         let earlier: Vec<[u8; 32]> = self
             .participations
@@ -195,28 +195,28 @@ impl Calls {
 
     fn grant(state: &State, id: &[u8; 32]) -> Option<VoiceGrant> {
         let own = state.participations.get(id)?;
-        let mut participants: Vec<VoiceParticipant> = state
+        let mut members: Vec<VoiceMember> = state
             .in_call(&own.call)
-            .map(|(_, participation)| participation.participant())
+            .map(|(_, participation)| participation.member())
             .collect();
-        participants.sort_by_key(|participant| participant.device_public_key);
+        members.sort_by_key(|member| member.device_public_key);
         Some(VoiceGrant {
             call: own.call,
             epoch: own.epoch,
             participation: *id,
             directions: own.directions,
-            participants,
+            members,
         })
     }
 
-    /// Send every participant of `calls` its current grant.
+    /// Send every member of `calls` its current grant.
     fn announce(state: &State, calls: &[[u8; 32]]) {
         for (id, participation) in &state.participations {
             if !calls.contains(&participation.call) {
                 continue;
             }
             if let Some(grant) = Self::grant(state, id) {
-                // A participant whose queue is full hears the roster at its
+                // A member whose queue is full hears the roster at its
                 // next heartbeat.
                 let _ = participation.outbound.try_send(Envelope::VoiceGranted {
                     workspace_id: participation.workspace_id,
@@ -226,7 +226,7 @@ impl Calls {
         }
     }
 
-    /// Send every participant of `call` but `joined` its current grant:
+    /// Send every member of `call` but `joined` its current grant:
     /// `joined` has its own as the answer to its join.
     fn announce_to_others(state: &State, call: [u8; 32], joined: [u8; 32]) {
         for (other, participation) in &state.participations {
@@ -244,7 +244,7 @@ impl Calls {
 
     /// Re-derive every participation in `workspace` from its committed policy:
     /// refuse those that may no longer take part, update the others, and
-    /// send the participants of every call that changed their new grants.
+    /// send the members of every call that changed their new grants.
     fn observe(&self, workspace: &GovernedWorkspace) {
         let policy = Policy::read(workspace);
         let mut state = self.state();
@@ -292,7 +292,7 @@ impl Calls {
     }
 
     /// End participations not heard from for [`PARTICIPATION_TTL`] or whose
-    /// connection closed. Returns the workspaces that still have participants.
+    /// connection closed. Returns the workspaces that still have members.
     fn expire(&self) -> Vec<String> {
         let mut state = self.state();
         let now = tilo_clock::now();
@@ -418,7 +418,7 @@ impl GovernedWorkspace {
         record: &str,
         channel: &str,
     ) -> Result<media::ChatCallBindingV1, String> {
-        if !self.peer().publication().is_sealed_record(app, record) {
+        if !self.peer().publication().is_sealed_document(app, record) {
             return self
                 .peer()
                 .media()
@@ -477,11 +477,11 @@ fn call_list(state: &State, policy: &Policy) -> Vec<CallSummary> {
         .calls
         .iter()
         .map(|(call, entry)| {
-            let mut participants: Vec<VoiceParticipant> = state
+            let mut members: Vec<VoiceMember> = state
                 .in_call(call)
-                .map(|(_, participation)| participation.participant())
+                .map(|(_, participation)| participation.member())
                 .collect();
-            participants.sort_by_key(|participant| participant.device_public_key);
+            members.sort_by_key(|member| member.device_public_key);
             CallSummary {
                 state: CallState {
                     call: *call,
@@ -490,9 +490,9 @@ fn call_list(state: &State, policy: &Policy) -> Vec<CallSummary> {
                     allowed: from_v1(entry.allowed),
                 },
                 app_id: entry.binding.app_id.clone(),
-                record_id: entry.binding.record_id.clone(),
+                document_id: entry.binding.document_id.clone(),
                 channel_id: entry.binding.channel_id.clone(),
-                participants,
+                members,
             }
         })
         .collect()
@@ -567,7 +567,7 @@ fn transition(
 }
 
 /// The call of `binding`'s channel in `policy`, active: its active call as
-/// it is, its ended call restarted, or a new call where participants publish
+/// it is, its ended call restarted, or a new call where members publish
 /// and subscribe.
 fn open(
     policy: &mut WorkspaceMediaV1,
@@ -726,17 +726,17 @@ impl Workspaces {
     ) -> Result<CallState, String> {
         let CallOperation::Open {
             app_id,
-            record_id,
+            document_id,
             channel_id,
         } = operation
         else {
             return Err("no one moderates the calls of a workspace without a governor here".into());
         };
         if app_id != "so.tilo.chat"
-            || record_id.len() > MAX_CARRIED_NAME
+            || document_id.len() > MAX_CARRIED_NAME
             || channel_id.is_empty()
             || channel_id.len() > MAX_CARRIED_NAME
-            || [record_id, channel_id]
+            || [document_id, channel_id]
                 .iter()
                 .any(|name| name.chars().any(char::is_control))
         {
@@ -744,7 +744,7 @@ impl Workspaces {
         }
         let binding = media::ChatCallBindingV1 {
             app_id: app_id.clone(),
-            record_id: record_id.clone(),
+            document_id: document_id.clone(),
             channel_id: channel_id.clone(),
             channel_object: String::new(),
             chat_workspace_id: String::new(),
@@ -833,17 +833,17 @@ impl Workspaces {
         let binding = match operation {
             CallOperation::Open {
                 app_id,
-                record_id,
+                document_id,
                 channel_id,
             }
             | CallOperation::Start {
                 app_id,
-                record_id,
+                document_id,
                 channel_id,
                 ..
             } => Some(
                 workspace
-                    .call_binding(app_id, record_id, channel_id)
+                    .call_binding(app_id, document_id, channel_id)
                     .await?,
             ),
             // A restarted call keeps its channel, which must still be one.
@@ -859,7 +859,7 @@ impl Workspaces {
                 match bound {
                     Some(bound) => Some(
                         workspace
-                            .call_binding(&bound.app_id, &bound.record_id, &bound.channel_id)
+                            .call_binding(&bound.app_id, &bound.document_id, &bound.channel_id)
                             .await?,
                     ),
                     None => None,
@@ -976,7 +976,7 @@ impl Workspaces {
                     outbound,
                 },
             );
-            tracing::info!(%workspace, call = %hex::encode(call), "voice participant joined");
+            tracing::info!(%workspace, call = %hex::encode(call), "voice member joined");
             id
         };
         changed |= state.participations.get(&id).is_some_and(|participation| {
@@ -1106,7 +1106,7 @@ impl Workspaces {
     }
 
     /// Record what `participation` of `peer` in `call` shows besides its
-    /// voice; when that changed, the call's participants get their grants
+    /// voice; when that changed, the call's members get their grants
     /// again and the workspace's call list watchers the new list.
     pub(crate) fn voice_show(
         &self,
@@ -1259,7 +1259,7 @@ mod tests {
             media::CallV1 {
                 binding: media::ChatCallBindingV1 {
                     app_id: "so.tilo.chat".into(),
-                    record_id: String::new(),
+                    document_id: String::new(),
                     channel_id: "voice".into(),
                     channel_object: "voice".into(),
                     chat_workspace_id: "main".into(),

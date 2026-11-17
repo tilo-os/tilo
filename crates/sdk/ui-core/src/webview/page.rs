@@ -10,7 +10,7 @@
 //! person reviewing what it did. A request then travels with the [`PageActor`] who asks, the
 //! engine keeps a record of what each did ([`PageRequest::Ledger`], [`PageRequest::Fields`]),
 //! and an answer says where its action stands in that record and what the others did
-//! meanwhile ([`PageRecordNote`]).
+//! meanwhile ([`PageResourceNote`]).
 
 use super::KeyModifiers;
 
@@ -177,7 +177,9 @@ impl PageActor {
         } else if let Some(id) = name.strip_prefix("app:") {
             Actor::App(nonempty(id)?.into())
         } else {
-            Actor::Member(MemberId::parse(name)?)
+            Actor::Member(MemberId::Person(
+                tilo_actions::policy::PersonId::parse(name).ok()?,
+            ))
         })
     }
 
@@ -1268,7 +1270,7 @@ pub struct PageReply {
     pub loading: bool,
     /// Where the action stands in the tab's record, and what the tab's other
     /// actors did meanwhile.
-    pub record: PageRecordNote,
+    pub record: PageResourceNote,
 }
 
 /// What an answer says of the tab's record beside its own request.
@@ -1278,7 +1280,7 @@ pub struct PageReply {
 /// out: an operating action's own place in the record, and what the other
 /// actors did since this one last heard from the tab, told once.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct PageRecordNote {
+pub struct PageResourceNote {
     /// The place of the action this answers in the tab's record. Reads take
     /// no place in it.
     pub seq: Option<u64>,
@@ -1291,7 +1293,7 @@ pub struct PageRecordNote {
     pub others_earlier: u32,
 }
 
-impl PageRecordNote {
+impl PageResourceNote {
     /// Whether the answer says nothing of the record: a read by an actor
     /// nobody else acted beside.
     pub fn is_empty(&self) -> bool {
@@ -1325,7 +1327,7 @@ pub struct PageFailure {
     pub message: String,
     /// Where the refused action stands in the tab's record, and what the
     /// tab's other actors did meanwhile: often why it was refused.
-    pub record: PageRecordNote,
+    pub record: PageResourceNote,
 }
 
 impl PageFailure {
@@ -1333,7 +1335,7 @@ impl PageFailure {
         Self {
             code: code.into(),
             message: message.into(),
-            record: PageRecordNote::default(),
+            record: PageResourceNote::default(),
         }
     }
 
@@ -1560,7 +1562,7 @@ pub(crate) fn decode_result(
             .map(str::to_string)
     };
     let message = bounded("message", MAX_MESSAGE_BYTES)?;
-    let record = decode_record_note(value)?;
+    let record = decode_resource_note(value)?;
     let result = if value["ok"].as_bool()? {
         let outline = match &value["outline"] {
             serde_json::Value::Null => None,
@@ -1668,10 +1670,10 @@ pub const MAX_CHANGED_FIELDS: usize = 64;
 /// The longest name a [`PageChange`] carries, in bytes.
 const MAX_CHANGED_NAME_BYTES: usize = 2048;
 
-/// Decode a `page_record` event: the place of an entry the engine set down
+/// Decode a `page_resource` event: the place of an entry the engine set down
 /// that no action's answer carried (what a person typed straight into the
 /// page), and the entry as [`PageRequest::Ledger`] lists it.
-pub(crate) fn decode_record_event(value: &serde_json::Value) -> Option<(u64, serde_json::Value)> {
+pub(crate) fn decode_resource_event(value: &serde_json::Value) -> Option<(u64, serde_json::Value)> {
     let seq = whole_number(&value["seq"]).filter(|seq| *seq > 0)?;
     let entry = value.get("entry").filter(|entry| entry.is_object())?;
     // The entry names its own place, and it is the place the event names.
@@ -1774,7 +1776,7 @@ fn whole_number(value: &serde_json::Value) -> Option<u64> {
 
 /// What an answer says of the tab's record, within its bounds: an answer
 /// that says more than an engine may is refused whole, like any other.
-fn decode_record_note(value: &serde_json::Value) -> Option<PageRecordNote> {
+fn decode_resource_note(value: &serde_json::Value) -> Option<PageResourceNote> {
     let seq = match &value["seq"] {
         serde_json::Value::Null => None,
         seq => Some(whole_number(seq).filter(|seq| *seq > 0)?),
@@ -1801,7 +1803,7 @@ fn decode_record_note(value: &serde_json::Value) -> Option<PageRecordNote> {
     if others.is_empty() && others_earlier > 0 {
         return None;
     }
-    Some(PageRecordNote {
+    Some(PageResourceNote {
         seq,
         others,
         others_earlier,

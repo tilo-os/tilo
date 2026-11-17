@@ -66,20 +66,20 @@ pub enum CollabEvent<C: EndpointCustody = NoCustody> {
     /// Records of this application's trees (a chain's next part, a
     /// container's child) that a peer wrote and no window here holds:
     /// whatever follows those trees holds them. Session-local.
-    RecordsArrived {
+    ResourcesArrived {
         records: Vec<String>,
     },
     /// The workspace's hosts sent everything they hold of the on-demand
-    /// record on `route` (`neighbour_wire::record_sync`) this endpoint read,
+    /// record on `route` (`neighbour_wire::document_sync`) this endpoint read,
     /// and it was not among it, or no host of the workspace is connected:
     /// what reads it shows it unavailable until it arrives, which its
     /// committed read delivers as ever. Session-local; minted by the SDK
     /// endpoint from its committed read.
-    RecordUnavailable {
+    ResourceUnavailable {
         route: RouteSpec,
     },
     /// Session chrome asked this app to bind its viewport/view mode to a
-    /// participant, or release that binding. This is local session control:
+    /// member, or release that binding. This is local session control:
     /// it is never published to collaboration peers.
     FollowChanged {
         peer_id: Option<tilo_actions::MemberId>,
@@ -200,7 +200,7 @@ pub enum CollabEvent<C: EndpointCustody = NoCustody> {
     /// Content the record on `route` references arrived: an answer to
     /// the toolkit's `CollabRequest::WantContent`, or content another app on the record
     /// offered. The bytes are verified against `hash` before use.
-    RecordContent {
+    DocumentContent {
         route: RouteSpec,
         hash: String,
         bytes: Vec<u8>,
@@ -210,7 +210,7 @@ pub enum CollabEvent<C: EndpointCustody = NoCustody> {
     /// ([`ContentState::Pending`](tilo_content::ContentState::Pending)),
     /// waiting for one that could hand it over to connect, or unavailable
     /// from every connected one. It changes as devices come and go.
-    RecordContentState {
+    DocumentContentState {
         route: RouteSpec,
         hash: String,
         state: tilo_content::ContentState,

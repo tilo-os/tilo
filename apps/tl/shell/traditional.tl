@@ -125,7 +125,7 @@ view frame_buttons(a: Layout, p: LayoutPlace, lists: Bool) {
             icon: .more_horizontal,
             icon_only: true,
             role: .bar,
-            subject: menu_resource(p, lists),
+            target: menu_resource(p, lists),
         ) {
             if a.rows.len() > 1 {
                 for r in a.rows {
@@ -158,7 +158,7 @@ view action_bar(a: Layout, room: BarRoom) {
                     icon: .app_window,
                     icon_only: room == .one,
                     role: .bar,
-                    subject: r,
+                    target: r,
                 )
             } else {
                 window_commands(a, p, room)

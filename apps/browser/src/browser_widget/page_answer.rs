@@ -190,7 +190,7 @@ impl BrowserWidget {
     /// `others_earlier`, how many older ones that leaves out. `None` when it
     /// says nothing. The entries are page content, like the rest.
     pub(super) fn page_record_details(
-        record: &ui::webview::PageRecordNote,
+        record: &ui::webview::PageResourceNote,
     ) -> Option<serde_json::Value> {
         if record.is_empty() {
             return None;

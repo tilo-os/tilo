@@ -1,10 +1,10 @@
 use super::*;
-use ui::tilo_resource::MemberId;
 use crate::messages::chat_part;
 use crate::parts::ChatPart;
 use crate::testing::MountedChat;
 use crate::testing::Workspace;
 use ui::tilo_resource::Id;
+use ui::tilo_resource::MemberId;
 
 fn fixture() -> Workspace {
     crate::testing::demo_doc()

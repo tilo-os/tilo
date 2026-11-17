@@ -66,7 +66,7 @@ fn listed(envelope: Envelope) -> Option<Vec<CallSummary>> {
 fn in_call(list: &[CallSummary], channel: &str) -> usize {
     list.iter()
         .filter(|call| call.channel_id == channel && call.state.active)
-        .map(|call| call.participants.len())
+        .map(|call| call.members.len())
         .sum()
 }
 
@@ -116,7 +116,7 @@ async fn whoever_watches_a_workspaces_calls_is_told_each_join_and_leave_unasked(
         let owner = &owner;
         let open = CallOperation::Open {
             app_id: CHAT.into(),
-            record_id: String::new(),
+            document_id: String::new(),
             channel_id: channel.clone(),
         };
         async move { operate(owner, workspace.workspace_id, 1, open).await.ok() }
@@ -136,7 +136,7 @@ async fn whoever_watches_a_workspaces_calls_is_told_each_join_and_leave_unasked(
     .await;
     let alice_in = joined
         .iter()
-        .flat_map(|call| &call.participants)
+        .flat_map(|call| &call.members)
         .next()
         .expect("Alice is listed");
     assert_eq!(alice_in.user_public_key, laptop.cert.user_public_key);
@@ -161,8 +161,8 @@ async fn whoever_watches_a_workspaces_calls_is_told_each_join_and_leave_unasked(
 fn shows(list: &[CallSummary], channel: &str, user: [u8; 32], showing: Showing) -> bool {
     list.iter()
         .filter(|call| call.channel_id == channel && call.state.active)
-        .flat_map(|call| &call.participants)
-        .any(|participant| participant.user_public_key == user && participant.showing == showing)
+        .flat_map(|call| &call.members)
+        .any(|member| member.user_public_key == user && member.showing == showing)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -208,7 +208,7 @@ async fn a_camera_a_shared_screen_and_a_mute_reach_everyone_watching_the_call() 
         let owner = &owner;
         let open = CallOperation::Open {
             app_id: CHAT.into(),
-            record_id: String::new(),
+            document_id: String::new(),
             channel_id: channel.clone(),
         };
         async move { operate(owner, workspace.workspace_id, 1, open).await.ok() }
@@ -233,7 +233,7 @@ async fn a_camera_a_shared_screen_and_a_mute_reach_everyone_watching_the_call() 
             laptop.cert.user_public_key,
             Showing::default()
         ),
-        "a participant joins showing nothing but its voice"
+        "a member joins showing nothing but its voice"
     );
 
     // Alice turns her camera on: Bob is told without asking, and so is
@@ -255,12 +255,8 @@ async fn a_camera_a_shared_screen_and_a_mute_reach_everyone_watching_the_call() 
     })
     .await;
     let regranted = native(&owner, |envelope| {
-        granted(envelope).filter(|grant| {
-            grant
-                .participants
-                .iter()
-                .any(|participant| participant.showing == camera)
-        })
+        granted(envelope)
+            .filter(|grant| grant.members.iter().any(|member| member.showing == camera))
     })
     .await;
     assert_eq!(regranted.participation, grant.participation);

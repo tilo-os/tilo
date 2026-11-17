@@ -135,6 +135,11 @@ impl Default for Spinner {
 }
 
 impl Widget for Spinner {
+    /// A ring the page turns itself, announced to a reader as busy.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("span");
+    }
+
     crate::described!();
 
     fn build_layout(

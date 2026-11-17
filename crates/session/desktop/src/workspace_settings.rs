@@ -148,7 +148,7 @@ fn scope_object_label(scope: &Scope, apps: &dyn AppDirectory) -> String {
 fn scope_phrase(scope: &Scope, object: bool, _apps: &dyn AppDirectory) -> String {
     let (key, args): (&str, Vec<(&str, ui::i18n::ArgValue)>) = match scope {
         Scope::FsPath(path) => fs_scope_phrase(path),
-        Scope::FsRecord(record) => (
+        Scope::FsResource(record) => (
             "workspace-settings-scope-record",
             vec![("id", short_id(record).into())],
         ),
@@ -805,7 +805,7 @@ fn ordered_roster(ws: &Workspace) -> Vec<(UserId, CapRole)> {
 }
 
 /// A member by name, numbered when another member here shares it
-/// ([`ui::presence::ParticipantLabels`]), or by a shortened id.
+/// ([`ui::presence::MemberLabels`]), or by a shortened id.
 fn member_name_or_short_id(ws: &Workspace, id: &MemberId) -> String {
     member_named(ws, id).map_or_else(|| short_id(id.id()), |member| member.name.trim().to_owned())
 }
@@ -1474,14 +1474,14 @@ mod permissions_tests {
         {
             let record = "b0d4e23f-c7cb-4ded-a427-b32cf9da9341";
             assert_eq!(
-                scope_label(&Scope::FsRecord(record.to_string()), &NoAppDirectory),
+                scope_label(&Scope::FsResource(record.to_string()), &NoAppDirectory),
                 "one shared file (b0d4e23f-c…)"
             );
             assert_eq!(
                 capability_allows(
                     &CapOverride::grant(
                         Grantee::person(OWNER),
-                        Scope::FsRecord(record.to_string()),
+                        Scope::FsResource(record.to_string()),
                         Access::Read,
                     )
                     .through("files"),
@@ -1628,7 +1628,7 @@ mod permissions_tests {
                 Scope::Device("camera".into()),
                 Scope::NetHost("*".into()),
                 Scope::NetHost("example.com".into()),
-                Scope::FsRecord("b0d4e23f-c7cb-4ded-a427-b32cf9da9341".into()),
+                Scope::FsResource("b0d4e23f-c7cb-4ded-a427-b32cf9da9341".into()),
             ];
             for scope in &scopes {
                 for verb in [Access::Read, Access::Write] {
@@ -1848,7 +1848,7 @@ mod permissions_tests {
                     Scope::Device(d) => ResourceRef::Device(d.clone()),
                     Scope::NetHost(h) => ResourceRef::NetHost(h.clone()),
                     Scope::FsPath(p) => ResourceRef::FsPath(p.clone()),
-                    Scope::FsRecord(record) => {
+                    Scope::FsResource(record) => {
                         panic!("unexpected scope in the grant table: {record:?}")
                     }
                 };

@@ -19,7 +19,7 @@ use tilo_lock::MutexRecover as _;
 
 /// Records remembered over every lineage (eight bytes each, plus the set's
 /// overhead: a few MiB at most). Past it, lineages are forgotten whole.
-const MAX_RECORDS: usize = 262_144;
+const MAX_DOCUMENTS: usize = 262_144;
 /// Lineages remembered. Past it, lineages are forgotten whole.
 const MAX_LINEAGES: usize = 16_384;
 
@@ -55,7 +55,7 @@ impl Index {
     /// lineage fit.
     fn make_room(&mut self, records: usize) {
         while !self.lineages.is_empty()
-            && (self.records.saturating_add(records) > MAX_RECORDS
+            && (self.records.saturating_add(records) > MAX_DOCUMENTS
                 || self.lineages.len() >= MAX_LINEAGES)
         {
             let Some(victim) = self.lineages.keys().next().cloned() else {
@@ -95,7 +95,7 @@ pub(super) fn last(lineage: &Path, stamp: &Stamp, digest: &[u8; 32]) -> Option<u
 pub(super) fn install(lineage: &Path, stamp: Stamp, last: u64, digests: HashSet<u64>) {
     let mut index = index();
     index.remove(lineage);
-    if digests.len() > MAX_RECORDS {
+    if digests.len() > MAX_DOCUMENTS {
         return;
     }
     index.make_room(digests.len());
@@ -131,7 +131,7 @@ pub(super) fn appended(
     generation.last = generation.last.max(ordinal);
     if generation.digests.insert(short(digest)) {
         index.records = index.records.saturating_add(1);
-        if index.records > MAX_RECORDS {
+        if index.records > MAX_DOCUMENTS {
             index.remove(lineage);
         }
     }

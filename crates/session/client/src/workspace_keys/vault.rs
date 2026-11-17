@@ -2,7 +2,7 @@
 //! the group state it seals.
 //! The vault hands the group encryption service ([`super::KeyService`]) one key derived from the
 //! master key and the store where sealed group state lives. MLS group membership follows the
-//! workspace's access policy through that service's participants; nothing here writes membership.
+//! workspace's access policy through that service's members; nothing here writes membership.
 
 use std::sync::Arc;
 

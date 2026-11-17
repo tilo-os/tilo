@@ -1,27 +1,27 @@
 //! Opening an on-demand record: a record a joining device is not replayed
-//! ([`crate::store::record_sync`]) is sent to it once it asks.
+//! ([`crate::store::document_sync`]) is sent to it once it asks.
 
 use super::{AuthenticatedPeer, Envelope, PeerError, SessionCtx, WorkspaceOperation};
 use tilo_relay_protocol::WorkspaceId;
 
-/// Handle `OpenRecord`: under the admission a replay has, mark the record
+/// Handle `OpenDocument`: under the admission a replay has, mark the record
 /// held by the device, so its live changes reach it from now on, then answer
 /// it in `answer` with everything retained of the record and, after it,
-/// [`Envelope::RecordOpened`]; another person's own record is answered as
+/// [`Envelope::DocumentOpened`]; another person's own record is answered as
 /// not this device's, with nothing of it. The answer is written as a replay is: no live
 /// frame goes between its frames ([`super::answered_as_replay`]).
 /// A chain's head ([`neighbour_wire::chain_head`]) sends the chain's newest
 /// part, and the device follows the chain's heads from then on.
 /// Marking first means no change committed meanwhile is missed; one that is
 /// both sent and retained arrives twice, which a record takes as once.
-pub(super) async fn handle_open_record(
+pub(super) async fn handle_open_document(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     subscribed: &[WorkspaceId],
     envelope: Envelope,
     answer: &mut Vec<Envelope>,
 ) -> Result<Option<Envelope>, PeerError> {
-    let Envelope::OpenRecord {
+    let Envelope::OpenDocument {
         workspace_id,
         channel,
         own,
@@ -79,10 +79,10 @@ pub(super) async fn handle_open_record(
             && (!runtime.store.reaches_person(&read, &peer.user_public_key)
                 || named_owner.is_some_and(|owner| owner != peer.user_public_key))
         {
-            return Ok(Some(Envelope::RecordOpened {
+            return Ok(Some(Envelope::DocumentOpened {
                 workspace_id,
                 channel,
-                answer: tilo_relay_protocol::RecordAnswer::NotYours,
+                answer: tilo_relay_protocol::DocumentAnswer::NotYours,
             }));
         }
         // Its person's device opening their own record says whose it is.
@@ -93,9 +93,9 @@ pub(super) async fn handle_open_record(
             runtime.store.learn_own(&own.app_id, &own.record);
         }
         let device = &peer.device_public_key;
-        runtime.hold_record(device, channel);
+        runtime.hold_document(device, channel);
         if let Some(head) = head {
-            runtime.hold_record(device, head);
+            runtime.hold_document(device, head);
         }
         (
             runtime.store.clone(),
@@ -130,9 +130,9 @@ pub(super) async fn handle_open_record(
     .map_err(|error| PeerError::Protocol(format!("record read: {error}")))??;
     let sent = u32::try_from(frames.len()).unwrap_or(u32::MAX);
     answer.extend(frames);
-    Ok(Some(Envelope::RecordOpened {
+    Ok(Some(Envelope::DocumentOpened {
         workspace_id,
         channel,
-        answer: tilo_relay_protocol::RecordAnswer::Sent { frames: sent },
+        answer: tilo_relay_protocol::DocumentAnswer::Sent { frames: sent },
     }))
 }

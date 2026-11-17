@@ -265,7 +265,7 @@ impl ResourceApp for MessagesShell {
     const TITLE_KEY: &'static str = "messages-app-title";
     const ICON: Option<&'static str> = Some("chat");
 
-    const PERSON_RECORDS: &'static [ui::framework::PersonKind] = &[
+    const PERSON_RESOURCES: &'static [ui::framework::PersonKind] = &[
         ui::framework::PersonKind::shared::<tilo_messaging::PersonAccounts>(),
         ui::framework::PersonKind::shared::<tilo_contact_directory::ContactDirectory>(),
     ];

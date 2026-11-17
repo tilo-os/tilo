@@ -5,10 +5,6 @@
 //! this choice (and as the sRGB colour [`identity_rgb`] gives it) and each
 //! viewer's toolkit paints it at its own theme's lightness and chroma.
 
-use std::collections::HashMap;
-
-use tilo_sort::CompactSort as _;
-
 /// How many hues the presence palette has.
 pub const PRESENCE_LEN: usize = tilo_face::PRESENCE_LEN;
 
@@ -221,12 +217,12 @@ pub fn agent_client(name: &str) -> &str {
         .trim()
 }
 
-/// The agent `participant`'s identity, with the run instance its admission gave it taken off:
+/// The agent `member`'s identity, with the run instance its admission gave it taken off:
 /// `agent:helper@host#2` is `helper@host`. One agent the person admits again wears the colour of
 /// what it is, not of the run that carried it; its name still numbers the runs apart.
 #[must_use]
-pub fn agent_identity(participant: &str) -> &str {
-    let bare = participant.strip_prefix("agent:").unwrap_or(participant);
+pub fn agent_identity(member: &str) -> &str {
+    let bare = member.strip_prefix("agent:").unwrap_or(member);
     bare.rsplit_once('#')
         .filter(|(stem, instance)| {
             !stem.is_empty() && !instance.is_empty() && instance.bytes().all(|b| b.is_ascii_digit())
@@ -259,47 +255,28 @@ impl PresenceHue {
         Self::of_agent_client(name).unwrap_or_else(|| Self::of_identity(agent_client(name)))
     }
 
-    /// The hue a member wears, from who they are: a person the one their identity derives
-    /// ([`Self::of_identity`]), software the one what it is wears ([`Self::of_agent`], the same
-    /// for every run of it) — and, for software, never the hue of the person it acts for
-    /// (`for_person`): it steps clear of them ([`Self::apart_from`]). A person yields a hue to
-    /// nobody. The one rule every surface and record asks.
+    /// The hue a member wears until they choose one, from who they are and nothing else: a person
+    /// the one their identity derives ([`Self::of_identity`]), software the one what it is wears
+    /// ([`Self::of_agent`], the same for every run of it). The one rule and the one key every
+    /// surface asks, so a member is one colour on the bar, in every app and in history.
     #[must_use]
-    pub fn of_member(member: &tilo_action_policy::MemberId, for_person: Option<&str>) -> Self {
+    pub fn of_member(member: &tilo_action_policy::MemberId) -> Self {
         use tilo_action_policy::MemberId;
-        let (MemberId::Agent(id) | MemberId::Bot(id)) = member else {
-            return Self::of_identity(member.id());
-        };
-        let own = Self::of_agent(id);
-        for_person.map_or(own, |person| own.apart_from(Self::of_identity(person)))
+        match member {
+            MemberId::Agent(id) | MemberId::Bot(id) => Self::of_agent(id),
+            MemberId::Person(person) => Self::of_identity(person.as_str()),
+        }
     }
 
-    /// This hue worn clearly apart from `other`: itself, unless it sits on `other`'s hue or
-    /// next to it, where it steps round the ring to the first entry two slots or more away, so
-    /// software is never painted in the colour of the person it acts for. `other` stays where
-    /// it is: a person's colour is theirs.
+    /// The hue `actor` wears: a member's ([`Self::of_member`]), an automation's or an app's the
+    /// one its id derives.
     #[must_use]
-    pub fn apart_from(self, other: Self) -> Self {
-        let distance = |hue: Self| {
-            let ahead = hue
-                .slot()
-                .wrapping_add(PRESENCE_LEN)
-                .wrapping_sub(other.slot())
-                .checked_rem(PRESENCE_LEN)
-                .unwrap_or(0);
-            ahead.min(PRESENCE_LEN.wrapping_sub(ahead))
-        };
-        (0..PRESENCE_LEN)
-            .map(|step| Self::from_slot(self.slot().wrapping_add(step)))
-            .find(|hue| distance(*hue) >= 2)
-            .unwrap_or(self)
+    pub fn of_actor(actor: &tilo_action_policy::Actor) -> Self {
+        match actor.member_id() {
+            Some(member) => Self::of_member(member),
+            None => Self::of_identity(actor.id()),
+        }
     }
-}
-
-/// [`PresenceHue::of_agent`] as the colour it travels as.
-#[must_use]
-pub fn agent_rgb(name: &str) -> (u8, u8, u8) {
-    identity_rgb(PresenceHue::of_agent(name))
 }
 
 /// A presence hue as the identity colour it travels as.
@@ -310,7 +287,7 @@ pub fn identity_rgb(hue: PresenceHue) -> (u8, u8, u8) {
 /// Every colour a peer can be drawn in:the design language's twelve
 /// presence hues ([`PRESENCE_HUES`], 30° apart) at the dark
 /// material's presence lightness and chroma (OKLCH L 0.74, C 0.14, gamut
-/// mapped), as sRGB. Equal lightness and chroma, so no participant looks
+/// mapped), as sRGB. Equal lightness and chroma, so no member looks
 /// more important than another; a closed ring rather than a hash over all
 /// 360 hues, so two people never land a few degrees apart.
 pub const PEER_PALETTE: [(u8, u8, u8); 12] = [
@@ -328,83 +305,13 @@ pub const PEER_PALETTE: [(u8, u8, u8); 12] = [
     (0xee, 0x83, 0xaf), // 355° pink — pinned for "alice"
 ];
 
-/// Give everyone in a workspace a colour nobody else in it is wearing.
-///
-/// [`user_color`] alone can't promise this — it's a hash, so `carol` lands
-/// on `alice`'s pink. Whoever collides steps to the next free ring entry,
-/// walking ids in sorted order so every host agrees despite seeing a
-/// different membership (everyone but itself). `reserved` colours are
-/// already spoken for by an explicit roster choice.
-pub fn assign_peer_colors(
-    ids: &[&str],
-    reserved: &[(u8, u8, u8)],
-) -> HashMap<String, (u8, u8, u8)> {
-    let naturals: Vec<(&str, (u8, u8, u8))> = ids.iter().map(|id| (*id, user_color(id))).collect();
-    assign_peer_colors_from(&naturals, reserved)
-}
-
-/// [`assign_peer_colors`] where each id's own colour is `naturals`: the entry it
-/// starts from, instead of the one its id hashes to. Software wears the colour
-/// what it is wears ([`PresenceHue::of_agent`]), never the one its run's id would
-/// hash to, and it steps aside from a colour already spoken for like anyone else.
-pub fn assign_peer_colors_from(
-    naturals: &[(&str, (u8, u8, u8))],
-    reserved: &[(u8, u8, u8)],
-) -> HashMap<String, (u8, u8, u8)> {
-    let mut sorted: Vec<(&str, (u8, u8, u8))> = naturals.to_vec();
-    sorted.compact_sort_by_key(|(id, _)| *id);
-    sorted.dedup_by(|a, b| a.0 == b.0);
-
-    let mut taken = [false; PEER_PALETTE.len()];
-    for c in reserved {
-        if let Some(i) = PEER_PALETTE.iter().position(|p| p == c)
-            && let Some(slot) = taken.get_mut(i)
-        {
-            *slot = true;
-        }
-    }
-
-    let mut out = HashMap::with_capacity(sorted.len());
-    for (id, natural) in sorted {
-        let start = PEER_PALETTE
-            .iter()
-            .position(|p| *p == natural)
-            // Always a ring member; 0 just keeps a draw path total rather than panicking.
-            .unwrap_or(0);
-        let mut slot = start;
-        for step in 0..PEER_PALETTE.len() {
-            // `PEER_PALETTE.len()` (24) is a nonzero compile-time constant,
-            // so the remainder can never divide by zero; `start`/`step` are
-            // both < 24, so the sum can't realistically overflow either.
-            let i = start
-                .saturating_add(step)
-                .checked_rem(PEER_PALETTE.len())
-                .unwrap_or(0);
-            if !taken.get(i).copied().unwrap_or(false) {
-                slot = i;
-                break;
-            }
-            // More people than colours: share the natural entry; the name still says who is who.
-            slot = start;
-        }
-        if let Some(s) = taken.get_mut(slot) {
-            *s = true;
-        }
-        out.insert(
-            id.to_string(),
-            PEER_PALETTE.get(slot).copied().unwrap_or_default(),
-        );
-    }
-    out
-}
-
 #[cfg(test)]
 mod agent_client_tests {
-    use super::{PRESENCE_LEN, PresenceHue, agent_client, agent_identity};
+    use super::{PresenceHue, agent_client, agent_identity};
 
     tilo_test_env::scenario! {
         /// The hue a person, an agent and an agent's clients wear.
-        fn people_and_their_agents_wear_hues_that_stay_theirs_and_stay_apart;
+        fn people_and_their_agents_wear_hues_that_stay_theirs;
 
         phase a_run_is_its_clients_and_a_client_has_its_hue;
         {
@@ -455,45 +362,6 @@ mod agent_client_tests {
                 PresenceHue::of_agent(agent_identity("agent:claude-code@host#9")),
                 PresenceHue::Orange,
                 "a known client keeps the colour it is known by"
-            );
-        }
-
-        phase an_agent_wears_a_hue_clear_of_its_persons;
-        // Software is never painted in the colour of the person it acts for, and never beside it:
-        // every pair of hues there is lands at least two entries apart, and an agent already clear
-        // of its person keeps the hue it is known by.
-        {
-            let apart = |a: PresenceHue, b: PresenceHue| {
-                let ahead = a
-                    .slot()
-                    .wrapping_add(PRESENCE_LEN)
-                    .wrapping_sub(b.slot())
-                    .checked_rem(PRESENCE_LEN)
-                    .unwrap_or(0);
-                ahead.min(PRESENCE_LEN.wrapping_sub(ahead))
-            };
-            for person in PresenceHue::ALL {
-                for agent in PresenceHue::ALL {
-                    let worn = agent.apart_from(person);
-                    assert_ne!(worn, person, "{agent:?} on {person:?}");
-                    assert!(apart(worn, person) >= 2, "{worn:?} beside {person:?}");
-                }
-            }
-            // A hue already clear of the person's is the one the agent wears.
-            assert_eq!(
-                PresenceHue::Blue.apart_from(PresenceHue::Red),
-                PresenceHue::Blue
-            );
-            // One that is not steps to the next entry that is.
-            assert_eq!(
-                PresenceHue::Blue.apart_from(PresenceHue::Sky),
-                PresenceHue::Violet,
-                "the entry after its neighbour"
-            );
-            assert_eq!(
-                PresenceHue::Blue.apart_from(PresenceHue::Blue),
-                PresenceHue::Magenta,
-                "and the one after its own neighbour"
             );
         }
 

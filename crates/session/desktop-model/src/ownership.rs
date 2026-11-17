@@ -34,7 +34,7 @@ use crate::tree::Layout;
 /// The app a workspace's shared desktop is published under.
 pub const DESKTOP_APP: &str = "so.tilo.browser-desktop";
 /// The record of [`DESKTOP_APP`] holding a workspace's shared desktop.
-pub const DESKTOP_RECORD: &str = "desktop";
+pub const DESKTOP_DOCUMENT: &str = "desktop";
 /// The resource kind of a shared desktop in the published tree.
 pub const DESKTOP_KIND: &str = "tilo.desktop";
 
@@ -127,7 +127,7 @@ pub fn act_node(workspace: &str, touched: &Touched) -> TreePath {
     TreePath::workspace(workspace)
         .app(DESKTOP_APP)
         .kind(DESKTOP_KIND)
-        .resource(DESKTOP_RECORD)
+        .resource(DESKTOP_DOCUMENT)
         .item(touched.id.to_string())
         .field(MODERATION_FIELD)
         .action(touched.act.verb())
@@ -142,7 +142,7 @@ pub fn moderation_node(workspace: &str) -> TreePath {
     TreePath::workspace(workspace)
         .app(DESKTOP_APP)
         .kind(DESKTOP_KIND)
-        .resource(DESKTOP_RECORD)
+        .resource(DESKTOP_DOCUMENT)
         .any(Level::Item)
         .field(MODERATION_FIELD)
         .any(Level::Action)
@@ -605,7 +605,7 @@ mod tests {
                 TreePath::workspace("workspace-1")
                     .app(DESKTOP_APP)
                     .kind(DESKTOP_KIND)
-                    .resource(DESKTOP_RECORD)
+                    .resource(DESKTOP_DOCUMENT)
                     .item("2")
                     .field(MODERATION_FIELD)
                     .action("close")

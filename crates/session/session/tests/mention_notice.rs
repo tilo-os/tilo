@@ -21,12 +21,14 @@ use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ObjType, ROOT};
 use durable_store::{StorageKey, WriteOp};
 use tilo_actions::ActionAddress;
-use tilo_actions::remote::{RemoteActionTarget, application_provider, application_provider_record};
+use tilo_actions::remote::{
+    RemoteActionTarget, application_provider, application_provider_resource,
+};
 use tilo_session::platform::Store;
 use tilo_session::platform::notice::OPEN_ACTION;
 use tilo_session::{AppActions, Options, Records, SearchOptions};
 use ui::mentions::MARK;
-use ui::record::{DocumentId, ResourceType};
+use ui::resource::{DocumentId, ResourceType};
 
 use crate::common::{PERSON, headless};
 
@@ -45,7 +47,7 @@ const KIND: &str = "probe.notebook";
 /// them.
 fn notebook(workspace: &str, person: &str) -> AutoCommit {
     let mut doc = AutoCommit::new();
-    ui::record::init(
+    ui::resource::init(
         &mut doc,
         &DocumentId::parse(RECORD).expect("a record id"),
         &ResourceType::new(KIND),
@@ -91,7 +93,7 @@ fn key_of(app: &str, workspace: &str) -> StorageKey {
 
 /// Write `doc` as `app`'s record of `workspace`, through the store the session reads: the write an
 /// app of the workspace makes.
-fn write_record(store: &Store, app: &str, workspace: &str, doc: &mut AutoCommit) {
+fn write_resource(store: &Store, app: &str, workspace: &str, doc: &mut AutoCommit) {
     let key = key_of(app, workspace);
     let lease = store.lease(&key).expect("the record's key is this app's");
     let bytes = doc.save();
@@ -152,7 +154,7 @@ fn opening_in(
         "the app that keeps the record, in the workspace that holds it: {target:?}"
     );
     assert_eq!(
-        application_provider_record(&target.provider),
+        application_provider_resource(&target.provider),
         Some(RECORD),
         "on the record the notice names: {target:?}"
     );
@@ -227,7 +229,7 @@ fn a_mention_in_a_record_is_told_and_choosing_it_opens_the_record() {
 
     // An app of the workspace writes a record that mentions the person, and they are told.
     let written = Instant::now();
-    write_record(
+    write_resource(
         &store,
         PROBE,
         &workspace,

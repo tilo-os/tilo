@@ -28,7 +28,7 @@ fn unserved_surface() -> Vec<u8> {
 
 /// What a member's device asks the workspace for.
 fn want(requester: u64, workspace: &str, hash: &str) -> Vec<u8> {
-    postcard::to_allocvec(&NeighbourMsg::RecordContentWant {
+    postcard::to_allocvec(&NeighbourMsg::DocumentContentWant {
         requester,
         app_id: APP.into(),
         cluster_id: workspace.into(),
@@ -40,7 +40,7 @@ fn want(requester: u64, workspace: &str, hash: &str) -> Vec<u8> {
 
 /// What device `member` answers the host with: the surface `bytes`, whole.
 fn answer(host: &[u8; 32], member: [u8; 32], workspace: &str, bytes: &[u8]) -> Vec<u8> {
-    postcard::to_allocvec(&NeighbourMsg::RecordContentPiece {
+    postcard::to_allocvec(&NeighbourMsg::DocumentContentPiece {
         responder: neighbour_wire::peer_handle(&member),
         requester: neighbour_wire::peer_handle(host),
         app_id: APP.into(),
@@ -58,7 +58,7 @@ fn gathered(frames: &[Vec<u8>]) -> Option<Vec<u8>> {
     let mut whole = Vec::new();
     for frame in frames {
         match postcard::from_bytes(frame).unwrap() {
-            NeighbourMsg::RecordContentPiece {
+            NeighbourMsg::DocumentContentPiece {
                 requester,
                 total,
                 offset,
@@ -70,7 +70,7 @@ fn gathered(frames: &[Vec<u8>]) -> Option<Vec<u8>> {
                 whole.append(&mut bytes);
                 assert_eq!(total, u64::try_from(whole.len()).unwrap_or(u64::MAX));
             }
-            NeighbourMsg::RecordContentLacks { .. } => return None,
+            NeighbourMsg::DocumentContentLacks { .. } => return None,
             other => panic!("a piece of content, or word that the host keeps none: {other:?}"),
         }
     }

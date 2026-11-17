@@ -350,7 +350,7 @@ impl SyncFolder {
             .filter(|(path, _)| !self.baseline.entries.contains_key(*path))
             .map(|(path, entry)| ((entry.stamp.dev, entry.stamp.ino), path.as_str()))
             .collect();
-        let remote_by_record: HashMap<[u8; 16], &str> = remote
+        let remote_by_document: HashMap<[u8; 16], &str> = remote
             .iter()
             .filter_map(|(path, entry)| Some((entry.record?, path.as_str())))
             .collect();
@@ -362,7 +362,8 @@ impl SyncFolder {
                 continue;
             };
             if local.contains_key(&from) {
-                if let Some(to) = renamed_remotely(&from, &base, local, remote, &remote_by_record) {
+                if let Some(to) = renamed_remotely(&from, &base, local, remote, &remote_by_document)
+                {
                     let target = self.root.join(to);
                     if let Some(parent) = target.parent() {
                         std::fs::create_dir_all(parent)?;
@@ -531,9 +532,9 @@ fn renamed_remotely<'a>(
     base: &Synced,
     local: &BTreeMap<String, LocalEntry>,
     remote: &BTreeMap<String, RemoteEntry>,
-    remote_by_record: &HashMap<[u8; 16], &'a str>,
+    remote_by_document: &HashMap<[u8; 16], &'a str>,
 ) -> Option<&'a str> {
-    let to = *remote_by_record.get(&base.record?)?;
+    let to = *remote_by_document.get(&base.record?)?;
     let unchanged_locally = local
         .get(from)
         .is_some_and(|l| l.dir == base.dir && (l.dir || l.stamp == base.local));

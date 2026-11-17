@@ -69,7 +69,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             })
             .and_then(|entry| {
                 entry
-                    .get("record_id")
+                    .get("document_id")
                     .and_then(Value::as_str)
                     .filter(|record| !record.is_empty())
                     .map(str::to_owned)
@@ -78,7 +78,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             Some(record) => json!({"update": {
                 "state": "succeeded",
                 "output": {"value": {
-                    "provider": format!("{}:{app_id}:{record}", tilo_actions::remote::RECORD_PROVIDER),
+                    "provider": format!("{}:{app_id}:{record}", tilo_actions::remote::RESOURCE_PROVIDER),
                     "record": record,
                 }},
             }}),

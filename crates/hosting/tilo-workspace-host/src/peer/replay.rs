@@ -54,7 +54,7 @@ impl ResumeLog {
 
 /// Record frames written to `workspace_id` in its resume log, if it has one,
 /// and return the position to write after them.
-pub(super) fn resume_record<'f>(
+pub(super) fn resume_document<'f>(
     session: &SessionCtx<'_>,
     workspace_id: WorkspaceId,
     frames: impl IntoIterator<Item = &'f Envelope>,
@@ -73,12 +73,12 @@ pub(super) struct ReplayWrite {
 }
 /// Whether the answer to `env` goes to the writer as a replay does: no live
 /// frame is written until it is. A subscription's replay ends in its
-/// `Ready`, an opened record's answer in its `RecordOpened`; a live frame
+/// `Ready`, an opened record's answer in its `DocumentOpened`; a live frame
 /// between their frames would reach the device ahead of what it builds on.
 pub(super) const fn answered_as_replay(env: &Envelope) -> bool {
     matches!(
         env,
-        Envelope::Subscribe { .. } | Envelope::SubscribeFrom { .. } | Envelope::OpenRecord { .. }
+        Envelope::Subscribe { .. } | Envelope::SubscribeFrom { .. } | Envelope::OpenDocument { .. }
     )
 }
 
@@ -277,7 +277,7 @@ impl ReplayFilter {
             person: peer.user_public_key,
             payloads: store.payloads().clone(),
             store,
-            every_frame: run.authority.every_record(),
+            every_frame: run.authority.every_document(),
             channel_reader: session
                 .channel_reader
                 .load(std::sync::atomic::Ordering::Relaxed),
@@ -377,14 +377,14 @@ pub(super) async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
         crate::timing::event("join.replay_total", replaying, replayed_frames);
         authorize_replay(&ws, &StateSource::new(peer, session), &ticket.authority).await?;
         // A host attached to the workspace was replayed every record.
-        let records_when_opened = {
+        let documents_when_opened = {
             let runtime = ws.lock().await;
-            runtime.store.records_when_opened() && !runtime.attached(&peer.device_public_key)
+            runtime.store.documents_when_opened() && !runtime.attached(&peer.device_public_key)
         };
         reply = Some(Envelope::Ready {
             workspace_id,
             pending_deltas: u32::try_from(replayed_frames).unwrap_or(u32::MAX),
-            records_when_opened,
+            documents_when_opened,
         });
         completed_replay = Some((
             catchup.clone(),
@@ -418,7 +418,7 @@ pub(super) async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
             .write_all(&encode_charged(&reply, session, false)?)
             .await?;
         if let Envelope::Ready { workspace_id, .. } = &reply
-            && let Some(position) = resume_record(session, *workspace_id, [])
+            && let Some(position) = resume_document(session, *workspace_id, [])
         {
             write
                 .write_all(&encode_charged(&position, session, false)?)
@@ -555,7 +555,7 @@ async fn write_replay_batch<W: tokio::io::AsyncWrite + Unpin>(
     while let Some(frame) = frames.front() {
         if filter.leaves_out(frame, run.catchup) {
             // Counted as delivered: a resume has nothing of it to send again.
-            let _ = resume_record(session, run.workspace_id, [frame]);
+            let _ = resume_document(session, run.workspace_id, [frame]);
             frames.pop_written();
             continue;
         }
@@ -565,7 +565,7 @@ async fn write_replay_batch<W: tokio::io::AsyncWrite + Unpin>(
         trace_native_publication("replay_written", frame, Some(&peer.device_public_key));
         // The position follows after `Ready`; a reconnect
         // before it replays these frames once more.
-        let _ = resume_record(session, run.workspace_id, [frame]);
+        let _ = resume_document(session, run.workspace_id, [frame]);
         frames.pop_written();
     }
     let written = WrittenBatch(frames.number);

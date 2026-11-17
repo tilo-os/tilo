@@ -63,7 +63,7 @@ impl Reads {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnitKind {
     Action,
-    /// An action's `require`: whether it can run on its subject now.
+    /// An action's `require`: whether it can run on its target now.
     Requirement,
     /// An action's `applies`: whether it can run on the item where it is offered.
     Applies,
@@ -101,7 +101,7 @@ impl UnitKind {
 /// One function a package exports, as a profile names it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Unit {
-    /// What it is called: its subject's type and its own name, then what kind of declaration
+    /// What it is called: its target's type and its own name, then what kind of declaration
     /// it is (`Task.due_today requirement`, `Task.home view`, `notes.add fn`).
     pub name: String,
     pub kind: UnitKind,
@@ -404,7 +404,7 @@ pub fn units_of(meta: &Meta, lines: &[Line]) -> BTreeMap<String, Rc<Unit>> {
         action_units(&mut units, meta, lines, action);
     }
     for view in &meta.views {
-        let subject = view.params.first().map(|p| short_ty(&p.ty));
+        let target = view.params.first().map(|p| short_ty(&p.ty));
         let kind = if view.row_of.is_some() {
             UnitKind::RowView
         } else {
@@ -416,19 +416,19 @@ pub fn units_of(meta: &Meta, lines: &[Line]) -> BTreeMap<String, Rc<Unit>> {
             lines,
             format!("v_{}", view.id),
             kind,
-            subject.as_deref(),
+            target.as_deref(),
             &view.name,
         );
     }
     for function in &meta.fns {
-        let subject = function.params.first().map(|p| short_ty(&p.ty));
+        let target = function.params.first().map(|p| short_ty(&p.ty));
         add_unit(
             &mut units,
             meta,
             lines,
             format!("n_{}", function.id),
             UnitKind::Fn,
-            subject.as_deref(),
+            target.as_deref(),
             &function.name,
         );
     }
@@ -454,8 +454,8 @@ fn action_units(
     lines: &[Line],
     action: &tilolang::meta::ActionMeta,
 ) {
-    let subject = action.params.first().map(|p| short_ty(&p.ty));
-    let subject = subject.as_deref();
+    let target = action.params.first().map(|p| short_ty(&p.ty));
+    let target = target.as_deref();
     let name = if action.scenario {
         format!("{} scenario", action.name)
     } else {
@@ -467,7 +467,7 @@ fn action_units(
         lines,
         format!("a_{}", action.id),
         UnitKind::Action,
-        if action.scenario { None } else { subject },
+        if action.scenario { None } else { target },
         &name,
     );
     if action.guard {
@@ -477,7 +477,7 @@ fn action_units(
             lines,
             format!("q_{}", action.id),
             UnitKind::Requirement,
-            subject,
+            target,
             &action.name,
         );
     }
@@ -488,7 +488,7 @@ fn action_units(
             lines,
             format!("p_{}", action.id),
             UnitKind::Applies,
-            subject,
+            target,
             &action.name,
         );
     }
@@ -502,14 +502,14 @@ fn action_units(
                 lines,
                 default.export.clone(),
                 UnitKind::Default,
-                subject,
+                target,
                 &format!("{} {}", action.name, param.name),
             );
         }
     }
 }
 
-/// Add the unit the export `export` runs as: named `subject.name kind`, placed at the line
+/// Add the unit the export `export` runs as: named `target.name kind`, placed at the line
 /// `lines` has for it.
 fn add_unit(
     units: &mut BTreeMap<String, Rc<Unit>>,
@@ -517,11 +517,11 @@ fn add_unit(
     lines: &[Line],
     export: String,
     kind: UnitKind,
-    subject: Option<&str>,
+    target: Option<&str>,
     name: &str,
 ) {
-    let named = match subject {
-        Some(subject) => format!("{subject}.{name} {}", kind.noun()),
+    let named = match target {
+        Some(target) => format!("{target}.{name} {}", kind.noun()),
         None => format!("{name} {}", kind.noun()),
     };
     let (file, line) = lines

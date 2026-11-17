@@ -39,12 +39,12 @@ pub(crate) const PACKAGE_PRIMARY: &str = "@tilo:package-primary";
 
 /// The record part: the app's primary record, or a prefixed record id.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RecordSegment {
+pub enum ResourceSegment {
     Primary,
     Id(String),
 }
 
-impl RecordSegment {
+impl ResourceSegment {
     /// A record id as the store spells it. The package primary and the wire's
     /// empty record both become [`Self::Primary`], so it has one spelling.
     ///
@@ -414,7 +414,7 @@ impl LinkSecrets {
 pub struct LinkTarget {
     pub scope: Scope,
     pub app: Option<AppId>,
-    pub record: Option<RecordSegment>,
+    pub record: Option<ResourceSegment>,
     pub resource: Option<ResourceAddress>,
     /// A `ResourceViewSpec::id`; `None` is the primary view.
     pub view: Option<String>,
@@ -444,12 +444,12 @@ impl LinkTarget {
     /// # Errors
     ///
     /// [`LinkError::BadProvider`] for any other shape.
-    pub fn from_provider(provider: &str) -> Result<(AppId, RecordSegment), LinkError> {
+    pub fn from_provider(provider: &str) -> Result<(AppId, ResourceSegment), LinkError> {
         let rest = provider
             .strip_prefix("record:")
             .ok_or(LinkError::BadProvider)?;
         let (app, record) = rest.split_once(':').ok_or(LinkError::BadProvider)?;
-        Ok((AppId::parse(app)?, RecordSegment::new(record)?))
+        Ok((AppId::parse(app)?, ResourceSegment::new(record)?))
     }
 
     /// The structural rules a target must meet to be written.
@@ -467,8 +467,8 @@ impl LinkTarget {
         if self.view.is_some() && self.record.is_none() {
             return Err(LinkError::Incomplete("it names a view but no document"));
         }
-        if let Some(RecordSegment::Id(id)) = &self.record
-            && RecordSegment::new(id)? != RecordSegment::Id(id.clone())
+        if let Some(ResourceSegment::Id(id)) = &self.record
+            && ResourceSegment::new(id)? != ResourceSegment::Id(id.clone())
         {
             return Err(LinkError::NonCanonical("write the primary record as -"));
         }
@@ -523,8 +523,8 @@ impl LinkTarget {
             encode::push_segment(out, app.as_str());
         }
         match &self.record {
-            Some(RecordSegment::Primary) => out.push_str("/-"),
-            Some(RecordSegment::Id(id)) => {
+            Some(ResourceSegment::Primary) => out.push_str("/-"),
+            Some(ResourceSegment::Id(id)) => {
                 out.push('/');
                 encode::push_segment(out, id);
             }
@@ -695,24 +695,24 @@ mod tests {
         assert!(AppId::parse("chat").is_err(), "an app id always has a dot");
         assert!(AppId::parse("so..chat").is_err());
         assert_eq!(
-            RecordSegment::new("@tilo:package-primary").unwrap(),
-            RecordSegment::Primary
+            ResourceSegment::new("@tilo:package-primary").unwrap(),
+            ResourceSegment::Primary
         );
-        assert_eq!(RecordSegment::new("").unwrap(), RecordSegment::Primary);
-        assert!(RecordSegment::new("no-prefix").is_err());
-        assert!(RecordSegment::new(":x").is_err());
+        assert_eq!(ResourceSegment::new("").unwrap(), ResourceSegment::Primary);
+        assert!(ResourceSegment::new("no-prefix").is_err());
+        assert!(ResourceSegment::new(":x").is_err());
         assert_eq!(
             LinkTarget::from_provider("record:so.tilo.chat:").unwrap(),
             (
                 AppId::parse("so.tilo.chat").unwrap(),
-                RecordSegment::Primary
+                ResourceSegment::Primary
             )
         );
         assert_eq!(
             LinkTarget::from_provider("record:so.tilo.notes:uuid:1")
                 .unwrap()
                 .1,
-            RecordSegment::Id("uuid:1".into())
+            ResourceSegment::Id("uuid:1".into())
         );
     }
 
@@ -785,7 +785,7 @@ mod tests {
         }
         target.app = Some(AppId::parse("so.tilo.word-processor").unwrap());
         target.record =
-            Some(RecordSegment::new("uuid:3e0d5a1c-7b2f-4e8a-9c6d-1a2b3c4d5e6f").unwrap());
+            Some(ResourceSegment::new("uuid:3e0d5a1c-7b2f-4e8a-9c6d-1a2b3c4d5e6f").unwrap());
         target.resource = Some(ResourceAddress {
             kind: "word_processor.block".into(),
             id: "b12".into(),
@@ -828,7 +828,7 @@ mod tests {
         .unwrap();
         let target = &arrived.target;
         assert_eq!(target.app.as_ref().map(AppId::as_str), Some("so.tilo.chat"));
-        assert_eq!(target.record, Some(RecordSegment::Primary));
+        assert_eq!(target.record, Some(ResourceSegment::Primary));
         let resource = target.resource.as_ref().unwrap();
         assert_eq!(resource.kind, "chat.channel");
         assert_eq!(resource.id, "c_quiet_software");
@@ -885,7 +885,7 @@ mod tests {
         let ordered = plain(Mode::Desktop, {
             let mut target = LinkTarget::new(workspace("https://tilo.so"));
             target.app = Some(AppId::parse("so.tilo.chat").unwrap());
-            target.record = Some(RecordSegment::Primary);
+            target.record = Some(ResourceSegment::Primary);
             target.discuss = Some(Slug::parse("a-post").unwrap());
             target.view = Some("thread".into());
             target
@@ -906,7 +906,7 @@ mod tests {
     #[test]
     fn structure_is_checked_before_writing() {
         let mut target = LinkTarget::new(Scope::Own);
-        target.record = Some(RecordSegment::Primary);
+        target.record = Some(ResourceSegment::Primary);
         assert_eq!(target.check().unwrap_err().code(), "incomplete");
         target.app = Some(AppId::parse("so.tilo.chat").unwrap());
         target.resource = Some(ResourceAddress {
@@ -916,7 +916,7 @@ mod tests {
         });
         assert_eq!(target.check().unwrap_err().code(), "bad-resource");
         target.resource = None;
-        target.record = Some(RecordSegment::Id("@tilo:package-primary".into()));
+        target.record = Some(ResourceSegment::Id("@tilo:package-primary".into()));
         assert_eq!(target.check().unwrap_err().code(), "non-canonical");
     }
 

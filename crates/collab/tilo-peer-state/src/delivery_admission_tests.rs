@@ -201,8 +201,8 @@ tilo_test_env::scenario! {
                 .is_err()
         );
         let mut wrong_route = message.clone();
-        if let NeighbourMsg::AppDocument { record_id, .. } = &mut wrong_route {
-            *record_id = "tab:2".into();
+        if let NeighbourMsg::AppDocument { document_id, .. } = &mut wrong_route {
+            *document_id = "tab:2".into();
         }
         assert!(
             receiver
@@ -455,7 +455,7 @@ tilo_test_env::scenario! {
             here.receive_from_report(origin, base, now).unwrap();
         }
         assert!(
-            here.seal_record("test.app", "tab:1"),
+            here.seal_document("test.app", "tab:1"),
             "the record is held here and sealed"
         );
         // After the seal a cleartext write is a downgrade, whether the host

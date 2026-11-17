@@ -297,12 +297,12 @@ tilo_test_env::scenario! {
 
         // The record keeps the id-taking action for scripts and agents, but a
         // person picks it on the card, so it is no palette row of its own.
-        let on_record = published
+        let on_resource = published
             .actions
             .iter()
             .find(|spec| spec.id == "advance")
             .unwrap();
-        assert!(!on_record.reaches_people());
+        assert!(!on_resource.reaches_people());
         assert!(
             published
                 .actions

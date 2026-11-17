@@ -4114,12 +4114,15 @@ fn an_agents_narrated_run_lands_at_the_prompt() {
         .update_presence(|presence| presence.apply_interaction(event.clone()).is_ok());
     let mut followed = ui::headless::FollowedView::default();
     assert!(
-        !app.harness()
-            .follow_view("someone-else", &mut ui::headless::FollowedView::default()),
+        !app.harness().follow_view(
+            &ui::permissions::MemberId::person("someone-else"),
+            &mut ui::headless::FollowedView::default()
+        ),
         "not following moves nothing"
     );
-    assert!(app.harness().follow_view("agent:agent", &mut followed));
-    assert!(!app.harness().follow_view("agent:agent", &mut followed));
+    let agent = ui::permissions::MemberId::agent("agent");
+    assert!(app.harness().follow_view(&agent, &mut followed));
+    assert!(!app.harness().follow_view(&agent, &mut followed));
     let audit = app.harness().native_app_audit();
     assert!(audit.is_certified(), "{audit:#?}");
 }

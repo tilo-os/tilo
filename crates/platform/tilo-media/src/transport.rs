@@ -4,7 +4,7 @@
 //! host's playhead at a wall-clock epoch, and the rate. Followers project it to now and
 //! nudge their engine toward the projection; both the projection and the drift
 //! decision ([`correction`]) are pure functions of `(state, now_ms)`. Where the state
-//! is kept and how it reaches the other participants is the app's.
+//! is kept and how it reaches the other members is the app's.
 
 /// Playhead drift (ms) beyond which a follower hard-seeks to the host instead
 /// of letting the small gap ride. Below it the follower stays in sync by simply

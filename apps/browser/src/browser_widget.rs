@@ -83,7 +83,7 @@ mod page_events;
 #[cfg(test)]
 mod page_files_tests;
 mod page_find;
-mod page_record;
+mod page_resource;
 mod page_review_view;
 mod page_stopping;
 mod page_turns;
@@ -538,16 +538,16 @@ pub struct BrowserWidget {
     /// The person's browsing history; `None` keeps it nowhere (a private
     /// window, a screenshot).
     person_bookmarks:
-        Option<ui::framework::PersonRecord<crate::personal_bookmarks::PersonalBookmarks>>,
+        Option<ui::framework::PersonResource<crate::personal_bookmarks::PersonalBookmarks>>,
     personal_bookmarks: Rc<crate::personal_bookmarks::PersonalBookmarkState>,
     personal_bookmarks_revision: Option<u64>,
     personal_open: ui::LocalState<std::collections::BTreeMap<String, String>>,
     personal_bookmark_location: crate::personal_bookmark_view::Location,
-    person_history: Option<ui::framework::PersonRecord<crate::history::BrowsingHistory>>,
+    person_history: Option<ui::framework::PersonResource<crate::history::BrowsingHistory>>,
     untitled_visit: Option<String>,
     continuity: Option<crate::continuity_handoff::Controller>,
     /// The person's address book, which new tabs fill forms from too.
-    address_book: Option<ui::framework::PersonRecord<crate::autofill::AddressBook>>,
+    address_book: Option<ui::framework::PersonResource<crate::autofill::AddressBook>>,
     history_revision: Option<u64>,
     history: History,
     bookmarks: Bookmarks,
@@ -619,11 +619,11 @@ pub struct BrowserWidget {
     page_waiting: std::collections::VecDeque<page_turns::WaitingPage>,
     /// Reads of the tab's record that are with the engine, and their answers
     /// not yet read. They take no turn: the record answers whatever runs.
-    page_record_reads: Vec<page_turns::RecordRead>,
+    page_record_reads: Vec<page_turns::ResourceRead>,
     page_record_answers: Vec<ui::tilo_actions::InvocationUpdate>,
     /// Where this tab's engine stands against the tab's record, which is
-    /// Browser's resource ([`crate::page_record`]).
-    page_record: crate::page_record::TabRecorder,
+    /// Browser's resource ([`crate::page_resource`]).
+    page_resource: crate::page_resource::TabRecorder,
     /// What the window knows of its page's forms: the actions the page
     /// publishes for them, from a read of it or from site memory.
     forms: crate::page_forms::PageForms,
@@ -1228,7 +1228,7 @@ impl BrowserWidget {
 
     pub(crate) fn attach_history(
         &mut self,
-        record: ui::framework::PersonRecord<crate::history::BrowsingHistory>,
+        record: ui::framework::PersonResource<crate::history::BrowsingHistory>,
     ) {
         self.person_history = Some(record);
         self.history_revision = None;
@@ -1242,7 +1242,7 @@ impl BrowserWidget {
 
     pub(crate) fn attach_personal_bookmarks(
         &mut self,
-        record: ui::framework::PersonRecord<crate::personal_bookmarks::PersonalBookmarks>,
+        record: ui::framework::PersonResource<crate::personal_bookmarks::PersonalBookmarks>,
     ) {
         self.person_bookmarks = Some(record);
         self.personal_bookmarks_revision = None;
@@ -1279,14 +1279,14 @@ impl BrowserWidget {
         }
     }
     /// The store a picture of the page is kept in, by hash: the host's
-    /// (`RecordEnv::content`), so the bytes reach the content service.
+    /// (`ResourceEnv::content`), so the bytes reach the content service.
     pub(crate) fn attach_content(&mut self, content: ui::content::ContentStore) {
         self.content = Some(content);
     }
 
     pub(crate) fn attach_address_book(
         &mut self,
-        book: ui::framework::PersonRecord<crate::autofill::AddressBook>,
+        book: ui::framework::PersonResource<crate::autofill::AddressBook>,
     ) {
         self.address_book = Some(book.clone());
         self.credentials.attach_address_book(book);
@@ -1492,7 +1492,7 @@ impl BrowserWidget {
             page_waiting: std::collections::VecDeque::new(),
             page_record_reads: Vec::new(),
             page_record_answers: Vec::new(),
-            page_record: crate::page_record::TabRecorder::default(),
+            page_resource: crate::page_resource::TabRecorder::default(),
             forms: crate::page_forms::PageForms::default(),
             forms_read: forms_read::FormsRead::default(),
             page_review: page_review_view::PageReview::default(),
@@ -3205,7 +3205,7 @@ impl BrowserWidget {
                 WebViewEvent::PageResult { request_id, result } => {
                     self.accept_page_result(request_id, result);
                 }
-                WebViewEvent::PageRecord { seq, entry } => self.hear_page_record(seq, &entry),
+                WebViewEvent::PageResource { seq, entry } => self.hear_page_record(seq, &entry),
                 WebViewEvent::PageChanged(change) => self.hear_page_changed(&change),
                 event @ (WebViewEvent::PageDialog(_) | WebViewEvent::PageDialogClosed { .. }) => {
                     // The question is taken first, so the action it stopped

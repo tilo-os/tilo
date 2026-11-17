@@ -194,6 +194,12 @@ impl Manual {
     }
 }
 impl Widget for Manual {
+    /// What it lays out, each where its own policy put it.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("div");
+        cx.children();
+    }
+
     retained_parts!("Manual", custom_apply_layout);
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.parts.apply_layout(tree, node, origin);

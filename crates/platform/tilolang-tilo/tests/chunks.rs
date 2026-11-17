@@ -452,11 +452,11 @@ fn counts(host: &Host) -> BTreeMap<ChunkNo, (usize, usize)> {
         .collect()
 }
 
-/// The action `name` of the board, invoked on `subject` of the type `ty`, as the API plans it.
+/// The action `name` of the board, invoked on `target` of the type `ty`, as the API plans it.
 pub(crate) fn act(
     host: &Host,
     meta: &Meta,
-    (ty, subject): (&str, &str),
+    (ty, target): (&str, &str),
     name: &str,
     args: Json,
 ) -> DynAction {
@@ -473,7 +473,7 @@ pub(crate) fn act(
         app: BOARD_APP,
         kind: &kind,
         action_id: &action,
-        resource: Some(subject),
+        resource: Some(target),
         args: &args,
         caller: None,
         from: None,

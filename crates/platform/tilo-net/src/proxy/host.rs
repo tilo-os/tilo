@@ -322,6 +322,53 @@ impl reqwest::dns::Resolve for CheckedResolver {
     }
 }
 
+/// A client that reaches only what `destinations` lets it: it follows no
+/// redirect, takes no proxy from the environment, and dials the addresses
+/// `lookup` answered once every one of them was checked.
+fn guarded(destinations: Destinations, lookup: Lookup) -> reqwest::ClientBuilder {
+    crate::http::client()
+        // Bodies arrive decompressed, as a page's `fetch` reads them; the
+        // response limit then bounds what was decompressed.
+        .gzip(true)
+        .brotli(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .referer(false)
+        .connect_timeout(Duration::from_secs(10))
+        .dns_resolver(Arc::new(CheckedResolver {
+            lookup,
+            destinations,
+        }))
+}
+
+/// A client for a host's own request to an address a person named (a model
+/// provider's endpoint), made as the proxy makes its requests: no redirect
+/// followed, no proxy taken from the environment, and under
+/// [`Destinations::Public`] only public addresses dialled, checked at the
+/// lookup the connection uses. A literal address is never looked up, so
+/// ask [`check_destination`] about the URL first.
+///
+/// # Errors
+/// When the client cannot be made.
+pub fn guarded_client(
+    destinations: Destinations,
+    lookup: Lookup,
+) -> Result<reqwest::Client, NetError> {
+    guarded(destinations, lookup)
+        .build()
+        .map_err(|error| NetError::Protocol(error.to_string()))
+}
+
+/// Whether a [`guarded_client`] may be sent to `url`: an http or https
+/// address, on a port the web uses, and under [`Destinations::Public`] no
+/// literal address off the public internet.
+///
+/// # Errors
+/// [`NetError::Blocked`] saying why not.
+pub fn check_destination(url: &Url, destinations: Destinations) -> Result<(), NetError> {
+    check_target(url, destinations).map_err(|refused| NetError::Blocked(refused.message))
+}
+
 #[derive(Debug)]
 struct Refused {
     failure: ProxyFailure,
@@ -569,20 +616,8 @@ impl FetchProxy {
     }
 
     pub fn with_lookup(config: Config, lookup: Lookup) -> Result<Self, NetError> {
-        let client = crate::http::client()
-            // Bodies arrive decompressed, as a page's `fetch` reads them;
-            // the response limit then bounds what was decompressed.
-            .gzip(true)
-            .brotli(true)
-            .redirect(reqwest::redirect::Policy::none())
-            .no_proxy()
-            .referer(false)
-            .connect_timeout(Duration::from_secs(10))
+        let client = guarded(config.destinations, lookup)
             .pool_idle_timeout(Duration::from_secs(30))
-            .dns_resolver(Arc::new(CheckedResolver {
-                lookup,
-                destinations: config.destinations,
-            }))
             .build()
             .map_err(|error| NetError::Protocol(error.to_string()))?;
         let limits = config.limits;

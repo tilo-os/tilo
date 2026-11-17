@@ -184,7 +184,7 @@ impl NativeWorkspaceOwner {
         )?;
         let mut record = candidate.record.clone();
         record.host_hint = Some(hint);
-        self.publish_record(workspace, &candidate, record, None)?;
+        self.publish_document(workspace, &candidate, record, None)?;
         Ok(true)
     }
 }

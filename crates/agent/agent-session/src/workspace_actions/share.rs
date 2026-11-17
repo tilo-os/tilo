@@ -46,7 +46,7 @@ impl Worker {
         let root = self
             .catalogue
             .get(&route.app_id)
-            .is_some_and(|definition| definition.record_kind.as_str() == resource.as_str());
+            .is_some_and(|definition| definition.resource_type.as_str() == resource.as_str());
         let plain = ["view", "start", "end"]
             .iter()
             .all(|name| arguments.get(*name).is_none_or(serde_json::Value::is_null));
@@ -60,7 +60,7 @@ impl Worker {
                 invite: false,
                 args: arguments,
             };
-            return self.record_link(workspace_id, caller, &opened, &request);
+            return self.document_link(workspace_id, caller, &opened, &request);
         }
         let wanted = tilo_actions::remote::ViewResourceQuery {
             id: resource.clone(),
@@ -190,7 +190,7 @@ impl Worker {
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
     )]
-    pub(super) fn record_link(
+    pub(super) fn document_link(
         &self,
         workspace_id: WorkspaceId,
         caller: &Caller,

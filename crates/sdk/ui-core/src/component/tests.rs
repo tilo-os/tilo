@@ -301,7 +301,7 @@ fn sample(ty: &Type) -> Value {
         Type::Float => Value::Float(1.0),
         Type::Bool => Value::Bool(true),
         Type::Actor => Value::Actor {
-            identity: "ada".into(),
+            identity: tilo_actions::MemberId::person("ada").into(),
             name: "Ada".into(),
         },
         Type::Resource => Value::Resource("r".into()),

@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The Mac app. build.sh writes the version, the site, the app and the signing team. -->
+<plist version="1.0"><dict>
+  <key>CFBundleDevelopmentRegion</key><string>en</string>
+  <key>CFBundleDisplayName</key><string>Tilo Assistant</string>
+  <key>CFBundleExecutable</key><string>TiloAssistant</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>CFBundleIdentifier</key><string>so.tilo.assistant.shell</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundleName</key><string>Tilo Assistant</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>0.0.0</string>
+  <key>CFBundleSupportedPlatforms</key><array><string>MacOSX</string></array>
+  <key>CFBundleVersion</key><string>0.0.0</string>
+  <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
+  <key>LSMinimumSystemVersion</key><string>26.4</string>
+  <key>NSAppTransportSecurity</key><dict>
+    <!-- A Tilo stack on this computer is plain http on loopback addresses and on names under
+         localhost. Everything else is https. -->
+    <key>NSAllowsLocalNetworking</key><true/>
+    <key>NSExceptionDomains</key><dict>
+      <key>localhost</key><dict>
+        <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
+        <key>NSIncludesSubdomains</key><true/>
+      </dict>
+    </dict>
+  </dict>
+  <key>NSCameraUsageDescription</key><string>Tilo Assistant shows your camera to the people in a call you join.</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSMicrophoneUsageDescription</key><string>Tilo Assistant listens when you dictate a message or join a call.</string>
+  <key>NSPrincipalClass</key><string>NSApplication</string>
+  <key>NSSpeechRecognitionUsageDescription</key><string>Tilo Assistant turns what you dictate into words on this Mac.</string>
+  <key>TiloApp</key><string>so.tilo.chat</string>
+  <key>TiloSite</key><string>https://tilo.sh</string>
+  <key>TiloTeam</key><string></string>
+</dict></plist>

@@ -319,7 +319,7 @@ impl Fixture {
     ) -> Self {
         Self::with_origin(launcher, host_steps, None)
     }
-    /// As [`Self::with_services`], with `record_changes` the origin of the
+    /// As [`Self::with_services`], with `resource_changes` the origin of the
     /// workspace's records.
     #[allow(
         clippy::too_many_lines,
@@ -328,7 +328,7 @@ impl Fixture {
     fn with_origin(
         launcher: Option<Arc<dyn crate::services::LauncherServices>>,
         host_steps: Vec<Arc<dyn crate::services::HostStepServices>>,
-        record_changes: Option<Arc<dyn crate::services::RecordChangeServices>>,
+        resource_changes: Option<Arc<dyn crate::services::DocumentChangeServices>>,
     ) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let mut identity_env = tilo_test_env::ScopedEnv::new();
@@ -420,7 +420,7 @@ impl Fixture {
                 agent_sessions: Some(native.clone()),
                 workspace_memberships: Some(native.clone()),
                 host_steps,
-                record_changes,
+                resource_changes,
                 ..Default::default()
             },
         );
@@ -499,7 +499,7 @@ impl Fixture {
             peer_id: peer,
             connection_id: peer,
             verified_identity: admitted,
-            record_kind: None,
+            resource_type: None,
             route_access: RouteAccess::Own,
             lease: None,
             _hold: None,

@@ -1,9 +1,9 @@
-use crate::KeptRecord;
+use crate::KeptDocument;
 use crate::TransportOrigin;
-use crate::owner::testing::{APP, WORKSPACE, raw_fixture, record_on_disk};
+use crate::owner::testing::{APP, WORKSPACE, document_on_disk, raw_fixture};
 use crate::owner::{
-    DocumentRead, History, Holding, HostAnswer, NativeWorkspaceOwner, PendingEnrollmentId,
-    RecordWrites, WorkspaceId, open_file,
+    DocumentRead, DocumentWrites, History, Holding, HostAnswer, NativeWorkspaceOwner,
+    PendingEnrollmentId, WorkspaceId, open_file,
 };
 use crate::owner_commit::{CommitOperation, OwnerCommitRequest};
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
@@ -205,7 +205,7 @@ tilo_test_env::scenario! {
             let parts = crate::owner::file_store::parts_of(&joined.path);
             let mode = std::fs::metadata(&parts).unwrap().permissions().mode();
             assert_eq!(mode & 0o077, 0, "the record's directory is owner-only");
-            for (file, _) in record_on_disk(&joined.path) {
+            for (file, _) in document_on_disk(&joined.path) {
                 let mode = std::fs::metadata(&file).unwrap().permissions().mode();
                 assert_eq!(mode & 0o077, 0, "{} is owner-only", file.display());
             }
@@ -241,7 +241,7 @@ tilo_test_env::scenario! {
     {
         let joined = enrolled();
         // The journals beside the files are binary.
-        for (file, bytes) in record_on_disk(&joined.path)
+        for (file, bytes) in document_on_disk(&joined.path)
             .into_iter()
             .filter(|(file, _)| {
                 file.extension()
@@ -272,11 +272,11 @@ tilo_test_env::scenario! {
             .owner
             .commit_document(request.clone(), joined.now)
             .unwrap();
-        let committed = record_on_disk(&joined.path);
+        let committed = document_on_disk(&joined.path);
         let retry = joined.owner.commit_document(request, joined.now).unwrap();
         assert_eq!(retry.generation, receipt.generation);
         assert_eq!(
-            record_on_disk(&joined.path),
+            document_on_disk(&joined.path),
             committed,
             "an exact retry does not rewrite"
         );
@@ -342,7 +342,7 @@ tilo_test_env::scenario! {
                 &BTreeMap::from([(newest(owner), HostAnswer::Refused)]),
             )
             .unwrap();
-        let answered = RecordWrites {
+        let answered = DocumentWrites {
             pending: 0,
             durable: 1,
             refused: 1,
@@ -362,7 +362,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             owner
-                .record_writes(workspace)
+                .document_writes(workspace)
                 .get(&(APP.to_owned(), String::new())),
             Some(&answered)
         );
@@ -370,7 +370,7 @@ tilo_test_env::scenario! {
         assert_eq!(topic(&reopened).as_deref(), Some("kept"));
         assert_eq!(
             reopened
-                .record_writes(workspace)
+                .document_writes(workspace)
                 .get(&(APP.to_owned(), String::new())),
             Some(&answered)
         );
@@ -441,7 +441,7 @@ tilo_test_env::scenario! {
             })
             .unwrap();
         let message = joined.replay.clone();
-        let before = record_on_disk(&joined.path);
+        let before = document_on_disk(&joined.path);
         let generation = joined
             .owner
             .with_current(joined.workspace, |view| Ok(view.generation()))
@@ -468,7 +468,7 @@ tilo_test_env::scenario! {
             "an unchanged authenticated replay must reuse the actual committed generation"
         );
         assert_eq!(
-            record_on_disk(&joined.path),
+            document_on_disk(&joined.path),
             before,
             "an unchanged authenticated replay must not rewrite durable owner state"
         );
@@ -880,7 +880,7 @@ tilo_test_env::scenario! {
             joined.owner.with_current(joined.workspace, |view| {
                 let history = History {
                     open: &mut |_| Err("the record is not sealed".into()),
-                    kept: &mut KeptRecord::default(),
+                    kept: &mut KeptDocument::default(),
                 };
                 view.document_revision(reader, (APP, ""), joined.now, history)
                     .map(|revision| revision.map(|revision| revision == known))
@@ -1091,8 +1091,8 @@ tilo_test_env::scenario! {
         let (keys, _) = rotated_channel();
         commit_sealed(&joined, &keys);
         let mut decryptions = 0;
-        let mut kept = KeptRecord::default();
-        let mut read = |holding: Holding<'_>, kept: &mut KeptRecord| {
+        let mut kept = KeptDocument::default();
+        let mut read = |holding: Holding<'_>, kept: &mut KeptDocument| {
             joined.owner.with_current(joined.workspace, |view| {
                 let open = &mut |op: &collab_types::SignedOp| {
                     decryptions += 1;
@@ -1138,7 +1138,7 @@ tilo_test_env::scenario! {
         let reader = member().verifying_key().to_bytes();
         let (keys, _) = rotated_channel();
         commit_sealed(&joined, &keys);
-        let before = record_on_disk(&joined.path);
+        let before = document_on_disk(&joined.path);
         let mut decryptions = 0;
         let mut opener = |op: &collab_types::SignedOp| {
             decryptions += 1;
@@ -1168,7 +1168,7 @@ tilo_test_env::scenario! {
                         joined.now,
                         History {
                             open: &mut opener,
-                            kept: &mut KeptRecord::default(),
+                            kept: &mut KeptDocument::default(),
                         },
                     )
                     .is_err(),
@@ -1182,7 +1182,7 @@ tilo_test_env::scenario! {
                     joined.now,
                     History {
                         open: &mut opener,
-                        kept: &mut KeptRecord::default(),
+                        kept: &mut KeptDocument::default(),
                     },
                 )
             })
@@ -1204,7 +1204,7 @@ tilo_test_env::scenario! {
                 .unwrap(),
             SECRET
         );
-        assert_eq!(record_on_disk(&joined.path), before);
+        assert_eq!(document_on_disk(&joined.path), before);
         let path = joined.path.clone();
         let workspace = joined.workspace;
         let now = joined.now;
@@ -1218,10 +1218,10 @@ tilo_test_env::scenario! {
                         &collab_types::sealed_ciphertext(op).map_err(|error| error.to_string())?)
                         .map(|bytes| bytes.to_vec()).map_err(|error| error.to_string())
                 },
-                kept: &mut KeptRecord::default(),
+                kept: &mut KeptDocument::default(),
             })
         }).unwrap(), DocumentRead::Unchanged(revision) if revision == captured.revision));
-        assert_eq!(record_on_disk(&path), before);
+        assert_eq!(document_on_disk(&path), before);
     }
 }
 
@@ -1370,7 +1370,7 @@ async fn a_refused_renewal_leaves_the_sealed_write_in_custody_as_it_was() {
     let joined = enrolled();
     let (keys, _) = rotated_channel();
     commit_sealed(&joined, &keys);
-    let committed = record_on_disk(&joined.path);
+    let committed = document_on_disk(&joined.path);
     let later = joined
         .now
         .checked_add(std::time::Duration::from_secs(301))
@@ -1389,7 +1389,7 @@ async fn a_refused_renewal_leaves_the_sealed_write_in_custody_as_it_was() {
         )
         .await
         .unwrap();
-    assert_eq!(record_on_disk(&joined.path), committed);
+    assert_eq!(document_on_disk(&joined.path), committed);
     assert_eq!(
         joined
             .owner

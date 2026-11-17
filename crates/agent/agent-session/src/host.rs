@@ -1,10 +1,10 @@
-//! Agents on a host: each agent's participant on its own thread, every grant
+//! Agents on a host: each agent's member on its own thread, every grant
 //! and agent kept under a state directory, picked up again when the host
 //! restarts.
 //!
 //! [`AgentHost`] owns an [`AgentSupervisor`] whose spawner starts one thread
 //! per agent. The thread mounts its apps, plans with the host's
-//! [`ModelChoice`] and pumps the participant until the agent stops or the
+//! [`ModelChoice`] and pumps the member until the agent stops or the
 //! host shuts down, sleeping between pumps until its session or steering
 //! changes or its presence keep-alive is due. A keeper thread settles expired
 //! grants (the agent stops and the host refuses its device) and writes the
@@ -44,8 +44,8 @@ use crate::apps::AppCatalogue;
 use crate::control::{
     AgentControl, AgentHostLink, AgentIdentity, AgentSupervisor, SupervisorSnapshot,
 };
+use crate::member::{AgentMember, MemberConfig};
 use crate::model::ModelChoice;
-use crate::participant::{AgentParticipant, ParticipantConfig};
 use tilo_lock::MutexRecover as _;
 
 const STATE_FILE: &str = "agents.json";
@@ -417,8 +417,8 @@ fn run_agent(
             .entry(agent_id.clone())
             .or_default(),
     );
-    let mut participant = match AgentParticipant::start_with_store(
-        ParticipantConfig {
+    let mut member = match AgentMember::start_with_store(
+        MemberConfig {
             host: endpoint.host,
             host_cert: endpoint.host_cert,
             workspace,
@@ -430,7 +430,7 @@ fn run_agent(
         planner,
         session,
     ) {
-        Ok(participant) => participant,
+        Ok(member) => member,
         Err(error) => {
             tracing::warn!(agent = %agent_id, %error, "agent could not join its workspace");
             control.fail(&error);
@@ -438,14 +438,14 @@ fn run_agent(
         }
     };
     tracing::info!(agent = %agent_id, model = %shared.model.describe(), "agent joined its workspace");
-    participant.run_until(None, |_| {
+    member.run_until(None, |_| {
         shared.stopping.load(Ordering::Acquire) || control.status() == AgentStatus::Stopped
     });
     if control.status() == AgentStatus::Stopped {
         // One more pump publishes the cleared presence.
-        participant.pump();
+        member.pump();
     }
-    participant.close();
+    member.close();
     tracing::info!(agent = %agent_id, "agent left its workspace");
 }
 

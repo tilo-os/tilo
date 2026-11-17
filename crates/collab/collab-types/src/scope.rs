@@ -8,15 +8,15 @@
 pub const MEDIA_APP: &str = "so.tilo.media";
 
 /// That record.
-pub const WORKSPACE_RECORD: &str = "live";
+pub const WORKSPACE_RESOURCE: &str = "live";
 
 /// One scope of a workspace's live plane.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Scope {
     /// The workspace itself: its layout, presence and activity.
     Workspace { workspace: String },
-    /// One record of the workspace: presence on a record belongs to it.
-    Record { workspace: String, record: String },
+    /// One resource of the workspace: presence on it belongs to it.
+    Resource { workspace: String, resource: String },
 }
 
 impl Scope {
@@ -28,12 +28,12 @@ impl Scope {
         }
     }
 
-    /// The scope of one record.
+    /// The scope of one resource.
     #[must_use]
-    pub fn record(workspace: impl Into<String>, record: impl Into<String>) -> Self {
-        Self::Record {
+    pub fn resource(workspace: impl Into<String>, resource: impl Into<String>) -> Self {
+        Self::Resource {
             workspace: workspace.into(),
-            record: record.into(),
+            resource: resource.into(),
         }
     }
 
@@ -41,17 +41,17 @@ impl Scope {
     #[must_use]
     pub fn workspace_id(&self) -> &str {
         match self {
-            Self::Workspace { workspace } | Self::Record { workspace, .. } => workspace,
+            Self::Workspace { workspace } | Self::Resource { workspace, .. } => workspace,
         }
     }
 
     /// The namespace segment that carries the scope: `workspace` or
-    /// `record/<record id>`.
+    /// `resource/<resource id>`.
     #[must_use]
     pub fn id(&self) -> String {
         match self {
             Self::Workspace { .. } => "workspace".to_owned(),
-            Self::Record { record, .. } => format!("record/{record}"),
+            Self::Resource { resource, .. } => format!("resource/{resource}"),
         }
     }
 }
@@ -71,9 +71,9 @@ mod tests {
     #[test]
     fn scopes_name_their_tracks_apart() {
         let workspace = Scope::workspace(WORKSPACE);
-        let record = Scope::record(WORKSPACE, "notes");
+        let resource = Scope::resource(WORKSPACE, "notes");
         assert_eq!(workspace.id(), "workspace");
-        assert_eq!(record.id(), "record/notes");
-        assert_eq!(record.workspace_id(), WORKSPACE);
+        assert_eq!(resource.id(), "resource/notes");
+        assert_eq!(resource.workspace_id(), WORKSPACE);
     }
 }

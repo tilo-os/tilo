@@ -33,7 +33,7 @@ fn nonce(index: u64, last: bool) -> XNonce {
 }
 
 const fn aad() -> &'static [u8] {
-    Label::RecordContent.as_bytes()
+    Label::DocumentContent.as_bytes()
 }
 
 /// Read `out.len()` bytes from `inner`, fewer only at its end.

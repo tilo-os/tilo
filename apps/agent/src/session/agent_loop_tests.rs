@@ -378,7 +378,7 @@ impl World {
                 provider: None,
                 app_id: "so.tilo.word-processor".into(),
                 cluster_id: Uuid::from_u128(1).to_string(),
-                record_id: "doc-1".into(),
+                document_id: "doc-1".into(),
                 live: true,
                 actions: vec![
                     descriptor(
@@ -443,7 +443,7 @@ impl World {
                 provider: None,
                 app_id: "so.tilo.chat".into(),
                 cluster_id: Uuid::from_u128(1).to_string(),
-                record_id: String::new(),
+                document_id: String::new(),
                 live: true,
                 actions: vec![ExportedAction {
                     state: tilo_actions::ActionState::default(),
@@ -495,7 +495,7 @@ impl World {
                 provider: None,
                 app_id: "so.tilo.browser".into(),
                 cluster_id: Uuid::from_u128(1).to_string(),
-                record_id: String::new(),
+                document_id: String::new(),
                 live: true,
                 actions: vec![
                     tab(
@@ -528,7 +528,7 @@ impl World {
             }),
             app_id: "so.tilo.chat".into(),
             cluster_id: Uuid::from_u128(1).to_string(),
-            record_id: record.into(),
+            document_id: record.into(),
             live,
             actions: vec![ExportedAction {
                 state: tilo_actions::ActionState::default(),
@@ -559,7 +559,7 @@ impl World {
         if let Some(record) = self.second_window {
             surfaces.push(BrokerActionSurface {
                 peer_id: SECOND_PEER,
-                record_id: record.into(),
+                document_id: record.into(),
                 ..surfaces[0].clone()
             });
         }
@@ -587,7 +587,7 @@ impl World {
                 provider: None,
                 app_id: "so.tilo.desktop".into(),
                 cluster_id: Uuid::from_u128(1).to_string(),
-                record_id: String::new(),
+                document_id: String::new(),
                 live: true,
                 actions: vec![
                     open("so.tilo.word-processor", "Writer"),
@@ -618,7 +618,7 @@ impl World {
                 "generation": 1,
                 "opened": [{
                     "app_id": "so.tilo.word-processor",
-                    "record_id": record,
+                    "document_id": record,
                     "strip": "1",
                     "group": "1",
                     "tab": "1"
@@ -2379,9 +2379,9 @@ tilo_test_env::scenario! {
             "command": "1:1",
             "generation": 3,
             "opened": [
-                {"app_id": "so.tilo.notes", "record_id": "n-1"},
-                {"app_id": "so.tilo.word-processor", "record_id": "doc-9"},
-                {"app_id": "so.tilo.word-processor", "record_id": ""}
+                {"app_id": "so.tilo.notes", "document_id": "n-1"},
+                {"app_id": "so.tilo.word-processor", "document_id": "doc-9"},
+                {"app_id": "so.tilo.word-processor", "document_id": ""}
             ]
         });
         assert_eq!(

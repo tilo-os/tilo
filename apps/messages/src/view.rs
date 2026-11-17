@@ -4,10 +4,11 @@ use serde::{Deserialize, Serialize};
 use tilo_contact_directory::{ContactDirectory, routing};
 use tilo_messaging::PersonAccounts;
 use ui::LocalState;
-use ui::framework::{Actions, Effected, Fixture, Live, PersonRecord, ViewCx};
+use ui::framework::{Actions, Effected, Fixture, Live, PersonResource, ViewCx};
 use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::prelude::{Collection, Id};
+use ui::tilo_resource::{MemberId, PersonId};
 use ui::widget::virtual_list::{VecListModel, VirtualList};
 use ui::widget::{
     Button, Column, Container, ConversationLine, ConversationList, DeliveryState, Element,
@@ -27,17 +28,17 @@ struct CapturePeople {
 /// name it calls them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct WorkspacePerson {
-    pub root: String,
+    pub root: PersonId,
     pub name: String,
 }
 
 #[derive(Clone)]
 pub(crate) struct Sources {
-    directory: Option<PersonRecord<ContactDirectory>>,
-    accounts: Option<PersonRecord<PersonAccounts>>,
+    directory: Option<PersonResource<ContactDirectory>>,
+    accounts: Option<PersonResource<PersonAccounts>>,
     record: Option<Live<Messages>>,
     pub(crate) tilo: bool,
-    pub(crate) me: String,
+    pub(crate) me: Option<PersonId>,
     people: Vec<WorkspacePerson>,
     fixture: Rc<CapturePeople>,
 }
@@ -46,7 +47,7 @@ impl Sources {
     /// The person a Tilo conversation is with, by the key it keeps them under: `None` for
     /// anyone the workspace does not name.
     pub(crate) fn workspace_person(&self, root: &str) -> Option<&WorkspacePerson> {
-        self.people.iter().find(|person| person.root == root)
+        self.people.iter().find(|person| person.root == *root)
     }
 
     /// Whether `person` is someone this window can write to, whether the workspace names
@@ -76,13 +77,14 @@ impl Sources {
     pub(crate) fn contacts(&self) -> Rc<ContactDirectory> {
         self.directory.as_ref().map_or_else(
             || Rc::new(self.fixture.directory.clone()),
-            PersonRecord::get,
+            PersonResource::get,
         )
     }
     pub(crate) fn accounts(&self) -> Rc<PersonAccounts> {
-        self.accounts
-            .as_ref()
-            .map_or_else(|| Rc::new(self.fixture.accounts.clone()), PersonRecord::get)
+        self.accounts.as_ref().map_or_else(
+            || Rc::new(self.fixture.accounts.clone()),
+            PersonResource::get,
+        )
     }
     pub(crate) fn record(&self) -> Rc<Messages> {
         self.record
@@ -91,8 +93,8 @@ impl Sources {
     }
     fn revision(&self) -> (u64, u64, u64) {
         (
-            self.directory.as_ref().map_or(0, PersonRecord::revision),
-            self.accounts.as_ref().map_or(0, PersonRecord::revision),
+            self.directory.as_ref().map_or(0, PersonResource::revision),
+            self.accounts.as_ref().map_or(0, PersonResource::revision),
             self.record.as_ref().map_or(0, Live::revision),
         )
     }
@@ -169,8 +171,11 @@ pub(crate) fn choices(sources: &Sources, person: &str) -> Vec<Choice> {
         }
         return vec![Choice {
             service: "tilo".into(),
-            account: sources.me.clone(),
-            recipient: workspace_person.root.clone(),
+            account: sources
+                .me
+                .as_ref()
+                .map_or_else(String::new, |me| me.as_str().to_owned()),
+            recipient: workspace_person.root.as_str().to_owned(),
             association: String::new(),
             scope: String::new(),
             revision: String::new(),
@@ -428,11 +433,7 @@ fn sources(cx: &ViewCx<Messages>) -> Sources {
         },
         record: Some(cx.live().clone()),
         tilo: live,
-        me: cx
-            .me()
-            .and_then(ui::tilo_resource::MemberId::person_id)
-            .map(str::to_owned)
-            .unwrap_or_default(),
+        me: cx.me().and_then(MemberId::as_person).cloned(),
         people,
         fixture: cx.fixture::<CapturePeople>().unwrap_or_default(),
     }
@@ -446,12 +447,10 @@ fn workspace_people(cx: &ViewCx<Messages>) -> Vec<WorkspacePerson> {
         .into_iter()
         .filter(|member| !member.is_self)
         .filter_map(|member| {
-            let root = member.id.person_id()?;
-            (root.len() == 64 && root.bytes().all(|byte| byte.is_ascii_hexdigit())).then(|| {
-                WorkspacePerson {
-                    root: root.to_owned(),
-                    name: member.name,
-                }
+            let root = member.id.as_person()?;
+            root.root().is_some().then(|| WorkspacePerson {
+                root: root.clone(),
+                name: member.name,
             })
         })
         .collect()
@@ -489,7 +488,7 @@ pub(super) fn build(cx: &ViewCx<Messages>, services: &Services) -> Element {
         sending
             .history()
             .or_else(|| live.then(|| services.history.clone()).flatten()),
-        cx.me().and_then(ui::tilo_resource::MemberId::person_id),
+        cx.me().and_then(MemberId::as_person),
         sources.tilo,
     );
     if !cx.mode().is_live()
@@ -500,7 +499,7 @@ pub(super) fn build(cx: &ViewCx<Messages>, services: &Services) -> Element {
     let setup = crate::setup::SetupView::new(
         sending.client(),
         live.then(|| enrollment(services)).flatten(),
-        cx.me().and_then(ui::tilo_resource::MemberId::person_id),
+        cx.me().and_then(MemberId::as_person),
     );
     let groups = crate::groups::GroupsView::new(sending.client());
     register_effects(
@@ -606,7 +605,7 @@ fn sending_and_drafts(
     services: &Services,
 ) -> (
     crate::sending::Sending,
-    Option<PersonRecord<crate::drafts::MessageDrafts>>,
+    Option<PersonResource<crate::drafts::MessageDrafts>>,
 ) {
     let drafts = cx.person::<crate::drafts::MessageDrafts>();
     let sending = crate::sending::Sending::new(
@@ -617,7 +616,7 @@ fn sending_and_drafts(
                 .or_else(|| inherited().map(|(_, messaging)| messaging))
         })
         .flatten(),
-        cx.me().and_then(ui::tilo_resource::MemberId::person_id),
+        cx.me().and_then(MemberId::as_person),
         drafts.clone(),
         direct,
     );
@@ -662,7 +661,7 @@ fn navigation(
     selected: &Selection,
     setup: &crate::setup::SetupView,
     groups: &crate::groups::GroupsView,
-    drafts: Option<&PersonRecord<crate::drafts::MessageDrafts>>,
+    drafts: Option<&PersonResource<crate::drafts::MessageDrafts>>,
 ) -> NavShell {
     let entries = groups.entries(sources, actions);
     // Nobody to message only when the record holds no conversation either: a Messages with
@@ -930,11 +929,11 @@ fn overview(
     sources: &Sources,
     actions: &Actions<Messages>,
     selected: &Selection,
-    drafts: Option<&PersonRecord<crate::drafts::MessageDrafts>>,
+    drafts: Option<&PersonResource<crate::drafts::MessageDrafts>>,
 ) -> Element {
     // The words left in a conversation are shown where the conversation is listed, beside
     // the person they were written for: a draft you cannot find is a draft you have lost.
-    let kept = drafts.map(PersonRecord::get);
+    let kept = drafts.map(PersonResource::get);
     let entries: Vec<_> = held(&sources.record())
         .into_iter()
         .map(Entry::Held)
@@ -942,7 +941,7 @@ fn overview(
             sources
                 .people
                 .iter()
-                .map(|person| Entry::Person(Id::from_raw(&person.root), person.name.clone())),
+                .map(|person| Entry::Person(Id::from_raw(&*person.root), person.name.clone())),
         )
         .chain(
             sources
@@ -1389,7 +1388,7 @@ mod route_tests {
             accounts: None,
             record: None,
             tilo: false,
-            me: String::new(),
+            me: None,
             people: Vec::new(),
             fixture: Rc::new(CapturePeople {
                 directory: ContactDirectory::default(),
@@ -1451,7 +1450,7 @@ mod route_tests {
             accounts: None,
             record: None,
             tilo: false,
-            me: String::new(),
+            me: None,
             people: Vec::new(),
             fixture: Rc::new(CapturePeople {
                 directory: ContactDirectory::default(),
@@ -1541,7 +1540,7 @@ mod route_tests {
             accounts: None,
             record: None,
             tilo: false,
-            me: String::new(),
+            me: None,
             people: Vec::new(),
             fixture: Rc::new(CapturePeople {
                 directory: ContactDirectory::default(),

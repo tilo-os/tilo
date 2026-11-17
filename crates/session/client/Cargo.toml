@@ -2,7 +2,7 @@
 # tests/*.rs are modules of tests/it.rs, not separate binaries
 autotests = false
 name = "tilo-session-client"
-description = "A participant's client of the collaboration plane: the workspaces it takes part in, who is here in each, and this device's own word on them; and the certified relay session a page, an agent or a program is a device of its person by, with its commit outbox, reconnect replay and live plane."
+description = "A member's client of the collaboration plane: the workspaces it takes part in, who is here in each, and this device's own word on them; and the certified relay session a page, an agent or a program is a device of its person by, with its commit outbox, reconnect replay and live plane."
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
@@ -17,7 +17,7 @@ path = "tests/it.rs"
 [dependencies]
 # The answer to a command, which a page awaits and a program waits on.
 oneshot.workspace = true
-# The layout's model: the workspaces a participant takes part in, and the windows presence places
+# The layout's model: the workspaces a member takes part in, and the windows presence places
 # people in.
 tilo-desktop-model = { path = "../desktop-model" }
 collab-types = { path = "../../collab/collab-types" }

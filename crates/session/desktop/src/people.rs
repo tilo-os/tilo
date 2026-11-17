@@ -93,7 +93,7 @@ pub struct RosterRow {
     /// The app that window runs, by its id (what names the place software works in beside its
     /// line, without naming the app it already sits in).
     pub working_app: Option<String>,
-    /// Short participant intention, marked by its [`LineSource`] so model-suggested words cannot be mistaken for a direct quote.
+    /// Short member intention, marked by its [`LineSource`] so model-suggested words cannot be mistaken for a direct quote.
     pub status: Option<RosterStatus>,
     /// What they changed recently in this workspace, newest first: a row with none does not open.
     pub recent: Vec<RecentChange>,

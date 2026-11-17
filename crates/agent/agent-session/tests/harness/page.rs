@@ -66,7 +66,7 @@ pub struct Page {
     /// The semantic work narrated here that the board admits, in order:
     /// the record it was on and the work.
     pub narrated: Vec<(
-        tilo_relay_protocol::live::LiveRecord,
+        tilo_relay_protocol::live::LiveResource,
         tilo_actions::SemanticInteraction,
     )>,
 }
@@ -254,7 +254,7 @@ impl Page {
         DocumentRoute {
             app_id: tilo_desktop_model::ownership::DESKTOP_APP.into(),
             cluster_id: self.cluster_id.clone(),
-            record: tilo_desktop_model::ownership::DESKTOP_RECORD.into(),
+            record: tilo_desktop_model::ownership::DESKTOP_DOCUMENT.into(),
         }
     }
 
@@ -303,7 +303,7 @@ impl Page {
             .engine()
             .record(&layout.cluster_id, &layout.app_id, &layout.record);
         let bytes = read.ok()??;
-        tilo_desktop_model::shared_record::read(&automerge::AutoCommit::load(&bytes).ok()?, None)
+        tilo_desktop_model::shared_resource::read(&automerge::AutoCommit::load(&bytes).ok()?, None)
     }
 
     /// Send `message` to the host.

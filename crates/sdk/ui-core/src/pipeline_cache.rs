@@ -236,7 +236,7 @@ pub(crate) mod first_frame_backdrop {
         let spawned = crate::background::Background::current().spawn(
             "first-frame-backdrop-save",
             move || {
-                if let Err(error) = record_in(&dir, drew) {
+                if let Err(error) = resource_in(&dir, drew) {
                     tracing::debug!(%error, "could not keep the first-frame backdrop hint");
                 }
             },
@@ -247,7 +247,7 @@ pub(crate) mod first_frame_backdrop {
     }
 
     /// `Ok(true)` when the file was written.
-    pub(crate) fn record_in(dir: &Path, drew: bool) -> std::io::Result<bool> {
+    pub(crate) fn resource_in(dir: &Path, drew: bool) -> std::io::Result<bool> {
         if recorded(dir) == Some(drew) {
             return Ok(false);
         }
@@ -268,15 +268,15 @@ mod tests {
             !first_frame_backdrop::expected_in(&dir),
             "a first launch expects no backdrop"
         );
-        assert!(first_frame_backdrop::record_in(&dir, true).unwrap());
+        assert!(first_frame_backdrop::resource_in(&dir, true).unwrap());
         assert!(first_frame_backdrop::expected_in(&dir));
         assert!(
-            !first_frame_backdrop::record_in(&dir, true).unwrap(),
+            !first_frame_backdrop::resource_in(&dir, true).unwrap(),
             "an unchanged hint is not rewritten"
         );
-        assert!(first_frame_backdrop::record_in(&dir, false).unwrap());
+        assert!(first_frame_backdrop::resource_in(&dir, false).unwrap());
         assert!(!first_frame_backdrop::expected_in(&dir));
-        assert!(!first_frame_backdrop::record_in(&dir, false).unwrap());
+        assert!(!first_frame_backdrop::resource_in(&dir, false).unwrap());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;

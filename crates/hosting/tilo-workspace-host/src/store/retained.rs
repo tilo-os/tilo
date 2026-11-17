@@ -215,7 +215,7 @@ fn covers(checkpoint: &[u8], prior: &[u8], workspace: WorkspaceId) -> bool {
 }
 
 #[cfg(test)]
-thread_local! { static RECORD_BYTES: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) }; }
+thread_local! { static DOCUMENT_BYTES: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) }; }
 
 struct Record {
     path: PathBuf,
@@ -232,7 +232,7 @@ impl Record {
     }
     fn from_bytes(path: PathBuf, bytes: Vec<u8>) -> Self {
         #[cfg(test)]
-        RECORD_BYTES.with(|counter| {
+        DOCUMENT_BYTES.with(|counter| {
             let (live, peak) = counter.get();
             counter.set((
                 live.saturating_add(bytes.len()),
@@ -245,7 +245,7 @@ impl Record {
 #[cfg(test)]
 impl Drop for Record {
     fn drop(&mut self) {
-        RECORD_BYTES.with(|counter| {
+        DOCUMENT_BYTES.with(|counter| {
             let (live, peak) = counter.get();
             counter.set((live.saturating_sub(self.bytes.len()), peak));
         });
@@ -287,7 +287,7 @@ fn file_key(metadata: &fs::Metadata) -> ([u64; 2], [i64; 5]) {
 const MAX_DIGESTS: usize = 65_536;
 
 /// The digest of the record at `path`, read only when not remembered.
-fn record_digest(path: &Path, metadata: &fs::Metadata) -> Result<[u8; 32], StoreError> {
+fn resource_digest(path: &Path, metadata: &fs::Metadata) -> Result<[u8; 32], StoreError> {
     #[cfg(unix)]
     let (identity, times) = file_key(metadata);
     #[cfg(unix)]
@@ -351,7 +351,7 @@ fn inspect_delta(
     }
     let metadata = entry.metadata()?;
     let known = if let Some(collected) = collected {
-        let record = record_digest(&entry.path(), &metadata)?;
+        let record = resource_digest(&entry.path(), &metadata)?;
         collected.insert(tail_index::short(&record));
         Some(record)
     } else {
@@ -363,7 +363,7 @@ fn inspect_delta(
     let known = if let Some(known) = known {
         known
     } else {
-        record_digest(&entry.path(), &metadata)?
+        resource_digest(&entry.path(), &metadata)?
     };
     if known != *digest {
         return Ok(());
@@ -648,7 +648,7 @@ impl CheckpointDiscard {
         let Some(entries) = &mut self.entries else {
             return Ok(Step::Done(()));
         };
-        for _ in 0..limit.record_entries() {
+        for _ in 0..limit.entry_bound() {
             let Some(entry) = entries.peek()? else {
                 self.entries = None;
                 match fs::remove_dir(&self.root) {
@@ -861,7 +861,7 @@ impl RetainBuild {
                 // A delta holds no metadata per entry, so its scan takes the
                 // whole entry quantum and needs no ordered pass after it.
                 let quantum = if self.checkpoint {
-                    limit.record_entries()
+                    limit.entry_bound()
                 } else {
                     limit.entries
                 };
@@ -919,7 +919,7 @@ impl RetainBuild {
                 }
             }
             RetainPhase::Inspect(file) => {
-                for _ in 0..limit.record_entries() {
+                for _ in 0..limit.entry_bound() {
                     self.sorter.stats.last_step_work =
                         self.sorter.stats.last_step_work.saturating_add(1);
                     let Some(meta) = read_meta(file)? else {
@@ -961,7 +961,7 @@ impl RetainBuild {
                 }
             }
             RetainPhase::Stage(file) => {
-                for _ in 0..limit.record_entries() {
+                for _ in 0..limit.entry_bound() {
                     self.sorter.stats.last_step_work =
                         self.sorter.stats.last_step_work.saturating_add(1);
                     let Some(meta) = read_meta(file)? else {
@@ -1131,7 +1131,7 @@ impl WorkspaceStore {
         if actual_channel != *channel || !checkpoint {
             return Err(invalid("retained envelope channel or kind mismatch"));
         }
-        self.learn_retained_record(channel, bytes);
+        self.learn_retained_document(channel, bytes);
         let v2 = self.root.join(RETAINED_DIR).join("v2");
         let lineage = v2.join(format!("{}-{}", hex::encode(author), hex::encode(channel)));
         if !v2.is_dir() {
@@ -1350,7 +1350,7 @@ impl WorkspaceStore {
         if actual_channel != *channel || checkpoint != seq.is_none() {
             return Err(invalid("retained envelope channel or kind mismatch"));
         }
-        self.learn_retained_record(channel, &bytes);
+        self.learn_retained_document(channel, &bytes);
         let v2 = self.root.join(RETAINED_DIR).join("v2");
         create_dir(&v2)?;
         let lineage = v2.join(format!("{}-{}", hex::encode(author), hex::encode(channel)));
@@ -1822,11 +1822,11 @@ pub(super) mod tests {
         for index in 2..514 {
             fs::write(active.join(format!("{index:016x}.delta")), &initial).unwrap();
         }
-        RECORD_BYTES.with(|counter| counter.set((0, 0)));
+        DOCUMENT_BYTES.with(|counter| counter.set((0, 0)));
         store
             .retain_delta(&[9; 32], 999, &frame(false, vec![1; 8192], 999))
             .unwrap();
-        let (live, peak) = RECORD_BYTES.with(std::cell::Cell::get);
+        let (live, peak) = DOCUMENT_BYTES.with(std::cell::Cell::get);
         assert_eq!(live, 0);
         assert!(
             peak <= initial.len(),

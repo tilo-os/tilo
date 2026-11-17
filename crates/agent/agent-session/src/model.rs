@@ -8,7 +8,7 @@
 //! more through read-only tools when it needs to, and finishes with a `plan`
 //! naming only operations it was shown. Its answer is
 //! untrusted: every step is mapped back to an offered address here, and then
-//! checked against the delegation and the app's API by the participant like
+//! checked against the delegation and the app's API by the member like
 //! any other step.
 //!
 //! [`GatewayModel`] asks through `tilo-model-gateway`, which holds the
@@ -394,7 +394,7 @@ enum Target {
     /// ([`PlanContext::previews`]).
     New(String),
     Open(String),
-    OpenRecord(DocumentRoute),
+    OpenDocument(DocumentRoute),
 }
 
 /// Words that carry no meaning of their own in an operation's label.
@@ -563,9 +563,9 @@ fn catalogue(context: &PlanContext) -> (Catalogue, BTreeMap<String, Target>) {
                 app: app.clone(),
                 broker_peer_id: None,
                 broker_provider: None,
-                descriptor: open_record_descriptor(app, &route.record, title.as_deref()),
+                descriptor: open_document_descriptor(app, &route.record, title.as_deref()),
             };
-            targets.insert(offer.id(), Target::OpenRecord(route.clone()));
+            targets.insert(offer.id(), Target::OpenDocument(route.clone()));
             offers.push(offer);
         }
         let is_open = context.open.iter().any(|(route, _)| route.app_id == *app);
@@ -640,7 +640,7 @@ fn found_targets(context: &PlanContext, targets: &mut BTreeMap<String, Target>) 
         {
             targets
                 .entry(crate::search::open_id(&doc.route))
-                .or_insert_with(|| Target::OpenRecord(doc.route.clone()));
+                .or_insert_with(|| Target::OpenDocument(doc.route.clone()));
         }
     }
 }
@@ -792,7 +792,7 @@ fn opened_by_step(offer: &Offer, context: &PlanContext) -> bool {
 /// The offer that opens `record`, a document of `app` the workspace already has,
 /// named `title` when its app names it: the title is in its labels, so a
 /// task that names the document finds it.
-fn open_record_descriptor(app: &str, record: &str, title: Option<&str>) -> ActionDescriptor {
+fn open_document_descriptor(app: &str, record: &str, title: Option<&str>) -> ActionDescriptor {
     let (resource_label, action_label) = match title {
         Some(title) => (
             title.to_owned(),
@@ -809,7 +809,7 @@ fn open_record_descriptor(app: &str, record: &str, title: Option<&str>) -> Actio
         did: None,
         state: tilo_actions::ActionState::default(),
         semantic_identity: None,
-        address: surface::open_record_address(app, record),
+        address: surface::open_document_address(app, record),
         resource_kind: surface::APPLICATION_KIND.to_owned(),
         resource_label,
         action_label,
@@ -1332,7 +1332,7 @@ fn answer_steps(
                 carries: None,
                 serves: tag,
             }),
-            Some(Target::OpenRecord(route)) => steps.push(Step {
+            Some(Target::OpenDocument(route)) => steps.push(Step {
                 app: route.app_id.clone(),
                 record: Some(route.record.clone()),
                 action: StepAction::Open,

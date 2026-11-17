@@ -93,19 +93,53 @@ did not place, so every action stays reachable. They all run in the UI host.
 
 A tilolang `view` is a component: typed parameters are props (a `Collection<T>`, `Set<T>` or
 `Map<V>` parameter is handed the field live, never copied, and a loop over it follows its
-inserts and removals), view parameters are slots, action
-parameters are events, and it declares its own view `state`. Other packages' views are
-used like `ui.*` ones.
+inserts and removals), view parameters are parts, action parameters are events, and it declares
+its own view `state`. Other packages' views are used like `ui.*` ones.
+
+A caller fills a view the way it fills a `ui.*` component:
+
+- **Options with defaults.** A parameter may take a default (`online: Bool = false`), which a
+  call that leaves it out gets; an optional event defaults to `.none`.
+- **Parts.** The call's block fills the view's `View` parameters: a section named after one
+  (`aside: { ... }`) fills that one, and the rest of the block fills the content parameter (the one
+  called `content`, else the first). A part the call leaves out is empty.
+- **Events as data.** An `on` clause answers the action parameter it names: `on message: ...`
+  gives `on_message`. A clause that takes a value answers a function parameter with it:
+  `on pick(x): set(chosen, x)` gives `on_pick: (Text) -> Action` the lambda `x -> set(chosen, x)`.
+  The view runs what it was given; it never holds a closure of the caller's.
 
 ```
-/// A dashboard tile: a titled card with a figure and a trend.
-view stat_tile(title: Text, value: Number, trend: List<Number>, on_open: Action) {
-    ui.Card(title: title) {
-        body: { ui.Text(format(value), role: .title); ui.Sparkline(trend) }
-        on activate: on_open
+/// A person as a card: what the caller adds under them, and a button to message them.
+view person_card(
+    name: Text,
+    role: Text,
+    online: Bool = false,
+    extra: View,
+    on_message: Option<Action> = .none,
+) {
+    ui.Card(title: name) {
+        row(gap: .related, align: .center) {
+            ui.Avatar(name: name)
+            ui.Text(role, role: .caption, secondary: true)
+        }
+        extra
+        if let message = on_message {
+            ui.Button("Message", icon: .send) {
+                on press: message
+            }
+        }
     }
 }
+
+person_card("Ada Lovelace", "Leads the release", online: true) {
+    ui.Chip("Design", icon: .tag)
+    on message: set(last, "You messaged Ada")
+}
 ```
+
+A view that takes such parameters expands where it is called, as a `template view` does: its
+nodes are the caller's, and its own `state` is kept per call. A view of values only is a boundary
+of its own, rendered again only when what it read or its arguments changed.
 
 ## 3. Native by default, as a library
 
@@ -210,7 +244,7 @@ and hot paths stay in Rust so Tilo runs well on slow hardware.
 | 1 | options on a component | one argument |
 | 2 | how the parts are laid out | its own `view` |
 | 3 | how a change plays | a `motion:` argument |
-| 4 | a shape of its own | specified, not in the language yet |
+| 4 | a shape of its own | a `ui.Drawing` of shapes as values |
 | 5 | a widget of its own | Rust, shipped with the package |
 
 ### 0. Defaults: nothing said, everything right
@@ -281,7 +315,7 @@ next frame). It changes *how long* the design system's named motions take, never
 the curve stays the theme's spring, reduced motion and a still theme pass through untouched.
 
 The components that own motion take it: `ui.VirtualList`, `ui.ListRow`, `ui.Checkbox`,
-`ui.Badge`, `ui.Section`, `ui.DisclosureRow`, `ui.TreeView`. A list's own pace is the pace of the
+`ui.Badge`, `ui.Section`, `ui.DisclosureRow`, `ui.TreeView`, `ui.Drawing`. A list's own pace is the pace of the
 rows it builds (rung 1 example above), so one option covers a whole list; a row says its own when
 it needs to differ from the list's. `std`'s shapes take the platform's pace — a view that wants
 its own either names the row it builds or composes the list itself (rung 2).
@@ -318,7 +352,8 @@ component that owns the change is the one that knows what it means:
 - **check-off** — `ui.Checkbox`, `ui.ListRow`'s leading box;
 - **reveal** — `ui.Section(collapsible: true)`, `ui.DisclosureRow`, a `ui.TreeView` branch;
 - **reorder** — `ui.VirtualList`, including a move the view state drives (`items.move(x, before: y)`);
-- **emphasis** — `ui.Badge`'s changed count.
+- **emphasis** — `ui.Badge`'s changed count;
+- **a new reading** — `ui.Drawing`'s shapes moving to it (rung 4).
 
 So the whole rung costs an argument:
 
@@ -340,68 +375,81 @@ view inbox(tasks: Tasks) {
 What it does *not* let a view say, and this is deliberate: no duration, no cubic-bezier, no
 per-property easing, no keyframes. An app's motion comes from which named motion plays and at
 which pace, so every app accelerates, settles and respects reduced motion the same way, and a
-theme change reaches all of them. Two things are specified and not in the language yet, and both
-would be a `motion:` on the view rather than a new syntax:
+theme change reaches all of them. A figure a view draws moves with its drawing (`ui.Drawing`,
+rung 4). Two things are specified and not in the language yet, and both would be a `motion:` on
+the view rather than a new syntax:
 
-- a transition on a value a component does not own (a figure that changes when a filter does):
-  today that value lands on the next frame, and the smallest form it will take is the same
+- a transition on a written value a component does not own (a figure that changes when a filter
+  does): today that text lands on the next frame, and the smallest form it will take is the same
   `motion:` on the `ui.Text` that shows it;
 - a view that wants to say what moved as a whole, rather than which component animated.
 
 ### 4. Draw with the design system
 
-A view may draw shapes of its own: paths, arcs, gradients, strokes. Specified, not in the
-language yet, and it will be one described component, so it stays on the same paint path, in the
-same widget tree, with the same damage accounting.
+A view may draw shapes of its own: paths, arcs, washes, strokes and text. It is one described
+component, `ui.Drawing`, so it stays on the same paint path, in the same widget tree, with the
+same damage accounting.
 
-`ui.Drawing` draws a list of shapes held as values. The shapes are values, so a
-drawing is a pure function of what the view reads, it is retained like any other node, and the
-compiler checks it like any other prop. There is no paint callback and no new syntax.
+`ui.Drawing` draws a list of shapes held as values. The shapes are values, so a drawing is a pure
+function of what the view reads, it is retained like any other node, and the compiler checks it
+like any other prop. There is no paint callback and no new syntax.
 
 ```
-/// How full a disk is, as a ring.
-view usage_ring(used: Float) {
+/// How full a disk is, as a ring with its figure inside.
+view usage_ring(used: Float, caption: Text) {
     ui.Drawing([
-        .arc(cx: 0.5, cy: 0.5, radius: 0.42, from: 0.0, to: 1.0, stroke: .track),
+        .arc(cx: 0.5, cy: 0.5, radius: 0.42, from: 0.0, to: 1.0, stroke: .track, weight: .strong),
         .arc(cx: 0.5, cy: 0.5, radius: 0.42, from: 0.0, to: used, stroke: .accent, weight: .strong),
-    ], meaning: .progress, value: .some(used), label: .some("Disk"), height: .some(64.0)) {
-        on press: open_details()
+        .text(x: 0.5, y: 0.45, text: percent(used), role: .title, strong: true),
+        .text(x: 0.5, y: 0.62, text: caption, role: .caption, ink: .muted),
+    ], meaning: .progress, value: .some(used), label: .some("Disk"), height: .some(132.0), motion: .calm) {
+        on press(at): open_details()
     }
 }
 ```
 
 - **Shapes** are the toolkit's enum `ui.Shape`: `.rect(x, y, w, h, round)`, `.ellipse(cx, cy,
   rx, ry)`, `.arc(cx, cy, radius, from, to)` (fractions of a turn from the top), `.line(x1, y1,
-  x2, y2)` and `.path(points, smooth, closed, wash)`. Coordinates are fractions of the
-  drawing's box, so a drawing scales with its layout and never names pixels. A field with a
-  default (`round`, `fill`, `weight`, the path's flags) may be left out, as a record's may.
-  Text in a drawing is not built yet.
+  x2, y2)`, `.path(points, smooth, closed, wash)` and `.text(x, y, text, role, ink, anchor,
+  strong)`. Coordinates are fractions of the drawing's box, so a drawing scales with its layout
+  and never names pixels. A field with a default (`round`, `fill`, `weight`, the path's flags, a
+  text's role and ink) may be left out, as a record's may.
+- **Shapes are computed like any list.** A function returns `List<ui.Shape>`, and `map` and
+  `flat_map` give their lambda the item's place as a second name, so a bar stands where its
+  reading does: `xs.map((x, i) -> ui.Shape.rect(x: i.to_float() * w, y: 1.0 - x, w: w, h: x))`.
 - **Looks come from the theme only.** A fill or stroke is an ink, `ui.Ink`: a role of the
   theme (`.accent`, `.ink`, `.muted`, `.track`, `.success`, `.warning`, `.danger`, `.info`).
   `wash` fades a path's fill out downward. A stroke's `weight` is a token (`.hairline`,
-  `.regular`, `.strong`) multiplied from the theme's border width, and strokes end round.
-  There are no raw colours, sizes or fonts, so a drawing reads right in every theme.
+  `.regular`, `.strong`) multiplied from the theme's border width, and strokes end round. A text
+  is set in one of the theme's type roles (`.title`, `.caption`, ...), `strong` heavier than its
+  role, with its `anchor` (`.start`, `.middle`, `.end`) at its point. There are no raw colours,
+  sizes or fonts, so a drawing reads right in every theme.
 - **What it means is required:** `meaning: .progress | .chart | .picture | .decoration`, with
   `label` and, for progress, `value`. Screen readers and agents read that, not the shapes; a
   decoration is not in the accessibility tree.
-- **Motion** (not built yet): when a shape's numbers change between two readings, the widget
-  is to move them with the platform's motion curve, in Rust, at native refresh. A view never
-  animates.
+- **Motion:** when a shape's numbers change between two readings (an arc's end, a bar's height,
+  a path's points), the widget moves them from where they are drawn to the new reading on the
+  platform's `Reading` motion, in Rust, at native refresh: a reading taken mid-flight goes on from
+  where it is drawn, never jumps. A change of form (a shape added, a path through more points)
+  lands at once. `motion:` sets the pace (rung 3); reduced motion and a still theme land every
+  reading at once. A view never animates.
 - **Retained and idle-free:** the shapes are props of a retained node, so a change of them is a
   patch of that node, and the widget paints them when its frame is drawn, like any widget. It
-  asks for no frame of its own, so an idle drawing costs nothing.
+  asks for frames only while a reading moves, so an idle drawing costs nothing.
 - **Events are data:** `press` carries the index of the topmost shape under the pointer, so a
-  chart's bar or a map's region is pressable without a closure. `hover` is not built yet.
+  chart's bar or a map's region is pressable without a closure; `hover` carries the index of the
+  shape under the pointer as it moves, or none when it leaves them, for the view to keep as state
+  (a bar lifted, its figure shown).
 
 Underneath, `ui.Drawing` is a ui-core widget (`#[derive(Component)]`) that lowers shapes to the
 same `kurbo` paths, fills, strokes and gradients the toolkit's own `Chart` and `Sparkline`
-paint with, resolving each role against the current theme. The component description gains
-the one thing it lacks for this: a closed set of cases *with fields* (`Type::Cases`, as a
-tilolang `enum` with payloads), which the compiler already understands from `enum`.
+paint with, resolving each role against the current theme. Its shapes are a closed set of cases
+*with fields* in the component description (`Type::Cases`, as a tilolang `enum` with payloads).
 
-Until it lands, a view that needs a picture uses the drawn components that exist
-(`ui.Sparkline`, `ui.ProgressRing`, `ui.ProgressBar`, `ui.Icon`), and a view that needs more is at
-rung 5.
+The same description gives the toolkit's drawn components their values: `ui.Chart` plots
+`ui.Series` lines (`.series(values: xs, label: "Reads", ink: .warning)`), and `ui.GraphCanvas`
+places `ui.GraphNode` views and draws the `ui.Connection`s between them
+(`.connection(from: "fetch", to: "build")`).
 
 ### 5. Native: a widget of its own
 

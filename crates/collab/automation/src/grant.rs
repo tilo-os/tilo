@@ -67,7 +67,7 @@ pub fn read_nodes(
         nodes.push(read_node(
             workspace,
             app_id,
-            &tilo_actions::record_sync::record_part(record, 0),
+            &tilo_actions::document_sync::document_part(record, 0),
         ));
     }
     nodes
@@ -492,7 +492,7 @@ pub fn trigger_rules(triggers: &[crate::TriggerSpec]) -> Vec<Rule> {
     let mut out: Vec<Rule> = Vec::new();
     for trigger in triggers {
         let rule = match trigger {
-            crate::TriggerSpec::RecordChanged { kind, .. } => Rule::new(
+            crate::TriggerSpec::ResourceChanged { kind, .. } => Rule::new(
                 any.clone().any(Level::App).kind(kind.clone()),
                 KindSet::READ,
                 Answer::Allow,
@@ -787,7 +787,7 @@ mod tests {
         {
             use crate::{ActorFilter, TriggerSpec};
             let rules = trigger_rules(&[
-                TriggerSpec::RecordChanged {
+                TriggerSpec::ResourceChanged {
                     kind: "chat.workspace".into(),
                     actions: vec!["post".into()],
                     fields: vec![],

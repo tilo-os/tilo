@@ -80,6 +80,34 @@ pub fn open_file_count(pid: u32) -> Option<usize> {
     table::open_file_count(pid)
 }
 
+/// The kernel's start time for `pid`, the value that tells a live process from another
+/// that reused its id. `None` where the system has no process table, or the process is gone.
+#[must_use]
+pub fn start_time(pid: u32) -> Option<u64> {
+    table::start_time(pid)
+}
+
+/// One line naming the live process `pid`: its id and [`start_time`], as [`identity_names`]
+/// reads it back. `None` where the system cannot see the process.
+#[must_use]
+pub fn identity_record(pid: u32) -> Option<String> {
+    Some(format!("{pid} {}\n", start_time(pid)?))
+}
+
+/// Whether `record`, as [`identity_record`] wrote it, names the process `pid` that is alive
+/// now: a process that reused the id has another start time, so its predecessor's record
+/// never names it. Anything but the one record shape is `false`.
+#[must_use]
+pub fn identity_names(record: &str, pid: u32) -> bool {
+    let mut fields = record.split_whitespace();
+    let (Some(record_pid), Some(record_start), None) =
+        (fields.next(), fields.next(), fields.next())
+    else {
+        return false;
+    };
+    record_pid.parse::<u32>() == Ok(pid) && record_start.parse::<u64>().ok() == start_time(pid)
+}
+
 /// Whether this process may read the system's process table: the read error on Linux,
 /// `Ok` where no separate table exists to fail, so an empty list can be told apart from
 /// a denied one.
@@ -131,6 +159,14 @@ mod table {
             .map(|entries| entries.flatten().count())
     }
 
+    /// Field 22 of `/proc/<pid>/stat`. `comm` is parenthesised and may itself hold spaces or a
+    /// `)`, so the last closing parenthesis is what precedes the fields after it.
+    pub fn start_time(pid: u32) -> Option<u64> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let tail = stat.rsplit_once(')')?.1;
+        tail.split_whitespace().nth(19)?.parse().ok()
+    }
+
     pub fn probe() -> std::io::Result<()> {
         std::fs::read_dir("/proc").map(|_| ())
     }
@@ -139,6 +175,10 @@ mod table {
 #[cfg(not(target_os = "linux"))]
 mod table {
     pub const fn open_file_count(_pid: u32) -> Option<usize> {
+        None
+    }
+
+    pub const fn start_time(_pid: u32) -> Option<u64> {
         None
     }
 
@@ -201,5 +241,19 @@ mod tests {
         assert_eq!(open_file_count(own).is_some(), cfg!(target_os = "linux"));
         assert_eq!(open_file_count(u32::MAX), None);
         assert!(probe_process_table().is_ok());
+    }
+
+    #[test]
+    fn a_process_record_names_its_id_and_start_time_and_nothing_else() {
+        let own = id().expect("a native process has an id");
+        let record = identity_record(own).expect("the system describes this process");
+        assert!(identity_names(&record, own), "{record:?}");
+        // Another process, whether a live one or an id nothing has, is never this one.
+        assert!(!identity_names(&record, own.wrapping_add(1)));
+        let start = start_time(own).expect("a start time");
+        assert!(!identity_names(&format!("{own} {}\n", start + 1), own));
+        for malformed in ["", "\n", "not a record", "1", "1 2 3"] {
+            assert!(!identity_names(malformed, own), "{malformed:?}");
+        }
     }
 }

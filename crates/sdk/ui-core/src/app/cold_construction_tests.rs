@@ -44,26 +44,26 @@ tilo_test_env::scenario! {
     phase absent_existing_record_cannot_reach_a_default_new_factory;
     {
         use crate::application::{ApplicationDefinition, ApplicationHost, ComponentRunnerInputs};
-        use crate::record::{DocumentCheckout, DocumentId, ResourceType};
+        use crate::resource::{DocumentCheckout, DocumentId, ResourceType};
         let directory = tempfile::tempdir().unwrap();
         let definition = ApplicationDefinition {
             app_id: "dev.tilo.cold-construction".into(),
             title: "Cold construction probe".into(),
             icon: crate::widget::IconDescriptor::Glyph("C"),
-            record_kind: ResourceType::new("cold.probe"),
+            resource_type: ResourceType::new("cold.probe"),
             required: vec![],
             optional: vec![],
             opens: &[],
-            workspace_record: false,
-            member_record: false,
-            opens_before_record: false,
+            workspace_resource: false,
+            member_resource: false,
+            opens_before_resource: false,
             create: |_, _, _| {
                 Err(crate::launch::LaunchError::Operation(
                     "definition factory ran".into(),
                 ))
             },
         };
-        let checkout = DocumentCheckout::new(DocumentId::for_tab(55), definition.record_kind.clone());
+        let checkout = DocumentCheckout::new(DocumentId::for_tab(55), definition.resource_type.clone());
         let factories = Cell::new(0_usize);
         let result = App::from_prepared_component_with_collaboration(
             CollaborationManager::disabled(),
@@ -78,7 +78,7 @@ tilo_test_env::scenario! {
                     ),
                     tilo_actions::ActionContext::default(),
                 )?;
-                host.prepare_record(
+                host.prepare_resource(
                     &definition,
                     55,
                     checkout.clone(),

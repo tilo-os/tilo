@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 /// `{kind: 'person' | 'agent', label, color: '#rrggbb', profile_ms}`: `profile_ms` when the
 /// person last changed their profile, as this page knows it (`0` for unknown).
 #[derive(Clone, Serialize, Deserialize)]
-pub(crate) struct JsParticipant {
+pub(crate) struct JsMember {
     pub(crate) kind: String,
     pub(crate) label: String,
     pub(crate) color: String,
@@ -59,7 +59,7 @@ pub(crate) struct JsPresence {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     selection: Option<ShellSelection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) participant: Option<JsParticipant>,
+    pub(crate) member: Option<JsMember>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     place: Option<String>,
     /// Cursor chat, beside the pointer.
@@ -85,18 +85,18 @@ pub(crate) struct JsPresence {
 pub(crate) fn shell_from_js(
     value: &JsPresence,
 ) -> Result<Option<Box<ShellPresence>>, &'static str> {
-    let Some(participant) = &value.participant else {
+    let Some(member) = &value.member else {
         return Ok(None);
     };
-    if !matches!(participant.kind.as_str(), "person" | "agent") {
-        return Err("a participant is a person or an agent");
+    if !matches!(member.kind.as_str(), "person" | "agent") {
+        return Err("a member is a person or an agent");
     }
-    let colour = participant.color.clone();
+    let colour = member.color.clone();
     let hex = colour
         .strip_prefix('#')
-        .ok_or("a participant's colour is #rrggbb")?;
+        .ok_or("a member's colour is #rrggbb")?;
     if hex.len() != 6 || hex::decode(hex).is_err() {
-        return Err("a participant's colour is #rrggbb");
+        return Err("a member's colour is #rrggbb");
     }
     let (size, mut windows) = match &value.layout {
         Some(layout) => (
@@ -146,8 +146,8 @@ pub(crate) fn shell_from_js(
     Ok(Some(Box::new(ShellPresence {
         seq: value.seq,
         sent_at_ms: value.sent_at_ms,
-        label: participant.label.clone(),
-        agent: participant.kind == "agent",
+        label: member.label.clone(),
+        agent: member.kind == "agent",
         colour,
         // What a person is doing travels as their status (`set_status`), never as their shell's.
         activity: None,
@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn the_window_the_person_works_in_is_the_one_the_page_names() {
         let value: JsPresence = serde_json::from_str(
-            r##"{"participant": {"kind": "person", "label": "Ada", "color": "#ff0000"},
+            r##"{"member": {"kind": "person", "label": "Ada", "color": "#ff0000"},
                 "focus": {"app": "so.tilo.notes", "document": "0011223344556677"}}"##,
         )
         .expect("the page's own word parses");
@@ -210,7 +210,7 @@ mod tests {
     #[test]
     fn the_focus_marks_the_layout_window_it_names() {
         let value: JsPresence = serde_json::from_str(
-            r##"{"participant": {"kind": "person", "label": "Ada", "color": "#ff0000"},
+            r##"{"member": {"kind": "person", "label": "Ada", "color": "#ff0000"},
                 "layout": {"size": [1000, 700], "windows": [
                     {"app": "so.tilo.chat", "document": "8899aabbccddeeff", "rect": [0, 0, 5000, 10000], "focused": false},
                     {"app": "so.tilo.notes", "document": "0011223344556677", "rect": [5000, 0, 10000, 10000], "focused": false}]},

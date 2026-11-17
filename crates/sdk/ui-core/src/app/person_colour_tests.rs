@@ -54,7 +54,7 @@ tilo_test_env::scenario! {
         let me = app.local_author().clone();
         assert_eq!(
             app.presence_ctx.hue_for(&me),
-            PresenceHue::of_identity(&me.key())
+            PresenceHue::of_identity(me.id())
         );
         assert_eq!(crate::local_identity::own_colour(), None);
     }

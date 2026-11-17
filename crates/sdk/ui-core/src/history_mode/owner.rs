@@ -2,7 +2,7 @@
 use super::{HistoryRegistrationError, HistoryResource};
 use crate::{
     bound_dispatch::CallbackBinding,
-    record::{DocumentCheckout, RecordStore},
+    resource::{DocumentCheckout, ResourceStore},
 };
 use automerge::{AutoCommit, transaction::Transactable};
 use std::{
@@ -29,12 +29,12 @@ pub(crate) enum OwnedDocumentPublication {
     },
 }
 
-pub(crate) struct RecordOwnerLifetime {
+pub(crate) struct ResourceOwnerLifetime {
     pub(crate) active: Cell<bool>,
     id: uuid::Uuid,
     pub(crate) control_domain: crate::ControlDomain,
 }
-impl RecordOwnerLifetime {
+impl ResourceOwnerLifetime {
     pub(crate) fn new() -> Rc<Self> {
         Rc::new(Self {
             active: Cell::new(true),
@@ -55,12 +55,12 @@ pub struct HistoryOwner(pub(crate) OwnerKind);
 pub(crate) enum OwnerKind {
     Component(CallbackBinding),
     Record {
-        store: RecordStore,
+        store: ResourceStore,
         checkout: DocumentCheckout,
-        lifetime: Weak<RecordOwnerLifetime>,
+        lifetime: Weak<ResourceOwnerLifetime>,
         /// Whether this app publishes the record's changes: the identity service signs a change on a
         /// route only for the app of that route, or for one of the workspace's shared records
-        /// ([`StoredRecord::publishes`](crate::record::StoredRecord::publishes)). A record this app
+        /// ([`StoredResource::publishes`](crate::resource::StoredResource::publishes)). A record this app
         /// only reads is merged from its route, never published on it.
         publishes: bool,
     },
@@ -92,12 +92,12 @@ impl HistoryOwner {
         }
     }
     /// `record`, held by this app, which `publishes` its changes when it is the app that may
-    /// ([`Self::publishes_record`]): a record it only reads is joined and merged from its route, never
+    /// ([`Self::publishes_resource`]): a record it only reads is joined and merged from its route, never
     /// published on it.
     pub(crate) fn record(
-        store: RecordStore,
+        store: ResourceStore,
         checkout: DocumentCheckout,
-        lifetime: &Rc<RecordOwnerLifetime>,
+        lifetime: &Rc<ResourceOwnerLifetime>,
         publishes: bool,
     ) -> Self {
         Self(OwnerKind::Record {
@@ -109,7 +109,7 @@ impl HistoryOwner {
     }
 
     /// Whether this app publishes what changes in the record behind this owner ([`Self::record`]).
-    pub(crate) fn publishes_record(&self) -> bool {
+    pub(crate) fn publishes_resource(&self) -> bool {
         match &self.0 {
             OwnerKind::Component(_) => true,
             OwnerKind::Record { publishes, .. } => *publishes,
@@ -165,7 +165,7 @@ impl HistoryOwner {
             }
         };
         store
-            .open_existing_record_checked(checkout)
+            .open_existing_resource_checked(checkout)
             .map_err(|_| HistoryRegistrationError::UnsupportedOwner)
     }
     pub(crate) fn resource(
@@ -343,7 +343,7 @@ impl HistoryOwner {
                     return Err(HistoryRegistrationError::UnsupportedOwner);
                 }
                 store
-                    .open_existing_record_checked(checkout)
+                    .open_existing_resource_checked(checkout)
                     .map_err(|_| HistoryRegistrationError::UnsupportedOwner)?;
                 store
                     .read_checked(&checkout.id, |document| {
@@ -368,17 +368,17 @@ mod publication_tests {
 
     #[test]
     fn legacy_publication_rejects_same_id_with_stale_checkout_metadata() {
-        let store = RecordStore::in_memory();
+        let store = ResourceStore::in_memory();
         let live = DocumentCheckout::new(
             crate::DocumentId::for_tab(919),
-            crate::record::ResourceType::new("note"),
+            crate::resource::ResourceType::new("note"),
         );
-        store.open_record(&live);
+        store.open_resource(&live);
         let stale = DocumentCheckout::new(
             live.id.clone(),
-            crate::record::ResourceType::new("different-kind"),
+            crate::resource::ResourceType::new("different-kind"),
         );
-        let lifetime = RecordOwnerLifetime::new();
+        let lifetime = ResourceOwnerLifetime::new();
         let owner = HistoryOwner::record(store, stale, &lifetime, true);
 
         assert!(matches!(
@@ -399,7 +399,7 @@ impl HistoryOwner {
         let (b, bc) = other.store_checkout();
         a.same_owner(b) && ac == bc
     }
-    pub(crate) fn store_checkout(&self) -> (&RecordStore, &DocumentCheckout) {
+    pub(crate) fn store_checkout(&self) -> (&ResourceStore, &DocumentCheckout) {
         match &self.0 {
             OwnerKind::Component(binding) => (&binding.records, &binding.checkout),
             OwnerKind::Record {
@@ -410,7 +410,7 @@ impl HistoryOwner {
     /// What the owner's record holds, as the checkout that opened it says. A host that must create the
     /// record on this device's first write needs the kind named here; a route joined without one can
     /// only be written where the record already exists.
-    pub(crate) fn record_kind(&self) -> crate::record::ResourceType {
+    pub(crate) fn resource_type(&self) -> crate::resource::ResourceType {
         self.store_checkout().1.kind.clone()
     }
 
@@ -474,7 +474,7 @@ impl HistoryOwner {
             OwnerKind::Component(binding) => binding.restore_write(outer, admitted, write),
             OwnerKind::Record {
                 store, checkout, ..
-            } => crate::bound_dispatch::restore_record_history(store, checkout, admitted, write),
+            } => crate::bound_dispatch::restore_resource_history(store, checkout, admitted, write),
         }
     }
 
@@ -507,7 +507,7 @@ impl HistoryOwner {
     }
 }
 
-impl Drop for RecordOwnerLifetime {
+impl Drop for ResourceOwnerLifetime {
     fn drop(&mut self) {
         self.control_domain.close();
     }
@@ -515,29 +515,29 @@ impl Drop for RecordOwnerLifetime {
 
 /// A stored record in a temporary profile and the owner a test opens scopes and History sources for.
 #[cfg(test)]
-pub(crate) struct RecordOwnerFixture {
+pub(crate) struct ResourceOwnerFixture {
     _temp: tempfile::TempDir,
-    _owners: crate::record::RecordOwners,
-    pub(crate) store: RecordStore,
+    _owners: crate::resource::ResourceOwners,
+    pub(crate) store: ResourceStore,
     pub(crate) checkout: DocumentCheckout,
     pub(crate) owner: HistoryOwner,
-    _lifetime: Rc<RecordOwnerLifetime>,
+    _lifetime: Rc<ResourceOwnerLifetime>,
 }
 
 #[cfg(test)]
-impl RecordOwnerFixture {
+impl ResourceOwnerFixture {
     /// Record `id` of `so.tilo.controlled` in `workspace`, holding `value: 1` and `owner: id`, with
     /// invocation provenance required.
     pub(crate) fn in_workspace(id: u64, workspace: &str) -> Self {
         let temp = tempfile::tempdir().unwrap();
-        let mut owners = crate::record::RecordOwners::new(temp.path().join("profile"));
+        let mut owners = crate::resource::ResourceOwners::new(temp.path().join("profile"));
         let store = owners.open("so.tilo.controlled", workspace).unwrap();
         let checkout = DocumentCheckout::new(
             crate::DocumentId::for_tab(id),
-            crate::record::ResourceType::new("controlled"),
+            crate::resource::ResourceType::new("controlled"),
         );
         store
-            .reserve_record(&checkout)
+            .reserve_resource(&checkout)
             .unwrap()
             .initialize(|doc| {
                 doc.put(automerge::ROOT, "value", 1)
@@ -548,7 +548,7 @@ impl RecordOwnerFixture {
             })
             .unwrap();
         store.require_invocation_provenance(&checkout).unwrap();
-        let lifetime = RecordOwnerLifetime::new();
+        let lifetime = ResourceOwnerLifetime::new();
         let owner = HistoryOwner::record(store.clone(), checkout.clone(), &lifetime, true);
         Self {
             _temp: temp,

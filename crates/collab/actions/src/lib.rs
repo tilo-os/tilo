@@ -159,6 +159,7 @@ pub mod compact;
 pub mod content;
 pub mod context;
 pub mod contract;
+pub mod document_sync;
 pub mod draft;
 pub mod entry;
 pub mod envelope;
@@ -174,7 +175,6 @@ pub mod outcome;
 pub mod params;
 pub mod protocol;
 pub mod published;
-pub mod record_sync;
 pub mod registry;
 pub mod remote;
 pub mod resource;
@@ -199,8 +199,8 @@ pub use content::{
 };
 pub use context::{
     ActionApp, ActionContext, ActionFacet, ActionInvoker, ActionResource, CHANGE_MESSAGE_PREFIX,
-    CONTINUATION_PREFIX, Cause, ChangeKind, InvokerDevice, MAX_PARTICIPANT_ID_BYTES, PLACE_FACET,
-    ParticipantId, RISK_FACET, WorkGroup,
+    CONTINUATION_PREFIX, Cause, ChangeKind, InvokerDevice, MAX_PRESENCE_ID_BYTES, PLACE_FACET,
+    PresenceId, RISK_FACET, WorkGroup,
 };
 pub use contract::{
     AGENTS_AUDIENCE_TAG, ARGUMENT_RISK_TAG, ATTENDED_TAG, ActionContract, ActionKind, ActionNeed,
@@ -209,9 +209,9 @@ pub use contract::{
     INCOMING_MESSAGE_FACET, INCOMING_MESSAGE_TAG, IRREVERSIBLE_TAG, MAX_OFFLOAD_CPU_TIME_MS,
     MAX_OFFLOAD_MEMORY_BYTES, MAX_OFFLOAD_OUTPUT_BYTES, MEMBER_OWN_TAG, MIN_OFFLOAD_MEMORY_BYTES,
     OPENS_PATH_EXTENSION_PREFIX, OPENS_PATH_TAG, OUTSIDE_CAPABILITY_PREFIX, OWN_DEVICE_SCOPE,
-    OWN_RECORD_SCOPE, Offload, PEOPLE_AUDIENCE_TAG, RECORD_READ_TAG, REQUIRES_HOST_PREFIX,
-    REQUIRES_NATIVE_PATHS_TAG, ResultSpec, RetryPolicy, RiskLevel, UNTRUSTED_CONTENT_TAG,
-    action_node, phrase_is_meaningful, resource_node,
+    OWN_RESOURCE_SCOPE, Offload, PEOPLE_AUDIENCE_TAG, REQUIRES_HOST_PREFIX,
+    REQUIRES_NATIVE_PATHS_TAG, RESOURCE_READ_TAG, ResultSpec, RetryPolicy, RiskLevel,
+    UNTRUSTED_CONTENT_TAG, action_node, phrase_is_meaningful, resource_node,
 };
 pub use draft::{Draft, DraftEdit, DraftField, DraftLayout, DraftValue, MessageRole};
 pub use entry::{
@@ -260,7 +260,7 @@ pub use resource::{
     listed_row, listed_row_problems, plural, singular, sole_text_argument,
 };
 pub use schema::{
-    CatalogueSchemaEntry, ContextRequirement, PARTICIPANT_VIEW_TAG, REQUIRES_TAG_PREFIX,
+    CatalogueSchemaEntry, ContextRequirement, PRESENCE_VIEW_TAG, REQUIRES_TAG_PREFIX,
     catalogue_schema, catalogue_schema_bytes,
 };
 pub use selection::{

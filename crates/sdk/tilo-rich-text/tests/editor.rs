@@ -238,8 +238,15 @@ fn typed_text_is_attributed_to_its_writer_by_the_splice_itself() {
     let last = app.versions().pop().unwrap();
     let context = last.context.as_ref().unwrap();
     assert_eq!(verb(context), "splice-text");
-    let writer = context.invoker.as_ref().unwrap().acting.by.key();
-    assert!(!writer.is_empty());
+    let writer = context
+        .invoker
+        .as_ref()
+        .unwrap()
+        .acting
+        .by
+        .member_id()
+        .unwrap();
+    let writer = ui::tilo_resource::text::author_mark(writer);
     assert_eq!(authors(&app), [(0, 5, writer.clone()), (0, 5, writer)]);
     assert!(app.undo());
     assert_eq!(paragraphs(&app), ["hello", ""]);

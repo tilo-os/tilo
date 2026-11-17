@@ -445,10 +445,6 @@ pub struct Map {
     /// The places standing when the person last pointed, by key: every other place is what
     /// arrived since, the answer and what it opened beside it, framed with it (`map_answer.rs`).
     asked_among: Vec<String>,
-    /// Whether the camera has moved to frame the answer since the person pointed: it then keeps
-    /// it framed as the places settle their sizes, where an answer that stood in view from the
-    /// first leaves the camera where the person had it.
-    framing_answer: bool,
 }
 
 /// What a map leaves for the one a rebuild puts in its place ([`crate::motion::keep`]): the
@@ -465,7 +461,6 @@ struct Lens {
     asked: Option<Point>,
     answer: Option<String>,
     asked_among: Vec<String>,
-    framing_answer: bool,
 }
 
 impl Drop for Map {
@@ -485,7 +480,6 @@ impl Drop for Map {
                 asked: self.asked,
                 answer: self.answer.take(),
                 asked_among: std::mem::take(&mut self.asked_among),
-                framing_answer: self.framing_answer,
             },
         );
     }
@@ -543,7 +537,6 @@ impl Map {
             asked: None,
             answer: None,
             asked_among: Vec::new(),
-            framing_answer: false,
         }
     }
 
@@ -572,7 +565,6 @@ impl Map {
         self.dirty = true;
         // The person moved the lens themselves: the camera no longer keeps their answer in view.
         self.answer = None;
-        self.framing_answer = false;
         // The person's own hand is on the canvas: it stands where they put it, whether or not a
         // reveal was on its way there.
         self.glide = None;
@@ -602,7 +594,6 @@ impl Map {
         if self.asked.is_none() {
             self.asked = lens.asked;
             self.asked_among = lens.asked_among;
-            self.framing_answer = lens.framing_answer;
         }
         self.take_answer(&lens.pins, lens.answer);
         self.reveal = self
@@ -816,6 +807,12 @@ impl Map {
         let Some((_, place, _)) = self.pins.iter().find(|(held, _, _)| *held == key) else {
             return;
         };
+        // On a canvas the person points at, the pointing itself (the caret, which does not grow
+        // out of anything) stands where they pointed, in view: it never moves the camera. Only
+        // an answer and what it places do (`canvas.md` §7).
+        if self.asked.is_some() && !place.grows {
+            return;
+        }
         let zoom = self.camera.zoom.max(f64::EPSILON);
         let canvas = |place: &PinPlace| {
             // A place whose height its view says is as tall as a window is wide over tall; one
@@ -1309,11 +1306,32 @@ const GRAIN_LEAST: f64 = crate::tokens::Spacing::BASE.rhythm.section as f64;
 /// How wide a dot of the ground is on screen, in logical pixels, at any zoom.
 const GRAIN_DOT: f64 = 1.5;
 
+/// The colour a dot of the ground's grain is painted in under `theme`: the theme's quietest veneer
+/// (`overlay_subtle`) laid over the canvas ground's colour once, here, so the dot is one colour
+/// that covers its pixels whole. No renderer blends it: the vello pipeline, the CPU rasterizer and
+/// whatever presents the frame (a software GL surface included) show the same pixel, never a
+/// veneer laid over a pixel that holds nothing (bright white where its alpha was taken back out).
+fn grain_colour(theme: &Theme) -> vello::peniko::Color {
+    let ground = crate::widget::primitives::SurfaceLevel::Ground.color(theme);
+    let veneer = theme.tokens.colors.overlay_subtle;
+    let [gr, gg, gb, ga] = ground.components;
+    let [vr, vg, vb, va] = veneer.components;
+    let alpha = va + ga * (1.0 - va);
+    if alpha <= f32::EPSILON {
+        return ground;
+    }
+    let over = |v: f32, g: f32| (v * va + g * ga * (1.0 - va)) / alpha;
+    vello::peniko::Color::new([over(vr, gr), over(vg, gg), over(vb, gb), alpha])
+}
+
 impl Map {
-    /// The ground's grain: a grid of dots in the theme's quietest veneer, so faint it only says
-    /// "surface" (`canvas.md` §7). The dots are canvas points, so they pan and zoom with the
-    /// ground and the person sees the ground move under their hand; on screen each is the same
-    /// size at every zoom. All of them are one path, filled once.
+    /// The ground's grain: a grid of dots in the theme's quietest veneer over the ground, so faint
+    /// it only says "surface" (`canvas.md` §7). The dots are canvas points, so they pan and zoom
+    /// with the ground and the person sees the ground move under their hand; on screen each is the
+    /// same size at every zoom. Each dot covers whole device pixels in one opaque-as-the-ground
+    /// colour ([`grain_colour`]) and stands wholly inside the viewport, so every renderer draws it
+    /// identically and no dot reaches past the canvas's edge (under the bar, at its top). All of
+    /// them are one path, filled once.
     fn draw_grain(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         let viewport = self.rect;
         let camera = self.shown.get();
@@ -1331,7 +1349,24 @@ impl Map {
         let first_y = (from.y / pitch).floor() as i64;
         let last_x = (to.x / pitch).ceil() as i64;
         let last_y = (to.y / pitch).ceil() as i64;
-        let half = GRAIN_DOT / 2.0;
+        // Where a logical point lands in device pixels: the output's scale and offset, as the
+        // transform carries them (a canvas is never drawn rotated).
+        let [scale, _, _, _, offset_x, offset_y] = transform.as_coeffs();
+        let scale = scale.abs().max(f64::EPSILON);
+        let device = |x: f64, y: f64| Point::new(x * scale + offset_x, y * scale + offset_y);
+        let logical = |at: Point| Point::new((at.x - offset_x) / scale, (at.y - offset_y) / scale);
+        // A dot is whole device pixels, at least one.
+        let side = (GRAIN_DOT * scale).round().max(1.0);
+        let inside = Rect::from_points(
+            device(viewport.x0, viewport.y0),
+            device(viewport.x1, viewport.y1),
+        );
+        let inside = Rect::new(
+            inside.x0.ceil(),
+            inside.y0.ceil(),
+            inside.x1.floor(),
+            inside.y1.floor(),
+        );
         let mut dots = vello::kurbo::BezPath::new();
         for row in first_y..=last_y {
             for column in first_x..=last_x {
@@ -1339,24 +1374,29 @@ impl Map {
                     corner,
                     Point::new(column as f64 * pitch, row as f64 * pitch),
                 );
-                // Snapped to the pixel grid, so every dot is as sharp as the next.
-                let at = Point::new(at.x.round(), at.y.round());
-                if !viewport.contains(at) {
+                let centre = device(at.x, at.y);
+                let x0 = (centre.x - side / 2.0).round();
+                let y0 = (centre.y - side / 2.0).round();
+                let dot = Rect::new(x0, y0, x0 + side, y0 + side);
+                // Wholly inside the viewport, or not at all: half a dot past the edge would stand
+                // over what is not the canvas.
+                if dot.x0 < inside.x0
+                    || dot.y0 < inside.y0
+                    || dot.x1 > inside.x1
+                    || dot.y1 > inside.y1
+                {
                     continue;
                 }
-                let dot = Rect::new(at.x - half, at.y - half, at.x + half, at.y + half);
+                let dot = Rect::from_points(
+                    logical(Point::new(dot.x0, dot.y0)),
+                    logical(Point::new(dot.x1, dot.y1)),
+                );
                 vello::kurbo::Shape::path_elements(&dot, 0.1).for_each(|element| {
                     dots.push(element);
                 });
             }
         }
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.overlay_subtle,
-            None,
-            &dots,
-        );
+        scene.fill(Fill::NonZero, transform, grain_colour(theme), None, &dots);
     }
 
     /// What the empty map says at the middle of what it shows, in the theme's quiet ink at body
@@ -1808,6 +1848,13 @@ impl Map {
 }
 
 impl Widget for Map {
+    /// The ground as its picture, the pins with what they hold.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("div");
+        cx.picture();
+        cx.children();
+    }
+
     fn needs_redraw(&self) -> bool {
         crate::widget::redraw_or_children(self.dirty, self)
     }

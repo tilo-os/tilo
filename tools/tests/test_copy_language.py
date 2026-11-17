@@ -887,7 +887,7 @@ class CopyLanguageTests(unittest.TestCase):
             self.assertEqual(
                 [text for _, _, text in copy.source_copy_literals(root)],
                 ["Reading the actions this workspace publishes", "Running {} of {}"],
-                "a headless participant has no window: the words it hands a turn's "
+                "a headless member has no window: the words it hands a turn's "
                 "update are what the person reads, and a sentence built around a "
                 "value is copy like any other; what it resolved through its own "
                 "catalogue, or holds in its own words, is not")

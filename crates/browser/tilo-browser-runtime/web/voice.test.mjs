@@ -14,12 +14,12 @@ const HOST = 'f'.repeat(64);
 const drain = async () => { for (let index = 0; index < 20; index++) await Promise.resolve(); };
 
 function grantFor({publish = true, others = [BOB]} = {}) {
-  const participants = [{device: HOST, user: ME}, ...others.map(id => ({device: id, user: id}))]
-    .map(participant => ({...participant, publishes: true}));
+  const members = [{device: HOST, user: ME}, ...others.map(id => ({device: id, user: id}))]
+    .map(member => ({...member, publishes: true}));
   return {
     call: CALL, epoch: 1,
     directions: {publish, subscribe: true},
-    participants,
+    members,
   };
 }
 
@@ -112,7 +112,7 @@ test('a joined call publishes its microphone on the plane and plays what the cal
   f.event({kind: 'granted', grant: grantFor()});
   await drain();
   assert.equal(f.call.state.phase, 'live');
-  assert.deepEqual(f.call.state.participants.map(participant => participant.self), [true, false]);
+  assert.deepEqual(f.call.state.members.map(member => member.self), [true, false]);
 
   f.audio.onFrame(frame(1));
   assert.deepEqual(f.published, [{timestamp48k: 960, opus: '01'}], 'a frame is published as it is made');
@@ -247,17 +247,17 @@ test('speaking follows the measured levels, held briefly', async () => {
   f.call.join(CALL);
   await drain();
   const starts = [];
-  f.call.subscribe(state => starts.push(state.participants.map(participant => participant.self)));
+  f.call.subscribe(state => starts.push(state.members.map(member => member.self)));
   f.event({kind: 'granted', grant: grantFor()});
   await drain();
   f.audio.onLevels({capture: 0, publishers: new Map([[BOB, 0.5]])});
-  assert.equal(f.call.state.participants.find(participant => participant.device === BOB).speaking, true);
+  assert.equal(f.call.state.members.find(member => member.device === BOB).speaking, true);
   f.clock.at += 100;
   f.audio.onLevels({capture: 0.5, publishers: new Map()});
-  assert.equal(f.call.state.participants.find(participant => participant.self).speaking, true, 'this page speaks as the host\'s device');
+  assert.equal(f.call.state.members.find(member => member.self).speaking, true, 'this page speaks as the host\'s device');
   f.clock.at += 500;
   f.audio.onLevels({capture: 0, publishers: new Map()});
-  assert.equal(f.call.state.participants.find(participant => participant.device === BOB).speaking, false, 'a held level ends');
+  assert.equal(f.call.state.members.find(member => member.device === BOB).speaking, false, 'a held level ends');
 });
 
 test('leaving ends the page\'s call on the host too; an ended call stops everything', async () => {
@@ -342,7 +342,7 @@ test('a refused unmute keeps the person in the call, muted, until they allow it'
   assert.equal(f.call.state.muted, false);
 });
 
-test('a participant plays at the volume set for them', async () => {
+test('a member plays at the volume set for them', async () => {
   const f = fixture();
   f.call.join(CALL);
   await drain();

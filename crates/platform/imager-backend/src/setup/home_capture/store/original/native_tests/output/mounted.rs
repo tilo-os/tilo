@@ -1,4 +1,4 @@
-//! Three explicitly owned subjects: primary, participant, and genuine USB output.
+//! Three disks of its own: primary, a volume, and a genuine USB output.
 use super::*;
 use crate::setup::migration_handoff::{self, Categories};
 
@@ -65,20 +65,20 @@ fn subject_disk(path: &Path) -> block_devices::BlockDevice {
     disk
 }
 pub(super) fn preflight(primary: &Path, target: &crate::imager_model::TargetDrive) {
-    let participant = PathBuf::from(
-        std::env::var_os("TILO_MOUNTED_PARTICIPANT_GPT_STORE")
-            .expect("third genuine owned GPT participant required"),
+    let volume = PathBuf::from(
+        std::env::var_os("TILO_MOUNTED_VOLUME_GPT_STORE")
+            .expect("third genuine owned GPT volume required"),
     );
     marker(
-        &participant.join(".tilo-original-source-qualification"),
+        &volume.join(".tilo-original-source-qualification"),
         b"disposable-original-source-only",
     );
     let primary = subject_disk(primary);
-    let participant = subject_disk(&participant);
-    assert_ne!(primary.name, participant.name);
-    assert_ne!(primary.ptuuid, participant.ptuuid);
+    let volume = subject_disk(&volume);
+    assert_ne!(primary.name, volume.name);
+    assert_ne!(primary.ptuuid, volume.ptuuid);
     assert_ne!(primary.name, target.dev_path());
-    assert_ne!(participant.name, target.dev_path());
+    assert_ne!(volume.name, target.dev_path());
     // Genuine USB initializer remains unchanged. Never relabel NBD as USB.
     assert_eq!(target.tran.as_deref(), Some("usb"));
     assert_eq!(target.stable_id.as_deref(), Some("tilo-install-target"));
@@ -90,31 +90,31 @@ pub(super) struct Subjects {
 }
 impl Subjects {
     pub(super) fn new(namespace: &Path, home: &Path, primary: &Path, output: &Path) -> Self {
-        let participant = PathBuf::from(
-            std::env::var_os("TILO_MOUNTED_PARTICIPANT_GPT_STORE")
-                .expect("third genuine owned GPT participant required"),
+        let volume = PathBuf::from(
+            std::env::var_os("TILO_MOUNTED_VOLUME_GPT_STORE")
+                .expect("third genuine owned GPT volume required"),
         );
         marker(
-            &participant.join(".tilo-original-source-qualification"),
+            &volume.join(".tilo-original-source-qualification"),
             b"disposable-original-source-only",
         );
-        let participant_dev = fs::metadata(&participant).unwrap().dev();
-        assert_ne!(participant_dev, fs::metadata(primary).unwrap().dev());
-        assert_ne!(participant_dev, fs::metadata(output).unwrap().dev());
+        let volume_dev = fs::metadata(&volume).unwrap().dev();
+        assert_ne!(volume_dev, fs::metadata(primary).unwrap().dev());
+        assert_ne!(volume_dev, fs::metadata(output).unwrap().dev());
         let temporary = tempfile::Builder::new()
             .permissions(fs::Permissions::from_mode(0o755))
-            .tempdir_in(&participant)
+            .tempdir_in(&volume)
             .unwrap();
         let root = temporary.keep();
         let directory = root.join("chosen-directory");
         fs::create_dir(&directory).unwrap();
         owner(&directory, 1003, 1002, 0o750);
         let child = directory.join("group-readable");
-        fs::write(&child, b"actual participant directory bytes").unwrap();
+        fs::write(&child, b"actual volume directory bytes").unwrap();
         owner(&child, 1003, 1002, 0o640);
         fs::hard_link(&child, directory.join("same-group-readable")).unwrap();
         let file = root.join("chosen-file");
-        fs::write(&file, b"actual participant regular-file bytes").unwrap();
+        fs::write(&file, b"actual volume regular-file bytes").unwrap();
         owner(&file, 1003, 1002, 0o640);
         let folder = home.join("mounted-directory");
         fs::create_dir(&folder).unwrap();
@@ -178,11 +178,11 @@ impl Subjects {
     pub(super) fn verify_original(&self) {
         assert_eq!(
             fs::read(self.directory.join("group-readable")).unwrap(),
-            b"actual participant directory bytes"
+            b"actual volume directory bytes"
         );
         assert_eq!(
             fs::read(&self.file).unwrap(),
-            b"actual participant regular-file bytes"
+            b"actual volume regular-file bytes"
         );
         assert_eq!(fs::metadata(&self.file).unwrap().uid(), 1003);
         assert_eq!(fs::metadata(&self.file).unwrap().gid(), 1002);
@@ -192,18 +192,18 @@ impl Subjects {
 impl Drop for Subjects {
     fn drop(&mut self) {
         // Namespace store last, then file and directory. No mount survives the
-        // UDisks participant/source unmount or takes authority into export.
+        // UDisks volume/source unmount or takes authority into export.
         while self.binds.pop().is_some() {}
     }
 }
 pub(super) fn verify_import(home: &Path) {
     assert_eq!(
         fs::read(home.join("mounted-directory/group-readable")).unwrap(),
-        b"actual participant directory bytes"
+        b"actual volume directory bytes"
     );
     assert_eq!(
         fs::read(home.join("mounted-file")).unwrap(),
-        b"actual participant regular-file bytes"
+        b"actual volume regular-file bytes"
     );
     assert_eq!(
         fs::metadata(home.join("mounted-directory/group-readable"))

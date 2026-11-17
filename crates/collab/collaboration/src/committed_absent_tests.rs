@@ -27,7 +27,7 @@ fn an_absent_on_demand_record_is_said_once_and_waited_on() {
         events
             .iter()
             .filter(
-                |event| matches!(event, CollabEvent::RecordUnavailable { route } if *route == part),
+                |event| matches!(event, CollabEvent::ResourceUnavailable { route } if *route == part),
             )
             .count()
     };

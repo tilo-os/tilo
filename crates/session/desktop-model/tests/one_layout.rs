@@ -2,7 +2,7 @@
 //! that document, a build that knows only the old record keeps writing into
 //! it, and peers that each change the layout keep both changes.
 //!
-//! Asserted through [`shared_record::read`], the function native and pages
+//! Asserted through [`shared_resource::read`], the function native and pages
 //! both read a workspace's layout with, and [`desktop_doc::rebuild`], what the
 //! layout's own document projects.
 
@@ -16,7 +16,7 @@ use automerge::{AutoCommit, ReadDoc as _};
 use tilo_automerge::ApplyIncoming as _;
 use tilo_desktop_model::desktop_doc;
 use tilo_desktop_model::ownership::SharedDesktop;
-use tilo_desktop_model::shared_record;
+use tilo_desktop_model::shared_resource;
 use tilo_desktop_model::{
     Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
@@ -97,7 +97,7 @@ fn read_back(doc: &AutoCommit) -> Layout {
 }
 
 fn opened(doc: &AutoCommit) -> SharedDesktop {
-    shared_record::read(doc, None).expect("a layout")
+    shared_resource::read(doc, None).expect("a layout")
 }
 
 tilo_test_env::scenario! {
@@ -111,7 +111,7 @@ tilo_test_env::scenario! {
     {
         let held = shared(layout());
         let mut doc = AutoCommit::new();
-        assert!(shared_record::write(&mut doc, &held).expect("written"));
+        assert!(shared_resource::write(&mut doc, &held).expect("written"));
         doc.commit();
         assert!(
             !desktop_doc::holds(&doc),
@@ -154,10 +154,10 @@ tilo_test_env::scenario! {
         let then = doc.get_heads();
         let mut renamed = held.tree.clone();
         renamed.workspaces[0].name = "Studio · renamed".into();
-        assert!(shared_record::write(&mut doc, &shared(renamed)).expect("written"));
+        assert!(shared_resource::write(&mut doc, &shared(renamed)).expect("written"));
         doc.commit();
         assert_eq!(
-            shared_record::read(&doc, Some(&then))
+            shared_resource::read(&doc, Some(&then))
                 .expect("the layout then")
                 .tree
                 .workspaces[0]
@@ -178,7 +178,7 @@ tilo_test_env::scenario! {
     {
         let held = shared(layout());
         let mut doc = AutoCommit::new();
-        assert!(shared_record::write(&mut doc, &held).expect("written"));
+        assert!(shared_resource::write(&mut doc, &held).expect("written"));
         assert!(desktop_doc::write_shared(
             &mut doc,
             &held.tree,
@@ -193,7 +193,7 @@ tilo_test_env::scenario! {
             .push(group(11, &[110]));
         older.records.push((110, "sheet".into()));
         older.authors.insert(110, "linus".to_owned());
-        assert!(shared_record::write(&mut doc, &older).expect("written"));
+        assert!(shared_resource::write(&mut doc, &older).expect("written"));
         doc.commit();
 
         assert!(desktop_doc::holds(&doc), "still the layout's own document");
@@ -209,7 +209,7 @@ tilo_test_env::scenario! {
     {
         let held = shared(layout());
         let mut local = AutoCommit::new();
-        assert!(shared_record::write(&mut local, &held).expect("written"));
+        assert!(shared_resource::write(&mut local, &held).expect("written"));
         assert!(desktop_doc::write_shared(
             &mut local,
             &held.tree,
@@ -221,7 +221,7 @@ tilo_test_env::scenario! {
 
         let mut mine = held.clone();
         mine.tree.workspaces[0].name = "Studio · mine".into();
-        assert!(shared_record::write(&mut local, &mine).expect("written"));
+        assert!(shared_resource::write(&mut local, &mine).expect("written"));
         local.commit();
 
         let mut theirs = held.clone();
@@ -229,7 +229,7 @@ tilo_test_env::scenario! {
             .window_groups
             .push(group(11, &[110]));
         theirs.authors.insert(110, "grace".to_owned());
-        assert!(shared_record::write(&mut peer, &theirs).expect("written"));
+        assert!(shared_resource::write(&mut peer, &theirs).expect("written"));
         peer.commit();
 
         local.merge_incoming(&mut peer).expect("merged");

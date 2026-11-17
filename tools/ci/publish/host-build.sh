@@ -48,7 +48,7 @@ mkdir -p "$context/bin" "$context/keys/release" \
   "$context/os/usr/lib/bootc/install" "$context/os/usr/lib/sysusers.d" \
   "$context/os/usr/lib/tmpfiles.d" "$context/os/usr/lib/systemd/system" \
   "$context/os/usr/libexec" "$context/docs/app-model"
-cp os/Containerfile.host "$context/"
+cp os/Containerfile.host "$context/Containerfile"
 cp "$binaries"/* "$context/bin/"
 cp os/containers/tilo-vm-host/hosted-jail.json "$context/os/containers/tilo-vm-host/"
 cp os/etc/containers/policy.json "$context/os/etc/containers/"
@@ -61,7 +61,7 @@ cp -r os/usr/lib/systemd/system/. "$context/os/usr/lib/systemd/system/"
 cp docs/recovery.md "$context/docs/"
 cp docs/app-model/environments.md "$context/docs/app-model/"
 cp keys/cosign.pub "$context/keys/"
-cp keys/release/ "$context/keys/release/"
+cp -r keys/release/. "$context/keys/release/"
 bash tools/ci/publish/oci-build.sh "$context" "$context/Containerfile" "$out" \
   --platform linux/amd64 \
   --build-context "github-assets=$assets" \

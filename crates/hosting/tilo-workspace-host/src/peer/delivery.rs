@@ -3,7 +3,7 @@
 
 use super::{
     AsyncWriteExt, AuthenticatedPeer, Envelope, PeerError, SessionCtx, SharedWorkspace,
-    StateDelivery, WorkspaceOperation, authorize_state_recipient, resume_record,
+    StateDelivery, WorkspaceOperation, authorize_state_recipient, resume_document,
     trace_native_publication, unix_now_ns,
 };
 use tilo_relay_protocol::WorkspaceId;
@@ -197,7 +197,7 @@ pub(super) async fn write_state_deliveries<W: tokio::io::AsyncWrite + Unpin>(
             &mut coding.deltas,
         )?);
     }
-    if let Some(position) = resume_record(
+    if let Some(position) = resume_document(
         session,
         workspace_id,
         accepted.iter().map(|delivery| &*delivery.envelope),

@@ -72,19 +72,7 @@ pub fn members(ws: &Workspace, names: &PeopleNames, viewer: &UserId) -> Vec<Memb
     ordered_roster(ws)
         .into_iter()
         .map(|(user, role)| {
-            let subject = tilo_action_policy::Grantee::person(user.clone());
-            let grants = ws
-                .policy
-                .grants
-                .iter()
-                .filter(|grant| grant.grantee == subject)
-                // Being an administrator, or whom the workspace is kept for, is said by the
-                // role, not counted as extra permissions.
-                .filter(|grant| {
-                    tilo_action_policy::roles::administrator_named(&grant.id).is_none()
-                        && tilo_action_policy::roles::keeper_named(&grant.id).is_none()
-                })
-                .count();
+            let grants = ws.policy.extra_grants(&user);
             Member {
                 name: member_row_name(
                     names,

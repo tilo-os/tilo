@@ -15,7 +15,7 @@ mod whats_new;
 
 use ui::time::{Duration, SystemTime};
 
-use ui::framework::RecordEnv;
+use ui::framework::ResourceEnv;
 use ui::prelude::*;
 use ui::tilo_actions::remote::InvokeArgument;
 use ui::tilo_actions::remote::workspace_activity as wire;
@@ -114,11 +114,11 @@ impl Nav {
 /// The session's api to the workspace's history, for the parts of the view that ask it for
 /// a change.
 #[derive(Clone)]
-pub(crate) struct Provider(RecordEnv<Filter>);
+pub(crate) struct Provider(ResourceEnv<Filter>);
 
 impl Provider {
     pub(crate) fn of(cx: &ViewCx<Filter>) -> Self {
-        Self(RecordEnv::clone(cx))
+        Self(ResourceEnv::clone(cx))
     }
 
     /// Ask for `action` with `value` as its argument.

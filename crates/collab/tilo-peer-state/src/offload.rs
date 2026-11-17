@@ -8,7 +8,7 @@
 //! it was asked ([`pick`](crate::placement::pick)).
 //!
 //! The devices asked are the ones the requesting device's own plane resolves
-//! in the workspace ([`ActionPlane::participants`](crate::actions::ActionPlane::participants)):
+//! in the workspace ([`ActionPlane::key_holders`](crate::actions::ActionPlane::key_holders)):
 //! certified, unrevoked, unexpired, their person a member. An app names no
 //! device and no address. [`OffloadPeers`] is what such a route needs of that
 //! plane — the asking and the running — so the route can live where the

@@ -195,15 +195,21 @@ impl TiloStore {
             inner.write_alone(chunk, part.edits.len(), author);
             let doc = inner.chunks.open_held(chunk);
             let before = doc.committed_heads();
-            tilo_actions::commit_written(
-                doc,
-                part,
-                encoded,
-                &author.actor_bytes(),
-                context,
-                Some(described),
-            )
-            .map(|_| then(doc, before))
+            if automerge::transaction::Transactable::pending_ops(doc) == 0 {
+                // Its writes set what the record held already (a reminder set to the moment it
+                // has): the action is done and changed nothing, so there is no change to record.
+                Ok(then(doc, before))
+            } else {
+                tilo_actions::commit_written(
+                    doc,
+                    part,
+                    encoded,
+                    &author.actor_bytes(),
+                    context,
+                    Some(described),
+                )
+                .map(|_| then(doc, before))
+            }
         };
         (out, self.catch_up(chunk))
     }
@@ -317,7 +323,7 @@ impl Inner {
             .iter()
             .filter(|write| write.chunk == chunk && !write.derived);
         let first = writes.clone().next()?;
-        let mut subject = None;
+        let mut target = None;
         for (index, edit) in part.edits.iter().enumerate() {
             let write = writes.next()?;
             let same = write.action == first.action
@@ -327,7 +333,7 @@ impl Inner {
             if !same {
                 return None;
             }
-            subject = subject.or(write.subject.as_ref());
+            target = target.or(write.target.as_ref());
         }
         if writes
             .next()
@@ -335,13 +341,13 @@ impl Inner {
         {
             return None;
         }
-        // The part's subject is read for the app the action is of, as replaying it reads it.
-        let subject = match subject {
-            Some((read, subject)) if read.as_str() == part.app => subject.clone(),
+        // The part's target is read for the app the action is of, as replaying it reads it.
+        let target = match target {
+            Some((read, target)) if read.as_str() == part.app => target.clone(),
             Some(_) => return None,
             None => None,
         };
-        Some(part.described_with(|_| subject))
+        Some(part.described_with(|_| target))
     }
 
     /// Leave the first `count` saved writes of chunk `chunk` (an action's, [`Self::written_as`])

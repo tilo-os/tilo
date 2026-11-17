@@ -78,7 +78,13 @@ main() {
   archive=tilo-$os-$arch.tar.gz
 
   work=$(mktemp -d 2>/dev/null || mktemp -d -t tilo)
-  trap 'rm -rf "$work"' EXIT INT TERM
+  # An install that stops early must not end as a success. macOS's sh (bash 3.2) ends a script
+  # that stopped on an unset variable with status 0 once an exit trap is set, so the trap asks
+  # whether the install said it finished, and fails if it did not.
+  finished=
+  trap 'status=$?; rm -rf "$work"; [ -n "$finished" ] || [ "$status" -ne 0 ] || status=1; exit "$status"' EXIT
+  trap 'rm -rf "$work"; trap - EXIT; exit 130' INT
+  trap 'rm -rf "$work"; trap - EXIT; exit 143' TERM
 
   cat >"$work/release.pub" <<'KEY'
 -----BEGIN PUBLIC KEY-----
@@ -92,7 +98,9 @@ KEY
   fi
 
   base=$releases/$version
-  say "Getting Tilo ($version) for $os $arch…"
+  # ${arch}, in braces: in a UTF-8 locale macOS's sh takes the first byte of the character
+  # after a bare name as part of the name, and stops on a variable that is not set.
+  say "Getting Tilo ($version) for $os ${arch}…"
   fetch "$base/SHA256SUMS" "$work/SHA256SUMS" || fail "could not get $base/SHA256SUMS"
   if command -v openssl >/dev/null 2>&1; then
     fetch "$base/SHA256SUMS.sig" "$work/SHA256SUMS.sig" || fail "could not get the release's signature"
@@ -120,6 +128,7 @@ KEY
   esac
   if [ "$#" -eq 0 ]; then
     say "Next: $tilo login CODE, with CODE from Tilo (choose \"Set up with your agent\")."
+    finished=1
     return
   fi
   rm -rf "$work"

@@ -63,6 +63,14 @@ impl ActionHost for Shared {
         self.0.next_change(caller, id)
     }
 
+    fn changed(
+        &self,
+        caller: &Caller,
+        scope: tilo_actions::remote::WatchScope,
+    ) -> Option<tilo_actions::remote::Pending<()>> {
+        self.0.changed(caller, scope)
+    }
+
     fn cancel(
         &self,
         caller: &Caller,
@@ -93,12 +101,12 @@ impl ActionHost for Shared {
         self.0.here(caller)
     }
 
-    fn record_reads(&self) -> Option<Arc<dyn tilo_actions::remote::RecordReads>> {
-        self.0.record_reads()
+    fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
+        self.0.resource_reads()
     }
 
-    fn record_changes(&self) -> Option<Arc<dyn tilo_actions::remote::RecordChanges>> {
-        self.0.record_changes()
+    fn resource_changes(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceChanges>> {
+        self.0.resource_changes()
     }
 
     fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {

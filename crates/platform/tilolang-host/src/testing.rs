@@ -40,17 +40,17 @@ pub struct Directory {
 #[derive(Default)]
 pub struct Bus {
     joined: RefCell<Vec<(RouteSpec, String, Inbox)>>,
-    /// The workspace's members, by person id, with their names.
-    members: RefCell<Vec<(String, String)>>,
+    /// The workspace's members, people and software, with their names.
+    members: RefCell<Vec<(collaboration::MemberId, String)>>,
 }
 
 impl Bus {
-    /// The workspace has the member `person`, named `name`: every connection is told.
-    pub fn member(&self, person: &str, name: &str) {
+    /// The workspace has the member `who`, named `name`: every connection is told.
+    pub fn member(&self, who: collaboration::MemberId, name: &str) {
         {
             let mut members = self.members.borrow_mut();
-            members.retain(|(held, _)| held != person);
-            members.push((person.to_owned(), name.to_owned()));
+            members.retain(|(held, _)| *held != who);
+            members.push((who, name.to_owned()));
         }
         let joined: Vec<(String, Inbox)> = self
             .joined
@@ -77,11 +77,8 @@ impl Bus {
         let members = members
             .iter()
             .map(|(id, name)| {
-                let mut member = collaboration::Member::named(
-                    collaboration::MemberId::person(id.clone()),
-                    name.clone(),
-                );
-                member.is_self = id == person;
+                let mut member = collaboration::Member::named(id.clone(), name.clone());
+                member.is_self = id.person_id() == Some(person);
                 member
             })
             .collect();

@@ -527,6 +527,13 @@ impl Compositor {
         self.data.backend.closed()
     }
 
+    /// Tell the backend how this run ends: `true` when the login's desktop is restarted in place,
+    /// so the displays are left showing what they show for the desktop that follows. Called once,
+    /// before the compositor is dropped.
+    pub fn keep_picture(&mut self, restarting: bool) {
+        self.data.backend.keep_picture(restarting);
+    }
+
     /// Start a recorded turn of the loop. The session calls it before [`Compositor::dispatch`] and
     /// ends it after the work the frame it drew answered.
     pub fn begin_tick(&mut self) {
@@ -571,6 +578,11 @@ impl Compositor {
     /// How many frames the displays presented since this session began.
     pub fn frames_presented(&self) -> u64 {
         self.data.state.frames_presented()
+    }
+
+    /// Whether `output` presented a frame since this session began: it is on and showing.
+    pub fn output_has_presented(&self, output: &str) -> bool {
+        self.data.state.output_has_presented(output)
     }
 
     /// The turn is over: its timings go to the frame trace.
@@ -718,6 +730,16 @@ impl Compositor {
     /// connection).
     pub fn connect_client(&mut self) -> Result<UnixStream, Error> {
         self.connect_client_as(false, None)
+    }
+
+    /// What connects clients for processes the session hands a connection to, from any thread:
+    /// an app keeper is given one each time a desktop attaches it ([`ClientConnector`]).
+    #[must_use]
+    pub fn client_connector(&self) -> ClientConnector {
+        ClientConnector {
+            display: self.display.handle(),
+            exited: std::sync::Arc::clone(&self.data.state.exited),
+        }
     }
 
     /// Connect a client the session trusts with privileged protocols (locking the session);
@@ -2749,5 +2771,34 @@ mod display_publication_tests {
             assert_eq!(std::fs::read(&path).unwrap(), b"wayland-4");
             drop(published);
         }
+    }
+}
+
+/// Connects untrusted clients for a process the session hands the connection to.
+///
+/// A socket pair names the session as its peer, so the compositor would take every window on it
+/// for the session's own: the connection is told the process it is for, and its windows name
+/// that process as a client connected on its own would.
+#[derive(Clone)]
+pub struct ClientConnector {
+    display: smithay::reexports::wayland_server::DisplayHandle,
+    exited: std::sync::Arc<std::sync::Mutex<Vec<u32>>>,
+}
+
+impl ClientConnector {
+    /// A new connection for the process `pid`; the returned end is the client's.
+    ///
+    /// # Errors
+    /// No socket pair, or the display refused the client.
+    pub fn connect_for(&self, pid: u32) -> std::io::Result<UnixStream> {
+        let (ours, theirs) = UnixStream::pair()?;
+        self.display
+            .clone()
+            .insert_client(
+                ours,
+                state::handed_client_data(pid, std::sync::Arc::clone(&self.exited)),
+            )
+            .map_err(std::io::Error::other)?;
+        Ok(theirs)
     }
 }

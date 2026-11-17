@@ -5,7 +5,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "tilo-agent: a headless participant that runs broker-leased tasks through the actions the session's apps publish to it."
+description = "tilo-agent: a headless member that runs broker-leased tasks through the actions the session's apps publish to it."
 
 [lib]
 name = "tilo_agent"

@@ -301,7 +301,7 @@ pub(crate) struct Nested {
 impl Shape {
     /// The root and collection the edits go to: the root's own, or that of the first root it
     /// refers to that has one.
-    fn subject(&self) -> Option<(&Self, &List)> {
+    fn target(&self) -> Option<(&Self, &List)> {
         self.list.as_ref().map(|l| (self, l)).or_else(|| {
             self.links
                 .iter()
@@ -1456,7 +1456,7 @@ impl Sized<'_> {
 fn workspace_sizes(shape: &Shape, sizes: &[usize]) -> Vec<usize> {
     if shape.list.as_ref().is_some_and(|l| l.places) {
         vec![PLACES]
-    } else if shape.subject().is_some() {
+    } else if shape.target().is_some() {
         sizes.to_vec()
     } else {
         vec![0]
@@ -1568,7 +1568,7 @@ fn changes(sized: &Sized<'_>, out: &mut Recorder<'_>) -> Result<(), String> {
     }
     workspace.frame(&mut [])?;
     workspace.phases.take();
-    if sized.shape.subject().is_some()
+    if sized.shape.target().is_some()
         || text_input(&workspace.host, workspace.list.tree(), None).is_some()
     {
         match keystroke(sized, &mut workspace)? {
@@ -2067,7 +2067,7 @@ fn typing(
     if let Some((input, text)) = body_input(host, main) {
         return Ok(Some((Typing::Main(input), text)));
     }
-    if let Some((root, list)) = sized.shape.subject()
+    if let Some((root, list)) = sized.shape.target()
         && has_default_view(sized.packages, &list.item_ty)
     {
         let target = sized.target(main);
@@ -2187,7 +2187,7 @@ fn peer_change<'a>(
     sample: usize,
 ) -> Result<(&'a Shape, Edit<DynRecord>), String> {
     let shape = sized.shape;
-    if let Some((root, list)) = shape.subject() {
+    if let Some((root, list)) = shape.target() {
         let title = list.texts.first().cloned().unwrap_or_default();
         let edit = Edit::new(
             item_path(&item_id(sized.target(workspace.list.tree())), &title),
@@ -2210,15 +2210,15 @@ fn peer_edit(sized: &Sized<'_>, workspace: &mut Workspace) -> Result<Record, Str
     let mut peer = workspace.record();
     let mut changes = Changes::default();
     for sample in 0..sized.config.samples {
-        let (subject, edit) = peer_change(sized, workspace, sample)?;
+        let (target, edit) = peer_change(sized, workspace, sample)?;
         let action = DynAction {
-            app: subject.app.clone(),
-            kind: format!("tl.{}.edit", subject.app),
+            app: target.app.clone(),
+            kind: format!("tl.{}.edit", target.app),
             action_id: "$edit".into(),
             args: Json::Null,
             authorship: Authorship::default(),
             edits: vec![DynEdit::Edit {
-                id: root_id(subject),
+                id: root_id(target),
                 edit,
             }],
         };
@@ -2242,7 +2242,7 @@ fn peer_edit(sized: &Sized<'_>, workspace: &mut Workspace) -> Result<Record, Str
 /// list sorted by when its items last changed moves it to the top. Only for a package whose
 /// list items hold a collection of their own.
 fn peer_post(sized: &Sized<'_>, workspace: &mut Workspace) -> Result<Option<Record>, String> {
-    let Some((subject, list)) = sized.shape.subject() else {
+    let Some((target, list)) = sized.shape.target() else {
         return Ok(None);
     };
     let Some(nested) = &list.nested else {
@@ -2271,13 +2271,13 @@ fn peer_post(sized: &Sized<'_>, workspace: &mut Workspace) -> Result<Option<Reco
             was: None,
         };
         let action = DynAction {
-            app: subject.app.clone(),
-            kind: format!("tl.{}.edit", subject.app),
+            app: target.app.clone(),
+            kind: format!("tl.{}.edit", target.app),
             action_id: "$edit".into(),
             args: Json::Null,
             authorship: Authorship::default(),
             edits: vec![DynEdit::Insert {
-                id: root_id(subject),
+                id: root_id(target),
                 item: id,
                 record: tilo_resource::Model::to_json(&message),
                 at: at.encode(),

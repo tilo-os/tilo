@@ -4,7 +4,7 @@
 //! group.
 //!
 //! This decides nothing the governance would: the request is one the group's
-//! participants judge against the workspace's policy, as every member's, and
+//! key holders judge against the workspace's policy, as every member's, and
 //! the group is followed as MLS checks it ([`GroupPeer::follow`]).
 
 use super::{
@@ -27,7 +27,7 @@ impl WorkspaceKeys {
     /// This device's signed request for the keys of `workspace`'s group,
     /// made before the workspace's
     /// governance names this device: its entry carries it to the host, which
-    /// hands it to the group's participants as it admits the device. The
+    /// hands it to the group's key holders as it admits the device. The
     /// device then waits for the group's Welcome as if it had published the
     /// request itself, and asks again on the usual backoff if none arrives.
     /// `None` when no secret store keeps this device's groups, when it is

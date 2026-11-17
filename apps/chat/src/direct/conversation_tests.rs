@@ -26,9 +26,9 @@ tilo_test_env::scenario! {
     /// The id of a direct conversation.
     /// Each case was a test of its own, on a fixture of its own; a failure
     /// names the cases that failed.
-    fn a_conversations_id_names_its_participants_people_or_agents;
+    fn a_conversations_id_names_its_members_people_or_agents;
 
-    phase a_conversation_is_named_by_its_participants_once;
+    phase a_conversation_is_named_by_its_members_once;
     // The conversation two people have is named by the two of them, whichever
     // order they are named in, once.
     {
@@ -38,28 +38,28 @@ tilo_test_env::scenario! {
         let other = Chat::direct_id([bob.clone(), ada.clone(), ada.clone()]);
         assert_eq!(one, other, "one conversation per pair, however named");
         assert_eq!(
-            Chat::direct_participants(&one),
+            Chat::direct_members(&one),
             Some(vec![ada, bob]),
-            "the id names its participants back"
+            "the id names its members back"
         );
-        assert_eq!(Chat::direct_participants(&"c_general".into()), None);
+        assert_eq!(Chat::direct_members(&"c_general".into()), None);
         // A conversation with oneself names one person; an id that names nobody,
         // or does not read as members, names no conversation.
         let cy = MemberId::person("c1".repeat(32));
         let alone = Chat::direct_id([cy.clone()]);
         assert_eq!(
-            Chat::direct_participants(&alone),
+            Chat::direct_members(&alone),
             Some(vec![cy]),
             "a conversation with oneself"
         );
         assert_eq!(
-            Chat::direct_participants(&Chat::direct_id(std::iter::empty::<MemberId>())),
+            Chat::direct_members(&Chat::direct_id(std::iter::empty::<MemberId>())),
             None,
             "an id that names nobody"
         );
         let dangling = format!("{}|", alone.as_str());
         assert_eq!(
-            Chat::direct_participants(&dangling.as_str().into()),
+            Chat::direct_members(&dangling.as_str().into()),
             None,
             "an id that does not read as members"
         );
@@ -149,7 +149,7 @@ fn deliver_messages(sender: &mut Window, reader: &mut Window) {
         .hold(0)
         .expect("the reader opens the part the conversation is in");
     sender
-        .deliver_record_to(reader, &crate::parts::part(0))
+        .deliver_resource_to(reader, &crate::parts::part(0))
         .expect("the messages arrive");
     reader.harness().relayout();
 }
@@ -168,7 +168,7 @@ fn two_peoples_chat_is_the_workspaces_own_messages() {
         assert!(
             chat.channels
                 .iter()
-                .any(|row| row.direct && row.participants.contains(&MemberId::person(ada.clone()))),
+                .any(|row| row.direct && row.members.contains(&MemberId::person(ada.clone()))),
             "Bob's window names Ada's conversation: {:?}",
             chat.channels
                 .iter()

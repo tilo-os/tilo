@@ -16,7 +16,7 @@
 
 /// A store of this thread's own, for a replica that runs without a window.
 #[cfg(any(test, feature = "test-support"))]
-pub use tilo_actions::content::register_for_records;
+pub use tilo_actions::content::register_for_resources;
 /// The one registry of window content stores: it lives beside the recorded
 /// actions that keep their parts in them.
 pub use tilo_actions::content::{current, register};

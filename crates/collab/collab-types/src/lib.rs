@@ -63,7 +63,7 @@ pub mod inbound;
 pub mod member;
 pub mod mls_governance;
 pub mod op;
-pub mod own_record;
+pub mod own_resource;
 pub mod peer;
 pub mod personal;
 pub mod presence;
@@ -112,13 +112,13 @@ pub use crypto::{
     Ed25519PublicKey, Signature, VerifyError, generate_keypair, sign_event, sign_op, verify_event,
     verify_op,
 };
-pub use direct::{canonical_pair, direct_pair_id, direct_record};
+pub use direct::{canonical_pair, direct_pair_id, direct_resource};
 pub use document_transfer::{
     DocumentFrame, DocumentMutationKind, DocumentReassembler, DocumentSegment,
     MAX_DOCUMENT_TRANSFER_BYTES, ReassembledDocument, ReassemblyError,
 };
 pub use identity::{AttestationId, AvatarBytes};
-pub use member::{Member, Person, assigned_colour};
+pub use member::{Member, Person};
 pub use mls_governance::{
     JoinMaterial, Joining, MAX_COMMIT_DEVICES, MLS_ACCESS_VERSION, MLS_GOVERNANCE_VERSION,
     MlsAccessRequestV1, MlsGovernanceAction, MlsGovernanceError, MlsGovernanceFrame,
@@ -130,15 +130,16 @@ pub use op::{
     live_artifact_id, next_unordered_document_sequence, validate_document_payload_route,
     validate_whole_document_payload_route,
 };
-pub use own_record::{OwnRecord, own_kinds};
+pub use own_resource::{OwnResource, own_kinds};
 pub use peer::{PeerPresence, PeerPresencePayload};
 pub use personal::{
-    is_personal_cluster, person_record_id, person_record_kind, personal_cluster,
+    is_personal_cluster, person_document_id, person_resource_type, personal_cluster,
     personal_cluster_of,
 };
 pub use receipt::{
-    Receipt, ReceiptRefusal, ReceiptSurface, Record, SurfaceSource, Surfaces, check_appearances,
-    check_claims, check_claims_by_kind, claim_node, decide_op, decide_op_pinned, record_node,
+    Receipt, ReceiptRefusal, ReceiptSurface, SurfaceSource, Surfaces, WrittenDocument,
+    check_appearances, check_claims, check_claims_by_kind, claim_node, decide_op, decide_op_pinned,
+    written_node,
 };
 pub use redaction::{
     MAX_REDACTION_REASON_BYTES, OpId, RedactRequest, RedactedMarker, RedactionError,

@@ -12,21 +12,21 @@ use std::rc::Rc;
 use tilo_actions::{Action as _, ActionContext, ActionError, ActionInvoker, ChangeKind};
 
 use super::live::Live;
-use super::record::{Held, RecordApi};
+use super::record::{Held, ResourceApi};
 use super::section::{SectionApi, SectionKind};
 use tilo_resource::{Invoke, Resource};
 use ui_core::LocalState;
 use ui_core::history_mode::HistoryOwner;
-use ui_core::record::ResourceType;
-use ui_core::record::StoredRecord;
-use ui_core::record::person::PersonRecords;
+use ui_core::resource::ResourceType;
+use ui_core::resource::StoredResource;
+use ui_core::resource::person::PersonResources;
 
 /// A record the app keeps beside the one it shows: one per resource kind
 /// and app in the workspace the app is open in, the same on every device,
 /// so it reaches the person's other devices with the workspace. What was
 /// watched, the words taught to the keyboard, where reading stopped. Or
 /// one of the person's shared records another app keeps
-/// ([`tilo_resource::SharedRecord`]). The shared ones belong to the person
+/// ([`tilo_resource::SharedResource`]). The shared ones belong to the person
 /// rather than to a workspace, so they are kept in the person's own scope and
 /// stay on this device until their personal store carries them.
 ///
@@ -36,11 +36,11 @@ use ui_core::record::person::PersonRecords;
 /// resource's genesis ([`Resource::initialize`]) where it does not exist
 /// yet. Read it through [`Self::state`] or [`Self::with`]; an edit from
 /// another window or device reaches it on the next frame.
-pub struct PersonRecord<P: Resource> {
+pub struct PersonResource<P: Resource> {
     shared: Rc<Shared<P>>,
 }
 
-impl<P: Resource> Clone for PersonRecord<P> {
+impl<P: Resource> Clone for PersonResource<P> {
     fn clone(&self) -> Self {
         Self {
             shared: Rc::clone(&self.shared),
@@ -49,7 +49,7 @@ impl<P: Resource> Clone for PersonRecord<P> {
 }
 
 struct Shared<P: Resource> {
-    record: StoredRecord,
+    record: StoredResource,
     /// The app that keeps the record, when this app does not change it:
     /// it is read here and its edits are refused.
     owner: Option<&'static str>,
@@ -71,7 +71,7 @@ impl<P: Resource> Shared<P> {
         let mut moved = match self.record.read(|doc| self.live.sync(doc)) {
             Some(Ok(moved)) => moved,
             Some(Err(error)) => {
-                unreadable_person_record(P::KIND, &error);
+                unreadable_person_resource(P::KIND, &error);
                 false
             }
             None => false,
@@ -83,7 +83,7 @@ impl<P: Resource> Shared<P> {
             // last read it whole; what that read found is the state too.
             match self.record.read(|doc| self.live.reread(doc)) {
                 Some(Ok(reread)) => moved = reread,
-                Some(Err(error)) => unreadable_person_record(P::KIND, &error),
+                Some(Err(error)) => unreadable_person_resource(P::KIND, &error),
                 None => {}
             }
         }
@@ -96,7 +96,7 @@ impl<P: Resource> Shared<P> {
     }
 }
 
-impl<P: Resource> PersonRecord<P> {
+impl<P: Resource> PersonResource<P> {
     /// The current state.
     #[must_use]
     pub fn get(&self) -> Rc<P::State> {
@@ -249,7 +249,7 @@ impl<P: Resource> PersonRecord<P> {
     /// The record underneath, for a test or host that carries it between
     /// devices itself.
     #[must_use]
-    pub fn record(&self) -> &StoredRecord {
+    pub fn record(&self) -> &StoredResource {
         &self.shared.record
     }
 }
@@ -258,16 +258,16 @@ impl<P: Resource> PersonRecord<P> {
 type OpenKey = (&'static str, String);
 
 /// The person's records a root's views opened, shared by every scope of the
-/// root: one [`PersonRecord`] per resource kind.
+/// root: one [`PersonResource`] per resource kind.
 pub(crate) struct PersonState {
-    /// The person's shared records ([`tilo_resource::SharedRecord`]); none
+    /// The person's shared records ([`tilo_resource::SharedResource`]); none
     /// for a host that keeps only the settings sections, whose history is
     /// the settings document's.
-    records: Option<PersonRecords>,
+    records: Option<PersonResources>,
     /// The app's own records of a kind, in the workspace it is open in;
     /// none for a host that keeps only the shared ones (the session's
     /// settings).
-    own: Option<PersonRecords>,
+    own: Option<PersonResources>,
     app_id: &'static str,
     app_title: &'static str,
     me: tilo_resource::MemberId,
@@ -277,7 +277,7 @@ pub(crate) struct PersonState {
     /// The open records, by the app that owns them and their kind.
     opened: RefCell<HashMap<OpenKey, Rc<dyn Any>>>,
     /// The records of the person's other apps keep, held here too.
-    others: RefCell<HashMap<&'static str, PersonRecords>>,
+    others: RefCell<HashMap<&'static str, PersonResources>>,
     owners: Rc<RefCell<Vec<HistoryOwner>>>,
     refreshers: RefCell<Vec<Box<dyn Fn() -> bool>>>,
     /// The open records' undo and redo, as the palette and agents reach
@@ -295,7 +295,7 @@ struct Published {
     id: String,
     label: String,
     /// Its field edits and verbs, as the API reaches them.
-    api: Rc<dyn RecordApi>,
+    api: Rc<dyn ResourceApi>,
     /// Take back (`true`) or redo (`false`) one of the person's steps, for
     /// the invoker named. Whether there was one.
     step: Step,
@@ -308,7 +308,7 @@ type Step = Box<dyn Fn(bool, &tilo_actions::Actor) -> bool>;
 /// its undo and redo.
 struct Opened {
     shared: Rc<dyn Any>,
-    api: Rc<dyn RecordApi>,
+    api: Rc<dyn ResourceApi>,
     step: Step,
 }
 
@@ -335,7 +335,7 @@ pub(crate) fn resource_id(kind: &str) -> String {
 }
 
 /// One of the person's own records an app keeps, declared with the app
-/// ([`ResourceApp::PERSON_RECORDS`](super::ResourceApp::PERSON_RECORDS)).
+/// ([`ResourceApp::PERSON_RESOURCES`](super::ResourceApp::PERSON_RESOURCES)).
 ///
 /// It is the person's, not the workspace's: kept in their own scope, carried
 /// to their other devices by their personal store, and never reaching a
@@ -351,9 +351,9 @@ pub struct PersonKind {
 
 impl PersonKind {
     /// The person's record `P`, kept by the app that owns it
-    /// ([`SharedRecord`](tilo_resource::SharedRecord)).
+    /// ([`SharedResource`](tilo_resource::SharedResource)).
     #[must_use]
-    pub const fn shared<P: tilo_resource::SharedRecord>() -> Self {
+    pub const fn shared<P: tilo_resource::SharedResource>() -> Self {
         Self {
             kind: P::KIND,
             report: shared_surface::<P>,
@@ -380,14 +380,14 @@ impl PersonKind {
     }
 }
 
-fn shared_surface<P: tilo_resource::SharedRecord>() -> tilo_resource::Surface {
+fn shared_surface<P: tilo_resource::SharedResource>() -> tilo_resource::Surface {
     tilo_resource::Surface {
         person: true,
         ..P::surface()
     }
 }
 
-fn open_shared<P: tilo_resource::SharedRecord>(storage: &super::settings::ViewStorage) {
+fn open_shared<P: tilo_resource::SharedResource>(storage: &super::settings::ViewStorage) {
     let _ = storage.shared_person::<P>();
 }
 
@@ -447,8 +447,8 @@ fn history_operation(record: String, label: &str, undo: bool) -> tilo_actions::A
 
 impl PersonState {
     pub(crate) fn new(
-        records: PersonRecords,
-        own: Option<PersonRecords>,
+        records: PersonResources,
+        own: Option<PersonResources>,
         app_id: &'static str,
         app_title: &'static str,
     ) -> Self {
@@ -461,7 +461,7 @@ impl PersonState {
     /// and read the sections' history in the settings document. `earlier`
     /// are the ids they went by before this device had an identity, whose
     /// changes are theirs too.
-    pub(crate) fn without_records(
+    pub(crate) fn without_resources(
         me: tilo_resource::MemberId,
         earlier: Vec<String>,
         app_id: &'static str,
@@ -471,8 +471,8 @@ impl PersonState {
     }
 
     fn named(
-        records: Option<PersonRecords>,
-        own: Option<PersonRecords>,
+        records: Option<PersonResources>,
+        own: Option<PersonResources>,
         me: tilo_resource::MemberId,
         earlier: Vec<String>,
         app_id: &'static str,
@@ -495,20 +495,24 @@ impl PersonState {
     }
 
     /// The person's record of `P`, opened on first use.
-    pub(crate) fn open<P: Resource>(&self) -> Option<PersonRecord<P>> {
+    pub(crate) fn open<P: Resource>(&self) -> Option<PersonResource<P>> {
         self.open_of::<P>(self.app_id, true, true, false)
     }
 
     /// The shared record `P`, opened on first use: kept by its owner, a copy
     /// of it here in every other app, changed where `P` says.
-    pub(crate) fn open_shared<P: tilo_resource::SharedRecord>(&self) -> Option<PersonRecord<P>> {
+    pub(crate) fn open_shared<P: tilo_resource::SharedResource>(
+        &self,
+    ) -> Option<PersonResource<P>> {
         self.open_of::<P>(P::OWNER, P::edited_by(self.app_id), true, true)
     }
 
     /// The shared record `P`, opened on first use as [`Self::open_shared`]
     /// but never published: a host holds it for its own edits, and the app
     /// whose window shows it publishes its actions.
-    pub(crate) fn hold_shared<P: tilo_resource::SharedRecord>(&self) -> Option<PersonRecord<P>> {
+    pub(crate) fn hold_shared<P: tilo_resource::SharedResource>(
+        &self,
+    ) -> Option<PersonResource<P>> {
         self.open_of::<P>(P::OWNER, P::edited_by(self.app_id), false, true)
     }
 
@@ -522,8 +526,8 @@ impl PersonState {
         edits: bool,
         publish: bool,
         shared: bool,
-    ) -> Option<PersonRecord<P>> {
-        let open = |record: StoredRecord| -> Result<Opened, String> {
+    ) -> Option<PersonResource<P>> {
+        let open = |record: StoredResource| -> Result<Opened, String> {
             let shared = self.shared_of::<P>(record, (!edits).then_some(owner))?;
             let held = Rc::new(held::<P>(&shared, edits));
             *shared.held.borrow_mut() = Some(Rc::clone(&held));
@@ -533,7 +537,7 @@ impl PersonState {
                 api: held,
                 step: Box::new(move |undo, _| {
                     weak.upgrade().is_some_and(|shared| {
-                        let record = PersonRecord { shared };
+                        let record = PersonResource { shared };
                         if undo { record.undo() } else { record.redo() }
                     })
                 }),
@@ -541,7 +545,7 @@ impl PersonState {
         };
         let shared = self.open_kind(
             owner,
-            &RecordType {
+            &PersonResourceType {
                 kind: P::KIND,
                 label: P::LABEL,
                 unreadable: &|reason| {
@@ -559,21 +563,21 @@ impl PersonState {
         shared
             .downcast::<Shared<P>>()
             .ok()
-            .map(|shared| PersonRecord { shared })
+            .map(|shared| PersonResource { shared })
     }
 
     /// The open record of `kind` that the app `owner` keeps, or the one
     /// `open` makes of it, created by `initialize` where it does not exist
     /// yet, kept and (for this app's own, when `publish`) published: the
     /// part of opening a record that does not depend on its type. A
-    /// `shared` one is the person's ([`tilo_resource::SharedRecord`]); any
+    /// `shared` one is the person's ([`tilo_resource::SharedResource`]); any
     /// other is the app's own, in the workspace it is open in.
     fn open_kind(
         &self,
         owner: &'static str,
-        of: &RecordType<'_>,
+        of: &PersonResourceType<'_>,
         initialize: &dyn Fn(&mut ui_core::automerge::AutoCommit) -> Result<(), String>,
-        open: &dyn Fn(StoredRecord) -> Result<Opened, String>,
+        open: &dyn Fn(StoredResource) -> Result<Opened, String>,
         (publish, shared): (bool, bool),
     ) -> Option<Rc<dyn Any>> {
         let (kind, label) = (of.kind, of.label);
@@ -582,11 +586,11 @@ impl PersonState {
             return Some(Rc::clone(open));
         }
         let records = if shared {
-            self.records_of(owner)?
+            self.resources_of(owner)?
         } else {
             self.own.clone()?
         };
-        let record = match open_record(&records, kind.to_owned(), kind, initialize) {
+        let record = match open_resource(&records, kind.to_owned(), kind, initialize) {
             Ok(record) => record,
             Err(reason) => return self.note_unavailable(owner, of, &reason, publish),
         };
@@ -618,7 +622,7 @@ impl PersonState {
     /// storage version the app reads, or what it holds is not a `P`.
     fn shared_of<P: Resource>(
         &self,
-        record: StoredRecord,
+        record: StoredResource,
         owner: Option<&'static str>,
     ) -> Result<Rc<Shared<P>>, String> {
         // An older record is brought up to the resource's storage version
@@ -683,7 +687,7 @@ impl PersonState {
             Published {
                 id: api.id().to_owned(),
                 label: api.label().to_owned(),
-                api: Rc::clone(&api) as Rc<dyn RecordApi>,
+                api: Rc::clone(&api) as Rc<dyn ResourceApi>,
                 step: Box::new(move |undo, by| {
                     stepping.upgrade().is_some_and(|api| api.step(undo, by))
                 }),
@@ -694,7 +698,7 @@ impl PersonState {
 
     /// The person's records `owner` keeps: this app's own, or another app's,
     /// opened once.
-    fn records_of(&self, owner: &'static str) -> Option<PersonRecords> {
+    fn resources_of(&self, owner: &'static str) -> Option<PersonResources> {
         // A host that keeps the person's shared records lends this app its
         // own as well: a second writer of them here would store nowhere the
         // host stores or syncs.
@@ -724,11 +728,11 @@ impl PersonState {
     fn note_unavailable(
         &self,
         owner: &'static str,
-        of: &RecordType<'_>,
+        of: &PersonResourceType<'_>,
         reason: &str,
         publish: bool,
     ) -> Option<Rc<dyn Any>> {
-        unreadable_person_record(of.kind, &reason);
+        unreadable_person_resource(of.kind, &reason);
         // Only the record this app would have published is published for
         // the reason: one another app keeps and this one reads is that
         // app's surface, which registers the actions its own record has.
@@ -780,7 +784,7 @@ impl PersonState {
     }
 
     /// The open records of the person's own, as the API changes them.
-    pub(crate) fn apis(&self) -> Vec<Rc<dyn RecordApi>> {
+    pub(crate) fn apis(&self) -> Vec<Rc<dyn ResourceApi>> {
         self.published
             .borrow()
             .iter()
@@ -856,14 +860,14 @@ impl PersonState {
 /// # Errors
 /// Why the record cannot be opened: the store refused it, or it cannot be
 /// created.
-fn open_record(
-    records: &PersonRecords,
+fn open_resource(
+    records: &PersonResources,
     kind: String,
     of: &str,
     initialize: &dyn Fn(&mut ui_core::automerge::AutoCommit) -> Result<(), String>,
-) -> Result<StoredRecord, String> {
+) -> Result<StoredResource, String> {
     records
-        .open_record(ResourceType::new(kind), initialize)
+        .open_resource(ResourceType::new(kind), initialize)
         .map_err(|error| format!("{of}'s record cannot be opened: {error}"))
 }
 
@@ -887,7 +891,7 @@ fn held<P: Resource>(shared: &Rc<Shared<P>>, edits: bool) -> Held<P> {
             let shared = applying
                 .upgrade()
                 .ok_or_else(|| ActionError::Refused("the record is closed".into()))?;
-            PersonRecord { shared }.apply_as(action, invoker)
+            PersonResource { shared }.apply_as(action, invoker)
         },
     )
     .reading(move |read| {
@@ -897,7 +901,7 @@ fn held<P: Resource>(shared: &Rc<Shared<P>>, edits: bool) -> Held<P> {
     })
 }
 
-impl<P: Resource> super::record::sealed::Hold<P> for PersonRecord<P> {
+impl<P: Resource> super::record::sealed::Hold<P> for PersonResource<P> {
     fn held(&self, _storage: super::record::sealed::Storage<'_>) -> Option<Rc<Held<P>>> {
         self.shared.held.borrow().clone()
     }
@@ -910,7 +914,7 @@ impl<P: Resource> super::record::sealed::Hold<P> for PersonRecord<P> {
             .held
             .borrow()
             .clone()
-            .map(|held| super::record::sealed::Api(held as Rc<dyn RecordApi>))
+            .map(|held| super::record::sealed::Api(held as Rc<dyn ResourceApi>))
     }
 }
 
@@ -929,13 +933,13 @@ impl Drop for PersonState {
 /// the runtime rather than one in every app for each record type.
 #[cold]
 #[inline(never)]
-fn unreadable_person_record(kind: &'static str, error: &dyn std::fmt::Display) {
+fn unreadable_person_resource(kind: &'static str, error: &dyn std::fmt::Display) {
     tracing::warn!(kind, %error, "person record unreadable");
 }
 
 /// A person record's type, as the part of opening one that does not depend
 /// on it reads it: compiled once, not into every app.
-struct RecordType<'a> {
+struct PersonResourceType<'a> {
     kind: &'static str,
     label: &'static str,
     /// What the record publishes when it could not be opened, for why.

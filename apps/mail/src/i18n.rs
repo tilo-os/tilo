@@ -20,7 +20,7 @@ pub fn t(key: &str) -> String {
     CATALOG.t(key)
 }
 
-pub fn no_subject() -> String {
+pub fn untitled() -> String {
     CATALOG.t("mail-no-subject")
 }
 

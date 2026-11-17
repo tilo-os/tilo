@@ -485,126 +485,12 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    fn everyone_here_wears_a_colour_of_their_own;
-
-    phase visitors_here_together_wear_distinct_colours_on_every_page;
-    // Two visitors whose identities hash to the same colour still wear two once they are here
-    // together, and each one's page settles the workspace alike, so a person is the same colour on
-    // every screen, their own included.
-    {
-        assert_eq!(
-            ui::presence::user_color("visitor-0"),
-            ui::presence::user_color("visitor-13")
-        );
-        let certified = |device: &str| LiveMember {
-            user: Some(device.into()),
-            ..member(device, "person", device)
-        };
-        let page = |own: &str, other: &str| {
-            let mut here = HereState::default();
-            here.set_members(Some(certified(own)), Some(vec![certified(other)]));
-            here
-        };
-        let first = page("visitor-0", "visitor-13");
-        let second = page("visitor-13", "visitor-0");
-        assert_ne!(
-            first.colors()["visitor-0"],
-            first.colors()["visitor-13"],
-            "two people here together never share a colour"
-        );
-        assert_eq!(first.colors(), second.colors(), "every page settles alike");
-        assert_eq!(first.own_rgb(), Some(second.colors()["visitor-0"]));
-        let tree = Layout::default();
-        let shown = first.people(&tree, &[], &|_| None);
-        assert_eq!(shown[0].rgb, second.own_rgb().expect("own colour"));
-    }
-
-    phase an_agent_never_wears_the_persons_own_colour;
-    // An agent that announces the colour the person themselves wears does not wear it: the
-    // person keeps their own colour, on their own ring and everywhere else, and the agent reads
-    // apart from them.
-    {
-        let mine = ui::presence::user_color("me-root");
-        let hex = format!("#{:02x}{:02x}{:02x}", mine.0, mine.1, mine.2);
-        let claiming = |member: &mut LiveMember| {
-            member.colour.clone_from(&hex);
-            member.clone()
-        };
-        let person = claiming(&mut LiveMember {
-            user: Some("me-root".into()),
-            ..member("me", "person", "Pat")
-        });
-        // The agent's face names no client this build knows, so it wears what it was given.
-        let agent = claiming(&mut member("helper", "agent", "Helper #1"));
-        let mut here = HereState::default();
-        here.set_members(Some(person), Some(vec![agent]));
-        assert_eq!(
-            here.own_rgb(),
-            Some(mine),
-            "the person wears their own colour"
-        );
-        assert_ne!(
-            here.colors().get("helper").copied(),
-            Some(mine),
-            "no member is drawn in the person's own colour"
-        );
-        // A client hue the person themselves wears is not worn by its agent either.
-        let orange = ui::presence::identity_rgb(ui::tokens::PresenceHue::Orange);
-        let orange_hex = format!("#{:02x}{:02x}{:02x}", orange.0, orange.1, orange.2);
-        let mut here = HereState::default();
-        here.set_members(
-            Some(LiveMember {
-                user: Some("me-root".into()),
-                colour: orange_hex,
-                ..member("me", "person", "Pat")
-            }),
-            Some(vec![member("claude", "agent", "Claude Code #1")]),
-        );
-        assert_ne!(
-            here.colors().get("claude").copied(),
-            Some(orange),
-            "the agent steps aside from the colour the person wears"
-        );
-        assert_eq!(here.own_rgb(), Some(orange));
-    }
-
-    phase an_agent_steps_clear_of_its_persons_colour;
-    // One agent wears one colour on every surface that draws it: the shell's faces and the cards in
-    // its windows, the People list's row, the bar's face, and the colour its own apps paint its
-    // card, its text marks and its caret in — the one rule ([`ui::presence::participant_color`]),
-    // never a colour a surface picked for itself.
-    // An agent that claims no colour wears the one rule's, clear of the person it is certified
-    // for, as its record and every app paint it: never theirs, even where what it is would land
-    // on them.
-    {
-        let helper = "agent:helper@host";
-        let own = ui::tokens::PresenceHue::of_agent(helper);
-        let person = (0..1000)
-            .map(|n| format!("person-{n}"))
-            .find(|id| ui::tokens::PresenceHue::of_identity(id) == own)
-            .expect("someone whose colour what it is lands on");
-        let agent = LiveMember {
-            user: Some(person.clone()),
-            ..member(helper, "agent", "Helper")
-        };
-        let mut here = HereState::default();
-        here.set_members(None, Some(vec![agent]));
-        let worn = here.colors().get(helper).copied();
-        assert_eq!(
-            worn,
-            Some(ui::presence::member_color(&ui::permissions::MemberId::agent(helper), Some(&person)))
-        );
-        assert_ne!(
-            worn,
-            Some(ui::presence::user_color(&person)),
-            "never theirs"
-        );
-    }
+    fn everyone_here_wears_the_colour_of_who_they_are;
 
     phase an_agent_wears_one_colour_on_every_surface;
     {
         let helper = "agent:helper@host";
-        let (r, g, b) = ui::presence::member_color(&ui::permissions::MemberId::agent(helper), None);
+        let (r, g, b) = ui::presence::member_color(&ui::permissions::MemberId::agent(helper));
         let announced = format!("#{r:02x}{g:02x}{b:02x}");
         let me = LiveMember {
             user: Some("me-root".into()),
@@ -632,7 +518,7 @@ tilo_test_env::scenario! {
                 here.colors().get(helper).copied(),
                 listed.rgb,
                 presence.color_for(&MemberId::agent("helper@host")),
-                ui::presence::member_color(&ui::permissions::MemberId::agent(helper), None),
+                ui::presence::member_color(&ui::permissions::MemberId::agent(helper)),
             ),
             (Some((r, g, b)), (r, g, b), (r, g, b), (r, g, b)),
             "the board, its people row, the windows and every app settle one colour"
@@ -666,10 +552,9 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_person_wears_the_colour_they_chose_and_the_others_step_aside;
+    phase a_person_wears_the_colour_they_chose;
     // The colour someone chose in their own card is the colour they wear here,
-    // on their own page and on everyone else's, and whoever else's identity
-    // names the same one steps to a free entry: one person, one colour, on the
+    // on their own page and on everyone else's: one person, one colour, on the
     // bar, in the People list and in every app they edit in.
     {
         let violet = ui::presence::identity_rgb(ui::tokens::PresenceHue::Violet);
@@ -699,11 +584,6 @@ tilo_test_env::scenario! {
             peer_page.colors()["me"],
             violet,
             "every page paints them in it too"
-        );
-        assert_ne!(
-            peer_page.colors()["bo"],
-            violet,
-            "whoever else lands on it steps aside"
         );
     }
 
@@ -739,7 +619,7 @@ tilo_test_env::scenario! {
         assert!(!here.colors().contains_key("ben-tab"));
         assert_eq!(
             here.own_rgb(),
-            Some(ui::presence::assign_peer_colors(&["me-root"], &[])["me-root"]),
+            Some(ui::presence::user_color("me-root")),
             "this page knows its own person"
         );
         here.set_members(
@@ -752,8 +632,8 @@ tilo_test_env::scenario! {
                 },
             ]),
         );
-        let settled = ui::presence::assign_peer_colors(&["me-root", "ben-root"], &[]);
-        assert_eq!(shown(&mut here), (settled["ben-root"], Some(settled["ben-root"])));
+        let ben = ui::presence::user_color("ben-root");
+        assert_eq!(shown(&mut here), (ben, Some(ben)));
         // A neutral face paints grey, not a ring colour.
         let palette = ui::tokens::colors::Colors::dark().presence;
         let painted = palette.of_rgb(ui::presence::UNSETTLED_RGB);
@@ -1430,7 +1310,7 @@ tilo_test_env::scenario! {
         let agent = workspace
             .members
             .iter()
-            .find(|member| member.id.key() == "agent:scribe")
+            .find(|member| member.id == collab_types::MemberId::agent("scribe"))
             .expect("the agent is on the member list");
         assert!(!agent.id.is_person(), "an agent's row is software's");
         let rows = crate::people::roster_rows(&tree, "me-root");
@@ -1536,4 +1416,87 @@ fn a_persons_devices_and_name_resolve_as_presence_shows_them() {
         ui::history_source::UNKNOWN_AUTHOR_NAME,
         "someone not here is nobody presence can name"
     );
+}
+
+/// One member, one colour: the face the bar draws for a person and for an agent at work is the
+/// colour an app's presence paints them in, keyed by who they are and nothing else. The agent here
+/// is kept by the person whose page this is, and what it is lands on that person's own hue: the
+/// bar knows its keeper from the workspace's grants, an app may not, and neither may change its
+/// colour. Its session speaks from a stand-in key of its own, which may not either.
+#[test]
+fn a_member_wears_one_colour_on_the_bar_and_in_every_app() {
+    let agent = MemberId::agent("helper");
+    let keeper = (0..1000)
+        .map(|n| format!("person-{n}"))
+        .find(|id| {
+            ui::tokens::PresenceHue::of_identity(id) == ui::tokens::PresenceHue::of_agent("helper")
+        })
+        .expect("a person whose hue what the agent is lands on");
+    let me = LiveMember {
+        user: Some(keeper.clone()),
+        ..member("me", "person", "Pat")
+    };
+    let bo = LiveMember {
+        user: Some("bo-root".into()),
+        ..member("bo-device", "person", "Bo")
+    };
+    let helper = LiveMember {
+        user: Some(keeper.clone()),
+        member: Some(agent.clone()),
+        ..member("5a3f00stand-in", "agent", "Helper")
+    };
+    let mut here = HereState::default();
+    here.set_members(Some(me), Some(vec![bo, helper]));
+    let people = here.people(&Layout::default(), &[], &|_| None);
+
+    let mut workspace = Workspace::new(tilo_desktop_model::WorkspaceId::from_u128(1), "Shell");
+    workspace.set_owner(&keeper);
+    let node = workspace.node();
+    workspace.grant(tilo_action_policy::Grant::new(
+        "agent-member:helper",
+        tilo_action_policy::Grantee::agent("helper"),
+        node,
+        tilo_action_policy::KindSet::READ,
+        tilo_action_policy::Answer::Allow,
+        tilo_action_policy::Grantee::person(&keeper),
+    ));
+    let mut tree = Layout {
+        active: workspace.id(),
+        workspaces: vec![workspace],
+        ..Layout::default()
+    };
+    place_here(&mut tree, &people, None);
+    let mut bar = crate::topbar::TopBarChrome::from_tree_with_local_user(&tree, keeper.clone());
+    bar.sync_from_tree(&tree);
+
+    // What an app is told of the workspace's members, and what it paints someone it was told
+    // nothing of.
+    let mut listed = PresenceCtx::empty();
+    listed.apply_members(vec![
+        Member::named(MemberId::person("bo-root"), "Bo"),
+        Member::named(agent.clone(), "Helper"),
+    ]);
+    let unlisted = PresenceCtx::empty();
+    let rgba = |(r, g, b): (u8, u8, u8)| {
+        vello::peniko::Color::from_rgb8(r, g, b)
+            .to_rgba8()
+            .to_u8_array()
+    };
+    let mut faces: Vec<[u8; 4]> = bar
+        .face_colors()
+        .iter()
+        .map(|c| c.to_rgba8().to_u8_array())
+        .collect();
+    faces.sort_unstable();
+    for app in [&listed, &unlisted] {
+        let mut painted = vec![
+            rgba(app.color_for(&MemberId::person("bo-root"))),
+            rgba(app.color_for(&agent)),
+        ];
+        painted.sort_unstable();
+        assert_eq!(
+            faces, painted,
+            "the bar's faces wear the colours the apps paint"
+        );
+    }
 }

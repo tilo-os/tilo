@@ -73,11 +73,11 @@ fn noise(len: usize, seed: u64) -> Vec<u8> {
 /// The shared desktop's first state: an automerge document carrying `filler`
 /// bytes, as a desktop of many windows does.
 fn desktop_base(filler: usize) -> automerge::AutoCommit {
-    record_of(filler, 1)
+    resource_of(filler, 1)
 }
 
 /// A record of `size` bytes: an automerge document, as every app's is.
-fn record_of(size: usize, seed: u64) -> automerge::AutoCommit {
+fn resource_of(size: usize, seed: u64) -> automerge::AutoCommit {
     use automerge::transaction::Transactable as _;
     let mut doc = automerge::AutoCommit::new();
     doc.put(automerge::ROOT, "filler", noise(size, seed))
@@ -480,7 +480,7 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
         author
             .write(
                 route,
-                &DocumentMutation::Snapshot(record_of(100 * 1024, record as u64 + 7).save()),
+                &DocumentMutation::Snapshot(resource_of(100 * 1024, record as u64 + 7).save()),
             )
             .unwrap();
     }
@@ -491,7 +491,7 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
     author
         .write(
             chat,
-            &DocumentMutation::Snapshot(record_of(CHAT_BYTES, 3).save()),
+            &DocumentMutation::Snapshot(resource_of(CHAT_BYTES, 3).save()),
         )
         .unwrap();
     first
@@ -742,7 +742,7 @@ fn chat_part(workspace: &str) -> DocumentRoute {
     DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: workspace.to_owned(),
-        record: neighbour_wire::record_part(CHAT_CHAIN, 0),
+        record: neighbour_wire::document_part(CHAT_CHAIN, 0),
     }
 }
 
@@ -871,7 +871,7 @@ const WEB_ROUND_TRIPS: f64 = 3.25;
 /// What the host and the page may spend on a fresh guest's entry, from its
 /// first request until its desktop shows: the session and the entry (about
 /// 0.1 s), the workspace admitting the guest (about 60 ms for 300 members),
-/// the participants' commit that adds the guest to a channel group of 300 and
+/// the members' commit that adds the guest to a channel group of 300 and
 /// carries its Welcome (about 85 ms), the replay written, and the page taking
 /// in its Welcome, the commits after it, the governance and the 300 members'
 /// parts of the desktop. Every member's page holds the keys, as in the Lounge,
@@ -1123,9 +1123,9 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
                     notes_before += 1;
                 }
                 Event::HostReady {
-                    records_when_opened,
+                    documents_when_opened,
                     ..
-                } => when_opened = Some(*records_when_opened),
+                } => when_opened = Some(*documents_when_opened),
                 _ => {}
             }
         }
@@ -1150,7 +1150,7 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
         notes_before, 0,
         "a note or the chat reached the guest before it opened one"
     );
-    page.send(Cmd::OpenRecordAt(place.workspace_id, place.note.clone()))
+    page.send(Cmd::OpenDocumentAt(place.workspace_id, place.note.clone()))
         .unwrap();
     let (mut note, mut opened) = (false, None);
     while !note || opened.is_none() || when_opened.is_none() {
@@ -1160,17 +1160,17 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
                     route,
                     author: Some(_),
                 } if route == *place.note => note = true,
-                Event::RecordOpened {
+                Event::DocumentOpened {
                     route: Some(route),
-                    answer: tilo_session_client::RecordAnswer::Sent { frames },
+                    answer: tilo_session_client::DocumentAnswer::Sent { frames },
                     ..
                 } if route == *place.note => {
                     opened = Some(frames);
                 }
                 Event::HostReady {
-                    records_when_opened,
+                    documents_when_opened,
                     ..
-                } => when_opened = Some(records_when_opened),
+                } => when_opened = Some(documents_when_opened),
                 _ => {}
             }
         }
@@ -1197,7 +1197,7 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
         record: neighbour_wire::chain_head(CHAT_CHAIN),
         ..place.chat.clone()
     };
-    page.send(Cmd::OpenRecordAt(place.workspace_id, head.clone()))
+    page.send(Cmd::OpenDocumentAt(place.workspace_id, head.clone()))
         .unwrap();
     let (mut part, mut answered) = (false, None);
     while !part || answered.is_none() {
@@ -1207,9 +1207,9 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
                     route,
                     author: Some(_),
                 } if route == *place.chat => part = true,
-                Event::RecordOpened {
+                Event::DocumentOpened {
                     route: Some(route),
-                    answer: tilo_session_client::RecordAnswer::Sent { frames },
+                    answer: tilo_session_client::DocumentAnswer::Sent { frames },
                     ..
                 } if route == head => {
                     answered = Some(frames);

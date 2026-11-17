@@ -36,8 +36,8 @@ fn verb(action: &str) -> Did {
     ))
 }
 
-fn post(actor: Acting, change: &str, caused_by: Option<Cause>) -> RecordEvent {
-    RecordEvent {
+fn post(actor: Acting, change: &str, caused_by: Option<Cause>) -> DocumentEvent {
+    DocumentEvent {
         workspace: "ws-1".into(),
         record: "rec-1".into(),
         kind: "chat.workspace".into(),
@@ -65,7 +65,7 @@ fn bot(id: &str) -> Acting {
 }
 
 fn watch_chat(by: ActorFilter) -> TriggerSpec {
-    TriggerSpec::RecordChanged {
+    TriggerSpec::ResourceChanged {
         kind: "chat.workspace".into(),
         actions: vec![],
         fields: vec![],
@@ -181,7 +181,7 @@ fn housekeeping_fires_only_a_trigger_that_names_its_action() {
             .is_empty(),
         "marking a channel read changes nothing the record holds"
     );
-    let reads = program(vec![TriggerSpec::RecordChanged {
+    let reads = program(vec![TriggerSpec::ResourceChanged {
         kind: "chat.workspace".into(),
         actions: vec!["mark-read".into()],
         fields: vec![],
@@ -331,7 +331,7 @@ tilo_test_env::scenario! {
         assert!(!field_matches("channels.*.name", "channels.c1.topic"));
         assert!(field_matches("channels", "channels.c1.name"));
         assert!(!field_matches("channels.*.name", "channels.c1"));
-        let only_edits = program(vec![TriggerSpec::RecordChanged {
+        let only_edits = program(vec![TriggerSpec::ResourceChanged {
             kind: "chat.workspace".into(),
             actions: vec!["edit-message".into()],
             fields: vec![],
@@ -343,7 +343,7 @@ tilo_test_env::scenario! {
                 .firings
                 .is_empty()
         );
-        let other_kind = program(vec![TriggerSpec::RecordChanged {
+        let other_kind = program(vec![TriggerSpec::ResourceChanged {
             kind: "discord.guild".into(),
             actions: vec![],
             fields: vec![],
@@ -355,7 +355,7 @@ tilo_test_env::scenario! {
                 .is_empty()
         );
 
-        let names = program(vec![TriggerSpec::RecordChanged {
+        let names = program(vec![TriggerSpec::ResourceChanged {
             kind: "chat.workspace".into(),
             actions: vec![],
             fields: vec!["channels.*.name".into()],

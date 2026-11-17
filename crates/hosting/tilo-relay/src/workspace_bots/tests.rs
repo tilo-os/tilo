@@ -12,6 +12,7 @@ use tilo_moderation::{Case, JudgeError, Outcome, Verdict};
 
 use super::*;
 use crate::workspaces::fixtures::{governor, restricted_until, test_host, test_host_taking_part};
+use tilo_actions::MemberId;
 
 const MALLORY: [u8; 32] = [7; 32];
 const ADA: [u8; 32] = [8; 32];
@@ -114,7 +115,7 @@ fn first_part() -> String {
 /// The messages of the chat's first part, as the workspace holds it.
 async fn posts(workspaces: &Workspaces, workspace: &str) -> Vec<chat::record::Message> {
     workspaces
-        .record_document(workspace, CHAT, &first_part())
+        .resource_document(workspace, CHAT, &first_part())
         .await
         .unwrap()
         .map(|bytes| chat::messages::read_part(&AutoCommit::load(&bytes).unwrap()))
@@ -124,9 +125,9 @@ async fn posts(workspaces: &Workspaces, workspace: &str) -> Vec<chat::record::Me
 
 /// The message ids `page` holds in the parts beside its chat record.
 fn message_ids(page: &Replica) -> Vec<String> {
-    page.records_beside()
+    page.resources_beside()
         .iter()
-        .filter_map(|record| page.read_record(record, chat::messages::read_part))
+        .filter_map(|record| page.read_resource(record, chat::messages::read_part))
         .flat_map(|part| {
             part.messages
                 .ids()
@@ -159,19 +160,19 @@ async fn post_with(
 ) -> String {
     let catalogue = AppCatalogue::native();
     let chat = workspaces
-        .record_document(workspace, CHAT, "")
+        .resource_document(workspace, CHAT, "")
         .await
         .unwrap()
         .unwrap();
     let mut held = Vec::new();
-    for (app, record) in workspaces.record_routes(workspace).await.unwrap() {
-        let Some(part) = ui::record::DocumentId::parse(&record)
+    for (app, record) in workspaces.document_routes(workspace).await.unwrap() {
+        let Some(part) = ui::resource::DocumentId::parse(&record)
             .filter(|part| app == CHAT && chat::parts::part_index(part).is_some())
         else {
             continue;
         };
         let bytes = workspaces
-            .record_document(workspace, CHAT, &record)
+            .resource_document(workspace, CHAT, &record)
             .await
             .unwrap()
             .unwrap();
@@ -183,16 +184,16 @@ async fn post_with(
             &catalogue,
             CHAT,
             workspace,
-            author,
+            &MemberId::person(author),
             ReplicaActor::Owner,
             Seed::Existing {
-                record: ui::record::DocumentId::package_primary(),
+                record: ui::resource::DocumentId::package_primary(),
                 changes: vec![chat],
             },
         )
         .unwrap();
         for (part, bytes) in held {
-            page.apply_record(&part, &DocumentMutation::Snapshot(bytes))
+            page.apply_document(&part, &DocumentMutation::Snapshot(bytes))
                 .unwrap();
         }
         let before = message_ids(&page);
@@ -202,7 +203,7 @@ async fn post_with(
         }
         page.invoke(
             &tilo_actions::api::ActionAddress::new(
-                ui::record::chain_resource_id(&chat::parts::chain()),
+                ui::resource::chain_resource_id(&chat::parts::chain()),
                 "post",
             ),
             arguments.as_object().unwrap(),
@@ -213,12 +214,12 @@ async fn post_with(
             .into_iter()
             .find(|id| !before.contains(id))
             .expect("the post is in a part");
-        (id, page.take_record_mutations().unwrap())
+        (id, page.take_document_mutations().unwrap())
     };
     for (record, mutation) in taken {
         match mutation {
             DocumentMutation::Snapshot(bytes) => workspaces
-                .author_workspace_record(workspace, cert, (CHAT, record.as_str()), |doc| {
+                .author_workspace_document(workspace, cert, (CHAT, record.as_str()), |doc| {
                     tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes)
                         .map(drop)
                         .map_err(|error| error.to_string())
@@ -294,7 +295,7 @@ async fn flood_posts(workspaces: &Workspaces, workspace: &str, cert: &DeviceCert
                 &ada,
                 chat::Chat::REPORT_MESSAGE.with(chat::record::chat::ReportMessage {
                     message: spam,
-                    author: tilo_resource::MemberId::person(mallory),
+                    author: MemberId::person(mallory),
                     reason: "spam".parse().unwrap(),
                 }),
             )
@@ -341,13 +342,13 @@ async fn a_report_filed_in_the_workspace_restricts_and_undoes_the_flood_as_the_b
     assert_eq!(texts_by(&posted, ADA), ["hello everyone"]);
     let after = chat_of(
         &workspaces
-            .record_document(&workspace, CHAT, "")
+            .resource_document(&workspace, CHAT, "")
             .await
             .unwrap()
             .unwrap(),
     );
     let decision = after.moderation.decisions.iter().next().unwrap();
-    assert_eq!(decision.person, mallory);
+    assert_eq!(decision.person, MemberId::person(mallory.as_str()));
     assert_eq!(decision.outcome, Outcome::Restrict);
     assert_eq!(
         after.moderation.open_reports().count(),
@@ -369,7 +370,7 @@ async fn a_report_filed_in_the_workspace_restricts_and_undoes_the_flood_as_the_b
 /// A bot that answers every person's post in `channel`.
 fn greeter(channel: &str) -> installed::InstalledBot {
     use tilo_automation::{ActorFilter, Binding, Selector, Shortcut, Step, StepKind, TriggerSpec};
-    let trigger = TriggerSpec::RecordChanged {
+    let trigger = TriggerSpec::ResourceChanged {
         kind: "chat.messages".into(),
         actions: vec!["post".into()],
         fields: Vec::new(),
@@ -525,7 +526,7 @@ async fn an_installed_bot_answers_a_post_in_the_workspace_once() {
     assert!(runner.step().await.unwrap().is_empty());
     assert_eq!(
         runner.workspace_input().await.unwrap()["members"],
-        serde_json::json!([{"person": hex::encode(cert.user_public_key), "role": "owner"}]),
+        serde_json::json!([{"member": {"person": hex::encode(cert.user_public_key)}, "role": "owner"}]),
         "a program declaring `workspace` is told who is in it"
     );
     post_in(&workspaces, &workspace, &cert, (&ada, &general, "hello")).await;
@@ -550,7 +551,7 @@ async fn an_installed_bot_answers_a_post_in_the_workspace_once() {
         .filter(|message| message.text == "welcome!")
         .collect();
     assert_eq!(answers.len(), 1, "one answer to one post");
-    assert_eq!(answers[0].author, tilo_resource::MemberId::bot(GREETER));
+    assert_eq!(answers[0].author, MemberId::bot(GREETER));
 }
 
 /// A workspace with the chat, Ada introduced, and `#general`'s id.
@@ -894,7 +895,7 @@ async fn a_bot_step_reads_the_records_it_follows_through_the_record_api() {
     let relay = bot_host(scratch.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
-    let trigger = TriggerSpec::RecordChanged {
+    let trigger = TriggerSpec::ResourceChanged {
         kind: "chat.messages".into(),
         actions: vec!["post".into()],
         fields: Vec::new(),
@@ -1020,7 +1021,7 @@ async fn a_bridge_posts_under_another_name_signed_by_its_own_device() {
         "the workspace admits the bridge's post: {reports:?}"
     );
     let bytes = workspaces
-        .record_document(&workspace, CHAT, &first_part())
+        .resource_document(&workspace, CHAT, &first_part())
         .await
         .unwrap()
         .unwrap();
@@ -1030,7 +1031,7 @@ async fn a_bridge_posts_under_another_name_signed_by_its_own_device() {
         .find(|message| message.text == "welcome!")
         .map(|message| message.author.clone())
         .expect("the bridge posted");
-    assert_eq!(post, tilo_resource::MemberId::bot(GREETER), "still the bot's");
+    assert_eq!(post, MemberId::bot(GREETER), "still the bot's");
     let shown: Vec<_> = AutoCommit::load(&bytes)
         .unwrap()
         .get_changes(&[])
@@ -1181,7 +1182,7 @@ fn membership_changes_fire_a_bots_workspace_triggers_as_governance_verbs() {
     assert!(installed::governance_events("r1", "owner", 7, &after, &after).is_empty());
 
     // A program's workspace trigger fires on them, the person in the event.
-    let trigger = TriggerSpec::RecordChanged {
+    let trigger = TriggerSpec::ResourceChanged {
         kind: "tilo.workspace".into(),
         actions: vec!["set-role".into(), "ban".into()],
         fields: Vec::new(),
@@ -1246,7 +1247,7 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
     // chat's messages: those are sealed now.
     let started = {
         let chat = workspaces
-            .record_document(&workspace, CHAT, "")
+            .resource_document(&workspace, CHAT, "")
             .await
             .unwrap()
             .unwrap();
@@ -1254,10 +1255,10 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
             &AppCatalogue::native(),
             CHAT,
             &workspace,
-            &hex::encode(guest_cert.user_public_key),
+            &MemberId::person(hex::encode(guest_cert.user_public_key)),
             ReplicaActor::Owner,
             Seed::Existing {
-                record: ui::record::DocumentId::package_primary(),
+                record: ui::resource::DocumentId::package_primary(),
                 changes: vec![chat],
             },
         )
@@ -1265,14 +1266,14 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
         let arguments = serde_json::json!({ "channel": general, "text": "hello" });
         page.invoke(
             &tilo_actions::api::ActionAddress::new(
-                ui::record::chain_resource_id(&chat::parts::chain()),
+                ui::resource::chain_resource_id(&chat::parts::chain()),
                 "post",
             ),
             arguments.as_object().unwrap(),
             false,
         )
         .unwrap();
-        match page.take_record_mutations().unwrap().pop() {
+        match page.take_document_mutations().unwrap().pop() {
             Some((_, DocumentMutation::Snapshot(bytes))) => bytes,
             other => panic!("the page started the first part: {other:?}"),
         }
@@ -1300,7 +1301,7 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
         .filter(|message| message.text == "welcome!")
         .collect();
     assert_eq!(answers.len(), 1, "the guest reads the bot's answer");
-    assert_eq!(answers[0].author, tilo_resource::MemberId::bot(GREETER));
+    assert_eq!(answers[0].author, MemberId::bot(GREETER));
     assert!(
         posted.iter().any(|message| message.text == "hello"),
         "beside Ada's post"
@@ -1311,7 +1312,7 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
 async fn referenced_in(workspaces: &Workspaces, workspace: &str) -> Vec<attachments::Referenced> {
     attachments::referenced(
         &workspaces
-            .record_document(workspace, CHAT, &first_part())
+            .resource_document(workspace, CHAT, &first_part())
             .await
             .unwrap()
             .unwrap(),
@@ -1331,7 +1332,7 @@ fn file(name: &str, bytes: &[u8]) -> serde_json::Value {
 /// The one piece `device` answers `want` with when it keeps `bytes`, as a
 /// member's device answers.
 fn answer(want: &[u8], device: [u8; 32], bytes: &[u8]) -> Vec<u8> {
-    let neighbour_wire::NeighbourMsg::RecordContentWant {
+    let neighbour_wire::NeighbourMsg::DocumentContentWant {
         requester,
         app_id,
         cluster_id,
@@ -1341,7 +1342,7 @@ fn answer(want: &[u8], device: [u8; 32], bytes: &[u8]) -> Vec<u8> {
     else {
         panic!("a request for content")
     };
-    postcard::to_allocvec(&neighbour_wire::NeighbourMsg::RecordContentPiece {
+    postcard::to_allocvec(&neighbour_wire::NeighbourMsg::DocumentContentPiece {
         responder: tilo_peer_state::peer_handle(&device),
         requester,
         app_id,
@@ -1361,7 +1362,7 @@ fn opened(
     device: [u8; 32],
     bytes: &[u8],
 ) -> Option<Vec<u8>> {
-    let want = postcard::to_allocvec(&neighbour_wire::NeighbourMsg::RecordContentWant {
+    let want = postcard::to_allocvec(&neighbour_wire::NeighbourMsg::DocumentContentWant {
         requester: tilo_peer_state::peer_handle(&device),
         app_id: CHAT.into(),
         cluster_id: workspace.into(),
@@ -1372,8 +1373,8 @@ fn opened(
     let mut whole = Vec::new();
     for frame in workspaces.content_answer(workspace, &want) {
         match postcard::from_bytes(&frame).unwrap() {
-            neighbour_wire::NeighbourMsg::RecordContentPiece { bytes, .. } => whole.extend(bytes),
-            neighbour_wire::NeighbourMsg::RecordContentLacks { .. } => return None,
+            neighbour_wire::NeighbourMsg::DocumentContentPiece { bytes, .. } => whole.extend(bytes),
+            neighbour_wire::NeighbourMsg::DocumentContentLacks { .. } => return None,
             _ => panic!("a piece of content, or word that the host keeps none"),
         }
     }
@@ -1445,7 +1446,7 @@ async fn a_file_a_member_posted_stays_in_the_workspace_after_they_leave() {
     workspaces.content_for_host(&workspace, ADA, &answer(&asks[0], ADA, &notes));
     assert_eq!(
         keeper.kept_for(&blake3::hash(&notes).to_hex()),
-        Some(tilo_resource::MemberId::person(ada.as_str()))
+        Some(MemberId::person(ada.as_str()))
     );
     assert_eq!(
         opened(&workspaces, &workspace, BO, &notes),
@@ -1511,7 +1512,7 @@ async fn a_file_a_member_posted_stays_in_the_workspace_after_they_leave() {
     let again = attachments_of(attachments::AttachmentLimits::default());
     assert_eq!(
         again.kept_for(&blake3::hash(&slides).to_hex()),
-        Some(tilo_resource::MemberId::person(ada.as_str()))
+        Some(MemberId::person(ada.as_str()))
     );
     assert_eq!(again.kept_for(&blake3::hash(&notes).to_hex()), None);
 }
@@ -1531,9 +1532,9 @@ pub(super) fn discord_bridge() -> installed::InstalledBot {
 
 /// The workspace's Chat categories by name, each with its channels' names.
 async fn chat_layout(workspaces: &Workspaces, workspace: &str) -> Vec<(String, Vec<String>)> {
-    let record = workspace_record(&AppCatalogue::native(), CHAT);
+    let record = workspace_resource(&AppCatalogue::native(), CHAT);
     let saved = workspaces
-        .record_document(workspace, CHAT, &record)
+        .resource_document(workspace, CHAT, &record)
         .await
         .unwrap()
         .unwrap();
@@ -1578,7 +1579,7 @@ async fn bridged_lounge(workspaces: &Workspaces, workspace: &str, cert: &DeviceC
             cert,
             &catalogue,
             discord::APP,
-            &workspace_record(&catalogue, discord::APP),
+            &workspace_resource(&catalogue, discord::APP),
             |doc| {
                 let current = ::discord::Guild::read_fields(doc, &automerge::ROOT)
                     .map_err(|error| error.to_string())?;
@@ -1642,7 +1643,7 @@ async fn a_bridge_run_the_workspace_refuses_part_of_finishes_the_import_when_it_
             &cert,
             &catalogue,
             CHAT,
-            &workspace_record(&catalogue, CHAT),
+            &workspace_resource(&catalogue, CHAT),
             |doc| {
                 chat::demo::apply_as(
                     doc,

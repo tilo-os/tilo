@@ -46,7 +46,7 @@ fn context(app: &str, live: Arc<AtomicBool>) -> BrowserServiceSessionRequestCont
     };
     tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
     let read = NativeDocumentReadContext {
-        record_kind: None,
+        resource_type: None,
         route: crate::collab_broker::CrdtRoute::record(
             app,
             "7851d1ef-c4fa-4d23-aa65-5ad85f80a6af",

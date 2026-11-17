@@ -14,7 +14,7 @@ use collab_types::DocumentMutation;
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{ActionHostError, Caller, InvokeRequest};
 use tilo_fs::namespace::Namespace;
-use tilo_fs::tree_record::{FILES_APP, record as tree_record};
+use tilo_fs::tree_document::{FILES_APP, record as tree_record};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::WorkspaceId;
 

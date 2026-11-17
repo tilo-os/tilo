@@ -112,7 +112,7 @@ pub(crate) struct StoredWorkspace {
     pub effect_history_root: Option<[u8; 32]>,
     /// The invitations this device issued for the workspace, the challenges it is
     /// answering and the joins it admitted: what another device's join is
-    /// decided against, held by every participant that answers one.
+    /// decided against, held by every key holder that answers one.
     #[serde(default)]
     pub join_ledger: crate::join_ledger::JoinLedger,
     /// The join admissions committed here, by the digest of their binding:

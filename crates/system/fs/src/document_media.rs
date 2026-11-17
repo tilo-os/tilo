@@ -12,7 +12,7 @@
 //! that workspace: by an app in it, or by the session for a record of the
 //! workspace whose content arrived from another of the record's devices. That
 //! exchange is the collaboration broker's — content travels on the record's
-//! route (`tilo_action_broker::record_content`), never between daemons.
+//! route (`tilo_action_broker::document_content`), never between daemons.
 //!
 //! A host can also offer an explicit owner action
 //! through [`LegacyMediaImportHost`]: it verifies a bounded selection and creates new
@@ -78,11 +78,11 @@ async fn references(store: &ContentStore, scope: &BlobScope, hash: Hash) -> bool
     )
 }
 
-async fn record_reference(store: &ContentStore, scope: &BlobScope, hash: Hash) -> Result<()> {
-    record_reference_tag(store, reference_tag(scope, hash), hash).await
+async fn document_reference(store: &ContentStore, scope: &BlobScope, hash: Hash) -> Result<()> {
+    document_reference_tag(store, reference_tag(scope, hash), hash).await
 }
 
-async fn record_reference_tag(store: &ContentStore, tag: String, hash: Hash) -> Result<()> {
+async fn document_reference_tag(store: &ContentStore, tag: String, hash: Hash) -> Result<()> {
     store
         .store()
         .tags()
@@ -246,7 +246,7 @@ impl DocumentMedia {
                 });
             }
         };
-        record_reference(&self.store, scope, hash)
+        document_reference(&self.store, scope, hash)
             .await
             .map_err(|error| BlobError::Refused(error.to_string()))?;
         Ok((hash, len))

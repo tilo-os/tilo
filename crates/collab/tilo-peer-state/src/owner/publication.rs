@@ -30,6 +30,55 @@ pub(crate) const MAX_VISIBLE_ENTRIES: usize = MAX_ENTRIES + 1;
 /// drafted nothing is tried again ([`NativeWorkspaceOwner::compact_outgoing`]).
 const COMPACTION_RETRY: usize = 256;
 
+/// The records whose compaction drafted nothing, each resting until its passes are spent.
+///
+/// The rest is the record's own, not the workspace's: one history that cannot fold yet — its
+/// keys are not here, or it does not merge — must not keep the workspace's other histories from
+/// folding, which leaves them to fill and refuse writes.
+#[derive(Default)]
+pub(crate) struct Resting(
+    std::sync::Mutex<std::collections::BTreeMap<(WorkspaceId, String, String), usize>>,
+);
+
+impl Resting {
+    /// Count one pass over `workspace`, and answer the records that still rest.
+    fn pass(&self, workspace: WorkspaceId) -> std::collections::BTreeSet<(String, String)> {
+        let mut resting = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut still = std::collections::BTreeSet::new();
+        resting.retain(|(resting_workspace, app, record), wait| {
+            if *resting_workspace != workspace {
+                return true;
+            }
+            *wait = wait.saturating_sub(1);
+            if *wait == 0 {
+                return false;
+            }
+            still.insert((app.clone(), record.clone()));
+            true
+        });
+        still
+    }
+
+    /// `record` of `workspace` drafted nothing: it rests a while.
+    fn failed(&self, workspace: WorkspaceId, (app, record): (String, String)) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert((workspace, app, record), COMPACTION_RETRY);
+    }
+
+    /// `record` of `workspace` folded: it is tried again when it is next due.
+    fn folded(&self, workspace: WorkspaceId, (app, record): (String, String)) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&(workspace, app, record));
+    }
+}
+
 /// The channel keys a device holds for the sealed records of its workspaces:
 /// what its owner compacts their histories with
 /// ([`NativeWorkspaceOwner::keep_sealed_histories`]).
@@ -74,7 +123,7 @@ pub(crate) struct StoredPublication {
     pub(crate) entries: Vec<StoredOutgoing>,
     /// Recovery projections an earlier build signed for its expiring
     /// frames. This build re-sends the signed originals instead, so the list
-    /// is read and then dropped (`file_store::read_record`); it stays in the
+    /// is read and then dropped (`file_store::read_resource`); it stays in the
     /// format so records that hold one still load.
     #[serde(
         default,
@@ -86,7 +135,7 @@ pub(crate) struct StoredPublication {
     governance: Vec<StoredOutgoing>,
     /// What the workspace's relay host answered to this device's writes, per record.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    answered: Vec<AnsweredRecord>,
+    answered: Vec<AnsweredDocument>,
     /// Writes behind `entries` the store keeps beside the record, oldest first: they move to
     /// the head as it sends and the host answers what it holds.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -175,7 +224,7 @@ type Runs<'a> = (&'a dyn super::Store, WorkspaceId);
 /// How many writes of what this device knows of its hosts' histories `view`'s record holds
 /// itself, and how many runs beside it hold the rest.
 #[cfg(test)]
-pub(crate) fn hosted_in_record(view: &NativeCommittedView) -> (usize, usize) {
+pub(crate) fn hosted_in_document(view: &NativeCommittedView) -> (usize, usize) {
     state(view).map_or((0, 0), |publication| {
         publication
             .hosted
@@ -199,7 +248,7 @@ pub(crate) struct SpilledRun {
 /// The relay host's answers to this device's writes to one record, kept with the custody they
 /// left.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct AnsweredRecord {
+struct AnsweredDocument {
     app: String,
     record: String,
     durable: u64,
@@ -218,7 +267,7 @@ pub enum HostAnswer {
 /// This device's writes to one record: those still in its custody, and what the workspace's
 /// relay host answered to the others.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct RecordWrites {
+pub struct DocumentWrites {
     pub pending: usize,
     pub durable: u64,
     pub refused: u64,
@@ -476,14 +525,14 @@ fn allowed(
             postcard::from_bytes(&entry.bytes).map_err(|e| e.to_string())?;
         let NeighbourMsg::AppDocument {
             app_id,
-            record_id,
+            document_id,
             envelope,
             ..
         } = message
         else {
             return Err("invalid native outgoing document".into());
         };
-        let route = (app_id, record_id);
+        let route = (app_id, document_id);
         if compacting.contains(&route) {
             tracing::debug!(
                 app = %route.0,
@@ -495,7 +544,7 @@ fn allowed(
         if envelope.kind == OpKind::Compaction {
             compacting.push(route.clone());
         }
-        let (app_id, record_id) = route;
+        let (app_id, document_id) = route;
         // A sealed write expires with the channel epoch it was made under:
         // its key holder renews it ([`NativeWorkspaceOwner::renew_outgoing`]),
         // and the relay never re-sends the expired original beside a renewal.
@@ -503,7 +552,7 @@ fn allowed(
         if envelope.encryption.is_some() && !fresh(entry, now) {
             tracing::debug!(
                 app = %app_id,
-                record = %record_id,
+                record = %document_id,
                 "a sealed write in custody is past its epoch and waits for its renewal"
             );
             continue;
@@ -512,14 +561,14 @@ fn allowed(
             *slot = envelope.author.as_bytes() == &view.device().device_public_key
                 && view
                     .peer
-                    .lookup_exact_local_document(&app_id, &record_id, &envelope, now)
+                    .lookup_exact_local_document(&app_id, &document_id, &envelope, now)
                     .ok()
                     .flatten()
                     .is_some();
             if !*slot {
                 tracing::debug!(
                     app = %app_id,
-                    record = %record_id,
+                    record = %document_id,
                     "a write in custody is not this device's as its replica holds it, and stays"
                 );
             }
@@ -577,7 +626,7 @@ pub(crate) fn request(message: &NeighbourMsg) -> Result<OwnerCommitRequest, Stri
     let NeighbourMsg::AppDocument {
         app_id,
         cluster_id,
-        record_id,
+        document_id,
         envelope,
         own,
         ..
@@ -589,7 +638,7 @@ pub(crate) fn request(message: &NeighbourMsg) -> Result<OwnerCommitRequest, Stri
         workspace: cluster_id.clone(),
         operation: CommitOperation::Document {
             app: app_id.clone(),
-            record: record_id.clone(),
+            record: document_id.clone(),
             envelope: envelope.clone(),
             own: own.clone(),
         },
@@ -689,7 +738,7 @@ pub(crate) fn prepare(request: &OwnerCommitRequest) -> Result<Vec<u8>, String> {
             peer,
             app_id: app.clone(),
             cluster_id: request.workspace.clone(),
-            record_id: record.clone(),
+            document_id: record.clone(),
             envelope: envelope.clone(),
             own: own.clone(),
         },
@@ -1493,7 +1542,7 @@ impl StoredPublication {
             .iter()
             .any(|held| held.app == app && held.record == record)
         {
-            self.answered.push(AnsweredRecord {
+            self.answered.push(AnsweredDocument {
                 app: app.to_owned(),
                 record: record.to_owned(),
                 durable: 0,
@@ -1655,7 +1704,7 @@ impl NativeWorkspaceOwner {
             // nothing to make durable, and a link costs no write of its record.
             if !candidate.record.hosted_here() {
                 let mut live = candidate.live();
-                if !live.holds_clear_records() {
+                if !live.holds_clear_documents() {
                     let mut next = live.clone();
                     let messages = next.publication_mut().bootstrap_messages(signed, now)?;
                     signed.settled()?;
@@ -1680,7 +1729,7 @@ impl NativeWorkspaceOwner {
                 stored.generation = generation;
                 Ok(messages)
             })?;
-            self.publish_record(workspace, &candidate, stored, None)?;
+            self.publish_document(workspace, &candidate, stored, None)?;
             Ok(messages)
         })
         .await
@@ -1703,12 +1752,12 @@ impl NativeWorkspaceOwner {
             .generation
             .checked_add(1)
             .ok_or("native owner generation exhausted")?;
-        self.publish_record(workspace, &candidate, record, None)
+        self.publish_document(workspace, &candidate, record, None)
     }
     /// Retire the custody entries `answers` names, which the workspace's relay host answered:
     /// a relay host acknowledges each commit, durable or refused, rather than receipting it in
     /// the workspace's governance, and an answered entry is never sent again. Each answer
-    /// counts toward its record's [`RecordWrites`], and a refused write leaves this device's
+    /// counts toward its record's [`DocumentWrites`], and a refused write leaves this device's
     /// replica as well: the workspace never holds it, so neither does this device.
     ///
     /// # Errors
@@ -1746,7 +1795,7 @@ impl NativeWorkspaceOwner {
                 // Custody holds governance entries too, which belong to no record.
                 let Ok(NeighbourMsg::AppDocument {
                     app_id,
-                    record_id,
+                    document_id,
                     envelope,
                     ..
                 }) = postcard::from_bytes::<NeighbourMsg>(&entry.bytes)
@@ -1757,7 +1806,7 @@ impl NativeWorkspaceOwner {
                     .get(&entry.id)
                     .copied()
                     .unwrap_or(HostAnswer::Refused);
-                let route = (app_id.as_str(), record_id.as_str());
+                let route = (app_id.as_str(), document_id.as_str());
                 match (envelope.kind, answer) {
                     // A segment is taken with its compaction.
                     (OpKind::Compaction, _) if collab_types::is_compaction_segment(&envelope) => {}
@@ -1774,13 +1823,13 @@ impl NativeWorkspaceOwner {
                         take_hosted(live, publication, runs, route, &envelope, &owed, now)?;
                     }
                     (_, HostAnswer::Refused) => {
-                        live.withdraw_local_document(&app_id, &record_id, &envelope)?;
+                        live.withdraw_local_document(&app_id, &document_id, &envelope)?;
                     }
                     (_, HostAnswer::Durable(_)) => {
                         publication.hosted_write(live, runs, route, &envelope)?;
                     }
                 }
-                publication.answer(&app_id, &record_id, answer);
+                publication.answer(&app_id, &document_id, answer);
             }
             publication.revision = publication
                 .revision
@@ -1795,23 +1844,23 @@ impl NativeWorkspaceOwner {
             .generation
             .checked_add(1)
             .ok_or("native owner generation exhausted")?;
-        self.publish_record(workspace, &candidate, record, None)
+        self.publish_document(workspace, &candidate, record, None)
     }
     /// This device's writes to each record of `workspace` it wrote, by app and record: those
     /// in its custody, and the relay host's answers to the others.
-    pub fn record_writes(
+    pub fn document_writes(
         &self,
         workspace: WorkspaceId,
-    ) -> BTreeMap<(String, String), RecordWrites> {
+    ) -> BTreeMap<(String, String), DocumentWrites> {
         self.with_current(workspace, |view| {
             let publication = state(view)?;
-            let mut writes: BTreeMap<(String, String), RecordWrites> = publication
+            let mut writes: BTreeMap<(String, String), DocumentWrites> = publication
                 .answered
                 .iter()
                 .map(|answered| {
                     (
                         (answered.app.clone(), answered.record.clone()),
-                        RecordWrites {
+                        DocumentWrites {
                             pending: 0,
                             durable: answered.durable,
                             refused: answered.refused,
@@ -1828,12 +1877,14 @@ impl NativeWorkspaceOwner {
                 .chain(&publication.tail)
             {
                 if let Ok(NeighbourMsg::AppDocument {
-                    app_id, record_id, ..
+                    app_id,
+                    document_id,
+                    ..
                 }) = tilo_failure::ignored!(
                     "custody holds governance entries too, which belong to no record",
                     postcard::from_bytes::<NeighbourMsg>(&entry.bytes)
                 ) {
-                    let writes = writes.entry((app_id, record_id)).or_default();
+                    let writes = writes.entry((app_id, document_id)).or_default();
                     writes.pending = writes.pending.saturating_add(1);
                 }
             }
@@ -1946,7 +1997,7 @@ impl NativeWorkspaceOwner {
     ///
     /// # Errors
     /// As [`Self::commit_outgoing`].
-    pub async fn compact_record(
+    pub async fn compact_document(
         &self,
         workspace: WorkspaceId,
         (app, record): (&str, &str),
@@ -1972,8 +2023,8 @@ impl NativeWorkspaceOwner {
             let publication = state(view)?;
             let latest = publication.entries.iter().rev().find(|entry| {
                 postcard::from_bytes::<NeighbourMsg>(&entry.bytes).is_ok_and(|message| {
-                    matches!(&message, NeighbourMsg::AppDocument { app_id, record_id, envelope, .. }
-                        if app_id == app && record_id == record && envelope.kind == OpKind::Compaction
+                    matches!(&message, NeighbourMsg::AppDocument { app_id, document_id, envelope, .. }
+                        if app_id == app && document_id == record && envelope.kind == OpKind::Compaction
                             && !collab_types::is_compaction_segment(envelope))
                 })
             });
@@ -1998,46 +2049,55 @@ impl NativeWorkspaceOwner {
         // A record asked for is compacted at once, whatever share of its bound it used.
         if asked.is_none()
             && self.with_current(workspace, |view| {
-                Ok(view
-                    .peer
-                    .publication()
-                    .sealed_records_to_compact()
-                    .is_empty())
+                Ok(view.peer.publication().sealed_to_compact().is_empty())
             })?
         {
             return Ok(0);
         }
-        if asked.is_none()
-            && let Some(wait) = self.0.compaction_wait.lock().get_mut(&workspace)
-            && *wait > 0
-        {
-            *wait = wait.saturating_sub(1);
-            return Ok(0);
-        }
+        // A history that drafted nothing rests a while: folding it again on every pass would
+        // read the whole history as often.
+        let resting = if asked.is_none() {
+            self.0.resting.pass(workspace)
+        } else {
+            std::collections::BTreeSet::new()
+        };
+        let failed = std::sync::Mutex::new(Vec::new());
+        let folded = std::sync::Mutex::new(Vec::new());
         let runs = (self.0.store.as_ref(), workspace);
         let draft = |view: &NativeCommittedView| {
             let device = view.device().device_public_key;
-            let mut due = view.peer.publication().sealed_records_to_compact();
-            if let Some(route) = asked
-                && !due.contains(&route)
+            let mut due = view.peer.publication().sealed_to_compact();
+            if let Some(route) = asked.as_ref()
+                && !due.contains(route)
             {
-                due.push(route);
+                due.push(route.clone());
             }
             let publication = state(view)?;
             let mut open = |write: &SignedOp| keys.open(workspace, write);
             due.into_iter()
                 .filter_map(|(app, record)| {
+                    if asked.is_none() && resting.contains(&(app.clone(), record.clone())) {
+                        return None;
+                    }
                     let mut seal =
                         |snapshot: &[u8]| keys.seal_checkpoint(workspace, &app, &record, snapshot);
                     let route = (app.as_str(), record.as_str());
-                    let drafted = view.peer.publication().draft_sealed_compaction(
-                        route, None, &mut open, &mut seal, device, now,
-                    );
-                    let ops = drafted
+                    let ops = view
+                        .peer
+                        .publication()
+                        .draft_sealed_compaction(route, None, &mut open, &mut seal, device, now)
                         .inspect_err(|error| {
                             tracing::warn!(%error, %app, %record, "sealed record history stays uncompacted");
+                            failed
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .push((app.clone(), record.clone()));
                         })
                         .ok()?;
+                    folded
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push((app.clone(), record.clone()));
                     Some(
                         owed_to(publication, runs, route)
                             .map(|owed| (None, (app, record, owed), ops)),
@@ -2056,13 +2116,19 @@ impl NativeWorkspaceOwner {
         let compacted = self
             .commit_outgoing(workspace, signer, now, draft, admit)
             .await?;
-        if compacted == 0 {
-            self.0
-                .compaction_wait
-                .lock()
-                .insert(workspace, COMPACTION_RETRY);
-        } else {
-            self.0.compaction_wait.lock().remove(&workspace);
+        let failed = failed
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let folded = folded
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A record that folded is tried again when it is next due, not kept resting; one that
+        // could not fold rests a while, still due (it may be full) but not read again each pass.
+        for (app, record) in folded {
+            self.0.resting.folded(workspace, (app, record));
+        }
+        for (app, record) in failed {
+            self.0.resting.failed(workspace, (app, record));
         }
         Ok(compacted)
     }
@@ -2088,12 +2154,14 @@ impl NativeWorkspaceOwner {
             return self.drop_slot(workspace, id);
         };
         let NeighbourMsg::AppDocument {
-            app_id, record_id, ..
+            app_id,
+            document_id,
+            ..
         } = &message
         else {
             return Err("a compaction in custody is a document write".into());
         };
-        let route = (app_id.as_str(), record_id.as_str());
+        let route = (app_id.as_str(), document_id.as_str());
         let draft = |_: &NativeCommittedView| Ok(vec![(Some(id), message.clone(), op)]);
         // `op` is the compaction and the segments it names.
         let admit = |live: &mut StatePeer,
@@ -2149,7 +2217,7 @@ impl NativeWorkspaceOwner {
             .generation
             .checked_add(1)
             .ok_or("native owner generation exhausted")?;
-        self.publish_record(workspace, &candidate, record, None)
+        self.publish_document(workspace, &candidate, record, None)
     }
 
     /// Commit the writes `draft` drafts of `workspace`, each with the custody entry it replaces,
@@ -2273,7 +2341,7 @@ impl NativeWorkspaceOwner {
                 .generation
                 .checked_add(1)
                 .ok_or("native owner generation exhausted")?;
-            self.publish_record(workspace, &candidate, record, None)?;
+            self.publish_document(workspace, &candidate, record, None)?;
             Ok(taken)
         })
         .await
@@ -2294,14 +2362,14 @@ impl NativeWorkspaceOwner {
         let NeighbourMsg::AppDocument {
             app_id,
             cluster_id,
-            record_id,
+            document_id,
             envelope,
             ..
         } = message
         else {
             return None;
         };
-        let route = (app_id.as_str(), record_id.as_str());
+        let route = (app_id.as_str(), document_id.as_str());
         if envelope.kind != OpKind::Compaction
             || !publication
                 .hosted
@@ -2434,14 +2502,14 @@ fn next_drafted(
     let message: NeighbourMsg = postcard::from_bytes(&entry.bytes).map_err(|e| e.to_string())?;
     let NeighbourMsg::AppDocument {
         app_id,
-        record_id,
+        document_id,
         envelope,
         ..
     } = &message
     else {
         return Err("a compaction in custody is a document write".into());
     };
-    let route = (app_id.as_str(), record_id.as_str());
+    let route = (app_id.as_str(), document_id.as_str());
     let owed = owed_to(publication, runs, route)?;
     let history = host_history(&view.peer, publication, runs, route, &owed)?;
     let mut open = |write: &SignedOp| keys.open(workspace, write);
@@ -2481,7 +2549,7 @@ fn drafted_here(
         peer,
         app_id,
         cluster_id,
-        record_id,
+        document_id,
         envelope,
         own,
     } = message
@@ -2515,7 +2583,7 @@ fn drafted_here(
         peer,
         app_id,
         cluster_id,
-        record_id,
+        document_id,
         envelope: Box::new(op),
         own,
     })
@@ -2612,10 +2680,10 @@ fn owed_to(
         .filter_map(|entry| match postcard::from_bytes(&entry.bytes) {
             Ok(NeighbourMsg::AppDocument {
                 app_id,
-                record_id,
+                document_id,
                 envelope,
                 ..
-            }) if app_id == app && record_id == record => Some(*envelope),
+            }) if app_id == app && document_id == record => Some(*envelope),
             _ => None,
         })
         .collect())
@@ -2832,5 +2900,40 @@ mod encoding_tests {
                 serde_json::from_value::<StoredOutgoing>(serde_json::to_value(&past).unwrap()).is_err()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{COMPACTION_RETRY, Resting, WorkspaceId};
+
+    fn workspace() -> WorkspaceId {
+        WorkspaceId::parse("23fb5a50-60db-42bd-bb3b-f597bfab1377").unwrap()
+    }
+
+    /// One history that cannot fold yet rests a while, and every other history of the
+    /// workspace — one that is full and refusing writes, say — is folded on the very next pass.
+    #[test]
+    fn a_history_that_cannot_fold_rests_alone() {
+        let resting = Resting::default();
+        let (stuck, ready) = (
+            ("so.tilo.files".to_owned(), "tree".to_owned()),
+            ("so.tilo.files".to_owned(), "chunk.1@tree".to_owned()),
+        );
+        resting.failed(workspace(), stuck.clone());
+        let still = resting.pass(workspace());
+        assert_eq!(still, std::collections::BTreeSet::from([stuck]));
+        assert!(!still.contains(&ready), "another record is not resting");
+
+        // Its rest is spent after its passes, and it is tried again.
+        for _ in 0..COMPACTION_RETRY {
+            resting.pass(workspace());
+        }
+        assert!(resting.pass(workspace()).is_empty());
+
+        // One that folds leaves no rest behind.
+        resting.failed(workspace(), ready.clone());
+        resting.folded(workspace(), ready.clone());
+        assert!(!resting.pass(workspace()).contains(&ready));
     }
 }

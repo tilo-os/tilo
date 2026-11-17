@@ -92,7 +92,7 @@ struct LivePlanes {
 }
 
 /// The relay the test's planes meet on: in-process, with no one to admit, since a local plane is
-/// its own relay's participant.
+/// its own relay's member.
 fn live_planes() -> &'static LivePlanes {
     static PLANES: OnceLock<LivePlanes> = OnceLock::new();
     PLANES.get_or_init(|| {

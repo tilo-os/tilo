@@ -46,11 +46,11 @@ pub const MAX_LABEL_LEN: usize = 120;
 /// somebody's words ([`NamedRange::named_by`] stays empty for it).
 pub const GENERATED_BY: &str = "describer";
 
-/// Whether the name at `record_id` was written by a model rather than a
+/// Whether the name at `document_id` was written by a model rather than a
 /// person. A record this device cannot read counts as a person's: never
 /// overwrite what another writer may have said.
-pub fn name_is_generated(doc: &AutoCommit, record_id: &str) -> bool {
-    doc.get(automerge::ROOT, record_id)
+pub fn name_is_generated(doc: &AutoCommit, document_id: &str) -> bool {
+    doc.get(automerge::ROOT, document_id)
         .ok()
         .flatten()
         .and_then(|(_, rec)| doc.str_at(&rec, "by"))
@@ -150,7 +150,7 @@ pub fn name_range_by(
 /// carries one name. `false` when there was nothing to write. The
 /// transaction is left open for the host to commit.
 pub fn apply_name_request(doc: &mut AutoCommit, request: &GroupNameRequest) -> bool {
-    let replaced = request.record_id.as_deref();
+    let replaced = request.document_id.as_deref();
     if request.label.trim().is_empty() {
         return replaced.is_some_and(|record| clear_name(doc, record));
     }
@@ -162,22 +162,27 @@ pub fn apply_name_request(doc: &mut AutoCommit, request: &GroupNameRequest) -> b
 }
 
 /// Close an open range at `end`. `false` when no such record exists.
-pub fn close_range(doc: &mut AutoCommit, record_id: &str, end: &HistoryEntryId) -> bool {
-    let Ok(Some((Value::Object(ObjType::Map), rec))) = doc.get(automerge::ROOT, record_id) else {
+pub fn close_range(doc: &mut AutoCommit, document_id: &str, end: &HistoryEntryId) -> bool {
+    let Ok(Some((Value::Object(ObjType::Map), rec))) = doc.get(automerge::ROOT, document_id) else {
         return false;
     };
     doc.put(&rec, "end", hex16(end)).is_ok()
 }
 
 /// Remove a name. The changes it covered stay; only the band goes.
-pub fn clear_name(doc: &mut AutoCommit, record_id: &str) -> bool {
-    if !record_id.starts_with(GROUPS_KEY) {
+pub fn clear_name(doc: &mut AutoCommit, document_id: &str) -> bool {
+    if !document_id.starts_with(GROUPS_KEY) {
         return false;
     }
-    if doc.get(automerge::ROOT, record_id).ok().flatten().is_none() {
+    if doc
+        .get(automerge::ROOT, document_id)
+        .ok()
+        .flatten()
+        .is_none()
+    {
         return false;
     }
-    doc.delete(automerge::ROOT, record_id).is_ok()
+    doc.delete(automerge::ROOT, document_id).is_ok()
 }
 
 /// Split one named band into two adjacent named bands in the current
@@ -186,14 +191,14 @@ pub fn clear_name(doc: &mut AutoCommit, record_id: &str) -> bool {
 /// would make the operation non-deterministic across peers.
 pub fn split_named_range(
     doc: &mut AutoCommit,
-    record_id: &str,
+    document_id: &str,
     left_end: &HistoryEntryId,
     right_start: &HistoryEntryId,
     left_label: &str,
     right_label: &str,
 ) -> Option<(String, String)> {
-    let original = named_range_record(doc, record_id)?;
-    if !clear_name(doc, record_id) {
+    let original = named_range_resource(doc, document_id)?;
+    if !clear_name(doc, document_id) {
         return None;
     }
     let left = name_range(doc, &original.0, Some(left_end), left_label);
@@ -206,19 +211,19 @@ pub fn split_named_range(
 /// set that a member has already edited.
 pub fn merge_named_ranges(
     doc: &mut AutoCommit,
-    record_ids: &[String],
+    document_ids: &[String],
     start: &HistoryEntryId,
     end: Option<&HistoryEntryId>,
     label: &str,
 ) -> Option<String> {
-    if record_ids.len() < 2
-        || record_ids
+    if document_ids.len() < 2
+        || document_ids
             .iter()
-            .any(|record| named_range_record(doc, record).is_none())
+            .any(|record| named_range_resource(doc, record).is_none())
     {
         return None;
     }
-    for record in record_ids {
+    for record in document_ids {
         if !clear_name(doc, record) {
             return None;
         }
@@ -231,16 +236,16 @@ pub fn merge_named_ranges(
 /// order and sends exact ids.
 pub fn move_named_boundary(
     doc: &mut AutoCommit,
-    left_record: &str,
-    right_record: &str,
+    left_resource: &str,
+    right_resource: &str,
     new_left_end: &HistoryEntryId,
     new_right_start: &HistoryEntryId,
 ) -> Option<(String, String)> {
-    let left = named_range_record(doc, left_record)?;
-    let right = named_range_record(doc, right_record)?;
-    let left_label = str_at_record(doc, left_record, "label")?;
-    let right_label = str_at_record(doc, right_record, "label")?;
-    if !clear_name(doc, left_record) || !clear_name(doc, right_record) {
+    let left = named_range_resource(doc, left_resource)?;
+    let right = named_range_resource(doc, right_resource)?;
+    let left_label = str_at_resource(doc, left_resource, "label")?;
+    let right_label = str_at_resource(doc, right_resource, "label")?;
+    if !clear_name(doc, left_resource) || !clear_name(doc, right_resource) {
         return None;
     }
     let new_left = name_range(doc, &left.0, Some(new_left_end), &left_label);
@@ -281,39 +286,39 @@ pub fn materialize_and_move_boundary(
 ) -> Option<(String, String)> {
     if left
         .record
-        .is_some_and(|record| named_range_record(doc, record).is_none())
+        .is_some_and(|record| named_range_resource(doc, record).is_none())
         || right
             .record
-            .is_some_and(|record| named_range_record(doc, record).is_none())
+            .is_some_and(|record| named_range_resource(doc, record).is_none())
         || matches!((left.record, right.record), (Some(left), Some(right)) if left == right)
     {
         return None;
     }
-    let left_record = left.materialize(doc);
-    let right_record = right.materialize(doc);
+    let left_resource = left.materialize(doc);
+    let right_resource = right.materialize(doc);
     move_named_boundary(
         doc,
-        &left_record,
-        &right_record,
+        &left_resource,
+        &right_resource,
         new_left_end,
         new_right_start,
     )
 }
 
-fn named_range_record(
+fn named_range_resource(
     doc: &AutoCommit,
-    record_id: &str,
+    document_id: &str,
 ) -> Option<(HistoryEntryId, Option<HistoryEntryId>)> {
-    let start = record_id.strip_prefix(GROUPS_KEY).and_then(from_hex16)?;
-    let Ok(Some((Value::Object(ObjType::Map), rec))) = doc.get(automerge::ROOT, record_id) else {
+    let start = document_id.strip_prefix(GROUPS_KEY).and_then(from_hex16)?;
+    let Ok(Some((Value::Object(ObjType::Map), rec))) = doc.get(automerge::ROOT, document_id) else {
         return None;
     };
     let end = doc.str_at(&rec, "end").and_then(|value| from_hex16(&value));
     Some((start, end))
 }
 
-fn str_at_record(doc: &AutoCommit, record_id: &str, field: &str) -> Option<String> {
-    let Ok(Some((Value::Object(ObjType::Map), rec))) = doc.get(automerge::ROOT, record_id) else {
+fn str_at_resource(doc: &AutoCommit, document_id: &str, field: &str) -> Option<String> {
+    let Ok(Some((Value::Object(ObjType::Map), rec))) = doc.get(automerge::ROOT, document_id) else {
         return None;
     };
     doc.str_at(&rec, field)

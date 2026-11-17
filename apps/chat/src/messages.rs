@@ -27,6 +27,7 @@ use ui::tilo_resource::{
 };
 
 use crate::parts::{self, ChatPart};
+use crate::question::{Choice, Question};
 use crate::record::{
     Chat, MAX_AGENT_NAME_BYTES, MAX_MESSAGE_TEXT_BYTES, Message, Posting, ProviderStream, Revision,
     ShareAccess, Step, Transition, WindowShare, Work, WorkUpdate, author, reply_id_at, seconds,
@@ -186,10 +187,37 @@ impl ChatPart {
                 author_name: Some(cx.acting_name()).filter(|name| !name.trim().is_empty()),
                 origin: posting.origin,
                 share: posting.share,
+                question: posting.question,
                 ..Message::new(channel.clone(), author, ts, posting.text)
             },
         );
         Ok(id)
+    }
+}
+
+impl ChatPart {
+    /// The question the message `message` asks.
+    fn question_of(&mut self, message: &Id) -> Result<&mut Question, Refusal> {
+        self.messages
+            .get_mut(message)
+            .ok_or_else(|| Refusal::new("there is no such message"))?
+            .question
+            .as_mut()
+            .ok_or_else(|| Refusal::new("the message asks nothing"))
+    }
+
+    /// Refuses anyone but the asker of the question `message` asks: taking
+    /// it back and saying what came of it are its asker's.
+    fn asked_by(&self, cx: &ActionCx, message: &Id) -> Result<(), Refusal> {
+        let row = self
+            .messages
+            .get(message)
+            .ok_or_else(|| Refusal::new("there is no such message"))?;
+        if author(cx)? == row.author {
+            Ok(())
+        } else {
+            Err(Refusal::new("only its asker changes a question"))
+        }
     }
 }
 
@@ -750,6 +778,102 @@ impl ChatPart {
         Ok(())
     }
 
+    /// Ask your person.
+    ///
+    /// Post a message that asks the person you act for something and waits
+    /// for their answer, on every device of theirs and with no time limit.
+    /// `answers` are the buttons under it; the one they press on a `choice`
+    /// is posted as their own message. Only they answer it, and
+    /// `withdraw-question` takes it back.
+    #[action(incoming_message, audience = "agents")]
+    pub fn ask(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The channel")] channel: Id,
+        #[param("What is asked, in words")] text: NonBlank,
+        #[param("The answers offered, in order: each an id and what its button says")]
+        answers: Option<Vec<Choice>>,
+        #[param("The kind of question; a choice when absent")] kind: Option<String>,
+        #[param("What the kind keeps with the question; leave it out for a choice")] detail: Option<
+            serde_json::Value,
+        >,
+        #[param("The message it answers in a thread")] parent: Option<Id>,
+    ) -> Result<(), Refusal> {
+        let person = crate::question::asked_person(cx)?;
+        let question = Question::asked(person, kind, answers.unwrap_or_default(), detail)?;
+        let id = cx.id();
+        let ts = seconds(cx);
+        self.append(
+            cx,
+            id,
+            &channel,
+            ts,
+            Posting {
+                text: text.into_string(),
+                parent,
+                question: Some(question),
+                ..Posting::default()
+            },
+        )
+        .map(drop)
+    }
+
+    /// Answer a question.
+    ///
+    /// The answer of the person a message asks: one of the answers it
+    /// offers, pressed by them on a device of their own. Nobody acting for
+    /// them answers it, and nobody else does.
+    #[action(item = messages, audience = "people")]
+    pub fn answer_question(
+        &mut self,
+        cx: &mut ActionCx,
+        message: &Id,
+        #[param("The answer, by its id")] answer: String,
+        #[param("The device it is answered on; filled in where it is pressed")] device: Option<
+            String,
+        >,
+        #[param("What the answer carries, as the question's kind says; leave it out")]
+        detail: Option<serde_json::Value>,
+    ) -> Result<(), Refusal> {
+        let at = seconds(cx);
+        self.question_of(message)?
+            .answer(cx, &answer, device, detail, at)
+    }
+
+    /// Withdraw a question.
+    ///
+    /// Take back a question you asked that nobody answered yet: it stops
+    /// waiting on every device, and its message keeps saying what was asked.
+    #[action(item = messages, audience = "agents")]
+    pub fn withdraw_question(
+        &mut self,
+        cx: &mut ActionCx,
+        message: &Id,
+        #[param("Why, in words its person reads")] why: Option<String>,
+    ) -> Result<(), Refusal> {
+        let at = seconds(cx);
+        self.asked_by(cx, message)?;
+        self.question_of(message)?.withdraw(why, at)
+    }
+
+    /// Say what came of an answer.
+    ///
+    /// What you did with the answer to a question you asked: `started`
+    /// before you carry it out, then `done` or `failed`, or `dropped` when
+    /// nothing was done. A question settles once.
+    #[action(item = messages, audience = "agents")]
+    pub fn settle_question(
+        &mut self,
+        cx: &mut ActionCx,
+        message: &Id,
+        #[param("What came of it: started, done, dropped or failed")] outcome: String,
+        #[param("What its person is told about it")] detail: Option<String>,
+    ) -> Result<(), Refusal> {
+        let at = seconds(cx);
+        self.asked_by(cx, message)?;
+        self.question_of(message)?.settle(&outcome, detail, at)
+    }
+
     /// Carry the counts of the parts before.
     ///
     /// What a part keeps of the parts before it: for each, how many
@@ -873,12 +997,12 @@ fn takes_posts(chat: &Chat, channel: &Id) -> Result<(), String> {
 impl Chained for ChatPart {
     type Base = Chat;
 
-    fn chain() -> ui::record::DocumentId {
+    fn chain() -> ui::resource::DocumentId {
         parts::chain()
     }
 
     fn part_for(action: &Self::Action, parts: &[(u64, Rc<Self>)]) -> Result<u64, String> {
-        use chat_part::{DeliverMessage, EditMessage, Post, RecordWork, StreamOutput};
+        use chat_part::{Ask, DeliverMessage, EditMessage, Post, RecordWork, StreamOutput};
         let holding = |message: &Id| {
             parts
                 .iter()
@@ -901,6 +1025,10 @@ impl Chained for ChatPart {
                         parent: Some(parent),
                         ..
                     },
+            })
+            | ChatPartAction::Ask(Ask {
+                parent: Some(parent),
+                ..
             }) => holding(parent),
             // A delivery made before is where it was put; it changes nothing.
             ChatPartAction::DeliverMessage(DeliverMessage {
@@ -911,6 +1039,7 @@ impl Chained for ChatPart {
             }) => holding(&crate::transcript::delivered_id(channel, author, *ts, body))
                 .or_else(|_| new()),
             ChatPartAction::Post(_)
+            | ChatPartAction::Ask(_)
             | ChatPartAction::DeliverMessage(_)
             | ChatPartAction::PostFile(_)
             | ChatPartAction::ShareResource(_)
@@ -960,6 +1089,7 @@ impl Chained for ChatPart {
                 share.mentions =
                     Some(chat.mentions(share.text.as_deref().unwrap_or_default(), &[]));
             }
+            ChatPartAction::Ask(ask) => takes_posts(chat, &ask.channel)?,
             ChatPartAction::EditMessage(edit) => {
                 let body = edit.body.clone().unwrap_or_default();
                 edit.mentions = Some(chat.mentions(&edit.text, &body));
@@ -985,6 +1115,7 @@ impl Chained for ChatPart {
             ChatPartAction::PostFile(post) => &post.channel,
             ChatPartAction::ShareResource(share) => &share.channel,
             ChatPartAction::ShareWindow(share) => &share.channel,
+            ChatPartAction::Ask(ask) => &ask.channel,
             _ => return None,
         };
         let conversation = chat.conversation(channel)?;
@@ -1002,7 +1133,10 @@ impl ChatPart {
             | ChatPartAction::Pin(chat_part::Pin { message, .. })
             | ChatPartAction::StopSharing(chat_part::StopSharing { message })
             | ChatPartAction::SetShareAccess(chat_part::SetShareAccess { message, .. })
-            | ChatPartAction::ShareOpen(chat_part::ShareOpen { message, .. }) => {
+            | ChatPartAction::ShareOpen(chat_part::ShareOpen { message, .. })
+            | ChatPartAction::AnswerQuestion(chat_part::AnswerQuestion { message, .. })
+            | ChatPartAction::WithdrawQuestion(chat_part::WithdrawQuestion { message, .. })
+            | ChatPartAction::SettleQuestion(chat_part::SettleQuestion { message, .. }) => {
                 Some(message.clone())
             }
             // A field edit of one message (a reaction) names it in its path.
@@ -1288,7 +1422,12 @@ impl Messages {
     /// reader holds it, in the same order as [`Self::first_unread`]: the
     /// part's own.
     #[must_use]
-    pub fn unread_by_others(&self, channel: &Id, mark: parts::ReadMark, author: &tilo_resource::MemberId) -> usize {
+    pub fn unread_by_others(
+        &self,
+        channel: &Id,
+        mark: parts::ReadMark,
+        author: &tilo_resource::MemberId,
+    ) -> usize {
         let from = u64::try_from(mark.part.max(0)).unwrap_or_default();
         let seen = usize::try_from(mark.seen.max(0)).unwrap_or(usize::MAX);
         let mut unread = 0;

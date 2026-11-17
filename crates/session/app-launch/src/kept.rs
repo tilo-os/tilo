@@ -1,0 +1,906 @@
+//! Apps that stay running while the desktop restarts in place.
+//!
+//! A program Tilo did not build (one of the machine's own apps, anything whose windows the Tilo
+//! runtime does not draw) loses its windows, and usually its life, when its compositor goes away.
+//! Such a launch therefore starts behind an app keeper (`tilo-app-keeper`): the launcher starts the
+//! keeper in the app's scope once it is there, the app as the keeper's child, and the keeper is the
+//! app's Wayland display while the desktop is one client of it ([`Planned::kept`]).
+//!
+//! Each keeper has a private directory under [`root`]: its sockets, the record of how its app
+//! ended, and this crate's record of the launch ([`KeptLaunch`], also the keeper's `--launch`).
+//! That directory is the registry of kept apps: a run of the session adopts every keeper it finds
+//! there, whoever started it.
+//!
+//! - **Running.** The session connects to the keeper's control socket, says hello, hands it a new
+//!   desktop connection named for the keeper's process (so its windows trace back to the launch),
+//!   and asks it to describe itself. Only a keeper that answered is one this run may leave running.
+//! - **In-place restart.** The run that ends leaves each such launch as it is: no signal, no cgroup
+//!   kill ([`crate::spawner::Teardown`]). Everything else ends as at a logout, and a logout ends
+//!   kept apps too.
+//! - **Adoption.** The run that follows a restart describes each keeper again, checks that the
+//!   app's process is the one the keeper started (pid and start time against `/proc`), and takes
+//!   the launch back into its spawner: tiers, the memory watch, the end report and ending it at
+//!   logout work as for a launch it started. Nobody watches memory pressure in the seconds between
+//!   runs; the kernel's group OOM kill is the backstop, and its cause is read from the cgroup's
+//!   events when the end is reported. An app that ended while no desktop was there is reported from
+//!   the keeper's `ended` record. Any other start finds only leftovers: their apps are ended and
+//!   their directories removed.
+
+use std::io::{self, Read as _, Write as _};
+use std::os::fd::{AsFd as _, AsRawFd as _, FromRawFd as _, OwnedFd};
+use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+use tilo_app_keeper::wire::{self, Description, FromKeeper, ToKeeper};
+use tilo_lock::MutexRecover as _;
+
+use crate::spawner::End;
+
+/// The version of [`KeptLaunch`]: a keeper started by a session that wrote another is not taken
+/// back (its launch cannot be read), and is left running.
+pub const LAUNCH_VERSION: u32 = 1;
+
+/// What a session knows of a kept launch, written where the keeper keeps it (its `--launch`, and
+/// `launch` in its directory): everything a later run needs to treat the running app as the same
+/// launch.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeptLaunch {
+    pub version: u32,
+    /// The app's desktop-file id, as tabs and notices name it.
+    pub app: String,
+    /// The name the app is shown by.
+    pub title: String,
+    /// The workspace it was launched into.
+    pub workspace: String,
+    /// The launch as it was asked for (what a notice's Reopen asks again), when one was.
+    pub asked: Option<String>,
+    /// Every string the app's windows may announce themselves by.
+    pub window_identities: Vec<String>,
+}
+
+impl KeptLaunch {
+    /// As the keeper is handed it.
+    #[must_use]
+    pub fn encode(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
+
+    /// The launch `text` names, when this session wrote it at this version.
+    #[must_use]
+    pub fn decode(text: &str) -> Option<Self> {
+        serde_json::from_str::<Self>(text)
+            .ok()
+            .filter(|launch| launch.version == LAUNCH_VERSION)
+    }
+}
+
+/// Where the keepers of the person's session keep their directories.
+#[must_use]
+pub fn root() -> PathBuf {
+    tilo_paths::xdg::runtime_dir_or_default()
+        .join("tilo-session")
+        .join("kept")
+}
+
+/// The keeper program installed here: beside this executable first, as a build tree has it, then
+/// where the image installs it.
+#[must_use]
+pub fn find_keeper() -> Option<PathBuf> {
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("tilo-app-keeper")));
+    beside
+        .into_iter()
+        .chain([PathBuf::from("/usr/libexec/tilo-app-keeper")])
+        .find(|path| path.is_file())
+}
+
+/// A connection to the desktop for the process `pid`: what a keeper is attached with.
+pub type Desktop = Arc<dyn Fn(u32) -> io::Result<UnixStream> + Send + Sync>;
+
+/// What starting apps behind keepers needs: the keeper program, the registry and the desktop.
+#[derive(Clone)]
+pub struct Keeping {
+    pub keeper: PathBuf,
+    pub root: PathBuf,
+    pub desktop: Desktop,
+}
+
+/// A new keeper directory under `root`, private to this user.
+pub(crate) fn new_dir(root: &Path, launch: &KeptLaunch) -> io::Result<PathBuf> {
+    private(root)?;
+    let dir = root.join(uuid::Uuid::new_v4().simple().to_string());
+    std::fs::create_dir(&dir)?;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    std::fs::write(dir.join("launch"), launch.encode())?;
+    Ok(dir)
+}
+
+fn private(dir: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+}
+
+/// The keeper directories under `root`.
+pub(crate) fn dirs(root: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut dirs: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .map(|entry| entry.path())
+        .collect();
+    dirs.sort();
+    dirs
+}
+
+/// How a kept app ended, from the record its keeper left.
+pub(crate) fn recorded_end(dir: &Path) -> Option<End> {
+    let bytes = std::fs::read(dir.join("ended")).ok()?;
+    serde_json::from_slice::<wire::End>(&bytes).ok().map(end_of)
+}
+
+pub(crate) const fn end_of(end: wire::End) -> End {
+    match end {
+        wire::End::Exited { code } => End::exited(code),
+        wire::End::Signalled { signal } => End::signalled(signal),
+    }
+}
+
+/// The launch the session wrote into `dir`, when it was this version's.
+pub(crate) fn written_launch(dir: &Path) -> Option<KeptLaunch> {
+    KeptLaunch::decode(&std::fs::read_to_string(dir.join("launch")).ok()?)
+}
+
+/// A kept launch's keeper, as the spawner holds it.
+pub(crate) struct Kept {
+    pub(crate) dir: PathBuf,
+    /// The control connection, once greeted: what the session writes on.
+    control: Mutex<Option<UnixStream>>,
+    /// The keeper's process, once connected.
+    keeper: AtomicU32,
+    /// The keeper answered Describe in this run: only such a launch may outlive it.
+    described: AtomicBool,
+    /// The run let go of the launch for an in-place restart: its watcher stops quietly.
+    released: AtomicBool,
+    /// A desktop was handed to the keeper in this run.
+    attached: AtomicBool,
+}
+
+impl Kept {
+    pub(crate) fn new(dir: PathBuf) -> Arc<Self> {
+        Arc::new(Self {
+            dir,
+            control: Mutex::new(None),
+            keeper: AtomicU32::new(0),
+            described: AtomicBool::new(false),
+            released: AtomicBool::new(false),
+            attached: AtomicBool::new(false),
+        })
+    }
+
+    /// Whether this run may leave the launch running through an in-place restart.
+    pub(crate) fn answered(&self) -> bool {
+        self.described.load(Ordering::Acquire) && self.control.lock_recover().is_some()
+    }
+
+    /// Whether the run let go of the launch for an in-place restart.
+    pub(crate) fn released(&self) -> bool {
+        self.released.load(Ordering::Acquire)
+    }
+
+    /// Let go of the keeper without touching it: the next run takes it back.
+    pub(crate) fn release(&self) {
+        self.released.store(true, Ordering::Release);
+        let control = self.control.lock_recover().take();
+        if let Some(control) = control {
+            let _ = control.shutdown(std::net::Shutdown::Both);
+        }
+    }
+
+    /// The launch ends: its directory goes with it.
+    pub(crate) fn remove(&self) {
+        if let Err(error) = std::fs::remove_dir_all(&self.dir)
+            && error.kind() != io::ErrorKind::NotFound
+        {
+            tracing::warn!(dir = %self.dir.display(), %error, "a kept app's directory stays");
+        }
+    }
+
+    /// Hand the keeper a new connection to `desktop`, unless it has one from this run.
+    pub(crate) fn attach(&self, desktop: &Desktop) {
+        let keeper = self.keeper.load(Ordering::Acquire);
+        let control = self
+            .control
+            .lock_recover()
+            .as_ref()
+            .and_then(|control| control.try_clone().ok());
+        let Some(control) = control else {
+            return;
+        };
+        if keeper == 0 || self.attached.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let attached =
+            desktop(keeper).and_then(|socket| send(&control, &ToKeeper::Attach, Some(&socket)));
+        if let Err(error) = attached {
+            tracing::warn!(dir = %self.dir.display(), %error, "a kept app was not shown");
+        }
+    }
+}
+
+/// Why a keeper was not taken up.
+#[derive(Debug)]
+pub(crate) enum Refused {
+    /// Nothing listens: the keeper is gone.
+    Gone,
+    /// It speaks another version of the interface: it was started before an update and runs on.
+    Version(u32),
+    Failed(io::Error),
+}
+
+impl From<io::Error> for Refused {
+    fn from(error: io::Error) -> Self {
+        // A keeper that went away while it was being asked is gone, not failing.
+        match error.kind() {
+            io::ErrorKind::ConnectionReset
+            | io::ErrorKind::BrokenPipe
+            | io::ErrorKind::UnexpectedEof => Self::Gone,
+            _ => Self::Failed(error),
+        }
+    }
+}
+
+/// A keeper that answered: its connection, its process, what it holds, and what it said after.
+pub(crate) struct Greeted {
+    pub(crate) control: UnixStream,
+    pub(crate) keeper: u32,
+    pub(crate) description: Description,
+    pub(crate) inbox: Inbox,
+}
+
+/// Connect to the keeper in `dir`, greet it, and read what it holds.
+pub(crate) fn greet(dir: &Path) -> Result<Greeted, Refused> {
+    let control = match UnixStream::connect(dir.join("control")) {
+        Ok(control) => control,
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+            ) =>
+        {
+            return Err(Refused::Gone);
+        }
+        Err(error) => return Err(error.into()),
+    };
+    // Never waits on a keeper that stopped answering for long: one in the middle of a restart
+    // answers in milliseconds.
+    control.set_read_timeout(Some(Duration::from_secs(5)))?;
+    let keeper = peer_pid(&control)?;
+    send(
+        &control,
+        &ToKeeper::Hello {
+            version: wire::INTERFACE_VERSION,
+        },
+        None,
+    )?;
+    let mut buffer = Inbox::default();
+    match receive(&control, &mut buffer)? {
+        Some(FromKeeper::Hello { .. }) => {}
+        Some(FromKeeper::VersionMismatch { version }) => return Err(Refused::Version(version)),
+        _ => return Err(Refused::Gone),
+    }
+    send(&control, &ToKeeper::Describe, None)?;
+    loop {
+        match receive(&control, &mut buffer)? {
+            Some(FromKeeper::Described(description)) => {
+                control.set_read_timeout(None)?;
+                return Ok(Greeted {
+                    control,
+                    keeper,
+                    description,
+                    inbox: buffer,
+                });
+            }
+            Some(_) => {}
+            None => return Err(Refused::Gone),
+        }
+    }
+}
+
+impl Kept {
+    /// The keeper answered on `control` in this run: what the session writes on from now.
+    pub(crate) fn greeted(&self, control: &UnixStream, keeper: u32) -> io::Result<()> {
+        *self.control.lock_recover() = Some(control.try_clone()?);
+        self.keeper.store(keeper, Ordering::Release);
+        self.described.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    /// Read the keeper's events until its app ended or the connection did; answer the end when
+    /// it was heard (`None` when the run let go of the keeper, or it went without a word).
+    pub(crate) fn listen(&self, control: &UnixStream, mut buffer: Inbox) -> Option<End> {
+        loop {
+            match receive(control, &mut buffer) {
+                Ok(Some(FromKeeper::Ended { end })) => return Some(end_of(end)),
+                Ok(Some(FromKeeper::Fault { fault })) => {
+                    tracing::warn!(dir = %self.dir.display(), %fault, "a kept app's windows broke the desktop's protocol");
+                }
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => break,
+            }
+        }
+        if self.released.load(Ordering::Acquire) {
+            return None;
+        }
+        recorded_end(&self.dir)
+    }
+}
+
+/// The process at the other end of `stream`.
+pub(crate) fn peer_pid(stream: &UnixStream) -> io::Result<u32> {
+    let mut cred = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut len =
+        libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).map_err(io::Error::other)?;
+    // SAFETY: SO_PEERCRED writes one ucred into the buffer of the length given.
+    let read = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            std::ptr::from_mut(&mut cred).cast(),
+            &raw mut len,
+        )
+    };
+    if read != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    u32::try_from(cred.pid)
+        .ok()
+        .filter(|pid| *pid != 0)
+        .ok_or_else(|| io::Error::other("the keeper's process is unknown"))
+}
+
+/// When `pid` started, in clock ticks since boot: field 22 of `/proc/<pid>/stat`.
+pub(crate) fn start_time(pid: u32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let (_, rest) = stat.rsplit_once(')')?;
+    rest.split_whitespace().nth(19)?.parse().ok()
+}
+
+/// Whether the app a keeper described is the process it started: its pid names a process that
+/// started when the keeper says it did, so a pid the kernel gave someone else is never taken.
+pub(crate) fn same_process(description: &Description) -> bool {
+    match (description.app_pid, description.started_at) {
+        (Some(pid), Some(at)) => start_time(pid) == Some(at),
+        _ => false,
+    }
+}
+
+/// A descriptor for `pid`, for a signal that can reach no later process with its pid.
+pub(crate) fn pidfd(pid: u32) -> Option<OwnedFd> {
+    let pid = libc::pid_t::try_from(pid).ok()?;
+    // SAFETY: pidfd_open takes a pid and flags and returns a new descriptor or -1.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    let fd = i32::try_from(fd).ok().filter(|fd| *fd >= 0)?;
+    // SAFETY: the kernel just returned this descriptor, and nothing else owns it.
+    Some(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// End the keeper `keeper` and everything in its cgroup: a leftover from a run that did not end
+/// in a restart. A keeper outside an app's cgroup is asked to end, and its app ends with it.
+pub(crate) fn end_leftover(dir: &Path) {
+    if let Ok(control) = UnixStream::connect(dir.join("control"))
+        && let Ok(keeper) = peer_pid(&control)
+    {
+        tracing::info!(dir = %dir.display(), keeper, "a kept app left from before ends");
+        let cgroup = std::fs::read_to_string(format!("/proc/{keeper}/cgroup"))
+            .ok()
+            .and_then(|cgroup| launcher::app_cgroup::app_cgroup_at(&cgroup))
+            .map(|cgroup| launcher::app_cgroup::fs_path(&cgroup));
+        match cgroup {
+            Some(cgroup) => {
+                if let Err(error) = launcher::app_cgroup::kill(&cgroup) {
+                    tracing::warn!(%error, "a leftover kept app did not end");
+                }
+            }
+            None => signal(keeper, libc::SIGTERM),
+        }
+    }
+    if let Err(error) = std::fs::remove_dir_all(dir)
+        && error.kind() != io::ErrorKind::NotFound
+    {
+        tracing::warn!(dir = %dir.display(), %error, "a leftover keeper directory stays");
+    }
+}
+
+/// Send `signal` to `pid` through a pidfd.
+pub(crate) fn signal(pid: u32, signal: i32) {
+    if let Some(fd) = pidfd(pid) {
+        // SAFETY: the descriptor is a live pidfd this function owns, and the info may be null.
+        let _ = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                fd.as_raw_fd(),
+                signal,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            )
+        };
+    }
+}
+
+/// Wait until the keeper the launcher `launcher` starts in `dir` listens, or the launcher ended.
+/// True once it listens.
+pub(crate) fn wait_for_control(dir: &Path, launcher: &OwnedFd) -> bool {
+    let control = dir.join("control");
+    // SAFETY: inotify_init1 takes flags and returns a new descriptor or -1.
+    let raw = unsafe { libc::inotify_init1(libc::IN_CLOEXEC) };
+    if raw < 0 {
+        return false;
+    }
+    // SAFETY: the kernel just returned this descriptor, owned by nobody else.
+    let mut inotify = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(raw) });
+    let Ok(path) = std::ffi::CString::new(dir.as_os_str().as_encoded_bytes()) else {
+        return false;
+    };
+    // SAFETY: a live inotify descriptor and a NUL-terminated path.
+    if unsafe { libc::inotify_add_watch(raw, path.as_ptr(), libc::IN_CREATE | libc::IN_MOVED_TO) }
+        < 0
+    {
+        return false;
+    }
+    loop {
+        // A socket is bound before it listens: one that refuses yet is waited for again.
+        if UnixStream::connect(&control).is_ok() {
+            return true;
+        }
+        let mut fds = [
+            libc::pollfd {
+                fd: inotify.as_fd().as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: launcher.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        let timeout = if control.exists() { 5 } else { 60_000 };
+        // SAFETY: two live pollfds in a buffer of that length.
+        let ready = unsafe { libc::poll(fds.as_mut_ptr(), 2, timeout) };
+        if ready < 0 {
+            if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return false;
+        }
+        if fds[1].revents != 0 {
+            return UnixStream::connect(&control).is_ok();
+        }
+        if fds[0].revents != 0 {
+            let mut events = [0u8; 4096];
+            let _ = inotify.read(&mut events);
+        } else if ready == 0 && !control.exists() {
+            // A keeper that has not bound in a minute is not coming.
+            return false;
+        }
+    }
+}
+
+/// Write `message`, with `fd` beside it when given.
+fn send(stream: &UnixStream, message: &ToKeeper, fd: Option<&UnixStream>) -> io::Result<()> {
+    let frame = wire::encode(message)?;
+    let Some(fd) = fd else {
+        return (&*stream).write_all(&frame);
+    };
+    let raw = fd.as_raw_fd();
+    let space = usize::try_from(
+        // SAFETY: CMSG_SPACE computes a size from a length.
+        unsafe { libc::CMSG_SPACE(u32::try_from(std::mem::size_of::<i32>()).unwrap_or(4)) },
+    )
+    .unwrap_or(64);
+    let mut control = vec![0u8; space];
+    let mut iov = libc::iovec {
+        iov_base: frame.as_ptr().cast_mut().cast(),
+        iov_len: frame.len(),
+    };
+    // SAFETY: an all-zero msghdr is valid; the fields set below point at live buffers.
+    let mut header: libc::msghdr = unsafe { std::mem::zeroed() };
+    header.msg_iov = &raw mut iov;
+    header.msg_iovlen = 1;
+    header.msg_control = control.as_mut_ptr().cast();
+    header.msg_controllen = space;
+    // SAFETY: the control buffer holds one header with room for one descriptor.
+    unsafe {
+        let cmsg = libc::CMSG_FIRSTHDR(&raw const header);
+        (*cmsg).cmsg_level = libc::SOL_SOCKET;
+        (*cmsg).cmsg_type = libc::SCM_RIGHTS;
+        (*cmsg).cmsg_len =
+            libc::CMSG_LEN(u32::try_from(std::mem::size_of::<i32>()).unwrap_or(4)) as usize;
+        std::ptr::copy_nonoverlapping(
+            std::ptr::from_ref(&raw).cast::<u8>(),
+            libc::CMSG_DATA(cmsg),
+            std::mem::size_of::<i32>(),
+        );
+    }
+    // SAFETY: the header points at the frame and the control buffer, both alive for the call.
+    let sent = unsafe { libc::sendmsg(stream.as_raw_fd(), &raw const header, libc::MSG_NOSIGNAL) };
+    let sent = usize::try_from(sent).map_err(|_| io::Error::last_os_error())?;
+    // The rest of a frame that did not go at once follows without its descriptor.
+    (&*stream).write_all(frame.get(sent..).unwrap_or_default())
+}
+
+/// What has come from a keeper and not been read yet.
+#[derive(Default)]
+pub(crate) struct Inbox {
+    bytes: Vec<u8>,
+    frames: std::collections::VecDeque<Vec<u8>>,
+}
+
+/// The next message from the keeper; `None` once the connection ended. A message this session
+/// cannot read is passed over.
+fn receive(stream: &UnixStream, inbox: &mut Inbox) -> io::Result<Option<FromKeeper>> {
+    loop {
+        while let Some(frame) = inbox.frames.pop_front() {
+            if let Ok(message) = serde_json::from_slice(&frame) {
+                return Ok(Some(message));
+            }
+        }
+        let mut chunk = [0u8; 8192];
+        let read = (&*stream).read(&mut chunk)?;
+        if read == 0 {
+            return Ok(None);
+        }
+        inbox
+            .bytes
+            .extend_from_slice(chunk.get(..read).unwrap_or_default());
+        inbox.frames.extend(wire::take_frames(&mut inbox.bytes)?);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::sync::atomic::AtomicBool;
+    use std::time::Instant;
+
+    use super::*;
+    use crate::plan::{Kind, Planned};
+    use crate::spawner::{Event, Spawner, Teardown};
+
+    /// What makes this test binary a keeper: its arguments, one per line.
+    const KEEPER_ARGS: &str = "TILO_TEST_KEEPER_ARGS";
+
+    /// Not a test: the keeper process the others start, as `tilo-app-keeper` would run.
+    #[test]
+    fn keeper_process() {
+        let Ok(args) = std::env::var(KEEPER_ARGS) else {
+            return;
+        };
+        let args: Vec<&str> = args.lines().collect();
+        let value = |flag: &str| {
+            args.iter()
+                .position(|arg| *arg == flag)
+                .and_then(|at| args.get(at + 1))
+                .map(|value| (*value).to_owned())
+                .unwrap_or_default()
+        };
+        let mut options = tilo_app_keeper::Options::new(value("--dir"), value("--launch"));
+        options.command = args
+            .iter()
+            .skip_while(|arg| **arg != "--")
+            .skip(1)
+            .map(Into::into)
+            .collect();
+        options.grace = Duration::from_secs(5);
+        let ran = tilo_app_keeper::Keeper::new(options).and_then(tilo_app_keeper::Keeper::run);
+        ran.expect("the keeper ran");
+    }
+
+    /// A desktop on a thread of its own, for as long as the value lives.
+    struct Desktop {
+        connector: super::Desktop,
+        stop: Arc<AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Desktop {
+        fn new() -> Self {
+            let stop = Arc::new(AtomicBool::new(false));
+            let (sender, connector) = std::sync::mpsc::channel();
+            let stopped = Arc::clone(&stop);
+            let thread = std::thread::spawn(move || {
+                let mut compositor = tilo_compositor::Compositor::headless(Box::new(
+                    tilo_compositor::policy::StackPolicy,
+                ))
+                .expect("a desktop");
+                compositor
+                    .add_output(&tilo_compositor::OutputConfig::new("HEADLESS-1", 640, 480))
+                    .expect("an output");
+                let _ = sender.send(compositor.client_connector());
+                while !stopped.load(Ordering::Acquire) {
+                    let _ = compositor.dispatch(Duration::from_millis(5));
+                }
+            });
+            let connector = connector.recv().expect("the desktop's connector");
+            Self {
+                connector: Arc::new(move |pid| connector.connect_for(pid)),
+                stop,
+                thread: Some(thread),
+            }
+        }
+    }
+
+    impl Drop for Desktop {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+
+    /// A registry, the keeper program (this binary) and a launcher that starts the app behind it
+    /// as `tilo-launcher run-host --keeper` does.
+    struct Rig {
+        dir: tempfile::TempDir,
+    }
+
+    /// One run of the session: its spawner and its desktop, which goes with it.
+    struct Run {
+        spawner: Spawner,
+        _desktop: Desktop,
+    }
+
+    impl std::ops::Deref for Run {
+        type Target = Spawner;
+        fn deref(&self) -> &Spawner {
+            &self.spawner
+        }
+    }
+
+    impl std::ops::DerefMut for Run {
+        fn deref_mut(&mut self) -> &mut Spawner {
+            &mut self.spawner
+        }
+    }
+
+    impl Rig {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().expect("a directory");
+            let keeper = dir.path().join("keeper");
+            std::fs::write(
+                &keeper,
+                format!(
+                    "#!/bin/sh\n{KEEPER_ARGS}=\"$(printf '%s\\n' \"$@\")\" exec '{}' --exact kept::tests::keeper_process --nocapture\n",
+                    std::env::current_exe().expect("this test").display()
+                ),
+            )
+            .expect("the keeper");
+            let launcher = dir.path().join("launcher");
+            std::fs::write(
+                &launcher,
+                "#!/bin/sh\nwhile [ $# -gt 0 ]; do case \"$1\" in --keeper) k=$2; shift;; --keep-in) d=$2; shift;; --keep-as) l=$2; shift;; esac; shift; done\nexec \"$k\" --dir \"$d\" --launch \"$l\" -- /bin/sh -c 'exec sleep 1000'\n",
+            )
+            .expect("the launcher");
+            for script in [&keeper, &launcher] {
+                std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o755))
+                    .expect("runnable");
+            }
+            Self { dir }
+        }
+
+        fn root(&self) -> PathBuf {
+            self.dir.path().join("kept")
+        }
+
+        /// A run of the session's spawner.
+        fn run(&self) -> Run {
+            let desktop = Desktop::new();
+            let mut spawner = Spawner::default();
+            spawner.keep_behind(Keeping {
+                keeper: self.dir.path().join("keeper"),
+                root: self.root(),
+                desktop: Arc::clone(&desktop.connector),
+            });
+            Run {
+                spawner,
+                _desktop: desktop,
+            }
+        }
+
+        /// Start the kept app in `spawner`, and wait until it runs on the desktop: its process.
+        fn start(&self, spawner: &mut Run) -> (u32, u64) {
+            let planned = Planned {
+                app: "org.example.Kept".into(),
+                title: "Kept".into(),
+                kind: Kind::Program,
+                program: self.dir.path().join("launcher"),
+                args: Vec::new(),
+                env: BTreeMap::new(),
+                window_identities: vec!["org.example.Kept".into()],
+            };
+            spawner
+                .start_with(
+                    &planned,
+                    None,
+                    &|_| {},
+                    "workspace-1",
+                    Some("org.example.Kept"),
+                )
+                .expect("starts");
+            self.shown()
+        }
+
+        /// The one keeper's description, once its app runs on a desktop.
+        fn shown(&self) -> (u32, u64) {
+            let started = Instant::now();
+            loop {
+                if let Some(dir) = dirs(&self.root()).first()
+                    && let Ok(greeted) = greet(dir)
+                    && greeted.description.attached
+                    && let (Some(pid), Some(at)) =
+                        (greeted.description.app_pid, greeted.description.started_at)
+                {
+                    return (pid, at);
+                }
+                assert!(
+                    started.elapsed() < Duration::from_secs(20),
+                    "the kept app never showed"
+                );
+                std::thread::park_timeout(Duration::from_millis(20));
+            }
+        }
+    }
+
+    /// Wait for `count` events of `spawner`.
+    fn events(spawner: &Run, count: usize) -> Vec<Event> {
+        let started = Instant::now();
+        let mut collected = Vec::new();
+        while collected.len() < count {
+            collected.extend(spawner.events());
+            assert!(
+                started.elapsed() < Duration::from_secs(20),
+                "no end was reported"
+            );
+            std::thread::park_timeout(Duration::from_millis(10));
+        }
+        collected
+    }
+
+    fn running(pid: u32, at: u64) -> bool {
+        start_time(pid) == Some(at)
+    }
+
+    fn kill(pid: u32) {
+        signal(pid, libc::SIGKILL);
+    }
+
+    tilo_test_env::scenario! {
+        fn a_kept_app_stays_running_through_in_place_restarts_and_ends_at_logout;
+
+        phase an_in_place_restart_leaves_it_running_and_the_next_run_takes_it_back;
+        {
+            let rig = Rig::new();
+            let mut first = rig.run();
+            let (pid, at) = rig.start(&mut first);
+            first.end_running(Teardown::InPlaceRestart);
+            drop(first);
+            assert!(running(pid, at), "the app outlives the run that started it");
+
+            let mut second = rig.run();
+            let adopted = second.adopt_kept();
+            assert_eq!(adopted.len(), 1, "the kept app is taken back");
+            let kept = adopted.first().expect("one");
+            assert_eq!(kept.launch.app, "org.example.Kept");
+            assert_eq!(kept.launch.workspace, "workspace-1");
+            assert_eq!(kept.launch.asked.as_deref(), Some("org.example.Kept"));
+            second.attach_kept();
+            assert_eq!(rig.shown(), (pid, at), "the same process shows on the new desktop");
+
+            kill(pid);
+            let ended = events(&second, 1);
+            assert_eq!(ended.first().map(|event| event.id), Some(kept.id));
+            assert_eq!(ended.first().map(|event| event.end.clone()), Some(End::signalled(9)));
+            assert!(dirs(&rig.root()).is_empty(), "its directory goes with it");
+        }
+
+        phase it_survives_two_restarts_in_a_row_and_a_logout_ends_it;
+        {
+            let rig = Rig::new();
+            let mut first = rig.run();
+            let (pid, at) = rig.start(&mut first);
+            first.end_running(Teardown::InPlaceRestart);
+            drop(first);
+            let mut second = rig.run();
+            assert_eq!(second.adopt_kept().len(), 1);
+            second.attach_kept();
+            rig.shown();
+            // The new desktop never became ready: the update is rolled back, in place again.
+            second.end_running(Teardown::InPlaceRestart);
+            drop(second);
+            let mut third = rig.run();
+            assert_eq!(third.adopt_kept().len(), 1);
+            third.attach_kept();
+            assert_eq!(rig.shown(), (pid, at), "the same process after both");
+
+            third.end_running(Teardown::Logout);
+            tilo_test_env::exited("the kept app at logout", pid);
+            assert!(dirs(&rig.root()).is_empty(), "a logout removes the keeper's directory");
+        }
+
+        phase an_app_that_ended_while_no_desktop_was_there_is_reported;
+        {
+            let rig = Rig::new();
+            let mut first = rig.run();
+            let (pid, _) = rig.start(&mut first);
+            first.end_running(Teardown::InPlaceRestart);
+            drop(first);
+            kill(pid);
+            let dir = dirs(&rig.root()).into_iter().next().expect("the keeper's directory");
+            let started = Instant::now();
+            while recorded_end(&dir).is_none() {
+                assert!(started.elapsed() < Duration::from_secs(20), "the keeper never recorded the end");
+                std::thread::park_timeout(Duration::from_millis(20));
+            }
+            let mut second = rig.run();
+            assert!(second.adopt_kept().is_empty(), "nothing runs to take back");
+            let ended = events(&second, 1);
+            assert_eq!(ended.first().map(|event| event.app.as_str()), Some("org.example.Kept"));
+            assert_eq!(ended.first().map(|event| event.end.clone()), Some(End::signalled(9)));
+            assert!(dirs(&rig.root()).is_empty());
+        }
+
+        phase a_start_that_follows_no_restart_ends_what_was_left;
+        {
+            let rig = Rig::new();
+            let mut first = rig.run();
+            let (pid, _) = rig.start(&mut first);
+            first.end_running(Teardown::InPlaceRestart);
+            drop(first);
+            let second = rig.run();
+            second.clear_kept();
+            tilo_test_env::exited("a leftover kept app", pid);
+            assert!(dirs(&rig.root()).is_empty(), "and its directory is gone");
+        }
+
+        phase a_keeper_of_another_version_is_left_running_and_not_taken;
+        {
+            let rig = Rig::new();
+            let dir = rig.root().join("older");
+            private(&dir).expect("a keeper directory");
+            let listener = std::os::unix::net::UnixListener::bind(dir.join("control")).expect("bound");
+            let answering = std::thread::spawn(move || {
+                let (stream, _) = listener.accept().expect("the session connects");
+                let frame = wire::encode(&FromKeeper::VersionMismatch { version: 0 }).expect("a frame");
+                (&stream).write_all(&frame).expect("answered");
+            });
+            let mut run = rig.run();
+            assert!(run.adopt_kept().is_empty(), "an older keeper is not taken");
+            let _ = answering.join();
+            assert!(dir.exists(), "nor is it removed");
+            assert!(run.events().is_empty(), "nor reported as ended");
+        }
+
+        phase a_logout_ends_a_kept_app_the_same_run_started;
+        {
+            let rig = Rig::new();
+            let mut first = rig.run();
+            let (pid, _) = rig.start(&mut first);
+            drop(first);
+            tilo_test_env::exited("the kept app its session no longer runs", pid);
+        }
+    }
+}

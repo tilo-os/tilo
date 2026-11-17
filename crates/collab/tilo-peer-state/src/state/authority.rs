@@ -4,8 +4,8 @@
 
 use super::{
     ActionKind, AutoCommit, DeviceCert, GovernedIdentity, MembershipError, Role, Route, SignedOp,
-    Standing, StatePeer, SystemTime, TreePath, WorkspacePolicy, backend, err, held_units, now_ns,
-    record_kind, record_surface, workspace, workspace_host_actor,
+    Standing, StatePeer, SystemTime, TreePath, WorkspacePolicy, backend, document_surface, err,
+    held_units, now_ns, resource_type, workspace, workspace_host_actor,
 };
 use collab_types::signer::DeviceSigner;
 
@@ -126,30 +126,30 @@ impl StatePeer {
     }
 
     /// The member's own record `app`'s `record` is, as a write of it or the
-    /// app keeping it said ([`Self::keep_own_record`]); `None` for a record
+    /// app keeping it said ([`Self::keep_own_document`]); `None` for a record
     /// of the workspace.
     #[must_use]
-    pub fn own_record(&self, app: &str, record: &str) -> Option<collab_types::OwnRecord> {
+    pub fn own_resource(&self, app: &str, record: &str) -> Option<collab_types::OwnResource> {
         self.core.own_of(app, record)
     }
 
-    /// [`Self::own_record`] for a write the device `author` signs: also the
+    /// [`Self::own_resource`] for a write the device `author` signs: also the
     /// author's person's own record of a kind the app's manifest declares each
-    /// member's own ([`collab_types::OwnRecord::recognise`]).
+    /// member's own ([`collab_types::OwnResource::recognise`]).
     #[must_use]
     pub fn own_write(
         &self,
         app: &str,
         record: &str,
         author: &[u8; 32],
-    ) -> Option<collab_types::OwnRecord> {
+    ) -> Option<collab_types::OwnResource> {
         self.core.own_write(app, record, author)
     }
 
     /// The person (user root key) of every member's own record this replica
     /// knows, by app and record.
     #[must_use]
-    pub fn own_records(&self) -> std::collections::BTreeMap<(String, String), [u8; 32]> {
+    pub fn own_resources(&self) -> std::collections::BTreeMap<(String, String), [u8; 32]> {
         self.core
             .own
             .iter()
@@ -160,8 +160,8 @@ impl StatePeer {
     /// Keep `app`'s record `own` names as that member's own record: every
     /// write of it this replica signs carries its kind and person
     /// ([`neighbour_wire::NeighbourMsg::AppDocument`]'s `own`).
-    pub fn keep_own_record(&mut self, app: &str, own: &collab_types::OwnRecord) {
-        self.core.learn_own(app, &own.record_id(), Some(own));
+    pub fn keep_own_document(&mut self, app: &str, own: &collab_types::OwnResource) {
+        self.core.learn_own(app, &own.document_id(), Some(own));
     }
 
     /// Verified public identity metadata; never includes signing keys.
@@ -603,8 +603,8 @@ impl StatePeer {
         // and which units a change writes.
         let enforced = self.surfaces.enforced();
         let document = enforced.then(|| self.core.documents.get(&route)).flatten();
-        let kind = document.and_then(|document| record_kind(&*document.doc));
-        let pinned = document.and_then(|document| record_surface(&*document.doc));
+        let kind = document.and_then(|document| resource_type(&*document.doc));
+        let pinned = document.and_then(|document| document_surface(&*document.doc));
         // A record this peer does not hold yet is read from its first
         // changes: they carry its unit index from the start.
         let held = match document {
@@ -619,17 +619,17 @@ impl StatePeer {
             .map(|own| own.person());
         let mut cx = tilo_action_policy::Context::at_time(authorization_time);
         if let Some(person) = &person {
-            cx = cx.with_own_record(record, person);
+            cx = cx.with_own_resource(record, person);
         }
         let allows = |node: &TreePath, kind: ActionKind| {
             member.answer(node, kind, &cx) == tilo_action_policy::Answer::Allow
         };
         let decided = collab_types::decide_op_pinned(
             envelope,
-            &collab_types::Record {
+            &collab_types::WrittenDocument {
                 workspace: &self.core.workspace,
                 app: app_id,
-                record,
+                document: record,
             },
             kind.as_deref(),
             held,

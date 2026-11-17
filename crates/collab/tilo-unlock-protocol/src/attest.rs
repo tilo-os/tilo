@@ -61,6 +61,102 @@ pub enum AttestError {
     /// The PCR selection or values do not match the quote.
     #[error("quoted PCRs do not match")]
     PcrMismatch,
+    /// A TPM structure early boot read back is not the shape this protocol expects.
+    #[error("malformed TPM structure")]
+    Malformed,
+}
+
+/// The SEC1 point of a `TPM2B_PUBLIC` ECC P-256 key, which is what a
+/// [`Quote`] verifies under.
+///
+/// Early boot reads the attestation key back with `tpm2_readpublic -f tss`
+/// and sends its point to the person's identity for certification; the TPM
+/// then signs each quote with that key.
+///
+/// # Errors
+///
+/// [`AttestError::Malformed`] unless the bytes are a `TPM2B_PUBLIC` holding an
+/// ECC P-256 key.
+pub fn sec1_from_tpm_public(public: &[u8]) -> Result<Vec<u8>, AttestError> {
+    let mut r = Reader(public);
+    let size = usize::from(r.u16()?);
+    if r.0.len() != size || r.u16()? != 0x0023 {
+        return Err(AttestError::Malformed);
+    }
+    let _name_alg = r.u16()?;
+    let _attributes = r.take(4)?;
+    let _auth_policy = r.sized()?;
+    // TPMT_SYM_DEF_OBJECT: null names no key bits or mode.
+    if r.u16()? != 0x0010 {
+        r.take(4)?;
+    }
+    // TPMT_ECC_SCHEME: null names no hash.
+    if r.u16()? == 0x0010 {
+        return Err(AttestError::Malformed);
+    }
+    let _scheme_hash = r.u16()?;
+    if r.u16()? != 0x0003 {
+        return Err(AttestError::Malformed);
+    }
+    // TPMT_KDF_SCHEME: null names no hash.
+    if r.u16()? != 0x0010 {
+        let _kdf_hash = r.u16()?;
+    }
+    let x = r.sized()?;
+    let y = r.sized()?;
+    if !r.0.is_empty() || x.len() != 32 || y.len() != 32 {
+        return Err(AttestError::Malformed);
+    }
+    let mut point = Vec::with_capacity(65);
+    point.push(4);
+    point.extend_from_slice(x);
+    point.extend_from_slice(y);
+    Ok(point)
+}
+
+/// The `r || s` form a [`Quote`] takes out of the `TPMT_SIGNATURE` a TPM
+/// writes beside the attestation (`tpm2_quote -s`).
+///
+/// # Errors
+///
+/// [`AttestError::Malformed`] unless the bytes are an ECDSA-SHA256 signature
+/// of two 32-byte integers.
+pub fn signature_from_tpm(signature: &[u8]) -> Result<[u8; 64], AttestError> {
+    let mut r = Reader(signature);
+    if r.u16()? != 0x0018 || r.u16()? != TPM_ALG_SHA256 {
+        return Err(AttestError::Malformed);
+    }
+    let r_part = r.sized()?;
+    let s_part = r.sized()?;
+    if !r.0.is_empty() || r_part.len() != 32 || s_part.len() != 32 {
+        return Err(AttestError::Malformed);
+    }
+    let mut out = [0; 64];
+    out[..32].copy_from_slice(r_part);
+    out[32..].copy_from_slice(s_part);
+    Ok(out)
+}
+
+/// The quoted values a TPM writes for `tpm2_quote -F values`: one 32-byte
+/// SHA-256 digest per selected PCR, in ascending index order.
+///
+/// # Errors
+///
+/// [`AttestError::Malformed`] when the bytes are not exactly one digest per
+/// index.
+pub fn pcr_values(bytes: &[u8], indices: &[u8]) -> Result<Vec<(u8, [u8; 32])>, AttestError> {
+    if bytes.len() != indices.len().saturating_mul(32) {
+        return Err(AttestError::Malformed);
+    }
+    indices
+        .iter()
+        .zip(bytes.chunks_exact(32))
+        .map(|(index, value)| {
+            <[u8; 32]>::try_from(value)
+                .map(|value| (*index, value))
+                .map_err(|_| AttestError::Malformed)
+        })
+        .collect()
 }
 
 /// The 32 bytes early boot passes the TPM as qualifying data for this
@@ -257,6 +353,59 @@ pub(crate) mod tests {
             signature: signature.to_der().as_bytes().to_vec(),
             pcrs: pcrs.to_vec(),
         }
+    }
+
+    #[test]
+    fn reads_the_attestation_key_point_a_tpm_writes() {
+        // `tpm2_readpublic -f tss` of an ECC P-256 restricted signing key.
+        let public = hex("00580023000b00050072000000100018000b0003\
+             0010002090b821ef1fa9f6c5798293c7e09abf62a2481ea7071bd75a00f87d6c9c58d60b\
+             0020926d746f192120797d494c1e8b933b743d6661d40791ad43c86c3a07c5241e80");
+        let point = sec1_from_tpm_public(&public).unwrap();
+        assert_eq!(point.len(), 65);
+        assert_eq!(point[0], 4);
+        // The point is a valid key the quotes verify under.
+        assert!(VerifyingKey::from_sec1_bytes(&point).is_ok());
+        let mut wrong_type = public.clone();
+        wrong_type[2] = 0x00;
+        wrong_type[3] = 0x01;
+        assert_eq!(
+            sec1_from_tpm_public(&wrong_type),
+            Err(AttestError::Malformed)
+        );
+        assert!(sec1_from_tpm_public(&public[..public.len() - 1]).is_err());
+    }
+
+    #[test]
+    fn reads_the_signature_a_tpm_writes_beside_the_quote() {
+        // `tpm2_quote -s`: TPMT_SIGNATURE of an ECDSA-SHA256 signature.
+        let signature = hex(
+            "0018000b00207a4c3204988607d2857d84dbbe3d8493be977c4de64282a46a0a3c936f55c1ba\
+             00206c8fa875a426998f1a6b6881fa8c3636f2cb47d34f0d68e683459abf00aa8c8f",
+        );
+        let split = signature_from_tpm(&signature).unwrap();
+        assert_eq!(&split[..32], &signature[6..38]);
+        assert_eq!(&split[32..], &signature[40..72]);
+        assert!(signature_from_tpm(&signature[..signature.len() - 1]).is_err());
+    }
+
+    #[test]
+    fn reads_the_pcr_values_of_one_index_each() {
+        let values = [(4, [1_u8; 32]), (7, [2_u8; 32])];
+        let mut bytes = Vec::new();
+        for (_, value) in values {
+            bytes.extend_from_slice(&value);
+        }
+        assert_eq!(pcr_values(&bytes, &QUOTED_PCRS), Ok(values.to_vec()));
+        assert_eq!(
+            pcr_values(&bytes[..32], &QUOTED_PCRS),
+            Err(AttestError::Malformed)
+        );
+        assert_eq!(pcr_values(&bytes, &[4]), Err(AttestError::Malformed));
+    }
+
+    fn hex(text: &str) -> Vec<u8> {
+        hex::decode(text.replace([' ', '\n'], "")).expect("test fixture hex")
     }
 
     #[test]

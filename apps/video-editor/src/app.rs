@@ -898,7 +898,7 @@ pub struct VideoEditorApp {
     timeline_split: ui::widget::SplitHandle,
     selection: Selection,
     selected_media: Option<MediaId>,
-    /// Decides which one thing to tell the workspace about this participant on
+    /// Decides which one thing to tell the workspace about this member on
     /// each poll of [`Widget::presence_payload`], which only carries one.
     /// See [`crate::presence`] for why there are two things to say.
     local_presence: crate::presence::LocalPresence,
@@ -994,7 +994,7 @@ pub struct VideoEditorApp {
     rect: Rect,
     /// Where every edit goes: the framework's dispatcher, handed over when
     /// the editor is hosted ([`Self::hosted`]). The
-    /// host checks each against the participant's permissions, applies it
+    /// host checks each against the member's permissions, applies it
     /// through the replayable executor, records it as one undo step and
     /// attributes it in history.
     actions: Option<ui::framework::Dispatcher<Project>>,

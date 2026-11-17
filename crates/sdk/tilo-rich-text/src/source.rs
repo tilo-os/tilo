@@ -12,7 +12,7 @@ use std::rc::Rc;
 use tilo_document::{RichText, RichTextAction, RichTextState};
 use ui::automerge::ObjId;
 use ui::automerge::transaction::Transactable;
-use ui::framework::{Dispatcher, Live, PersonRecord, ResourceSelection};
+use ui::framework::{Dispatcher, Live, PersonResource, ResourceSelection};
 use ui::presence::PresenceKey;
 use ui::tilo_actions::ActionError;
 use ui::tilo_resource::{Demand, Doc, Invoke, ModelError, Resource, Tracker};
@@ -437,7 +437,7 @@ impl RichTextSource for RichTextField {
 type Wrap<P> = Box<dyn Fn(&RichTextAction) -> <P as Resource>::Action>;
 
 /// Rich text stored in a field of a record the app keeps beside the one it
-/// shows ([`PersonRecord`]): a draft, a note. It is the person's own record
+/// shows ([`PersonResource`]): a draft, a note. It is the person's own record
 /// in the workspace, kept apart from the record the app shows; no other
 /// member reads or changes it.
 ///
@@ -447,7 +447,7 @@ type Wrap<P> = Box<dyn Fn(&RichTextAction) -> <P as Resource>::Action>;
 /// that creates the field, applied before the first edit of a field that
 /// does not exist yet.
 pub struct PersonField<P: Resource> {
-    record: PersonRecord<P>,
+    record: PersonResource<P>,
     locate: Locate,
     wrap: Wrap<P>,
     start: Option<Box<dyn Fn() -> Invoke<P>>>,
@@ -460,7 +460,7 @@ impl<P: Resource> PersonField<P> {
     /// The rich text `locate` finds in `record`, each edit applied as the
     /// action `wrap` makes of it.
     pub fn new(
-        record: PersonRecord<P>,
+        record: PersonResource<P>,
         locate: impl Fn(&Doc) -> Option<ObjId> + 'static,
         wrap: impl Fn(&RichTextAction) -> P::Action + 'static,
     ) -> Self {

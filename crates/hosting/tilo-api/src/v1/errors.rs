@@ -31,6 +31,13 @@ impl ApiError {
         self
     }
 
+    /// Say how long to wait before the same call works.
+    #[must_use]
+    pub fn retry_after_ms(mut self, wait: u64) -> Self {
+        self.body.retry_after_ms = Some(wait);
+        self
+    }
+
     pub fn invalid(message: impl Into<String>) -> Self {
         Self::new("invalid_request", message)
     }
@@ -105,6 +112,10 @@ impl From<crate::relay::RelayError> for ApiError {
             RelayError::Unavailable(_) => {
                 Self::new("unavailable", error.to_string()).next("try again in a minute")
             }
+            // Nothing that can read the workspace answered: what to do is in
+            // the message itself.
+            RelayError::NoHolder => Self::new("unavailable", error.to_string())
+                .next("open Tilo on a device that holds the workspace, then try again"),
             RelayError::RateLimited { retry_after_ms } => {
                 let mut refused = Self::new("rate_limited", error.to_string());
                 refused.body.retry_after_ms = Some(retry_after_ms);

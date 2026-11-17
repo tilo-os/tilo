@@ -15,6 +15,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use tilo_actions::MemberId;
 use tilo_actions::api::{ActionDescriptor, ApiError};
 use tilo_agent_session::{ConfinedReplica, ReplicaActor, Seed, render};
 use tilo_content::ContentStore;
@@ -75,10 +76,15 @@ fn timeline(source: Option<&str>) -> Project {
 
 /// `project` held for an agent, lent `workspace`: a new record the agent loads
 /// the project into through the action API, as opening a project file does.
-fn agents_record(project: &Project, workspace: &ContentStore) -> ConfinedReplica {
-    let agent = crate::common::confined(VIDEO, "editor", &ReplicaActor::Agent, Seed::New)
-        .unwrap()
-        .lending(workspace.clone());
+fn agents_document(project: &Project, workspace: &ContentStore) -> ConfinedReplica {
+    let agent = crate::common::confined(
+        VIDEO,
+        &MemberId::person("editor"),
+        &ReplicaActor::Agent,
+        Seed::New,
+    )
+    .unwrap()
+    .lending(workspace.clone());
     let load = offered(&agent, "field-edit").expect("field edits are offered");
     let edit = serde_json::json!({ "edit": video_editor::resource::load_project(project) });
     agent
@@ -104,7 +110,7 @@ fn arguments(value: serde_json::Value) -> serde_json::Map<String, serde_json::Va
 
 #[test]
 fn an_agent_is_offered_the_renders_exactly_where_its_host_renders() {
-    let agent = agents_record(&timeline(None), &ContentStore::memory());
+    let agent = agents_document(&timeline(None), &ContentStore::memory());
     for action in [
         "export-video-content",
         "view-frame-content",
@@ -128,7 +134,7 @@ fn an_export_is_rendered_on_the_host_kept_as_content_and_answered_again_unchange
         return;
     }
     let workspace = ContentStore::memory();
-    let agent = agents_record(&timeline(None), &workspace);
+    let agent = agents_document(&timeline(None), &workspace);
     let export = offered(&agent, "export-video-content").unwrap().address;
     let ask = arguments(serde_json::json!({ "width": 320, "height": 180, "fps": 24 }));
     let first = agent
@@ -169,7 +175,7 @@ fn an_export_is_rendered_on_the_host_kept_as_content_and_answered_again_unchange
 
 #[test]
 fn an_agents_record_states_its_facts_now_and_at_an_earlier_version() {
-    let agent = agents_record(&timeline(None), &ContentStore::memory());
+    let agent = agents_document(&timeline(None), &ContentStore::memory());
     let facts = offered(&agent, "facts").expect("a project states its facts");
     let before = agent
         .read(|doc| {
@@ -219,7 +225,7 @@ fn a_still_is_drawn_on_the_host_as_a_png_kept_as_content() {
         return;
     }
     let workspace = ContentStore::memory();
-    let agent = agents_record(&timeline(None), &workspace);
+    let agent = agents_document(&timeline(None), &workspace);
     let frame = offered(&agent, "view-frame-content").unwrap().address;
     let output = agent
         .invoke(
@@ -245,7 +251,7 @@ fn a_render_of_content_the_workspace_lacks_or_a_size_too_large_is_refused_before
     }
     let workspace = ContentStore::memory();
     let missing = format!("tilo.content:{}", "ab".repeat(32));
-    let agent = agents_record(&timeline(Some(&missing)), &workspace);
+    let agent = agents_document(&timeline(Some(&missing)), &workspace);
     let export = offered(&agent, "export-video-content").unwrap().address;
     match agent.invoke(&export, &serde_json::Map::new(), true) {
         Err(ApiError::Unavailable { code, reason }) => {
@@ -254,7 +260,7 @@ fn a_render_of_content_the_workspace_lacks_or_a_size_too_large_is_refused_before
         }
         other => panic!("a source the workspace lacks is refused: {other:?}"),
     }
-    let plain = agents_record(&timeline(None), &workspace);
+    let plain = agents_document(&timeline(None), &workspace);
     let too_big = arguments(serde_json::json!({ "width": 3840, "height": 2160 }));
     assert!(matches!(
         plain.invoke(&export, &too_big, true),
@@ -263,16 +269,16 @@ fn a_render_of_content_the_workspace_lacks_or_a_size_too_large_is_refused_before
 }
 
 /// One agent brings footage into a new project and places it on V1, the
-/// lane a new project lacks until a clip names it; another participant's
+/// lane a new project lacks until a clip names it; another member's
 /// replica of the same record, on the workspace's content, views a frame of it.
 #[test]
-fn a_second_participant_views_a_frame_of_footage_the_first_imported() {
+fn a_second_presence_views_a_frame_of_footage_the_first_imported() {
     if !renders() {
         return;
     }
     let workspace = ContentStore::memory();
     // The footage: a second of a title, rendered and kept in the workspace.
-    let maker = agents_record(&timeline(None), &workspace);
+    let maker = agents_document(&timeline(None), &workspace);
     let export = offered(&maker, "export-video-content").unwrap().address;
     let made = maker
         .invoke(
@@ -283,9 +289,14 @@ fn a_second_participant_views_a_frame_of_footage_the_first_imported() {
         .unwrap_or_else(|error| panic!("the host renders: {error}"));
     let footage = made.value.unwrap()["content"].as_str().unwrap().to_owned();
 
-    let editor = crate::common::confined(VIDEO, "editor", &ReplicaActor::Agent, Seed::New)
-        .unwrap()
-        .lending(workspace.clone());
+    let editor = crate::common::confined(
+        VIDEO,
+        &MemberId::person("editor"),
+        &ReplicaActor::Agent,
+        Seed::New,
+    )
+    .unwrap()
+    .lending(workspace.clone());
     let import = offered(&editor, "import-content").unwrap().address;
     editor
         .invoke(
@@ -310,10 +321,10 @@ fn a_second_participant_views_a_frame_of_footage_the_first_imported() {
 
     let reviewer = crate::common::confined(
         VIDEO,
-        "reviewer",
+        &MemberId::person("reviewer"),
         &ReplicaActor::Agent,
         Seed::Existing {
-            record: editor.record_id().clone(),
+            record: editor.document_id().clone(),
             changes: vec![snapshot],
         },
     )

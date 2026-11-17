@@ -320,7 +320,7 @@ mod photo_tests {
 
 #[cfg(test)]
 #[cfg(all(unix, feature = "local-daemons"))]
-mod active_record_tests {
+mod active_document_tests {
     use super::LocalIdentitySource as _;
     use std::os::unix::fs::PermissionsExt as _;
 

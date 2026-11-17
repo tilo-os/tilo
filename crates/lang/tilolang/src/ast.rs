@@ -281,7 +281,7 @@ pub struct TriggerDecl {
     /// The record the trigger runs for: the resources of its type are the ones it runs on.
     pub param: Option<Param>,
     pub when: TriggerWhen,
-    /// The action it runs: the subject, and any roots it passes.
+    /// The action it runs: the target, and any roots it passes.
     pub call: Expr,
     pub span: Span,
 }
@@ -360,7 +360,7 @@ pub struct Proposal {
 /// only a migration is left out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActionRole {
-    /// The one main action on its subject: the header's Primary button and the empty state's
+    /// The one main action on its target: the header's Primary button and the empty state's
     /// action.
     Primary,
     /// Drawn as destructive; undone rather than confirmed.
@@ -400,7 +400,7 @@ pub struct ActionDecl {
     pub uses: Vec<Ident>,
     pub proposal: Option<Proposal>,
     pub opts: Vec<ActionOpt>,
-    /// The `require` lines heading the body: when the action is available on its subject.
+    /// The `require` lines heading the body: when the action is available on its target.
     pub requires: Vec<Require>,
     /// The `applies` lines heading the body: when the action can apply where it is offered (`applies
     /// above != .none`). A surface then leaves it out of an item's menu rather than showing a row
@@ -410,9 +410,9 @@ pub struct ActionDecl {
     pub span: Span,
 }
 
-/// `require not d.sent "{d.subject} went already"`: a condition on the subject the action needs, and
+/// `require not d.sent "{d.subject} went already"`: a condition on the target the action needs, and
 /// why it is unavailable without it. Not offered where it would be; invoked anyway, it is refused
-/// with the reason before it changes anything. The condition reads only the subject.
+/// with the reason before it changes anything. The condition reads only the target.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Require {
     pub cond: Expr,
@@ -422,28 +422,27 @@ pub struct Require {
 }
 
 impl ActionDecl {
-    /// Whether the presentation follows the subject: a `label:` or `icon:` written as an `if`, an
-    /// `on:` state, or a `require` on it. It is then lowered to a hidden view of the subject.
+    /// Whether the presentation follows the target: a `label:` or `icon:` written as an `if`, an
+    /// `on:` state, or a `require` on it. It is then lowered to a hidden view of the target.
     pub fn presents_state(&self) -> bool {
         !self.requires.is_empty()
             || self.opts.iter().any(|o| match o.name.name.as_str() {
                 "on" => true,
                 "label" => {
-                    matches!(o.value.kind, ExprKind::If { .. })
-                        || self.label_reads_subject(&o.value)
+                    matches!(o.value.kind, ExprKind::If { .. }) || self.label_reads_target(&o.value)
                 }
                 "icon" => matches!(o.value.kind, ExprKind::If { .. }),
                 _ => false,
             })
     }
 
-    /// Whether `label` is text interpolating the subject and nothing else: it then follows the
-    /// subject wherever the action is offered.
-    pub fn label_reads_subject(&self, label: &Expr) -> bool {
+    /// Whether `label` is text interpolating the target and nothing else: it then follows the
+    /// target wherever the action is offered.
+    pub fn label_reads_target(&self, label: &Expr) -> bool {
         let ExprKind::Str(parts) = &label.kind else {
             return false;
         };
-        let Some(subject) = self.params.first() else {
+        let Some(target) = self.params.first() else {
             return false;
         };
         let mut any = false;
@@ -456,7 +455,7 @@ impl ActionDecl {
                     root = base;
                 }
                 match &root.kind {
-                    ExprKind::Ident(n) if *n == subject.name.name => any = true,
+                    ExprKind::Ident(n) if *n == target.name.name => any = true,
                     _ => return false,
                 }
             }

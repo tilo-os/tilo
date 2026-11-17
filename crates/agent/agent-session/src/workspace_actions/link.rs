@@ -3,7 +3,7 @@
 //! ([`HostDevice`]), the standing and read policy it decides a view by
 //! ([`ViewReadPolicy`]), the verified snapshot a view is discovered from
 //! ([`ViewDocument`]), and the two APIs back into the host
-//! ([`WorkspaceRecordsLink`] for everything the service asks, and
+//! ([`WorkspaceDocumentsLink`] for everything the service asks, and
 //! [`FeedbackReviewer`] for the model a review is looked over with).
 
 use std::sync::Arc;
@@ -66,7 +66,7 @@ pub struct ViewDocument {
 
 /// What the service needs of its host. Methods block; they are called from
 /// the service's own thread, never from the host's runtime.
-pub trait WorkspaceRecordsLink: Send + Sync {
+pub trait WorkspaceDocumentsLink: Send + Sync {
     /// The user root the host chains to: the person whose device this service is.
     fn user_public_key(&self) -> [u8; 32];
     /// The host's own device, as the service joins its workspaces.
@@ -116,7 +116,7 @@ pub trait WorkspaceRecordsLink: Send + Sync {
     /// a record the service is about to write for the first time.
     ///
     /// `None` when the host does not take part in the workspace's channels: the
-    /// service waits for a participant to admit it over the channel, like
+    /// service waits for a member to admit it over the channel, like
     /// any member.
     /// `Some(Err)` when the host refused the hand-off or holds no such
     /// channel. Called only on behalf of a caller the service serves.

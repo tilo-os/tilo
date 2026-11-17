@@ -968,7 +968,7 @@ pub(crate) async fn seed_apps(
     let catalogue = tilo_agent_session::AppCatalogue::native();
     let pending: Vec<&String> = apps.iter().filter(|app| !seeded.contains(*app)).collect();
     for app in pending {
-        let record = tilo_relay::workspace_bots::workspace_record(&catalogue, app);
+        let record = tilo_relay::workspace_bots::workspace_resource(&catalogue, app);
         workspaces
             .prepare_application(workspace, cert, &catalogue, app, &record)
             .await
@@ -1026,7 +1026,7 @@ pub(crate) async fn settle_chat(
     }
     let catalogue = tilo_agent_session::AppCatalogue::native();
     let record =
-        tilo_relay::workspace_bots::workspace_record(&catalogue, crate::workspace_chat::CHAT_APP);
+        tilo_relay::workspace_bots::workspace_resource(&catalogue, crate::workspace_chat::CHAT_APP);
     workspaces
         .author_application(
             workspace,
@@ -1059,7 +1059,7 @@ pub(crate) async fn settle_strips(
         return Ok(());
     }
     workspaces
-        .author_workspace_record(workspace, cert, crate::workspace_strips::DESKTOP, |doc| {
+        .author_workspace_document(workspace, cert, crate::workspace_strips::DESKTOP, |doc| {
             crate::workspace_strips::settle_strips(doc, workspace, shown, strips)
         })
         .await
@@ -1093,7 +1093,7 @@ async fn refound_records(
             continue;
         }
         let outcome = workspaces
-            .refound_record(workspace, app, record)
+            .refound_document(workspace, app, record)
             .await
             .map_err(|error| anyhow::anyhow!("refound {entry}: {error}"))?;
         tracing::info!(

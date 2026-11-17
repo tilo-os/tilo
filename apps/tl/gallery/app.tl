@@ -48,6 +48,7 @@ type Gallery {
     media: Collection<Media>
     places: Collection<Places>
     chrome: Collection<ShellParts>
+    customs: Collection<Custom>
 }
 
 root Gallery
@@ -141,6 +142,16 @@ view gallery(g: Gallery) {
                     secondary: "Bars, docks, tabs and dragging",
                     item: x,
                     icon: .monitor,
+                )
+            }
+        }
+        ui.Section("Your own") {
+            for x in g.customs {
+                ui.ListRow(
+                    x.title,
+                    secondary: "Views, drawings, charts and graphs an app makes",
+                    item: x,
+                    icon: .pencil,
                 )
             }
         }

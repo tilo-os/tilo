@@ -1,9 +1,9 @@
 //! `tilo_read` of `record:<app>:<record>`: a record of the workspace as any reader reads it, through the one record API
-//! ([`tilo_actions::remote::RecordReads`]): its content as a structured value whatever app keeps
+//! ([`tilo_actions::remote::ResourceReads`]): its content as a structured value whatever app keeps
 //! it, decided as the agent may read it now, and woken by the next write to it.
 
 use super::{ActionHost, Failure, McpServer, Reply};
-use tilo_actions::remote::{RecordAddress, RecordAsk, read_records};
+use tilo_actions::remote::{ResourceAddress, ResourceAsk, read_resources};
 
 /// How long a record read waits for a write past the revision it was given.
 const RECORD_WAIT_MS: u64 = 25_000;
@@ -21,10 +21,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     ) -> Result<Reply, Failure> {
         let reads = self
             .host()
-            .record_reads()
-            .ok_or(tilo_actions::remote::RECORD_READS_UNAVAILABLE)?;
-        let asks = [RecordAsk {
-            address: RecordAddress {
+            .resource_reads()
+            .ok_or(tilo_actions::remote::RESOURCE_READS_UNAVAILABLE)?;
+        let asks = [ResourceAsk {
+            address: ResourceAddress {
                 app: app.to_owned(),
                 record: record.to_owned(),
             },
@@ -37,7 +37,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let caller = self.execution_caller();
         // The owner captures each record on this thread's behalf, and the wait holds it.
         let readings = tokio::task::spawn_blocking(move || {
-            read_records(reads.as_ref(), &caller, &asks, after.as_deref(), deadline)
+            read_resources(reads.as_ref(), &caller, &asks, after.as_deref(), deadline)
         })
         .await
         .map_err(|error| format!("the record read ended: {error}"))?

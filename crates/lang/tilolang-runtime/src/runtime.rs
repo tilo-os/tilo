@@ -904,21 +904,21 @@ impl Runtime {
         project(&self.core, value, opts)
     }
 
-    /// Why the action `action` cannot run on the resource `subject` now, as the requirements its
-    /// subject alone decides say: the first that does not hold, in `viewer`'s words. `None` while
-    /// it can run, and for an action whose app keeps no requirement the subject decides.
+    /// Why the action `action` cannot run on the resource `target` now, as the requirements its
+    /// target alone decides say: the first that does not hold, in `viewer`'s words. `None` while
+    /// it can run, and for an action whose app keeps no requirement the target decides.
     pub fn refusal(
         &self,
         action: &str,
-        subject: &ResourceRef,
+        target: &ResourceRef,
         viewer: &Actor,
     ) -> Result<Option<String>, RuntimeError> {
-        let subject = crate::value::RefValue {
-            target: Rc::new(subject.clone()),
+        let target = crate::value::RefValue {
+            target: Rc::new(target.clone()),
             author: None,
         };
         self.core
-            .refusal(action, &subject, viewer)
+            .refusal(action, &target, viewer)
             .map_err(|error| match error {
                 crate::engine::HostFail::Trap(message) => RuntimeError::Package(message),
                 crate::engine::HostFail::Suspend => {
@@ -933,15 +933,15 @@ impl Runtime {
     pub fn refusal_reading(
         &self,
         action: &str,
-        subject: &ResourceRef,
+        target: &ResourceRef,
         viewer: &Actor,
     ) -> Result<(Option<String>, Reading), RuntimeError> {
-        let subject = crate::value::RefValue {
-            target: Rc::new(subject.clone()),
+        let target = crate::value::RefValue {
+            target: Rc::new(target.clone()),
             author: None,
         };
         self.core
-            .refusal_reading(action, &subject, viewer)
+            .refusal_reading(action, &target, viewer)
             .map_err(|error| match error {
                 crate::engine::HostFail::Trap(message) => RuntimeError::Package(message),
                 crate::engine::HostFail::Suspend => {
@@ -951,19 +951,19 @@ impl Runtime {
     }
 
     /// As [`Runtime::refusal`], with what a view's offer of the action reads: whether the action
-    /// can apply to `subject` where it is offered at all, and the first reason it cannot.
+    /// can apply to `target` where it is offered at all, and the first reason it cannot.
     pub fn applies_reading(
         &self,
         action: &str,
-        subject: &ResourceRef,
+        target: &ResourceRef,
         viewer: &Actor,
     ) -> Result<(Option<String>, Reading), RuntimeError> {
-        let subject = crate::value::RefValue {
-            target: Rc::new(subject.clone()),
+        let target = crate::value::RefValue {
+            target: Rc::new(target.clone()),
             author: None,
         };
         self.core
-            .applies_reading(action, &subject, viewer)
+            .applies_reading(action, &target, viewer)
             .map_err(|error| match error {
                 crate::engine::HostFail::Trap(message) => RuntimeError::Package(message),
                 crate::engine::HostFail::Suspend => {
@@ -972,7 +972,7 @@ impl Runtime {
             })
     }
 
-    /// What the action `action` shows offered on `subject` now: the label, icon and toggled
+    /// What the action `action` shows offered on `target` now: the label, icon and toggled
     /// state its presentation gives it, with what reading them read. `None` for an action whose
     /// app presents nothing of it there.
     ///
@@ -982,15 +982,15 @@ impl Runtime {
     pub fn presentation_reading(
         &self,
         action: &str,
-        subject: &ResourceRef,
+        target: &ResourceRef,
         viewer: &Actor,
     ) -> Result<(Option<Presentation>, Reading), RuntimeError> {
-        let subject = crate::value::RefValue {
-            target: Rc::new(subject.clone()),
+        let target = crate::value::RefValue {
+            target: Rc::new(target.clone()),
             author: None,
         };
         self.core
-            .presentation_reading(action, &subject, viewer)
+            .presentation_reading(action, &target, viewer)
             .map_err(|error| match error {
                 crate::engine::HostFail::Trap(message) => RuntimeError::Package(message),
                 crate::engine::HostFail::Suspend => {
@@ -1503,11 +1503,11 @@ impl Runtime {
     }
 }
 
-/// What an action shows offered on a subject, as its app presents it there (`present`): what it
+/// What an action shows offered on a target, as its app presents it there (`present`): what it
 /// is called, the icon beside it, and whether the state it toggles is on.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Presentation {
-    /// The label the presentation reads for the subject.
+    /// The label the presentation reads for the target.
     pub label: Option<String>,
     /// The icon name it reads there.
     pub icon: Option<String>,

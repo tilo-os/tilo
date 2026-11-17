@@ -300,7 +300,7 @@ fn historical_resolve(
     }
     let binding = ChatCallBindingV1 {
         app_id: app.into(),
-        record_id: record.into(),
+        document_id: record.into(),
         channel_id: channel.into(),
         channel_object: object.to_string(),
         chat_workspace_id: match candidate

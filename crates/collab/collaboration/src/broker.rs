@@ -653,7 +653,7 @@ impl CollabTransport for BrokerTransport {
                 app_id,
                 cluster_id,
                 record,
-                record_kind,
+                resource_type,
                 handle,
             }) => SdkCommand::Hello(PrimaryHello {
                 route: RouteSpec {
@@ -661,17 +661,17 @@ impl CollabTransport for BrokerTransport {
                     cluster_id,
                     record,
                 },
-                record_kind,
+                resource_type,
                 handle,
             }),
             TransportCommand::Primary(request) => SdkCommand::Primary(request),
             TransportCommand::ToRoute(route, request) => SdkCommand::ToRoute(route, request),
-            TransportCommand::Join(route, record_kind) => {
+            TransportCommand::Join(route, resource_type) => {
                 self.state
-                    .route_record_kinds
+                    .route_resource_types
                     .lock_recover()
-                    .insert(route.channel_id(), record_kind.as_str().to_owned());
-                SdkCommand::Join(route, Some(record_kind.as_str().to_owned()))
+                    .insert(route.channel_id(), resource_type.as_str().to_owned());
+                SdkCommand::Join(route, Some(resource_type.as_str().to_owned()))
             }
             TransportCommand::ConfirmPrimaryRoute => {
                 let (reply, pending) = mpsc::sync_channel(1);
@@ -816,9 +816,9 @@ impl CollabTransport for BrokerTransport {
         }))
     }
 
-    fn joined_record_kind(&self, channel: &str) -> Option<collab_types::document::ResourceType> {
+    fn joined_resource_type(&self, channel: &str) -> Option<collab_types::document::ResourceType> {
         self.state
-            .route_record_kinds
+            .route_resource_types
             .lock_recover()
             .get(channel)
             .map(collab_types::document::ResourceType::new)
@@ -909,11 +909,11 @@ impl CollabTransport for BrokerTransport {
     fn prepare_committed_document(
         &mut self,
         route: RouteSpec,
-        record_kind: &str,
+        resource_type: &str,
     ) -> Option<CommittedDocument> {
         let key = route.channel_id();
         if self.state.document_reads.joining(&key) {
-            let _ = self.enqueue(SdkCommand::Join(route, Some(record_kind.to_owned())));
+            let _ = self.enqueue(SdkCommand::Join(route, Some(resource_type.to_owned())));
         }
         self.state.document_reads.initial(&key)
     }
@@ -1009,7 +1009,7 @@ enum SdkCommand {
 
 struct PrimaryHello {
     route: RouteSpec,
-    record_kind: Option<String>,
+    resource_type: Option<String>,
     handle: Option<String>,
 }
 
@@ -1101,7 +1101,7 @@ pub(crate) struct BridgeState {
     /// The kind each joined route's record holds, by channel: a change that
     /// arrives on a route awaiting its first join re-joins it naming the kind
     /// the owner opened the record with.
-    route_record_kinds: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
+    route_resource_types: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
     healthy: Arc<AtomicBool>,
     publication_failure: Arc<std::sync::Mutex<Option<DocumentPublicationError>>>,
     /// Per record route, the last change the peer answered but would not
@@ -1313,7 +1313,7 @@ impl BridgeState {
             commits: Arc::default(),
             route_join_failures: Arc::default(),
             unpublished_routes: Arc::default(),
-            route_record_kinds: Arc::default(),
+            route_resource_types: Arc::default(),
             healthy: Arc::new(AtomicBool::new(true)),
             publication_failure: Arc::new(std::sync::Mutex::new(None)),
             last_refused_change: Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new())),
@@ -1992,14 +1992,14 @@ impl SdkConnectSource {
 /// Build the certified device presentation used for a launcher-bound join.
 /// A launcher identity without a device certificate cannot enter the
 /// collaboration session.
-/// The participant kind of a headless service that holds no document of its
+/// The member kind of a headless service that holds no document of its
 /// own ([`CollaborationManager::for_service`]). It stays on this side: the
 /// broker admits the service as the person whose launch it is.
-const SERVICE_PARTICIPANT: &str = "service";
+const SERVICE_MEMBER: &str = "service";
 
-/// The kind the broker is asked to admit a participant of `kind` as.
-fn broker_participant_kind(kind: &str) -> &str {
-    if kind == SERVICE_PARTICIPANT {
+/// The kind the broker is asked to admit a member of `kind` as.
+fn broker_member_kind(kind: &str) -> &str {
+    if kind == SERVICE_MEMBER {
         "person"
     } else {
         kind
@@ -2011,7 +2011,7 @@ struct SdkJoinIdentity {
     /// Requested broker actor kind. The broker only accepts `agent`
     /// when the named agent is admitted and this certified user may operate
     /// it; ordinary applications always leave this as `person`.
-    participant_kind: &'static str,
+    member_kind: &'static str,
     /// Retained on the shovel thread so document signing stays off the UI
     /// thread and the workspace broker connection is not consumed at join.
     signer: SdkDocumentSigner,
@@ -2092,7 +2092,7 @@ trait SdkCertifiedIdentity: Send + Sync {
         &self,
         workspace_id: &str,
         app_id: &str,
-        record_id: &str,
+        document_id: &str,
         known_generation: u64,
     ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable>;
     fn device_certificate(&self) -> Option<&[u8]>;
@@ -2105,7 +2105,7 @@ trait SdkCertifiedIdentity: Send + Sync {
         &self,
         workspace_id: &str,
         app_id: &str,
-        record_id: &str,
+        document_id: &str,
         unsigned_op: &[u8],
     ) -> Result<[u8; 64], runtime_portal::NotAvailable>;
 }
@@ -2115,14 +2115,14 @@ impl SdkCertifiedIdentity for std::sync::Arc<runtime_identity::BrokerSigningIden
         &self,
         workspace_id: &str,
         app_id: &str,
-        record_id: &str,
+        document_id: &str,
         known_generation: u64,
     ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable> {
         runtime_identity::BrokerSigningIdentity::group_keys(
             self.as_ref(),
             workspace_id,
             app_id,
-            record_id,
+            document_id,
             known_generation,
         )
     }
@@ -2145,14 +2145,14 @@ impl SdkCertifiedIdentity for std::sync::Arc<runtime_identity::BrokerSigningIden
         &self,
         workspace_id: &str,
         app_id: &str,
-        record_id: &str,
+        document_id: &str,
         unsigned_op: &[u8],
     ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
         runtime_identity::BrokerSigningIdentity::sign_collaboration_op(
             self.as_ref(),
             workspace_id,
             app_id,
-            record_id,
+            document_id,
             unsigned_op,
         )
     }
@@ -2184,7 +2184,7 @@ enum SdkDocumentSigner {
 /// thread boundary; inherited Unix and harness identities remain Send.
 struct LocalSdkJoinIdentity {
     presentation: Vec<u8>,
-    participant_kind: &'static str,
+    member_kind: &'static str,
     signer: LocalSdkDocumentSigner,
 }
 
@@ -2197,7 +2197,7 @@ impl From<SdkJoinIdentity> for LocalSdkJoinIdentity {
     fn from(identity: SdkJoinIdentity) -> Self {
         Self {
             presentation: identity.presentation,
-            participant_kind: identity.participant_kind,
+            member_kind: identity.member_kind,
             signer: LocalSdkDocumentSigner::Inherited(identity.signer),
         }
     }
@@ -2277,7 +2277,7 @@ fn sdk_join_identity_from<I: SdkCertifiedIdentity + 'static>(
     let presentation = certified_presentation(workspace_id, device_certificate.to_vec(), &proof)?;
     Ok(SdkJoinIdentity {
         presentation,
-        participant_kind: "person",
+        member_kind: "person",
         signer: SdkDocumentSigner::Certified(std::sync::Arc::new(identity)),
     })
 }
@@ -2300,7 +2300,7 @@ async fn sdk_join_identity_from_host(
     let presentation = certified_presentation(workspace_id, device_certificate, &proof)?;
     Ok(LocalSdkJoinIdentity {
         presentation,
-        participant_kind: "person",
+        member_kind: "person",
         signer: LocalSdkDocumentSigner::Host(identity),
     })
 }
@@ -2461,7 +2461,7 @@ impl CollaborationManager {
             None,
             None,
             None,
-            SERVICE_PARTICIPANT,
+            SERVICE_MEMBER,
         )
     }
 
@@ -2515,7 +2515,7 @@ impl CollaborationManager {
             handle,
             Some(SdkJoinIdentity {
                 presentation: identity.presentation.clone(),
-                participant_kind: "person",
+                member_kind: "person",
                 signer: identity.document_signer(),
             }),
             "person",
@@ -2552,7 +2552,7 @@ impl CollaborationManager {
         .map(Self::from_connected)
     }
 
-    pub fn switch_native_record(
+    pub fn switch_native_resource(
         &mut self,
         checkout: &collab_types::document::DocumentCheckout,
     ) -> Result<(), String> {
@@ -2571,7 +2571,7 @@ impl CollaborationManager {
             app_id: primary.app_id,
             cluster_id: primary.cluster_id,
             record,
-            record_kind: Some(checkout.kind.as_str().to_owned()),
+            resource_type: Some(checkout.kind.as_str().to_owned()),
             handle: crate::local_identity::own_name(),
         }) {
             return Err("native route queue unavailable".into());
@@ -2736,7 +2736,7 @@ impl CollaborationManager {
         record: Option<String>,
         handle: Option<String>,
         endpoint_identity: Option<SdkJoinIdentity>,
-        participant_kind: &'static str,
+        member_kind: &'static str,
     ) -> Result<Self, runtime_portal::NotAvailable> {
         Self::connect_route_from(
             source,
@@ -2745,7 +2745,7 @@ impl CollaborationManager {
             record,
             handle,
             endpoint_identity,
-            participant_kind,
+            member_kind,
         )
         .map(Self::from_connected)
     }
@@ -2770,7 +2770,7 @@ impl CollaborationManager {
         record: Option<String>,
         handle: Option<String>,
         endpoint_identity: Option<SdkJoinIdentity>,
-        participant_kind: &'static str,
+        member_kind: &'static str,
     ) -> Result<ConnectedBroker, runtime_portal::NotAvailable> {
         Self::connect_route_kind(
             source,
@@ -2782,7 +2782,7 @@ impl CollaborationManager {
             None,
             handle,
             endpoint_identity,
-            participant_kind,
+            member_kind,
         )
     }
 
@@ -2791,10 +2791,10 @@ impl CollaborationManager {
     fn connect_route_kind(
         source: SdkConnectSource,
         route: RouteSpec,
-        record_kind: Option<String>,
+        resource_type: Option<String>,
         handle: Option<String>,
         endpoint_identity: Option<SdkJoinIdentity>,
-        participant_kind: &'static str,
+        member_kind: &'static str,
     ) -> Result<ConnectedBroker, runtime_portal::NotAvailable> {
         let RouteSpec {
             app_id,
@@ -2812,12 +2812,12 @@ impl CollaborationManager {
             }
             None => Some(SdkJoinIdentity {
                 presentation: harness_presentation(),
-                participant_kind: "person",
+                member_kind: "person",
                 signer: harness_document_signer(),
             }),
         };
         if let Some(identity) = &mut identity {
-            identity.participant_kind = participant_kind;
+            identity.member_kind = member_kind;
         }
         tilo_startup_metrics::startup_mark("collab-identity-ready");
         let mut transport = Self::spawn_sdk(source, identity)?;
@@ -2832,7 +2832,7 @@ impl CollaborationManager {
             app_id,
             cluster_id,
             record,
-            record_kind,
+            resource_type,
             handle,
         }));
         await_primary_route_on(&mut transport, &mut primary_route)?;
@@ -2855,7 +2855,7 @@ impl CollaborationManager {
         await_primary_route_on(transport.as_mut(), &mut self.primary_route)
     }
 
-    /// Connect a headless participant as a first-class workspace agent.
+    /// Connect a headless member as a first-class workspace agent.
     /// Its friendly id is both the visible handle and the actor whose
     /// scoped capabilities the broker evaluates.
     ///
@@ -2929,14 +2929,14 @@ impl CollaborationManager {
             Some(agent_id.into()),
             Some(SdkJoinIdentity {
                 presentation: identity.presentation.clone(),
-                participant_kind: "agent",
+                member_kind: "agent",
                 signer: identity.document_signer(),
             }),
             "agent",
         )
     }
 
-    pub(super) fn new_scoped(record: Option<String>, record_kind: Option<String>) -> Self {
+    pub(super) fn new_scoped(record: Option<String>, resource_type: Option<String>) -> Self {
         // Without an inherited service there is nothing to reach; say so
         // without starting a worker.
         if runtime_portal::service_fd("collab").is_none() {
@@ -2952,7 +2952,7 @@ impl CollaborationManager {
                 cluster_id,
                 record,
             },
-            record_kind,
+            resource_type,
             crate::local_identity::own_name(),
         )
     }
@@ -2965,13 +2965,13 @@ impl CollaborationManager {
     pub fn for_route_host_in_background(
         connector: HostSessionConnector,
         route: RouteSpec,
-        record_kind: Option<String>,
+        resource_type: Option<String>,
     ) -> Self {
         Self::connect_in_background(
             SdkConnectSource::Host(connector, route.clone()),
             SdkIdentitySource::Ready(None),
             route,
-            record_kind,
+            resource_type,
             None,
         )
     }
@@ -2985,7 +2985,7 @@ impl CollaborationManager {
         source: SdkConnectSource,
         identity: SdkIdentitySource,
         route: RouteSpec,
-        record_kind: Option<String>,
+        resource_type: Option<String>,
         handle: Option<String>,
     ) -> Self {
         let sdk = match Self::start_sdk(source, identity) {
@@ -3008,7 +3008,7 @@ impl CollaborationManager {
             app_id,
             cluster_id,
             record,
-            record_kind,
+            resource_type,
             handle,
         });
         manager.confirm_primary_route_in_background();
@@ -3174,7 +3174,7 @@ impl CollaborationManager {
             SdkConnectSource::Fd(fd),
             Some(SdkJoinIdentity {
                 presentation: identity_bytes,
-                participant_kind: "person",
+                member_kind: "person",
                 signer: harness_document_signer(),
             }),
         )
@@ -3184,7 +3184,7 @@ impl CollaborationManager {
             app_id: app_id.to_owned(),
             cluster_id,
             record: None,
-            record_kind: None,
+            resource_type: None,
             handle: crate::local_identity::own_name(),
         });
         manager
@@ -3320,7 +3320,7 @@ impl SessionServices {
                 // A surface joins no workspace: it presents no identity, and the
                 // broker admits it for the launch alone.
                 presentation: Vec::new(),
-                participant_kind: "person",
+                member_kind: "person",
                 signer: harness_document_signer(),
             }),
         )?;
@@ -3632,7 +3632,7 @@ async fn drive_shovel(
     let _private_person_snapshot_lifetime = PrivatePersonSnapshotLifetime;
     let LocalSdkJoinIdentity {
         presentation,
-        participant_kind,
+        member_kind,
         mut signer,
     } = identity;
     let person = personal_cluster_presentation(&presentation, &mut signer).await;
@@ -3659,7 +3659,7 @@ async fn drive_shovel(
     let lane = DocumentLane::start(signer.clone(), inbound_tx.clone());
     let mut routes = std::collections::HashMap::<String, SdkRoute>::new();
     let mut primary: Option<String> = None;
-    let mut participant_handle: Option<String> = None;
+    let mut member_handle: Option<String> = None;
     let mut primary_result = Err("primary collaboration route was not announced".to_string());
     // The app's settings over the primary route, when the shell keeps them.
     let mut settings_link: Option<SettingsLink> = None;
@@ -3702,8 +3702,8 @@ async fn drive_shovel(
                 client: client.clone(),
                 presentation: presentation.clone(),
                 person: person.clone(),
-                participant_handle: participant_handle.clone(),
-                participant_kind,
+                member_handle: member_handle.clone(),
+                member_kind,
                 inbound_tx: inbound_tx.clone(),
                 media_routes: media_routes.clone(),
             }
@@ -3720,8 +3720,8 @@ async fn drive_shovel(
                 client: &client,
                 presentation: &presentation,
                 person: person.as_ref(),
-                participant_handle: participant_handle.as_deref(),
-                participant_kind,
+                member_handle: member_handle.as_deref(),
+                member_kind,
                 inbound_tx: &inbound_tx,
                 media_routes: &media_routes,
             }
@@ -3962,10 +3962,10 @@ async fn drive_shovel(
                 }
                 let PrimaryHello {
                     route: spec,
-                    record_kind,
+                    resource_type,
                     handle,
                 } = hello;
-                participant_handle = handle;
+                member_handle = handle;
                 let key = spec.channel_id();
                 // The join ends when the broker answers it or it fails, with
                 // the broker's reason; a broker that goes away fails it. No
@@ -3979,7 +3979,7 @@ async fn drive_shovel(
                         &context,
                         &mut routes,
                         &spec,
-                        record_kind.as_deref().unwrap_or(""),
+                        resource_type.as_deref().unwrap_or(""),
                     );
                     tokio::pin!(join);
                     tokio::select! {
@@ -4040,7 +4040,7 @@ async fn drive_shovel(
                     published = false;
                 }
             }
-            SdkCommand::Join(spec, record_kind) => {
+            SdkCommand::Join(spec, resource_type) => {
                 // The route joins beside this loop; its answer comes back on
                 // `joined_rx`, failed or not, within `ROUTE_JOIN_WAIT`.
                 let key = spec.channel_id();
@@ -4053,7 +4053,7 @@ async fn drive_shovel(
                     start_route_join(
                         join_inputs!(),
                         spec,
-                        record_kind.unwrap_or_default(),
+                        resource_type.unwrap_or_default(),
                         joined_tx.clone(),
                     );
                 }
@@ -4445,8 +4445,8 @@ struct SdkJoinContext<'a> {
     /// identity service lends one: what a route of a record of theirs
     /// presents instead of the launch workspace's.
     person: Option<&'a (String, Vec<u8>)>,
-    participant_handle: Option<&'a str>,
-    participant_kind: &'a str,
+    member_handle: Option<&'a str>,
+    member_kind: &'a str,
     inbound_tx: &'a InboundBridge,
     media_routes: &'a native_media::Routes,
 }
@@ -4689,19 +4689,19 @@ async fn ensure_sdk_route(
     context: &SdkJoinContext<'_>,
     routes: &mut std::collections::HashMap<String, SdkRoute>,
     spec: &RouteSpec,
-    record_kind: &str,
+    resource_type: &str,
 ) -> Result<(), String> {
     let channel_id = spec.channel_id();
     if routes.contains_key(&channel_id) {
         return Ok(());
     }
-    let route = join_route(context, spec, record_kind).await?;
+    let route = join_route(context, spec, resource_type).await?;
     routes.insert(channel_id, route);
     Ok(())
 }
 
 /// Bridge content arriving for `channel`'s record into
-/// [`CollabEvent::RecordContent`] on `inbound_tx`. A host that keeps no
+/// [`CollabEvent::DocumentContent`] on `inbound_tx`. A host that keeps no
 /// record content refuses the subscription, and its apps keep their content
 /// to themselves.
 #[allow(
@@ -4716,7 +4716,7 @@ async fn spawn_content_stream(
     let Ok(stream) = channel.subscribe_blobs().await else {
         return;
     };
-    super::record_content::ContentLane::of(&route).serve();
+    super::document_content::ContentLane::of(&route).serve();
     let inbound_tx = inbound_tx.clone();
     tokio::task::spawn_local(async move {
         while let Ok(event) = stream.read().await {
@@ -4725,12 +4725,12 @@ async fn spawn_content_stream(
                 state => Some(state),
             };
             let event = match state {
-                None => CollabEvent::RecordContent {
+                None => CollabEvent::DocumentContent {
                     route: route.clone(),
                     hash: event.hash,
                     bytes: event.bytes,
                 },
-                Some(state) => CollabEvent::RecordContentState {
+                Some(state) => CollabEvent::DocumentContentState {
                     route: route.clone(),
                     hash: event.hash,
                     state,
@@ -4920,10 +4920,10 @@ async fn spawn_context_stream(
                     }
                     continue;
                 }
-                if !context.records_arrived.is_empty() {
+                if !context.resources_arrived.is_empty() {
                     if !tx
-                        .send_durable(CollabEvent::RecordsArrived {
-                            records: context.records_arrived,
+                        .send_durable(CollabEvent::ResourcesArrived {
+                            records: context.resources_arrived,
                         })
                         .await
                     {
@@ -5951,8 +5951,9 @@ async fn try_send_frame(
     state: &BridgeState,
 ) -> FrameSend {
     let workspace_id = route.spec.cluster_id.to_string();
-    let record_id = route.spec.record.as_deref().unwrap_or("");
-    let artifact = collab_types::document_artifact_id(&route.spec.app_id, &workspace_id, record_id);
+    let document_id = route.spec.record.as_deref().unwrap_or("");
+    let artifact =
+        collab_types::document_artifact_id(&route.spec.app_id, &workspace_id, document_id);
     let (payload, encryption_metadata) =
         match prepare_document_payload(&route.encryption, artifact, cleartext, claims) {
             PreparedFrame::Ready(payload, metadata) => (payload, metadata),
@@ -5968,7 +5969,7 @@ async fn try_send_frame(
     let now = crate::time::wall();
     let author = collab_types::Ed25519PublicKey::from_bytes(signer_device(signer));
     let attestation =
-        collab_types::document_attestation_id(&route.spec.app_id, &workspace_id, record_id);
+        collab_types::document_attestation_id(&route.spec.app_id, &workspace_id, document_id);
     let seq = collab_types::next_unordered_document_sequence(now);
     let mut op = match encryption_metadata {
         Some(metadata) => SignedOp::new_unsigned_with_encryption(
@@ -6010,7 +6011,7 @@ async fn try_send_frame(
     };
     let signature = match signer {
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => match identity
-            .sign_collaboration_op(&workspace_id, &route.spec.app_id, record_id, &unsigned_op)
+            .sign_collaboration_op(&workspace_id, &route.spec.app_id, document_id, &unsigned_op)
         {
             Ok(signature) => signature,
             Err(error) => {
@@ -6029,7 +6030,7 @@ async fn try_send_frame(
             }
         },
         LocalSdkDocumentSigner::Host(identity) => match identity
-            .sign_collaboration_op(&workspace_id, &route.spec.app_id, record_id, &unsigned_op)
+            .sign_collaboration_op(&workspace_id, &route.spec.app_id, document_id, &unsigned_op)
             .await
         {
             Ok(signature) => signature,
@@ -6173,7 +6174,7 @@ async fn refresh_route_keys(route: &DocumentRoute, signer: &mut LocalSdkDocument
         return false;
     };
     let workspace_id = route.spec.cluster_id.to_string();
-    let record_id = route.spec.record.as_deref().unwrap_or("");
+    let document_id = route.spec.record.as_deref().unwrap_or("");
     let reply = match signer {
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
             let query = KeyQuery::of(route, generation);
@@ -6186,7 +6187,7 @@ async fn refresh_route_keys(route: &DocumentRoute, signer: &mut LocalSdkDocument
         }
         LocalSdkDocumentSigner::Host(identity) => {
             identity
-                .group_keys(&workspace_id, &route.spec.app_id, record_id, generation)
+                .group_keys(&workspace_id, &route.spec.app_id, document_id, generation)
                 .await
         }
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(_, Some(keys))) => {
@@ -6225,8 +6226,8 @@ async fn refresh_keys(
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
             let identity = std::sync::Arc::clone(identity);
             std::sync::Arc::new(
-                move |workspace_id: &str, app_id: &str, record_id: &str, generation: u64| {
-                    identity.group_keys(workspace_id, app_id, record_id, generation)
+                move |workspace_id: &str, app_id: &str, document_id: &str, generation: u64| {
+                    identity.group_keys(workspace_id, app_id, document_id, generation)
                 },
             )
         }
@@ -6794,7 +6795,7 @@ async fn dispatch_sdk_request(
                 inbound_tx.state.fail_closed("invocation update encoding");
             }
         },
-        CollabRequest::RecordLocalEffect { address, update } => {
+        CollabRequest::ResourceLocalEffect { address, update } => {
             match serde_json::to_string(&update) {
                 Ok(json) => {
                     if let Err(error) = route
@@ -7008,7 +7009,7 @@ pub mod test_support {
     /// # Panics
     /// When the route cannot be joined.
     #[must_use]
-    pub fn manager_on_record_route(
+    pub fn manager_on_resource_route(
         fd: RawFd,
         app: String,
         workspace: Uuid,
@@ -7061,7 +7062,7 @@ pub mod test_support {
             SdkConnectSource::Fd(fd),
             Some(super::SdkJoinIdentity {
                 presentation: super::harness_presentation(),
-                participant_kind: "person",
+                member_kind: "person",
                 signer: super::harness_document_signer(),
             }),
         )
@@ -7071,7 +7072,7 @@ pub mod test_support {
             app_id: "so.tilo.browser".into(),
             cluster_id: cluster,
             record: None,
-            record_kind: None,
+            resource_type: None,
             handle: None,
         }));
         let admission = manager.await_primary_route();

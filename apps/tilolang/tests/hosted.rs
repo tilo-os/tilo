@@ -765,7 +765,7 @@ impl Session {
             app_id: route.app_id.clone(),
             cluster_id: route.cluster_id,
             record: None,
-            record_kind: None,
+            resource_type: None,
             handle: Some(spec.person.clone()),
         }));
         // What arrives while the route joins, the member list among it, the host takes once the
@@ -1264,7 +1264,7 @@ fn who_edited_a_page_reads_as_the_name_the_member_list_calls_them_never_their_ke
     // The person's id is their key, as a real workspace's ids are.
     let ada = "95522b97c3d1e0f4a7b8c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4";
     let bus = Rc::new(tilolang_host::testing::Bus::default());
-    bus.member(ada, "Ada");
+    bus.member(ui::tilo_actions::MemberId::person(ada), "Ada");
     let route = RouteSpec::app("so.tilo.lang.signed", uuid::Uuid::new_v4());
     let chunks = tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new());
     let mut session = Session::on_bus(&bus, &route, spec_of(&route, ada), chunks);
@@ -1287,7 +1287,7 @@ fn who_edited_a_page_reads_as_the_name_the_member_list_calls_them_never_their_ke
     session.window.type_text("Plan");
     session.settle();
     // The workspace renames the person: the page follows.
-    bus.member(ada, "Ada Lovelace");
+    bus.member(ui::tilo_actions::MemberId::person(ada), "Ada Lovelace");
     session.settle();
     let shown = session.shown();
     assert!(

@@ -6,7 +6,7 @@
 use crate::collaboration::CollabRequest;
 use crate::collaboration::test_support::{
     Captures, FakeBroker, document_reads_publishable, eventually, manager_on,
-    manager_on_record_route, ordinary_catalogue_manager, stand_up_fake_broker, wake_channel,
+    manager_on_resource_route, ordinary_catalogue_manager, stand_up_fake_broker, wake_channel,
 };
 use std::sync::Arc;
 use uuid::Uuid;
@@ -377,11 +377,11 @@ fn ordinary_application_starts_with_an_oversized_workspace_catalogue() {
 fn committed_initial_route_uses_one_worker_and_blocks_default_publication() {
     use automerge::transaction::Transactable;
     let cluster = Uuid::new_v4();
-    let want = crate::record::DocumentCheckout::new(
-        crate::record::DocumentId::minted(),
-        crate::record::ResourceType::new("report"),
+    let want = crate::resource::DocumentCheckout::new(
+        crate::resource::DocumentId::minted(),
+        crate::resource::ResourceType::new("report"),
     );
-    let mut source = crate::record::RecordSet::in_memory().with_home(cluster.to_string());
+    let mut source = crate::resource::ResourceSet::in_memory().with_home(cluster.to_string());
     let mut original = crate::state::State::new();
     assert!(source.checkout(&mut original, None, &want));
     original
@@ -406,11 +406,11 @@ fn committed_initial_route_uses_one_worker_and_blocks_default_publication() {
     )));
     let mut initial = None;
     tilo_test_env::wait_until("the native record to hydrate", || {
-        initial = manager.prepare_native_record(&want);
+        initial = manager.prepare_native_resource(&want);
         initial.is_some()
     });
     let read = initial.unwrap();
-    let mut set = crate::record::RecordSet::in_memory().with_home(cluster.to_string());
+    let mut set = crate::resource::ResourceSet::in_memory().with_home(cluster.to_string());
     let mut state = crate::state::State::new();
     assert!(
         read.with_mutation(|mutation| {
@@ -420,14 +420,14 @@ fn committed_initial_route_uses_one_worker_and_blocks_default_publication() {
     );
     assert_eq!(state.doc.get_heads(), heads);
     read.applied();
-    manager.switch_native_record(&want).unwrap();
+    manager.switch_native_resource(&want).unwrap();
     assert_eq!(
         captures.lock().unwrap().joined.len(),
         2,
         "two routes must share the one inherited transport"
     );
     assert_eq!(
-        captures.lock().unwrap().joined_record_kinds,
+        captures.lock().unwrap().joined_resource_types,
         ["", "report"],
         "the record route names its resource kind for the owner; the launch route none"
     );
@@ -449,11 +449,11 @@ fn committed_initial_route_uses_one_worker_and_blocks_default_publication() {
 fn switching_to_a_record_still_joining_joins_its_route_once() {
     use automerge::transaction::Transactable;
     let cluster = Uuid::new_v4();
-    let want = crate::record::DocumentCheckout::new(
-        crate::record::DocumentId::minted(),
-        crate::record::ResourceType::new("report"),
+    let want = crate::resource::DocumentCheckout::new(
+        crate::resource::DocumentId::minted(),
+        crate::resource::ResourceType::new("report"),
     );
-    let mut source = crate::record::RecordSet::in_memory().with_home(cluster.to_string());
+    let mut source = crate::resource::ResourceSet::in_memory().with_home(cluster.to_string());
     let mut original = crate::state::State::new();
     assert!(source.checkout(&mut original, None, &want));
     original
@@ -474,8 +474,8 @@ fn switching_to_a_record_still_joining_joins_its_route_once() {
     let mut manager = manager_on(fd, "so.tilo.test", cluster);
     assert!(manager.has_native_committed_primary());
     // The window prepared its record and switched before that route joined.
-    assert!(manager.prepare_native_record(&want).is_none());
-    manager.switch_native_record(&want).unwrap();
+    assert!(manager.prepare_native_resource(&want).is_none());
+    manager.switch_native_resource(&want).unwrap();
     assert_eq!(
         captures.lock().unwrap().joined.len(),
         2,
@@ -487,9 +487,9 @@ fn switching_to_a_record_still_joining_joins_its_route_once() {
         "the record's route is the window's primary route"
     );
     let read = manager
-        .prepare_native_record(&want)
+        .prepare_native_resource(&want)
         .expect("the read the preparation staged is still there");
-    let mut set = crate::record::RecordSet::in_memory().with_home(cluster.to_string());
+    let mut set = crate::resource::ResourceSet::in_memory().with_home(cluster.to_string());
     let mut state = crate::state::State::new();
     assert!(
         read.with_mutation(|mutation| {
@@ -530,8 +530,8 @@ fn a_native_window_showing_another_record_joins_its_route_on_the_live_broker() {
     };
     let (fd, captures, _thread) = stand_up_fake_broker(broker);
     let definition = runner_probe_definition();
-    let shown = crate::record::DocumentId::minted();
-    let manager = manager_on_record_route(
+    let shown = crate::resource::DocumentId::minted();
+    let manager = manager_on_resource_route(
         fd,
         definition.app_id().to_owned(),
         cluster,
@@ -541,7 +541,7 @@ fn a_native_window_showing_another_record_joins_its_route_on_the_live_broker() {
 
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("state");
-    let mut owners = crate::record::RecordOwners::new(root.clone());
+    let mut owners = crate::resource::ResourceOwners::new(root.clone());
     let records = owners
         .open(definition.app_id(), &cluster.to_string())
         .unwrap();
@@ -549,7 +549,7 @@ fn a_native_window_showing_another_record_joins_its_route_on_the_live_broker() {
         crate::application_view::InstanceViewStore::new(root, DEVICE, &cluster.to_string())
             .unwrap(),
     );
-    let context = crate::application::HostContext::prepare_new_record(
+    let context = crate::application::HostContext::prepare_new_resource(
         definition,
         crate::application::HostContextInputs {
             records,
@@ -571,7 +571,7 @@ fn a_native_window_showing_another_record_joins_its_route_on_the_live_broker() {
         crate::App::from_component_with_collaboration(component, runner_inputs(), manager).unwrap();
     assert_eq!(captures.lock().unwrap().joined.len(), 1, "the launch route");
 
-    let wanted = crate::record::DocumentId::minted();
+    let wanted = crate::resource::DocumentId::minted();
     let (next, target) = reopener.prepare(definition, wanted.clone()).unwrap();
     let replacement = definition
         .instantiate(next, target, RestoreInput::None)
@@ -588,10 +588,10 @@ fn a_native_window_showing_another_record_joins_its_route_on_the_live_broker() {
         captures
             .lock()
             .unwrap()
-            .joined_record_kinds
+            .joined_resource_types
             .last()
             .map(String::as_str),
-        Some(definition.record_kind.as_str()),
+        Some(definition.resource_type.as_str()),
         "the record route names its kind for the owner"
     );
     assert_eq!(

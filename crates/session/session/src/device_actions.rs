@@ -477,7 +477,7 @@ mod tests {
     use iroh::protocol::Router;
     use iroh::{Endpoint, RelayMode, SecretKey};
     use neighbour_wire::offer::{Decline, Power, Rank, Route, Work};
-    use tilo_action_broker::record_content::ContentState;
+    use tilo_action_broker::document_content::ContentState;
     use tilo_actions::offload::{OffloadRequest, Offloaded};
     use tilo_actions::remote::{
         InvokeArgument, TestHost, application_action_target, application_provider, own_device,

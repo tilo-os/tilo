@@ -140,7 +140,7 @@ impl ChatApp {
             .into_iter()
             .map(|conversation| {
                 let unread = conversation.unread;
-                let with = self.conversation_peer(&conversation.participants);
+                let with = self.conversation_peer(&conversation.members);
                 let mut item = NavItem::new(channel_place(&conversation.id), &conversation.name)
                     .icon(Icon::Users)
                     .unread(unread > 0)
@@ -160,12 +160,10 @@ impl ChatApp {
             .collect()
     }
 
-    /// The one other participant of a conversation with `participants` (their keys), when it has
+    /// The one other member of a conversation with `members` (their keys), when it has
     /// exactly one.
-    pub(crate) fn conversation_peer(&self, participants: &[MemberId]) -> Option<MemberId> {
-        let mut others = participants
-            .iter()
-            .filter(|participant| !self.is_me(participant));
+    pub(crate) fn conversation_peer(&self, members: &[MemberId]) -> Option<MemberId> {
+        let mut others = members.iter().filter(|member| !self.is_me(member));
         let peer = others.next()?;
         others.next().is_none().then(|| peer.clone())
     }

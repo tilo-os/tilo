@@ -426,7 +426,7 @@ impl Checker<'_> {
                 None if self.is_flag(None, value) => self.flag_arg(n, value),
                 None if !titled => {
                     titled = true;
-                    title = self.row_subject(&node, value);
+                    title = self.row_target(&node, value);
                 }
                 None => {
                     self.err("E022", value.span, format!("a list row takes one positional argument, its title; name the others: {ROW_ARGS_TEXT}"));
@@ -581,7 +581,7 @@ impl Checker<'_> {
 
     /// A list row's positional: its title (Text, a Date, a Time, or an Option of one, `.none` being
     /// the empty text), which the host formats; or the resource it shows.
-    fn row_subject(&mut self, node: &Ex, value: &ast::Expr) -> Option<LocalId> {
+    fn row_target(&mut self, node: &Ex, value: &ast::Expr) -> Option<LocalId> {
         let v = self.expr(value, Some(&Ty::Text));
         if matches!(v.ty, Ty::Record(_)) {
             let r = self.fresh(v.ty.clone());
@@ -1111,7 +1111,7 @@ impl Checker<'_> {
     }
 
     /// The hidden view of an action whose `label:` or `icon:` is an `if`, or that declares `on:`:
-    /// one `present` node of the subject with those props, read from the subject alone.
+    /// one `present` node of the target with those props, read from the target alone.
     pub(super) fn run_present(
         &mut self,
         view: &Callable,
@@ -1121,12 +1121,12 @@ impl Checker<'_> {
         let params = action.params.as_slice();
         self.begin(super::Ctx::View, &view.params, Ty::View, &view.id);
         self.st.words_of = Some(action.id.clone());
-        // The parameters whose defaults follow from the subject are what an invocation from here would
+        // The parameters whose defaults follow from the target are what an invocation from here would
         // pass: `done` with `done: Bool = not item.done`.
         let mut given: Vec<Ex> = view
             .params
             .first()
-            .map(|subject| Ex::local(0, subject.ty.clone()))
+            .map(|target| Ex::local(0, target.ty.clone()))
             .into_iter()
             .collect();
         let mut others: Vec<&str> = Vec::new();
@@ -1160,8 +1160,8 @@ impl Checker<'_> {
                 continue;
             }
             if let Some(other) = mentions(&opt.value, others) {
-                let subject = params.first().map_or("", |p| p.name.as_str());
-                self.err("E090", opt.value.span, format!("`{name}:` is shown wherever the action is offered on `{subject}`, before anyone gives `{other}`; it reads only the subject, `{subject}`"));
+                let target = params.first().map_or("", |p| p.name.as_str());
+                self.err("E090", opt.value.span, format!("`{name}:` is shown wherever the action is offered on `{target}`, before anyone gives `{other}`; it reads only the target, `{target}`"));
                 continue;
             }
             match name {
@@ -1188,7 +1188,7 @@ impl Checker<'_> {
     }
 
     /// The guard (or `applies`) of the action `c`: one function answering the first reason it cannot
-    /// run on the subject now ([`crate::ir::FuncKind::Guard`]). A requirement that reads what a
+    /// run on the target now ([`crate::ir::FuncKind::Guard`]). A requirement that reads what a
     /// caller gives (`to` in `move_to(t, to)`) is checked when the action runs with it.
     pub(super) fn run_guard(
         &mut self,
@@ -1198,10 +1198,10 @@ impl Checker<'_> {
         kind: crate::ir::FuncKind,
         export: fn(&str) -> String,
     ) -> crate::ir::Func {
-        // The subject, then the places a view supplies: everything an offer knows before it is made.
+        // The target, then the places a view supplies: everything an offer knows before it is made.
         let decided = 1 + params.iter().skip(1).take_while(|p| p.place).count();
-        let subject = params.get(..decided).unwrap_or_default();
-        self.begin(super::Ctx::View, subject, Ty::Text, &c.id);
+        let target = params.get(..decided).unwrap_or_default();
+        self.begin(super::Ctx::View, target, Ty::Text, &c.id);
         for r in requires.iter().filter(|r| offer_decided(r, params)) {
             self.st.invoker = super::Invoker::Viewer;
             let cond = self.expr_as(&r.cond, &Ty::Bool);
@@ -1212,7 +1212,7 @@ impl Checker<'_> {
         }
         self.emit(Stmt::Return(Some(Ex::str(""))));
         let mut f = self.end(kind, &c.name, &export(&c.id));
-        f.nparams = subject.len();
+        f.nparams = target.len();
         f
     }
 
@@ -1472,7 +1472,7 @@ impl Checker<'_> {
     }
 }
 
-/// Whether the requirement `r` reads nothing a caller gives beyond the subject: what a surface
+/// Whether the requirement `r` reads nothing a caller gives beyond the target: what a surface
 /// offering the action can decide before anyone gives the rest.
 pub(crate) fn offer_decided(r: &ast::Require, params: &[crate::resolve::ParamInfo]) -> bool {
     let others: Vec<&str> = params

@@ -29,9 +29,9 @@ pub trait GroupKeySource: collab_types::signer::MaybeSendSync + 'static {
 /// The records of the person's own an app keeps in, or reads from, their
 /// store: the person-record kinds its surface declares. Nothing broader is
 /// signed for an app in the person's store.
-pub trait PersonRecordKinds: collab_types::signer::MaybeSendSync + 'static {
+pub trait PersonResourceTypes: collab_types::signer::MaybeSendSync + 'static {
     /// The person-record kinds `app_id` declares; empty for none.
-    fn person_record_kinds(&self, app_id: &str) -> Vec<String>;
+    fn person_resource_types(&self, app_id: &str) -> Vec<String>;
 
     /// `app_id` attached naming `surface`, the surface file it was started
     /// with. A host that runs no package of the app may take it as the
@@ -48,15 +48,15 @@ pub trait PersonRecordKinds: collab_types::signer::MaybeSendSync + 'static {
     /// Whether `reader` declares that it reads `owner`'s records (its surface's `reads` against
     /// the owner's resource kinds), as the broker admits its read-only join: it is handed the
     /// keys that open them, and signs nothing there. None by default.
-    fn reads_records_of(&self, _reader: &str, _owner: &str) -> bool {
+    fn reads_documents_of(&self, _reader: &str, _owner: &str) -> bool {
         false
     }
 }
 
 /// A host that knows no app's person records: nothing is signed in the
 /// person's store.
-impl PersonRecordKinds for () {
-    fn person_record_kinds(&self, _app_id: &str) -> Vec<String> {
+impl PersonResourceTypes for () {
+    fn person_resource_types(&self, _app_id: &str) -> Vec<String> {
         Vec::new()
     }
 }

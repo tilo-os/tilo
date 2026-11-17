@@ -155,7 +155,7 @@ fn server() -> Arc<Server> {
             issuer: ISSUER.into(),
             web_entry: WEB_ENTRY.into(),
             // Nothing here reaches a workspace, so nothing dials it.
-            relay: "https://relay.tilo.test".into(),
+            hosts: vec!["https://relay.tilo.test".into()],
         },
         Store::in_memory(),
     )
@@ -1093,7 +1093,7 @@ fn server_in_front_of(site: &str) -> Arc<Server> {
         &Config {
             issuer: ISSUER.into(),
             web_entry: site.into(),
-            relay: "https://relay.tilo.test".into(),
+            hosts: vec!["https://relay.tilo.test".into()],
         },
         Store::in_memory(),
     )
@@ -1333,4 +1333,53 @@ async fn a_form_the_server_forgot_returns_the_person_to_their_grants_page() {
         .await;
     assert_eq!(reply.status(), StatusCode::SEE_OTHER);
     assert_eq!(location(&reply), "/grants");
+}
+
+/// A key is the grant the person approved, carried in the key itself: a
+/// front door that never saw the approval accepts the same key, reads the
+/// same grant, and revokes that one grant.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_key_carries_its_grant_to_every_front_door() {
+    let alice = Person::new(1);
+    let first = server();
+    let (poll, asked) = ask_for_key(&first, &json!({"name": "Visa backend"})).await;
+    assert!(
+        answer(&first, &alice.allow(&asked))
+            .await
+            .status()
+            .is_success()
+    );
+    let (status, polled) = poll_key(&first, &poll).await;
+    assert_eq!(status, StatusCode::OK, "{polled}");
+    let token = polled["key"].as_str().unwrap().to_owned();
+
+    let now = tilo_clock::unix_now_ms();
+    let second = server();
+    let carried = second.store.access(&token, now).unwrap();
+    assert_eq!(carried.client_name, "Visa backend");
+    assert_eq!(
+        carried.person,
+        hex::encode(alice.root.verifying_key().to_bytes())
+    );
+    assert_eq!(carried.scope, store::Scope::Account);
+    assert!(carried.key().is_some(), "the key travels with its grant");
+    assert_eq!(carried.id, first.store.access(&token, now).unwrap().id);
+
+    // Revoked at one front door, that grant is revoked at that one for good.
+    assert!(
+        !second
+            .store
+            .revoke_grant(&carried.person, &carried.id, now)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        second.store.access(&token, now).unwrap_err(),
+        store::Denied::Revoked { at_ms: Some(now) }
+    );
+    // A token that carries no grant reaches nothing, as before.
+    assert_eq!(
+        second.store.access("tilo_sk_not-a-grant", now).unwrap_err(),
+        store::Denied::Unknown
+    );
 }

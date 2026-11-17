@@ -1,4 +1,4 @@
-//! **The action API**: how a participant that is not the app enumerates what
+//! **The action API**: how a member that is not the app enumerates what
 //! it has open and performs one of its exported operations.
 //!
 //! [`ResourceSpec`] trees already describe an app's surface and

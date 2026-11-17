@@ -157,8 +157,8 @@ pub struct WorkspaceRuntime {
     /// The on-demand records each subscriber holds, by channel: those it
     /// opened, and the chain parts it was replayed or followed live while
     /// they were their chain's head. Live changes to an on-demand record
-    /// reach only these ([`crate::store::record_sync`]).
-    held_records: HashMap<[u8; 32], HashSet<[u8; 32]>>,
+    /// reach only these ([`crate::store::document_sync`]).
+    held_documents: HashMap<[u8; 32], HashSet<[u8; 32]>>,
     /// The connections of each device whose subscription was admitted and
     /// has not registered yet, oldest first. A device that reconnects (its
     /// network dropped, its shell re-dialled) subscribes again while the
@@ -397,7 +397,7 @@ impl WorkspaceRuntime {
             state_sessions: HashMap::new(),
             outbound_leases: HashMap::new(),
             checkpoint_served: HashMap::new(),
-            held_records: HashMap::new(),
+            held_documents: HashMap::new(),
             subscribing: HashMap::new(),
             arriving: crate::peer::Arriving::default(),
             presence_mailboxes: HashMap::new(),
@@ -510,7 +510,7 @@ impl WorkspaceRuntime {
         self.checkpoint_served
             .insert(sub.device_public_key, HashSet::new());
         // Its replay holds every chain's head.
-        self.held_records.insert(
+        self.held_documents.insert(
             sub.device_public_key,
             self.store.chain_heads().into_iter().collect(),
         );
@@ -554,16 +554,16 @@ impl WorkspaceRuntime {
     }
 
     /// Whether subscriber `device` holds the on-demand record on `channel`.
-    pub(crate) fn holds_record(&self, device: &[u8; 32], channel: &[u8; 32]) -> bool {
-        self.held_records
+    pub(crate) fn holds_resource(&self, device: &[u8; 32], channel: &[u8; 32]) -> bool {
+        self.held_documents
             .get(device)
             .is_some_and(|held| held.contains(channel))
     }
 
     /// Subscriber `device` now holds the record on `channel`: it opened it,
     /// or took a live change to it while it was its chain's head.
-    pub(crate) fn hold_record(&mut self, device: &[u8; 32], channel: [u8; 32]) {
-        if let Some(held) = self.held_records.get_mut(device) {
+    pub(crate) fn hold_document(&mut self, device: &[u8; 32], channel: [u8; 32]) {
+        if let Some(held) = self.held_documents.get_mut(device) {
             held.insert(channel);
         }
     }
@@ -713,7 +713,7 @@ impl WorkspaceRuntime {
                 .store(false, std::sync::atomic::Ordering::SeqCst);
         }
         self.checkpoint_served.remove(device);
-        self.held_records.remove(device);
+        self.held_documents.remove(device);
         let workspace_id = self.store.workspace_id();
         self.live_leave(device, workspace_id);
     }
@@ -873,7 +873,7 @@ pub(crate) const STANDING_WAIT: std::time::Duration = std::time::Duration::from_
 /// workspace's payload adapter.
 ///
 /// A device can hold a record's keys, and write, before the host has settled
-/// its own admission of that device: the keys come from another participant,
+/// its own admission of that device: the keys come from another key holder,
 /// and a page counts itself in once its person is a member, while its device's
 /// row is still on its way into the workspace's governance. Decided against
 /// the projection of that moment, such a change would be refused for a grant
@@ -1290,7 +1290,7 @@ mod standing_wait_tests {
     const PAGE: [u8; 32] = [2; 32];
 
     /// A page's change that reaches the host before the host has projected
-    /// the page's standing (its keys came from another participant, its
+    /// the page's standing (its keys came from another key holder, its
     /// admission is still settling) waits, and is decided against the
     /// projection that admits the page, not refused against the one before.
     #[tokio::test]

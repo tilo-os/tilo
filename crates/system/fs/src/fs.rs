@@ -34,7 +34,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use iroh_blobs::Hash;
 
 use crate::acl::{Access, AclHandle};
-use crate::availability::{AvailabilityRegistry, RecordAvailability, RecordKind};
+use crate::availability::{AvailabilityRegistry, DocumentAvailability, EntryKind};
 use crate::clock::unix_now_ms as now_ms;
 use crate::eviction::{EvictionMode, EvictionQueue, EvictionRequestId, EvictionRequestState};
 use crate::hydration::Hydrator;
@@ -44,7 +44,7 @@ use crate::smart::Heuristics;
 use crate::smart::history::{AccessHistory, natural_cmp};
 use crate::smart::kept_history::{KeptHistory, KeptHistorySource};
 use fs_protocol::projection::{
-    RECORD_INDEX_PAGE_ENTRIES, RECORD_INDEX_V2_VERSION, RecordIndexEntryV1,
+    DocumentIndexEntryV1, RECORD_INDEX_PAGE_ENTRIES, RECORD_INDEX_V2_VERSION,
 };
 use fs_protocol::{AvailabilityPolicy, Residency, TransferPhase};
 
@@ -91,7 +91,7 @@ struct VersionSnapshot {
 fn keep_both_uuid(
     domain: &[u8],
     workspace_id: uuid::Uuid,
-    source_record: fs_protocol::FileDocumentId,
+    source_document: fs_protocol::FileDocumentId,
     conflict_id: uuid::Uuid,
     selected_version: fs_protocol::FileVersionId,
     actor: fs_protocol::FileActor,
@@ -100,7 +100,7 @@ fn keep_both_uuid(
     hash.update(b"tilo.collaborative-fs.keep-both.v2\0");
     hash.update(domain);
     hash.update(workspace_id.as_bytes());
-    hash.update(source_record.0.as_bytes());
+    hash.update(source_document.0.as_bytes());
     hash.update(conflict_id.as_bytes());
     hash.update(selected_version.0.as_bytes());
     hash.update(actor.person.as_bytes());
@@ -115,7 +115,7 @@ fn keep_both_uuid(
 fn merge_uuid(
     domain: &[u8],
     workspace_id: uuid::Uuid,
-    source_record: fs_protocol::FileDocumentId,
+    source_document: fs_protocol::FileDocumentId,
     conflict_id: uuid::Uuid,
     versions: &[fs_protocol::FileVersionId],
     actor: fs_protocol::FileActor,
@@ -126,7 +126,7 @@ fn merge_uuid(
     hash.update(b"tilo.collaborative-fs.merge.v2\0");
     hash.update(domain);
     hash.update(workspace_id.as_bytes());
-    hash.update(source_record.0.as_bytes());
+    hash.update(source_document.0.as_bytes());
     hash.update(conflict_id.as_bytes());
     for version in versions {
         hash.update(version.0.as_bytes());
@@ -142,10 +142,10 @@ fn merge_uuid(
 
 fn keep_both_name(
     source_name: impl AsRef<[u8]>,
-    target_record: fs_protocol::FileDocumentId,
+    target_document: fs_protocol::FileDocumentId,
 ) -> fs_protocol::FileNameV1 {
     let source_name = source_name.as_ref();
-    let simple = target_record.0.simple().to_string();
+    let simple = target_document.0.simple().to_string();
     let suffix = format!(".keep-both-{}", simple.get(..12).unwrap_or(&simple));
     let max_prefix = fs_protocol::files::MAX_FILE_NAME_BYTES.saturating_sub(suffix.len());
     let prefix_len = source_name.len().min(max_prefix);
@@ -412,7 +412,7 @@ mod staging_limit_tests {
 }
 
 /// The record ids from `ino` up to the root, or `None` when one of them has no record id.
-fn record_ancestry(ns: &mut Namespace, ino: u64) -> Option<Vec<fs_protocol::FileDocumentId>> {
+fn document_ancestry(ns: &mut Namespace, ino: u64) -> Option<Vec<fs_protocol::FileDocumentId>> {
     let mut ancestry = Vec::new();
     let mut cursor = Some(ino);
     while let Some(current) = cursor {
@@ -554,7 +554,7 @@ enum PinnedProbe {
 struct PinnedCandidate {
     document_id: fs_protocol::FileDocumentId,
     parent: Option<fs_protocol::FileDocumentId>,
-    kind: RecordKind,
+    kind: EntryKind,
     version: Option<fs_protocol::FileVersionId>,
     hash: Option<Hash>,
     size: u64,
@@ -562,7 +562,7 @@ struct PinnedCandidate {
 }
 
 #[derive(Clone)]
-struct RecordIndexCursor {
+struct DocumentIndexCursor {
     revision: String,
     /// Private source state captured when the cursor was issued; never serialized.
     source_revision: String,
@@ -574,12 +574,12 @@ struct RecordIndexCursor {
 /// operation; serving a v3 page is a bounded slice of it, and no v3 request walks denied
 /// namespace rows.
 #[derive(Clone)]
-struct AclVisibleRecordIndex {
+struct AclVisibleDocumentIndex {
     source_revision: String,
     acl_revision: u64,
     revision: String,
-    records: Vec<RecordIndexEntryV1>,
-    by_id: HashMap<fs_protocol::FileDocumentId, RecordIndexEntryV1>,
+    records: Vec<DocumentIndexEntryV1>,
+    by_id: HashMap<fs_protocol::FileDocumentId, DocumentIndexEntryV1>,
     /// Rows this authority may not see, with the path they were judged at.
     /// With `by_id` it lets the next refresh under the same ACL revision
     /// re-evaluate only rows whose path changed.
@@ -588,7 +588,7 @@ struct AclVisibleRecordIndex {
     acl_evaluations: usize,
 }
 
-impl AclVisibleRecordIndex {
+impl AclVisibleDocumentIndex {
     /// The visibility this view already decided for `document_id` at `path`, if it judged
     /// that exact row. Visibility is a function of the ACL revision and the path alone, so
     /// the verdict holds for the same pair.
@@ -665,9 +665,9 @@ pub struct QuickFS {
     /// Cached serialized form of each document inode, keyed by the doc's heads, so a
     /// multi-chunk read exports once.
     doc_exports: Mutex<DocExports>,
-    record_index_cursors: Mutex<HashMap<String, RecordIndexCursor>>,
-    record_index_initial_cursors: Mutex<HashMap<(String, String, u64), String>>,
-    acl_visible_record_index: Arc<Mutex<Option<Arc<AclVisibleRecordIndex>>>>,
+    document_index_cursors: Mutex<HashMap<String, DocumentIndexCursor>>,
+    document_index_initial_cursors: Mutex<HashMap<(String, String, u64), String>>,
+    acl_visible_document_index: Arc<Mutex<Option<Arc<AclVisibleDocumentIndex>>>>,
     /// Rich facts extracted while current-version bytes are already local; peers consume
     /// them without hydrating the payload.
     rich_metadata: Mutex<
@@ -751,9 +751,9 @@ impl QuickFS {
             open_file_handles: Mutex::new(HashMap::new()),
             next_file_handle: AtomicU64::new(1),
             doc_exports: Mutex::new(HashMap::new()),
-            record_index_cursors: Mutex::new(HashMap::new()),
-            record_index_initial_cursors: Mutex::new(HashMap::new()),
-            acl_visible_record_index: Arc::new(Mutex::new(None)),
+            document_index_cursors: Mutex::new(HashMap::new()),
+            document_index_initial_cursors: Mutex::new(HashMap::new()),
+            acl_visible_document_index: Arc::new(Mutex::new(None)),
             rich_metadata: Mutex::new(HashMap::new()),
             enforcement: None,
             thumbs: None,
@@ -2062,7 +2062,7 @@ impl QuickFS {
             content.unwrap_or_else(|| fs_protocol::ContentHash(*blake3::hash(data).as_bytes())),
         );
         self.publish();
-        self.record_version(ino, fs_protocol::FileProvenance::Edit, content);
+        self.document_version(ino, fs_protocol::FileProvenance::Edit, content);
         Ok(())
     }
 
@@ -2165,20 +2165,20 @@ impl QuickFS {
         Some(bytes)
     }
 
-    fn start_record_index_acl_worker(&self) {
+    fn start_document_index_acl_worker(&self) {
         let Some((acl, identity)) = self.enforcement.clone() else {
             return;
         };
-        self.start_record_index_refresh_worker(acl.subscribe_revision(), (acl, identity));
+        self.start_document_index_refresh_worker(acl.subscribe_revision(), (acl, identity));
     }
 
-    fn start_record_index_refresh_worker(
+    fn start_document_index_refresh_worker(
         &self,
         mut generations: tokio::sync::watch::Receiver<u64>,
         enforcement: (AclHandle, crate::acl::IdentityKey),
     ) {
         let namespace = Arc::clone(&self.namespace);
-        let retained = Arc::downgrade(&self.acl_visible_record_index);
+        let retained = Arc::downgrade(&self.acl_visible_document_index);
         drop(self.hydrator.runtime_handle.spawn(async move {
             while generations.changed().await.is_ok() {
                 tokio::time::sleep(std::time::Duration::from_millis(1)).await;
@@ -2627,7 +2627,7 @@ impl QuickFS {
         let Some(actor) = &self.history else {
             return Ok(fs_protocol::FileVersionId::new());
         };
-        let parents = self.ns().record_history_heads(snapshot.document_id);
+        let parents = self.ns().document_history_heads(snapshot.document_id);
         let id = fs_protocol::FileVersionId::new();
         let version = fs_protocol::FileVersionV1 {
             id,
@@ -2691,7 +2691,7 @@ impl QuickFS {
         Ok(())
     }
 
-    fn record_version(
+    fn document_version(
         &self,
         ino: u64,
         provenance: fs_protocol::FileProvenance,
@@ -2713,7 +2713,7 @@ impl QuickFS {
         self.history.as_ref()?;
         let document_id = self.ns().document_id_for(ino)?;
         self.ns()
-            .record_history_projection(document_id)?
+            .document_history_projection(document_id)?
             .to_xattr_bytes()
             .ok()
     }
@@ -2722,16 +2722,19 @@ impl QuickFS {
     /// CRDT heads plus the live ACL generation; it does not enumerate records. Domain and
     /// length framing prevent an ambiguous concatenation from producing an equivalent
     /// cursor generation.
-    fn record_catalog_revision(&self) -> String {
+    fn document_catalog_revision(&self) -> String {
         let namespace = self.ns();
         let acl_revision = self
             .enforcement
             .as_ref()
             .map_or(0, |(acl, _)| acl.revision());
-        Self::record_catalog_revision_from_index(namespace.indexed_record_revision(), acl_revision)
+        Self::document_catalog_revision_from_index(
+            namespace.indexed_document_revision(),
+            acl_revision,
+        )
     }
 
-    fn record_catalog_revision_from_index(index_revision: &str, acl_revision: u64) -> String {
+    fn document_catalog_revision_from_index(index_revision: &str, acl_revision: u64) -> String {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"tilo.fs.record-index.v2.revision\\0");
         let index_revision = index_revision.as_bytes();
@@ -2745,13 +2748,13 @@ impl QuickFS {
     /// Return a retained projection by cheap shared reference. Serving an xattr
     /// deliberately never rebuilds it: a remote replay whose refresh notification has not
     /// arrived is transiently unavailable rather than a corpus walk.
-    fn acl_visible_record_index(&self) -> Option<Arc<AclVisibleRecordIndex>> {
-        let source_revision = self.record_catalog_revision();
+    fn acl_visible_document_index(&self) -> Option<Arc<AclVisibleDocumentIndex>> {
+        let source_revision = self.document_catalog_revision();
         let acl_revision = self
             .enforcement
             .as_ref()
             .map_or(0, |(acl, _)| acl.revision());
-        self.acl_visible_record_index
+        self.acl_visible_document_index
             .lock_recover()
             .as_ref()
             .filter(|index| {
@@ -2763,11 +2766,11 @@ impl QuickFS {
     /// Rebuild the retained authority view under one coherent Namespace lock. Call only
     /// from mount, mutation and sync notification paths, never from an xattr request; it
     /// replaces the snapshot every subsequent bounded page uses.
-    fn refresh_acl_visible_record_index(&self) {
+    fn refresh_acl_visible_document_index(&self) {
         Self::refresh_acl_visible_record_index_into(
             &self.namespace,
             self.enforcement.as_ref(),
-            &self.acl_visible_record_index,
+            &self.acl_visible_document_index,
         );
     }
 
@@ -2778,14 +2781,14 @@ impl QuickFS {
     fn refresh_acl_visible_record_index_into(
         namespace: &Arc<Mutex<Namespace>>,
         enforcement: Option<&(AclHandle, crate::acl::IdentityKey)>,
-        retained: &Arc<Mutex<Option<Arc<AclVisibleRecordIndex>>>>,
+        retained: &Arc<Mutex<Option<Arc<AclVisibleDocumentIndex>>>>,
     ) {
         let acl_revision = enforcement.map_or(0, |(acl, _)| acl.revision());
         let previous = retained.lock_recover().clone();
         let (source_revision, rows) = {
             let namespace = namespace.lock_recover();
-            let source_revision = Self::record_catalog_revision_from_index(
-                namespace.indexed_record_revision(),
+            let source_revision = Self::document_catalog_revision_from_index(
+                namespace.indexed_document_revision(),
                 acl_revision,
             );
             if previous.as_ref().is_some_and(|index| {
@@ -2793,9 +2796,9 @@ impl QuickFS {
             }) {
                 return;
             }
-            let mut rows = Vec::with_capacity(namespace.indexed_record_count());
+            let mut rows = Vec::with_capacity(namespace.indexed_document_count());
             loop {
-                let page = namespace.indexed_record_page(rows.len(), RECORD_INDEX_PAGE_ENTRIES);
+                let page = namespace.indexed_document_page(rows.len(), RECORD_INDEX_PAGE_ENTRIES);
                 if page.is_empty() {
                     break;
                 }
@@ -2821,7 +2824,7 @@ impl QuickFS {
                     enforcement.is_none_or(|(acl, identity)| acl.visible(identity, &entry.path))
                 });
             if visible {
-                records.push(RecordIndexEntryV1 {
+                records.push(DocumentIndexEntryV1 {
                     document_id: entry.document_id,
                     path: entry.path,
                     is_dir: entry.is_dir,
@@ -2847,7 +2850,7 @@ impl QuickFS {
             .cloned()
             .map(|record| (record.document_id, record))
             .collect();
-        let index = Arc::new(AclVisibleRecordIndex {
+        let index = Arc::new(AclVisibleDocumentIndex {
             source_revision: source_revision.clone(),
             acl_revision,
             revision,
@@ -2861,8 +2864,8 @@ impl QuickFS {
         // releasing the namespace lock above. Its notification builds the next generation.
         let current_source = {
             let namespace = namespace.lock_recover();
-            Self::record_catalog_revision_from_index(
-                namespace.indexed_record_revision(),
+            Self::document_catalog_revision_from_index(
+                namespace.indexed_document_revision(),
                 acl_revision,
             )
         };
@@ -2877,10 +2880,10 @@ impl QuickFS {
         *retained = Some(index);
     }
 
-    fn record_index_manifest_v2(&self) -> Option<Vec<u8>> {
-        let revision = self.record_catalog_revision();
-        let records = self.ns().indexed_record_count();
-        let manifest = fs_protocol::projection::RecordIndexManifestV2 {
+    fn document_index_manifest_v2(&self) -> Option<Vec<u8>> {
+        let revision = self.document_catalog_revision();
+        let records = self.ns().indexed_document_count();
+        let manifest = fs_protocol::projection::DocumentIndexManifestV2 {
             schema_version: RECORD_INDEX_V2_VERSION,
             revision,
             // A bounded-cursor ceiling, not an ACL-visible count: pages apply ACL filtering
@@ -2893,18 +2896,18 @@ impl QuickFS {
         serde_json::to_vec(&manifest).ok()
     }
 
-    fn record_index_page_v2(&self, revision: &str, offset: usize) -> Option<Vec<u8>> {
-        (self.record_catalog_revision() == revision).then_some(())?;
+    fn document_index_page_v2(&self, revision: &str, offset: usize) -> Option<Vec<u8>> {
+        (self.document_catalog_revision() == revision).then_some(())?;
         let page_entries = RECORD_INDEX_PAGE_ENTRIES;
         let namespace = self.ns();
-        let records = namespace.indexed_record_count();
+        let records = namespace.indexed_document_count();
         if offset > records || !offset.is_multiple_of(page_entries) {
             return None;
         }
         let end = offset.saturating_add(page_entries).min(records);
-        let candidates = namespace.indexed_record_page(offset, page_entries);
+        let candidates = namespace.indexed_document_page(offset, page_entries);
         drop(namespace);
-        let page = fs_protocol::projection::RecordIndexPageV2 {
+        let page = fs_protocol::projection::DocumentIndexPageV2 {
             schema_version: RECORD_INDEX_V2_VERSION,
             revision: revision.to_string(),
             offset,
@@ -2912,7 +2915,7 @@ impl QuickFS {
             records: candidates
                 .into_iter()
                 .filter(|entry| self.in_view(&entry.path))
-                .map(|entry| RecordIndexEntryV1 {
+                .map(|entry| DocumentIndexEntryV1 {
                     document_id: entry.document_id,
                     path: entry.path,
                     is_dir: entry.is_dir,
@@ -2924,7 +2927,7 @@ impl QuickFS {
         (bytes.len() <= fs_protocol::projection::MAX_RECORD_INDEX_PAGE_BYTES).then_some(bytes)
     }
 
-    fn record_index_cursor(
+    fn document_index_cursor(
         &self,
         revision: String,
         source_revision: String,
@@ -2932,7 +2935,7 @@ impl QuickFS {
         offset: usize,
     ) -> String {
         let cursor = uuid::Uuid::new_v4().to_string();
-        let mut cursors = self.record_index_cursors.lock_recover();
+        let mut cursors = self.document_index_cursors.lock_recover();
         if cursors.len() >= 1024
             && let Some(evicted) = cursors.keys().next().cloned()
         {
@@ -2940,7 +2943,7 @@ impl QuickFS {
         }
         cursors.insert(
             cursor.clone(),
-            RecordIndexCursor {
+            DocumentIndexCursor {
                 revision,
                 source_revision,
                 acl_revision,
@@ -2950,24 +2953,24 @@ impl QuickFS {
         cursor
     }
 
-    fn record_index_manifest_v3(&self) -> Option<Vec<u8>> {
-        let index = self.acl_visible_record_index()?;
+    fn document_index_manifest_v3(&self) -> Option<Vec<u8>> {
+        let index = self.acl_visible_document_index()?;
         // Initial issuance is stable for an unchanged authority view. A hidden source change
         // keeps both the public revision and this opaque token stable, so polling cannot
         // correlate hidden activity.
         let key = (index.revision.clone(), String::new(), index.acl_revision);
         let initial_cursor = {
-            let initials = self.record_index_initial_cursors.lock_recover();
+            let initials = self.document_index_initial_cursors.lock_recover();
             initials.get(&key).cloned()
         }
         .unwrap_or_else(|| {
-            let cursor = self.record_index_cursor(
+            let cursor = self.document_index_cursor(
                 index.revision.clone(),
                 index.source_revision.clone(),
                 index.acl_revision,
                 0,
             );
-            let mut initials = self.record_index_initial_cursors.lock_recover();
+            let mut initials = self.document_index_initial_cursors.lock_recover();
             if initials.len() >= 128
                 && let Some(evicted) = initials.keys().next().cloned()
             {
@@ -2976,7 +2979,7 @@ impl QuickFS {
             initials.insert(key, cursor.clone());
             cursor
         });
-        let manifest = fs_protocol::projection::RecordIndexManifestV3 {
+        let manifest = fs_protocol::projection::DocumentIndexManifestV3 {
             schema_version: 3,
             initial_cursor,
             revision: index.revision.clone(),
@@ -2986,9 +2989,9 @@ impl QuickFS {
         serde_json::to_vec(&manifest).ok()
     }
 
-    fn record_index_page_v3(&self, revision: &str, cursor: &str) -> Option<Vec<u8>> {
+    fn document_index_page_v3(&self, revision: &str, cursor: &str) -> Option<Vec<u8>> {
         let (source_revision, acl_revision, offset) = self
-            .record_index_cursors
+            .document_index_cursors
             .lock_recover()
             .get(cursor)
             .filter(|state| state.revision == revision)
@@ -2999,7 +3002,7 @@ impl QuickFS {
                     state.offset,
                 )
             })?;
-        let index = self.acl_visible_record_index()?;
+        let index = self.acl_visible_document_index()?;
         // A changed visible projection (or any ACL replacement) fails closed; a hidden-only
         // source update leaves an equivalent view traversable under the same capability.
         (index.revision == revision && index.acl_revision == acl_revision).then_some(())?;
@@ -3009,9 +3012,9 @@ impl QuickFS {
             .min(records);
         let candidates = index.records.get(offset..end)?.to_vec();
         let next_cursor = (end < records).then(|| {
-            self.record_index_cursor(revision.to_string(), source_revision, acl_revision, end)
+            self.document_index_cursor(revision.to_string(), source_revision, acl_revision, end)
         });
-        let page = fs_protocol::projection::RecordIndexPageV3 {
+        let page = fs_protocol::projection::DocumentIndexPageV3 {
             schema_version: 3,
             revision: revision.to_string(),
             next_cursor,
@@ -3022,10 +3025,10 @@ impl QuickFS {
         (bytes.len() <= fs_protocol::projection::MAX_RECORD_INDEX_PAGE_BYTES).then_some(bytes)
     }
 
-    fn record_index_by_id_v2(&self, document_id: fs_protocol::FileDocumentId) -> Option<Vec<u8>> {
-        let index = self.acl_visible_record_index()?;
+    fn document_index_by_id_v2(&self, document_id: fs_protocol::FileDocumentId) -> Option<Vec<u8>> {
+        let index = self.acl_visible_document_index()?;
         let entry = index.by_id.get(&document_id)?.clone();
-        let projection = fs_protocol::projection::RecordIndexExactV2 {
+        let projection = fs_protocol::projection::DocumentIndexExactV2 {
             schema_version: RECORD_INDEX_V2_VERSION,
             revision: index.revision.clone(),
             record: entry,
@@ -3046,7 +3049,7 @@ impl QuickFS {
         self.check_access(ino, Access::Read)?;
         self.history.as_ref().ok_or(libc::ENOTSUP)?;
         let document_id = self.ns().document_id_for(ino).ok_or(ENOENT)?;
-        let (version, _) = self.ns().record_version(document_id, version_id);
+        let (version, _) = self.ns().document_version(document_id, version_id);
         let version = version.ok_or(EINVAL)?;
         let Some(content_hash) = version.content_hash else {
             return Ok(Vec::new());
@@ -3091,7 +3094,7 @@ impl QuickFS {
         if !matches!(extension.as_str(), "txt" | "qdoc" | "tilo-doc") {
             return Err(libc::ENOTSUP);
         }
-        let state = self.ns().record_history(document_id).ok_or(EINVAL)?;
+        let state = self.ns().document_history(document_id).ok_or(EINVAL)?;
         let conflict = state
             .conflicts
             .iter()
@@ -3228,7 +3231,7 @@ impl QuickFS {
         if expected_revision.document_id != document_id {
             return Err(EIO);
         }
-        let state = self.ns().record_history(document_id).ok_or(EINVAL)?;
+        let state = self.ns().document_history(document_id).ok_or(EINVAL)?;
         let conflict = state
             .conflicts
             .iter()
@@ -3350,7 +3353,7 @@ impl QuickFS {
     ) -> Result<(), i32> {
         let actor = self.history.as_ref().ok_or(libc::ENOTSUP)?;
         let workspace_id = self.mount_workspace()?;
-        let (document_id, current_revision, parent_record, source_name) = {
+        let (document_id, current_revision, parent_document, source_name) = {
             let mut namespace = self.ns();
             let document_id = namespace.document_id_for(ino).ok_or(ENOENT)?;
             let current = namespace.observed_content_revision(ino).ok_or(EIO)?;
@@ -3371,7 +3374,7 @@ impl QuickFS {
         if !matches!(extension.as_str(), "txt" | "qdoc" | "tilo-doc") {
             return Err(libc::ENOTSUP);
         }
-        let state = self.ns().record_history(document_id).ok_or(EINVAL)?;
+        let state = self.ns().document_history(document_id).ok_or(EINVAL)?;
         let conflict = state
             .conflicts
             .iter()
@@ -3505,14 +3508,14 @@ impl QuickFS {
             metadata_hash: snapshot.metadata_hash,
             provenance: fs_protocol::FileProvenance::ConflictResolution,
         };
-        let mut participant = fs_protocol::FileMutationParticipant {
+        let mut transaction_file = fs_protocol::TransactionFile {
             document_id,
-            role: fs_protocol::FileMutationParticipantRole::MergeSource,
+            role: fs_protocol::TransactionFileRole::MergeSource,
             expected_version: current_revision.version_id,
             proposed_binding: fs_protocol::FileBindingV1 {
                 schema_version: fs_protocol::FILE_BINDING_VERSION,
                 document_id,
-                parent: Some(parent_record),
+                parent: Some(parent_document),
                 name: source_name.clone(),
                 kind: fs_protocol::FileNodeKind::File,
                 tombstoned: false,
@@ -3530,7 +3533,9 @@ impl QuickFS {
             proposed_version,
             projection_hash: fs_protocol::ContentHash([0; 32]),
         };
-        participant.projection_hash = participant.computed_projection_hash().map_err(|_| EIO)?;
+        transaction_file.projection_hash = transaction_file
+            .computed_projection_hash()
+            .map_err(|_| EIO)?;
         let codec = match merged.codec {
             crate::conflict_merge::DeterministicMergeCodec::TiloDocAutomergeV1 => {
                 fs_protocol::ConflictMergeCodecV1::TiloDocAutomergeV1
@@ -3553,8 +3558,8 @@ impl QuickFS {
             actor: *actor,
             timestamp_ms,
             operation: fs_protocol::FileMutationOperation::MergeContentConflict {
-                source_record: document_id,
-                parent_record,
+                source_document: document_id,
+                parent_document,
                 source_name,
                 conflict_id,
                 conflict_versions: conflict.versions.clone(),
@@ -3562,12 +3567,12 @@ impl QuickFS {
                 base_version: merged.base_version,
                 codec,
             },
-            participants: vec![participant],
+            files: vec![transaction_file],
         };
         let attributed: Vec<_> = manifest
-            .participants
+            .files
             .iter()
-            .map(|participant| participant.proposed_version.clone())
+            .map(|transaction_file| transaction_file.proposed_version.clone())
             .collect();
         self.commit_manifest(&manifest)?;
         self.attribute_versions(&attributed, None);
@@ -3587,18 +3592,18 @@ impl QuickFS {
     ) -> Result<(), i32> {
         let actor = self.history.as_ref().ok_or(libc::ENOTSUP)?;
         let workspace_id = self.mount_workspace()?;
-        let (source_record, current_revision, parent_record, source_name, source_path) = {
+        let (source_document, current_revision, parent_document, source_name, source_path) = {
             let mut namespace = self.ns();
-            let source_record = namespace.document_id_for(ino).ok_or(ENOENT)?;
+            let source_document = namespace.document_id_for(ino).ok_or(ENOENT)?;
             let current_revision = namespace.observed_content_revision(ino).ok_or(EIO)?;
             let parent_ino = namespace.parent_ino(ino).ok_or(EIO)?;
-            let parent_record = namespace.document_id_for(parent_ino).ok_or(EIO)?;
+            let parent_document = namespace.document_id_for(parent_ino).ok_or(EIO)?;
             let source_path = namespace.path_for(ino).ok_or(EIO)?;
             let source_name = namespace.file_name_for(ino).ok_or(EIO)?;
             (
-                source_record,
+                source_document,
                 current_revision,
-                parent_record,
+                parent_document,
                 source_name,
                 source_path,
             )
@@ -3607,17 +3612,17 @@ impl QuickFS {
             keep_both_uuid(
                 domain,
                 workspace_id,
-                source_record,
+                source_document,
                 conflict_id,
                 selected_version,
                 *actor,
             )
         };
-        let target_record = fs_protocol::FileDocumentId(derive(b"target-record"));
+        let target_document = fs_protocol::FileDocumentId(derive(b"target-record"));
         let target_version_id = fs_protocol::FileVersionId(derive(b"target-version"));
         let result_version_id = fs_protocol::FileVersionId(derive(b"source-result"));
         let transaction_id = derive(b"transaction");
-        let state = self.ns().record_history(source_record).ok_or(EINVAL)?;
+        let state = self.ns().document_history(source_document).ok_or(EINVAL)?;
         let conflict = state
             .conflicts
             .iter()
@@ -3628,7 +3633,7 @@ impl QuickFS {
                 && resolution.result == result_version_id
                 && self
                     .ns()
-                    .ensure_ino_for_document_id(target_record)
+                    .ensure_ino_for_document_id(target_document)
                     .is_some()
             {
                 Ok(())
@@ -3669,7 +3674,7 @@ impl QuickFS {
             .max()
             .and_then(|timestamp| timestamp.checked_add(1))
             .ok_or(EINVAL)?;
-        let target_name = keep_both_name(&source_name, target_record);
+        let target_name = keep_both_name(&source_name, target_document);
         let parent_path = source_path
             .rsplit_once('/')
             .map_or("", |(parent, _)| parent);
@@ -3705,7 +3710,7 @@ impl QuickFS {
         }
         let source_version = fs_protocol::FileVersionV1 {
             id: result_version_id,
-            document_id: source_record,
+            document_id: source_document,
             parents,
             actor: *actor,
             timestamp_ms,
@@ -3715,7 +3720,7 @@ impl QuickFS {
         };
         let target_version = fs_protocol::FileVersionV1 {
             id: target_version_id,
-            document_id: target_record,
+            document_id: target_document,
             parents: Vec::new(),
             actor: *actor,
             timestamp_ms,
@@ -3723,14 +3728,14 @@ impl QuickFS {
             metadata_hash: target_metadata_hash,
             provenance: fs_protocol::FileProvenance::Create,
         };
-        let mut source_participant = fs_protocol::FileMutationParticipant {
-            document_id: source_record,
-            role: fs_protocol::FileMutationParticipantRole::KeepBothSource,
+        let mut source_file = fs_protocol::TransactionFile {
+            document_id: source_document,
+            role: fs_protocol::TransactionFileRole::KeepBothSource,
             expected_version: current_revision.version_id,
             proposed_binding: fs_protocol::FileBindingV1 {
                 schema_version: fs_protocol::FILE_BINDING_VERSION,
-                document_id: source_record,
-                parent: Some(parent_record),
+                document_id: source_document,
+                parent: Some(parent_document),
                 name: source_name.clone(),
                 kind: fs_protocol::FileNodeKind::File,
                 tombstoned: false,
@@ -3739,7 +3744,7 @@ impl QuickFS {
             },
             proposed_content_revision: Some(fs_protocol::ContentRevisionV1 {
                 schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-                document_id: source_record,
+                document_id: source_document,
                 version_id: result_version_id,
                 content_hash: current.content_hash,
                 byte_len: current_revision.byte_len,
@@ -3748,17 +3753,15 @@ impl QuickFS {
             proposed_version: source_version,
             projection_hash: fs_protocol::ContentHash([0; 32]),
         };
-        source_participant.projection_hash = source_participant
-            .computed_projection_hash()
-            .map_err(|_| EIO)?;
-        let mut sibling_participant = fs_protocol::FileMutationParticipant {
-            document_id: target_record,
-            role: fs_protocol::FileMutationParticipantRole::KeepBothSibling,
+        source_file.projection_hash = source_file.computed_projection_hash().map_err(|_| EIO)?;
+        let mut sibling_file = fs_protocol::TransactionFile {
+            document_id: target_document,
+            role: fs_protocol::TransactionFileRole::KeepBothSibling,
             expected_version: selected_version,
             proposed_binding: fs_protocol::FileBindingV1 {
                 schema_version: fs_protocol::FILE_BINDING_VERSION,
-                document_id: target_record,
-                parent: Some(parent_record),
+                document_id: target_document,
+                parent: Some(parent_document),
                 name: target_name.clone(),
                 kind: fs_protocol::FileNodeKind::File,
                 tombstoned: false,
@@ -3767,7 +3770,7 @@ impl QuickFS {
             },
             proposed_content_revision: Some(fs_protocol::ContentRevisionV1 {
                 schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-                document_id: target_record,
+                document_id: target_document,
                 version_id: target_version_id,
                 content_hash: selected.content_hash,
                 byte_len: selected_len,
@@ -3776,11 +3779,9 @@ impl QuickFS {
             proposed_version: target_version,
             projection_hash: fs_protocol::ContentHash([0; 32]),
         };
-        sibling_participant.projection_hash = sibling_participant
-            .computed_projection_hash()
-            .map_err(|_| EIO)?;
-        let mut participants = vec![source_participant, sibling_participant];
-        participants.sort_by_key(|participant| participant.document_id);
+        sibling_file.projection_hash = sibling_file.computed_projection_hash().map_err(|_| EIO)?;
+        let mut files = vec![source_file, sibling_file];
+        files.sort_by_key(|transaction_file| transaction_file.document_id);
         let manifest = fs_protocol::FileMutationTransactionManifest {
             schema_version: fs_protocol::files::FILE_MUTATION_TRANSACTION_VERSION_V2,
             transaction_id,
@@ -3788,23 +3789,23 @@ impl QuickFS {
             actor: *actor,
             timestamp_ms,
             operation: fs_protocol::FileMutationOperation::KeepBothContentConflict {
-                source_record,
-                sibling_record: target_record,
-                parent_record,
+                source_document,
+                sibling_document: target_document,
+                parent_document,
                 source_name,
                 sibling_name: target_name,
                 conflict_id,
                 conflict_versions: conflict.versions.clone(),
                 selected_version,
             },
-            participants,
+            files,
         };
         // Who caused these versions, when an agent did, is recorded once the transaction
         // committed them.
         let attributed: Vec<_> = manifest
-            .participants
+            .files
             .iter()
-            .map(|participant| participant.proposed_version.clone())
+            .map(|transaction_file| transaction_file.proposed_version.clone())
             .collect();
         self.commit_manifest(&manifest)?;
         self.attribute_versions(&attributed, None);
@@ -3822,14 +3823,14 @@ impl QuickFS {
             let document_id = ns.document_id_for(ino)?;
             let attr = ns.getattr(ino)?;
             let kind = if attr.kind == FileType::Directory {
-                RecordKind::Directory
+                EntryKind::Directory
             } else {
-                RecordKind::File
+                EntryKind::File
             };
             let parent = ns
                 .parent_ino(ino)
                 .and_then(|parent_ino| ns.document_id_for(parent_ino));
-            let ancestry = record_ancestry(&mut ns, ino)?;
+            let ancestry = document_ancestry(&mut ns, ino)?;
             (document_id, kind, parent, attr.size, ancestry)
         };
         let (mut record, effective_policy) = {
@@ -3837,7 +3838,7 @@ impl QuickFS {
             let record = registry
                 .get(document_id)
                 .cloned()
-                .unwrap_or_else(|| RecordAvailability::new(document_id, kind));
+                .unwrap_or_else(|| DocumentAvailability::new(document_id, kind));
             (record, inherited_policy(&registry, &ancestry))
         };
         record.parent = parent;
@@ -3871,9 +3872,9 @@ impl QuickFS {
                 let current_id = ns.document_id_for(current_ino).ok_or(ENOENT)?;
                 let attr = ns.getattr(current_ino).ok_or(ENOENT)?;
                 let kind = if attr.kind == FileType::Directory {
-                    RecordKind::Directory
+                    EntryKind::Directory
                 } else {
-                    RecordKind::File
+                    EntryKind::File
                 };
                 let parent_ino = ns.parent_ino(current_ino);
                 let parent = parent_ino.and_then(|parent_ino| ns.document_id_for(parent_ino));
@@ -3916,7 +3917,7 @@ impl QuickFS {
             let mut record = registry
                 .get(document_id)
                 .cloned()
-                .unwrap_or_else(|| RecordAvailability::new(document_id, RecordKind::File));
+                .unwrap_or_else(|| DocumentAvailability::new(document_id, EntryKind::File));
             if record.transfer.phase.is_active() {
                 return Err(libc::EALREADY);
             }
@@ -4212,10 +4213,10 @@ impl QuickFS {
         self.enforcement = Some((acl.into(), identity));
         // Subscribe before the initial snapshot, so a live ACL or sync mutation in between has a
         // receiver to wake instead of becoming a watch value no `.changed()` can observe.
-        self.start_record_index_acl_worker();
+        self.start_document_index_acl_worker();
         // Build the authority view once when the mount is bound; later v3 manifest and page
         // requests use only this retained snapshot.
-        self.refresh_acl_visible_record_index();
+        self.refresh_acl_visible_document_index();
         self
     }
 
@@ -4491,7 +4492,7 @@ impl QuickFS {
             // Local structural changes already updated the Namespace record index. Refresh the
             // retained ACL projection before advertising the mutation, so a pager's next poll
             // observes a visible addition without a request-time scan.
-            self.refresh_acl_visible_record_index();
+            self.refresh_acl_visible_document_index();
         }
         self.wake_pinned_hydration();
     }
@@ -4800,9 +4801,9 @@ impl QuickFS {
                 (ino, replaced)
             };
             if let Some(replaced) = replaced {
-                self.record_version(replaced, fs_protocol::FileProvenance::Delete, None);
+                self.document_version(replaced, fs_protocol::FileProvenance::Delete, None);
             }
-            self.record_version(
+            self.document_version(
                 ino,
                 if parent == new_parent {
                     fs_protocol::FileProvenance::Rename
@@ -4846,7 +4847,7 @@ fn child_path(dir: &str, name: &[u8]) -> String {
 fn update_retry_state(
     registry: &Arc<Mutex<AvailabilityRegistry>>,
     document_id: fs_protocol::FileDocumentId,
-    update: impl FnOnce(&mut RecordAvailability),
+    update: impl FnOnce(&mut DocumentAvailability),
 ) {
     let mut registry = registry.lock_recover();
     let Some(mut record) = registry.get(document_id).cloned() else {
@@ -4872,7 +4873,7 @@ fn pinned_candidates(
             candidates.push(PinnedCandidate {
                 document_id,
                 parent: None,
-                kind: RecordKind::Directory,
+                kind: EntryKind::Directory,
                 version: None,
                 hash: None,
                 size: 0,
@@ -4890,9 +4891,9 @@ fn pinned_candidates(
                 document_id: entry.document_id,
                 parent: namespace.document_id_for_id(&entry.parent),
                 kind: if namespace.node_is_dir(&id) == Some(true) {
-                    RecordKind::Directory
+                    EntryKind::Directory
                 } else {
-                    RecordKind::File
+                    EntryKind::File
                 },
                 version: namespace
                     .content_revision_for_id(&id)
@@ -4915,7 +4916,7 @@ fn pinned_candidates(
 fn update_candidate_state(
     registry: &Arc<Mutex<AvailabilityRegistry>>,
     candidate: &PinnedCandidate,
-    update: impl FnOnce(&mut RecordAvailability),
+    update: impl FnOnce(&mut DocumentAvailability),
 ) {
     let mut registry = registry.lock_recover();
     let Some(mut record) = registry.get(candidate.document_id).cloned() else {
@@ -4959,13 +4960,13 @@ fn covered_by_pin(
 }
 
 fn topology_update(
-    current: Option<&RecordAvailability>,
+    current: Option<&DocumentAvailability>,
     candidate: &PinnedCandidate,
     observed_at: u64,
-) -> Option<RecordAvailability> {
+) -> Option<DocumentAvailability> {
     let mut record = current
         .cloned()
-        .unwrap_or_else(|| RecordAvailability::new(candidate.document_id, candidate.kind));
+        .unwrap_or_else(|| DocumentAvailability::new(candidate.document_id, candidate.kind));
     let version_changed = record.current_version != candidate.version;
     let mut changed =
         current.is_none() || record.kind != candidate.kind || record.parent != candidate.parent;
@@ -4985,7 +4986,7 @@ fn topology_update(
         record.freshness.metadata_observed_at_ms = Some(observed_at);
         changed = true;
     }
-    if candidate.kind == RecordKind::Directory || candidate.hash.is_none() {
+    if candidate.kind == EntryKind::Directory || candidate.hash.is_none() {
         let resident = Residency::Resident {
             bytes: candidate.size,
         };
@@ -5000,11 +5001,11 @@ fn topology_update(
 }
 
 fn pinned_state_update(
-    current: &RecordAvailability,
+    current: &DocumentAvailability,
     candidate: &PinnedCandidate,
     probe: PinnedProbe,
     observed_at: u64,
-) -> (Option<RecordAvailability>, bool) {
+) -> (Option<DocumentAvailability>, bool) {
     let mut record = current.clone();
     match probe {
         PinnedProbe::Local => {
@@ -5053,7 +5054,7 @@ fn pinned_state_update(
 
 #[derive(Default)]
 struct PinnedPassPlan {
-    writes: Vec<RecordAvailability>,
+    writes: Vec<DocumentAvailability>,
     fetches: Vec<PinnedCandidate>,
     outcome: PinnedPassOutcome,
 }
@@ -5080,7 +5081,7 @@ fn plan_pinned_pass(
         if record.parent.is_some_and(|parent| {
             registry
                 .get(parent)
-                .is_none_or(|parent| parent.kind != RecordKind::Directory)
+                .is_none_or(|parent| parent.kind != EntryKind::Directory)
         }) {
             unparented = unparented.saturating_add(1);
             continue;
@@ -5094,7 +5095,7 @@ fn plan_pinned_pass(
 
     for candidate in candidates
         .iter()
-        .filter(|candidate| candidate.kind == RecordKind::File && candidate.hash.is_some())
+        .filter(|candidate| candidate.kind == EntryKind::File && candidate.hash.is_some())
     {
         let Some(current) = registry.get(candidate.document_id).cloned() else {
             continue;
@@ -5222,7 +5223,7 @@ async fn reconcile_pinned_hydration(
         candidates
             .iter()
             .filter(|candidate| {
-                candidate.kind == RecordKind::File
+                candidate.kind == EntryKind::File
                     && candidate.hash.is_some()
                     && covered_by_pin(&registry, &parents, candidate.document_id)
             })
@@ -5696,7 +5697,7 @@ impl Filesystem for QuickFS {
         self.publish();
         drop(writer);
         writer = self.note_writer(req.pid(), Some(attr.ino.0));
-        self.record_version(attr.ino.0, fs_protocol::FileProvenance::Create, None);
+        self.document_version(attr.ino.0, fs_protocol::FileProvenance::Create, None);
         drop(writer);
         let handle = self.next_file_handle.fetch_add(1, Ordering::Relaxed);
         let opened_path = self.ns().path_for(attr.ino.0);
@@ -5904,7 +5905,7 @@ impl Filesystem for QuickFS {
         match attr {
             Some(attr) => {
                 self.publish();
-                self.record_version(attr.ino.0, fs_protocol::FileProvenance::Create, None);
+                self.document_version(attr.ino.0, fs_protocol::FileProvenance::Create, None);
                 reply.entry_with_ttls(
                     &self.attr_ttl(TTL),
                     &TTL,
@@ -6253,7 +6254,7 @@ impl Filesystem for QuickFS {
                 reply.error(to_errno(libc::ENODATA));
                 return;
             }
-            match self.record_index_manifest_v2() {
+            match self.document_index_manifest_v2() {
                 Some(bytes) => reply_xattr_bytes(reply, &bytes, size),
                 None => reply.error(to_errno(libc::ENODATA)),
             }
@@ -6264,7 +6265,7 @@ impl Filesystem for QuickFS {
                 reply.error(to_errno(libc::ENODATA));
                 return;
             }
-            match self.record_index_manifest_v3() {
+            match self.document_index_manifest_v3() {
                 Some(bytes) => reply_xattr_bytes(reply, &bytes, size),
                 None => reply.error(to_errno(libc::ENODATA)),
             }
@@ -6279,7 +6280,7 @@ impl Filesystem for QuickFS {
                 reply.error(to_errno(libc::ENODATA));
                 return;
             }
-            match self.record_index_page_v3(revision, cursor) {
+            match self.document_index_page_v3(revision, cursor) {
                 Some(bytes) => reply_xattr_bytes(reply, &bytes, size),
                 None => reply.error(to_errno(libc::ENODATA)),
             }
@@ -6297,7 +6298,7 @@ impl Filesystem for QuickFS {
                 reply.error(to_errno(libc::ENODATA));
                 return;
             }
-            match self.record_index_by_id_v2(document_id) {
+            match self.document_index_by_id_v2(document_id) {
                 Some(bytes) => reply_xattr_bytes(reply, &bytes, size),
                 None => reply.error(to_errno(libc::ENODATA)),
             }
@@ -6318,7 +6319,7 @@ impl Filesystem for QuickFS {
                 reply.error(to_errno(libc::ENODATA));
                 return;
             }
-            match self.record_index_page_v2(revision, offset) {
+            match self.document_index_page_v2(revision, offset) {
                 Some(bytes) => reply_xattr_bytes(reply, &bytes, size),
                 None => reply.error(to_errno(libc::ENODATA)),
             }
@@ -6347,7 +6348,7 @@ impl Filesystem for QuickFS {
             // The policy `user.tilo.availability` reports: the file's own, or a folder's above it. The
             // registry's row for the file alone would say nothing about a file created in a pinned
             // folder until a restart registered it.
-            let ancestry = record_ancestry(&mut self.ns(), ino.0);
+            let ancestry = document_ancestry(&mut self.ns(), ino.0);
             let policy =
                 ancestry.map(|ancestry| inherited_policy(&registry.lock_recover(), &ancestry));
             match policy {
@@ -6454,6 +6455,9 @@ impl Filesystem for QuickFS {
         }
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod mount_tests;
 
 #[cfg(test)]
 mod tests;

@@ -63,7 +63,7 @@ fn a_workspace_launch_opens_the_workspaces_default_record() {
         ],
     );
     let dirs = record_dirs(&host);
-    let workspace_default = ui::record::DocumentId::workspace_default().storage_key();
+    let workspace_default = ui::resource::DocumentId::workspace_default().storage_key();
     assert!(dirs.contains(&workspace_default), "{dirs:?}");
     assert!(
         !host.join("tilo/sheets/workbook.automerge").exists(),

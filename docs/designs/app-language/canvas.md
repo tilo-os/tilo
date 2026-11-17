@@ -133,9 +133,10 @@ is shown to anyone.
   camera never chases a place the agent puts off-screen at the cost of the turn. The agent's views
   stand adjacent to their turn (§3), sized so the turn and they fit on the screen together where
   they can, and the camera pans (never zooms) to show both; when both cannot fit, the turn wins.
-  Panned to them, the camera frames the turn and its views together: centred top to bottom when
-  they fit, else from their top, never hanging at an edge with the screen empty opposite.
-  A card hugs what it holds up to the visible area and no further:
+  The camera moves only when something of the new turn, or of what it places, is not in view;
+  then it pans the least distance that brings them in, keeping what the person was looking at in
+  view as far as that allows. When everything new is already visible it never pans, and the
+  caret itself never moves it. A card hugs what it holds up to the visible area and no further:
   its text wraps and the card scrolls.
 - **Captions name the thing.** A place's caption is what it shows, by the name of the view it
   stands through ("All inboxes", "Notes"), never the first record or account of its app's root.

@@ -6,9 +6,9 @@
 //! view reads.
 
 pub use ::collaboration::*;
+pub mod document_content;
 pub mod owner_view;
-pub mod participants;
-pub mod record_content;
+pub mod presences;
 
 #[cfg(test)]
 #[cfg(feature = "broker-transport")]

@@ -446,14 +446,14 @@ fn a_guest_who_may_only_view_builds_no_index_and_sends_no_write() {
 
 #[test]
 fn an_index_and_a_text_on_their_way_are_waited_for_and_the_passage_opens() {
-    use ui::collaboration::record_content::{ContentLane, RecordContent};
+    use ui::collaboration::document_content::{ContentLane, DocumentContent};
 
     use crate::resource::{index_book, shelve};
 
     let mut app = TestApp::<EbookShell>::new().unwrap();
     books(&mut app).query = super::query_view::BookQuery::hermetic();
     let lane = std::sync::Arc::new(ContentLane::default());
-    books(&mut app).content = Some(RecordContent::store(
+    books(&mut app).content = Some(DocumentContent::store(
         tilo_content::ContentStore::memory(),
         std::sync::Arc::clone(&lane),
     ));

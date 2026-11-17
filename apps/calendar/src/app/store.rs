@@ -8,7 +8,7 @@ use std::rc::Rc;
 use chrono::NaiveDate;
 use tilo_contact_directory::ContactDirectory;
 use ui::framework::{
-    EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, Live, LiveRow, PersonRecord,
+    EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, Live, LiveRow, PersonResource,
     Publishes, Setting, ViewCx,
 };
 use ui::widget::Element;
@@ -55,7 +55,7 @@ pub(crate) struct Store {
     pub(super) syncing: bool,
     pub(super) sync_requested: bool,
     pub(super) sync_reply: Option<EffectReply>,
-    pub(super) contact_directory: Option<PersonRecord<ContactDirectory>>,
+    pub(super) contact_directory: Option<PersonResource<ContactDirectory>>,
     pub(super) contact_event: Option<Id>,
     pub(super) asks: Vec<Ask>,
 }

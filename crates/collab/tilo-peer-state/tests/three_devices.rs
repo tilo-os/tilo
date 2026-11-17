@@ -1,4 +1,4 @@
-//! A workspace has members, not one governing device: a participant that does not
+//! A workspace has members, not one governing device: a key holder that does not
 //! host the workspace answers a join and removes a member, every device admits
 //! what it wrote, and the removed device is refused everywhere.
 #![allow(
@@ -169,10 +169,10 @@ fn is_member(
 }
 
 /// A workspace with three people: its owner's device answers the workspace's host, a
-/// second person's device holds it as a participant, and a third joins
-/// through that participant, which then removes them.
+/// second person's device holds it as a key holder, and a third joins
+/// through that key holder, which then removes them.
 #[tokio::test]
-async fn a_participant_that_does_not_host_the_workspace_admits_and_removes_members() {
+async fn a_key_holder_that_does_not_host_the_workspace_admits_and_removes_members() {
     let directory = tempfile::tempdir().unwrap();
     let (_root_a, key_a, cert_a) = device(91, 92, "A's desktop");
     let (_root_b, key_b, cert_b) = device(73, 74, "B's desktop");
@@ -200,7 +200,7 @@ async fn a_participant_that_does_not_host_the_workspace_admits_and_removes_membe
         "A's device holds the workspace it made"
     );
 
-    // The workspace's owner lets B invite: what a participant admits with.
+    // The workspace's owner lets B invite: what a key holder admits with.
     let invite = tilo_action_policy::Grant::new(
         "invite:b",
         tilo_action_policy::Grantee::person(hex::encode(cert_b.user_public_key)),
@@ -235,7 +235,7 @@ async fn a_participant_that_does_not_host_the_workspace_admits_and_removes_membe
             .unwrap();
     }
 
-    // B is a member, a participant of the workspace on their own device.
+    // B is a member, a key holder of the workspace on their own device.
     let b = open_file(&directory.path().join("b.json")).unwrap();
     enroll(
         &b,

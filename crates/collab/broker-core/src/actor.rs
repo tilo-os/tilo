@@ -11,7 +11,7 @@ use tilo_actions::remote::Caller;
 use tilo_app_id::AppId;
 use tilo_desktop_model::Workspace;
 
-use crate::published::{PublishedAction, PublishedSurface, canonical_record, published_node};
+use crate::published::{PublishedAction, PublishedSurface, canonical_document, published_node};
 
 /// The person a user root is, as the workspace's governance names them: the key in lowercase hex.
 #[must_use]
@@ -50,6 +50,7 @@ pub struct BrokerActor {
 }
 
 impl BrokerActor {
+    #[track_caller]
     #[must_use]
     pub fn person(id: impl Into<tilo_action_policy::PersonId>) -> Self {
         Self::of_member(MemberId::person(id))
@@ -414,7 +415,7 @@ impl BrokerActor {
         let record = if self.is_agent() {
             None
         } else {
-            Some(canonical_record(&surface.route.record_id)?)
+            Some(canonical_document(&surface.route.document_id)?)
         };
         let need = action.contract.need();
         let node = published_node(workspace, &surface.app_id, action);

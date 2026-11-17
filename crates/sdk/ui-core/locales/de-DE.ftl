@@ -586,12 +586,12 @@ relative-compact-years = { $count } J.
 
 # Ein Software-Teilnehmer in Verlauf, Präsenz und Aktivität.
 history-run-step-separator = {", "}
-participant-agent = { $name } · Agent
-participant-shortcut = { $name } · Kurzbefehl
-participant-bot = { $name } · Bot
+member-agent = { $name } · Agent
+member-shortcut = { $name } · Kurzbefehl
+member-bot = { $name } · Bot
 # Zwei oder mehr Personen in einem Arbeitsbereich tragen denselben Namen: jede
 # wird nummeriert, für alle im Arbeitsbereich gleich.
-participant-numbered = { $name } ({ $number })
+member-numbered = { $name } ({ $number })
 interaction-agent = Agent
 interaction-member = Mitglied
 # Was jemand gerade tut: der Name, dann die Handlung im Präsens.
@@ -650,7 +650,7 @@ step-searching = Sucht nach { $what }
 # ist, für eine Vorlesehilfe gesagt. Bei einer Auswahl steht das stattdessen.
 presence-writing-here = { $name } schreibt hier
 presence-selecting-here = { $name } markiert hier
-participant-unknown-agent = Unbekannter Agent
+member-unknown-agent = Unbekannter Agent
 
 
 # Befehlspalette: Tastenhinweise, Ergebniszahl und leere Zustände.
@@ -1238,6 +1238,8 @@ widget-dialog-cancel = Abbrechen
 widget-dismiss = Ausblenden
 widget-hand-to-agent = An Agenten übergeben
 widget-more = Mehr
+widget-number-increase = Vergrößern
+widget-number-decrease = Verkleinern
 widget-copy = Kopieren
 widget-hosted-applications = Gehostete Anwendungen
 widget-searching = Wird gesucht…

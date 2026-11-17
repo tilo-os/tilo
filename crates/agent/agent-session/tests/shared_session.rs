@@ -3,7 +3,7 @@
 //! The browser is the page's session code built natively: HTTPS for
 //! documents and remote actions, its workspace session for presence, and
 //! the app mounted from the same component the browser runtime mounts. The
-//! agent is a host-side participant over iroh with its own device key,
+//! agent is a host-side member over iroh with its own device key,
 //! certified under the user's root through the ordinary certification flow
 //! (the laptop approves it), and a root-signed delegation the host enforces.
 //!
@@ -46,7 +46,7 @@ use tilo_actions::remote::{
     RemoteActionMessage, RemoteActionTarget,
 };
 use tilo_agent_session::{
-    AgentIdentity, AgentParticipant, AgentSupervisor, DirectPlanner, ParticipantConfig, Replica,
+    AgentIdentity, AgentMember, AgentSupervisor, DirectPlanner, MemberConfig, Replica,
     ReplicaActor, Seed, SupervisorHost,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
@@ -191,7 +191,7 @@ async fn approve_agent(host: &TestHost, root: &SigningKey, laptop: &Device) -> S
 async fn call(
     browser: &Link,
     host_device: [u8; 32],
-    agent: Option<&mut AgentParticipant>,
+    agent: Option<&mut AgentMember>,
     address: ActionAddress,
     argument: InvokeArgument,
 ) -> InvocationReceipt {
@@ -247,11 +247,7 @@ fn completed(receipt: &InvocationReceipt) -> serde_json::Value {
     }
 }
 
-async fn status(
-    browser: &Link,
-    host_device: [u8; 32],
-    agent: &mut AgentParticipant,
-) -> AgentsStatus {
+async fn status(browser: &Link, host_device: [u8; 32], agent: &mut AgentMember) -> AgentsStatus {
     let receipt = call(
         browser,
         host_device,
@@ -266,7 +262,7 @@ async fn status(
 /// Apply every durable change of `route` the browser receives, checking
 /// each was authored by `author`, until the record contains `text`.
 async fn receive_until(
-    agent: &mut AgentParticipant,
+    agent: &mut AgentMember,
     (browser, events): (&Link, &tilo_session_client::Events),
     route: &DocumentRoute,
     page: &mut Replica,
@@ -280,7 +276,7 @@ async fn receive_until(
             "the browser's record never carried {text:?}: {}\nagent tasks: {:?}\nagent records: {:?}\nagent's copy: {:?}\nagent channels: {}",
             body(page),
             agent.control().info().tasks,
-            agent.known_records(),
+            agent.known_resources(),
             agent.app(route).map(body),
             agent.peer().status().key_state,
         );
@@ -328,7 +324,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     let state = crate::support::scratch_dir();
 
     // The supervisor hands each spawned agent to this thread, which drives
-    // its participant (in a host, its own thread does).
+    // its member (in a host, its own thread does).
     let (spawned_tx, spawned_rx) = std::sync::mpsc::channel();
     let spawned_tx = std::sync::Mutex::new(spawned_tx);
     let supervisor = AgentSupervisor::new(
@@ -361,7 +357,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     });
     let shown = code_rx.await.unwrap();
     assert_eq!(approve_agent(&host, &root, &laptop).await, shown);
-    let (agent_cert, _) = certifying.await.unwrap().unwrap();
+    let (agent_cert, _, _) = certifying.await.unwrap().unwrap();
     assert_eq!(
         agent_cert.capabilities,
         CertificationPolicy::agent().ceiling
@@ -406,13 +402,19 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     browser.join_placed(WORKSPACE, "Workspace").unwrap();
     ready(&[&browser]).await;
     let catalogue = catalogue();
-    let mut page = crate::common::open(SCRATCHPAD, "ada", ReplicaActor::Owner, Seed::New).unwrap();
+    let mut page = crate::common::open(
+        SCRATCHPAD,
+        &tilo_actions::MemberId::person("ada"),
+        ReplicaActor::Owner,
+        Seed::New,
+    )
+    .unwrap();
     // Scratchpad keeps the workspace's one record: its package primary,
     // which travels as the route without a record id.
     let route = DocumentRoute {
         app_id: SCRATCHPAD.into(),
         cluster_id: WORKSPACE.into(),
-        record: page.wire_record().to_owned(),
+        record: page.wire_document().to_owned(),
     };
     browser
         .write(route.clone(), &page.take_mutation().unwrap().unwrap())
@@ -450,8 +452,8 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     let (identity, control) = tilo_test_env::recv("the spawned agent", &spawned_rx);
     let (release_plan, release) = std::sync::mpsc::channel();
     let plan_ready = Arc::new(std::sync::Mutex::new(None));
-    let mut agent = AgentParticipant::start(
-        ParticipantConfig {
+    let mut agent = AgentMember::start(
+        MemberConfig {
             host: host.iroh(),
             host_cert: host_cert.clone(),
             workspace: WORKSPACE.into(),
@@ -842,7 +844,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     // Every edit the host carried, the page's and the agent's, is sealed.
     let retained = host
         .relay
-        .workspace_records()
+        .workspace_documents()
         .retained(workspace())
         .await
         .unwrap();

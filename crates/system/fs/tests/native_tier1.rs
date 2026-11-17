@@ -665,7 +665,7 @@ fn provenance(cache: &Path, path: &str) -> Vec<fs_protocol::FileProvenance> {
     let entry = ns
         .entry_at(path)
         .unwrap_or_else(|| panic!("{path} is not a record"));
-    let mut versions = ns.record_history(entry.document_id).unwrap().versions;
+    let mut versions = ns.document_history(entry.document_id).unwrap().versions;
     versions.sort_by_key(|v| v.timestamp_ms);
     versions.into_iter().map(|v| v.provenance).collect()
 }
@@ -678,7 +678,7 @@ fn first_versions(cache: &Path, paths: &[&str]) -> Vec<u64> {
             let entry = ns
                 .entry_at(p)
                 .unwrap_or_else(|| panic!("{p} is not a record"));
-            let snapshot = ns.record_history(entry.document_id).unwrap();
+            let snapshot = ns.document_history(entry.document_id).unwrap();
             snapshot
                 .versions
                 .iter()

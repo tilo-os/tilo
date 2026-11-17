@@ -568,7 +568,7 @@ pub enum TriggerSpec {
     /// `actions` and `fields` match any change; otherwise a change matches
     /// when it ran one of the verbs (public ids) or edited a field whose
     /// path matches one of the patterns (`channels.*.name`).
-    RecordChanged {
+    ResourceChanged {
         kind: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         actions: Vec<String>,
@@ -608,7 +608,7 @@ pub enum TriggerSpec {
     },
 }
 
-/// Whose changes a [`TriggerSpec::RecordChanged`] counts.
+/// Whose changes a [`TriggerSpec::ResourceChanged`] counts.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActorFilter {
@@ -687,7 +687,7 @@ impl TriggerSpec {
             Self::WorkspaceJoined { .. } => &WORKSPACE_PAYLOAD,
             Self::FileChanged { .. } => &FILE_PAYLOAD,
             Self::FocusMode { .. } => &FOCUS_PAYLOAD,
-            Self::RecordChanged { .. }
+            Self::ResourceChanged { .. }
             | Self::Connector { .. }
             | Self::IncomingMessage { .. }
             | Self::AppEvent { .. }
@@ -708,7 +708,7 @@ impl TriggerSpec {
             Self::FocusMode { .. } => "focus_mode",
             Self::NetworkChanged { .. } => "network_changed",
             Self::DeviceConnected { .. } => "device_connected",
-            Self::RecordChanged { .. } => "record_changed",
+            Self::ResourceChanged { .. } => "resource_changed",
             Self::Connector { .. } => "connector",
             Self::AppEvent { .. } => "app_event",
             Self::IncomingMessage { .. } => "incoming_message",

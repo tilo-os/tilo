@@ -210,7 +210,7 @@ pub struct Page {
 /// or where `from` stopped.
 ///
 /// A page reads only the changes it lists and their direct dependencies, so
-/// a participant who joins a document with years of history sees its latest
+/// a member who joins a document with years of history sees its latest
 /// changes at once, and older ones load as they scroll back. Every change is
 /// listed once, after every change that depends on it: a change's operation
 /// counters are greater than those of anything it depends on, so taking the

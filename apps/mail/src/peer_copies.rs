@@ -2,14 +2,14 @@
 //! ([`crate::copies`]): what it fetches is kept for them, and what they kept
 //! and this device lacks is taken into the mailbox.
 
-use ui::framework::PersonRecord;
+use ui::framework::PersonResource;
 
 use super::MailApp;
 use crate::model::Message;
 use crate::resource::read_mail;
 
 impl MailApp {
-    pub(crate) fn share_copies(&mut self, record: PersonRecord<crate::copies::MailCopies>) {
+    pub(crate) fn share_copies(&mut self, record: PersonResource<crate::copies::MailCopies>) {
         if let Some(content) = record.content() {
             self.copies = Some(crate::copies::Copies::new(record, content));
         }
@@ -120,8 +120,8 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
     }
 
     fn device(
-        record: PersonRecord<crate::copies::MailCopies>,
-        lane: &Arc<ui::collaboration::record_content::ContentLane>,
+        record: PersonResource<crate::copies::MailCopies>,
+        lane: &Arc<ui::collaboration::document_content::ContentLane>,
     ) -> (
         MailApp,
         AutoCommit,
@@ -135,7 +135,7 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
             tx: outgoing,
             rx: incoming_rx,
         });
-        let content = ui::collaboration::record_content::RecordContent::store(
+        let content = ui::collaboration::document_content::DocumentContent::store(
             ContentStore::memory(),
             Arc::clone(lane),
         );
@@ -149,21 +149,21 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
         reason = "two devices and the route between them, step by step"
     )]
     fn a_device_takes_mail_its_other_device_fetched_while_its_server_is_unreachable() {
-        use ui::collaboration::record_content::ContentLane;
+        use ui::collaboration::document_content::ContentLane;
 
         let person = "c7".repeat(32);
         let mut first_host =
             ui::framework::testing::TestApp::<crate::MailShell>::for_person(&person).unwrap();
         let mut second_host =
             ui::framework::testing::TestApp::<crate::MailShell>::for_person(&person).unwrap();
-        let first_record = first_host.person::<crate::copies::MailCopies>().unwrap();
-        let second_record = second_host.person::<crate::copies::MailCopies>().unwrap();
+        let first_resource = first_host.person::<crate::copies::MailCopies>().unwrap();
+        let second_resource = second_host.person::<crate::copies::MailCopies>().unwrap();
         let first_lane = Arc::new(ContentLane::default());
         let second_lane = Arc::new(ContentLane::default());
         let (mut first, mut first_doc, first_requests, first_events) =
-            device(first_record.clone(), &first_lane);
+            device(first_resource.clone(), &first_lane);
         let (mut second, mut second_doc, second_requests, second_events) =
-            device(second_record.clone(), &second_lane);
+            device(second_resource.clone(), &second_lane);
         let config = first.shared.borrow().accounts.active_config();
         let account = config.email.clone();
         assert_eq!(
@@ -211,7 +211,7 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
         // The person's record names both, by a sealed reference to what the
         // server sent; the ciphertext went to the first device's host, which
         // keeps it with the record, and the window let go of its own copy.
-        let kept = first_record.get();
+        let kept = first_resource.get();
         let named = |message: &Message| {
             kept.copies
                 .get(&ui::tilo_resource::Id::from_raw(message.id.to_string()))
@@ -249,9 +249,9 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
             "the window holds no second copy of what its host keeps"
         );
 
-        second_record
+        second_resource
             .record()
-            .merge_peer_document(first_record.record().document().unwrap())
+            .merge_peer_document(first_resource.record().document().unwrap())
             .unwrap();
         let refresh = second
             .state()

@@ -30,6 +30,13 @@ pub struct GraphCanvas {
     parts: Parts,
     connections: Vec<GraphCanvasConnection>,
     grid_gap: Option<Rc<Cell<f32>>>,
+    /// What each node is called, in order, for a connection that names a node rather than a
+    /// control in one.
+    node_ids: Vec<String>,
+    /// What the graph is, for assistive technology.
+    name: Option<String>,
+    /// Where its described nodes stand, as its props said ([`Described`](crate::component::Described)).
+    layout: String,
 }
 
 impl GraphCanvas {
@@ -71,6 +78,9 @@ impl GraphCanvas {
             parts: Parts::new(vec![Box::new(manual)]),
             connections,
             grid_gap: None,
+            node_ids: Vec::new(),
+            name: None,
+            layout: String::new(),
         }
     }
 
@@ -127,18 +137,24 @@ impl GraphCanvas {
             parts: Parts::new(vec![Box::new(manual)]),
             connections,
             grid_gap: Some(gap),
+            node_ids: Vec::new(),
+            name: None,
+            layout: String::new(),
         }
     }
 
     fn connection_rects(&self) -> Vec<(Rect, Rect)> {
+        let nodes = self.parts.children[0].as_ref();
+        let end = |id: &str| {
+            self.node_ids
+                .iter()
+                .position(|node| node == id)
+                .and_then(|index| nodes.children().get(index).map(|node| node.get_rect()))
+                .or_else(|| find(nodes, id))
+        };
         self.connections
             .iter()
-            .filter_map(|edge| {
-                Some((
-                    find(self.parts.children[0].as_ref(), &edge.from)?,
-                    find(self.parts.children[0].as_ref(), &edge.to)?,
-                ))
-            })
+            .filter_map(|edge| Some((end(&edge.from)?, end(&edge.to)?)))
             .collect()
     }
 }
@@ -148,6 +164,14 @@ fn find(widget: &dyn Widget, id: &str) -> Option<Rect> {
 }
 
 impl Widget for GraphCanvas {
+    crate::described!();
+
+    /// Its nodes and the lines between them.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("div");
+        cx.children();
+    }
+
     retained_parts!("GraphCanvas");
     fn build_layout(
         &mut self,
@@ -199,7 +223,20 @@ impl Widget for GraphCanvas {
         }
         self.parts.draw(scene, transform, text, theme, presence);
     }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        Some(
+            crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+                .with_optional_name(self.name.clone()),
+        )
+    }
 }
+
+#[path = "graph_canvas/graph_canvas_component.rs"]
+mod graph_canvas_component;
+pub use graph_canvas_component::{
+    Connection, GraphCanvasProps, GraphNodeProps, connection_description,
+};
 
 #[cfg(test)]
 #[path = "graph_canvas/tests.rs"]

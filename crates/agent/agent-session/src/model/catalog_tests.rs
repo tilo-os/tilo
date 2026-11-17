@@ -410,7 +410,7 @@ fn survey(app: &str) -> Vec<ActionDescriptor> {
         &crate::AppCatalogue::native(),
         app,
         WORKSPACE,
-        "measure",
+        &tilo_actions::MemberId::person("measure"),
         &crate::ReplicaActor::Agent,
         crate::Seed::New,
     )
@@ -426,7 +426,7 @@ fn surveyed(apps: &[&str]) -> Vec<(String, Vec<ActionDescriptor>)> {
 }
 
 /// The context of an agent granted `apps` planning `task`, with a record
-/// of each of `open` open, as the participant builds it: in mode `all`,
+/// of each of `open` open, as the member builds it: in mode `all`,
 /// every app's reference for an agent granted at most four, else those
 /// open or named; in mode `relevant`, every app's, with their names.
 /// `published` is what a new record of each app publishes ([`surveyed`]).

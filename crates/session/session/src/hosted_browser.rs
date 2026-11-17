@@ -1239,10 +1239,10 @@ mod tests {
         let said: Arc<Mutex<Vec<String>>> = Arc::default();
         let mut hosted = holding(0, &said);
         hosted.holds = Holds::Apps;
-        let woke = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let counting = Arc::clone(&woke);
+        // Each wake comes after the app it is for arrived: the loop it wakes finds it.
+        let (woke, wakes) = std::sync::mpsc::channel();
         hosted.waking(Arc::new(move || {
-            counting.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let _ = woke.send(());
         }));
         let input = format!(
             "{}\nsh -c id\n{}\n",
@@ -1251,19 +1251,19 @@ mod tests {
         );
         hosted.read_launches(std::io::Cursor::new(input.into_bytes()));
         let mut told = Vec::new();
-        while told.len() < 2 {
-            match hosted.arrived.recv_timeout(Duration::from_secs(10)) {
-                Ok(Arrived::Launch(launch)) => told.push(launch.desktop_id),
-                Ok(_) => {}
-                Err(error) => panic!("the apps were not read: {error}"),
+        for _ in 0..2 {
+            wakes
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the loop is woken once for each app");
+            loop {
+                match hosted.arrived.try_recv() {
+                    Ok(Arrived::Launch(launch)) => break told.push(launch.desktop_id),
+                    Ok(_) => {}
+                    Err(error) => panic!("no app had arrived when the loop woke: {error}"),
+                }
             }
         }
         assert_eq!(told, ["xterm", "org.gnome.TextEditor"]);
-        assert_eq!(
-            woke.load(std::sync::atomic::Ordering::SeqCst),
-            2,
-            "once for each app"
-        );
     }
 
     #[test]

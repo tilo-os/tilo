@@ -633,7 +633,7 @@ async fn a_logged_in_computers_agents_act_while_the_persons_tab_is_open() {
     let tab_device = enrol(&root, "browser", DeviceCapabilities::member());
     let computer = enrol(&root, "Claude Code on laptop", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let relay = crate::harness::hosted::serving_records(
+    let relay = crate::harness::hosted::serving_documents(
         &root,
         &host,
         state.path(),
@@ -696,7 +696,7 @@ async fn a_logged_in_computers_agents_act_with_no_tab_open() {
     let tab_device = enrol(&root, "browser", DeviceCapabilities::member());
     let computer = enrol(&root, "Claude Code on laptop", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let relay = crate::harness::hosted::serving_records(
+    let relay = crate::harness::hosted::serving_documents(
         &root,
         &host,
         state.path(),
@@ -816,7 +816,7 @@ async fn the_first_call_after_tilo_login_is_the_agents() {
     let tab_device = enrol(&root, "browser", DeviceCapabilities::member());
     let computer = enrol(&root, "Claude Code on laptop", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let relay = crate::harness::hosted::serving_records(
+    let relay = crate::harness::hosted::serving_documents(
         &root,
         &host,
         state.path(),

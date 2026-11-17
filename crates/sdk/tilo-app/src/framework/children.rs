@@ -1,7 +1,7 @@
 //! Child records: resources a record contains, each a record of its own
 //! (`tilo_resource::children`).
 //!
-//! A [`ChildRecord`] type names the record that lists it (its parent, the
+//! A [`ChildResource`] type names the record that lists it (its parent, the
 //! app's own record by default) and the container field there. The
 //! framework does the rest:
 //!
@@ -11,9 +11,9 @@
 //!   ([`Children::children`]), synced on its own route like every record of
 //!   the app.
 //! - **One API.** The container is published beside the app's resource
-//!   ([`ui_core::record::children_resource_id`]): every listed child with
+//!   ([`ui_core::resource::children_resource_id`]): every listed child with
 //!   its own actions, carried out on its record, checked against the
-//!   participant's roles in the workspace as the app's own actions are,
+//!   member's roles in the workspace as the app's own actions are,
 //!   attributed to whoever invokes them and written into the child's
 //!   history.
 //! - **One lifecycle.** The container's `create` (a child with its first
@@ -25,7 +25,7 @@
 //! An app declares a child type in
 //! [`ResourceApp::records`](super::ResourceApp::records)
 //! (`records.children::<Channel>()`) and reaches it from a view or surface
-//! with [`RecordEnv::children`](super::RecordEnv::children).
+//! with [`ResourceEnv::children`](super::ResourceEnv::children).
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -40,12 +40,12 @@ use tilo_resource::children::{self as lifecycle, ChildList as _, ChildRef, Child
 use tilo_resource::{Atom, Edit, EditOp, Id, Reader, Resource, Segment};
 use ui_core::arriving::{Arrival, Arriving, Source};
 use ui_core::permissions::{PermissionScope, TreePath};
-use ui_core::record::{DocumentCheckout, DocumentId, RecordOpenError, ResourceType};
+use ui_core::resource::{DocumentCheckout, DocumentId, ResourceOpenError, ResourceType};
 use ui_core::widget::Edits;
 
-use super::chain::{CHAIN_ACTION_TYPE, WorkspaceRecords};
+use super::chain::{CHAIN_ACTION_TYPE, WorkspaceResources};
 use super::live::Live;
-use super::record::RecordApi;
+use super::record::ResourceApi;
 
 /// The operation type a child's own actions are carried out under on the
 /// container's API: the action and the child it changes.
@@ -73,13 +73,13 @@ impl From<String> for Unheld {
 
 /// A resource whose records are children a record lists. See the
 /// module docs.
-pub trait ChildRecord: Resource<State: tilo_resource::Model + Default> {
+pub trait ChildResource: Resource<State: tilo_resource::Model + Default> {
     /// The resource whose record lists these children.
     type Parent: Resource;
 
     /// The record that lists them: the app's own record in its workspace.
     #[must_use]
-    fn parent_record() -> DocumentId {
+    fn parent_resource() -> DocumentId {
         DocumentId::workspace_default()
     }
 
@@ -199,7 +199,7 @@ struct ChildAction {
 
 /// The parent's state, as the lifecycle reads it where it is invoked.
 /// A field of the container's item `id`, in the parent's document.
-fn item_path<C: ChildRecord>(id: &Id, field: &str) -> Vec<Segment> {
+fn item_path<C: ChildResource>(id: &Id, field: &str) -> Vec<Segment> {
     let mut path = C::container_path();
     path.push(Segment::Item(id.clone()));
     path.push(Segment::Field(field.to_owned()));
@@ -207,7 +207,7 @@ fn item_path<C: ChildRecord>(id: &Id, field: &str) -> Vec<Segment> {
 }
 
 /// How the container lists `child`, if it lists it as one of `C`.
-fn listed<'a, C: ChildRecord>(
+fn listed<'a, C: ChildResource>(
     parent: &'a <C::Parent as Resource>::State,
     child: &Id,
 ) -> Result<&'a ChildRef, ActionError> {
@@ -218,7 +218,7 @@ fn listed<'a, C: ChildRecord>(
 }
 
 /// Whether `child` may sit under `group`: the container's rule, then `C`'s.
-fn check_place<C: ChildRecord>(
+fn check_place<C: ChildResource>(
     parent: &<C::Parent as Resource>::State,
     child: &Id,
     group: Option<&Id>,
@@ -227,12 +227,12 @@ fn check_place<C: ChildRecord>(
     C::check_group(parent, group).map_err(ActionError::Refused)
 }
 
-type Parent<C> = Rc<dyn Fn() -> Rc<<<C as ChildRecord>::Parent as Resource>::State>>;
+type Parent<C> = Rc<dyn Fn() -> Rc<<<C as ChildResource>::Parent as Resource>::State>>;
 
 /// The children of one kind a container lists, held for a window. See the
 /// [module docs](self).
-pub(crate) struct ChildrenState<C: ChildRecord> {
-    workspace: WorkspaceRecords,
+pub(crate) struct ChildrenState<C: ChildResource> {
+    workspace: WorkspaceResources,
     parent: Parent<C>,
     id: String,
     kind: ResourceType,
@@ -253,8 +253,8 @@ pub(crate) struct ChildrenState<C: ChildRecord> {
     parent_api: RefCell<Option<super::Dispatcher<C::Parent>>>,
 }
 
-impl<C: ChildRecord> ChildrenState<C> {
-    pub(crate) fn open(workspace: WorkspaceRecords, parent: Parent<C>) -> Option<Self> {
+impl<C: ChildResource> ChildrenState<C> {
+    pub(crate) fn open(workspace: WorkspaceResources, parent: Parent<C>) -> Option<Self> {
         let mut doc = ui_core::automerge::AutoCommit::new();
         C::initialize(&mut doc)
             .map_err(|error| tracing::warn!(kind = C::KIND, %error, "child has no genesis"))
@@ -267,7 +267,7 @@ impl<C: ChildRecord> ChildrenState<C> {
         let state = Self {
             workspace,
             parent,
-            id: ui_core::record::children_resource_id(&C::parent_record(), C::KIND),
+            id: ui_core::resource::children_resource_id(&C::parent_resource(), C::KIND),
             kind: ResourceType::new(C::KIND),
             held: RefCell::default(),
             arrivals: RefCell::default(),
@@ -292,7 +292,7 @@ impl<C: ChildRecord> ChildrenState<C> {
     }
 
     fn record(child: &Id) -> Result<DocumentId, String> {
-        C::parent_record()
+        C::parent_resource()
             .child(child.as_str())
             .ok_or_else(|| format!("`{child}` cannot name a record"))
     }
@@ -435,9 +435,9 @@ impl<C: ChildRecord> ChildrenState<C> {
             if !self.workspace.store.takes_writes() {
                 return Err(Unheld::Missing);
             }
-            match self.workspace.store.try_open_record(&checkout) {
+            match self.workspace.store.try_open_resource(&checkout) {
                 Ok(_) => {}
-                Err(RecordOpenError::MissingRecord | RecordOpenError::Busy) => {
+                Err(ResourceOpenError::MissingResource | ResourceOpenError::Busy) => {
                     return Err(Unheld::Missing);
                 }
                 Err(error) => return Err(Unheld::Unreadable(error.to_string())),
@@ -479,16 +479,16 @@ impl<C: ChildRecord> ChildrenState<C> {
             let initialize = |doc: &mut ui_core::automerge::AutoCommit| {
                 C::initialize(doc).map_err(|error| error.to_string())
             };
-            match self.workspace.store.reserve_record(&checkout) {
+            match self.workspace.store.reserve_resource(&checkout) {
                 Ok(mut reservation) => reservation
                     .initialize(initialize)
                     .map_err(|error| error.to_string())?,
                 // A store that keeps no canonical records (a test's)
                 // creates it the way it creates every record.
-                Err(RecordOpenError::IdentityMismatch) => {
+                Err(ResourceOpenError::IdentityMismatch) => {
                     self.workspace
                         .store
-                        .create_record(&checkout)
+                        .create_resource(&checkout)
                         .map_err(|error| error.to_string())?;
                     self.workspace
                         .store
@@ -537,7 +537,7 @@ impl<C: ChildRecord> ChildrenState<C> {
         invoker: &ActionInvoker,
         mut live: Option<&mut Edits<'_>>,
     ) -> Result<(), ActionError> {
-        let record = C::parent_record();
+        let record = C::parent_resource();
         let api = self.parent_api.borrow().clone();
         for edit in edits {
             let action = <C::Parent as Resource>::edit_action(edit)
@@ -924,7 +924,7 @@ pub fn child_resource_id<C: Resource>(id: &Id) -> String {
 
 /// The edits that give a new `C` its first `fields` (its JSON form, any of
 /// its fields), each set on its own.
-fn first_fields<C: ChildRecord>(fields: &serde_json::Value) -> Result<Vec<Edit<C>>, String> {
+fn first_fields<C: ChildResource>(fields: &serde_json::Value) -> Result<Vec<Edit<C>>, String> {
     let fields = match fields {
         serde_json::Value::Null => return Ok(Vec::new()),
         serde_json::Value::Object(fields) => fields,
@@ -990,7 +990,7 @@ fn wrap_child(spec: ActionSpec, api: &str, child: &Id) -> ActionSpec {
         .and_then(|action| {
             EncodedAction::encode_operation(
                 CHAIN_ACTION_TYPE,
-                &super::record::RecordAction {
+                &super::record::ResourceAction {
                     record: api.clone(),
                     action,
                 },
@@ -1101,7 +1101,7 @@ fn move_spec(child: &Id) -> ActionSpec {
     )
 }
 
-impl<C: ChildRecord> RecordApi for ChildrenState<C> {
+impl<C: ChildResource> ResourceApi for ChildrenState<C> {
     fn id(&self) -> &str {
         &self.id
     }
@@ -1140,7 +1140,7 @@ impl<C: ChildRecord> RecordApi for ChildrenState<C> {
     }
 }
 
-impl<C: ChildRecord> ChildrenState<C> {
+impl<C: ChildResource> ChildrenState<C> {
     /// Carry out one published action of the container for `invoker`, the
     /// window lending the parent it shows as `live`.
     fn answer(
@@ -1189,7 +1189,7 @@ impl<C: ChildRecord> ChildrenState<C> {
 
 /// The children of `C` a record lists, held for a view or surface. See the
 /// module docs.
-pub struct Children<C: ChildRecord> {
+pub struct Children<C: ChildResource> {
     state: Rc<ChildrenState<C>>,
     me: tilo_resource::MemberId,
     /// The API of the parent the view shows, which the lifecycle a view
@@ -1197,7 +1197,7 @@ pub struct Children<C: ChildRecord> {
     dispatch: Option<super::Dispatcher<C::Parent>>,
 }
 
-impl<C: ChildRecord> Clone for Children<C> {
+impl<C: ChildResource> Clone for Children<C> {
     fn clone(&self) -> Self {
         Self {
             state: Rc::clone(&self.state),
@@ -1207,7 +1207,7 @@ impl<C: ChildRecord> Clone for Children<C> {
     }
 }
 
-impl<C: ChildRecord> Children<C> {
+impl<C: ChildResource> Children<C> {
     pub(crate) fn new(state: Rc<ChildrenState<C>>, me: tilo_resource::MemberId) -> Self {
         Self {
             state,
@@ -1353,7 +1353,7 @@ impl<C: ChildRecord> Children<C> {
         action: &EncodedAction,
         invoker: &ActionInvoker,
     ) -> Result<tilo_actions::ActionOutput, String> {
-        let request: super::record::RecordAction =
+        let request: super::record::ResourceAction =
             tilo_actions::decode_json(&action.payload).map_err(|error| error.to_string())?;
         if request.record != self.state.id() {
             return Err(format!("`{}` is another record", request.record));
@@ -1367,12 +1367,12 @@ impl<C: ChildRecord> Children<C> {
     /// read as a child.
     #[must_use]
     pub fn detached_in(
-        store: ui_core::record::RecordStore,
+        store: ui_core::resource::ResourceStore,
         app_id: &'static str,
         me: &tilo_resource::MemberId,
         parent: impl Fn() -> Rc<<C::Parent as Resource>::State> + 'static,
     ) -> Option<Self> {
-        let workspace = WorkspaceRecords {
+        let workspace = WorkspaceResources {
             store,
             me: me.clone(),
             permissions: None,
@@ -1395,7 +1395,7 @@ mod tests {
 
     use super::*;
     use tilo_resource::{Model, resource};
-    use ui_core::record::RecordStore;
+    use ui_core::resource::ResourceStore;
 
     #[derive(Model, Default, Debug, Clone, PartialEq)]
     pub struct Workspace {
@@ -1430,7 +1430,7 @@ mod tests {
         }
     }
 
-    impl ChildRecord for Topic {
+    impl ChildResource for Topic {
         type Parent = Workspace;
         fn container(parent: &Workspace) -> &Container {
             &parent.entries
@@ -1441,13 +1441,13 @@ mod tests {
     }
 
     /// A workspace's record in a store of its own, and its topics held over it.
-    fn workspace() -> (RecordStore, Children<Topic>) {
-        let store = RecordStore::in_memory();
+    fn workspace() -> (ResourceStore, Children<Topic>) {
+        let store = ResourceStore::in_memory();
         let parent = DocumentCheckout::new(
             DocumentId::workspace_default(),
             ResourceType::new(Workspace::KIND),
         );
-        store.create_record(&parent).unwrap();
+        store.create_resource(&parent).unwrap();
         store
             .with(&parent.id, |doc| {
                 Workspace::initialize(doc).unwrap();
@@ -1660,7 +1660,7 @@ mod tests {
                 DocumentId::workspace_default(),
                 ResourceType::new(Workspace::KIND),
             );
-            here.create_record(&parent).unwrap();
+            here.create_resource(&parent).unwrap();
             here.with(&parent.id, |doc| {
                 Workspace::initialize(doc).unwrap();
                 doc.commit();
@@ -1708,9 +1708,9 @@ mod tests {
     }
 
     /// The saved record `id` of `store`, as another device receives it.
-    fn copy(from: &RecordStore, to: &RecordStore, id: &DocumentId, kind: &str) {
+    fn copy(from: &ResourceStore, to: &ResourceStore, id: &DocumentId, kind: &str) {
         let saved = from.read(id, |doc| doc.clone().save()).unwrap();
-        to.create_record(&DocumentCheckout::new(id.clone(), ResourceType::new(kind)))
+        to.create_resource(&DocumentCheckout::new(id.clone(), ResourceType::new(kind)))
             .unwrap();
         to.with(id, |doc| {
             *doc = ui_core::automerge::AutoCommit::load(&saved).unwrap();
@@ -1720,14 +1720,14 @@ mod tests {
 
     /// A device's store of workspace `lounge`'s records, kept as it keeps them:
     /// a record it has not got reads as missing, not as an error.
-    fn device() -> RecordStore {
-        crate::record::RecordOwners::with_store(Rc::new(crate::feedback::MemoryStore::new()))
+    fn device() -> ResourceStore {
+        crate::resource::ResourceOwners::with_store(Rc::new(crate::feedback::MemoryStore::new()))
             .open("so.tilo.test", "lounge")
             .unwrap()
     }
 
     /// The children of the workspace `store` holds, as `author` sees them.
-    fn children_of(store: &RecordStore) -> Children<Topic> {
+    fn children_of(store: &ResourceStore) -> Children<Topic> {
         let read = store.clone();
         Children::<Topic>::detached_in(
             store.clone(),

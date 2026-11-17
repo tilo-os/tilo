@@ -3,7 +3,7 @@
 use super::{
     AdmissionError, AdmissionReport, DeviceCert, DocumentAdmission, Held, InputDisposition,
     MembershipError, MissingPrerequisite, NeighbourMsg, ReceiveOutcome, Route, SignedOp, StatePeer,
-    SystemTime, TransportOrigin, VerifiedCertificate, backend, covered_records, err, now_ns,
+    SystemTime, TransportOrigin, VerifiedCertificate, backend, covered_documents, err, now_ns,
     peer_handle, workspace, written_route,
 };
 
@@ -110,7 +110,7 @@ impl StatePeer {
             peer,
             app_id,
             cluster_id,
-            record_id,
+            document_id,
             envelope,
             ..
         } = message
@@ -120,7 +120,7 @@ impl StatePeer {
         if *peer != peer_handle(&source) {
             return Err("transport author mismatch".into());
         }
-        self.lookup_exact_document_parts(source, app_id, cluster_id, record_id, envelope, now)
+        self.lookup_exact_document_parts(source, app_id, cluster_id, document_id, envelope, now)
     }
     pub(super) fn lookup_exact_document_parts(
         &self,
@@ -505,7 +505,7 @@ impl StatePeer {
         // The governance may name a record this replica holds nothing of and
         // that no one can send it: an empty one. Held before the writes
         // waiting on it are tried, so the first one builds on the record.
-        covered_records::hold_covered_empty_records(self)?;
+        covered_documents::hold_covered_empty_documents(self)?;
         let mut report = AdmissionReport::metadata(ReceiveOutcome {
             changed,
             metadata_changed,

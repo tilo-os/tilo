@@ -365,7 +365,7 @@ impl Loaded {
             len: bytes.len() as u64,
         };
         for record in snapshot.records {
-            check_record(&record, loaded.snapshot.host)?;
+            check_resource(&record, loaded.snapshot.host)?;
             loaded.index.insert(&mut loaded.snapshot.records, record)?;
         }
         if rest.iter().all(u8::is_ascii_whitespace) {
@@ -398,7 +398,7 @@ impl Loaded {
         if entry.version != VERSION {
             return Err("invocation journal entry version unsupported".into());
         }
-        check_record(&entry.record, self.snapshot.host)?;
+        check_resource(&entry.record, self.snapshot.host)?;
         self.entries = self.entries.saturating_add(1);
         let Some(&at) = self.index.by_invocation.get(&entry.record.key.invocation) else {
             return self
@@ -448,7 +448,7 @@ pub(super) fn evidence_facts(
         )
         .map_err(|_| "admission actor missing")?,
         app_id: text("app_id")?,
-        record_id: text("record_id")?,
+        document_id: text("document_id")?,
         resource: text("resource")?,
         action: text("action")?,
         revision: intent
@@ -468,7 +468,7 @@ fn check_evidence(
     evidence.validate_retained(intent)
 }
 
-fn check_record(record: &DurableInvocation, host: uuid::Uuid) -> Result<(), String> {
+fn check_resource(record: &DurableInvocation, host: uuid::Uuid) -> Result<(), String> {
     record.key.owner.validate()?;
     if let Some(evidence) = &record.admission {
         check_evidence(&record.key, &record.intent, evidence)?;
@@ -532,7 +532,7 @@ pub(super) struct InvocationJournal {
     /// What a reader may see of each invocation with a write in flight: as
     /// it was before the first, until each write is durable.
     undurable: HashMap<InvocationId, Undurable>,
-    /// The record [`Self::record_mut`] last handed out, as it was before.
+    /// The record [`Self::document_mut`] last handed out, as it was before.
     before: Option<DurableInvocation>,
     poisoned: bool,
     #[cfg(test)]
@@ -798,7 +798,7 @@ impl InvocationJournal {
             .then_some(at)
     }
 
-    fn record_mut(
+    fn document_mut(
         &mut self,
         key: &InvocationKey,
     ) -> Result<(usize, &mut DurableInvocation), &'static str> {
@@ -958,7 +958,7 @@ impl InvocationJournal {
         uncertain: bool,
     ) -> Result<Durable, String> {
         self.ready()?;
-        let (at, record) = self.record_mut(key)?;
+        let (at, record) = self.document_mut(key)?;
         if record.update.is_terminal() || update.invocation() != key.invocation {
             return Err("invocation journal transition rejected".into());
         }
@@ -1005,7 +1005,7 @@ impl InvocationJournal {
         selection: [u8; 32],
     ) -> Result<(), String> {
         self.ready()?;
-        let (at, record) = self.record_mut(key)?;
+        let (at, record) = self.document_mut(key)?;
         if let Some(guarded) = &record.guarded {
             return if guarded.selection() == &selection {
                 Ok(())
@@ -1035,7 +1035,7 @@ impl InvocationJournal {
         bytes: u32,
     ) -> Result<(), String> {
         self.ready()?;
-        let (at, record) = self.record_mut(key)?;
+        let (at, record) = self.document_mut(key)?;
         if !matches!(record.update, InvocationUpdate::Accepted { .. })
             || record.uncertain
             || record.cancellation_requested
@@ -1069,7 +1069,7 @@ impl InvocationJournal {
     /// The cancellation request is durable once the returned write resolves.
     pub fn record_cancellation(&mut self, key: &InvocationKey) -> Result<Durable, String> {
         self.ready()?;
-        let (at, record) = self.record_mut(key)?;
+        let (at, record) = self.document_mut(key)?;
         if record.update.is_terminal() {
             return Err("invocation is no longer running".into());
         }
@@ -1208,7 +1208,7 @@ impl InvocationJournal {
             .get(at)
             .ok_or("unknown invocation journal identity")?
             .clone();
-        // `record_mut` in a later stage records the record as it is now; the
+        // `document_mut` in a later stage records the record as it is now; the
         // one this transition started from is the caller's `before`.
         let started = before.unwrap_or_else(|| record.clone());
         let staged = self
@@ -1400,7 +1400,7 @@ mod tests {
     use super::*;
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    const PRIVATE_RECORD: &str = r#"{"version":7,"host":"00000000-0000-0000-0000-000000000063","records":[{"key":{"workspace":"00000000-0000-0000-0000-000000000001","host":"00000000-0000-0000-0000-000000000063","owner":{"Certified":{"root":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],"device":[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2]}},"invocation":"00000000-0000-0000-0000-000000000004"},"intent":{},"wire_id":1,"update":{"state":"succeeded","invocation":"00000000-0000-0000-0000-000000000004","output":{"value":"private result"}},"uncertain":false,"cancellation_requested":false}]}"#;
+    const PRIVATE_DOCUMENT: &str = r#"{"version":7,"host":"00000000-0000-0000-0000-000000000063","records":[{"key":{"workspace":"00000000-0000-0000-0000-000000000001","host":"00000000-0000-0000-0000-000000000063","owner":{"Certified":{"root":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],"device":[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2]}},"invocation":"00000000-0000-0000-0000-000000000004"},"intent":{},"wire_id":1,"update":{"state":"succeeded","invocation":"00000000-0000-0000-0000-000000000004","output":{"value":"private result"}},"uncertain":false,"cancellation_requested":false}]}"#;
 
     tilo_test_env::scenario! {
         fn a_journal_store_opens_only_for_its_owner_in_a_shape_it_knows;
@@ -1444,9 +1444,9 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let root = dir.path().join("journal");
             drop(InvocationJournal::open(&root).unwrap());
-            std::fs::write(root.join("records.json"), PRIVATE_RECORD).unwrap();
+            std::fs::write(root.join("records.json"), PRIVATE_DOCUMENT).unwrap();
             let mut journal = InvocationJournal::open(&root).expect("private ownership reads");
-            let before: serde_json::Value = serde_json::from_str(PRIVATE_RECORD).unwrap();
+            let before: serde_json::Value = serde_json::from_str(PRIVATE_DOCUMENT).unwrap();
             assert_eq!(serde_json::to_value(&journal.snapshot).unwrap(), before);
             let mut local = key();
             local.host = journal.host();
@@ -1541,7 +1541,7 @@ mod tests {
 
         phase a_journal_barrier_never_returns_effect_permission_on_failure;
         {
-            let private: Snapshot = serde_json::from_str(PRIVATE_RECORD).expect("private owner data");
+            let private: Snapshot = serde_json::from_str(PRIVATE_DOCUMENT).expect("private owner data");
             for failure in [BarrierFailure::File, BarrierFailure::Directory] {
                 let dir = tempfile::tempdir().unwrap();
                 let root = dir.path().join("journal");

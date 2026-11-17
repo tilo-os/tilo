@@ -156,6 +156,18 @@ the recovery key always remains (`tilo-disk-encrypt`).
   auto-approve a request from a machine whose TPM attested the expected boot
   chain. A stolen machine can ask, but it cannot unlock without the owner. A
   copied boot partition alone gets nothing.
+  - `tilo-disk-encrypt enrol --sibling --unattended` asks for exactly that
+    auto-approval: at enrolment the machine creates an attestation key under
+    its TPM, the session holding the person's root certifies its public point
+    in the boot key certificate, and the root signs the PCR 4 + 7 composite
+    the machine measures then. Every boot loads that key again and answers a
+    sibling's challenge with a TPM quote over the challenge nonce, the boot id
+    and the request's ephemeral key; a sibling releases the half with no
+    prompt when the quote is that accepted chain, and asks the person
+    otherwise. A cluster of servers therefore unlocks itself after a power
+    loss, while a machine whose boot chain changed, whose TPM was cleared, or
+    which has no attestation key still waits for its owner. Enrolling again
+    accepts a new chain; the recovery key remains the independent last resort.
 - **The passphrase or recovery key** at the keyboard, as today.
 
 Wi-Fi-only machines need the network in early boot. The initramfs runs the
@@ -239,6 +251,8 @@ It unlocks like any other machine with a TPM.
   rollback through the `device` slot, then sleep and are woken by name.
 - A VM with an encrypted disk reboots and is unlocked by its paired sibling
   after `device.unlock` is approved (`os/dev/test-nearby-pairing.sh
-  --unlock`). A denied request, a replayed earlier exchange, a boot key that
-  was never certified, and a device removed from the fleet each leave it at
-  the passphrase prompt, with the attempt in the owner's history.
+  --unlock`). Re-enrolled with `--unattended`, the same VM reboots on its
+  accepted boot chain and is released with no prompt, its kept exchange
+  recording the TPM quote. A denied request, a replayed earlier exchange, a
+  boot key that was never certified, and a device removed from the fleet each
+  leave it at the passphrase prompt, with the attempt in the owner's history.

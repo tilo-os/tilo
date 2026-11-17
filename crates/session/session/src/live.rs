@@ -13,7 +13,7 @@
 //! admitting as many devices as it takes at once — the device asks it again, waiting longer each
 //! time, since a relay that comes back says nothing to the devices that missed it.
 //! Every other member dials that relay over iroh ([`tilo_live::native`]) with its device
-//! certificate as its grant, and each participant seals its own tracks under the scope's channel
+//! certificate as its grant, and each member seals its own tracks under the scope's channel
 //! content keys ([`tilo_live::plane::Plane`]): the relay copies bytes it cannot open, and it is a
 //! member that holds them already.
 
@@ -570,7 +570,7 @@ impl Shared {
             workspace: request.workspace,
             workspace_name: request.workspace.to_string(),
             publication: Namespace::new(&scope, request.device).path(),
-            prefix: live::participants(&scope),
+            prefix: live::devices(&scope),
             scope: scope.id(),
         }))
     }
@@ -1529,7 +1529,7 @@ mod tests {
                 "the device serving the workspace admits"
             );
             let mut elsewhere = grant(workspace, &mine);
-            elsewhere.scope = Scope::record(workspace.to_string(), "elsewhere").id();
+            elsewhere.scope = Scope::resource(workspace.to_string(), "elsewhere").id();
             assert!(
                 !admits([2; 32], &elsewhere, &devices, [2; 32], 10),
                 "a scope this session carries no plane for is refused"
@@ -1763,7 +1763,7 @@ mod tests {
                 Some("endpoint-not-the-device")
             );
             let mut elsewhere = grant(workspace, &other);
-            elsewhere.scope = Scope::record(workspace.to_string(), "elsewhere").id();
+            elsewhere.scope = Scope::resource(workspace.to_string(), "elsewhere").id();
             assert_eq!(why([2; 32], &elsewhere, [1; 32]), Some("scope-not-carried"));
             assert_eq!(
                 why([1; 32], &grant(workspace, &mine), [2; 32]),

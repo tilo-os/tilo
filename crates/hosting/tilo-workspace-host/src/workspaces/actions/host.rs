@@ -724,6 +724,14 @@ impl Workspaces {
     /// so a host with many workspaces answers a person with a few of them in
     /// the time those few take. With `only`, only the workspaces it names,
     /// the others never read.
+    /// `device`'s person's whole workspace list as their devices read it now:
+    /// what the host sends every session of theirs when the list changes.
+    pub(in crate::workspaces) async fn personal_of(&self, device: &DeviceCert) -> PersonalList {
+        let only = Listed::default();
+        let here = self.listed(device, &only).await;
+        self.personal(device, &here, &only)
+    }
+
     async fn listed(&self, device: &DeviceCert, only: &Listed) -> Vec<WorkspaceListing> {
         let labels = &only.labels;
         let person = device.user_public_key;

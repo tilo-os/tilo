@@ -50,7 +50,7 @@ impl PersonSeen {
 impl TabBar {
     /// Remember that `widget` painted `text` as its ink stands at `rect`
     /// ([`TabBar::painted_labels`]).
-    pub(super) fn record_label(&self, widget: &'static str, text: &str, rect: Rect) {
+    pub(super) fn resource_label(&self, widget: &'static str, text: &str, rect: Rect) {
         if text.is_empty() || rect.area() <= 0.0 {
             return;
         }

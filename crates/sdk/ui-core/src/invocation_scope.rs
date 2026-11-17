@@ -8,8 +8,7 @@ use tilo_sort::CompactSort as _;
 #[cfg(feature = "broker-transport")]
 pub use ::collaboration::invocation_scope::ExternalModerationReply;
 pub use ::collaboration::invocation_scope::{
-    InvokerScope, WriteAttributionReceipt, current_invoker, current_participant,
-    delivered_invocation,
+    InvokerScope, WriteAttributionReceipt, current_invoker, current_presence, delivered_invocation,
 };
 
 /// A host moderation receipt, suitable for an existing action worker.
@@ -87,30 +86,30 @@ pub struct PublishedInvocationRequest {
     /// Whose view this invocation resolves against. Set only by the host that admitted `actor` (for an
     /// agent task, derived from the admitted task), never taken from a caller's envelope. It routes to
     /// view state and is never authority.
-    pub participant: Option<tilo_actions::ParticipantId>,
+    pub presence: Option<tilo_actions::PresenceId>,
 }
 impl PublishedInvocationRequest {
-    /// The invoker this request resolves for: the admitted actor plus the host-set participant.
+    /// The invoker this request resolves for: the admitted actor plus the host-set presence.
     pub fn invoker(&self) -> tilo_actions::ActionInvoker {
         let invoker = tilo_actions::ActionInvoker::admitted(&self.actor.clone().into());
-        match &self.participant {
-            Some(participant) => invoker.with_participant(participant.clone()),
+        match &self.presence {
+            Some(presence) => invoker.with_presence(presence.clone()),
             None => invoker,
         }
     }
 }
 
 thread_local! {
-    static VIEWERS: std::cell::RefCell<Vec<tilo_actions::ParticipantId>> =
+    static VIEWERS: std::cell::RefCell<Vec<tilo_actions::PresenceId>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// The participant a published tree is being built for while it lives: what a surface offers bound to
-/// where someone is (their caret, their Find hits) is that participant's, not the window's.
+/// The presence a published tree is being built for while it lives: what a surface offers bound to
+/// where someone is (their caret, their Find hits) is that presence's, not the window's.
 pub struct ViewerScope(());
 impl ViewerScope {
-    pub fn enter(participant: tilo_actions::ParticipantId) -> Self {
-        VIEWERS.with_borrow_mut(|viewers| viewers.push(participant));
+    pub fn enter(presence: tilo_actions::PresenceId) -> Self {
+        VIEWERS.with_borrow_mut(|viewers| viewers.push(presence));
         Self(())
     }
 }
@@ -122,10 +121,10 @@ impl Drop for ViewerScope {
     }
 }
 
-/// Whose view what is being built or resolved now is: the participant of the delivered invocation, else
-/// the participant a tree is published for.
-pub fn current_viewer() -> Option<tilo_actions::ParticipantId> {
-    current_participant().or_else(|| VIEWERS.with_borrow(|viewers| viewers.last().cloned()))
+/// Whose view what is being built or resolved now is: the presence of the delivered invocation, else
+/// the presence a tree is published for.
+pub fn current_viewer() -> Option<tilo_actions::PresenceId> {
+    current_presence().or_else(|| VIEWERS.with_borrow(|viewers| viewers.last().cloned()))
 }
 
 /// Who an effect invocation runs for, kept while it runs: what its handler and completion submit is
@@ -237,11 +236,10 @@ pub fn view_operation_permitted(
     contract: &tilo_actions::ActionContract,
 ) -> bool {
     actor.member_id() == Some(local_author)
-        || contract.reads_record()
-        || (contract.is_participant_view()
-            && current_invoker().is_some_and(|invoker| {
-                invoker.acting.by == *actor && invoker.participant.is_some()
-            }))
+        || contract.reads_resource()
+        || (contract.is_presence_view()
+            && current_invoker()
+                .is_some_and(|invoker| invoker.acting.by == *actor && invoker.presence.is_some()))
 }
 
 /// Inert declaration retained by the actual host at original admission. This is not authority, and is
@@ -344,7 +342,7 @@ pub(crate) struct PublishedInvocationRuntime {
 use crate::{
     collaboration::RouteSpec,
     history_mode::HistoryOwner,
-    record::{DocumentCheckout, DocumentId, RecordAdmission, RecordStore},
+    resource::{DocumentCheckout, DocumentId, ResourceAdmission, ResourceStore},
 };
 use automerge::{AutoCommit, ChangeHash, transaction::Transactable};
 use std::{
@@ -364,7 +362,7 @@ use std::{
 pub struct InvocationLocusBasis {
     invocation: tilo_actions::InvocationId,
     actor: tilo_actions::Actor,
-    participant: Option<tilo_actions::ParticipantId>,
+    presence: Option<tilo_actions::PresenceId>,
     publication: tilo_actions::ActionAddress,
     target: crate::bound_dispatch::BoundActionAddress,
     owner_lifetime: uuid::Uuid,
@@ -380,8 +378,8 @@ impl InvocationLocusBasis {
     pub fn actor(&self) -> &tilo_actions::Actor {
         &self.actor
     }
-    pub fn participant(&self) -> Option<&tilo_actions::ParticipantId> {
-        self.participant.as_ref()
+    pub fn presence(&self) -> Option<&tilo_actions::PresenceId> {
+        self.presence.as_ref()
     }
     /// Original host-admitted address; it may be a publication alias.
     pub fn publication(&self) -> &tilo_actions::ActionAddress {
@@ -426,7 +424,7 @@ const MAX_LOCUS_BASIS_BYTES: usize = 16 * 1024;
 #[derive(Clone)]
 pub struct ResourceInvocationScope {
     owner: HistoryOwner,
-    admission: RecordAdmission,
+    admission: ResourceAdmission,
     lease: PublishedInvocationLease,
     provenance: Rc<RefCell<InvocationProvenance>>,
     retired: Arc<AtomicBool>,
@@ -535,9 +533,9 @@ impl ResourceInvocationScope {
         let fields = [
             request.actor.id(),
             request
-                .participant
+                .presence
                 .as_ref()
-                .map_or("", tilo_actions::ParticipantId::as_str),
+                .map_or("", tilo_actions::PresenceId::as_str),
             request.address.resource.as_str(),
             request.address.action.as_str(),
             target.address.address.resource.as_str(),
@@ -562,7 +560,7 @@ impl ResourceInvocationScope {
             InvocationLocusState::Captured(Box::new(InvocationLocusBasis {
                 invocation,
                 actor: request.actor.clone(),
-                participant: request.participant.clone(),
+                presence: request.presence.clone(),
                 publication: request.address.clone(),
                 target: target.address.clone(),
                 owner_lifetime: target.binding.lifetime_id,
@@ -1235,9 +1233,9 @@ impl DocumentAuthorization {
                 request.actor.id().len(),
                 request.argument.as_ref().map_or(0, String::capacity),
                 request
-                    .participant
+                    .presence
                     .as_ref()
-                    .map_or(0, |participant| participant.as_str().len()),
+                    .map_or(0, |presence| presence.as_str().len()),
             ] {
                 bytes = bytes.checked_add(len)?;
             }
@@ -1247,43 +1245,43 @@ impl DocumentAuthorization {
 }
 
 struct LoanIdentity {
-    store: RecordStore,
+    store: ResourceStore,
     record: DocumentId,
     document: *const AutoCommit,
 }
 thread_local! {
-    static RECORD_LOANS: RefCell<Vec<LoanIdentity>> = const { RefCell::new(Vec::new()) };
+    static RESOURCE_LOANS: RefCell<Vec<LoanIdentity>> = const { RefCell::new(Vec::new()) };
 }
-struct RecordLoan;
-impl Drop for RecordLoan {
+struct ResourceLoan;
+impl Drop for ResourceLoan {
     fn drop(&mut self) {
-        RECORD_LOANS.with_borrow_mut(|loans| {
+        RESOURCE_LOANS.with_borrow_mut(|loans| {
             loans.pop();
         });
     }
 }
-pub(crate) fn with_record_loan<R>(
-    store: &RecordStore,
+pub(crate) fn with_resource_loan<R>(
+    store: &ResourceStore,
     record: &DocumentId,
     document: &mut AutoCommit,
     callback: impl FnOnce(&mut AutoCommit) -> R,
 ) -> R {
-    RECORD_LOANS.with_borrow_mut(|loans| {
+    RESOURCE_LOANS.with_borrow_mut(|loans| {
         loans.push(LoanIdentity {
             store: store.clone(),
             record: record.clone(),
             document,
         })
     });
-    let _loan = RecordLoan;
+    let _loan = ResourceLoan;
     callback(document)
 }
 fn record_loan_matches(
-    store: &RecordStore,
+    store: &ResourceStore,
     checkout: &DocumentCheckout,
     document: &AutoCommit,
 ) -> bool {
-    RECORD_LOANS.with_borrow(|loans| {
+    RESOURCE_LOANS.with_borrow(|loans| {
         loans.last().is_some_and(|loan| {
             loan.store.same_owner(store)
                 && loan.record == checkout.id
@@ -1294,24 +1292,24 @@ fn record_loan_matches(
 
 /// The record a disclosed read names: its workspace when it is shared in one.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RecordStamp {
+pub(crate) struct ResourceStamp {
     pub(crate) workspace: Option<uuid::Uuid>,
     pub(crate) app_id: String,
-    pub(crate) record_id: String,
+    pub(crate) document_id: String,
 }
 
-impl From<&RouteSpec> for RecordStamp {
+impl From<&RouteSpec> for ResourceStamp {
     fn from(route: &RouteSpec) -> Self {
         Self {
             workspace: Some(route.cluster_id),
             app_id: route.app_id.clone(),
-            record_id: route.record.clone().unwrap_or_default(),
+            document_id: route.record.clone().unwrap_or_default(),
         }
     }
 }
 
 struct MountedDocument {
-    stamp: RecordStamp,
+    stamp: ResourceStamp,
     document: *const AutoCommit,
 }
 thread_local! {
@@ -1328,7 +1326,7 @@ impl Drop for MountedLoan {
 
 /// Lend `document` to `callback`, identified as the record `stamp` names.
 fn with_identified_document<R>(
-    stamp: Option<RecordStamp>,
+    stamp: Option<ResourceStamp>,
     document: &mut AutoCommit,
     callback: impl FnOnce(&mut AutoCommit) -> R,
 ) -> R {
@@ -1349,14 +1347,14 @@ pub(crate) fn with_mounted_document<R>(
     document: &mut AutoCommit,
     callback: impl FnOnce(&mut AutoCommit) -> R,
 ) -> R {
-    with_identified_document(route.as_ref().map(RecordStamp::from), document, callback)
+    with_identified_document(route.as_ref().map(ResourceStamp::from), document, callback)
 }
 
 /// Lend a component's record document to `callback`, identified only when it is the record store's
 /// current loan of exactly `checkout`'s document: on its canonical `route` when it has one, else as
 /// `app_id`'s local record.
-pub(crate) fn with_loaned_record<R>(
-    store: &RecordStore,
+pub(crate) fn with_loaned_resource<R>(
+    store: &ResourceStore,
     checkout: &DocumentCheckout,
     app_id: &str,
     route: Option<RouteSpec>,
@@ -1365,19 +1363,19 @@ pub(crate) fn with_loaned_record<R>(
 ) -> R {
     let stamp = record_loan_matches(store, checkout, document).then(|| {
         route.as_ref().map_or_else(
-            || RecordStamp {
+            || ResourceStamp {
                 workspace: None,
                 app_id: app_id.to_string(),
-                record_id: checkout.id.as_str().to_string(),
+                document_id: checkout.id.as_str().to_string(),
             },
-            RecordStamp::from,
+            ResourceStamp::from,
         )
     });
     with_identified_document(stamp, document, callback)
 }
 
 /// The record the innermost identified document names, when it is exactly `document`.
-pub(crate) fn identified_record(document: &AutoCommit) -> Option<RecordStamp> {
+pub(crate) fn identified_resource(document: &AutoCommit) -> Option<ResourceStamp> {
     MOUNTED_DOCUMENTS.with_borrow(|mounted| {
         mounted
             .last()

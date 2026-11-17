@@ -31,9 +31,14 @@ is part of the widget contract, beside `draw`:
   `<input>` or `<textarea>`), `cx.blocks(…)` for a document of blocks
   (paragraphs, headings, list and checklist items, quotes, code, with inline
   marks and the caret).
-- A widget that is **genuinely drawn** (a chart, a canvas, a map, video)
-  calls `cx.picture()`: the page shows its paint as a `<canvas>` at the
+- A widget that is **genuinely drawn** (a chart, a canvas, a keyboard map,
+  video) calls `cx.picture()`: the page shows its paint as a `<canvas>` at the
   screen's density, asked for when what it shows changed.
+- A **control** calls `cx.control(control)`: the element the browser and an
+  assistive technology know, holding what the widget holds. The page builds it
+  from `Control`, and what the person does on it comes back as the widget's own
+  semantic action (`semantic`, the path a field already uses): one input path
+  for the canvas and the page alike.
 
 The trait's default, `HtmlCx::from_layout`, renders a widget from its layout
 node and its role (its children, or a picture for a leaf). It exists only for
@@ -42,6 +47,29 @@ refuses an `impl Widget` without `fn html` beyond the counts listed in
 `tools/policy/widget_html_baseline.txt`, and asks for a count to be lowered
 once a widget gets its own, so the list only shrinks and new widgets cannot
 skip it.
+
+## Controls
+
+`Control` (`crates/sdk/ui-core/src/composition.rs`) is one kind per family of
+control, carrying what the element holds:
+
+| Kind | The page's element | What comes back |
+|---|---|---|
+| `Check` | a `<label>` around `<input type=checkbox>` (a radio's in a set, a switch's as `role=switch`), with its words | `ToggleCheck` |
+| `Range` | `<input type=range>` with `min`, `max`, `step` and the app's words for the value | `SetValue` |
+| `Entry` | `<input>` of a kind (`number` with two steppers, `date`, `time`, `colour`, `search`) | `SetValue` |
+| `Select` | a `<button role=combobox aria-haspopup=listbox>` showing the current value, and its open `role=listbox` of `role=option`s | `Activate` to open; `SetValue` per option |
+| `Choices` | a set (`tablist`, `radiogroup`, `menu`, `toolbar`, `group`) of `role=tab`/`radio`/`menuitem`/`button` choices, each naming its semantic target | `Activate` on that target |
+| `Link` | `<a href>` with its words | `Activate` |
+
+A widget that shows several parts of one control (a colour's swatches beside
+its hex field) calls `cx.control` once per part. A choice with no `target` and
+no `value` is only its looks: a press on it goes to the canvas as every other
+press does, and the widget acts by where the press landed.
+
+Icons reach a page through `composition::glyph`, which is part of `HTML_CODE`
+with the faces, so an SVG outline's path data is not in a program that never
+composes a page.
 
 Widgets with their own HTML so far: `Text`, `EditableLabel`, `BlockEditor`,
 `Button` (a `<button>` whose face is its icon, words and state), `ListRow`,
@@ -56,14 +84,41 @@ and its shortcut; the window's search is its field and its buttons; a floating
 window is its title, its close button and the content it holds; the window
 strip's tiles, groups and their controls are their children and their glyphs;
 the history host and the framework's presentation compose their children, and
-the header a client-drawn window draws is a `<header>`. What a widget draws
-itself — a web view, a native surface mounted by the platform, an embedded
-app, a capture's canvas, a display arrangement, a split's rule — is a picture
-of that paint, with the controls it names (`HtmlCx::targets`) as real buttons
-over it: `HtmlCx::painted` takes the count a widget bumps each time it paints,
-so the page fetches a new picture when there is one. The window's bar of
-slots, which the frame hosts over a page that mounts one app, is a `<header>`
-toolbar of real buttons over its painted band.
+the header a client-drawn window draws is a `<header>`. The content widgets
+show what they are: `DataTable` (a `<table>` of `<th>` and `<td>`),
+`PropertyList` and `Facts` (a `<dl>` of terms and descriptions), `Breadcrumb`
+(a `<nav>` holding an `<ol>`), `ConversationList` and `ActivityTimeline` (a
+list of lines with their authors and times), a quote (a `<blockquote>`),
+`CodeEditor` (a `<pre><code>` to read, its own field to edit), `ProgressBar`
+(a `<progress>` with its value), `Gauge` (its name and readout as words over a
+track and fill the page lays), the `Section` family (a `<section>` with its
+heading, count and action), `EmptyState`, `Banner` (a live region), `DropZone`,
+`SearchResults`, `Card`/`MediaCard`/`StatTile`/`QuickTile` and their grids,
+`TextStack`, `Badge`, `Avatar` (an `<img>` where its address loads, its
+initials as text otherwise), `Image` (an `<img>` where its address loads),
+`Icon`, `Divider` (a `<hr>`), `Spinner` and `Skeleton` (drawn by the page's own
+CSS), `EmojiPicker`, `ReactionStrip`, `MediaTransport`'s art, lines and times,
+`PagePreview`, `PageSidebar`, the `Surfaces` components, and the containers
+that only place what they hold (`GroupRow`, `Columns`, `DragRun`,
+`GraphCanvas`, `Manual`, `DocumentView`, `DocumentViewport`, `DisclosureRow`);
+a widget that is genuinely drawn (`Chart`, `Sparkline`, `Plot`, `Map`,
+`Drawing`, `QR`, `VideoPlayer`, `ImageViewer`, `ImageCrop`, `ProgressRing`)
+shows as its picture inside an element that carries its name. What a widget
+draws itself — a web view, a native surface mounted by the platform, an
+embedded app, a capture's canvas, a display arrangement, a split's rule — is a
+picture of that paint, with the controls it names (`HtmlCx::targets`) as real
+buttons over it: `HtmlCx::painted` takes the count a widget bumps each time it
+paints, so the page fetches a new picture when there is one. The controls' own
+elements are listed above. The window's bar of slots, which the frame hosts
+over a page that mounts one app, is a `<header>` toolbar of real buttons over
+its painted band.
+
+A widget shows what it paints itself from parts of its own: `cx.words` puts a
+run of text as an element (`h3`, `dt`, `td`, `li`) standing where the widget
+sets it, `cx.attr` gives its element what only its kind carries (an `<img>`'s
+`src` and `alt`, a `<progress>`'s `value`, a `<time>`'s `datetime`), and
+`cx.ground` fills its element with the ground the widget paints under it (a
+card's, a badge's), so a page reads like the canvas in light and dark.
 
 ## How a frame reaches the page
 

@@ -42,7 +42,7 @@ tilo_test_env::scenario! {
             fs("/var/workspace/books/dune.epub"),
             ResourceRef::Device("camera".into()),
             ResourceRef::NetHost("example.com".into()),
-            ResourceRef::FsRecord("file-1".into()),
+            ResourceRef::FsResource("file-1".into()),
         ] {
             for access in [Access::Read, Access::Write] {
                 assert_eq!(

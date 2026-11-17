@@ -114,14 +114,14 @@ impl Direct {
             &Config {
                 issuer: host.to_owned(),
                 web_entry: site.to_owned(),
-                relay: host.to_owned(),
+                hosts: vec![host.to_owned()],
             },
             Store::in_memory(),
         )
         .map_err(|error| error.to_string())?;
         let (_, token) = server
             .store
-            .record_key(&key, &file.name, GrantKind::Key, None, now_ms())
+            .resource_key(&key, &file.name, GrantKind::Key, None, now_ms())
             .map_err(|error| error.to_string())?;
         Ok(Self {
             server,

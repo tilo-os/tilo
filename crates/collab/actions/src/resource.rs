@@ -118,7 +118,7 @@ pub struct ActionBinding<I> {
     /// window's business is ([`Self::identity`]).
     kind: String,
     /// The app the resource is published by, when everyone in the workspace reads it rather than
-    /// only its person ([`ResourceSpec::personal`]): what [`Self::shared_record`] names.
+    /// only its person ([`ResourceSpec::personal`]): what [`Self::shared_resource`] names.
     shared_by: Option<String>,
     spec: ActionSpec,
     arguments: Arguments<I>,
@@ -198,7 +198,7 @@ impl<I> ActionBinding<I> {
     /// app publishing it, the resource and its kind: a change to a shared document (a message
     /// sent into a conversation), never an effect, a view change or the person's own record.
     #[must_use]
-    pub fn shared_record(&self) -> Option<(&str, &str, &str)> {
+    pub fn shared_resource(&self) -> Option<(&str, &str, &str)> {
         let app = self.shared_by.as_deref()?;
         (self.spec.kind == OperationKind::Document).then_some((
             app,
@@ -2243,15 +2243,15 @@ impl ActionSpec {
 
     /// Declare this view as a read of what its record holds that takes
     /// arguments (a version, a review of one): recorded as
-    /// [`RECORD_READ_TAG`](crate::RECORD_READ_TAG), it moves nothing, anyone
+    /// [`RESOURCE_READ_TAG`](crate::RESOURCE_READ_TAG), it moves nothing, anyone
     /// who may read the record may run it, and it discloses the record to
     /// them. Call after [`with_contract`](Self::with_contract), which replaces
     /// the tags.
     #[must_use]
-    pub fn reads_record(mut self) -> Self {
+    pub fn reads_resource(mut self) -> Self {
         push_tag(
             &mut self.type_mut().contract,
-            crate::contract::RECORD_READ_TAG,
+            crate::contract::RESOURCE_READ_TAG,
         );
         self
     }

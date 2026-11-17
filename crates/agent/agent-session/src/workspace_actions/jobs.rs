@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use tilo_relay_protocol::WorkspaceId;
 
-use super::{CatalogueFactory, Job, Shared, Worker, WorkspaceRecordsLink};
+use super::{CatalogueFactory, Job, Shared, Worker, WorkspaceDocumentsLink};
 
 impl Job {
     /// The workspace whose thread serves the job: every job is about one.
@@ -21,10 +21,12 @@ impl Job {
             | Self::Search { workspace_id, .. }
             | Self::Changes { workspace_id, .. }
             | Self::Invocations { workspace_id, .. }
+            | Self::Changed { workspace_id, .. }
             | Self::Arrived { workspace_id, .. }
             | Self::Joined(workspace_id)
             | Self::Forget(workspace_id)
-            | Self::NotesFolder(workspace_id) => *workspace_id,
+            | Self::NotesFolder(workspace_id)
+            | Self::Rename(workspace_id, _) => *workspace_id,
             Self::Ran(ended) => ended.workspace_id,
         }
     }
@@ -49,7 +51,7 @@ impl Jobs {
     pub(super) fn start(
         shared: &Arc<Shared>,
         catalogue: &CatalogueFactory,
-        link: &Arc<dyn WorkspaceRecordsLink>,
+        link: &Arc<dyn WorkspaceDocumentsLink>,
     ) -> Result<Self, String> {
         let mut shards = Vec::new();
         for index in 0..crate::worker::pool_size() {

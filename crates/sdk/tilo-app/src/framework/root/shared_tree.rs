@@ -48,10 +48,10 @@ pub(super) struct ItemChildren {
     children: SharedChildren,
 }
 
-/// The view operation types of the nested resources at one live version,
-/// and the children they were collected from.
+/// The view operation types beneath the resource and its records, at one live
+/// version and records' revisions, and the children they were collected from.
 pub(super) struct NestedViews {
-    revision: (u64, u64),
+    at: ((u64, u64), Vec<(String, u64)>),
     children: SharedChildren,
     views: Rc<HashSet<String>>,
 }
@@ -59,7 +59,7 @@ pub(super) struct NestedViews {
 /// The children of the publication with the records kept beside the
 /// resource, at the records' revisions, one locale and whether `open` is
 /// offered on items.
-pub(super) struct RecordChildren {
+pub(super) struct ResourceChildren {
     document: SharedChildren,
     records: Vec<(String, u64)>,
     i18n: u64,
@@ -303,41 +303,34 @@ impl ResourceRoot {
         children
     }
 
-    /// The view operation types of the nested resources of the live state.
+    /// The view operation types beneath the live state and the records kept
+    /// beside it, such as a chain's items' rich-text bodies.
     pub(super) fn nested_views(&self) -> Rc<HashSet<String>> {
-        let revision = self.version();
+        let at = (self.version(), self.storage.resources_key());
         if let Some(pinned) = self
             .nested_views
             .borrow()
             .as_ref()
-            .filter(|pinned| pinned.revision == revision)
+            .filter(|pinned| pinned.at == at)
         {
             return Rc::clone(&pinned.views);
         }
         let tree = self.shared_document_tree(&*self.typed.state());
-        self.keep_nested_views(revision, tree.children())
+        self.keep_nested_views(tree.children())
     }
 
-    /// Answer the nested views of `state`, a version the view has not
-    /// synced yet, until the live revision moves.
-    pub(super) fn pin_nested_views(&self, state: &dyn Any) {
-        let tree = self.shared_document_tree(state);
-        self.keep_nested_views(self.version(), tree.children());
-    }
-
-    fn keep_nested_views(
-        &self,
-        revision: (u64, u64),
-        children: &SharedChildren,
-    ) -> Rc<HashSet<String>> {
+    /// Answer the nested views of `document`, until the live revision moves.
+    pub(super) fn keep_nested_views(&self, document: &SharedChildren) -> Rc<HashSet<String>> {
+        let children = self.with_resource_children(document.clone(), self.stages.opens());
+        let at = (self.version(), self.storage.resources_key());
         let mut kept = self.nested_views.borrow_mut();
         let views = match kept.as_ref() {
-            Some(last) if last.children.ptr_eq(children) => Rc::clone(&last.views),
+            Some(last) if last.children.ptr_eq(&children) => Rc::clone(&last.views),
             _ => Rc::new(nested_view_types(children.as_slice())),
         };
         *kept = Some(NestedViews {
-            revision,
-            children: children.clone(),
+            at,
+            children,
             views: Rc::clone(&views),
         });
         views
@@ -348,14 +341,14 @@ impl ResourceRoot {
     /// children beyond what [`Self::published_children`] keeps per child (no
     /// surface, which alone publishes rows or binds edits to them, and no
     /// content resource naming the root), and the record reads as the
-    /// resource. `None` otherwise, and for a participant's view, which is
+    /// resource. `None` otherwise, and for a presence's view, which is
     /// never kept.
     pub(super) fn shared_resources(
         &self,
-        participant: Option<&tilo_actions::ParticipantId>,
+        presence: Option<&tilo_actions::PresenceId>,
         doc: &AutoCommit,
     ) -> Option<Vec<SharedResource>> {
-        if participant.is_some() || self.typed.unreadable().is_some() {
+        if presence.is_some() || self.typed.unreadable().is_some() {
             return None;
         }
         let surface = self.has_surface();
@@ -373,7 +366,7 @@ impl ResourceRoot {
             if current.is_some() {
                 // As `current_publication`: nested views follow this state
                 // until the view syncs to it.
-                self.keep_nested_views(self.version(), tree.children());
+                self.keep_nested_views(tree.children());
             }
             let mut head =
                 self.decorate_publication(state, tree.head().clone(), Decoration::Actions);
@@ -383,7 +376,7 @@ impl ResourceRoot {
             } else {
                 document
             };
-            let children = self.with_record_children(document, opens);
+            let children = self.with_resource_children(document, opens);
             if opens && !head.actions.iter().any(|existing| existing.id == "open") {
                 head = head.with_action(open_spec());
             }
@@ -456,13 +449,13 @@ impl ResourceRoot {
     /// publication carries them (with `open` on their items when a view
     /// `opens` them). The same children while neither moved, so what reads
     /// the forest skips them as seen.
-    fn with_record_children(&self, document: SharedChildren, opens: bool) -> SharedChildren {
-        let records = self.storage.records_key();
+    fn with_resource_children(&self, document: SharedChildren, opens: bool) -> SharedChildren {
+        let records = self.storage.resources_key();
         if records.is_empty() {
             return document;
         }
         let i18n = ui_core::i18n::I18nManager::revision();
-        let mut kept = self.record_children.borrow_mut();
+        let mut kept = self.resource_children.borrow_mut();
         if let Some(kept) = kept.as_ref().filter(|kept| {
             kept.document.ptr_eq(&document)
                 && kept.records == records
@@ -477,7 +470,7 @@ impl ResourceRoot {
                 .cloned()
                 .chain(
                     self.storage
-                        .record_resources()
+                        .resource_resources()
                         .into_iter()
                         .map(|mut record| {
                             if opens {
@@ -488,7 +481,7 @@ impl ResourceRoot {
                 )
                 .collect(),
         );
-        *kept = Some(RecordChildren {
+        *kept = Some(ResourceChildren {
             document,
             records,
             i18n,
@@ -650,7 +643,7 @@ impl ResourceRoot {
         Adds {
             open: opens,
             jobs: self.typed.has_causal_drains(),
-            reads: self.resource.record_table.is_some(),
+            reads: self.resource.resource_table.is_some(),
         }
     }
 
@@ -665,7 +658,7 @@ impl ResourceRoot {
             offer_item_open(self.resource.opens_as_item, resource);
         }
         if adds.reads
-            && let Some(table) = self.resource.record_table
+            && let Some(table) = self.resource.resource_table
         {
             offer_item_reads(resource, table, self.resource.kind);
         }

@@ -12,17 +12,17 @@ use fs_protocol::files::FileNodeKind;
 use fs_protocol::tree::{FILES_APP, ROOT_ID, Tree, TreeEntry};
 use serde_json::json;
 use std::sync::Arc;
-use tilo_fs::tree_record::record as tree_record;
+use tilo_fs::tree_document::record as tree_record;
 
 /// The tree of `workspace`'s Files as its host keeps it; empty while it keeps none.
 async fn tree_of(on_relay: &OnRelay, workspace: &str) -> Tree {
     let workspaces = on_relay.hosted.relay.workspaces().unwrap();
     workspaces
-        .record_document(workspace, FILES_APP, &tree_record())
+        .resource_document(workspace, FILES_APP, &tree_record())
         .await
         .ok()
         .flatten()
-        .and_then(|record| Tree::of_record(&record).ok())
+        .and_then(|record| Tree::of_document(&record).ok())
         .unwrap_or_default()
 }
 

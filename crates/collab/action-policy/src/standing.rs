@@ -42,6 +42,7 @@ impl Standing {
 
     /// A person acting as themselves.
     #[must_use]
+    #[track_caller]
     pub fn person(
         policy: impl Into<std::sync::Arc<WorkspacePolicy>>,
         person: impl Into<crate::PersonId>,

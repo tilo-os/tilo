@@ -850,7 +850,7 @@ pub struct ChannelContext {
     /// On a session-local frame: records of this application's trees a peer
     /// wrote and no window here holds (`recordsArrived`); empty otherwise.
     /// Not a roster update either.
-    pub records_arrived: Vec<String>,
+    pub resources_arrived: Vec<String>,
 }
 
 /// One delegated agent the session verified for a workspace: its person's root

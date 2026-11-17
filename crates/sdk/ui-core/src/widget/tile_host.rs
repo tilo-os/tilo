@@ -343,15 +343,15 @@ fn planned_copies(
 
 /// The name of the card a tile shows while its record cannot be opened.
 #[must_use]
-pub fn record_unavailable_title() -> String {
+pub fn resource_unavailable_title() -> String {
     crate::i18n::I18nManager::lookup_plain("record-unavailable-title")
 }
 
 /// The card a tile shows while its record cannot be opened: what happened
 /// and what to do, in the person's words, with the store's reason (`detail`)
 /// behind "Details".
-fn record_unavailable_card(detail: &str) -> super::EmptyState {
-    super::EmptyState::new(record_unavailable_title())
+fn resource_unavailable_card(detail: &str) -> super::EmptyState {
+    super::EmptyState::new(resource_unavailable_title())
         .with_icon(crate::icons::Icon::File)
         .with_message(crate::i18n::I18nManager::lookup_plain(
             "record-unavailable-hint",
@@ -388,11 +388,11 @@ pub struct TileHost {
     owner_bound_work: bool,
     owner_bound_custody: Option<crate::history_mode::HistoryOwner>,
     close_reports: Vec<crate::application::ComponentCloseReport>,
-    history_lifetime: std::rc::Rc<crate::history_mode::owner::RecordOwnerLifetime>,
+    history_lifetime: std::rc::Rc<crate::history_mode::owner::ResourceOwnerLifetime>,
     custody_parent: Option<crate::ControlDomain>,
     custody_scope: Option<crate::ControlDomain>,
     custody_renewal: Option<crate::control_custody::CustodyAttachment>,
-    record_error: Option<String>,
+    resource_error: Option<String>,
     error_card: Option<(String, super::EmptyState)>,
     record_transition_error: Option<String>,
     structure_dirty: bool,
@@ -446,8 +446,8 @@ struct Running {
 impl TileHost {
     /// What a window with no app in it draws as a card: its title and the line under it.
     fn card_words(&self) -> Option<(String, String)> {
-        if let Some(detail) = &self.record_error {
-            return Some((record_unavailable_title(), detail.clone()));
+        if let Some(detail) = &self.resource_error {
+            return Some((resource_unavailable_title(), detail.clone()));
         }
         if let Some(detail) = &self.record_transition_error {
             return Some((
@@ -703,7 +703,7 @@ impl TileHost {
             HistoryPresentation, HistoryRegistration, HistoryRegistrationError,
             HistorySourceRegistration,
         };
-        self.prepare_record_resolution()
+        self.prepare_resource_resolution()
             .map_err(|_| HistoryRegistrationError::UnsupportedOwner)?;
         let owner = self
             .history_owner()
@@ -728,7 +728,7 @@ impl TileHost {
             })
             .collect::<Result<Vec<_>, _>>()?;
         self.install_history_registration(HistoryRegistration::new(definition, sources)?);
-        if self.record_error.is_some() {
+        if self.resource_error.is_some() {
             return Err(HistoryRegistrationError::UnsupportedOwner);
         }
         Ok(())
@@ -754,11 +754,11 @@ impl TileHost {
             owner_bound_work: false,
             owner_bound_custody: None,
             close_reports: vec![],
-            history_lifetime: crate::history_mode::owner::RecordOwnerLifetime::new(),
+            history_lifetime: crate::history_mode::owner::ResourceOwnerLifetime::new(),
             custody_parent: None,
             custody_scope: None,
             custody_renewal: None,
-            record_error: None,
+            resource_error: None,
             error_card: None,
             record_transition_error: None,
             structure_dirty: false,
@@ -787,7 +787,7 @@ impl TileHost {
         };
         match registration {
             Ok(Some(registration)) => tile.install_history_registration(registration),
-            Err(error) => tile.record_error = Some(format!("History unavailable: {error}")),
+            Err(error) => tile.resource_error = Some(format!("History unavailable: {error}")),
             Ok(None) => {}
         }
         tile.arrival = tile.begin_arrival(None);
@@ -878,11 +878,11 @@ impl TileHost {
         {
             return false;
         }
-        if self.prepare_record_resolution().is_err() {
+        if self.prepare_resource_resolution().is_err() {
             return false;
         }
         self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
-        if self.record_error.is_some() {
+        if self.resource_error.is_some() {
             return false;
         }
         let TileContent::App(w) = &mut self.content else {
@@ -1113,7 +1113,7 @@ impl TileHost {
         }
         let release = match &mut self.content {
             TileContent::App(root) => {
-                crate::record::capability::release_record_scope(root.as_mut())
+                crate::resource::capability::release_resource_scope(root.as_mut())
             }
             TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => Ok(()),
         };
@@ -1157,7 +1157,7 @@ impl TileHost {
         self.history_lifetime.control_domain.close();
         self.history_lifetime.active.set(false);
         let previous = self.history_lifetime.control_domain.clone();
-        self.history_lifetime = crate::history_mode::owner::RecordOwnerLifetime::new();
+        self.history_lifetime = crate::history_mode::owner::ResourceOwnerLifetime::new();
         self.custody_renewal = Some(self.history_lifetime.control_domain.renewal_from(&previous));
     }
 
@@ -1175,7 +1175,7 @@ impl TileHost {
         }
     }
 
-    fn prepare_record_resolution(&mut self) -> Result<(), String> {
+    fn prepare_resource_resolution(&mut self) -> Result<(), String> {
         if !self.history_lifetime.active.get() {
             let error = "The current document owner is closed".to_string();
             self.record_transition_error = Some(error.clone());
@@ -1264,7 +1264,7 @@ impl TileHost {
         self.pending_history = None;
         match registration {
             Ok(Some(registration)) => self.install_history_registration(registration),
-            Err(error) => self.record_error = Some(format!("History unavailable: {error}")),
+            Err(error) => self.resource_error = Some(format!("History unavailable: {error}")),
             Ok(None) => {}
         }
         if let Some(tab_presents) = self.window_history
@@ -1690,7 +1690,7 @@ impl Widget for TileHost {
         dyn crate::widget::Continuable,
         dyn crate::widget::FloatingSurfaceProvider,
         dyn crate::widget::AudiencePresentationProvider,
-        dyn crate::collaboration::participants::CollaborationTopology,
+        dyn crate::collaboration::presences::CollaborationTopology,
         dyn crate::history_mode::capability::FrameworkHistoryTopology,
         dyn crate::widget::controls::ActionControls,
         dyn crate::search::capability::SearchSource,
@@ -1836,7 +1836,7 @@ impl Widget for TileHost {
     }
 
     fn history_owner(&self) -> Option<crate::history_mode::HistoryOwner> {
-        if self.record_error.is_some() || !self.history_lifetime.active.get() {
+        if self.resource_error.is_some() || !self.history_lifetime.active.get() {
             return None;
         }
         self.callback_binding()
@@ -1854,7 +1854,7 @@ impl Widget for TileHost {
         }
     }
     fn children(&self) -> Vec<&dyn Widget> {
-        if self.record_error.is_some() {
+        if self.resource_error.is_some() {
             return vec![];
         }
         let mut children = vec![];
@@ -1885,7 +1885,7 @@ impl Widget for TileHost {
         true
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        if self.record_error.is_some() {
+        if self.resource_error.is_some() {
             return vec![];
         }
         let interactive = self
@@ -1903,7 +1903,7 @@ impl Widget for TileHost {
     }
 
     fn is_layout_dirty(&self) -> bool {
-        if self.record_error.is_some() {
+        if self.resource_error.is_some() {
             return true;
         }
         let mut has_children = false;
@@ -1971,11 +1971,11 @@ impl Widget for TileHost {
             self.close_reports.extend(reports);
             self.retained_updates = answers;
         }
-        if self.prepare_record_resolution().is_err() {
+        if self.prepare_resource_resolution().is_err() {
             return;
         }
         self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
-        if self.record_error.is_some() {
+        if self.resource_error.is_some() {
             return;
         }
         if let TileContent::App(w) = &mut self.content {
@@ -1987,7 +1987,7 @@ impl Widget for TileHost {
         let _running = self.running();
         if !self.history_lifetime.active.get()
             || crate::history_mode::frame::FrameworkInputFrame::active()
-            || self.record_error.is_some()
+            || self.resource_error.is_some()
         {
             return;
         }
@@ -2174,7 +2174,7 @@ impl Widget for TileHost {
             ));
         }
         // The card of a record that cannot be opened opens its "Details".
-        if self.record_error.is_some()
+        if self.resource_error.is_some()
             && let Some((_, card)) = &mut self.error_card
         {
             card.handle_event(event, ctx);
@@ -2185,12 +2185,12 @@ impl Widget for TileHost {
         // Refuse what is meant for this tile while its owner is closed or
         // switching, or its content cannot be shown; leave the rest for its
         // neighbours (a loading window must not freeze the ones beside it).
-        if self.prepare_record_resolution().is_err() {
+        if self.prepare_resource_resolution().is_err() {
             *ctx.handled |= self.event_is_for_this_tile(event, ctx.scale_factor);
             return;
         }
         self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
-        if self.record_error.is_some() {
+        if self.resource_error.is_some() {
             *ctx.handled |= self.event_is_for_this_tile(event, ctx.scale_factor);
             return;
         }
@@ -2227,8 +2227,8 @@ impl Widget for TileHost {
     }
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         let _running = self.running();
-        if let Some(detail) = &self.record_error {
-            let card = record_unavailable_card(detail);
+        if let Some(detail) = &self.resource_error {
+            let card = resource_unavailable_card(detail);
             let node = card
                 .accessibility()
                 .unwrap_or_else(|| crate::a11y::AccessNode::new(crate::a11y::Role::Group));
@@ -2435,7 +2435,7 @@ impl crate::widget::ResourceOperations for TileHost {
         if !self.history_lifetime.active.get() {
             return Err("The current document owner is closed".into());
         }
-        self.prepare_record_resolution()?;
+        self.prepare_resource_resolution()?;
         if scope.is_none() {
             self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
         }
@@ -2573,7 +2573,7 @@ impl crate::component_lifecycle::ComponentLifecycle for TileHost {
     }
     fn checkpoint_components(&mut self) -> Vec<String> {
         let mut errors = crate::close_admission::retry_reports(&mut self.close_reports);
-        errors.extend(self.record_error.iter().cloned());
+        errors.extend(self.resource_error.iter().cloned());
         if let TileContent::App(root) = &mut self.content {
             errors.extend(crate::component_lifecycle::checkpoint_components(
                 root.as_mut(),
@@ -2642,7 +2642,8 @@ impl crate::widget::controls::ActionControls for TileHost {
                 if domain.permits_renewal(previous, attachment) {
                     self.history_lifetime.control_domain.close();
                     self.history_lifetime.active.set(false);
-                    self.history_lifetime = crate::history_mode::owner::RecordOwnerLifetime::new();
+                    self.history_lifetime =
+                        crate::history_mode::owner::ResourceOwnerLifetime::new();
                     self.custody_scope = None;
                     self.custody_renewal = None;
                 } else if previous.closed() || !previous.same_owner_incarnation(domain) {
@@ -2702,7 +2703,7 @@ impl crate::history_mode::capability::FrameworkHistoryTopology for TileHost {
     }
 }
 
-impl crate::collaboration::participants::CollaborationTopology for TileHost {
+impl crate::collaboration::presences::CollaborationTopology for TileHost {
     fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         match &mut self.content {
             TileContent::App(live) => vec![live.as_mut()],
@@ -2789,7 +2790,7 @@ impl TileHost {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        if self.record_error.is_some() {
+        if self.resource_error.is_some() {
             return;
         }
         let Some(detail) = &self.record_transition_error else {
@@ -3005,13 +3006,13 @@ impl TileHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if let Some(detail) = self.record_error.clone() {
+        if let Some(detail) = self.resource_error.clone() {
             if self
                 .error_card
                 .as_ref()
                 .is_none_or(|(shown, _)| *shown != detail)
             {
-                self.error_card = Some((detail.clone(), record_unavailable_card(&detail)));
+                self.error_card = Some((detail.clone(), resource_unavailable_card(&detail)));
             }
             let rect = self.rect;
             if let Some((_, card)) = &mut self.error_card {

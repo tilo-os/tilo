@@ -35,7 +35,7 @@ fn retitle(app: &mut TestApp<NotesShell>, text: &str, at_ms: u64) {
 fn renames(app: &TestApp<NotesShell>) -> Vec<String> {
     let mut doc = app.peer_document();
     let rows = ui::history_source::HistorySource::new()
-        .without_record_genesis()
+        .without_resource_genesis()
         .entries(&mut doc);
     let entries: Vec<_> = rows.iter().filter_map(|row| row.context.clone()).collect();
     app.sentences(&entries)

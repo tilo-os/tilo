@@ -8,9 +8,11 @@ resource too: its workspaces and its keys.
 Two things serve it:
 
 - **An API server** (`tilo-api`, `https://api.tilo.sh` for hosted Tilo), which you call with a
-  key (`Authorization: Bearer tilo_sk_…`). It holds no authority of its own: each key is a device
-  key of the person, certified by their root (or by a key of theirs it was minted from), and every
-  call goes to the Tilo host that keeps the workspace, which decides it.
+  key (`Authorization: Bearer tilo_sk_…`). It holds no authority and no workspace of its own: each
+  key carries the grant the person approved — a device key of theirs, certified by their root (or
+  by a key of theirs it was minted from) — so any front door accepts it. Every call is forwarded to
+  the Tilo host that serves the workspace best right now, and that host decides it. When no host
+  that can read the workspace is online, the call answers `503 unavailable` saying so.
 - **Any Tilo host directly**, from the SDKs and the `tilo` command, as a device of the person
   with its own key. The SDKs link the same Rust client the API server runs (`tilo-api`'s
   library), which serves these same routes in process: no second implementation, no socket.
@@ -61,7 +63,9 @@ when there are any. The HTTP status follows the code:
 Every mutating call (`POST`, `PUT`, `DELETE`) takes an `Idempotency-Key` header (1–255
 printable characters; the SDKs always send one). The same key with the same request answers the
 first answer again (`Idempotent-Replayed: true`) and never runs anything twice; the same key with
-another request is `409 idempotency_conflict`. An action's invocation is derived from the key,
+another request is `409 idempotency_conflict`. Asked again while the first is still running,
+the same key and request answer `503 unavailable` with a `Retry-After`; the SDKs ask again and
+get the first answer once it lands. An action's invocation is derived from the key,
 so the host itself never runs it twice, also across API server restarts. A call still pending
 (waiting for a person) is not stored: retrying it with its key asks about the same invocation
 again, which is how a client awaits it. Keys are remembered for 24 hours per key holder.

@@ -1,6 +1,6 @@
 //! The editor's part of the toolkit contract, which its window answers
 //! with: how it syncs from its document, draws, answers actions and
-//! publishes presence, and the capabilities it has as a participant.
+//! publishes presence, and the capabilities it has as a presence.
 
 use super::toolbar::{HIGHLIGHT_PALETTE, STYLE_PALETTE};
 use crate::i18n::t;
@@ -106,10 +106,10 @@ impl Editor {
         }
         self.refresh_blocks(state);
         let now = ui::time::now();
-        self.participants.adopt_outcomes(state, now);
+        self.presences.adopt_outcomes(state, now);
         self.adopt_local_outcome(state);
-        self.participants.rebase(state);
-        self.participants.expire(now);
+        self.presences.rebase(state);
+        self.presences.expire(now);
         self.resolve_bound_edits(state);
         self.follow_settings();
         if self.guide_drag.is_none() && self.editing_field.is_none() {
@@ -624,21 +624,21 @@ impl ui::undo::LocalUndo for Editor {
     }
 }
 
-impl ui::collaboration::participants::Participants for Editor {
-    fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
-        let joined = self.participants.join(participant.clone(), ui::time::now());
+impl ui::collaboration::presences::Presences for Editor {
+    fn join_presence(&mut self, presence: &tilo_actions::PresenceId) -> bool {
+        let joined = self.presences.join(presence.clone(), ui::time::now());
         self.lifecycle.dirty |= joined;
         joined
     }
-    fn leave_participant(&mut self, participant: &tilo_actions::ParticipantId) {
-        self.participants.remove(participant);
+    fn leave_presence(&mut self, presence: &tilo_actions::PresenceId) {
+        self.presences.remove(presence);
         self.lifecycle.dirty = true;
     }
-    fn set_participant_label(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
-        Editor::set_participant_label(self, participant, label);
+    fn set_presence_label(&mut self, presence: &tilo_actions::PresenceId, label: &str) {
+        Editor::set_presence_label(self, presence, label);
     }
-    fn participant_presence(&self, doc: &AutoCommit) -> Vec<ui::ParticipantPresence> {
-        Editor::participant_presence(self, doc)
+    fn presences(&self, doc: &AutoCommit) -> Vec<ui::ViewPresence> {
+        Editor::presences(self, doc)
     }
 }
 

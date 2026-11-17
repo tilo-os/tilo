@@ -9,7 +9,7 @@ fn hello(handle: &str) -> CollabRequest {
         app_id: APP.into(),
         cluster_id: typed_peer::workspace(),
         record: None,
-        record_kind: None,
+        resource_type: None,
         handle: Some(handle.into()),
     }
 }

@@ -75,7 +75,7 @@ impl ActionHost for Host {
                         provider: row.provider.clone(),
                         app_id: row.app_id.clone(),
                         workspace: ROOM.into(),
-                        record_id: String::new(),
+                        document_id: String::new(),
                         browsable: true,
                     });
                 }

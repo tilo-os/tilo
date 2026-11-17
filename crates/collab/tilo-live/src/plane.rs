@@ -1,6 +1,6 @@
-//! One participant's live session in one scope: what it publishes, sealed
+//! One device's live session in one scope: what it publishes, sealed
 //! under the scope's channel content keys, and what it hears from the
-//! scope's other participants.
+//! scope's other devices.
 //!
 //! A [`Plane`] is one carrier session ([`crate::carrier`]) with one broadcast
 //! of its own ([`crate::live::Namespace`] of this device) and one reader per
@@ -388,9 +388,9 @@ impl Shared {
         exact(&[path.as_str()]).and_then(|names| self.outgoing.consume().scope("", &names).ok())
     }
 
-    /// What the carrier subscribes to: every participant of this scope.
+    /// What the carrier subscribes to: every device of this scope.
     fn subscription(&self) -> Result<Option<Producer>, PlaneError> {
-        let prefix = live::participants(&self.join.scope);
+        let prefix = live::devices(&self.join.scope);
         let pattern =
             moq_net::Pattern::subtree(prefix.as_str()).map_err(|_| PlaneError::Unavailable)?;
         let scoped = self

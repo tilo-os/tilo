@@ -790,7 +790,7 @@ fn check_bus(pipeline: &gst::Pipeline) -> Result<(), AudioError> {
 
 // 32 kbit/s 20 ms voice with DTX: in silence the encoder emits a 1-byte "nothing to
 // send" packet ([`super::needs_transmission`]) for all but one comfort-noise update
-// every 400 ms, so a silent participant sends ~2.5 packets a second instead of 50.
+// every 400 ms, so a silent member sends ~2.5 packets a second instead of 50.
 // Opus enters DTX only after ~200 ms of inactivity and leaves it on the first active
 // frame, so speech onsets are coded normally. In-band FEC stays off: QUIC already
 // retransmits, and browser receivers cannot decode it.

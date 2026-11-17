@@ -35,7 +35,7 @@ pub use interaction::{
     TERMINAL_INTERACTION_DWELL, interaction_card_slots,
 };
 pub use key::{DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange};
-pub use labels::{ParticipantLabels, guest_label, name_key, shown_name};
+pub use labels::{MemberLabels, guest_label, name_key, shown_name};
 #[cfg(feature = "native")]
 pub use layer::LayerMarks;
 pub use layer::{PresenceLayer, WidgetPresence};
@@ -99,24 +99,16 @@ const TYPING_DERIVE_MAX_RUN: usize = 512;
 const EDIT_PULSE_WINDOW: crate::time::Duration = crate::time::Duration::from_millis(1500);
 
 pub use collab_types::presence::{
-    PEER_PALETTE, agent_client, agent_identity, assign_peer_colors, assign_peer_colors_from,
-    identity_rgb, user_color,
+    PEER_PALETTE, agent_client, agent_identity, identity_rgb, user_color,
 };
 
-/// The hue a member wears ([`crate::tokens::PresenceHue::of_member`]): the one lookup every
-/// surface asks — the bar's faces, the People list, a profile card, an agent's card in a window,
-/// its marks and carets, and the run a change is attributed to — so one member is one colour
-/// everywhere. `for_person` is `None` for software whose person the surface does not know.
+/// The colour a member wears until they choose one ([`crate::tokens::PresenceHue::of_member`]),
+/// as it travels: the one lookup every surface asks — the bar's faces, the People list, a profile
+/// card, an agent's card in a window, its marks and carets, and the run a change is attributed to
+/// — so one member is one colour everywhere.
 #[must_use]
-pub fn member_hue(member: &MemberId, for_person: Option<&str>) -> crate::tokens::PresenceHue {
-    crate::tokens::PresenceHue::of_member(member, for_person)
-}
-
-/// [`member_hue`] as the colour it travels as: what the workspace paints a member in until it
-/// hears the colour they chose.
-#[must_use]
-pub fn member_color(member: &MemberId, for_person: Option<&str>) -> (u8, u8, u8) {
-    identity_rgb(member_hue(member, for_person))
+pub fn member_color(member: &MemberId) -> (u8, u8, u8) {
+    identity_rgb(crate::tokens::PresenceHue::of_member(member))
 }
 
 /// A presence colour as the surfaces paint it: the `(r, g, b)` a person's
@@ -127,89 +119,6 @@ pub fn presence_colour((red, green, blue): (u8, u8, u8)) -> vello::peniko::Color
     vello::peniko::Color::from_rgb8(red, green, blue)
 }
 
-/// What colour each of `ids` is drawn in, given the colours `chosen` already
-/// holds for some of them (a person's own, as they announced it): everyone else
-/// takes the ring entry their identity names, stepping to a free one where
-/// somebody already wears it, walked over sorted ids so every host settles a
-/// workspace alike ([`assign_peer_colors`]).
-///
-/// A colour two here announced is worn by `mine` — the reader themselves —
-/// and the other steps to a free entry: nobody here is ever drawn in the
-/// reader's own colour. Without `mine`, the first id in sorted order keeps it.
-///
-/// One settlement for the shell's faces, its roster and its cursors, so one
-/// person is one colour on every surface of a workspace.
-#[must_use]
-pub fn settle_colors<S: std::hash::BuildHasher>(
-    ids: &[&str],
-    chosen: &HashMap<String, (u8, u8, u8), S>,
-) -> HashMap<String, (u8, u8, u8)> {
-    settle_colors_around(ids, chosen, None)
-}
-
-/// [`settle_colors`], with `mine` the reader themselves: their announced
-/// colour is worn by them, and no other id here takes it.
-#[must_use]
-pub fn settle_colors_around<S: std::hash::BuildHasher>(
-    ids: &[&str],
-    chosen: &HashMap<String, (u8, u8, u8), S>,
-    mine: Option<&str>,
-) -> HashMap<String, (u8, u8, u8)> {
-    let naturals: Vec<(&str, (u8, u8, u8))> = ids.iter().map(|id| (*id, user_color(id))).collect();
-    settle_colors_of(&naturals, chosen, mine)
-}
-
-/// [`settle_colors_around`] over participants the workspace knows the kind of: `naturals`
-/// pairs each id with the colour it wears before any settlement — a person's identity's
-/// ([`member_color`]), software's own ([`member_color`] of an agent) — so an agent
-/// settles on the colour it is known by and steps aside from one already spoken for, as
-/// everyone else does.
-#[must_use]
-pub fn settle_colors_of<S: std::hash::BuildHasher>(
-    naturals: &[(&str, (u8, u8, u8))],
-    chosen: &HashMap<String, (u8, u8, u8), S>,
-    mine: Option<&str>,
-) -> HashMap<String, (u8, u8, u8)> {
-    let mut settled: Vec<(&str, (u8, u8, u8))> = naturals
-        .iter()
-        .copied()
-        .filter(|(id, _)| !chosen.contains_key(*id))
-        .collect();
-    settled.compact_sort_by_key(|(id, _)| *id);
-    settled.dedup_by(|a, b| a.0 == b.0);
-    // The colours here spoken for, in the order they are honoured: the
-    // reader's own first, then the ids in sorted order, so every host that
-    // sees the same claims settles them alike.
-    let mut claimants: Vec<&str> = naturals
-        .iter()
-        .map(|(id, _)| *id)
-        .filter(|id| chosen.contains_key(*id))
-        .filter(|id| Some(*id) != mine)
-        .collect();
-    claimants.compact_sort();
-    claimants.dedup();
-    if let Some(mine) = mine.filter(|mine| chosen.contains_key(*mine)) {
-        claimants.insert(0, mine);
-    }
-    let mut worn: Vec<(u8, u8, u8)> = Vec::new();
-    let mut claimed: HashMap<String, (u8, u8, u8)> = HashMap::new();
-    for id in claimants {
-        let Some(rgb) = chosen.get(id).copied() else {
-            continue;
-        };
-        if worn.contains(&rgb) {
-            // Someone here already wears it: this one takes a free entry.
-            settled.push((id, rgb));
-            continue;
-        }
-        worn.push(rgb);
-        claimed.insert(id.to_owned(), rgb);
-    }
-    let mut assigned = assign_peer_colors_from(&settled, &worn);
-    assigned.extend(claimed);
-    assigned
-}
-
 /// [`user_color`] as a colour: what a face of `user_id` wears when the workspace
 /// has not given them one ([`Face::colour`]).
 #[must_use]
@@ -217,7 +126,7 @@ pub fn identity_colour(user_id: &str) -> vello::peniko::Color {
     presence_colour(user_color(user_id))
 }
 
-/// The face of someone here whose colour the workspace has not settled yet:
+/// The face of someone here whose person the workspace does not know yet:
 /// grey, which the presence palette paints neutral
 /// ([`crate::tokens::colors::PresencePalette::of`]), never a ring colour
 /// they would then change from.
@@ -239,26 +148,6 @@ mod color_tests {
 
     tilo_test_env::scenario! {
         fn peer_colours_are_distinct_stable_and_agreed;
-
-        phase a_colour_two_here_announced_is_the_readers_own;
-        // A colour two people here announced is worn by the reader themselves: the other takes a
-        // free entry, so nobody here is ever drawn in the reader's own colour.
-        {
-            let teal = identity_rgb(crate::tokens::PresenceHue::Teal);
-            let chosen: HashMap<String, (u8, u8, u8)> =
-                HashMap::from([("me".to_owned(), teal), ("helper".to_owned(), teal)]);
-            let settled = settle_colors_around(&["helper", "me"], &chosen, Some("me"));
-            assert_eq!(settled["me"], teal, "the reader wears what they announced");
-            assert_ne!(settled["helper"], teal, "nobody else wears it");
-            // Another reader settles the same claims with themselves first: the colour is theirs.
-            let theirs = settle_colors_around(&["helper", "me"], &chosen, Some("helper"));
-            assert_eq!(theirs["helper"], teal);
-            assert_ne!(theirs["me"], teal);
-            // Without a reader, the ids in sorted order decide who keeps it, so hosts agree.
-            let nobody = settle_colors_around(&["helper", "me"], &chosen, None);
-            assert_eq!(nobody["helper"], teal, "the first in sorted order keeps it");
-            assert_ne!(nobody["me"], teal);
-        }
 
         phase user_colours_are_pinned_or_hashed_onto_a_distinct_ring;
         {
@@ -359,77 +248,10 @@ mod color_tests {
             }
         }
 
-        phase a_workspace_assigns_distinct_agreed_stable_colours;
-        {
-            // phase: a_workspace_never_puts_two_people_in_one_colour
-            // The case the ring alone can't fix: `judy` hashes onto exactly the
-            // pink `alice` is pinned to, so one of them has to move.
-            {
-                assert_eq!(
-                    user_color("judy"),
-                    user_color("alice"),
-                    "this test is guarding a real collision; if the hash moved, \
-             pick another colliding pair rather than deleting the test",
-                );
-
-                let workspace = ["alice", "bob", "judy", "danah", "erin", "dana"];
-                let assigned = assign_peer_colors(&workspace, &[]);
-                assert_eq!(assigned.len(), workspace.len());
-                for (i, a) in workspace.iter().enumerate() {
-                    for b in &workspace[i + 1..] {
-                        assert_ne!(
-                            assigned[*a], assigned[*b],
-                            "{a} and {b} were given the same colour",
-                        );
-                        assert!(
-                            color_distance(assigned[*a], assigned[*b]) >= 60.0,
-                            "{a} and {b} are too close to tell apart",
-                        );
-                    }
-                }
-                assert_eq!(assigned["alice"], user_color("alice"));
-                assert_eq!(assigned["bob"], user_color("bob"));
-            }
-            // phase: every_machine_in_a_workspace_agrees_on_who_is_what_colour
-            {
-                let workspace = ["alice", "bob", "judy"];
-                for me in workspace {
-                    let mut mine: Vec<&str> = workspace.iter().copied().filter(|u| *u != me).collect();
-                    mine.push(me);
-                    assert_eq!(
-                        assign_peer_colors(&mine, &[]),
-                        assign_peer_colors(&workspace, &[]),
-                        "the host running as {me} disagrees with the others",
-                    );
-                }
-            }
-            // phase: an_explicit_roster_colour_is_not_reassigned_to_someone_else
-            // A colour the roster handed out explicitly is not available to be
-            // computed onto, or an invited peer and a live one could collide.
-            {
-                let taken = user_color("judy"); // == alice's pink
-                let assigned = assign_peer_colors(&["judy"], &[taken]);
-                assert_ne!(
-                    assigned["judy"], taken,
-                    "judy took a colour the roster had already spoken for",
-                );
-            }
-            // phase: a_late_arrival_leaves_the_others_alone
-            // Someone arriving late must not repaint the people already there
-            // unless they actually collide with one.
-            {
-                let before = assign_peer_colors(&["alice", "bob"], &[]);
-                let after = assign_peer_colors(&["alice", "bob", "dana"], &[]);
-                assert_eq!(before["alice"], after["alice"]);
-                assert_eq!(before["bob"], after["bob"]);
-            }
-        }
-
         phase an_agent_keeps_one_colour_across_its_runs;
         // An agent keeps one colour however often it comes: the key is the agent it is, never the
         // run it works in.
         {
-            let person = Some("person-ada");
             for (first, second) in [
                 // The same agent admitted again, with a run of its own each time.
                 ("agent:claude-code@box#1", "agent:claude-code@box#4"),
@@ -440,59 +262,20 @@ mod color_tests {
                 ("agent:helper@box", "helper@box"),
             ] {
                 assert_eq!(
-                    member_color(&MemberId::agent(first), person),
-                    member_color(&MemberId::agent(second), person),
+                    member_color(&MemberId::agent(first)),
+                    member_color(&MemberId::agent(second)),
                     "{first} and {second} are one agent, so one colour"
                 );
             }
         }
 
-        phase an_agent_never_wears_the_hue_of_the_person_it_acts_for;
-        // Software never wears the hue of the person it acts for, whichever hues the two land on:
-        // the agent steps round the ring, and the person keeps theirs.
+        phase software_wears_the_hue_of_what_it_is;
         {
-            use crate::tokens::PresenceHue;
-            let distance = |a: PresenceHue, b: PresenceHue| {
-                let len = PEER_PALETTE.len();
-                let ahead = a
-                    .slot()
-                    .wrapping_add(len)
-                    .wrapping_sub(b.slot())
-                    .checked_rem(len)
-                    .unwrap_or(0);
-                ahead.min(len.wrapping_sub(ahead))
-            };
-            let ids = |hue: PresenceHue, agent: bool| {
-                (0..1000)
-                    .map(|n| format!("{}-{n}", if agent { "agent" } else { "person" }))
-                    .find(|id| {
-                        let own = if agent {
-                            PresenceHue::of_agent(id)
-                        } else {
-                            PresenceHue::of_identity(id)
-                        };
-                        own == hue
-                    })
-                    .expect("some identity lands on every hue")
-            };
-            for person_hue in PresenceHue::ALL {
-                let person = ids(person_hue, false);
-                for agent_hue in PresenceHue::ALL {
-                    let agent = ids(agent_hue, true);
-                    let worn = member_hue(&MemberId::agent(&agent), Some(&person));
-                    assert!(
-                        distance(worn, person_hue) >= 2,
-                        "{agent} ({worn:?}) reads as {person}'s own ({person_hue:?})"
-                    );
-                    // The person's own colour never moves for it.
-                    assert_eq!(member_hue(&MemberId::person(&person), None), person_hue);
-                }
-            }
-            // Software whose person the surface does not know still wears its own hue.
             assert_eq!(
-                member_hue(&MemberId::agent("claude-code@box"), None),
-                crate::tokens::PresenceHue::Orange
+                member_color(&MemberId::agent("claude-code@box")),
+                identity_rgb(crate::tokens::PresenceHue::Orange)
             );
+            assert_eq!(member_color(&MemberId::person("ada")), user_color("ada"));
         }
     }
 }
@@ -711,19 +494,19 @@ pub struct PresenceCtx {
     /// frame it sent comes back stamped with. Empty means "unknown", which
     /// suppresses nobody. See [`Self::set_own_identity`].
     own: std::collections::HashSet<MemberId>,
-    /// Which participant in the workspace this session *is* — the `is_self` row of
+    /// Which member in the workspace this session *is* — the `is_self` row of
     /// `CollabEvent::Context`. Deliberately not in [`Self::names`], [`Self::here`] or the pointer
     /// and caret stores, which describe *other* people. `None` until the workspace has said.
-    self_participant: Option<(MemberId, String)>,
-    /// When the workspace admitted each participant, this session's own
+    self_member: Option<(MemberId, String)>,
+    /// When the workspace admitted each member, this session's own
     /// included, Unix milliseconds, as the roster
     /// (`CollabEvent::Context`) records it. Who shares a name is numbered
     /// in this order.
     joined: HashMap<MemberId, u64>,
     /// The numbers people who share a name are told apart by, resolved from
-    /// [`Self::names`], [`Self::self_participant`] and [`Self::joined`]
-    /// whenever one changes. See [`ParticipantLabels`].
-    labels: ParticipantLabels,
+    /// [`Self::names`], [`Self::self_member`] and [`Self::joined`]
+    /// whenever one changes. See [`MemberLabels`].
+    labels: MemberLabels,
     /// The surface this process draws, spelled as [`crate::local_surface_id`] spells it, compared
     /// against a pointer's claimed surface to decide whether a content-space position is this
     /// process's to place. `None` fails closed: a pointer in the wrong window stays invisible
@@ -937,7 +720,7 @@ impl PresenceCtx {
     /// Declare the identities a frame *this* session published comes back
     /// stamped with, so its own presence is never painted as somebody else's.
     ///
-    /// Discriminator is the participant, not the process or app: two windows
+    /// Discriminator is the member, not the process or app: two windows
     /// of one app are one person, but an agent editing the same document
     /// joins under its own identity and stays a peer.
     pub fn set_own_identity(&mut self, ids: impl IntoIterator<Item = MemberId>) {
@@ -973,8 +756,8 @@ impl PresenceCtx {
 
     /// Fed only from the `is_self` row of `CollabEvent::Context` — a
     /// machine cannot mint this for itself.
-    pub fn set_self_participant(&mut self, id: MemberId, name: impl Into<String>) {
-        self.self_participant = Some((id, name.into()));
+    pub fn set_self_member(&mut self, id: MemberId, name: impl Into<String>) {
+        self.self_member = Some((id, name.into()));
         self.refresh_labels();
     }
 
@@ -982,29 +765,29 @@ impl PresenceCtx {
     /// roster replacement no longer contains an exact self row. Local
     /// process identities remain in `own`; this only withdraws the workspace's
     /// authenticated answer.
-    pub(crate) fn clear_self_participant(&mut self) {
-        self.self_participant = None;
+    pub(crate) fn clear_self_member(&mut self) {
+        self.self_member = None;
         self.refresh_labels();
     }
 
-    /// Which participant in the workspace this session is, if the workspace has said.
+    /// Which member in the workspace this session is, if the workspace has said.
     pub fn self_id(&self) -> Option<&MemberId> {
-        self.self_participant.as_ref().map(|(id, _)| id)
+        self.self_member.as_ref().map(|(id, _)| id)
     }
 
-    /// What the workspace calls this session's own participant. `None` for a
-    /// participant the workspace knows only as an address.
+    /// What the workspace calls this session's own member. `None` for a
+    /// member the workspace knows only as an address.
     pub fn self_name(&self) -> Option<&str> {
-        self.self_participant
+        self.self_member
             .as_ref()
             .map(|(_, n)| n.trim())
             .filter(|n| !n.is_empty())
     }
 
-    /// Whether `member` is this session's own participant: the workspace's self row, or one of the
+    /// Whether `member` is this session's own member: the workspace's self row, or one of the
     /// identities [`Self::set_own_identity`] declared.
     pub fn is_own_identity(&self, member: &MemberId) -> bool {
-        self.self_participant
+        self.self_member
             .as_ref()
             .is_some_and(|(id, _)| id == member)
             || self.own.contains(member)
@@ -1427,9 +1210,9 @@ impl PresenceCtx {
 
     /// The hue `user`'s identity derives where the workspace announced none: a person's
     /// own, and for software the one what it is wears rather than the one its run's id
-    /// would — [`member_hue`], the rule every surface asks.
+    /// would — [`crate::tokens::PresenceHue::of_member`], the rule every surface asks.
     fn identity_hue(user: &MemberId) -> crate::tokens::PresenceHue {
-        member_hue(user, None)
+        crate::tokens::PresenceHue::of_member(user)
     }
 
     /// The hue `user` wears: the one the workspace announced for them (their
@@ -1480,9 +1263,9 @@ impl PresenceCtx {
     /// the workspace names including this session's own, and relabel the pills
     /// of anyone whose label that changed.
     fn refresh_labels(&mut self) {
-        let own = self.self_participant.as_ref().map(|(id, name)| (id, name));
+        let own = self.self_member.as_ref().map(|(id, name)| (id, name));
         let next =
-            ParticipantLabels::by_joining(self.names.iter().chain(own).filter_map(|(id, name)| {
+            MemberLabels::by_joining(self.names.iter().chain(own).filter_map(|(id, name)| {
                 let person = id.person_id()?;
                 Some((person, name.as_str(), self.joined.get(id).copied()))
             }));
@@ -1503,14 +1286,14 @@ impl PresenceCtx {
 
     /// The numbers people who share a name are told apart by in this workspace.
     /// [`Self::display_name`] already applies them; this is for a caller
-    /// that holds names of its own for the same participants.
-    pub fn labels(&self) -> &ParticipantLabels {
+    /// that holds names of its own for the same members.
+    pub fn labels(&self) -> &MemberLabels {
         &self.labels
     }
 
-    /// The friendly name to show for `user`, this session's own participant included, falling back
+    /// The friendly name to show for `user`, this session's own member included, falling back
     /// to the raw id when the roster has not announced one. Never blank. People sharing a name
-    /// carry their number ("Ada (2)", [`ParticipantLabels`]); software acting for a person is named
+    /// carry their number ("Ada (2)", [`MemberLabels`]); software acting for a person is named
     /// with that person ("Claude for Ada"), else with its kind.
     pub fn display_name(&self, user: &MemberId) -> String {
         let name = self
@@ -1518,7 +1301,7 @@ impl PresenceCtx {
             .get(user)
             .and_then(|name| shown_name(name))
             .or_else(|| {
-                self.self_participant
+                self.self_member
                     .as_ref()
                     .filter(|(id, _)| id == user)
                     .and_then(|(_, name)| shown_name(name))
@@ -1551,7 +1334,7 @@ impl PresenceCtx {
             }
         }
         if user.is_bot() {
-            crate::i18n::widget_format("participant-bot", &[("name", name.into())])
+            crate::i18n::widget_format("member-bot", &[("name", name.into())])
         } else {
             crate::history_source::agent_display_label(name)
         }
@@ -1569,6 +1352,7 @@ impl PresenceCtx {
             is_self: self.is_own_identity(user),
             removed: false,
             administrator: false,
+            grants: 0,
         }
     }
 
@@ -1927,13 +1711,13 @@ impl PresenceCtx {
             }
             return match payload {
                 // A Tab-keyed arrival moves a focus dot; only a scope
-                // arrival affects participant-level presence.
+                // arrival affects member-level presence.
                 Arrived if !matches!(key, PresenceKey::Tab { .. }) => {
                     tracing::debug!(
                         target: "tilo.state",
                         event = "presence_self_filtered",
                         %member,
-                        "ignored own participant in peer rendering"
+                        "ignored own member in peer rendering"
                     );
                     RemotePresenceEffect::PeerArrived
                 }
@@ -2123,7 +1907,7 @@ impl PresenceCtx {
         self.refresh_labels();
     }
 
-    /// Current status for a workspace participant. Inferred statuses apply their
+    /// Current status for a workspace member. Inferred statuses apply their
     /// normal expiry even if a peer vanished without a clean disconnect.
     pub fn status_for(
         &self,
@@ -2794,14 +2578,14 @@ mod string_id_wrapper_tests {
             // The workspace seen from Ada's machine: she is the self row.
             let mut mine = PresenceCtx::empty();
             mine.upsert_remote_cursor(MemberId::person("key-b"), [1.0, 1.0], Some("ada"));
-            mine.set_self_participant(ada.clone(), "Ada");
+            mine.set_self_member(ada.clone(), "Ada");
             mine.set_display_name(other_ada.clone(), "ada");
             mine.set_display_name(agent.clone(), "Ada");
             // And from the other Ada's, who heard of everyone in another order.
             let mut theirs = PresenceCtx::empty();
             theirs.set_display_name(agent.clone(), "Ada");
             theirs.set_display_name(ada.clone(), "Ada");
-            theirs.set_self_participant(other_ada.clone(), "ada");
+            theirs.set_self_member(other_ada.clone(), "ada");
 
             for ctx in [&mine, &theirs] {
                 assert_eq!(ctx.display_name(&ada), "Ada (1)");
@@ -2927,7 +2711,7 @@ mod string_id_wrapper_tests {
     }
 }
 
-/// A session must not paint its own participant, and must go on
+/// A session must not paint its own member, and must go on
 /// painting everybody else. Both halves are asserted here: the second
 /// is the one that keeps a fix in this area from hiding the workspace.
 #[cfg(test)]
@@ -2972,7 +2756,7 @@ mod own_identity_tests {
                 assert!(ctx.peers_on(&workspace()).is_empty());
             }
             // phase: another_person_is_still_painted
-            // The control. A second *person* is a second participant, and the
+            // The control. A second *person* is a second member, and the
             // self-rule may not touch them — hiding a real member is the
             // worse of the two failures by a distance.
             {
@@ -3000,10 +2784,10 @@ mod own_identity_tests {
                 assert_eq!(ctx.remote_cursors[0].member, MemberId::person("peer@77"));
             }
             // phase: an_agent_in_the_same_document_is_still_painted
-            // A document legitimately has more than one app participant: the
+            // A document legitimately has more than one app member: the
             // agent joins as one and publishes a caret as it edits, with no
             // window anywhere. It announces an identity of its own, so the
-            // rule leaves it alone — the test is the participant, not the
+            // rule leaves it alone — the test is the member, not the
             // process and not the presence of a window.
             {
                 let mut ctx = mine();
@@ -3059,7 +2843,7 @@ mod own_identity_tests {
             }
         }
 
-        phase the_own_participant_is_known_without_becoming_a_peer;
+        phase the_own_member_is_known_without_becoming_a_peer;
         {
             // phase: a_session_does_not_follow_its_own_view
             // Following yourself is not a thing. A `View` broadcast stamped
@@ -3088,14 +2872,14 @@ mod own_identity_tests {
                 );
                 assert!(ctx.peer_view(&MemberId::person("ada")).is_none());
             }
-            // phase: knowing_which_participant_you_are_does_not_make_you_a_peer
-            // The workspace's answer to "which participant am I" arrives without making
-            // this session a participant of its own presence store — a `names` entry
+            // phase: knowing_which_member_you_are_does_not_make_you_a_peer
+            // The workspace's answer to "which member am I" arrives without making
+            // this session a member of its own presence store — a `names` entry
             // for it would paint a pill over its own document.
             {
                 let mut ctx = PresenceCtx::empty();
                 let me = MemberId::person("peer@9007495404254172154");
-                ctx.set_self_participant(me.clone(), "Bob");
+                ctx.set_self_member(me.clone(), "Bob");
 
                 assert_eq!(ctx.self_id(), Some(&me));
                 assert_eq!(ctx.self_name(), Some("Bob"));
@@ -3117,14 +2901,14 @@ mod own_identity_tests {
                     "this session was listed as somebody else in its own workspace"
                 );
             }
-            // phase: an_unnamed_own_participant_reports_no_name
-            // A participant the workspace has admitted but not named has an address and no
+            // phase: an_unnamed_own_member_reports_no_name
+            // A member the workspace has admitted but not named has an address and no
             // name. Handing the address back as a name is how a routing hash ends up
             // rendered where a name belongs.
             {
                 let mut ctx = PresenceCtx::empty();
                 let me = MemberId::person("peer@42");
-                ctx.set_self_participant(me.clone(), "   ");
+                ctx.set_self_member(me.clone(), "   ");
                 assert_eq!(ctx.self_id(), Some(&me));
                 assert_eq!(ctx.self_name(), None);
             }
@@ -3132,7 +2916,7 @@ mod own_identity_tests {
             {
                 let mut ctx = PresenceCtx::empty();
                 let me = MemberId::person("peer@42");
-                ctx.set_self_participant(me.clone(), "Bob");
+                ctx.set_self_member(me.clone(), "Bob");
                 ctx.set_own_identity([MemberId::person("so.tilo.chat")]);
                 assert!(ctx.is_own_identity(&me));
                 assert!(ctx.is_own_identity(&MemberId::person("so.tilo.chat")));
@@ -3329,7 +3113,7 @@ mod own_identity_tests {
         {
             // phase: a_pointer_nobody_restates_is_retired_and_nothing_else_is
             // A pointer nobody restates is retired; everything else about that peer
-            // stays — retiring a cursor is not evicting a peer, or a participant
+            // stays — retiring a cursor is not evicting a peer, or a member
             // would vanish from the roster whenever it stops moving.
             {
                 let t0 = crate::time::now();

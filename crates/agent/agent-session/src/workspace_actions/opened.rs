@@ -7,7 +7,7 @@
 //! record this service holds none of is not one the workspace lacks: it is
 //! asked for ([`Cmd::OpenRoute`](tilo_session_client::Cmd::OpenRoute), which asks the host and delivers
 //! what arrives as an ordinary change), and it is absent only once the host
-//! answered it holds none of it ([`tilo_session_client::Event::RecordOpened`]
+//! answered it holds none of it ([`tilo_session_client::Event::DocumentOpened`]
 //! with no frames). Without that, every read and action about a record the
 //! host had not replayed was refused as one the workspace has none of, and a
 //! member's own records could neither be read nor acted on in the workspace
@@ -17,22 +17,22 @@ use super::keys::{Keys, invoke_keys};
 use super::{DocumentRoute, Needs, Outcome, Worker, Workspace};
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, APPLICATION_START_ACTION,
-    ActionHostError, InvokeRequest, application_provider, application_provider_record,
+    ActionHostError, InvokeRequest, application_provider, application_provider_resource,
     provider_workspace,
 };
 use tilo_relay_protocol::WorkspaceId;
 use tilo_session_client::{Cmd, Outbox};
 
 /// The chain `record` is a part of, when it is a part of one.
-pub(super) fn chain_of(record: &str) -> Option<ui::record::DocumentId> {
-    let part = ui::record::DocumentId::parse(record)?;
+pub(super) fn chain_of(record: &str) -> Option<ui::resource::DocumentId> {
+    let part = ui::resource::DocumentId::parse(record)?;
     part.chain_part().map(|(chain, _)| chain)
 }
 
 /// The records a request naming `record` of `app_id` asks the workspace's
 /// host for, in the workspace whose channels are `cluster_id`: the record
 /// itself, and for a part of a chain the chain's head
-/// ([`ui::record::DocumentId::chain_head`]), which names whichever part is
+/// ([`ui::resource::DocumentId::chain_head`]), which names whichever part is
 /// the newest rather than a guess at its oldest, beside the record a part
 /// is kept with.
 fn asked_routes(cluster_id: &str, app_id: &str, record: &str) -> Vec<DocumentRoute> {
@@ -74,7 +74,7 @@ impl Workspace {
     /// are opened sends nothing else, so a record not here is one the
     /// workspace may still hold: it is asked for rather than taken as absent,
     /// and is absent only once the host answered it holds none of it
-    /// ([`tilo_session_client::Event::RecordOpened`] with no frames).
+    /// ([`tilo_session_client::Event::DocumentOpened`] with no frames).
     pub(super) fn ask(&mut self, workspace_id: WorkspaceId, needs: Needs<'_>) -> bool {
         if !self.when_opened {
             return false;
@@ -131,12 +131,12 @@ impl Worker {
         // wrote yet is founded by the put.
         if puts_into_the_tree(request) {
             return Keys::Record {
-                app_id: tilo_fs::tree_record::FILES_APP.to_owned(),
-                record: tilo_fs::tree_record::record(),
+                app_id: tilo_fs::tree_document::FILES_APP.to_owned(),
+                record: tilo_fs::tree_document::record(),
                 act: false,
             };
         }
-        match self.opened_record(request) {
+        match self.opened_resource(request) {
             Some((app_id, record)) => Keys::Record {
                 app_id,
                 record,
@@ -148,11 +148,11 @@ impl Worker {
 
     /// The app and record an open of an app in `request` shows, when the
     /// record is one the workspace may already hold.
-    fn opened_record(&self, request: &InvokeRequest) -> Option<(String, String)> {
+    fn opened_resource(&self, request: &InvokeRequest) -> Option<(String, String)> {
         let target = &request.target;
         if let Some((_, app)) = application_provider(&target.provider) {
             return (target.address.action == APPLICATION_OPEN_ACTION).then(|| {
-                let record = application_provider_record(&target.provider).unwrap_or_default();
+                let record = application_provider_resource(&target.provider).unwrap_or_default();
                 (app.to_owned(), record.to_owned())
             });
         }
@@ -166,7 +166,7 @@ impl Worker {
         let keeps = self
             .catalogue
             .get(app)
-            .is_some_and(ui::application::ApplicationDefinition::keeps_workspace_record);
+            .is_some_and(ui::application::ApplicationDefinition::keeps_workspace_resource);
         (opens && keeps).then(|| (app.to_owned(), String::new()))
     }
 
@@ -223,7 +223,7 @@ fn puts_into_the_tree(request: &InvokeRequest) -> bool {
             .address
             .resource
             .strip_prefix(APPLICATION_RESOURCE_PREFIX)
-            == Some(tilo_fs::tree_record::FILES_APP)
+            == Some(tilo_fs::tree_document::FILES_APP)
         && super::opened_file::OpenedFile::named(&super::invoke_arguments(&request.argument))
             .is_ok_and(|file| file.is_some())
 }
@@ -247,8 +247,11 @@ mod tests {
     }
 
     /// The chat's chain: the record its numbered parts hang off.
-    fn chain() -> ui::record::DocumentId {
-        ui::record::DocumentId::derived("messages", &ui::record::DocumentId::workspace_default())
+    fn chain() -> ui::resource::DocumentId {
+        ui::resource::DocumentId::derived(
+            "messages",
+            &ui::resource::DocumentId::workspace_default(),
+        )
     }
 
     #[test]

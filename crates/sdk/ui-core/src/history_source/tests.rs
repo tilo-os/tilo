@@ -1033,13 +1033,13 @@ tilo_test_env::scenario! {
 
     phase a_records_genesis_can_be_left_out_of_a_feed_of_what_people_did;
     {
-        use crate::record::{DocumentCheckout, DocumentId, ResourceType, RecordOwners, genesis_actor};
+        use crate::resource::{DocumentCheckout, DocumentId, ResourceType, ResourceOwners, genesis_actor};
         let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
-        let store = RecordOwners::portable(cache)
+        let store = ResourceOwners::portable(cache)
             .open("test", "workspace")
             .unwrap();
         let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("document"));
-        store.create_record(&checkout).unwrap();
+        store.create_resource(&checkout).unwrap();
         let mut doc = store.read(&checkout.id, AutoCommit::clone).unwrap();
         let genesis = genesis_actor(&doc).expect("a record names its genesis actor");
         assert!(
@@ -1062,7 +1062,7 @@ tilo_test_env::scenario! {
         );
         assert!(
             HistorySource::new()
-                .without_record_genesis()
+                .without_resource_genesis()
                 .entries(&mut doc)
                 .is_empty()
         );
@@ -1070,7 +1070,7 @@ tilo_test_env::scenario! {
         doc.put(ROOT, "title", "Notes").unwrap();
         tilo_resource::history::commit_stamped_at(&mut doc, T0);
         let entries = HistorySource::new()
-            .without_record_genesis()
+            .without_resource_genesis()
             .entries(&mut doc);
         assert_eq!(entries.len(), 1, "only the edit someone made");
         assert_eq!(entries[0].timestamp, at(T0));
@@ -1084,14 +1084,14 @@ tilo_test_env::scenario! {
 
     phase a_package_primary_documents_genesis_is_left_out_of_a_feed_too;
     {
-        use crate::record::{DocumentCheckout, ResourceType, RecordOwners, genesis_actor};
+        use crate::resource::{DocumentCheckout, ResourceType, ResourceOwners, genesis_actor};
         let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
-        let store = RecordOwners::portable(cache)
+        let store = ResourceOwners::portable(cache)
             .open("test", "workspace")
             .unwrap();
         let checkout = DocumentCheckout::package_primary(ResourceType::new("chat"));
         store
-            .reserve_record(&checkout)
+            .reserve_resource(&checkout)
             .unwrap()
             .initialize(|doc| {
                 doc.put(ROOT, "categories", "general")
@@ -1114,7 +1114,7 @@ tilo_test_env::scenario! {
         assert!(kept[0].is_genesis());
         assert!(
             HistorySource::new()
-                .without_record_genesis()
+                .without_resource_genesis()
                 .entries(&mut doc)
                 .is_empty(),
             "nobody made the root change at time zero"
@@ -1128,7 +1128,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             HistorySource::new()
-                .without_record_genesis()
+                .without_resource_genesis()
                 .entries(&mut doc)
                 .len(),
             1,
@@ -1140,7 +1140,7 @@ tilo_test_env::scenario! {
         first.commit();
         assert_eq!(
             HistorySource::new()
-                .without_record_genesis()
+                .without_resource_genesis()
                 .entries(&mut first)
                 .len(),
             1,

@@ -674,12 +674,16 @@ impl Store {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let token = state
+        let Some(held) = state
             .tokens
             .get(&digest(token))
             .filter(|token| token.kind != TokenKind::Refresh)
-            .ok_or(Denied::Unknown)?;
-        let (id, expires_ms) = (token.grant.clone(), token.expires_ms);
+            .cloned()
+        else {
+            drop(state);
+            return self.carried(token, now_ms);
+        };
+        let (id, expires_ms) = (held.grant.clone(), held.expires_ms);
         let grant = state.grants.get(&id).ok_or(Denied::Unknown)?;
         if let Some(denied) = Denied::of(grant, now_ms) {
             return Err(denied);
@@ -707,6 +711,57 @@ impl Store {
         Ok(used)
     }
 
+    /// The grant a key carries itself, for a token this store never saw: the
+    /// key is the grant the person approved, so every front door reads it
+    /// without holding anything another front door would have to share.
+    /// Revoking it here records the grant under the same id every front door
+    /// derives from it, so a store that revoked one refuses it from then on.
+    fn carried(&self, token: &str, now_ms: u64) -> Result<Grant, Denied> {
+        let (name, key) = carried_key(token).ok_or(Denied::Unknown)?;
+        let id = grant_id_of(&key);
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(known) = state.grants.get(&id) {
+            if let Some(denied) = Denied::of(known, now_ms) {
+                return Err(denied);
+            }
+            let mut known = known.clone();
+            known.last_used_ms = Some(now_ms);
+            return Ok(known);
+        }
+        if !key.holds(now_ms.saturating_mul(1_000_000)) {
+            return Err(Denied::Expired {
+                at_ms: expiry_ms(&key),
+            });
+        }
+        let grant = Grant {
+            id,
+            person: key.person(),
+            client_id: String::new(),
+            client_name: name,
+            scope: scope_of(&key),
+            kind: GrantKind::Key,
+            expires_ms: expiry_ms(&key),
+            browser_pages: key.browser_pages(),
+            created_ms: key.cert().issued_at_ns / 1_000_000,
+            last_used_ms: Some(now_ms),
+            created_by: None,
+            revoked_ms: None,
+            key: Some(KeptKey {
+                secret: hex::encode(key.secret()),
+                cert: hex::encode(key.cert_bytes()),
+            }),
+        };
+        state.grants.insert(grant.id.clone(), grant.clone());
+        if let Err(error) = self.save(&state) {
+            tracing::warn!(%error, "could not keep a key a front door was handed");
+        }
+        drop(state);
+        Ok(grant)
+    }
+
     /// Record a grant the person approved as an API key on their device
     /// `created_by`, or one a grant minted (`kind`), named `name`, with `key`
     /// and its certificate, and issue its one bearer token, lasting as long
@@ -715,7 +770,7 @@ impl Store {
     ///
     /// # Errors
     /// The store could not be written, or the parent is not live.
-    pub fn record_key(
+    pub fn resource_key(
         &self,
         key: &GrantKey,
         name: &str,
@@ -723,9 +778,9 @@ impl Store {
         created_by: Option<String>,
         now_ms: u64,
     ) -> io::Result<(Grant, String)> {
-        let token = format!("tilo_sk_{}", secret(32)?);
+        let token = key_token(name, key)?;
         let grant = Grant {
-            id: format!("grant-{}", secret(12)?),
+            id: grant_id_of(key),
             person: key.person(),
             client_id: String::new(),
             client_name: name.to_owned(),
@@ -865,6 +920,64 @@ impl Store {
             *count
         })
     }
+}
+
+/// The prefix of a key that carries its own grant: `tilo_sk_…`.
+pub const KEY_PREFIX: &str = "tilo_sk_";
+
+/// The key a person approved, as the one bearer token a key is: its name,
+/// its secret and the person's certificate, so every front door reads the
+/// grant without a store one front door would have to share with it.
+///
+/// # Errors
+/// The key cannot be encoded.
+pub fn key_token(name: &str, key: &GrantKey) -> io::Result<String> {
+    use base64::Engine as _;
+    let carried = KeyToken {
+        name: name.to_owned(),
+        secret: hex::encode(key.secret()),
+        cert: hex::encode(key.cert_bytes()),
+    };
+    let json = serde_json::to_vec(&carried).map_err(io::Error::other)?;
+    Ok(format!(
+        "{KEY_PREFIX}{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json)
+    ))
+}
+
+/// The grant `token` carries: its name and the key with its certificate.
+fn carried_key(token: &str) -> Option<(String, GrantKey)> {
+    use base64::Engine as _;
+    let encoded = token.strip_prefix(KEY_PREFIX)?;
+    let json = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(encoded)
+        .ok()?;
+    let carried: KeyToken = serde_json::from_slice(&json).ok()?;
+    let key = GrantKey::from_kept(
+        &hex::decode(&carried.secret).ok()?,
+        &hex::decode(&carried.cert).ok()?,
+    )
+    .ok()?;
+    Some((carried.name, key))
+}
+
+/// The grant `key` is, by the same id every front door derives from it: its
+/// certificate's device key, so a grant recorded or revoked at one front
+/// door is the same grant at another.
+#[must_use]
+pub fn grant_id_of(key: &GrantKey) -> String {
+    tilo_peer_state::WorkspaceGrant::id_of(&key.cert().device_public_key)
+}
+
+/// A key as its token carries it.
+#[derive(Serialize, Deserialize)]
+struct KeyToken {
+    /// What the person approved the key for, as it was asked ("Visa backend").
+    name: String,
+    /// The key's 32 secret bytes, hex.
+    secret: String,
+    /// The certificate's canonical encoding, hex.
+    cert: String,
 }
 
 /// `bytes` of fresh randomness, base64url without padding.

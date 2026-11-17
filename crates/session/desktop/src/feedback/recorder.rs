@@ -130,7 +130,7 @@ mod tests {
     use automerge::ROOT;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use tilo_app::feedback::ShownRecord;
+    use tilo_app::feedback::ShownResource;
     use tilo_resource::history::commit_stamped_at;
 
     /// A note: its identity, then edits at seconds 10, 700, 800 and 900.
@@ -167,7 +167,7 @@ mod tests {
 
     fn showing(app: &str, record: &str) -> Subject {
         Subject {
-            record: Some(ShownRecord {
+            record: Some(ShownResource {
                 workspace: "w".into(),
                 record: record.into(),
             }),

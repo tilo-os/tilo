@@ -4,7 +4,7 @@ use fs_protocol::files::{
     FileHistoryReadErrorV1 as Error, FileHistoryReadQueryV1 as Query,
     FileHistoryReadScopeV1 as Scope, FileHistoryReadValueV1 as Value, MAX_HISTORY_PAGE_VERSIONS,
 };
-use fs_protocol::history::RecordHistorySnapshot;
+use fs_protocol::history::DocumentHistorySnapshot;
 use fs_protocol::{
     ConflictStatus, ContentHash, Ed25519PublicKey, FileActor, FileDocumentId, FileProvenance,
     FileVersionAttributionV1, FileVersionId, FileVersionV1,
@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 /// The snapshot a record with `count` versions has: each version its
 /// parent's child, all metadata-only.
-fn metadata_snapshot(record: FileDocumentId, count: u64) -> RecordHistorySnapshot {
+fn metadata_snapshot(record: FileDocumentId, count: u64) -> DocumentHistorySnapshot {
     let mut versions = Vec::new();
     let mut parent = None;
     for index in 0..count {
@@ -39,7 +39,7 @@ fn metadata_snapshot(record: FileDocumentId, count: u64) -> RecordHistorySnapsho
     }
     versions.sort_by_key(|version| version.id);
     let head = versions.last().map(|version| version.id);
-    RecordHistorySnapshot {
+    DocumentHistorySnapshot {
         document_id: record,
         versions,
         heads: head.into_iter().collect(),

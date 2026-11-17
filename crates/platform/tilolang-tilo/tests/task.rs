@@ -129,7 +129,7 @@ fn changes_in_two_apps_are_invocations_of_each() {
             .as_str()
             .unwrap()
             .starts_with("tl:so.tilo.lang.notes:"),
-        "the action is invoked on its subject: {invoked:#?}"
+        "the action is invoked on its target: {invoked:#?}"
     );
     assert_eq!(
         task.said("notes.notebook.notes.filter(n -> n.pinned).len()"),
@@ -332,4 +332,95 @@ fn each_argument_is_sent_as_its_published_parameter_takes_it() {
         ),
         "2 1"
     );
+}
+
+/// "Make a note with the groceries: eggs, milk, bread" is one program: the note is made with its
+/// title and its words by the action that makes it, and more words go under them by the note's
+/// own action, as any caller writes a note's body.
+#[test]
+fn a_program_makes_a_note_with_its_words() {
+    let task = task(Vec::new());
+    let made = task.run(
+        "let n = notes.new_note(notes.notebook, title: \"Groceries\", body: \"- eggs\\n- milk\")\nnotes.add_text(n, \"- bread\")",
+        true,
+    );
+    assert_eq!(made["state"], "done", "{made:#}");
+    let read = task.run(
+        "for n in notes.notebook.notes.filter(n -> n.title == \"Groceries\") { print(read(n)) }",
+        false,
+    );
+    assert_eq!(read["state"], "done", "{read:#}");
+    let said = read["output"].to_string();
+    for item in ["eggs", "milk", "bread"] {
+        assert!(said.contains(item), "{item}: {read:#}");
+    }
+    assert!(
+        said.find("milk") < said.find("bread"),
+        "added words go under what the note says: {read:#}"
+    );
+}
+
+/// A task moved to another day keeps its moment and its reminder at the same time of day:
+/// "move the reminder to Friday" of a task due Wednesday at six, reminded at six, moves both.
+#[test]
+fn a_task_moved_to_another_day_takes_its_moment_and_reminder() {
+    let task = task(Vec::new());
+    let made = task.run(
+        "tasks.new_task(tasks.tasks, title: \"Call mum\", due: Date(\"2026-11-18\"), at: Time(\"2026-11-18T17:00:00Z\"), remind: Time(\"2026-11-18T17:00:00Z\"))",
+        true,
+    );
+    assert_eq!(made["state"], "done", "{made:#}");
+    let moved = task.run(
+        "for t in tasks.tasks.items.filter(t -> t.title == \"Call mum\") { tasks.schedule(t, Date(\"2026-11-20\")) }",
+        true,
+    );
+    assert_eq!(moved["state"], "done", "{moved:#}");
+    let said = task.said(
+        "for t in tasks.tasks.items.filter(t -> t.title == \"Call mum\") { print(t.due, t.at, t.remind) }",
+    );
+    assert_eq!(
+        said.matches("2026-11-20").count(),
+        3,
+        "the day, the moment and the reminder: {said}"
+    );
+    assert!(!said.contains("2026-11-18"), "{said}");
+}
+
+/// An action that sets what a record already holds changes nothing and is done, never a failure
+/// of the program: "move the reminder to Friday" written as the day's move and then the reminder
+/// set to the moment the move already gave it.
+#[test]
+fn an_action_that_changes_nothing_is_done() {
+    let task = task(Vec::new());
+    let made = task.run(
+        "tasks.new_task(tasks.tasks, title: \"Call mum\", due: Date(\"2026-11-18\"), at: Time(\"2026-11-18T17:00:00Z\"), remind: Time(\"2026-11-18T17:00:00Z\"))",
+        true,
+    );
+    assert_eq!(made["state"], "done", "{made:#}");
+    let moved = task.run(
+        "for t in tasks.tasks.items.filter(t -> t.title == \"Call mum\") {\n    tasks.schedule(t, Date(\"2026-11-20\"))\n    tasks.remind_at(t, Time(\"2026-11-20T17:00:00Z\"))\n}",
+        true,
+    );
+    assert_eq!(moved["state"], "done", "{moved:#}");
+}
+
+/// "Move the reminder to Friday" of a task due Wednesday: a reminder on a day after the task is
+/// due moves the task to that day, so the reminder and the day it is due move together.
+#[test]
+fn a_reminder_past_the_tasks_day_moves_the_task() {
+    let task = task(Vec::new());
+    let made = task.run(
+        "tasks.new_task(tasks.tasks, title: \"Call mum\", due: Date(\"2026-11-18\"), remind: Time(\"2026-11-18T17:00:00Z\"))",
+        true,
+    );
+    assert_eq!(made["state"], "done", "{made:#}");
+    let moved = task.run(
+        "for t in tasks.tasks.items.filter(t -> t.title == \"Call mum\") { tasks.remind_at(t, Time(\"2026-11-20T17:00:00Z\")) }",
+        true,
+    );
+    assert_eq!(moved["state"], "done", "{moved:#}");
+    let said = task.said(
+        "for t in tasks.tasks.items.filter(t -> t.title == \"Call mum\") { print(t.due, t.remind) }",
+    );
+    assert_eq!(said.matches("2026-11-20").count(), 2, "{said}");
 }

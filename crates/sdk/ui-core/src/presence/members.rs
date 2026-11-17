@@ -8,12 +8,12 @@ use super::PresenceCtx;
 use crate::permissions::MemberId;
 
 impl PresenceCtx {
-    /// Everyone the workspace names, this session's own participant included,
+    /// Everyone the workspace names, this session's own member included,
     /// as they are shown, in an order every replica shares: who a people
     /// list or a mention picker offers.
     pub fn roster(&self) -> Vec<Member> {
         let mut ids: Vec<&MemberId> = self.names.keys().collect();
-        if let Some((own, _)) = &self.self_participant
+        if let Some((own, _)) = &self.self_member
             && !self.names.contains_key(own)
         {
             ids.push(own);
@@ -22,7 +22,7 @@ impl PresenceCtx {
         ids.into_iter().map(|id| self.user(id)).collect()
     }
 
-    /// What this session's own participant is shown as, numbered like
+    /// What this session's own member is shown as, numbered like
     /// anyone else's name; `None` until the workspace has named them.
     pub fn self_label(&self) -> Option<String> {
         self.self_name()?;
@@ -30,7 +30,7 @@ impl PresenceCtx {
     }
 
     /// Take the workspace's member list as the broker delivers it (`CollabEvent::Context`), a
-    /// complete one each time: when each joined, what this session's own participant and
+    /// complete one each time: when each joined, what this session's own member and
     /// everyone else is called and the colour they wear. Whoever left the list since the last
     /// one is no longer here.
     pub fn apply_members(&mut self, members: Vec<Member>) {
@@ -44,10 +44,10 @@ impl PresenceCtx {
             self.set_joined_at(member.id.clone(), member.joined_at);
         }
         if let Some(me) = members.iter().find(|member| member.is_self) {
-            self.set_self_participant(me.id.clone(), me.name.clone());
+            self.set_self_member(me.id.clone(), me.name.clone());
             self.set_presence_hue(me.id.clone(), me.colour);
         } else {
-            self.clear_self_participant();
+            self.clear_self_member();
         }
         // The others alone: the person's own row would put them in every list built from
         // presence.

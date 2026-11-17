@@ -22,14 +22,11 @@ pub(crate) mod tree;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tilo_relay_protocol::WorkspaceId;
+use tilo_relay_session::workspaces::PersonalList;
 use tilo_session_client::device::Device as Entered;
-
-/// How often the person's workspace list is asked for again.
-const LIST_AGAIN: Duration = Duration::from_secs(60);
 
 /// One workspace, as this peer shows it.
 struct Held {
@@ -81,10 +78,10 @@ pub(crate) struct Peer {
     state: PathBuf,
     /// Whether to mount with FUSE where this user can.
     mount: bool,
-    /// The person's workspaces as last listed, when that was, and whether the
-    /// host answered the whole list: a list that did not answer holds only the
+    /// The person's workspaces as their host last sent them, and whether it
+    /// answered the whole list: a list that did not answer holds only the
     /// workspace logged into, and nothing may be dropped because of it.
-    listed: tokio::sync::Mutex<Option<(Instant, Vec<Listed>, bool)>>,
+    listed: tokio::sync::Mutex<Option<(Vec<Listed>, bool)>>,
     /// Why a workspace is not shown, by workspace.
     failed: std::sync::Mutex<Vec<(String, String)>>,
 }
@@ -125,63 +122,77 @@ impl Peer {
         })
     }
 
-    /// The person's workspaces on the host `device` entered, asked again
-    /// once [`LIST_AGAIN`] passed: what was listed, and whether the host
-    /// answered the whole list.
+    /// The person's workspaces on the host `device` entered: the list their
+    /// host sent ([`Self::keep_personal`]), or the one asked for once while
+    /// none arrived. What was listed, and whether the host answered the whole
+    /// list.
     async fn listed(&self, device: &Entered) -> (Vec<Listed>, bool) {
-        {
-            let listed = self.listed.lock().await;
-            if let Some((at, list, complete)) = listed.as_ref()
-                && at.elapsed() < LIST_AGAIN
-            {
-                return (list.clone(), *complete);
-            }
+        let held = self.listed.lock().await.clone();
+        if let Some((list, complete)) = held {
+            return (list, complete);
         }
-        let mut list = vec![Listed {
-            workspace: device.workspace_id(),
-            name: None,
-            role: None,
-        }];
-        let complete = match device
+        let (list, complete) = match device
             .personal_list(
                 &tilo_relay_session::workspaces::WorkspaceLabels::new(),
                 None,
             )
             .await
         {
-            Ok(personal) => {
-                for entry in personal.workspaces {
-                    let Some(workspace) = WorkspaceId::parse(&entry.workspace) else {
-                        continue;
-                    };
-                    let item = Listed {
-                        workspace,
-                        name: Some(entry.name).filter(|name| !name.trim().is_empty()),
-                        role: entry.role,
-                    };
-                    match list.iter_mut().find(|known| known.workspace == workspace) {
-                        Some(known) => *known = item,
-                        None => list.push(item),
-                    }
-                }
-                true
-            }
+            Ok(personal) => (Self::listed_from(device.workspace_id(), &personal), true),
             Err(refusal) => {
                 tracing::warn!(%refusal, "the person's workspaces are not listed; only the one logged into is shown");
-                false
+                (
+                    vec![Listed {
+                        workspace: device.workspace_id(),
+                        name: None,
+                        role: None,
+                    }],
+                    false,
+                )
             }
         };
-        *self.listed.lock().await = Some((Instant::now(), list.clone(), complete));
+        *self.listed.lock().await = Some((list.clone(), complete));
         (list, complete)
     }
 
-    /// Ask the host for the person's workspaces now, remembering the answer:
-    /// what `tilo folders add` and the account commands ask for rather than
-    /// waiting out [`LIST_AGAIN`]. The folders are brought in line with it on
-    /// the peer's next look.
-    pub(crate) async fn refresh(&self, device: &Entered) {
+    /// A session has just started: nothing has been sent over it yet, so the
+    /// list it carries is asked for once, and a workspace made while this
+    /// computer was away is not missed.
+    pub(crate) async fn forget_personal(&self) {
         *self.listed.lock().await = None;
-        let _ = self.listed(device).await;
+    }
+
+    /// The host sent the person's workspaces as they are now: their folders
+    /// follow on the peer's next look, without asking the host again.
+    pub(crate) async fn keep_personal(&self, device: &Entered, personal: &PersonalList) {
+        *self.listed.lock().await =
+            Some((Self::listed_from(device.workspace_id(), personal), true));
+    }
+
+    /// `personal`, as the peer lists it: the workspace this device entered
+    /// first, so its folder exists before any list names it, then each
+    /// workspace the host named.
+    fn listed_from(entered: WorkspaceId, personal: &PersonalList) -> Vec<Listed> {
+        let mut list = vec![Listed {
+            workspace: entered,
+            name: None,
+            role: None,
+        }];
+        for entry in &personal.workspaces {
+            let Some(workspace) = WorkspaceId::parse(&entry.workspace) else {
+                continue;
+            };
+            let item = Listed {
+                workspace,
+                name: Some(entry.name.clone()).filter(|name| !name.trim().is_empty()),
+                role: entry.role.clone(),
+            };
+            match list.iter_mut().find(|known| known.workspace == workspace) {
+                Some(known) => *known = item,
+                None => list.push(item),
+            }
+        }
+        list
     }
 
     /// Show the folders [`folders`] names, and no other: offer a folder to
@@ -401,8 +412,8 @@ impl Peer {
     /// the host answered the whole list.
     pub(crate) async fn workspaces(&self) -> (Vec<serde_json::Value>, bool) {
         let listed = self.listed.lock().await;
-        let complete = listed.as_ref().is_some_and(|(_, _, complete)| *complete);
-        let rows = listed.as_ref().map_or_else(Vec::new, |(_, list, _)| {
+        let complete = listed.as_ref().is_some_and(|(_, complete)| *complete);
+        let rows = listed.as_ref().map_or_else(Vec::new, |(list, _)| {
             list.iter()
                 .map(|entry| {
                     serde_json::json!({
@@ -541,4 +552,39 @@ pub(crate) fn describe_folder(workspace: &serde_json::Value) -> String {
         size(number("local_bytes")),
         size(number("bytes")),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_relay_session::workspaces::{PersonalWorkspace, WorkspaceHostAddress};
+
+    /// The host's list names each folder after its workspace, and the folder
+    /// of the workspace this device entered exists before any list names it.
+    #[test]
+    fn a_list_sent_by_the_host_names_the_folders() {
+        let entered = WorkspaceId::parse("11111111-1111-4111-8111-111111111111").unwrap();
+        let second = "22222222-2222-4222-8222-222222222222";
+        let personal = PersonalList {
+            workspaces: vec![PersonalWorkspace {
+                workspace: second.to_owned(),
+                name: "Second".to_owned(),
+                host: Some(WorkspaceHostAddress {
+                    name: "tilo.test".to_owned(),
+                    hint: None,
+                }),
+                role: Some("owner".to_owned()),
+                labels: tilo_relay_session::workspaces::WorkspaceLabels::default(),
+                unattended: false,
+            }],
+            devices: Vec::new(),
+        };
+        let listed = Peer::listed_from(entered, &personal);
+        assert_eq!(listed.len(), 2, "the workspace entered, then the named one");
+        assert_eq!(listed[0].workspace, entered);
+        assert_eq!(listed[0].name, None, "no list has named it yet");
+        assert_eq!(listed[1].workspace, WorkspaceId::parse(second).unwrap());
+        assert_eq!(listed[1].name.as_deref(), Some("Second"));
+        assert_eq!(listed[1].role.as_deref(), Some("owner"));
+    }
 }

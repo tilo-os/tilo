@@ -21,23 +21,29 @@
 )]
 
 use collab_types::DocumentMutation;
+use tilo_actions::MemberId;
 use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::{CatalogueQuery, CatalogueRow};
 use tilo_agent_session::{ConfinedReplica, Replica, ReplicaActor, Seed};
 
 /// The address the chat publishes its messages under.
 fn messages() -> String {
-    ui::record::chain_resource_id(&chat::parts::chain())
+    ui::resource::chain_resource_id(&chat::parts::chain())
 }
 
 /// A chat a page founded: its record, with the channel the posts go in.
 fn founded() -> Replica {
-    let mut page =
-        crate::common::open("so.tilo.chat", "ada", ReplicaActor::Owner, Seed::New).unwrap();
+    let mut page = crate::common::open(
+        "so.tilo.chat",
+        &MemberId::person("ada"),
+        ReplicaActor::Owner,
+        Seed::New,
+    )
+    .unwrap();
     page.invoke(
         &ActionAddress::new("chat.workspace", "create-channel-with-id"),
         serde_json::json!({"id": "c_chat", "name": "chat", "category": null,
-            "kind": null, "topic": null, "participants": null})
+            "kind": null, "topic": null, "members": null})
         .as_object()
         .unwrap(),
         false,
@@ -53,10 +59,10 @@ fn held(page: &mut Replica) -> ConfinedReplica {
     };
     crate::common::confined(
         "so.tilo.chat",
-        "host",
+        &MemberId::person("host"),
         &ReplicaActor::Owner,
         Seed::Existing {
-            record: page.record_id().clone(),
+            record: page.document_id().clone(),
             changes: vec![changes],
         },
     )

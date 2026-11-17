@@ -3,7 +3,7 @@
 //!
 //! Settings' sections (appearance, accessibility, region, ...) are the
 //! person's records, kept by their session under
-//! [`settings_records::PROVIDER`]: a window shows them and binds its controls
+//! [`settings_resources::PROVIDER`]: a window shows them and binds its controls
 //! to their field edits and verbs, but each change is the keeper's action,
 //! invoked where it is kept ([`ui::framework::Records::kept_by`]). On a page
 //! the page is that session: it keeps the settings document
@@ -19,7 +19,7 @@
 //! drawn its first frame, and long before the peer a workspace is entered
 //! through lands.
 
-use tilo_actions::remote::settings_records;
+use tilo_actions::remote::settings_resources;
 use ui::headless::{FrameHarness, ServedProvider};
 use ui::storage::SettingsDocument;
 
@@ -39,7 +39,7 @@ pub struct SettingsKeeper {
 /// The provider that answers the sections' actions as `person`'s, kept in
 /// `document`: what they change is theirs, undone and redone as their steps.
 fn make(person: &tilo_actions::MemberId, document: SettingsDocument) -> ServedProvider {
-    let records = tilo_app::framework::SettingsRecords::of_person_named_in(
+    let records = tilo_app::framework::SettingsResources::of_person_named_in(
         settings_sections::APP_ID,
         settings_sections::APP_TITLE,
         person,
@@ -73,7 +73,7 @@ pub(crate) fn serve(
     let person = person.clone();
     let mut kept: Option<ServedProvider> = None;
     frame.serve_provider(
-        settings_records::PROVIDER,
+        settings_resources::PROVIDER,
         Box::new(move |invocation| {
             let keeper =
                 SETTINGS_KEEPER
@@ -123,7 +123,7 @@ mod tests {
 
     /// Every section as the page keeps it now.
     fn stored(document: &ui::storage::SettingsDocument) -> BTreeMap<&'static str, String> {
-        let records = tilo_app::framework::SettingsRecords::in_document(
+        let records = tilo_app::framework::SettingsResources::in_document(
             settings_sections::APP_ID,
             &[settings_sections::declare],
             document.clone(),

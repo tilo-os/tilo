@@ -642,7 +642,7 @@ fn unenrolled_stranger_device() -> (ed25519_dalek::SigningKey, tilo_user_identit
 
 /// A device the workspace owner's root certified that the workspace never
 /// enrolled: the owner's own, because membership follows the person and any
-/// participant admits a member's further device when it first asks
+/// key holder admits a member's further device when it first asks
 /// (`docs/architecture/workspace.md`).
 fn another_owner_device() -> (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert) {
     let owner_root = ed25519_dalek::SigningKey::from_bytes(&[0x11; 32]);
@@ -812,7 +812,7 @@ async fn chat_route(
     let route = tilo_peer_state::document_frame::DocumentRoute {
         app_id: CHAT.into(),
         cluster_id: cluster.into(),
-        record: tilo_relay::workspace_bots::workspace_record(&catalogue, CHAT),
+        record: tilo_relay::workspace_bots::workspace_resource(&catalogue, CHAT),
     };
     (host, host_cert, route)
 }
@@ -1323,7 +1323,7 @@ fn a_persistent_workspace_reopens_after_hard_stops() {
         let route = tilo_peer_state::document_frame::DocumentRoute {
             app_id: CHAT.into(),
             cluster_id: id.clone(),
-            record: tilo_relay::workspace_bots::workspace_record(&catalogue, CHAT),
+            record: tilo_relay::workspace_bots::workspace_resource(&catalogue, CHAT),
         };
         let visiting = page(host, key, cert, &host_cert);
         let visiting_heard = visiting.events();

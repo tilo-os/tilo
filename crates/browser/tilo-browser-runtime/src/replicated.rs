@@ -25,16 +25,16 @@ use durable_store::MemoryStore;
 use tilo_relay_protocol::workspaces::WorkspacesRequest;
 use tilo_session::platform::records::{Changes, Since};
 use ui::automerge::AutoCommit;
-use ui::record::RecordStore;
+use ui::resource::ResourceStore;
 
 /// The layout's own document, in the workspace's routes: what the layout of the
 /// browser runtime is to every other device of the workspace.
 pub(crate) const DESKTOP_APP: &str = "so.tilo.browser-desktop";
-pub(crate) const DESKTOP_RECORD: &str = "desktop";
+pub(crate) const DESKTOP_DOCUMENT: &str = "desktop";
 
 /// What a mount shares with the workspace.
 pub(crate) struct Attachment {
-    pub stores: Rc<RefCell<Vec<RecordStore>>>,
+    pub stores: Rc<RefCell<Vec<ResourceStore>>>,
     pub desktop: Option<(tilo_desktop_surface::DesktopHandle, crate::desktop::Shared)>,
     /// Set when a peer's change reached one of this mount's records.
     pub changed: Rc<Cell<bool>>,
@@ -84,7 +84,7 @@ pub(crate) struct Replicated {
     /// The one stream of record changes this page feeds.
     pub(crate) changes: fn() -> Changes,
     /// A record as the page holds it now.
-    pub(crate) record_document: fn(u32, &str, &str) -> Option<AutoCommit>,
+    pub(crate) resource_document: fn(u32, &str, &str) -> Option<AutoCommit>,
     /// What changed of a record since the heads a reader holds it at, read without it whole.
     pub(crate) record_since: fn(u32, &str, &str, &[ui::automerge::ChangeHash]) -> Since,
     /// The heads the workspace last delivered a record at, as the page took it in.
@@ -165,9 +165,9 @@ pub(crate) fn changes() -> Changes {
     installed(Changes::default(), |replicated| (replicated.changes)())
 }
 
-pub(crate) fn record_document(id: u32, app: &str, record: &str) -> Option<AutoCommit> {
+pub(crate) fn resource_document(id: u32, app: &str, record: &str) -> Option<AutoCommit> {
     installed(None, |replicated| {
-        (replicated.record_document)(id, app, record)
+        (replicated.resource_document)(id, app, record)
     })
 }
 

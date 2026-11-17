@@ -140,7 +140,7 @@ async fn local_report_admission(
                 peer_id: 903,
                 connection_id: 903,
                 verified_identity: identity.clone(),
-                record_kind: None,
+                resource_type: None,
                 route_access: RouteAccess::Own,
                 lease: None,
                 _hold: None,
@@ -154,7 +154,7 @@ async fn local_report_admission(
                     agent: identity.agent_id.clone(),
                     app_id: env.route.app_id.clone(),
                     workspace: env.route.cluster_id.clone(),
-                    document: env.route.record_id.clone(),
+                    document: env.route.document_id.clone(),
                 }),
                 version: 1,
                 invocation: uuid::Uuid::nil(),
@@ -169,7 +169,7 @@ async fn local_report_admission(
                 },
                 context: Some(tilo_actions::ActionContext {
                     resource: Some(tilo_actions::ActionResource {
-                        id: env.route.record_id.clone(),
+                        id: env.route.document_id.clone(),
                         kind: "parent-document".into(),
                         label: "Private parent".into(),
                     }),
@@ -234,7 +234,7 @@ async fn local_report_admission(
                 peer_id: 904,
                 connection_id: 904,
                 verified_identity: identity.clone(),
-                record_kind: None,
+                resource_type: None,
                 route_access: RouteAccess::Own,
                 lease: None,
                 _hold: None,
@@ -323,7 +323,7 @@ async fn local_report_admission(
             let facts = &evidence.public_receipt().facts;
             assert_eq!(facts.invocation.0, invocation);
             assert_eq!(facts.app_id, env.route.app_id);
-            assert_eq!(facts.record_id, env.route.record_id);
+            assert_eq!(facts.document_id, env.route.document_id);
             assert_eq!(
                 facts.actor,
                 crate::action_evidence::VerifiedActor::AuthenticatedLocal {
@@ -364,7 +364,7 @@ async fn local_report_admission(
                 let receipts = rig.state.local_report_receipts.lock().unwrap();
                 let record = receipts.lookup(&key).unwrap();
                 let retained = &record.intent;
-                assert_eq!(retained["record_id"], env.route.record_id);
+                assert_eq!(retained["document_id"], env.route.document_id);
                 assert_eq!(retained["resource"], request.resource);
                 assert!(
                     retained.get("request").is_none(),
@@ -375,7 +375,7 @@ async fn local_report_admission(
                     "claim": "semantic-admission-and-app-reported-input-and-hashes-not-execution",
                     "resolved_request": {
                         "app_id": env.route.app_id,
-                        "record_id": env.route.record_id,
+                        "document_id": env.route.document_id,
                         "resource": request.resource,
                         "action": request.action,
                         "argument": request.argument,
@@ -405,7 +405,7 @@ async fn local_report_admission(
                     assert!(!record.admitted_request_is(&changed["request"]));
                     assert!(opening.verify(evidence.public_receipt(), &changed).is_err());
                 }
-                for field in ["record_id", "resource", "actor"] {
+                for field in ["document_id", "resource", "actor"] {
                     let mut changed = retained.clone();
                     changed[field] = serde_json::json!("substitution");
                     assert!(evidence.validate_retained(&changed).is_err());

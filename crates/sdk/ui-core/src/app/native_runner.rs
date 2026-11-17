@@ -2039,7 +2039,7 @@ impl AppHandler {
             {
                 if presentation.window_rect.size() != surface.shell_rect.size() {
                     // App-owned activities can change silhouette while detached (a call gains
-                    // participant rows, navigation reveals another instruction, accessibility text
+                    // member rows, navigation reveals another instruction, accessibility text
                     // grows), so resize the buffer with the shared presentation rect.
                     resize_native_floating_window(&surface.window, presentation.window_rect);
                 }
@@ -2529,11 +2529,11 @@ impl AppHandler {
         // record, sync against that record's document, not the
         // outgoing one's.
         mark_first_frame("first-frame-record-start");
-        let record_changed = app.swap_requested_component() | app.record_tick();
+        let resource_changed = app.swap_requested_component() | app.record_tick();
         mark_first_frame("first-frame-record-done");
-        floating_content_changed |= record_changed;
+        floating_content_changed |= resource_changed;
         // A different record is a different document under the same tree.
-        full_redraw_required |= repaint_why.note("record", record_changed);
+        full_redraw_required |= repaint_why.note("record", resource_changed);
 
         let __prof_frame_start = app.profiler.as_ref().map(|_| crate::time::now());
         // Drain model notifications and advance update-driven widgets before
@@ -3072,7 +3072,7 @@ impl AppHandler {
                 crate::native_scenario::log::emit_json("tilo-physical-frame", row);
             }
 
-            let key_record = crate::input_frame::submitted(if full_redraw_required {
+            let key_resource = crate::input_frame::submitted(if full_redraw_required {
                 crate::input_frame::Repaint::Full(repaint_why)
             } else {
                 crate::input_frame::Repaint::Damage(&damage_regions)
@@ -3116,7 +3116,7 @@ impl AppHandler {
                 partial,
                 layers: layers.filter(|_| backdrop.is_empty()),
                 backdrop,
-                on_present: present_hook(self.dev_reload_timing.take(), key_record),
+                on_present: present_hook(self.dev_reload_timing.take(), key_resource),
             };
             record_main_stage(&mut native_main_stages, MainStage::AfterHudRequest);
             if let Some((origin, entered)) = native_redraw_entry {

@@ -61,10 +61,10 @@ pub enum Scope {
     /// A network host pattern; see [`net`].
     NetHost(String),
     /// A stable collaborative-file record id, or `*` for every record.
-    FsRecord(String),
+    FsResource(String),
 }
 
-/// The scope pattern a [`Scope::Device`] or [`Scope::FsRecord`] uses for
+/// The scope pattern a [`Scope::Device`] or [`Scope::FsResource`] uses for
 /// every one.
 pub const EVERY: &str = "*";
 
@@ -74,9 +74,9 @@ impl Scope {
         match (self, resource) {
             (Scope::FsPath(prefix), ResourceRef::FsPath(path)) => path_covers(prefix, path),
             (Scope::Device(d), ResourceRef::Device(e))
-            | (Scope::FsRecord(d), ResourceRef::FsRecord(e)) => d == EVERY || d == e,
+            | (Scope::FsResource(d), ResourceRef::FsResource(e)) => d == EVERY || d == e,
             (Scope::NetHost(h), ResourceRef::NetHost(target)) => host_covers(h, target),
-            (Scope::FsPath(_) | Scope::Device(_) | Scope::NetHost(_) | Scope::FsRecord(_), _) => {
+            (Scope::FsPath(_) | Scope::Device(_) | Scope::NetHost(_) | Scope::FsResource(_), _) => {
                 false
             }
         }
@@ -160,7 +160,7 @@ pub enum ResourceRef {
     FsPath(String),
     Device(String),
     NetHost(String),
-    FsRecord(String),
+    FsResource(String),
 }
 
 /// When a capability dies — the `expiry` of `(who, resource, access, expiry)`.

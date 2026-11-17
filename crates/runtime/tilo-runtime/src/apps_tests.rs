@@ -322,7 +322,7 @@ tilo_test_env::scenario! {
     // from the signed package as it launches it and hands it to its identity
     // service and broker. A surface changed after install declares nothing.
     {
-        use tilo_identity_host::broker::PersonRecordKinds as _;
+        use tilo_identity_host::broker::PersonResourceTypes as _;
 
         const KEEPER: &str = "so.tilo.person-keeper";
         const TAMPERED: &str = "so.tilo.person-tampered";
@@ -353,7 +353,7 @@ tilo_test_env::scenario! {
             surface("person-forged"),
         )
         .unwrap();
-        let declared = |app: &str| tilo_action_broker::SurfacePersonRecords.person_record_kinds(app);
+        let declared = |app: &str| tilo_action_broker::SurfacePersonDocuments.person_resource_types(app);
         assert!(declared(KEEPER).is_empty(), "nothing before it is launched");
 
         // This builder has no launcher: the launch stops there, after the

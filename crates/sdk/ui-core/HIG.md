@@ -493,7 +493,7 @@ completeness does not exempt a screen from these requirements.
   wall of same-size text; no illegible low-contrast label on a colored fill
   (the permissions-pane and camera regressions were exactly this).
 - **Content reflows by size, not just shrinks.** Honor the responsive rule (§1):
-  card grids re-column, participant/media grids re-tile by count, panels become
+  card grids re-column, member/media grids re-tile by count, panels become
   separate screens when they no longer fit — measured against window *area*, and
   **recomputed on resize**, never laid out once.
 - **State reads at a glance.** Selection, focus, active/live, speaking, syncing,
@@ -559,7 +559,7 @@ composite in rest, hover, pressed, focused, disabled, selected and error, at
 each `ControlSize`, and every overlay over a busy page with and without the
 blurred material, dark and light. A change to a widget's look is checked
 there first. When a pattern
-recurs (a media/participant grid, a stat tile, a huddle overlay, a segmented
+recurs (a media/member grid, a stat tile, a huddle overlay, a segmented
 control), promote it to a `ui` primitive so the shared version is the default.
 
 Promoted so far, each as a retained widget and a `*Face` painter with the
@@ -1273,7 +1273,7 @@ these intents (`colors.intent`):
 | your colour | `intent.you` (= `border_focus`) | the keyboard focus ring (never focus a click gave), the text caret, selection handles, a drop or insertion indicator |
 | selection tint | `intent.selection_tint` | the text-selection highlight (your colour, translucent) |
 | status | `semantic.{danger, warning, success, info}` | status only, muted (chroma at most 0.13), never decoration. A destructive button is danger ink on a neutral control, filled only inside the confirmation step |
-| presence | `presence.of_rgb(user_color(id))`, `presence.get(slot)`, `presence.series(i)` | a participant's cursor, selection, avatar and attribution; chart and tag series |
+| presence | `presence.of_rgb(user_color(id))`, `presence.get(slot)`, `presence.series(i)` | a member's cursor, selection, avatar and attribution; chart and tag series |
 
 Links are primary ink with an underline. An "active" icon is primary ink, an
 inactive one secondary ink. The focused window's edge
@@ -1301,7 +1301,7 @@ the intents and never ask which emphasis is active; the label of the fill is
 always `intent.on_inverted`.
 
 **The presence palette** is twelve hues at one OKLCH lightness and chroma
-(dark L 0.74 C 0.14, light L 0.58 C 0.15), so no participant looks more
+(dark L 0.74 C 0.14, light L 0.58 C 0.15), so no member looks more
 important than another. Identities travel as colours
 (`ui::presence::user_color`, `PEER_PALETTE`); paint them through
 `colors.presence.of(..)`, which carries their hue at the active material's

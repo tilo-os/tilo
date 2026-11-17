@@ -153,6 +153,20 @@ fn check_estimate(estimate: Option<u32>) -> Result<(), Refusal> {
     Ok(())
 }
 
+/// Who gave an issue to `assignee` and when, when it is an agent and a person
+/// gave it: the agent works on it for them. Nothing for anyone else.
+fn given_to_agent(
+    assignee: Option<&tilo_resource::Atom>,
+    by: Option<&tilo_resource::MemberId>,
+    at_ms: i64,
+) -> (Option<tilo_resource::MemberId>, i64) {
+    let to_agent = assignee.is_some_and(|assignee| assignee.0.starts_with("agent:"));
+    match by {
+        Some(by) if to_agent && by.is_person() => (Some(by.clone()), at_ms),
+        _ => (None, 0),
+    }
+}
+
 fn by_agent(cx: &ActionCx) -> bool {
     cx.invoked_by().is_some_and(|by| by.is_agent())
 }
@@ -212,6 +226,7 @@ impl IssuePart {
                 kept_labels.insert(label.to_owned());
             }
         }
+        let given = given_to_agent(assignee.as_ref(), author.as_ref(), cx.now_ms());
         let issue = Issue {
             number,
             rank: rank.unwrap_or_default(),
@@ -233,6 +248,8 @@ impl IssuePart {
             due_ms,
             labels: kept_labels,
             origin,
+            assigned_by: given.0,
+            assigned_ms: given.1,
             ..Issue::default()
         };
         let id = cx.id();
@@ -272,9 +289,13 @@ impl IssuePart {
 
     /// Assign an issue to a person or an agent, to someone not in the
     /// workspace yet by their name, or to nobody.
+    ///
+    /// Giving it to an agent asks the agent to do it, for whoever gave it:
+    /// the agent works on it as their turn and answers in its thread.
     #[action(item = issues, step = "edit", writes = issues)]
     pub fn assign(
         &mut self,
+        cx: &mut ActionCx,
         issue: &Id,
         #[param(
             "a person's root key, agent:<id>, or outside:<name> for someone not in the workspace yet; nobody without"
@@ -282,7 +303,14 @@ impl IssuePart {
         assignee: Option<String>,
     ) -> Result<(), Refusal> {
         let assignee = checked_assignee(assignee)?;
-        self.issue_mut(issue)?.assignee = assignee;
+        let (by, at_ms) = given_to_agent(assignee.as_ref(), Some(&author(cx)?), cx.now_ms());
+        let target = self.issue_mut(issue)?;
+        // Giving it to the agent it is with already asks nothing new.
+        if target.assignee != assignee || by.is_none() {
+            target.assigned_by = by;
+            target.assigned_ms = at_ms;
+        }
+        target.assignee = assignee;
         Ok(())
     }
 
@@ -912,14 +940,14 @@ mod tests;
 
 /// The chain the parts belong to, beside the tracker's own record.
 #[must_use]
-pub fn chain() -> ui::record::DocumentId {
-    ui::record::DocumentId::derived("issues", &ui::record::DocumentId::workspace_default())
+pub fn chain() -> ui::resource::DocumentId {
+    ui::resource::DocumentId::derived("issues", &ui::resource::DocumentId::workspace_default())
 }
 
 impl ui::framework::Chained for IssuePart {
     type Base = Tracker;
 
-    fn chain() -> ui::record::DocumentId {
+    fn chain() -> ui::resource::DocumentId {
         chain()
     }
 

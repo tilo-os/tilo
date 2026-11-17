@@ -4,7 +4,7 @@
 //! content the device asked for are kept, and the assembled bytes are handed
 //! on only when they hash to what was asked for.
 //!
-//! Every participant answers such requests ([`answer`]), host or page, from
+//! Every key holder answers such requests ([`answer`]), host or page, from
 //! what it keeps: a file a visitor posted from a page is only there until the
 //! workspace's host has asked for its own copy, and an app surface is one
 //! device's until the workspace has it too.
@@ -205,7 +205,7 @@ impl<T> ContentWants<T> {
         {
             self.wants.remove(&oldest);
         }
-        let request = postcard::to_allocvec(&crate::NeighbourMsg::RecordContentWant {
+        let request = postcard::to_allocvec(&crate::NeighbourMsg::DocumentContentWant {
             requester: crate::peer_handle(device),
             app_id: app_id.to_owned(),
             cluster_id: cluster_id.to_owned(),
@@ -252,7 +252,7 @@ impl<T> ContentWants<T> {
             if silent < want.patience_ms() {
                 continue;
             }
-            let Ok(request) = postcard::to_allocvec(&crate::NeighbourMsg::RecordContentWant {
+            let Ok(request) = postcard::to_allocvec(&crate::NeighbourMsg::DocumentContentWant {
                 requester: crate::peer_handle(device),
                 app_id: want.app_id.clone(),
                 cluster_id: want.cluster_id.clone(),
@@ -272,7 +272,7 @@ impl<T> ContentWants<T> {
     /// member's general content budget, since it asked for it.
     #[must_use]
     pub fn expects(&self, device: &[u8; 32], frame: &[u8]) -> bool {
-        let Ok(crate::NeighbourMsg::RecordContentPiece {
+        let Ok(crate::NeighbourMsg::DocumentContentPiece {
             requester,
             app_id,
             cluster_id,
@@ -295,7 +295,7 @@ impl<T> ContentWants<T> {
     /// belongs to content a device asked for; the content once whole and
     /// verified.
     pub fn piece(&mut self, device: &[u8; 32], frame: &[u8], now_ms: u64) -> Option<Arrived<T>> {
-        let Ok(crate::NeighbourMsg::RecordContentPiece {
+        let Ok(crate::NeighbourMsg::DocumentContentPiece {
             requester,
             app_id,
             cluster_id,
@@ -350,11 +350,11 @@ impl<T> ContentWants<T> {
     }
 }
 
-/// The frames that answer `request`, a member's `RecordContentWant` that
+/// The frames that answer `request`, a member's `DocumentContentWant` that
 /// device `asker` published, from device `device`, addressed to `asker`: the
-/// `NeighbourMsg::RecordContentPiece`s of what `read` (given the request's
+/// `NeighbourMsg::DocumentContentPiece`s of what `read` (given the request's
 /// app, workspace and hash) keeps under it that the asker does not hold yet,
-/// or one `RecordContentLacks` when it keeps nothing, so the asker stops
+/// or one `DocumentContentLacks` when it keeps nothing, so the asker stops
 /// counting on this responder. Empty when the request is not one this
 /// responder answers. What `read` returns is sent only when it hashes to what
 /// was asked for.
@@ -369,7 +369,7 @@ pub fn answer(
     request: &[u8],
     read: impl FnOnce(&str, &str, &str) -> Option<Vec<u8>>,
 ) -> Vec<Vec<u8>> {
-    let Ok(crate::NeighbourMsg::RecordContentWant {
+    let Ok(crate::NeighbourMsg::DocumentContentWant {
         requester,
         app_id,
         cluster_id,
@@ -389,7 +389,7 @@ pub fn answer(
         u64::try_from(bytes.len()).is_ok_and(|total| total <= MAX_CONTENT_BYTES)
             && blake3::hash(bytes).to_hex().as_str() == hash
     }) else {
-        return postcard::to_allocvec(&crate::NeighbourMsg::RecordContentLacks {
+        return postcard::to_allocvec(&crate::NeighbourMsg::DocumentContentLacks {
             responder,
             requester,
             app_id,
@@ -401,7 +401,7 @@ pub fn answer(
     };
     let total = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
     let piece = |offset: u64, chunk: &[u8]| {
-        postcard::to_allocvec(&crate::NeighbourMsg::RecordContentPiece {
+        postcard::to_allocvec(&crate::NeighbourMsg::DocumentContentPiece {
             responder,
             requester,
             app_id: app_id.clone(),
@@ -502,7 +502,7 @@ mod tests {
             "asked once while the request is open"
         );
         let piece = |offset: usize, chunk: &[u8]| {
-            postcard::to_allocvec(&crate::NeighbourMsg::RecordContentPiece {
+            postcard::to_allocvec(&crate::NeighbourMsg::DocumentContentPiece {
                 responder: crate::peer_handle(&[1; 32]),
                 requester: crate::peer_handle(&device),
                 app_id: workspace.0.into(),
@@ -581,7 +581,7 @@ mod tests {
             frames,
             [frame] if matches!(
                 postcard::from_bytes(frame),
-                Ok(crate::NeighbourMsg::RecordContentLacks { .. })
+                Ok(crate::NeighbourMsg::DocumentContentLacks { .. })
             )
         )
     }

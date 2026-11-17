@@ -7,6 +7,7 @@ use tilo_messaging::{Delivery, Direction, HistoryClient, HistoryCursor, HistoryP
 use ui::LocalState;
 use ui::framework::{ActionControl, Actions, EffectAnswer, EffectCx, EffectStatus, Effected};
 use ui::i18n::ArgValue;
+use ui::tilo_resource::{MemberId, PersonId};
 use ui::widget::{
     Button, Column, ConversationLine, ConversationList, DeliveryState, DeliveryStep, Element,
     ModelView, Text,
@@ -31,16 +32,20 @@ struct Projection {
 pub(crate) struct HistoryView {
     client: Option<HistoryClient>,
     direct: bool,
-    me: Option<String>,
+    me: Option<PersonId>,
     state: LocalState<Projection>,
     changes: LocalState<u64>,
     _subscription: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
 }
 
 impl HistoryView {
-    pub(crate) fn new(client: Option<HistoryClient>, actor: Option<&str>, direct: bool) -> Self {
+    pub(crate) fn new(
+        client: Option<HistoryClient>,
+        actor: Option<&PersonId>,
+        direct: bool,
+    ) -> Self {
         let client = client.filter(|client| {
-            actor.is_some_and(|person| !person.is_empty() && person == client.actor())
+            actor.is_some_and(|person| !person.is_empty() && person.as_str() == client.actor())
         });
         let changes = LocalState::new(0u64);
         let wake = changes.clone();
@@ -55,7 +60,7 @@ impl HistoryView {
         Self {
             client,
             direct,
-            me: actor.map(str::to_owned),
+            me: actor.cloned(),
             state: LocalState::new(Projection::default()),
             changes,
             _subscription: subscription,
@@ -377,15 +382,15 @@ impl HistoryView {
             .clone()
             .filter(|me| !me.is_empty() && me != peer)
             .ok_or_else(|| CATALOG.t("messages-history-unavailable"))?;
-        let peer = peer.to_owned();
-        let read = ui::tilo_actions::remote::RecordReadRequest {
+        let peer = PersonId::parse(peer).map_err(|_| CATALOG.t("messages-history-unavailable"))?;
+        let read = ui::tilo_actions::remote::ResourceReadRequest {
             app: CHAT.into(),
             record: CHAT_MESSAGES.into(),
             joined: true,
             after: None,
             wait_ms: None,
         };
-        Ok(cx.read_record(read, move |(), readings, cx| {
+        Ok(cx.read_resource(read, move |(), readings, cx| {
             then(direct_page(route, (&me, &peer), &readings?), cx)
         }))
     }
@@ -396,12 +401,12 @@ impl HistoryView {
 /// draws them.
 pub(crate) fn direct_page(
     route: routing::Route,
-    (me, peer): (&str, &str),
+    (me, peer): (&PersonId, &PersonId),
     readings: &serde_json::Value,
 ) -> HistoryPage {
-    let mut sides = [me.to_owned(), peer.to_owned()];
-    sides.sort();
-    let channel = format!("direct:{}", sides.join("|"));
+    let channel =
+        chat::Chat::direct_id([MemberId::Person(me.clone()), MemberId::Person(peer.clone())]);
+    let peer = MemberId::Person(peer.clone());
     let field = |value: &serde_json::Value, at: &str| value.pointer(at).cloned();
     let mut messages = Vec::new();
     let parts = readings
@@ -414,7 +419,9 @@ pub(crate) fn direct_page(
         let mut held: Vec<(&String, &serde_json::Value)> = held
             .into_iter()
             .flatten()
-            .filter(|(_, entry)| field(entry, "/v/channel").is_some_and(|at| at == *channel))
+            .filter(|(_, entry)| {
+                field(entry, "/v/channel").is_some_and(|at| at == channel.as_str())
+            })
             .collect();
         held.sort_by_key(|(id, entry)| (field(entry, "/k").map(|k| k.to_string()), *id));
         messages.extend(held.into_iter().map(|(id, entry)| {
@@ -423,7 +430,10 @@ pub(crate) fn direct_page(
             tilo_messaging::Message {
                 id: id.clone(),
                 text: text.unwrap_or_default().into(),
-                direction: if field(entry, "/v/author").is_some_and(|author| author == peer) {
+                direction: if field(entry, "/v/author")
+                    .and_then(|author| serde_json::from_value::<MemberId>(author).ok())
+                    .is_some_and(|author| author == peer)
+                {
                     Direction::Incoming
                 } else {
                     Direction::Outgoing

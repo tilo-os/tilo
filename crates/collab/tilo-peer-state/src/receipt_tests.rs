@@ -6,7 +6,7 @@ use std::sync::Arc;
 use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{AutoCommit, ObjType, ROOT};
 use collab_types::claim::ClaimedAction;
-use collab_types::{ReceiptSurface, Record, SurfaceSource, Surfaces, UnitPath};
+use collab_types::{ReceiptSurface, SurfaceSource, Surfaces, UnitPath, WrittenDocument};
 use ed25519_dalek::SigningKey;
 use tilo_action_policy::ActionKind;
 use tilo_actions::{
@@ -75,7 +75,7 @@ struct Source(bool);
 impl SurfaceSource for Source {
     fn surface(
         &self,
-        _: &Record<'_>,
+        _: &WrittenDocument<'_>,
         _: Option<&str>,
         _: Option<&[u8; 32]>,
     ) -> Option<Arc<dyn ReceiptSurface>> {
@@ -127,7 +127,7 @@ fn workspace_keeping(role: Role, units: &[&str]) -> (StatePeer, SigningKey, Devi
                 .unwrap(),
             documents: vec![SeedDocument {
                 app_id: APP.into(),
-                record_id: RECORD.into(),
+                document_id: RECORD.into(),
                 kind: KIND.into(),
                 bytes: record.save(),
             }],
@@ -332,7 +332,7 @@ fn signed_write_at(
         peer: crate::peer_handle(author.as_bytes()),
         app_id: APP.into(),
         cluster_id: WORKSPACE.into(),
-        record_id: RECORD.into(),
+        document_id: RECORD.into(),
         envelope: Box::new(envelope),
         own: None,
     }
@@ -480,7 +480,7 @@ tilo_test_env::scenario! {
             peer: handle,
             app_id,
             cluster_id,
-            record_id,
+            document_id,
             mut envelope,
             own,
         } = wrote_other
@@ -510,7 +510,7 @@ tilo_test_env::scenario! {
             peer: handle,
             app_id,
             cluster_id,
-            record_id,
+            document_id,
             envelope,
             own,
         };
@@ -626,7 +626,7 @@ tilo_test_env::scenario! {
                 peer: handle,
                 app_id,
                 cluster_id,
-                record_id,
+                document_id,
                 mut envelope,
                 own,
             } = message
@@ -639,7 +639,7 @@ tilo_test_env::scenario! {
                 peer: handle,
                 app_id,
                 cluster_id,
-                record_id,
+                document_id,
                 envelope,
                 own,
             }
@@ -685,7 +685,7 @@ tilo_test_env::scenario! {
                 peer: crate::peer_handle(author.as_bytes()),
                 app_id: APP.into(),
                 cluster_id: WORKSPACE.into(),
-                record_id: RECORD.into(),
+                document_id: RECORD.into(),
                 envelope: Box::new(envelope),
                 own: None,
             },
@@ -907,7 +907,7 @@ fn upgraded_write(
         peer: crate::peer_handle(author.as_bytes()),
         app_id: APP.into(),
         cluster_id: WORKSPACE.into(),
-        record_id: RECORD.into(),
+        document_id: RECORD.into(),
         envelope: Box::new(envelope),
         own: None,
     }

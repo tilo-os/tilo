@@ -127,7 +127,7 @@ impl ActionHost for Notes {
             provider: "71".into(),
             app_id: "so.tilo.notes".into(),
             workspace: "workspace".into(),
-            record_id: "notebook".into(),
+            document_id: "notebook".into(),
             browsable: true,
         }];
         Pending::ready(Ok(page))

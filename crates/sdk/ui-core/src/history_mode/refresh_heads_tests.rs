@@ -5,9 +5,9 @@ use crate::application_test_support::{
     APP, ProbeHost, runner_permissions, runner_probe_definition,
 };
 use crate::bound_dispatch::CallbackBinding;
-use crate::history_mode::owner::{HistoryOwner, OWNED_DOCUMENT_CLONES, RecordOwnerLifetime};
+use crate::history_mode::owner::{HistoryOwner, OWNED_DOCUMENT_CLONES, ResourceOwnerLifetime};
 use crate::history_mode::{HistoryDefinition, HistoryResource, HistoryScopeDefinition};
-use crate::record::{DocumentCheckout, RecordStore, ResourceType};
+use crate::resource::{DocumentCheckout, ResourceStore, ResourceType};
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
 
 static DEFINITION: HistoryDefinition = HistoryDefinition {
@@ -77,7 +77,11 @@ impl BoundFixture {
     }
     fn close(&mut self) {
         let report = self.component.close();
-        assert!(report.record_error.is_none(), "{:?}", report.record_error);
+        assert!(
+            report.resource_error.is_none(),
+            "{:?}",
+            report.resource_error
+        );
         assert!(report.view_error.is_none(), "{:?}", report.view_error);
         assert!(
             report.teardown_error.is_none(),
@@ -251,10 +255,10 @@ tilo_test_env::scenario! {
         ));
         fixture.close();
 
-        let store = RecordStore::in_memory();
+        let store = ResourceStore::in_memory();
         let live = DocumentCheckout::new(crate::DocumentId::for_tab(941), ResourceType::new("note"));
-        store.open_record(&live);
-        let lifetime = RecordOwnerLifetime::new();
+        store.open_resource(&live);
+        let lifetime = ResourceOwnerLifetime::new();
         let live_owner = HistoryOwner::record(store.clone(), live.clone(), &lifetime, true);
         let resource = live_owner.resource(APP).unwrap();
         let stale = DocumentCheckout::new(live.id.clone(), ResourceType::new("foreign-kind"));
@@ -398,11 +402,11 @@ fn refresh_heads_allocation_growth_independent_of_real_graph_size_in_all_documen
         let mut observations = Vec::new();
         for size in [16, 2048] {
             let document = populated_document(size);
-            let store = RecordStore::in_memory();
+            let store = ResourceStore::in_memory();
             let checkout =
                 DocumentCheckout::new(crate::DocumentId::for_tab(943), ResourceType::new("note"));
-            store.open_record(&checkout);
-            let lifetime = RecordOwnerLifetime::new();
+            store.open_resource(&checkout);
+            let lifetime = ResourceOwnerLifetime::new();
             let source = match route {
                 "owned" => {
                     store

@@ -3,7 +3,7 @@
 //! adding someone is checked, recorded and undone as typing their address is.
 
 use tilo_contact_directory::{ContactDirectory, EmailHint};
-use ui::framework::{LiveRow, PersonRecord};
+use ui::framework::{LiveRow, PersonResource};
 use ui::tilo_resource::{ActionDecl, SearchEntry};
 
 use super::CalendarApp;
@@ -57,7 +57,7 @@ impl Choice {
 }
 
 impl Store {
-    pub(crate) fn follow_contacts(&mut self, record: Option<PersonRecord<ContactDirectory>>) {
+    pub(crate) fn follow_contacts(&mut self, record: Option<PersonResource<ContactDirectory>>) {
         self.contact_directory = record;
     }
 

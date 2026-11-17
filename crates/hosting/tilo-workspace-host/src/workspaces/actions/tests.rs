@@ -1028,7 +1028,7 @@ async fn a_developer_chooses_the_version_of_an_app_the_whole_workspace_runs() {
 
 /// `request` of the person's own settings, asked by the device `device`
 /// certifies in the workspace `workspace_id` carries.
-async fn ask_own(
+pub(super) async fn ask_own(
     host: &HostWorkspaceActions,
     workspace_id: WorkspaceId,
     device: &DeviceCert,
@@ -1080,6 +1080,47 @@ fn files_holding(
     (holding, inside)
 }
 
+/// Every request of a person's model providers, the ones that name a
+/// provider naming `provider`.
+fn model_requests(provider: &str) -> Vec<(&'static str, Value)> {
+    use tilo_actions::remote::person_models;
+
+    vec![
+        (person_models::LIST, json!({})),
+        (
+            person_models::ADD_PROVIDER,
+            json!({"name": "Another", "protocol": "open-ai-compatible", "endpoint": "https://other.example/v1"}),
+        ),
+        (person_models::ADD_PRESET, json!({"preset": "anthropic"})),
+        (
+            person_models::SET_KEY,
+            json!({"provider": provider, "key": "sk-replaced"}),
+        ),
+        (person_models::REMOVE_KEY, json!({"provider": provider})),
+        (
+            person_models::REMOVE_PROVIDER,
+            json!({"provider": provider}),
+        ),
+        (person_models::REFRESH_MODELS, json!({"provider": provider})),
+        (
+            person_models::ADD_MODEL,
+            json!({"provider": provider, "model": "typed"}),
+        ),
+        (
+            person_models::SET_DEFAULT,
+            json!({"provider": provider, "model": "typed"}),
+        ),
+        (
+            person_models::SET_ASSIGNMENT,
+            json!({"kind": "task", "provider": provider, "model": "typed"}),
+        ),
+        (
+            person_models::SET_ASSIGNMENTS,
+            json!({"kinds": ["request", "task"], "provider": provider, "model": "typed"}),
+        ),
+    ]
+}
+
 /// What `other` sees of the person's providers, and that naming
 /// `provider` reaches nothing of theirs.
 async fn reaches_none_of_hers(
@@ -1094,17 +1135,17 @@ async fn reaches_none_of_hers(
         .await
         .unwrap();
     assert_eq!(listed["providers"], json!([]), "{listed}");
-    for (verb, argument) in [
-        (
-            person_models::SET_KEY,
-            json!({"provider": provider, "key": "sk-replaced"}),
-        ),
-        (person_models::REMOVE_KEY, json!({"provider": provider})),
-        (
-            person_models::REMOVE_PROVIDER,
-            json!({"provider": provider}),
-        ),
-    ] {
+    // Every request that names a provider: the three that name none are the
+    // other person's own to make, of their own store.
+    let naming = model_requests(provider).into_iter().filter(|(verb, _)| {
+        ![
+            person_models::LIST,
+            person_models::ADD_PROVIDER,
+            person_models::ADD_PRESET,
+        ]
+        .contains(verb)
+    });
+    for (verb, argument) in naming {
         let refused = ask_own(host, workspace_id, other, verb, argument).await;
         assert!(
             matches!(refused, Err(ActionHostError::Refused { .. })),
@@ -1191,4 +1232,285 @@ async fn no_other_administrator_reads_a_persons_secrets() {
         vault_files > 0,
         "Ada's vault keeps its sealed file in her store"
     );
+}
+
+/// No agent reaches a person's model providers, the keys kept for them or
+/// the models chosen, whatever it asks: not one the person delegated on
+/// their own device. Unknown and forbidden are the same answer, and nothing
+/// of the person's changed.
+#[tokio::test]
+async fn no_agent_reaches_a_persons_model_providers() {
+    use tilo_actions::remote::person_models;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let added = ask_own(
+        &host,
+        workspace_id,
+        &ada,
+        person_models::ADD_PRESET,
+        json!({"preset": "openrouter"}),
+    )
+    .await
+    .expect("Ada adds a provider");
+    let provider = added["id"].as_str().expect("the provider's id").to_owned();
+    ask_own(
+        &host,
+        workspace_id,
+        &ada,
+        person_models::SET_KEY,
+        json!({"provider": provider, "key": "sk-ada-own-secret"}),
+    )
+    .await
+    .expect("Ada keeps her key");
+    let before = ask_own(&host, workspace_id, &ada, person_models::LIST, json!({}))
+        .await
+        .unwrap();
+
+    let agents = [
+        Caller::delegated_agent("assistant", ada.user_public_key, ada.device_public_key),
+        Caller::local_agent("assistant"),
+    ];
+    for agent in &agents {
+        for (verb, argument) in model_requests(&provider) {
+            let mut asking = request("", "", argument);
+            asking.target = person_models::target(verb);
+            let refused = settled(
+                host.in_workspace_as(workspace_id, &ada)
+                    .invoke(agent, asking),
+            )
+            .await
+            .map(|_| ());
+            assert!(
+                matches!(refused, Err(ActionHostError::UnknownAction)),
+                "{verb}: {refused:?}"
+            );
+        }
+    }
+    let after = ask_own(&host, workspace_id, &ada, person_models::LIST, json!({}))
+        .await
+        .unwrap();
+    assert_eq!(after, before);
+    assert_eq!(after["providers"][0]["configured"], json!(true), "{after}");
+    relay.shutdown().await;
+}
+
+/// A provider `person` links as `adding` says, its `key` kept and its models
+/// asked for: the provider's id.
+async fn links_a_provider(
+    host: &HostWorkspaceActions,
+    workspace_id: WorkspaceId,
+    person: &DeviceCert,
+    adding: &Value,
+    key: &str,
+) -> String {
+    use tilo_actions::remote::person_models;
+
+    let added = ask_own(
+        host,
+        workspace_id,
+        person,
+        person_models::ADD_PROVIDER,
+        adding.clone(),
+    )
+    .await
+    .expect("a provider is added");
+    let provider = added["id"].as_str().expect("the provider's id").to_owned();
+    ask_own(
+        host,
+        workspace_id,
+        person,
+        person_models::SET_KEY,
+        json!({"provider": provider, "key": key}),
+    )
+    .await
+    .expect("the key is kept");
+    let listed = ask_own(
+        host,
+        workspace_id,
+        person,
+        person_models::REFRESH_MODELS,
+        json!({"provider": provider}),
+    )
+    .await
+    .expect("the provider is asked");
+    assert!(listed.get("problem").is_none(), "{listed}");
+    assert!(!listed.to_string().contains(key), "{listed}");
+    provider
+}
+
+/// A provider on this machine that lists `sk-ada`'s models to that key and
+/// `sk-bo`'s to that one, and where a page adds it.
+fn provider_of_two_keys() -> (test_http::Responder, Value) {
+    use test_http::{Reply, Responder};
+
+    let fake = Responder::handle(|request| {
+        let models = match request.header("authorization") {
+            Some("Bearer sk-ada") => r#"{"data":[{"id":"ada-large"},{"id":"ada-small"}]}"#,
+            Some("Bearer sk-bo") => r#"{"data":[{"id":"bo-only"}]}"#,
+            _ => return Some(Reply::status(401)),
+        };
+        Some(Reply::status(200).body(models))
+    });
+    let adding = json!({
+        "name": "Fake provider",
+        "protocol": "open-ai-compatible",
+        "endpoint": format!("{}/v1", fake.url()),
+    });
+    (fake, adding)
+}
+
+/// The model `kind` of work runs on in the listing `reads`.
+fn model_for(reads: &Value, kind: &str) -> Option<Value> {
+    reads["assignments"]
+        .as_array()
+        .and_then(|chosen| chosen.iter().find(|chosen| chosen["kind"] == kind))
+        .map(|chosen| chosen["model"].clone())
+}
+
+/// Two people on one host each link a provider with a key of their own.
+/// The host asks the provider for its models with each person's key, each
+/// chooses the models their kinds of work run on, and neither reads the
+/// other's or chooses from them.
+#[tokio::test]
+async fn each_person_links_a_provider_and_chooses_their_own_models() {
+    use tilo_actions::remote::person_models;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let bo = admit(workspaces, &workspace, &owner, 2).await;
+    // The provider is on this machine, which a host calls only with its
+    // operator's leave.
+    workspaces.call_private_model_addresses(true);
+    let (_fake, adding) = provider_of_two_keys();
+    let hers = links_a_provider(&host, workspace_id, &ada, &adding, "sk-ada").await;
+    let his = links_a_provider(&host, workspace_id, &bo, &adding, "sk-bo").await;
+
+    for (person, verb, choosing) in [
+        (
+            &ada,
+            person_models::SET_DEFAULT,
+            json!({"provider": hers, "model": "ada-small"}),
+        ),
+        (
+            &ada,
+            person_models::SET_ASSIGNMENTS,
+            json!({"kinds": ["request", "task"], "provider": hers, "model": "ada-large"}),
+        ),
+        (
+            &ada,
+            person_models::SET_ASSIGNMENT,
+            json!({"kind": "subtask", "provider": hers, "model": "ada-small"}),
+        ),
+        (
+            &bo,
+            person_models::SET_DEFAULT,
+            json!({"provider": his, "model": "bo-only"}),
+        ),
+    ] {
+        ask_own(&host, workspace_id, person, verb, choosing)
+            .await
+            .expect("a model is chosen");
+    }
+
+    let ada_reads = ask_own(&host, workspace_id, &ada, person_models::LIST, json!({}))
+        .await
+        .unwrap();
+    assert_eq!(ada_reads["defaultProvider"], json!(hers), "{ada_reads}");
+    assert_eq!(
+        ada_reads["providers"][0]["defaultModel"],
+        json!("ada-small")
+    );
+    let offered: Vec<&str> = ada_reads["providers"][0]["models"]
+        .as_array()
+        .expect("the models the provider listed")
+        .iter()
+        .filter_map(|model| model["id"].as_str())
+        .collect();
+    assert_eq!(offered, ["ada-large", "ada-small"]);
+    assert_eq!(model_for(&ada_reads, "request"), Some(json!("ada-large")));
+    assert_eq!(model_for(&ada_reads, "task"), Some(json!("ada-large")));
+    assert_eq!(model_for(&ada_reads, "subtask"), Some(json!("ada-small")));
+    assert_eq!(model_for(&ada_reads, "classifier"), None);
+
+    let bo_reads = ask_own(&host, workspace_id, &bo, person_models::LIST, json!({}))
+        .await
+        .unwrap();
+    assert_eq!(bo_reads["defaultProvider"], json!(his), "{bo_reads}");
+    assert_eq!(bo_reads["providers"].as_array().map(Vec::len), Some(1));
+    assert_eq!(bo_reads["providers"][0]["defaultModel"], json!("bo-only"));
+    assert!(bo_reads.get("assignments").is_none(), "{bo_reads}");
+    // His own provider offers no model of hers, and hers is no provider of
+    // his.
+    for provider in [&his, &hers] {
+        let refused = ask_own(
+            &host,
+            workspace_id,
+            &bo,
+            person_models::SET_DEFAULT,
+            json!({"provider": provider, "model": "ada-large"}),
+        )
+        .await;
+        assert!(
+            matches!(refused, Err(ActionHostError::Refused { .. })),
+            "{refused:?}"
+        );
+    }
+    relay.shutdown().await;
+}
+
+/// A host calls a provider on its own network only with its operator's
+/// leave: without it no provider is kept there, and one kept while it had
+/// the leave is no longer asked.
+#[tokio::test]
+async fn a_host_reaches_its_own_network_only_with_its_operators_leave() {
+    use tilo_actions::remote::person_models;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let (fake, adding) = provider_of_two_keys();
+
+    let unkept = ask_own(
+        &host,
+        workspace_id,
+        &ada,
+        person_models::ADD_PROVIDER,
+        adding.clone(),
+    )
+    .await;
+    assert!(
+        matches!(unkept, Err(ActionHostError::Refused { .. })),
+        "{unkept:?}"
+    );
+    assert!(fake.drain_requests().is_empty());
+
+    workspaces.call_private_model_addresses(true);
+    let hers = links_a_provider(&host, workspace_id, &ada, &adding, "sk-ada").await;
+    assert_eq!(fake.drain_requests().len(), 1);
+
+    workspaces.call_private_model_addresses(false);
+    let uncalled = ask_own(
+        &host,
+        workspace_id,
+        &ada,
+        person_models::REFRESH_MODELS,
+        json!({"provider": hers}),
+    )
+    .await
+    .expect("an answer that says why not");
+    assert_eq!(uncalled["problem"], json!("not-allowed"), "{uncalled}");
+    assert!(fake.drain_requests().is_empty());
+    relay.shutdown().await;
 }

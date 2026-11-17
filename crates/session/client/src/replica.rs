@@ -20,7 +20,7 @@
 //!
 //! A workspace's replica is the only source of what its governance says: a
 //! workspace with no governance yet (no bootstrap received) admits no
-//! member's write and names no channel participants. A page places its
+//! member's write and names no key holders. A page places its
 //! person's own workspaces on their host before joining them
 //! ([`Outbox::join_placed`](crate::Outbox::join_placed)), so those have governance too.
 
@@ -505,7 +505,7 @@ impl Replicas {
     /// The devices that hold the keys of `route`'s workspace, as the
     /// channels' directory names them; `None` while the workspace's
     /// governance does not answer.
-    pub(crate) fn participants(&self, route: &DocumentRoute) -> Option<BTreeSet<Ed25519PublicKey>> {
+    pub(crate) fn key_holders(&self, route: &DocumentRoute) -> Option<BTreeSet<Ed25519PublicKey>> {
         use tilo_workspace_keys::KeyDirectory as _;
         let workspace = WorkspaceId::parse(&route.cluster_id)?;
         crate::workspace_keys::OwnerDirectory::reader(self.owner())

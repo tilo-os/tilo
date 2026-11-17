@@ -56,7 +56,12 @@ pub fn catalogue() -> AppCatalogue {
 /// # Errors
 ///
 /// As [`Replica::open`].
-pub fn open(app: &str, who: &str, actor: ReplicaActor, seed: Seed) -> Result<Replica, AppError> {
+pub fn open(
+    app: &str,
+    who: &tilo_actions::MemberId,
+    actor: ReplicaActor,
+    seed: Seed,
+) -> Result<Replica, AppError> {
     open_in(WORKSPACE, app, who, actor, seed)
 }
 
@@ -68,7 +73,7 @@ pub fn open(app: &str, who: &str, actor: ReplicaActor, seed: Seed) -> Result<Rep
 pub fn open_in(
     workspace: &str,
     app: &str,
-    who: &str,
+    who: &tilo_actions::MemberId,
     actor: ReplicaActor,
     seed: Seed,
 ) -> Result<Replica, AppError> {
@@ -82,7 +87,7 @@ pub fn open_in(
 /// As [`ConfinedReplica::open`].
 pub fn confined(
     app: &str,
-    who: &str,
+    who: &tilo_actions::MemberId,
     actor: &ReplicaActor,
     seed: Seed,
 ) -> Result<ConfinedReplica, AppError> {
@@ -144,7 +149,7 @@ impl Body for tilo_agent_session::ConfinedReplica {
     }
 }
 
-/// Something an agent can drive: a replica, or a participant's record.
+/// Something an agent can drive: a replica, or a member's record.
 pub trait Driveable {
     /// Every operation the record publishes.
     fn survey(&mut self) -> Vec<ActionDescriptor>;

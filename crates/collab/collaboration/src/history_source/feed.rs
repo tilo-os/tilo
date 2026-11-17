@@ -15,12 +15,12 @@
 use std::collections::{HashMap, VecDeque};
 
 use automerge::{AutoCommit, ChangeHash};
-use tilo_actions::remote::{ChangePage, RecordChanged};
+use tilo_actions::remote::{ChangePage, ResourceChanged};
 
 use super::words::HistoryWords;
 
 /// One record of a workspace: the app whose record it is, and its id there.
-pub type RecordKey = (String, String);
+pub type DocumentKey = (String, String);
 
 /// The most changes kept for followers to read.
 const KEPT: usize = 4096;
@@ -33,9 +33,9 @@ pub struct ChangeLog {
     /// Names this log in its cursors: a cursor of another names nothing here.
     epoch: String,
     /// Each record's revision and heads when last read.
-    seen: HashMap<RecordKey, ([u8; 32], Vec<ChangeHash>)>,
+    seen: HashMap<DocumentKey, ([u8; 32], Vec<ChangeHash>)>,
     /// The changes kept, each with its sequence number, oldest first.
-    kept: VecDeque<(u64, RecordChanged)>,
+    kept: VecDeque<(u64, ResourceChanged)>,
     /// The sequence number of the last change taken in.
     last: u64,
     /// Whether the records were read once: what they held then is no news.
@@ -65,9 +65,9 @@ impl ChangeLog {
     /// open yet. Each change is said in `words`.
     pub fn take_in(
         &mut self,
-        records: &[RecordKey],
-        revision: impl Fn(&RecordKey) -> Option<[u8; 32]>,
-        document: impl Fn(&RecordKey) -> Option<Vec<u8>>,
+        records: &[DocumentKey],
+        revision: impl Fn(&DocumentKey) -> Option<[u8; 32]>,
+        document: impl Fn(&DocumentKey) -> Option<Vec<u8>>,
         words: &dyn HistoryWords,
     ) {
         for route in records {
@@ -90,7 +90,7 @@ impl ChangeLog {
             };
             if let Some(after) = news {
                 for entry in super::verbs::entries_after(&doc, &after, words) {
-                    self.keep(RecordChanged {
+                    self.keep(ResourceChanged {
                         app: route.0.clone(),
                         record: route.1.clone(),
                         entry,
@@ -102,7 +102,7 @@ impl ChangeLog {
         self.primed = true;
     }
 
-    fn keep(&mut self, change: RecordChanged) {
+    fn keep(&mut self, change: ResourceChanged) {
         self.last = self.last.saturating_add(1);
         self.kept.push_back((self.last, change));
         while self.kept.len() > KEPT {
@@ -127,7 +127,7 @@ impl ChangeLog {
                 cursor: self.cursor(self.last),
             };
         };
-        let changes: Vec<(u64, RecordChanged)> = self
+        let changes: Vec<(u64, ResourceChanged)> = self
             .kept
             .iter()
             .filter(|(seq, _)| *seq > from)
@@ -151,22 +151,22 @@ mod tests {
     use super::*;
     use automerge::transaction::Transactable as _;
 
-    fn route(record: &str) -> RecordKey {
+    fn route(record: &str) -> DocumentKey {
         ("so.tilo.notes".into(), record.into())
     }
 
     /// A store of saved records, by route, each with a revision that moves on every save.
     #[derive(Default)]
-    struct Saved(HashMap<RecordKey, ([u8; 32], Vec<u8>)>, u8);
+    struct Saved(HashMap<DocumentKey, ([u8; 32], Vec<u8>)>, u8);
 
     impl Saved {
-        fn save(&mut self, at: &RecordKey, doc: &mut AutoCommit) {
+        fn save(&mut self, at: &DocumentKey, doc: &mut AutoCommit) {
             self.1 = self.1.wrapping_add(1);
             self.0.insert(at.clone(), ([self.1; 32], doc.save()));
         }
 
         fn take_into(&self, log: &mut ChangeLog) {
-            let records: Vec<RecordKey> = self.0.keys().cloned().collect();
+            let records: Vec<DocumentKey> = self.0.keys().cloned().collect();
             log.take_in(
                 &records,
                 |at| self.0.get(at).map(|(revision, _)| *revision),

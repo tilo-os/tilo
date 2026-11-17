@@ -51,7 +51,7 @@ fn tracker(device: &Device, after: Option<&str>) -> (Value, String) {
     let deadline = tilo_test_env::hang_deadline();
     let wait = deadline.saturating_duration_since(Instant::now());
     let answer = device.ask(&json!({
-        "op": "record_read",
+        "op": "resource_read",
         "app": APP,
         "records": [""],
         "after": after,

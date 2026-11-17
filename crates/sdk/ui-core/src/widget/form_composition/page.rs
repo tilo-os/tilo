@@ -63,6 +63,11 @@ impl PageBody {
 }
 
 impl Widget for PageBody {
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("div");
+        cx.children();
+    }
+
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
@@ -128,6 +133,11 @@ struct PinnedActions {
 }
 
 impl Widget for PinnedActions {
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("footer");
+        cx.children();
+    }
+
     retained_parts!(lifecycle: parts);
     fn name(&self) -> &'static str {
         "PinnedActions"
@@ -545,6 +555,12 @@ macro_rules! framed_page {
             retained_parts!(lifecycle: frame.parts);
             fn name(&self) -> &'static str {
                 $name
+            }
+            /// A page as a page's own: its body and its pinned footer, composed
+            /// as the frame lays them out.
+            fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+                cx.element("div");
+                cx.children();
             }
             fn build_layout(
                 &mut self,

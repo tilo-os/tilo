@@ -572,7 +572,7 @@ pub struct FrameHarness {
     pointer_replay: crate::pointer_replay::PointerReplay,
     /// The records this driver has open, for apps that use them; without them a record-aware app would
     /// be driven against its workspace index instead.
-    records: Option<crate::record::RecordSet>,
+    records: Option<crate::resource::ResourceSet>,
     workspace_index: Option<Box<automerge::AutoCommit>>,
     /// The taffy node holding keyboard focus, or `None`; remapped on every relayout by scanning for
     /// `is_focused()`, since widget instances survive a relayout but their taffy ids do not.
@@ -924,16 +924,16 @@ impl FrameHarness {
 
     /// The lane the mounted component's record content travels on: the lane its window keeps, read as
     /// the window reads it, so a test asking what the window asked for looks here.
-    pub fn component_record_content_lane(
+    pub fn component_document_content_lane(
         &self,
-    ) -> Option<std::sync::Arc<crate::collaboration::record_content::ContentLane>> {
+    ) -> Option<std::sync::Arc<crate::collaboration::document_content::ContentLane>> {
         let binding = &self.component_wake.as_ref()?.binding;
         let _entry = binding.lifetime.enter_if_open().ok()?;
-        Some(crate::collaboration::record_content::ContentLane::of_window())
+        Some(crate::collaboration::document_content::ContentLane::of_window())
     }
 
     /// The record the mounted component shows.
-    pub fn component_record(&self) -> Option<&crate::record::DocumentCheckout> {
+    pub fn component_resource(&self) -> Option<&crate::resource::DocumentCheckout> {
         self.component_wake
             .as_ref()
             .map(|wake| &wake.binding.checkout)
@@ -954,7 +954,7 @@ impl FrameHarness {
 
     /// Force the record writer to acknowledge every pending edit, then project the resulting durability
     /// state: an explicit save boundary for captures instead of a debounce.
-    pub fn flush_component_records(&mut self) -> Result<(), String> {
+    pub fn flush_component_resources(&mut self) -> Result<(), String> {
         self.invalidate_local();
         let result = self
             .component_wake
@@ -2883,18 +2883,18 @@ impl FrameHarness {
 
     /// Drive a record-aware app: the live document is a record's, and the widget names which one.
     #[must_use]
-    pub fn with_records(
+    pub fn with_resources(
         mut self,
-        records: crate::record::RecordSet,
+        records: crate::resource::ResourceSet,
         workspace_index: automerge::AutoCommit,
     ) -> Self {
-        self.attach_records(records, workspace_index);
+        self.attach_resources(records, workspace_index);
         self
     }
 
-    fn attach_records(
+    fn attach_resources(
         &mut self,
-        mut records: crate::record::RecordSet,
+        mut records: crate::resource::ResourceSet,
         workspace_index: automerge::AutoCommit,
     ) {
         records.discover_workspace(&workspace_index);
@@ -2903,9 +2903,9 @@ impl FrameHarness {
         self.relayout();
     }
 
-    fn tick_records(&mut self) {
+    fn tick_resources(&mut self) {
         if let Some(set) = self.records.as_mut() {
-            crate::record::tick(
+            crate::resource::tick(
                 set,
                 &mut self.state,
                 self.workspace_index.as_deref_mut(),
@@ -2915,7 +2915,7 @@ impl FrameHarness {
     }
 
     /// The records this driver has open, if the app under test uses them.
-    pub fn records(&self) -> Option<&crate::record::RecordSet> {
+    pub fn records(&self) -> Option<&crate::resource::ResourceSet> {
         self.drain_component_wakes();
         self.records.as_ref()
     }
@@ -3326,12 +3326,12 @@ impl FrameHarness {
         if history_at_rest.is_none() {
             crate::history_mode::embedded::capture_entries(self.root.as_mut(), &self.state.doc);
         }
-        self.tick_records();
+        self.tick_resources();
         let updated = {
             let _update = tilo_resource::profiling::Phase::start("ui.frame_update");
             self.update_root()
         };
-        self.tick_records();
+        self.tick_resources();
         if updated || woken {
             self.local_changes = self.local_changes.wrapping_add(1);
         }
@@ -5131,7 +5131,7 @@ impl FrameHarness {
             }
         }
         let mut peers: Vec<InspectionNode> = Vec::new();
-        let mut written: Vec<String> = Vec::new();
+        let mut written: Vec<crate::permissions::MemberId> = Vec::new();
         for mut mark in drawn {
             if mark.rect.width() <= 0.0 || mark.rect.height() <= 0.0 {
                 continue;
@@ -5140,32 +5140,35 @@ impl FrameHarness {
                 mark.saying = self
                     .drawn_action_markers
                     .iter()
-                    .find(|marker| marker.interaction.actor.by.key() == mark.user.key())
+                    .find(|marker| marker.interaction.actor.by.member_id() == Some(&mark.user))
                     .map(|marker| self.presence.interaction_status_label(&marker.interaction));
             }
-            let path = format!("presence-mark-{}", mark.user.key());
+            let path = format!("presence-mark-{}", mark.user.id());
             let name = self.presence.mark_words(&mark);
             peers.push(Self::presence_node(&path, Some(mark.rect), name));
-            written.push(mark.user.key());
+            written.push(mark.user);
         }
         for marker in &self.drawn_action_markers {
-            let actor = &marker.interaction.actor.by.key();
-            if written.contains(actor) {
+            let actor = &marker.interaction.actor.by;
+            if actor
+                .member_id()
+                .is_some_and(|member| written.contains(member))
+            {
                 continue;
             }
-            let path = format!("agent-marker-{actor}");
+            let path = format!("agent-marker-{}", actor.id());
             let name = self.presence.interaction_status_label(&marker.interaction);
             peers.push(Self::presence_node(&path, None, name));
         }
         for (index, tag) in self.presence.caret_tags().into_iter().enumerate() {
             let rect = to_surface.transform_rect_bbox(tag.rect);
             let mut node = Self::presence_node(
-                &format!("presence-tag-{}-{index}", tag.user.key()),
+                &format!("presence-tag-{}-{index}", tag.user.id()),
                 None,
                 tag.label,
             );
             node.widget = crate::presence::TAG_WIDGET.into();
-            node.test_id = Some(format!("presence-tag-{}", tag.user.key()));
+            node.test_id = Some(format!("presence-tag-{}", tag.user.id()));
             node.rect = [rect.x0, rect.y0, rect.width(), rect.height()];
             node.semantics = None;
             peers.push(node);
@@ -8961,7 +8964,7 @@ mod tests {
             crate::permissions::MemberId::person("reader"),
         );
         assert!(
-            frame.component_record().is_none(),
+            frame.component_resource().is_none(),
             "a bare root shows no component's record"
         );
         let owner = ProbeHost::new();
@@ -8974,7 +8977,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            frame.component_record().map(|shown| shown.id.clone()),
+            frame.component_resource().map(|shown| shown.id.clone()),
             Some(record)
         );
         frame.resize((400, 200)).unwrap();
@@ -11505,25 +11508,25 @@ mod tests {
         }
     }
 
-    struct RecordRootProbe {
-        checkout: crate::record::DocumentCheckout,
+    struct ResourceRootProbe {
+        checkout: crate::resource::DocumentCheckout,
     }
-    impl Widget for RecordRootProbe {
+    impl Widget for ResourceRootProbe {
         crate::provides!(
             dyn crate::resources::PublishesResources,
-            dyn crate::record::capability::RecordScoped
+            dyn crate::resource::capability::ResourceScoped
         );
 
-        crate::testing::inert_widget_methods!(leaf_layout, name = "RecordRootProbe");
+        crate::testing::inert_widget_methods!(leaf_layout, name = "ResourceRootProbe");
     }
 
-    impl crate::record::capability::RecordScoped for RecordRootProbe {
-        fn record_intent(&self) -> Option<crate::record::DocumentCheckout> {
+    impl crate::resource::capability::ResourceScoped for ResourceRootProbe {
+        fn record_intent(&self) -> Option<crate::resource::DocumentCheckout> {
             Some(self.checkout.clone())
         }
     }
 
-    impl crate::resources::PublishesResources for RecordRootProbe {
+    impl crate::resources::PublishesResources for ResourceRootProbe {
         fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
             vec![tilo_actions::ResourceSpec::new(
                 "probe.document:1",
@@ -11535,19 +11538,19 @@ mod tests {
 
     #[test]
     fn standalone_record_backed_root_publishes_its_resources() {
-        use crate::record::{DocumentCheckout, DocumentId, RecordSet, ResourceType};
+        use crate::resource::{DocumentCheckout, DocumentId, ResourceSet, ResourceType};
         let checkout = DocumentCheckout::new(
             DocumentId::for_file("standalone-record-root"),
             ResourceType::new("document"),
         );
-        let root = RecordRootProbe {
+        let root = ResourceRootProbe {
             checkout: checkout.clone(),
         };
         let mut harness = FrameHarness::new(State::new(), Box::new(root), (320, 240))
-            .with_records(RecordSet::in_memory(), automerge::AutoCommit::new());
+            .with_resources(ResourceSet::in_memory(), automerge::AutoCommit::new());
         harness.relayout();
         assert_eq!(
-            crate::record::identity(&harness.state_mut().doc).map(|record| record.id),
+            crate::resource::identity(&harness.state_mut().doc).map(|record| record.id),
             Some(checkout.id),
             "the runner checked the root's record out as its State"
         );

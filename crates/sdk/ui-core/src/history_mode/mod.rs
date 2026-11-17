@@ -60,7 +60,7 @@ pub struct HistoryResource {
     pub profile_id: String,
     pub workspace_id: String,
     pub app_id: String,
-    pub record_id: DocumentId,
+    pub document_id: DocumentId,
 }
 
 impl HistoryResource {
@@ -68,13 +68,13 @@ impl HistoryResource {
         profile_id: impl Into<String>,
         workspace_id: impl Into<String>,
         app_id: impl Into<String>,
-        record_id: DocumentId,
+        document_id: DocumentId,
     ) -> Self {
         Self {
             profile_id: profile_id.into(),
             workspace_id: workspace_id.into(),
             app_id: app_id.into(),
-            record_id,
+            document_id,
         }
     }
 }
@@ -207,7 +207,7 @@ pub struct HistoryController {
     /// ([`crate::history_source::set_workspace_agents`]) the source names; a newer list is named on the
     /// next refresh.
     workspace_agents: Option<u64>,
-    /// The workspace's participants by id and name, as presence last named them: the authors the source
+    /// The workspace's members by id and name, as presence last named them: the authors the source
     /// resolves besides registered identities.
     roster: Vec<(MemberId, String)>,
 }

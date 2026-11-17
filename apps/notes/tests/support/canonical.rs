@@ -8,7 +8,7 @@ use notes::{
 use std::{cell::RefCell, collections::HashMap, path::PathBuf};
 use ui::{
     permissions::{MemberId, PermissionContext, Role},
-    record::{DocumentCheckout, DocumentId, RecordOwners, RecordStore, ResourceType},
+    resource::{DocumentCheckout, DocumentId, ResourceOwners, ResourceStore, ResourceType},
 };
 use uuid::Uuid;
 
@@ -19,8 +19,8 @@ pub const LAUNCH_BODY: &str = "# Heading **one**\n\n## Heading *two*\n\n### Head
 /// A notebook of three notes — Projects, its child Launch, and an Empty
 /// one — with one tag, and the bodies [`notebook`](super::notebook) writes.
 pub struct NotebookFixture {
-    pub records: RecordStore,
-    pub owners: RecordOwners,
+    pub records: ResourceStore,
+    pub owners: ResourceOwners,
     pub state_root: PathBuf,
     pub root: PageId,
     pub child: PageId,
@@ -46,7 +46,7 @@ impl NotebookFixture {
     pub fn rich() -> Self {
         let temp = tempfile::tempdir().unwrap();
         let state_root = temp.path().join("state");
-        let mut owners = RecordOwners::new(state_root.clone());
+        let mut owners = ResourceOwners::new(state_root.clone());
         let records = owners.open(PACKAGE, WORKSPACE).unwrap();
         let root = Uuid::from_u128(0x1001);
         let child = Uuid::from_u128(0x1002);
@@ -155,7 +155,7 @@ impl NotebookFixture {
         );
         let actions = self.actions();
         self.records
-            .reserve_record(&checkout)
+            .reserve_resource(&checkout)
             .unwrap()
             .initialize(|doc| {
                 <notes::Notebook as ui::tilo_resource::Resource>::initialize(doc)

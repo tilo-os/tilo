@@ -40,7 +40,7 @@ pub struct RecordReads {
     bundles: HashMap<String, Bundle>,
     /// The id whose records an app keeps, when it is not its own: an app renamed keeps the
     /// record of its earliest id.
-    records_under: BTreeMap<String, String>,
+    documents_under: BTreeMap<String, String>,
     source: Rc<dyn RecordSource>,
     /// The records this program read, by app, each held by a host of its own.
     open: RefCell<HashMap<String, Host>>,
@@ -59,13 +59,13 @@ impl RecordReads {
     #[must_use]
     pub fn new(
         bundles: &[Bundle],
-        records_under: BTreeMap<String, String>,
+        documents_under: BTreeMap<String, String>,
         person: Option<&str>,
         source: Rc<dyn RecordSource>,
     ) -> Self {
         // The ids the session believes each app had before are the ones a task honours: a
         // package's own `previously:` is a claim the installed catalogue decides on.
-        for (app, under) in &records_under {
+        for (app, under) in &documents_under {
             crate::schema::register_previously(app, std::slice::from_ref(under));
         }
         Self {
@@ -74,7 +74,7 @@ impl RecordReads {
                 .iter()
                 .map(|bundle| (bundle.meta.app.clone(), bundle.clone()))
                 .collect(),
-            records_under,
+            documents_under,
             source,
             open: RefCell::default(),
             read_none: RefCell::default(),
@@ -88,7 +88,7 @@ impl RecordReads {
     pub fn address(&self, app: &str) -> Option<(String, String)> {
         let bundle = self.bundles.get(app)?;
         let under = self
-            .records_under
+            .documents_under
             .get(app)
             .cloned()
             .unwrap_or_else(|| app.to_owned());

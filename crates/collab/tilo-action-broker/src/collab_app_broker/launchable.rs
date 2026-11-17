@@ -58,7 +58,7 @@ pub(super) fn launch_permits() -> Arc<tokio::sync::Semaphore> {
     Arc::clone(PERMITS.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(LAUNCH_CALLS))))
 }
 
-/// `(app_id, cluster_id, record_id)`: one retained surface.
+/// `(app_id, cluster_id, document_id)`: one retained surface.
 type SurfaceKey = (String, String, String);
 
 /// The record of a window rather than of something the person keeps: a
@@ -66,14 +66,14 @@ type SurfaceKey = (String, String, String);
 /// (`derived:default@tab:<id>`, Settings' page of that window). Answers the
 /// roles leading to the window and the window's id. The person's own base
 /// (tab 0) names no window.
-fn window_record(record_id: &str) -> Option<(&str, u64)> {
-    let mut rest = record_id;
+fn window_record(document_id: &str) -> Option<(&str, u64)> {
+    let mut rest = document_id;
     while let Some(derived) = rest.strip_prefix("derived:") {
         rest = derived.split_once('@')?.1;
     }
     let tab = rest.strip_prefix("tab:")?;
     let tab = u64::from_str_radix(tab, 16).ok().filter(|tab| *tab != 0)?;
-    Some((record_id.strip_suffix(rest)?, tab))
+    Some((document_id.strip_suffix(rest)?, tab))
 }
 
 /// Whether `retained` is an older window's record playing the same roles of
@@ -144,7 +144,7 @@ impl ActorViews {
 pub fn launchable_provider(surface: &PublishedSurface) -> String {
     format!(
         "{LAUNCHABLE_PROVIDER}:{}:{}:{}",
-        surface.route.cluster_id, surface.app_id, surface.route.record_id
+        surface.route.cluster_id, surface.app_id, surface.route.document_id
     )
 }
 
@@ -161,7 +161,7 @@ pub(super) fn is_launchable_provider(provider: &str) -> bool {
 struct StoredSurface {
     app_id: String,
     cluster_id: String,
-    record_id: String,
+    document_id: String,
     actions: Vec<PublishedAction>,
 }
 
@@ -174,7 +174,7 @@ impl StoredSurface {
         let key = (
             self.app_id.clone(),
             self.cluster_id.clone(),
-            self.record_id.clone(),
+            self.document_id.clone(),
         );
         Some((
             key,
@@ -184,7 +184,7 @@ impl StoredSurface {
                 route: CrdtRoute {
                     app_id: self.app_id,
                     cluster_id: self.cluster_id,
-                    record_id: self.record_id,
+                    document_id: self.document_id,
                 },
                 actions,
                 live: false,
@@ -345,7 +345,7 @@ impl LaunchableCatalogue {
             .get(&(
                 route.app_id.clone(),
                 route.cluster_id.clone(),
-                route.record_id.clone(),
+                route.document_id.clone(),
             ))?
             .action_projection(resource, action)
     }
@@ -367,7 +367,7 @@ impl LaunchableCatalogue {
         let key = (
             published.app_id.clone(),
             published.route.cluster_id.clone(),
-            published.route.record_id.clone(),
+            published.route.document_id.clone(),
         );
         let actions = launchable_actions(&published.actions);
         let Ok(mut surfaces) = self.surfaces.lock() else {
@@ -410,12 +410,16 @@ impl LaunchableCatalogue {
             .map(|surface| StoredSurface {
                 app_id: surface.app_id.clone(),
                 cluster_id: surface.route.cluster_id.clone(),
-                record_id: surface.route.record_id.clone(),
+                document_id: surface.route.document_id.clone(),
                 actions: surface.actions.clone(),
             })
             .collect::<Vec<_>>();
         stored.sort_by(|a, b| {
-            (&a.app_id, &a.cluster_id, &a.record_id).cmp(&(&b.app_id, &b.cluster_id, &b.record_id))
+            (&a.app_id, &a.cluster_id, &a.document_id).cmp(&(
+                &b.app_id,
+                &b.cluster_id,
+                &b.document_id,
+            ))
         });
         match serde_json::to_vec(&stored) {
             Ok(bytes) => store.save(bytes),
@@ -539,7 +543,7 @@ mod tests {
     /// `surface(7, workspace)` for the record `record`.
     fn surface_of(workspace: &str, record: &str) -> PublishedSurface {
         let mut surface = surface(7, workspace);
-        surface.route.record_id = record.into();
+        surface.route.document_id = record.into();
         surface
     }
 
@@ -582,11 +586,11 @@ mod tests {
         }
     }
 
-    fn retained_records(catalogue: &LaunchableCatalogue) -> Vec<(String, String)> {
+    fn retained_documents(catalogue: &LaunchableCatalogue) -> Vec<(String, String)> {
         let mut records = catalogue
             .surfaces()
             .into_iter()
-            .map(|surface| (surface.route.cluster_id, surface.route.record_id))
+            .map(|surface| (surface.route.cluster_id, surface.route.document_id))
             .collect::<Vec<_>>();
         records.sort();
         records
@@ -626,7 +630,7 @@ mod tests {
             catalogue.retain(&surface_of("workspace-b", first));
             let workspace = |workspace: &str, record: &str| (workspace.to_owned(), record.to_owned());
             assert_eq!(
-                retained_records(&catalogue),
+                retained_documents(&catalogue),
                 [
                     workspace("workspace-a", "derived:default@tab:0000000000000000"),
                     workspace("workspace-a", later),
@@ -655,14 +659,14 @@ mod tests {
             .map(|tab| StoredSurface {
                 app_id: APP.into(),
                 cluster_id: "workspace-a".into(),
-                record_id: format!("derived:default@tab:{tab}"),
+                document_id: format!("derived:default@tab:{tab}"),
                 actions: vec![action.clone()],
             });
             std::fs::write(&path, serde_json::to_vec(&stored).expect("encode")).expect("write");
             let catalogue = LaunchableCatalogue::new();
             catalogue.persist_at(&path);
             assert_eq!(
-                retained_records(&catalogue),
+                retained_documents(&catalogue),
                 [(
                     "workspace-a".to_owned(),
                     "derived:default@tab:000000000000000f".to_owned()
@@ -821,7 +825,7 @@ mod tests {
                     .insert(peer_id, tx);
                 let mut up = surface(peer_id, &workspace.id().to_string());
                 if let Some(record) = record {
-                    up.route.record_id = record.to_owned();
+                    up.route.document_id = record.to_owned();
                 }
                 state.surfaces.lock().expect("surfaces").insert(peer_id, up);
                 streams.send(rx).map_err(|error| error.to_string())
@@ -1059,7 +1063,7 @@ mod tests {
         {
             let (state, workspace) = broker(&workspace());
             let mut draft = surface(7, &workspace);
-            draft.route.record_id = "draft-record".into();
+            draft.route.document_id = "draft-record".into();
             state.launchable.retain(&draft);
             let (streams, _, places) = app_comes_up_placed(&state, 8);
             let owner = Caller::local_person("owner").in_workspace(&workspace);
@@ -1632,7 +1636,7 @@ mod tests {
                 .lock()
                 .expect("surfaces")
                 .insert(7, surface_of(&workspace, "uuid:other"));
-            let target = tilo_actions::remote::application_record_target(
+            let target = tilo_actions::remote::application_resource_target(
                 &workspace,
                 APP,
                 "uuid:plan",

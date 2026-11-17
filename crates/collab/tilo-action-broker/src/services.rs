@@ -10,10 +10,10 @@ use std::sync::Arc;
 use tilo_desktop_model::{Workspace, WorkspaceId};
 
 pub use crate::collab_app_broker::{
-    AudioOutputFuture, AudioOutputServices, AwaitingRecord, CertifiedPersonContext,
+    AudioOutputFuture, AudioOutputServices, AwaitingDocument, CertifiedPersonContext,
     ChainHeadAnswer, DocumentBytes, HeldRevision, NativeDocumentRead, NativeDocumentReadContext,
     NativeDocumentReads, NativeMediaFuture, NativeMediaRequestContext, NativeMediaServices,
-    RecordRead,
+    ResourceRead,
 };
 
 /// A workspace's status once it changed ([`WorkspaceMemberships::workspace_status_change`]).
@@ -841,7 +841,7 @@ pub struct HostServices {
     pub agent_sessions: Option<Arc<dyn AgentSessions>>,
     pub native_certificates: Option<Arc<dyn crate::certificate_authority::CertificateAuthority>>,
     pub local_person: Option<Arc<dyn LocalPersonServices>>,
-    pub record_changes: Option<Arc<dyn RecordChangeServices>>,
+    pub resource_changes: Option<Arc<dyn DocumentChangeServices>>,
     pub legacy_workspace: Option<Arc<dyn LegacyWorkspaceProjection>>,
     pub launcher: Option<Arc<dyn LauncherServices>>,
     /// The resources this session's services publish, which its apps read, watch and invoke;
@@ -858,7 +858,7 @@ pub struct HostServices {
     /// they run.
     pub search_index: Option<Arc<dyn SearchIndexServices>>,
     /// What the session hears of a record changing, so search reads it again.
-    pub record_index_changes: Option<Arc<dyn RecordIndexChanges>>,
+    pub document_index_changes: Option<Arc<dyn DocumentIndexChanges>>,
     /// The device content store content puts go to; without it that api is not offered.
     pub content_store: Option<Arc<dyn ContentStoreServices>>,
     pub workspace_control: Option<Arc<dyn WorkspaceControlServices>>,
@@ -897,7 +897,7 @@ pub struct HostServices {
     pub launchable_catalogue: Option<std::path::PathBuf>,
     /// Content records reference, kept here and asked of its route; without it apps' content stays
     /// in their own process.
-    pub record_content: Option<Arc<crate::record_content::RouteContent>>,
+    pub document_content: Option<Arc<crate::document_content::RouteContent>>,
     /// This device's channel encryption service, which tells each route's endpoint when its
     /// channel keys changed (`groupKeysChanged`).
     pub group_keys: Option<crate::workspace_keys::KeyProvider>,
@@ -933,7 +933,7 @@ impl HostServices {
         "agent_sessions",
         "native_certificates",
         "local_person",
-        "record_changes",
+        "resource_changes",
         "legacy_workspace",
         "launcher",
         "published",
@@ -943,7 +943,7 @@ impl HostServices {
         "host_steps",
         "continuations",
         "search_index",
-        "record_index_changes",
+        "document_index_changes",
         "content_store",
         "workspace_control",
         "realtime",
@@ -962,7 +962,7 @@ impl HostServices {
         "workspace_grants",
         "app_consents",
         "launchable_catalogue",
-        "record_content",
+        "document_content",
         "group_keys",
         "action_offload",
         "own_device",

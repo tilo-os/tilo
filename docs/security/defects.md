@@ -504,7 +504,7 @@ document relay is intentionally not that adapter; it must never broadcast
 Welcome bytes.
 
 **Production adapter now present.** `crates/collab/tilo-action-broker/src/workspace_keys.rs`
-runs a participant (`key_group::GroupPeer`) for every workspace a device takes part in: it
+runs a key holder (`key_group::GroupPeer`) for every workspace a device takes part in: it
 reconciles each MLS group with the workspace's access policy, so an invite, a removal, a role change
 that ends access or a revoked device becomes a commit (`GroupPeer::reconcile`, which stages
 removals and admissions in one commit through `KeyGroup::stage_commit`), and it publishes the
@@ -514,7 +514,7 @@ that module's `an_announced_revocation_is_enforced_at_once_and_idle_groups_park`
 `delivery_survives_a_network_outage` and
 `observing_live_keys_never_opens_a_channel_or_rejoins_after_removal`, plus
 `key-group/tests/content_history.rs::removed_member_cannot_read_content_sealed_after_removal`.
-Participants admit per workspace; Read inside a workspace is no key boundary, see `P1-11`.
+Key holders admit per workspace; Read inside a workspace is no key boundary, see `P1-11`.
 Provisioning and recovery UX were not assessed by this reconciliation.
 
 ---

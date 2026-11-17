@@ -52,7 +52,7 @@ pub struct Channel {
     /// Whether it is a call rather than a conversation to read.
     #[serde(default)]
     pub voice: bool,
-    /// The people its messages name, by the participant id each is written under.
+    /// The people its messages name, by the member id each is written under.
     #[serde(default)]
     pub people: Vec<Person>,
     /// Its messages, oldest first, each with its body, reactions and what it answers.
@@ -133,6 +133,9 @@ pub struct Message {
     /// it ended, drawn under the words it wrote. `None` on every ordinary message.
     #[serde(default)]
     pub work: Option<Work>,
+    /// What it asks one person, as its card reads to the page's reader.
+    #[serde(default)]
+    pub question: Option<crate::question_card::QuestionShown>,
     /// Retrying this reply asks the agent again: it failed, it is the reply the agent would
     /// write now (no newer reply has replaced it), and nobody has asked again yet.
     #[serde(default)]
@@ -222,6 +225,7 @@ impl Message {
             attachments: Vec::new(),
             pinned: false,
             work: None,
+            question: None,
             retry: false,
             retry_summons: None,
             attempts: 0,
@@ -448,6 +452,9 @@ impl Channel {
                 attachments: row.attachments.iter().map(Attachment::of).collect(),
                 pinned: row.pinned,
                 work: row.work.as_ref().map(work_of),
+                question: row.question.as_ref().and_then(|asked| {
+                    question::shown_to(asked, me, rows.get(index + 1..).unwrap_or_default())
+                }),
                 // Retry is offered on the reply a person may ask again — the current attempt's,
                 // which failed — and it names the message that reply answered.
                 retry: retryable(rows, row),
@@ -684,6 +691,8 @@ impl ViewResource for Channel {
     const APP: &'static str = "chat";
 }
 
+#[path = "views_question.rs"]
+mod question;
 #[path = "views_turn.rs"]
 mod turn;
 pub use turn::{TURN_KIND, Turn};
@@ -1019,6 +1028,9 @@ fn message_said(c: &Channel, message: &Message, cx: &ViewCx) -> Node {
             &cx.key(format!("reactions-{}", message.id)),
         ));
     }
+    if let Some(shown) = &message.question {
+        body.push(question::card(c, message, shown, cx));
+    }
     if let Some(work) = &message.work
         && work.failed()
     {
@@ -1345,7 +1357,7 @@ fn author_label(person: Option<&Person>, id: &MemberId) -> String {
 /// cannot name, never their id.
 fn actor(person: Option<&Person>, id: &MemberId) -> tilo_view::Actor {
     tilo_view::Actor {
-        id: person.map_or(id, |person| &person.id).key(),
+        id: person.map_or(id, |person| &person.id).clone().into(),
         name: author_label(person, id),
     }
 }
@@ -1380,7 +1392,7 @@ mod tests {
             channel.resource(),
             "page",
             tilo_view::Actor {
-                id: crate::model::ME.to_owned(),
+                id: MemberId::person(crate::model::ME).into(),
                 name: "Pat".to_owned(),
             },
             std::collections::BTreeMap::new(),
@@ -1463,7 +1475,13 @@ mod tests {
     }
 
     /// A message of `channel` written by `author` at `ts`, as the record's projection reads one.
-    fn row(channel: &str, id: &str, author: MemberId, ts: i64, text: &str) -> crate::model::Message {
+    fn row(
+        channel: &str,
+        id: &str,
+        author: MemberId,
+        ts: i64,
+        text: &str,
+    ) -> crate::model::Message {
         crate::model::Message {
             id: id.to_owned(),
             channel: channel.to_owned(),
@@ -1484,6 +1502,7 @@ mod tests {
             acting: None,
             author_name: None,
             share: None,
+            question: None,
             attempts: 0,
             sending: false,
         }
@@ -1498,15 +1517,18 @@ mod tests {
             Id::from_raw("c_ask"),
             crate::record::Conversation {
                 name: "Assistant".to_owned(),
-                participants: vec![
-                    MemberId::person(me),
-                    MemberId::agent(agent),
-                ],
+                members: vec![MemberId::person(me), MemberId::agent(agent)],
                 ..crate::record::Conversation::default()
             },
         );
         let rows = vec![
-            row("c_ask", "m_ask", MemberId::person(me), 1_782_470_400, "hello"),
+            row(
+                "c_ask",
+                "m_ask",
+                MemberId::person(me),
+                1_782_470_400,
+                "hello",
+            ),
             row(
                 "c_ask",
                 "m_reply",
@@ -1570,7 +1592,7 @@ mod tests {
             assert_eq!(
                 avatar.props.get("who"),
                 Some(&Value::Actor(tilo_view::Actor {
-                    id: ME.to_owned(),
+                    id: MemberId::person(ME).into(),
                     name: "Quinn Davis".to_owned(),
                 })),
                 "the avatar is drawn for the person by name, not by id"
@@ -1989,7 +2011,7 @@ mod tests {
                 Id::from_raw("c_ask"),
                 crate::record::Conversation {
                     name: "Assistant".to_owned(),
-                    participants: vec![
+                    members: vec![
                         MemberId::person(ME),
                         MemberId::agent("assistant"),
                     ],
@@ -2164,7 +2186,8 @@ mod tests {
             ..Message::by(MemberId::person(crate::model::ME))
         });
         channel.messages.push(Message {
-            id: crate::record::reply_id(&Id::from_raw("m_asked"), &MemberId::agent("tide")).to_string(),
+            id: crate::record::reply_id(&Id::from_raw("m_asked"), &MemberId::agent("tide"))
+                .to_string(),
             ts: 1_782_470_400,
             text: partial.to_owned(),
             reply_to: Some(Quote {
@@ -2444,6 +2467,7 @@ mod tests {
                 acting: None,
                 author_name: None,
                 share: None,
+                question: None,
                 attempts: 0,
                 sending: false,
             });
@@ -2628,7 +2652,7 @@ mod tests {
                 Id::from_raw("c_ask"),
                 crate::record::Conversation {
                     name: "Assistant".to_owned(),
-                    participants: vec![
+                    members: vec![
                         MemberId::person(ME),
                         MemberId::agent("assistant"),
                     ],

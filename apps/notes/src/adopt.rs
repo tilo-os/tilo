@@ -4,7 +4,7 @@
 //! got a record of its own (`derived:default@tab:<window>`), so a new window
 //! showed an empty notebook and the pages written in another were reachable
 //! only by restoring that exact window. Notes now keeps one notebook per
-//! workspace ([`ResourceApp::WORKSPACE_RECORD`](ui::framework::ResourceApp::WORKSPACE_RECORD)).
+//! workspace ([`ResourceApp::WORKSPACE_RESOURCE`](ui::framework::ResourceApp::WORKSPACE_RESOURCE)).
 //! When a workspace's notebook is first created, its seed copies the notes, tags
 //! and pictures of every per-window notebook this device holds in the workspace
 //! into it ([`adoption`]).
@@ -15,7 +15,7 @@
 //! per-window records are only read; they stay on disk as they were, so the
 //! migration can be undone by hand.
 //!
-//! Why a copy and not [`DocumentCheckout::formerly`](ui::record::DocumentCheckout::formerly):
+//! Why a copy and not [`DocumentCheckout::formerly`](ui::resource::DocumentCheckout::formerly):
 //! a former identity hands the new record *one* earlier document, history
 //! and all, and claims it so no other successor gets it. A workspace usually has
 //! several window notebooks with notes (each window someone wrote in), and
@@ -34,7 +34,7 @@ use crate::model::{PageId, TagId};
 use crate::notebook::{self, Notebook};
 
 /// The seed that copies `records` (a workspace's window notebooks, as
-/// [`SeedCx::window_records`](ui::framework::SeedCx::window_records) reads
+/// [`SeedCx::window_resources`](ui::framework::SeedCx::window_resources) reads
 /// them) into a new notebook: its notes with their trees, bodies and tags,
 /// then the pictures they show, which `content` (this device's content
 /// store) serves when a notebook holds only a reference to one. Empty when
@@ -42,7 +42,7 @@ use crate::notebook::{self, Notebook};
 /// notebook is left out and logged; so is a picture whose bytes are not
 /// here, which is then missing from its notes as it was in the old window.
 pub fn adoption(
-    records: &[(ui::record::DocumentId, ui::tilo_resource::Doc)],
+    records: &[(ui::resource::DocumentId, ui::tilo_resource::Doc)],
     content: Option<&tilo_content::ContentStore>,
 ) -> Vec<Invoke<Notebook>> {
     let mut seed = Vec::new();

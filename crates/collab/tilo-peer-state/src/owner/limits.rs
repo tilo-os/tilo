@@ -44,7 +44,7 @@ impl<W: Write> Write for LimitedWriter<W> {
 ///
 /// # Errors
 /// `stored` pretty-prints to more than `limit` bytes.
-pub(crate) fn preflight_record(
+pub(crate) fn preflight_document(
     stored: &super::record::StoredWorkspace,
     limit: usize,
 ) -> io::Result<()> {

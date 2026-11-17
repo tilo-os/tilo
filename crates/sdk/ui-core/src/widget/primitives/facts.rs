@@ -328,6 +328,54 @@ impl Facts {
 }
 
 impl Widget for Facts {
+    /// Its facts as a page's own list: each a term and what it says, in a row.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        use crate::composition::TextLook;
+        let theme = cx.theme();
+        cx.element("dl");
+        let m = FactsMetrics::of(theme);
+        let widths = crate::text_render::with_layout_renderer(theme, |text| {
+            self.items
+                .iter()
+                .map(|fact| {
+                    let whole = m.fact_width(fact, text) + m.mark_width(fact.mark);
+                    let label = fact.label.as_ref().map(|label| {
+                        f64::from(text.measure_style(label, None, &m.style).0) + m.label_gap
+                    });
+                    (whole, label)
+                })
+                .collect::<Vec<(f64, Option<f64>)>>()
+        });
+        let height = f64::from(theme.text(TextRole::Caption).line_height_px());
+        let mut x = self.rect.x0;
+        for (index, fact) in self.items.iter().enumerate() {
+            let (width, label_width) = widths.get(index).copied().unwrap_or((0.0, None));
+            let start = x + m.mark_width(fact.mark);
+            let mut at = start;
+            if let Some(label) = &fact.label {
+                let label_width = label_width.unwrap_or(0.0).min(width);
+                let look = TextLook::new(label.clone(), &m.style, Some(theme.text_dim))
+                    .with_max_lines(Some(1));
+                cx.words(
+                    &format!("label:{index}"),
+                    "dt",
+                    Rect::new(at, self.rect.y0, start + label_width, self.rect.y0 + height),
+                    look,
+                );
+                at = start + label_width;
+            }
+            let look = TextLook::new(fact.text.clone(), &m.style, Some(theme.text_primary))
+                .with_max_lines(Some(1));
+            cx.words(
+                &format!("text:{index}"),
+                "dd",
+                Rect::new(at, self.rect.y0, x + width, self.rect.y0 + height),
+                look,
+            );
+            x += width + m.gap;
+        }
+    }
+
     crate::described!();
 
     fn build_layout(

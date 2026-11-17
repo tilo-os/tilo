@@ -64,7 +64,7 @@ type Workshop {
   everywhere, and its author is told why.
 - Invariants come with the type: reuse a `Workshop` and its capacity rule comes along.
 - An invariant can only cover data with one origin. Across origins there are calls (§6).
-- An action states what it needs of its subject with `require`, the action's own invariant:
+- An action states what it needs of its target with `require`, the action's own invariant:
 
   ```
   primary action send(d: Draft) {
@@ -73,8 +73,8 @@ type Workshop {
   }
   ```
 
-  A requirement is pure. One that reads only the subject decides where the action is offered:
-  wherever it would be offered on the subject (a window's header, a menu, an agent's choices)
+  A requirement is pure. One that reads only the target decides where the action is offered:
+  wherever it would be offered on the target (a window's header, a menu, an agent's choices)
   the action's published availability says whether it can run now, and why not. A list of things
   a person can take (a palette, a search, a menu, a swipe) leaves it out while one fails; a
   button that names it stays, disabled, with the requirement's reason as its description.

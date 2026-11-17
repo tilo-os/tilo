@@ -284,7 +284,7 @@ pub struct RichTextLine {
 impl RichTextLine {
     pub fn new() -> Self {
         // Block-editor cells render as document copy, not a form field. `@` is the block
-        // editor's own: it writes a mention mark naming the participant, which the field's
+        // editor's own: it writes a mention mark naming the member, which the field's
         // inline completion cannot.
         let mut inner = TextInput::local()
             .with_plain_chrome()
@@ -346,7 +346,7 @@ impl RichTextLine {
         self.composer = composer;
     }
 
-    /// Paint mentions in the colours `paint` gives each participant.
+    /// Paint mentions in the colours `paint` gives each member.
     pub fn set_mention_paint(&mut self, paint: Option<marks::MentionPaint>) {
         self.paint_dirty = true;
         self.mention_paint = paint;
@@ -1482,6 +1482,11 @@ impl crate::widget::TextFits for RichTextLine {
 }
 
 impl Widget for RichTextLine {
+    /// The line as its own field: what the person types edits it.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        Widget::html(&self.inner, cx);
+    }
+
     crate::provides!(dyn crate::widget::TextFits);
 
     /// The inner field's timers (a settling squiggle, a suggestion for the

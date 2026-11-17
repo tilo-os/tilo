@@ -50,6 +50,16 @@ pub fn step_done(step: &TaskStep) -> String {
     t_args(key, &[("what", ui::i18n::ArgValue::from(bounded(subject)))])
 }
 
+/// A program's change of one field, said as done ("Edited body"): what the API names
+/// `body =`, which no person reads as a step.
+#[must_use]
+pub fn edited(field: &str) -> String {
+    t_args(
+        "agent-step-edited",
+        &[("what", ui::i18n::ArgValue::from(bounded(field)))],
+    )
+}
+
 /// A program that read and changed nothing, said as done: it looked up the app
 /// its answer names, by the app's title exactly as the app publishes it
 /// ("Looked up Tasks"), or looked things up when it named none.
@@ -297,5 +307,16 @@ mod tests {
             assert!(!said.contains("Retry inference"), "{id}: {said}");
             assert!(!said.contains("replay completed actions"), "{id}: {said}");
         }
+    }
+
+    /// A field a program assigned is said as its edit with what it changed, never the API's
+    /// `body =`: "Edited body: Re: Dinner on Friday?".
+    #[test]
+    fn a_field_a_program_set_is_said_as_its_edit() {
+        ui::i18n::I18nManager::init("en-US");
+        assert_eq!(
+            super::did(&super::edited("body"), None, "Re: Dinner on Friday?"),
+            "Edited body: Re: Dinner on Friday?"
+        );
     }
 }

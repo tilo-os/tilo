@@ -13,7 +13,9 @@
 
 use serde::Serialize;
 use tilo_actions::params::{ActionParam, ParamType};
-use tilo_actions::surface::{FieldType, ParamSurface, RECORD_UNIT, Surface, TypeSet, VerbSurface};
+use tilo_actions::surface::{
+    FieldType, ParamSurface, RESOURCE_UNIT, Surface, TypeSet, VerbSurface,
+};
 use tilo_actions::{ActionSpec, ResourceSpec, RiskLevel};
 use tilo_desktop_surface::navigation::{ChromeEffect, LayoutEffect};
 use tilo_resource::Effect;
@@ -269,7 +271,7 @@ fn verb(action: &ActionSpec, declared: Option<Declared>, types: &mut TypeSet) ->
         incoming_message: false,
         params,
         returns: None,
-        writes: vec![RECORD_UNIT.to_owned()],
+        writes: vec![RESOURCE_UNIT.to_owned()],
         field: None,
     }
 }

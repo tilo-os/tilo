@@ -33,15 +33,15 @@ pub enum Mark {
     Mention(String),
 }
 
-/// How a mention of one participant is painted.
+/// How a mention of one member is painted.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MentionColors {
     pub ink: vello::peniko::Color,
     pub band: Option<vello::peniko::Color>,
 }
 
-/// The colours a mention of the participant with this id is painted in, supplied by the
-/// owning model (it knows who the participant is).
+/// The colours a mention of the member with this id is painted in, supplied by the
+/// owning model (it knows who the member is).
 pub type MentionPaint = std::rc::Rc<dyn Fn(&str) -> MentionColors>;
 
 impl Mark {

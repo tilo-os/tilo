@@ -9,7 +9,9 @@ use std::rc::Rc;
 
 use tilo_app::framework::{Chain, ChainList, ChainPager, ChainRow, Chained, Paged, PartArrival};
 use tilo_app::prelude::*;
-use tilo_app::record::{DocumentCheckout, DocumentId, RecordOwners, RecordStore, ResourceType};
+use tilo_app::resource::{
+    DocumentCheckout, DocumentId, ResourceOwners, ResourceStore, ResourceType,
+};
 use tilo_app::tilo_resource::Collection;
 use tilo_app::widget::virtual_list::ListModel;
 
@@ -69,18 +71,18 @@ impl Chained for LogPart {
 }
 
 /// One device's records of the log in its workspace.
-fn device() -> RecordStore {
+fn device() -> ResourceStore {
     device_keeping(&Rc::new(durable_store::MemoryStore::new()))
 }
 
 /// [`device`], keeping its records in `memory`.
-fn device_keeping(memory: &Rc<durable_store::MemoryStore>) -> RecordStore {
-    RecordOwners::with_store(Rc::clone(memory) as Rc<dyn durable_store::DurableStore>)
+fn device_keeping(memory: &Rc<durable_store::MemoryStore>) -> ResourceStore {
+    ResourceOwners::with_store(Rc::clone(memory) as Rc<dyn durable_store::DurableStore>)
         .open("so.tilo.test-chain-log", "workspace")
         .unwrap()
 }
 
-fn chain_in(store: &RecordStore, me: &str) -> Chain<LogPart> {
+fn chain_in(store: &ResourceStore, me: &str) -> Chain<LogPart> {
     let me = &MemberId::person(me);
     let log = Rc::new(Log::default());
     Chain::detached_in(store.clone(), "so.tilo.test-chain-log", me, move || {
@@ -92,8 +94,8 @@ fn chain_in(store: &RecordStore, me: &str) -> Chain<LogPart> {
 /// A writer that filled parts 0 and 1 and wrote one line into part 2, and
 /// a reader that joined after: its workspace sent it the head only.
 struct Joined {
-    writer: RecordStore,
-    reader: RecordStore,
+    writer: ResourceStore,
+    reader: ResourceStore,
     chain: Chain<LogPart>,
 }
 
@@ -360,7 +362,7 @@ fn a_write_while_its_part_is_on_its_way_lands_once_the_part_arrived() {
 fn part_arrives(
     theirs: &durable_store::MemoryStore,
     ours: &durable_store::MemoryStore,
-    reader: &RecordStore,
+    reader: &ResourceStore,
 ) {
     use durable_store::{DurableStore as _, StorageKey};
     let key = StorageKey::document(
@@ -394,7 +396,7 @@ fn sending(chain: &Chain<LogPart>) -> Vec<String> {
 fn written_while_away() -> (
     Rc<durable_store::MemoryStore>,
     Rc<durable_store::MemoryStore>,
-    RecordStore,
+    ResourceStore,
 ) {
     let written = |text: &str| LogPart::WRITE.with(log_part::Write { text: text.into() });
     let theirs = Rc::new(durable_store::MemoryStore::new());
@@ -480,7 +482,7 @@ fn a_native_window_waits_for_the_workspaces_newest_part_and_founds_no_part_of_it
     // full part 0 that everyone's earlier lines are in.
     let theirs = Rc::new(MemoryStore::new());
     let writer =
-        RecordOwners::with_store(Rc::clone(&theirs) as Rc<dyn durable_store::DurableStore>)
+        ResourceOwners::with_store(Rc::clone(&theirs) as Rc<dyn durable_store::DurableStore>)
             .open(APP, &workspace)
             .unwrap();
     let writing = chain_in(&writer, "ada");
@@ -508,9 +510,10 @@ fn a_native_window_waits_for_the_workspaces_newest_part_and_founds_no_part_of_it
     );
     let _construction = NativeConstruction::enter(broker).expect("the app's construction");
     let ours = Rc::new(MemoryStore::new());
-    let reader = RecordOwners::with_store(Rc::clone(&ours) as Rc<dyn durable_store::DurableStore>)
-        .open(APP, &workspace)
-        .unwrap();
+    let reader =
+        ResourceOwners::with_store(Rc::clone(&ours) as Rc<dyn durable_store::DurableStore>)
+            .open(APP, &workspace)
+            .unwrap();
     let chain = chain_in(&reader, "bo");
     assert!(chain.parts().is_empty(), "no part of it is here");
     assert!(
@@ -543,7 +546,9 @@ fn a_native_window_waits_for_the_workspaces_newest_part_and_founds_no_part_of_it
     );
     assert!(!chain.head_arriving());
     assert_eq!(
-        chain.stage_as(&written("two"), &tilo_resource::MemberId::person("bo")).unwrap(),
+        chain
+            .stage_as(&written("two"), &tilo_resource::MemberId::person("bo"))
+            .unwrap(),
         Some(1),
         "the line is written into the workspace's newest part"
     );

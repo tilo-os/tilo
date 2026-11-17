@@ -87,7 +87,7 @@ fn an_idle_shell_syncs_no_window_and_a_change_from_elsewhere_syncs_the_one_it_re
         0,
         "nothing reached any window: none syncs"
     );
-    // Another participant's edit reaches the calendar's record.
+    // Another member's edit reaches the calendar's record.
     shell.change_elsewhere("calendar");
     let reached = shell.syncs_during(|shell| {
         shell.idle();

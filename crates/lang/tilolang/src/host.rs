@@ -122,7 +122,7 @@ pub const VALUE_TYPES: &[ValueType] = &[
             (
                 "available",
                 "Bool",
-                "Whether it can run on the resource now: the requirements its subject decides \
+                "Whether it can run on the resource now: the requirements its target decides \
                  hold. A control for one that cannot is disabled, and says `reason`.",
             ),
             (
@@ -135,7 +135,7 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "applies",
                 "Bool",
                 "Whether it can apply to the item where it is offered at all: the `applies` \
-                 conditions its subject and place decide hold. A menu leaves one that does not \
+                 conditions its target and place decide hold. A menu leaves one that does not \
                  apply out; a palette lists it, disabled with `reason`.",
             ),
         ],
@@ -225,7 +225,7 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "count",
                 "Int",
                 "How many items the change was made over: `1` for an action applied to its \
-                 subject, and for one action applied to many items at once (`many`), as many \
+                 target, and for one action applied to many items at once (`many`), as many \
                  as the items it changed.",
             ),
         ],
@@ -613,7 +613,7 @@ pub fn host_meta() -> PackageMeta {
                     "The suggestion's run on the device that made it.",
                 ),
                 field(
-                    "subject",
+                    "target",
                     "Option<Resource>",
                     "The resource the action is about, when a person proposed it: the resource it waits on.",
                 ),

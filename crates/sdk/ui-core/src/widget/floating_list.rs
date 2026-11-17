@@ -86,7 +86,7 @@ impl FloatingMetrics {
         }
     }
 
-    /// A participant's avatar: a little larger than an icon, inside the row.
+    /// A member's avatar: a little larger than an icon, inside the row.
     #[must_use]
     pub fn avatar(&self) -> f64 {
         (self.icon + 4.0).min(self.row - 2.0 * self.inset.min(4.0))

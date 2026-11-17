@@ -45,9 +45,7 @@ fn locus_scope_with(
         address: tilo_actions::ActionAddress::new(publication, "apply"),
         argument: None,
         actor: actor.clone(),
-        participant: Some(
-            tilo_actions::ParticipantId::new(format!("host-participant-{id}")).unwrap(),
-        ),
+        presence: Some(tilo_actions::PresenceId::new(format!("host-presence-{id}")).unwrap()),
     };
     let snapshots = crate::bound_dispatch::discover_bound_resources(
         fixture.app.root_widget.as_ref(),
@@ -135,7 +133,7 @@ tilo_test_env::scenario! {
             basis.actor(),
             &tilo_actions::Actor::Member(tilo_actions::MemberId::person("fixture-user"))
         );
-        assert_eq!(basis.participant(), request.participant.as_ref());
+        assert_eq!(basis.presence(), request.presence.as_ref());
         assert_eq!(basis.publication(), &request.address);
         assert_eq!(basis.target(), &target.address.address);
         assert_eq!(basis.instance(), target.binding.instance_id);
@@ -179,7 +177,7 @@ tilo_test_env::scenario! {
         let other = second.locus_basis().unwrap().unwrap();
         assert_eq!(captured.actor(), other.actor());
         assert_ne!(captured.invocation(), other.invocation());
-        assert_ne!(captured.participant(), other.participant());
+        assert_ne!(captured.presence(), other.presence());
         assert_ne!(captured.heads(), other.heads());
         assert_eq!(first.clone().locus_basis().unwrap().unwrap(), captured);
         first.cancel();
@@ -215,7 +213,7 @@ tilo_test_env::scenario! {
             }
             let mut invoker = request.invoker();
             if case == 5 {
-                invoker.participant = Some(tilo_actions::ParticipantId::new("another-run").unwrap());
+                invoker.presence = Some(tilo_actions::PresenceId::new("another-run").unwrap());
             } else if case == 6 {
                 invoker.acting = tilo_actions::Acting::person("another-actor");
             }

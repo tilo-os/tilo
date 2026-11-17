@@ -78,7 +78,7 @@ tilo-resource = { path = "../../sdk/tilo-resource" }
 # (`record_index::hosted_entries`).
 tilo-app = { path = "../../sdk/tilo-app" }
 tilo-desktop = { path = "../desktop" }
-# The participant's own client of the collaboration plane: the boards of who is here and this
+# The member's own client of the collaboration plane: the boards of who is here and this
 # device's own word, which this session hosts with its own endpoint.
 tilo-session-client = { path = "../client" }
 # The roles every host runs: the shell's document and the layout it holds.
@@ -101,6 +101,8 @@ tilo-files = { path = "../../platform/tilo-files" }
 durable-store = { path = "../../system/durable-store" }
 automerge.workspace = true
 tilo-paths.workspace = true
+# This process's id and kernel start time, which the desktop's ready record names.
+tilo-process = { path = "../../platform/tilo-process" }
 tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-actions = { path = "../../collab/actions" }
 # The directory of public workspaces a site serves: what joins list and

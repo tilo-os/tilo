@@ -105,7 +105,7 @@ fn independently_created_documents_merge_without_displacing_either_side() {
              bytes — the image cannot render because it is not in the merged document"
         );
     }
-    // A third participant, and a peer that joins after there is already content: order of arrival
+    // A third member, and a peer that joins after there is already content: order of arrival
     // must not decide whose paragraph survives.
     {
         const ROUNDS: usize = 32;
@@ -136,7 +136,7 @@ fn independently_created_documents_merge_without_displacing_either_side() {
 
         assert_eq!(
             lost, 0,
-            "{lost}/{ROUNDS} three-way merges dropped at least one participant's content"
+            "{lost}/{ROUNDS} three-way merges dropped at least one member's content"
         );
     }
     // Adopting the genesis must not cost the caller an edit: `init` is reached from `sync`, where

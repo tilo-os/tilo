@@ -13,7 +13,7 @@ use ui_core::application::{ApplicationHost, ComponentRunnerInputs};
 use ui_core::headless::FrameHarness;
 use ui_core::launch::LaunchError;
 use ui_core::permissions::{MemberId, Role};
-use ui_core::record::DocumentId;
+use ui_core::resource::DocumentId;
 
 use tilo_resource::Resource;
 
@@ -226,14 +226,14 @@ pub fn live_window_in_workspace<A: ResourceApp>(
 /// The record window `instance` of `A` kept in the test workspace while `A` kept
 /// one per window: stamped with that window's default identity, initialized
 /// as `A` creates a record, then edited with `actions`. Open the app over
-/// such records with [`HeadlessApp::with_window_records`].
+/// such records with [`HeadlessApp::with_window_resources`].
 pub fn window_record<A: ResourceApp>(
     instance: u64,
     actions: &[<A::Resource as Resource>::Action],
 ) -> Result<tilo_resource::Doc, LaunchError> {
     let mut doc = tilo_resource::Doc::new();
-    let kind = definition::<A>().record_kind.clone();
-    if !ui_core::record::init_scoped(
+    let kind = definition::<A>().resource_type.clone();
+    if !ui_core::resource::init_scoped(
         &mut doc,
         &DocumentId::window_default(instance),
         &kind,

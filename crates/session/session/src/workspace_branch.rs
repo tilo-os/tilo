@@ -10,8 +10,8 @@
 //!    ([`Engine::found`]): its governance is new, its only member the person, as its owner, and
 //!    its channels get keys of their own the first time a record of it is sealed.
 //! 2. Every record the source holds here is read whole, with its history, and written into the
-//!    branch as its founding write ([`Engine::write_record`]), forked under a writer of its own and
-//!    naming the branch as its workspace ([`ui::record::transfer::branch`]). A record an app keeps on
+//!    branch as its founding write ([`Engine::write_resource`]), forked under a writer of its own and
+//!    naming the branch as its workspace ([`ui::resource::transfer::branch`]). A record an app keeps on
 //!    this device too is the same document there: the local copy's changes are merged in first,
 //!    and the branch's local copy is the very document the branch's engine holds.
 //! 3. What the apps keep for the workspace on this device (`tilo-workspaces/<workspace>/<app>`) is
@@ -188,7 +188,7 @@ async fn found(
         Some(seal_keys(engine, workspace, until).await?)
     };
     engine
-        .write_record(workspace, (app, record), changes, true, sealed.as_ref())
+        .write_resource(workspace, (app, record), changes, true, sealed.as_ref())
         .await
         .map(|_| ())
 }
@@ -227,7 +227,7 @@ pub(crate) async fn copy(
     let mut branched = Branched::default();
     let sources = match engine {
         Some(engine) if engine.holds(from) && engine.holds(to) => {
-            read_records(engine, from, until, &mut branched).await
+            read_resources(engine, from, until, &mut branched).await
         }
         // The source's records are this device's to read, and the branch holds none: it could not
         // be founded here.
@@ -279,7 +279,7 @@ fn make_copies(
     let workspace = to.to_string();
     let mut records = Vec::new();
     for ((app, record), source) in sources {
-        let mut doc = match ui::record::transfer::branch(&source, &workspace) {
+        let mut doc = match ui::resource::transfer::branch(&source, &workspace) {
             Ok(doc) => doc,
             Err(error) => {
                 branched.missing.push(format!("{record} of {app}: {error}"));
@@ -323,7 +323,7 @@ fn make_copies(
 }
 
 /// Every record of `from` this device reads, but those that stay behind.
-async fn read_records(
+async fn read_resources(
     engine: &Engine,
     from: WorkspaceId,
     until: Instant,
@@ -398,7 +398,9 @@ fn placed(path: &Path, from: &str, to: &str) -> Option<PathBuf> {
     match parts.first() {
         // Chat's directory stays behind but for the workspace's own records Chat keeps (its emoji,
         // its agents), which come along in the branch's engine and so in Chat's store too.
-        Some(&CHAT) if record_of(&parts, from).is_none_or(|(app, record)| stays(&app, &record)) => {
+        Some(&CHAT)
+            if resource_of(&parts, from).is_none_or(|(app, record)| stays(&app, &record)) =>
+        {
             return None;
         }
         Some(&tilo_desktop_model::ownership::DESKTOP_APP) => return None,
@@ -406,7 +408,7 @@ fn placed(path: &Path, from: &str, to: &str) -> Option<PathBuf> {
         // Terminal's store (the emoji) comes along like every copy of it.
         Some(&TERMINAL)
             if environment_records(&parts, from)
-                && record_of(&parts, from).is_none_or(|(app, record)| stays(&app, &record)) =>
+                && resource_of(&parts, from).is_none_or(|(app, record)| stays(&app, &record)) =>
         {
             return None;
         }
@@ -450,7 +452,7 @@ fn environment_records(parts: &[&str], from: &str) -> bool {
 
 /// The app and record a document at `path` (relative to the workspace's app directories) is,
 /// when it is a record: `<app dir>/…/<app>/workspaces/<workspace>/documents/<record>`.
-fn record_of(parts: &[&str], workspace: &str) -> Option<(String, String)> {
+fn resource_of(parts: &[&str], workspace: &str) -> Option<(String, String)> {
     let at = parts.windows(3).position(|window| {
         window
             == [
@@ -509,7 +511,7 @@ fn copy_app_data(
         )
         .map_err(|error| format!("{}: {error}", relative.display()));
         let mut held = loaded?;
-        if let Some(route) = record_of(&parts, &from_id)
+        if let Some(route) = resource_of(&parts, &from_id)
             && let Some(source) = sources.get_mut(&route)
         {
             // The same record, as an app on this device last wrote it: its changes are the
@@ -530,7 +532,7 @@ fn copy_app_data(
 
 /// Write the branch's copy of `doc` to `path` , a document of an app's directory in the branch.
 fn write_local(doc: &AutoCommit, path: &Path, to: WorkspaceId) -> Result<(), String> {
-    let mut copy = ui::record::transfer::branch(doc, &to.to_string())
+    let mut copy = ui::resource::transfer::branch(doc, &to.to_string())
         .map_err(|error| format!("{}: {error}", path.display()))?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
@@ -995,7 +997,7 @@ mod tests {
                 .join("documents/uuid-plan");
             let doc = load(&copied.join("state.automerge"));
             assert_eq!(body(&doc), "plan");
-            assert_eq!(ui::record::workspace_scope(&doc).as_deref(), Some(TO));
+            assert_eq!(ui::resource::workspace_scope(&doc).as_deref(), Some(TO));
             assert!(
                 !copied.join("actor").exists(),
                 "the branch writes as a writer of its own"
@@ -1025,7 +1027,7 @@ mod tests {
 
             // The source is as it was, and an edit in either stays there.
             let source = load(&notes.join("state.automerge"));
-            assert_eq!(ui::record::workspace_scope(&source).as_deref(), Some(FROM));
+            assert_eq!(ui::resource::workspace_scope(&source).as_deref(), Some(FROM));
             let mut edited = doc;
             automerge::transaction::Transactable::put(&mut edited, automerge::ROOT, "body", "branch")
                 .unwrap();
@@ -1179,7 +1181,7 @@ mod tests {
                 assert!(path.exists(), "{app}'s copy of the emoji came along");
                 let mut copy = load(&path);
                 assert_eq!(body(&copy), "party-parrot");
-                assert_eq!(ui::record::workspace_scope(&copy).as_deref(), Some(TO));
+                assert_eq!(ui::resource::workspace_scope(&copy).as_deref(), Some(TO));
                 assert_eq!(
                     copy.get_heads(),
                     engines.get_heads(),
@@ -1219,14 +1221,14 @@ mod tests {
             .unwrap();
             // An app's window of `workspace` opening the emoji, in a store of its own.
             let opened = |workspace: &str| {
-                ui::record::workspace::WorkspaceRecords::in_workspace(
-                    ui::record::RecordOwners::with_store(std::rc::Rc::new(
+                ui::resource::workspace::WorkspaceResources::in_workspace(
+                    ui::resource::ResourceOwners::with_store(std::rc::Rc::new(
                         durable_store::MemoryStore::new(),
                     )),
                     workspace.to_owned(),
                     ui::permissions::MemberId::person("ada"),
                 )
-                .open_record(CHAT, EMOJI, &|doc| {
+                .open_resource(CHAT, EMOJI, &|doc| {
                     doc.put(automerge::ROOT, "body", "")
                         .map_err(|error| error.to_string())
                 })
@@ -1256,11 +1258,11 @@ mod tests {
             let mut met = opened(TO).read(AutoCommit::clone).unwrap();
             met.merge_incoming(&mut engines).unwrap();
             assert_eq!(
-                ui::record::identity(&met).map(|checkout| checkout.id.as_str().to_owned()),
+                ui::resource::identity(&met).map(|checkout| checkout.id.as_str().to_owned()),
                 Some(emoji),
                 "one record of the branch"
             );
-            assert_eq!(ui::record::workspace_scope(&met).as_deref(), Some(TO));
+            assert_eq!(ui::resource::workspace_scope(&met).as_deref(), Some(TO));
             assert!(matches!(
                 met.get(automerge::ROOT, "body").unwrap(),
                 Some((automerge::Value::Scalar(body), _)) if body.as_str() == Some("party-parrot")
@@ -1433,7 +1435,7 @@ mod tests {
             };
             let mut copied = read(TO, notes.1);
             assert_eq!(body(&copied), "plan");
-            assert_eq!(ui::record::workspace_scope(&copied).as_deref(), Some(TO));
+            assert_eq!(ui::resource::workspace_scope(&copied).as_deref(), Some(TO));
             for change in plan.get_heads() {
                 assert!(
                     copied.get_change_by_hash(&change).is_some(),
@@ -1464,7 +1466,7 @@ mod tests {
 
             // The source holds what it held, and the two are documents of their own.
             let mut source = read(FROM, notes.1);
-            assert_eq!(ui::record::workspace_scope(&source).as_deref(), Some(FROM));
+            assert_eq!(ui::resource::workspace_scope(&source).as_deref(), Some(FROM));
             assert_ne!(source.get_heads(), copied.get_heads());
             assert!(
                 engine
@@ -1487,10 +1489,10 @@ mod tests {
     /// A record document as an app keeps it on this device.
     fn record(workspace: &str, body: &str) -> AutoCommit {
         let mut doc = AutoCommit::new();
-        assert!(ui::record::init_scoped(
+        assert!(ui::resource::init_scoped(
             &mut doc,
-            &ui::record::DocumentId::minted(),
-            &ui::record::ResourceType::new("notes.page"),
+            &ui::resource::DocumentId::minted(),
+            &ui::resource::ResourceType::new("notes.page"),
             workspace,
             Some(workspace),
         ));
@@ -1565,7 +1567,7 @@ mod tests {
         for held in [ids().0, ids().1] {
             engine.hand_keys(held, keys.clone());
         }
-        pollster::block_on(engine.write_record(
+        pollster::block_on(engine.write_resource(
             workspace,
             (app, record),
             &doc.save_after(&[]),

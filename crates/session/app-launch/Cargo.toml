@@ -80,6 +80,10 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# The control interface of the keeper an app that is not Tilo's runs behind.
+tilo-app-keeper = { path = "../app-keeper" }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 # A record a window kept, written as its own process writes it, read back
@@ -89,6 +93,10 @@ durable-store = { path = "../../system/durable-store" }
 # The subscriber a test reads what an app wrote back through.
 tracing-subscriber = { workspace = true }
 tilo-test-env = { path = "../../dev/test-env" }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# The desktop a kept app's keeper is attached to in its tests.
+tilo-compositor = { path = "../compositor" }
 
 [lints]
 workspace = true

@@ -689,12 +689,12 @@ impl Checker<'_> {
     /// The people a rich input's `@` drawer offers after the conversation's own, which no view declares:
     /// the system gives every rich input its `people`.
     pub(super) fn drawer_props(&mut self, n: LocalId) {
-        let subject = self
+        let target = self
             .st
-            .subject
+            .target
             .clone()
             .map(|(local, ty)| Ex::local(local, ty));
-        let people = Self::drawer_people(subject);
+        let people = Self::drawer_people(target);
         self.emit(Stmt::Eval(Ex::host(
             Imp::UiPropH,
             vec![Ex::local(n, Ty::View), Ex::str("people"), people],
@@ -1244,8 +1244,8 @@ impl Checker<'_> {
                 "E063",
                 span,
                 format!(
-                    "`{}` is a view and takes no child block; pass children as a View parameter",
-                    v.name
+                    "`{}` takes no block: a view takes one when it declares a `View` parameter for it to fill, as `view {}(..., content: View)`",
+                    v.name, v.name
                 ),
             );
         }

@@ -32,7 +32,7 @@ impl BrowserWidget {
         credentials: Option<HttpAuthCredentials>,
     ) -> Result<String, String> {
         if let Some(credentials) = &credentials {
-            self.page_record.sent_secret(credentials.password());
+            self.page_resource.sent_secret(credentials.password());
         }
         let answered = self
             .page_sign_in

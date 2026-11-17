@@ -249,7 +249,7 @@ async fn the_host_lets_go_of_content_no_record_of_the_workspace_names() {
     let governor = workspaces.serving_certificate().clone();
     for picture in [earlier.clone(), format!("tilo.content:{current}")] {
         workspaces
-            .author_workspace_record(&hosted.workspace, &governor, (OPENED, ""), |doc| {
+            .author_workspace_document(&hosted.workspace, &governor, (OPENED, ""), |doc| {
                 doc.put(ROOT, "picture", picture.as_str())
                     .map_err(|error| error.to_string())
             })
@@ -339,9 +339,9 @@ async fn a_viewer_writes_their_own_record_of(own_app: &str, kind: &str) {
         peer.select_exact_admissions().unwrap();
         peer
     };
-    let own = collab_types::OwnRecord::new(kind, carol.user_pk)
+    let own = collab_types::OwnResource::new(kind, carol.user_pk)
         .unwrap()
-        .record_id();
+        .document_id();
     // The workspace's owner is live while Carol writes: a member like any other
     // for her own record, which never reaches the owner's device.
     let owner_session = session(&relay, &laptop, workspace).await;
@@ -413,13 +413,13 @@ async fn a_viewer_writes_their_own_record_of(own_app: &str, kind: &str) {
     assert!(
         matches!(
             answer_to_opening(&phone_session, own_app, &own).await,
-            tilo_relay_protocol::RecordAnswer::Sent { frames } if frames > 0
+            tilo_relay_protocol::DocumentAnswer::Sent { frames } if frames > 0
         ),
         "her other device opens her own record"
     );
     assert_eq!(
         answer_to_opening(&owner_session, own_app, &own).await,
-        tilo_relay_protocol::RecordAnswer::NotYours,
+        tilo_relay_protocol::DocumentAnswer::NotYours,
         "the owner's device was sent none of it live, and opening it is answered as hers"
     );
     // Joined again, the owner's device is replayed the workspace without it.
@@ -427,7 +427,7 @@ async fn a_viewer_writes_their_own_record_of(own_app: &str, kind: &str) {
     let owner_session = session(&relay, &laptop, workspace).await;
     assert_eq!(
         answer_to_opening(&owner_session, own_app, &own).await,
-        tilo_relay_protocol::RecordAnswer::NotYours,
+        tilo_relay_protocol::DocumentAnswer::NotYours,
         "nor is it in the owner's catch-up"
     );
     owner_session.close().await;
@@ -531,17 +531,17 @@ async fn a_viewer_writes_their_own_record_of(own_app: &str, kind: &str) {
     // it holds none.
     let alices = tilo_relay_protocol::OwnedChannel {
         app_id: own_app.to_owned(),
-        record: collab_types::OwnRecord::new(kind, alice.user_pk).unwrap(),
+        record: collab_types::OwnResource::new(kind, alice.user_pk).unwrap(),
     };
     assert_eq!(
         answer_to_opening_own(&viewer_session, &alices).await,
-        tilo_relay_protocol::RecordAnswer::NotYours,
+        tilo_relay_protocol::DocumentAnswer::NotYours,
         "another member's own record is not hers, written or not"
     );
     let owner_session = session(&relay, &laptop, workspace).await;
     assert_eq!(
         answer_to_opening_own(&owner_session, &alices).await,
-        tilo_relay_protocol::RecordAnswer::Sent { frames: 0 },
+        tilo_relay_protocol::DocumentAnswer::Sent { frames: 0 },
         "the owner's own record, of which nothing is written yet"
     );
     owner_session.close().await;
@@ -648,12 +648,12 @@ async fn a_viewer_writes_their_own_record_of(own_app: &str, kind: &str) {
 async fn answer_to_opening_own(
     session: &RelayCoeditSession,
     own: &tilo_relay_protocol::OwnedChannel,
-) -> tilo_relay_protocol::RecordAnswer {
-    let channel = neighbour_wire::app_document_channel(&own.app_id, &own.record.record_id());
+) -> tilo_relay_protocol::DocumentAnswer {
+    let channel = neighbour_wire::app_document_channel(&own.app_id, &own.record.document_id());
     session.open_own_record(own.clone()).unwrap();
     tilo_test_env::within("the host answers the opened record", async {
         loop {
-            if let Inbound::RecordOpened {
+            if let Inbound::DocumentOpened {
                 channel: opened,
                 answer,
             } = session.recv().await.expect("the session stays open")
@@ -682,22 +682,22 @@ async fn answer_to_opening(
     session: &RelayCoeditSession,
     app: &str,
     record: &str,
-) -> tilo_relay_protocol::RecordAnswer {
+) -> tilo_relay_protocol::DocumentAnswer {
     let channel = neighbour_wire::app_document_channel(app, record);
-    session.open_record(channel).unwrap();
+    session.open_resource(channel).unwrap();
     let mut received = false;
     let answer = tilo_test_env::within("the host answers the opened record", async {
         loop {
             match session.recv().await.expect("the session stays open") {
                 Inbound::Delta { data, .. } => {
-                    if let Ok(NeighbourMsg::AppDocument { record_id, .. }) =
+                    if let Ok(NeighbourMsg::AppDocument { document_id, .. }) =
                         postcard::from_bytes::<NeighbourMsg>(&data)
-                        && record_id == record
+                        && document_id == record
                     {
                         received = true;
                     }
                 }
-                Inbound::RecordOpened {
+                Inbound::DocumentOpened {
                     channel: opened,
                     answer,
                 } if opened == channel => return answer,
@@ -706,7 +706,7 @@ async fn answer_to_opening(
         }
     })
     .await;
-    if answer == tilo_relay_protocol::RecordAnswer::NotYours {
+    if answer == tilo_relay_protocol::DocumentAnswer::NotYours {
         assert!(
             !received,
             "a device that may not open the record received it"

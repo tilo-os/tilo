@@ -587,6 +587,28 @@ impl Stepper {
 
 impl Widget for Stepper {
     crate::described!();
+    /// A stepper as a page's own group of station buttons: the one it stands on
+    /// is chosen, each moves the flow to its station.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        use crate::composition::{Control, ControlOption};
+        let options = self
+            .steps
+            .iter()
+            .enumerate()
+            .map(|(index, step)| {
+                ControlOption::new(step.clone())
+                    .selected(self.current == Some(index))
+                    .with_target(self.station_id(index))
+                    .disabled(!self.enabled_stations().contains(&index))
+            })
+            .collect();
+        cx.control(Control::Choices {
+            list: "group",
+            item: "button",
+            label: None,
+            options,
+        });
+    }
 
     crate::provides!(
         dyn crate::widget::controls::ActionControls,

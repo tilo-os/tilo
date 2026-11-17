@@ -68,8 +68,8 @@ pub use kept::{
 pub(crate) use kept::{closing_window, frame_ended};
 pub use named::{
     Ambient, Appear, Attention, Breathe, CROSS_FADE, ControlChange, CrossFade, Disclose, Drill,
-    DrillDepth, Extent, Feedback, Float, Follow, ListChange, Mark, PanelSlide, Reveal, Snap,
-    Speaking, Thumb, Trace, Transient, WindowMotion, Zoom, held_by_aim, stage, unit_opacity,
+    DrillDepth, Extent, Feedback, Float, Follow, ListChange, Mark, PanelSlide, Reading, Reveal,
+    Snap, Speaking, Thumb, Trace, Transient, WindowMotion, Zoom, held_by_aim, stage, unit_opacity,
 };
 pub use placed::Placed;
 pub use pose::Pose;

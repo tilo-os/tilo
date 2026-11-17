@@ -74,12 +74,12 @@ impl ClocksOnDevices {
 /// is no record (a capture, a past version).
 #[derive(Clone)]
 pub(crate) struct DeviceChoices {
-    record: Option<(PersonRecord<ClocksOnDevices>, String)>,
+    record: Option<(PersonResource<ClocksOnDevices>, String)>,
     held: Rc<RefCell<OnThisDevice>>,
 }
 
 impl DeviceChoices {
-    pub(crate) fn new(record: Option<(PersonRecord<ClocksOnDevices>, String)>) -> Self {
+    pub(crate) fn new(record: Option<(PersonResource<ClocksOnDevices>, String)>) -> Self {
         Self {
             record,
             held: Rc::default(),

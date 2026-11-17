@@ -14,7 +14,7 @@ use tilo_desktop_model::{UserId, Workspace, WorkspaceId};
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 
-/// The workspaces a participant shows, as a workspace's governance writes into them: the ones it
+/// The workspaces a member shows, as a workspace's governance writes into them: the ones it
 /// lists, and the policy each carries.
 pub trait Workspaces {
     /// Read the workspaces, change them with `edit`, and put them back when it says it

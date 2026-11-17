@@ -51,6 +51,15 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
   stack.sh logs NAME     a service's log (relay, tls, api, web, discord, releases, mail)
   stack.sh mail          the mail the entry sent (wait-list confirmations,
                          invitations), with the links in each
+  stack.sh owner --here [--name NAME]
+                         an owner of the Lounge and a key for them, no browser:
+                         a person whose root the stack keeps in its own state
+                         (made once, the same person after), declared an owner
+                         as production's operator does, approves an API key on
+                         the spot. Prints export TILO_API_KEY=…, so
+                         eval "$(stack.sh owner --here)" holds it; stack.sh env
+                         exports it from then on
+  stack.sh tilo ARGS...  tilo as that owner: stack.sh tilo keys create "My backend"
   stack.sh owner [KEY] [--name NAME]
                          the owner link: opening it in any browser (one with
                          no Tilo identity yet too) makes that person an owner
@@ -464,6 +473,16 @@ relay_env() {
       "TILO_WORKSPACES_BOTS=$bots_path/discord-bridge.json guild=1000 server=Tilo mirror-channels=yes"
     )
   fi
+  # The model the agents a workspace made to run on its server work with, as
+  # production's TILO_AGENT_MODEL names it: TILO_SH_AGENT_MODEL (with
+  # TILO_SH_AGENT_MODEL_NAME and TILO_SH_AGENT_API_KEY), e.g.
+  # anthropic:https://api.anthropic.com. Without it the agents answer that
+  # the server runs no model.
+  if [[ -n ${TILO_SH_AGENT_MODEL:-} ]]; then
+    env+=("TILO_AGENT_MODEL=$TILO_SH_AGENT_MODEL")
+    [[ -z ${TILO_SH_AGENT_MODEL_NAME:-} ]] || env+=("TILO_AGENT_MODEL_NAME=$TILO_SH_AGENT_MODEL_NAME")
+    [[ -z ${TILO_SH_AGENT_API_KEY:-} ]] || env+=("TILO_AGENT_API_KEY=$TILO_SH_AGENT_API_KEY")
+  fi
   # A workspace's programs and its Browser run in its VM on this stack's own
   # VM host, when it is up: where to place a workspace, which device holds it,
   # and the ledger its page actions are counted in.
@@ -591,8 +610,10 @@ host_invite() {
 declare_owner() {
   local key=''
   local name=''
+  local here=0
   while [[ $# -gt 0 ]]; do
     case $1 in
+      --here) here=1 ;;
       --name)
         [[ $# -ge 2 ]] || die 'owner --name: the name the person goes by'
         name=$2
@@ -602,6 +623,11 @@ declare_owner() {
     esac
     shift
   done
+  if [[ $here == 1 ]]; then
+    [[ -z $key ]] || die 'owner --here makes its own person; KEY names someone else'
+    owner_here "$name"
+    return
+  fi
   if [[ -z $key ]]; then
     [[ -z $name ]] || die 'owner --name names a KEY; whoever opens the owner link names themself'
     owner_link
@@ -609,6 +635,43 @@ declare_owner() {
   fi
   [[ $key =~ ^[0-9a-f]{64}$ ]] || die 'owner KEY: the person'"'"'s user public key, 64 hex characters (tilo login --json names it as user_public_key)'
   declare_owner_at_lounge "$key" "$name"
+}
+
+# The stack's own person: tilo run with a home of its own under the stack's
+# state, so their root and the keys they approve never touch this account's
+# own Tilo. `stack.sh tilo …` and owner --here run tilo this way.
+as_owner() {
+  local home=$state/owner/home
+  mkdir -p "$home"
+  HOME=$home XDG_CONFIG_HOME=$home/.config XDG_STATE_HOME=$home/.local/state \
+    XDG_DATA_HOME=$home/.local/share XDG_CACHE_HOME=$home/.cache \
+    TILO_API_URL=$api_origin TILO_SITE=$site_origin "$(find_tilo)" "$@"
+}
+
+# owner --here [NAME]: the stack's own person (made the first time, the same
+# one after) is declared an owner of the Lounge and approves an API key for
+# themself there and then, as the person's own Tilo approves one: no browser.
+# Prints the key as an export line and keeps it for stack.sh env.
+owner_here() {
+  local name=${1:-}
+  local made key answer api_key
+  local -a named=()
+  [[ -z $name ]] || named=(--name "$name")
+  made=$(as_owner login --new-identity --json "${named[@]}") \
+    || die 'tilo made no person for the stack (tilo login --new-identity)'
+  key=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["user_public_key"])' "$made") \
+    || die "tilo named no person: $made"
+  [[ -n $name ]] || name=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("name") or "")' "$made")
+  declare_owner_at_lounge "$key" "$name"
+  answer=$(as_owner keys create 'Local stack' --json) || die "the owner's key was not approved: $answer"
+  api_key=$(python3 -c 'import json,sys
+answer = json.loads(sys.argv[1])
+print(next(answer[field] for field in ("key", "token", "api_key") if answer.get(field)))' "$answer") \
+    || die "tilo answered no key: $answer"
+  printf '%s\n' "$api_key" > "$state/owner/api-key"
+  chmod 600 "$state/owner/api-key"
+  say "the owner's key is kept for stack.sh env; stack.sh tilo … acts as them"
+  printf 'export TILO_API_KEY=%s\n' "$api_key"
 }
 
 # The owner link: to the owner invitation nobody has opened yet, else to a new
@@ -1848,6 +1911,14 @@ print_env() {
 # reach the local API server; nothing here touches tilo.sh.
 export TILO_API_URL=$api_origin
 export TILO_SITE=$site_origin
+EOF
+  # The key the stack's own owner approved (stack.sh owner --here), once there is one.
+  if [[ -s $state/owner/api-key ]]; then
+    printf 'export TILO_API_KEY=%s\n' "$(cat "$state/owner/api-key")"
+  else
+    printf '%s\n' '# No key yet: eval "$(stack.sh owner --here)" makes an owner and one.'
+  fi
+  cat <<EOF
 # An agent's MCP client, e.g. Claude Code:
 #   claude mcp add --transport http tilo-local $api_origin/mcp
 # a one-workspace key's MCP: $api_origin/w/<workspace>/mcp with
@@ -1884,6 +1955,7 @@ case $cmd in
   mail) list_mail ;;
   owner) declare_owner "$@" ;;
   invite) invite_link "$@" ;;
+  tilo) as_owner "$@" ;;
   hold | unhold) hold_workspace "$cmd" "$@" ;;
   browser) browser "$@" ;;
   check)

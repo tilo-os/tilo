@@ -89,8 +89,8 @@ pub fn register_package(app_id: &str, bytes: &[u8]) {
     {
         return;
     }
-    // Readers below parse it on each use and take a surface that does not
-    // parse as declaring nothing: say so once, here.
+    // Readers below take a surface that does not parse as declaring nothing:
+    // say so once, here.
     if let Err(error) = crate::surface::SurfaceFile::parse(bytes) {
         tracing::warn!(app = app_id, %error, "package surface does not parse; it declares no records, reads or footprints");
     }
@@ -157,24 +157,39 @@ pub fn bytes_of(app_id: &str) -> Option<&'static [u8]> {
         .map(|named| named.bytes)
 }
 
+/// `app_id`'s surface as parsed, once per distinct surface: every check of a change reads it,
+/// and a surface is tens of kilobytes. `None` when this process holds no surface for the app, or
+/// it does not parse (logged when it was named).
+fn surface_of(app_id: &str) -> Option<std::sync::Arc<crate::surface::SurfaceFile>> {
+    type Parsed = Option<std::sync::Arc<crate::surface::SurfaceFile>>;
+    static PARSED: OnceLock<Mutex<BTreeMap<[u8; 32], Parsed>>> = OnceLock::new();
+    let named = *registry().lock_recover().get(app_id)?;
+    PARSED
+        .get_or_init(Mutex::default)
+        .lock_recover()
+        .entry(named.hash)
+        .or_insert_with(|| {
+            tilo_failure::ignored!(
+                "a held surface that does not parse was logged when it was named, and declares nothing here",
+                crate::surface::SurfaceFile::parse(named.bytes).ok()
+            )
+            .map(std::sync::Arc::new)
+        })
+        .clone()
+}
+
 /// The person-record kinds `app_id`'s surface declares (its
-/// `ResourceApp::PERSON_RECORDS`): the records it may keep in, or read from,
+/// `ResourceApp::PERSON_RESOURCES`): the records it may keep in, or read from,
 /// the person's own workspace. Empty when this process holds no surface for
 /// it.
 #[must_use]
-pub fn person_record_kinds(app_id: &str) -> Vec<String> {
-    bytes_of(app_id)
-        .and_then(|bytes| {
-            tilo_failure::ignored!(
-                "a held surface that does not parse was logged when it was named, and declares nothing here",
-                crate::surface::SurfaceFile::parse(bytes).ok()
-            )
-        })
+pub fn person_resource_types(app_id: &str) -> Vec<String> {
+    surface_of(app_id)
         .map(|file| {
             file.resources
-                .into_iter()
+                .iter()
                 .filter(|surface| surface.person)
-                .map(|surface| surface.kind)
+                .map(|surface| surface.kind.clone())
                 .collect()
         })
         .unwrap_or_default()
@@ -184,27 +199,21 @@ pub fn person_record_kinds(app_id: &str) -> Vec<String> {
 /// workspace (`own`, a tilolang package's `records: .own`). Empty when this
 /// process holds no surface for it.
 #[must_use]
-pub fn own_record_kinds(app_id: &str) -> Vec<String> {
-    bytes_of(app_id)
-        .and_then(|bytes| {
-            tilo_failure::ignored!(
-                "a held surface that does not parse was logged when it was named, and declares nothing here",
-                crate::surface::SurfaceFile::parse(bytes).ok()
-            )
-        })
+pub fn own_resource_types(app_id: &str) -> Vec<String> {
+    surface_of(app_id)
         .map(|file| {
             file.resources
-                .into_iter()
+                .iter()
                 .filter(|surface| surface.own)
-                .map(|surface| surface.kind)
+                .map(|surface| surface.kind.clone())
                 .collect()
         })
         .unwrap_or_default()
 }
 
 #[must_use]
-pub fn keeps_person_record(app_id: &str, kind: &str) -> bool {
-    person_record_kinds(app_id)
+pub fn keeps_person_resource(app_id: &str, kind: &str) -> bool {
+    person_resource_types(app_id)
         .iter()
         .any(|known| known == kind)
 }
@@ -214,15 +223,7 @@ pub fn keeps_person_record(app_id: &str, kind: &str) -> bool {
 /// may hold. False when this process holds either surface not.
 #[must_use]
 pub fn reads_app(reader: &str, owner: &str) -> bool {
-    let parse = |app: &str| {
-        bytes_of(app).and_then(|bytes| {
-            tilo_failure::ignored!(
-                "a held surface that does not parse was logged when it was named, and declares nothing here",
-                crate::surface::SurfaceFile::parse(bytes).ok()
-            )
-        })
-    };
-    match (parse(reader), parse(owner)) {
+    match (surface_of(reader), surface_of(owner)) {
         (Some(reader), Some(owner)) => reader.reads_any_of(&owner),
         _ => false,
     }
@@ -240,13 +241,7 @@ pub fn with_footprints(
     mut claims: Vec<crate::ChangeClaim>,
 ) -> Vec<crate::ChangeClaim> {
     use crate::ReceiptSurface as _;
-    let Some(file) = bytes_of(app_id).and_then(|bytes| {
-        tilo_failure::ignored!(
-            "a held surface that does not parse was logged when it was named, and declares nothing here",
-            crate::surface::SurfaceFile::parse(bytes).ok()
-        )
-    })
-    else {
+    let Some(file) = surface_of(app_id) else {
         return claims;
     };
     for claim in &mut claims {
@@ -290,30 +285,27 @@ pub fn claims_of(
 /// grants aside, which the broker decides. `None` when this process holds no
 /// surface for the app: its receivers then hold the change until one arrives.
 #[must_use]
-pub fn refusal(record: &crate::Record<'_>, mutation: &crate::DocumentMutation) -> Option<String> {
-    let claims = match claims_of(record.app, mutation) {
+pub fn refusal(
+    document: &crate::WrittenDocument<'_>,
+    mutation: &crate::DocumentMutation,
+) -> Option<String> {
+    let claims = match claims_of(document.app, mutation) {
         Ok(claims) => claims,
         Err(error) => return Some(error.to_string()),
     };
-    let file = bytes_of(record.app)
-        .and_then(|bytes| {
-            tilo_failure::ignored!(
-                "a held surface that does not parse was logged when it was named, and declares nothing here",
-                crate::surface::SurfaceFile::parse(bytes).ok()
-            )
-        })?;
+    let file = surface_of(document.app)?;
     let surface_for = |kind: Option<&str>| {
         file.resource(kind).map(|resource| {
             std::sync::Arc::new(crate::surface::KindSurface(resource.clone()))
                 as std::sync::Arc<dyn crate::ReceiptSurface>
         })
     };
-    match crate::check_claims_by_kind(&claims, record, None, &surface_for, &|_, _| true) {
+    match crate::check_claims_by_kind(&claims, document, None, &surface_for, &|_, _| true) {
         Ok(crate::Receipt::Admit) => None,
         // The surface is here: what holds is a resource kind it does not publish, which no
         // receiver holding it admits.
         Ok(crate::Receipt::Hold) => {
-            Some("the record's app publishes no resource the change names".to_owned())
+            Some("the document's app publishes no resource the change names".to_owned())
         }
         Err(refusal) => Some(refusal.to_string()),
     }
@@ -338,10 +330,10 @@ mod tests {
         {
             static FILE: &[u8] = b"[[resources]]\nkind = \"test.own\"\nlabel = \"Own\"\nversion = 1\n\n[[resources]]\nkind = \"test.history\"\nlabel = \"History\"\nperson = true\nversion = 1\n";
             register_package("test.person-kinds", FILE);
-            assert_eq!(person_record_kinds("test.person-kinds"), ["test.history"]);
-            assert!(keeps_person_record("test.person-kinds", "test.history"));
-            assert!(!keeps_person_record("test.person-kinds", "test.own"));
-            assert!(!keeps_person_record("test.unknown-app", "test.history"));
+            assert_eq!(person_resource_types("test.person-kinds"), ["test.history"]);
+            assert!(keeps_person_resource("test.person-kinds", "test.history"));
+            assert!(!keeps_person_resource("test.person-kinds", "test.own"));
+            assert!(!keeps_person_resource("test.unknown-app", "test.history"));
         }
 
         phase a_claim_names_the_units_its_action_may_write;
@@ -362,26 +354,26 @@ mod tests {
                 ],
             };
             let group = ClaimedAction::Group(vec![edit("text"), edit("resolved")]);
-            let whole_record = vec![ChangeClaim {
+            let whole_resource = vec![ChangeClaim {
                 change: [7; 32],
                 action: group,
                 units: vec![Vec::new()],
             }];
             let file = crate::surface::SurfaceFile::parse(FILE).unwrap();
             let receiver = crate::surface::KindSurface(file.resource(None).unwrap().clone());
-            let record = crate::Record {
+            let document = crate::WrittenDocument {
                 workspace: "workspace-1",
                 app: "test.footprints",
-                record: "paper-1",
+                document: "paper-1",
             };
             let decide = |claims: &[ChangeClaim]| {
-                crate::check_claims(claims, &record, None, None, Some(&receiver), &|_, _| true)
+                crate::check_claims(claims, &document, None, None, Some(&receiver), &|_, _| true)
             };
             assert!(matches!(
-                decide(&whole_record),
+                decide(&whole_resource),
                 Err(ReceiptRefusal::OutsideFootprint { .. })
             ));
-            let claimed = with_footprints("test.footprints", whole_record);
+            let claimed = with_footprints("test.footprints", whole_resource);
             let comment = vec![
                 PathStep::Field("comments".into()),
                 PathStep::Item("c1".into()),
@@ -404,7 +396,7 @@ mod tests {
             );
             assert_eq!(bytes_of("test.package-surface"), Some(package.as_slice()));
             assert_eq!(
-                person_record_kinds("test.package-surface"),
+                person_resource_types("test.package-surface"),
                 ["test.pkg-history"]
             );
         }

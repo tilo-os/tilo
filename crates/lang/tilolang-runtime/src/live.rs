@@ -57,7 +57,7 @@ pub(crate) struct Bound {
     /// does not depend on which items those have.
     pub loops: Vec<Rc<LoopRows>>,
     pub space_reads: Vec<(String, f64)>,
-    /// Whether it showed something only the window knows: a participant's name, a day or a time
+    /// Whether it showed something only the window knows: a member's name, a day or a time
     /// of day in the person's formats, a word in the language their window speaks.
     pub person_reads: bool,
     pub state_reads: Vec<(StateKey, u64)>,
@@ -685,7 +685,7 @@ impl Live {
     }
 
     /// The resources the window shows now, by [`ResourceRef::id_string`]: the views' own
-    /// subjects, the items of the rows rendered, and the items the virtual lists built (the
+    /// targets, the items of the rows rendered, and the items the virtual lists built (the
     /// visible rows and the overscan). What an app publishes for the window to act on: a
     /// surface bounded by what a person can reach, whatever the workspace holds.
     pub fn shown_refs(&self, core: &Core) -> Vec<String> {
@@ -1003,7 +1003,7 @@ impl Live {
     }
 
     /// Mark the boundaries that show something only the window knows: the person chose another
-    /// language, another clock or another date style, or the window calls a participant
+    /// language, another clock or another date style, or the window calls a member
     /// something else, and what shows one shows it again. A view that shows none is not run.
     pub fn person_moved(&mut self) {
         let hit: Vec<BoundId> = self.index.people.iter().copied().collect();

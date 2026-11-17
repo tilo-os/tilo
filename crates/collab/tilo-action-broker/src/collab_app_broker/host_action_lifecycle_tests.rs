@@ -111,7 +111,7 @@ tilo_test_env::scenario! {
             )
             .unwrap();
         let record = fixture.record(&request);
-        assert!(fixture.state.cancel_durable_record(&record).is_err());
+        assert!(fixture.state.cancel_durable_document(&record).is_err());
         assert!(!fixture.record(&request).cancellation_requested);
         fixture.reopen_journal();
         let replay = fixture

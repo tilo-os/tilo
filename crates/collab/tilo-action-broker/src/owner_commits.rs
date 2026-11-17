@@ -26,7 +26,7 @@ pub struct NativeOwnerCommits {
     custody: Arc<dyn OwnerCustody>,
     writes: OwnerWrites,
     /// What hears of a record committed here: search reads it again.
-    changes: Option<Arc<dyn crate::services::RecordIndexChanges>>,
+    changes: Option<Arc<dyn crate::services::DocumentIndexChanges>>,
 }
 
 impl NativeOwnerCommits {
@@ -34,7 +34,7 @@ impl NativeOwnerCommits {
     #[must_use]
     pub fn new(
         custody: Arc<dyn OwnerCustody>,
-        changes: Option<Arc<dyn crate::services::RecordIndexChanges>>,
+        changes: Option<Arc<dyn crate::services::DocumentIndexChanges>>,
     ) -> Self {
         Self {
             custody,
@@ -125,7 +125,7 @@ impl OwnerCommitService for NativeOwnerCommits {
     fn commit_local_document(
         &self,
         request: OwnerCommitRequest,
-        _record_kind: Option<String>,
+        _resource_type: Option<String>,
     ) -> LocalDocumentFuture {
         let custody = Arc::clone(&self.custody);
         let writes = self.writes.clone();

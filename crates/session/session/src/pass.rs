@@ -25,7 +25,7 @@ fn secret_of(
     app: &str,
 ) -> Option<tilo_seal::SymmetricKey> {
     match engine.seal_keys(workspace) {
-        Ok(crate::engine::SealKeys::Here(keys)) => keys.record_content_secret().ok(),
+        Ok(crate::engine::SealKeys::Here(keys)) => keys.document_content_secret().ok(),
         Ok(crate::engine::SealKeys::Waiting | crate::engine::SealKeys::NoSecretStore) => None,
         Err(error) => {
             // A session that takes no part in the collaboration plane keeps no channel of its
@@ -134,6 +134,32 @@ impl Session {
         tilo_compositor::heap_trim::log_milestone("first-frame");
         tilo_startup_metrics::close_startup();
         self.first_frame = true;
+    }
+
+    /// The desktop is usable, and says so once: every enabled output has shown its first frame —
+    /// the lock surface when this session starts locked, which is what that frame draws — and the
+    /// windows this device left open are being asked for. What this publishes is what the update
+    /// service waits for before it calls a restarted desktop back.
+    pub(super) fn desktop_ready(&mut self) {
+        let Some(ready) = &mut self.ready else {
+            return;
+        };
+        if ready.published() {
+            return;
+        }
+        let outputs = self.compositor.outputs();
+        let mut enabled = outputs.iter().filter(|output| output.enabled).peekable();
+        if enabled.peek().is_none()
+            || !enabled.all(|output| self.compositor.output_has_presented(&output.name))
+        {
+            return;
+        }
+        if !self.shared.restore.borrow().started() {
+            return;
+        }
+        if let Err(error) = ready.publish() {
+            tracing::warn!(%error, "the desktop's ready record is not published");
+        }
     }
 
     /// One turn of the loop: wait up to `timeout` for clients and devices,
@@ -279,6 +305,7 @@ impl Session {
             self.compositor.render()?;
         }
         self.first_frame_presented();
+        self.desktop_ready();
         // What the session does once the frame is out, the control socket's answer aside (its own
         // `testctl_us`): the turn's `after_us`.
         let after = Instant::now();

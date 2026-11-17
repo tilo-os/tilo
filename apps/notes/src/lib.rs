@@ -67,7 +67,7 @@ extern crate self as notes;
 pub mod local_view;
 
 /// The app's toolkit definition, which every host that mounts Notes (the
-/// web desktop, an agent's participant host, a desktop test) instantiates.
+/// web desktop, an agent's member host, a desktop test) instantiates.
 #[must_use]
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(NotesShell)

@@ -30,9 +30,9 @@ use winit::event::WindowEvent;
 
 use ui::Widget;
 use ui::presence::PresenceCtx;
-use ui::tilo_resource::MemberId;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tilo_resource::MemberId;
 use ui::widget::{Collaborative, Continuable, NavFeed, SidebarDrawer, VideoPlayer, WindowBarLink};
 
 use crate::call::CallState;
@@ -129,7 +129,7 @@ pub struct ChatApp {
     pub(crate) channels: Vec<Channel>,
     pub(crate) categories: Vec<crate::model::Category>,
     /// People evidenced in the workspace's chat: the local person plus authors,
-    /// reactors, mentioned people, and voice participants in its channels.
+    /// reactors, mentioned people, and voice members in its channels.
     pub(crate) users: Vec<User>,
     pub(crate) messages: Vec<Message>,
     /// The rows each held part of the messages chain was read as, with the
@@ -317,7 +317,7 @@ pub struct ChatApp {
     pub(crate) call_chrome_motion: CallChromeMotion,
     /// The speaking ring on each face in the call.
     pub(crate) speaking: crate::call::SpeakingRings,
-    /// How many rows the floating call window's participant chips take,
+    /// How many rows the floating call window's member chips take,
     /// measured by the paint pass.
     pub(crate) huddle_chip_rows: usize,
     pub(crate) pending_floating: Option<ui::floating_surface::FloatingSurfaceRequest>,
@@ -351,12 +351,12 @@ pub struct ChatApp {
     // The local peer's identity: how this peer authors messages, reactions,
     // voice membership, and its own read watermark in the shared document.
     // Distinct + stable per real peer (see [`crate::identity`]) so genuine
-    // multi-participant chat attributes and de-duplicates correctly.
+    // multi-member chat attributes and de-duplicates correctly.
     pub(crate) me: LocalIdentity,
 
     // The workspace's answer for who everybody is, refreshed every frame from
     // presence (see `adopt_workspace`). A peer never writes its own name into
-    // this map — only what the workspace says about a participant lands here.
+    // this map — only what the workspace says about a member lands here.
     pub(crate) workspace_names: HashMap<MemberId, String>,
     /// Whether presence answered this frame with who is here (see
     /// `adopt_workspace`): the answer decides who is offline, even when it names
@@ -368,7 +368,7 @@ pub struct ChatApp {
     pub(crate) workspace_voice: HashMap<Id, Vec<MemberId>>,
     /// The numbers people who share a name are told apart by, as the workspace
     /// resolves them, so every screen in it numbers the same people alike.
-    pub(crate) workspace_labels: ui::presence::ParticipantLabels,
+    pub(crate) workspace_labels: ui::presence::MemberLabels,
     /// What the workspace calls this window's person, numbered like anyone else.
     pub(crate) own_label: Option<String>,
     pub(crate) workspace_colors: HashMap<MemberId, (u8, u8, u8)>,
@@ -381,8 +381,8 @@ pub struct ChatApp {
     /// workspace.
     pub(crate) workspace_agent_colours: HashMap<Id, u8>,
     /// The agent identity record, followed every frame (see `follow_agents`).
-    agents_record:
-        Option<ui::framework::WorkspaceRecord<ui::tilo_workspace_agent::WorkspaceAgents>>,
+    agents_document:
+        Option<ui::framework::WorkspaceResource<ui::tilo_workspace_agent::WorkspaceAgents>>,
     /// Explicit shot fixture; never set on the live launch path.
     capture_agent_presence: Option<PresenceCtx>,
     /// The direct conversations that hold messages, by conversation id: the
@@ -418,9 +418,12 @@ pub struct ChatApp {
     pub(crate) mention_paint_cache:
         std::cell::RefCell<Option<(u64, ui::widget::marks::MentionPaint)>>,
     // Other spellings of this window's person the workspace uses. See
-    // `adopt_own_participant`: what was said under one of these is still
+    // `adopt_own_member`: what was said under one of these is still
     // this person, so their lines go on reading as theirs.
     pub(crate) former_ids: Vec<MemberId>,
+    /// The device this window runs on, as its host names it: what an answer
+    /// to a question says it was pressed on.
+    pub(crate) device: Option<String>,
 
     // The OS permission gate: routes channel participation + file-embed
     // hydration through the toolkit's permission model. Refreshed from the
@@ -459,10 +462,8 @@ pub struct ChatApp {
     /// A screenshot scenario's messages still to stage, each with who
     /// wrote it: staged once the workspace's records take a write (a frame's
     /// read of the record holds them).
-    pub(crate) staged_parts: std::collections::VecDeque<(
-        MemberId,
-        ui::tilo_resource::Invoke<crate::parts::ChatPart>,
-    )>,
+    pub(crate) staged_parts:
+        std::collections::VecDeque<(MemberId, ui::tilo_resource::Invoke<crate::parts::ChatPart>)>,
     /// The scenario those messages are of.
     #[cfg(feature = "samples")]
     pub(crate) staged_scenario: Option<String>,
@@ -499,7 +500,7 @@ pub struct ChatApp {
     pub(crate) content: ContentStore,
     /// The attachments' bytes as reads ([`ui::arriving`]): here, on their
     /// way from the workspace, or with no device that has them.
-    pub(crate) content_reads: ui::collaboration::record_content::ContentReads,
+    pub(crate) content_reads: ui::collaboration::document_content::ContentReads,
     /// When the next attachment on its way steps its placeholder on, as the
     /// last frame painted them.
     pub(crate) arriving_wake: std::cell::Cell<Option<ui::time::Instant>>,
@@ -539,7 +540,7 @@ pub struct ChatApp {
     announce: Option<crate::identity::LocalIdentity>,
     /// The person's own drafts record, so the sidebar can say where the
     /// unsent words are.
-    pub(crate) drafts_record: Option<ui::framework::PersonRecord<crate::drafts::ChatDrafts>>,
+    pub(crate) drafts_record: Option<ui::framework::PersonResource<crate::drafts::ChatDrafts>>,
 
     /// Latest decoded camera picture per person, shown in their call tile
     /// (this person's own among them, in the host tile). Only ever holds a
@@ -644,11 +645,9 @@ impl ChatApp {
     #[cfg(test)]
     pub(crate) fn attach_detached_chain(&mut self, me: &MemberId) {
         let last_read = std::rc::Rc::clone(&self.last_read);
-        if let Some(chain) = ui::framework::Chain::detached(
-            "so.tilo.chat",
-            me,
-            move || std::rc::Rc::clone(&last_read.borrow()),
-        ) {
+        if let Some(chain) = ui::framework::Chain::detached("so.tilo.chat", me, move || {
+            std::rc::Rc::clone(&last_read.borrow())
+        }) {
             self.attach_chain(chain);
         }
     }
@@ -770,12 +769,12 @@ impl ChatApp {
             workspace_names: HashMap::new(),
             workspace_presence_answers: false,
             workspace_voice: HashMap::new(),
-            workspace_labels: ui::presence::ParticipantLabels::default(),
+            workspace_labels: ui::presence::MemberLabels::default(),
             own_label: None,
             workspace_colors: HashMap::new(),
             workspace_agent_names: HashMap::new(),
             workspace_agent_colours: HashMap::new(),
-            agents_record: None,
+            agents_document: None,
             capture_agent_presence: None,
             direct_held: std::collections::HashSet::new(),
             recorded_channels: std::collections::HashSet::new(),
@@ -787,6 +786,7 @@ impl ChatApp {
             body_text_inset: std::cell::Cell::new(0.0),
             mention_paint_cache: std::cell::RefCell::new(None),
             former_ids: Vec::new(),
+            device: None,
             // Default to the deterministic local bus; the live binary
             // (`ChatApp::new`) upgrades to the real transport. This keeps
             // `--shots`/tests from binding a real iroh endpoint per instance.
@@ -817,7 +817,7 @@ impl ChatApp {
             #[cfg(test)]
             dispatched_parts: std::cell::RefCell::default(),
             images: ui::ImageStore::new(&crate::images::fetcher(content.clone())),
-            content_reads: ui::collaboration::record_content::ContentReads::new(content.clone()),
+            content_reads: ui::collaboration::document_content::ContentReads::new(content.clone()),
             arriving_wake: std::cell::Cell::new(None),
             call_tick: std::cell::Cell::new(None),
             content,
@@ -1157,7 +1157,7 @@ impl ChatApp {
     #[must_use]
     pub(crate) fn with_drafts(
         mut self,
-        record: Option<ui::framework::PersonRecord<crate::drafts::ChatDrafts>>,
+        record: Option<ui::framework::PersonResource<crate::drafts::ChatDrafts>>,
     ) -> Self {
         if let Some(record) = record {
             self.composer_main.attach_drafts(record.clone());
@@ -1272,7 +1272,7 @@ impl ChatApp {
         self.users.iter().find(|u| u.id == *id)
     }
 
-    /// Whether `id` is this session's own participant, under its own id or
+    /// Whether `id` is this session's own member, under its own id or
     /// a spelling the workspace uses for it.
     pub(crate) fn is_me(&self, id: &MemberId) -> bool {
         *id == self.me.id || self.former_ids.contains(id)
@@ -1296,13 +1296,13 @@ impl ChatApp {
     }
 
     /// The person this window is talking to in the open conversation, when it
-    /// is a direct one: its participant that is not this window's person.
+    /// is a direct one: its member that is not this window's person.
     pub(crate) fn direct_person(&self) -> Option<MemberId> {
-        crate::record::Chat::direct_participants(&ui::tilo_resource::Id::from_raw(
+        crate::record::Chat::direct_members(&ui::tilo_resource::Id::from_raw(
             self.active_channel.clone(),
         ))?
         .into_iter()
-        .find(|participant| participant.is_person() && *participant != self.me.id)
+        .find(|member| member.is_person() && *member != self.me.id)
     }
 
     pub(crate) fn channel(&self, id: &str) -> Option<&Channel> {
@@ -1311,14 +1311,12 @@ impl ChatApp {
 
     /// Whether `id` is a conversation this window can show: a channel the
     /// record lists, or a direct one, with a person or an agent — which
-    /// exists by naming its participants, whether or not the record lists it
+    /// exists by naming its members, whether or not the record lists it
     /// as a row yet.
     pub(crate) fn is_conversation(&self, id: &str) -> bool {
         self.channel(id).is_some()
-            || crate::record::Chat::direct_participants(&ui::tilo_resource::Id::from_raw(
-                id.to_owned(),
-            ))
-            .is_some()
+            || crate::record::Chat::direct_members(&ui::tilo_resource::Id::from_raw(id.to_owned()))
+                .is_some()
     }
     pub(crate) fn message(&self, id: &str) -> Option<&Message> {
         self.messages.iter().find(|m| m.id == id)
@@ -1853,7 +1851,7 @@ impl Widget for ChatApp {
         // sits at a *fractional* home (sized correctly even before `self.rect`
         // is known); the dragged overlay offset is applied as an origin shift
         // in `apply_layout`. In the expanded overlay it instead tracks the
-        // first cell of the responsive participant grid so the surface fills
+        // first cell of the responsive member grid so the surface fills
         // its share at every width. That cell depends on the window size, so
         // it is expressed in absolute px derived from the last known
         // `self.rect`; before any layout pass the rect is empty, in which case
@@ -1963,7 +1961,7 @@ impl Widget for ChatApp {
     /// tile is laid out. So a frame elsewhere on the desktop (another window
     /// opening, an animation, a peer's pointer) re-solves nothing here: the
     /// layout is dirty only while the expanded call's tile follows the
-    /// participant grid, or when the tile's node would be placed elsewhere
+    /// member grid, or when the tile's node would be placed elsewhere
     /// than it was laid, because the call closed or the tile moved.
     fn is_layout_dirty(&self) -> bool {
         self.call.expanded
@@ -2686,7 +2684,7 @@ impl ui::presence::capability::PublishesPresence for ChatApp {
 impl ChatApp {
     /// The one rendering path for a docked or shell-presented huddle. The
     /// shell calls this exact method after ownership transfer, so video,
-    /// participants, controls and hit regions remain live without duplication.
+    /// members, controls and hit regions remain live without duplication.
     fn draw_live_huddle(
         &mut self,
         scene: &mut Scene,
@@ -2815,6 +2813,7 @@ pub(crate) mod menus;
 pub(crate) mod message_bar;
 mod own_delete;
 mod people;
+mod question;
 #[cfg(feature = "samples")]
 mod scenarios;
 mod submission;

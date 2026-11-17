@@ -29,10 +29,13 @@ const READ_PIECE: u64 = 4 * 1024 * 1024;
 
 /// The workspace's tree, waiting while it is on its way from the workspace's hosts (they send it,
 /// or say they have none and it is founded here).
-async fn tree_here(files: &WorkspaceFiles) -> Result<ui::record::StoredRecord, String> {
+async fn tree_here(files: &WorkspaceFiles) -> Result<ui::resource::StoredResource, String> {
     for _ in 0..TREE_WAITS {
         match files.tree_record() {
-            Err(ui::record::RecordOpenError::Arriving | ui::record::RecordOpenError::Opening) => {
+            Err(
+                ui::resource::ResourceOpenError::Arriving
+                | ui::resource::ResourceOpenError::Opening,
+            ) => {
                 super::frame_loop::sleep_ms(TREE_WAIT_MS).await;
             }
             opened => {
@@ -171,7 +174,7 @@ impl Desktop {
     /// The folder of the workspace's tree the Files window of `tab` shows, by its node; `None`
     /// for the tree's root.
     fn files_folder(&self, tab: u64) -> Option<String> {
-        let checkout = self.shared.record_of(tab)?;
+        let checkout = self.shared.resource_of(tab)?;
         let store = self.files.as_ref()?.records().store_of(FILES_APP).ok()?;
         store
             .read(&checkout.id, |doc| {
@@ -193,7 +196,7 @@ impl Desktop {
         let named = self.files_folder(tab).and_then(|folder| {
             let page = self.files.as_ref()?;
             let tree = page.tree_record().ok()?.read(|doc| doc.clone().save())?;
-            let tree = Tree::of_record(&tree).ok()?;
+            let tree = Tree::of_document(&tree).ok()?;
             let node = tree.node(&folder)?;
             Some(String::from_utf8_lossy(node.name.as_bytes()).into_owned())
         });
@@ -343,7 +346,7 @@ async fn copy(
     let mtime = js_sys::Date::now().max(0.0) as u64;
     let author = page.records().author().key();
     let (placed, folder_name) = record.edit(false, |doc| {
-        let mut tree = Tree::of_record(&doc.save()).map_err(|error| error.to_string())?;
+        let mut tree = Tree::of_document(&doc.save()).map_err(|error| error.to_string())?;
         let folder = into
             .and_then(|folder| {
                 tree.node(folder)

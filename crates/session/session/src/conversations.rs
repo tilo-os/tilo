@@ -15,14 +15,15 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use chat::summons::{person_of, unanswered};
 use tilo_action_policy::WorkspacePolicy;
 use tilo_action_policy::turn::Turn;
-use tilo_app::framework::WorkspaceRecord;
+use tilo_app::framework::WorkspaceResource;
 use tilo_broker_core::services::AgentTurn;
 use tilo_resource::{Id, Resource as _};
 use ui::permissions::{LivePermissions, MemberId, PermissionContext};
-use ui::record::DocumentId;
-use ui::record::workspace::WorkspaceRecords;
+use ui::resource::DocumentId;
+use ui::resource::workspace::WorkspaceResources;
 
 /// The app that keeps the conversations: its own record of a workspace.
 use ui::apps::CHAT as CHAT_OWNER;
@@ -60,10 +61,10 @@ struct Opened {
     /// The grants they were opened with: a workspace whose grants changed has them opened again, so
     /// its decisions follow.
     policy: WorkspacePolicy,
-    records: WorkspaceRecords,
-    chat: Option<WorkspaceRecord<chat::Chat>>,
+    records: WorkspaceResources,
+    chat: Option<WorkspaceResource<chat::Chat>>,
     /// The head of the messages' chain, and the part it holds here.
-    part: Option<(u64, WorkspaceRecord<chat::parts::ChatPart>)>,
+    part: Option<(u64, WorkspaceResource<chat::parts::ChatPart>)>,
 }
 
 impl Conversations {
@@ -88,15 +89,16 @@ impl Conversations {
         }
     }
 
-    /// The person at this device: whose changes what the service records are theirs, and the author
-    /// a message or a record of work is written by when the caller names nobody else.
+    /// The member at this device: whose changes what the service records are theirs, and the
+    /// author a message or a record of work is written by when the caller names nobody else.
+    /// Nobody while no workspace is open.
     #[must_use]
-    pub fn person(&self) -> String {
+    pub fn member(&self) -> MemberId {
         let open = self.open.borrow();
-        open.values()
-            .next()
-            .map(|opened| opened.records.author().key())
-            .unwrap_or_default()
+        open.values().next().map_or_else(
+            || MemberId::person(""),
+            |opened| opened.records.author().clone(),
+        )
     }
 
     /// The workspace's agents by their id, as the workspace keeps their names: what a
@@ -112,23 +114,23 @@ impl Conversations {
     /// Chat's.
     fn workspace_agents(
         opened: &Opened,
-    ) -> Option<WorkspaceRecord<tilo_app::tilo_workspace_agent::WorkspaceAgents>> {
+    ) -> Option<WorkspaceResource<tilo_app::tilo_workspace_agent::WorkspaceAgents>> {
         use tilo_app::tilo_workspace_agent::{KIND as AGENTS_KIND, OWNER as AGENTS_OWNER};
         let id = collab_types::workspace_document_id(AGENTS_KIND);
         let held = opened
             .records
-            .holds_record(AGENTS_OWNER, &id, AGENTS_KIND)
+            .holds_resource(AGENTS_OWNER, &id, AGENTS_KIND)
             .unwrap_or(false);
         if !held {
             return None;
         }
-        let standing = tilo_action_policy::Standing::person(
+        let standing = tilo_action_policy::Standing::new(
             opened.policy.clone(),
-            opened.records.author().key(),
+            tilo_action_policy::Acting::member(opened.records.author().clone()),
         );
         let permissions = PermissionContext::from_standing(standing)
             .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
-        WorkspaceRecord::<tilo_app::tilo_workspace_agent::WorkspaceAgents>::open(
+        WorkspaceResource::<tilo_app::tilo_workspace_agent::WorkspaceAgents>::open(
             &opened.records,
             AGENTS_OWNER,
             CHAT_APP,
@@ -297,8 +299,8 @@ impl Conversations {
         workspace: &WorkspaceFacts,
         person: &str,
     ) -> Option<(
-        WorkspaceRecord<chat::Chat>,
-        WorkspaceRecord<chat::parts::ChatPart>,
+        WorkspaceResource<chat::Chat>,
+        WorkspaceResource<chat::parts::ChatPart>,
     )> {
         let mut open = self.open.borrow_mut();
         let id = workspace.workspace.clone();
@@ -325,12 +327,12 @@ impl Conversations {
         if opened.chat.is_none() {
             let held = opened
                 .records
-                .holds_record(CHAT_OWNER, chat_id.as_str(), chat::Chat::KIND)
+                .holds_resource(CHAT_OWNER, chat_id.as_str(), chat::Chat::KIND)
                 .unwrap_or(false);
             if !held {
                 return None;
             }
-            opened.chat = WorkspaceRecord::<chat::Chat>::open_primary(
+            opened.chat = WorkspaceResource::<chat::Chat>::open_primary(
                 &opened.records,
                 CHAT_OWNER,
                 CHAT_APP,
@@ -347,7 +349,7 @@ impl Conversations {
             .into_iter()
             .max()?;
         if opened.part.as_ref().map(|(held, _)| *held) != Some(head) {
-            let part = WorkspaceRecord::<chat::parts::ChatPart>::open_at(
+            let part = WorkspaceResource::<chat::parts::ChatPart>::open_at(
                 &opened.records,
                 CHAT_OWNER,
                 chat::parts::part(head).as_str(),
@@ -683,7 +685,7 @@ impl tilo_service::Service for TurnSummonses {
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<tilo_service::Started, tilo_actions::ApiError> {
-        let invoker = tilo_actions::ActionInvoker::person(self.conversations.person());
+        let invoker = tilo_actions::ActionInvoker::member(self.conversations.member());
         self.invoke_as(&invoker, resource, action, arguments)
     }
 
@@ -722,7 +724,7 @@ impl tilo_service::Service for TurnSummonses {
         // person's (or the invoker's) own arranging step.
         if action == CONVERSATION && resource.starts_with(TURNS) {
             let asked = if invoker.acting.by.id().is_empty() {
-                tilo_actions::MemberId::person(self.conversations.person()).into()
+                self.conversations.member().into()
             } else {
                 invoker.acting.by.clone()
             };
@@ -774,24 +776,6 @@ fn message_of(resource: &str) -> Option<String> {
     bare.then(|| resource.to_owned())
 }
 
-/// Whether `reply` has yet to answer its summons: absent, or still working. A reply without work is
-/// a plain answer; one that keeps work is going until its work ends.
-fn unanswered(reply: Option<&chat::record::Message>) -> bool {
-    reply.is_none_or(|reply| {
-        reply.work.as_ref().is_some_and(|work| {
-            let streamed = work
-                .stream
-                .as_ref()
-                .is_some_and(|stream| stream.finish.is_some());
-            !streamed
-                && work
-                    .state
-                    .as_ref()
-                    .is_none_or(|transition| !transition.state.finished())
-        })
-    })
-}
-
 /// Every summons whose reply has no item Chat's window publishes yet: the person's messages an
 /// agent in the conversation has not answered, and that no held message of the part answers. The
 /// reply each names is the one its id and the agent's derive (`chat::record::reply_id`), so this
@@ -820,9 +804,9 @@ fn summonses(chat: &chat::Chat, part: &chat::parts::ChatPart) -> Vec<Id> {
             continue;
         }
         let agents: Vec<MemberId> = chat
-            .conversation_participants(&message.channel)
+            .conversation_members(&message.channel)
             .into_iter()
-            .filter(|participant| !participant.is_person())
+            .filter(|member| !member.is_person())
             .collect();
         for agent in agents {
             // The reply of the attempt the message is in: a retry moved it on, so the reply that
@@ -883,20 +867,8 @@ fn summons_item(id: &Id) -> tilo_actions::ResourceSpec {
     spec
 }
 
-/// The person a message's author names, when it names one: a member key that is a person
-/// ([`MemberId::key`], what a conversation's fields keep). A message a person posted summons its
-/// conversation's agent, and the run answers for the person it names; software names nobody.
-fn person_of(author: &MemberId) -> Option<String> {
-    author
-        .person_id()
-        .filter(|person| !person.is_empty())
-        .map(str::to_owned)
-}
-
-/// The turns `chat` 's conversations in `workspace` give, read from `part` 's messages, each with
-/// what its agent is called.
-/// A conversation the pass has no message for is none: a direct conversation exists only as the id
-/// its messages carry ([`chat::Chat::direct_id`]).
+/// The turns `chat` 's conversations in `workspace` give, read from `part` 's messages
+/// ([`chat::summons::summonses`]), each with what its agent is called.
 fn turns(
     workspace: &str,
     chat: &chat::Chat,
@@ -904,98 +876,54 @@ fn turns(
     person: &str,
     agent_names: &chat::projection::AgentNames,
 ) -> Vec<(AgentTurn, String)> {
-    let mut conversations: Vec<Id> = Vec::new();
-    for (_, message) in part.messages.iter() {
-        if !conversations.contains(&message.channel) {
-            conversations.push(message.channel.clone());
-        }
-    }
-    let mut turns = Vec::new();
-    for id in &conversations {
-        // An archived conversation takes no message, and one the record does not list is a direct
-        // conversation the record derives from its id.
-        if chat
-            .channels
-            .get(id)
-            .is_some_and(|conversation| conversation.archived)
-        {
-            continue;
-        }
-        let messages: Vec<(&Id, &chat::record::Message)> = part
-            .messages
-            .iter()
-            .filter(|(_, message)| message.channel == *id)
-            .collect();
-        for participant in chat.conversation_participants(id) {
-            if participant.is_person() {
-                continue;
-            }
-            let agent = participant.id().to_owned();
-            // The person's newest message the agent has not answered: the reply its id and the
-            // agent's derive, which only the agent's answer to that message carries. An agent's
-            // reply that is still working (its work is not finished) leaves the turn going, so a
-            // runner that records "taken" before it acts is not read as having answered. A
-            // message a person asked again (`chat`'s `retry`) is in a later attempt, whose reply
-            // is absent yet: its turn goes again, and the answer is a reply of its own.
-            let summons = messages
-                .iter()
-                .copied()
-                .filter(|(message_id, message)| {
-                    (!message.text.trim().is_empty() || !message.attachments.is_empty())
-                        && person_of(&message.author).is_some()
-                        && unanswered(part.messages.get(&chat::record::reply_id_at(
-                            message_id,
-                            &participant,
-                            message.attempts,
-                        )))
-                })
-                .max_by_key(|(message_id, message)| (message.ts, message_id.as_str()));
-            let Some((message_id, message)) = summons else {
-                continue;
-            };
-            let Some(starter) = person_of(&message.author) else {
-                continue;
-            };
-            // The conversation's address in the workspace, as the shell and the apps name it, and
-            // the message's own beneath it.
-            let address = format!("{}/channels/{id}", chat::Chat::KIND);
-            let (instruction, subject) = request(message);
+    chat::summons::summonses(chat, part)
+        .into_iter()
+        .filter_map(|summons| {
+            let message = part.messages.get(&summons.message)?;
+            let address = summons.address();
+            let (instruction, subject) = chat::summons::request(message);
             // What came before it in the conversation, oldest first: "what did I ask you
             // before?" and "move the reminder to Friday" are understood through it.
-            let mut earlier: Vec<&chat::record::Message> = messages
+            let conversation = &summons.conversation;
+            let mut earlier: Vec<&chat::record::Message> = part
+                .messages
                 .iter()
-                .map(|(_, earlier)| *earlier)
+                .map(|(_, earlier)| earlier)
+                .filter(|earlier| &earlier.channel == conversation)
                 .filter(|earlier| earlier.ts < message.ts && !earlier.text.trim().is_empty())
                 .collect();
             earlier.sort_by_key(|earlier| earlier.ts);
             let instruction = with_conversation(instruction, &earlier);
             let name = agent_names
-                .get(&agent)
+                .get(&summons.agent)
                 .cloned()
-                .unwrap_or_else(|| agent.clone());
-            turns.push((
+                .unwrap_or_else(|| summons.agent.clone());
+            Some((
                 AgentTurn {
-                    session: session_of(workspace, &address, &agent),
-                    agent,
-                    author: starter,
-                    turn: Turn::new(address.clone(), message_id.to_string()),
+                    session: session_of(workspace, &address, &summons.agent),
+                    agent: summons.agent.clone(),
+                    author: summons.person.clone(),
+                    turn: Turn::new(address.clone(), summons.message.to_string()),
                     // A person's Retry asks again for the same message, and that is a turn of its
                     // own: the one they gave up on reads as replaced, and the broker hands the agent
                     // the new one.
-                    attempt: message.attempts,
+                    attempt: summons.attempt,
                     request: runtime_collab::TurnRequest {
-                        message: format!("{address}/messages/{message_id}"),
-                        title: chat.display_names(id, Some(&MemberId::person(person)), agent_names),
+                        message: format!("{address}/messages/{}", summons.message),
+                        title: chat.display_names(
+                            &summons.conversation,
+                            Some(&MemberId::person(person)),
+                            agent_names,
+                        ),
                         instruction,
                         subject,
                         spend: None,
                     },
                 },
                 name,
-            ));
-        }
-    }
-    turns
+            ))
+        })
+        .collect()
 }
 
 /// The agent session `agent` answers the turns of the conversation at `conversation` in
@@ -1060,50 +988,6 @@ fn with_conversation(instruction: String, earlier: &[&chat::record::Message]) ->
     out
 }
 
-/// What a message asks of the agents it summons: its words, and what it carries as the records
-/// they name — the first of them the run's subject, which the agent acts on through that record's
-/// own actions, and every other one said beside the words. A file or words quoted from nowhere are
-/// said as what they are.
-fn request(message: &chat::record::Message) -> (String, Option<tilo_actions::SelectionSubject>) {
-    let mut subject = None;
-    // A reply that answers a run of another message is asked with the words it quotes above its
-    // own: the reply's quote is the conversation's record of what it means, so an answer to "yes,
-    // that one" names what "that one" is without the agent opening the record it acts in.
-    let mut instruction = message
-        .quoted
-        .as_ref()
-        .filter(|quoted| !quoted.text.trim().is_empty())
-        .map_or_else(
-            || message.text.trim().to_owned(),
-            |quoted| format!("> {}\n\n{}", quoted.text.trim(), message.text.trim()),
-        );
-    for attached in &message.attachments {
-        let named = attached.subject();
-        if subject.is_none() && named.is_some() {
-            subject = named;
-            continue;
-        }
-        let line = match (named, attached) {
-            (Some(named), _) => format!(
-                "It also carries {:?} ({} `{}`, in `{}`).",
-                attached.label(),
-                named.resource.kind,
-                named.resource.id,
-                named.app_id
-            ),
-            (None, tilo_reference::Attached::Text { text, .. }) => {
-                format!("It quotes: {text:?}.")
-            }
-            (None, _) => format!("It carries the file {:?}.", attached.label()),
-        };
-        if !instruction.is_empty() {
-            instruction.push('\n');
-        }
-        instruction.push_str(&line);
-    }
-    (instruction, subject)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1136,7 +1020,7 @@ mod tests {
             Id::from_raw(CONVERSATION),
             chat::record::Conversation {
                 name: "Tide".into(),
-                participants: vec![MemberId::person(ME), MemberId::agent(AGENT)],
+                members: vec![MemberId::person(ME), MemberId::agent(AGENT)],
                 ..chat::record::Conversation::default()
             },
         );

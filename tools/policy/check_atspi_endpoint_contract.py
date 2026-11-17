@@ -101,7 +101,7 @@ def audit(root: Path = ROOT) -> list[str]:
         # `tilo-agent` links the app-model facade to consume
         # resource descriptors, but has no window. The launch specification and
         # direct App construction are the two windowed entrypoint shapes; skip
-        # this headless collaboration participant.
+        # this headless collaboration member.
         if "LaunchSpec" not in source and "App::new(" not in source:
             continue
         standard_launch = "ui::launch::run(" in source or "ui::launch::run_or_exit(" in source

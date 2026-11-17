@@ -409,7 +409,7 @@ impl Workspace {
                     .map_err(|error| anyhow!("{error}"))?,
                 documents: vec![SeedDocument {
                     app_id: APP.into(),
-                    record_id: RECORD.into(),
+                    document_id: RECORD.into(),
                     kind: "text".into(),
                     bytes: document.save(),
                 }],

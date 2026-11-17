@@ -220,11 +220,11 @@ tilo_test_env::scenario! {
         let (_temp, path) = fresh_lock_path();
         assert_eq!(owner_pid(&path), None);
         let shared = FileLock::open(&path, LockMode::Shared).unwrap();
-        assert!(shared.record_owner().is_err());
+        assert!(shared.resource_owner().is_err());
         drop(shared);
         std::fs::write(&path, "a much longer stale record").unwrap();
         let guard = FileLock::open(&path, LockMode::Exclusive).unwrap();
-        guard.record_owner().unwrap();
+        guard.resource_owner().unwrap();
         assert_eq!(owner_pid(&path), Some(std::process::id()));
     }
 

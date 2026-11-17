@@ -188,6 +188,7 @@ impl Grantee {
         Self::Member(member)
     }
 
+    #[track_caller]
     #[must_use]
     pub fn person(id: impl Into<crate::PersonId>) -> Self {
         Self::Member(crate::MemberId::person(id))
@@ -428,13 +429,13 @@ impl<'a> Context<'a> {
     /// Deciding about `record`, which is `person`'s own record (the hex of
     /// their user root key).
     #[must_use]
-    pub const fn with_own_record(mut self, record: &'a str, person: &'a str) -> Self {
+    pub const fn with_own_resource(mut self, record: &'a str, person: &'a str) -> Self {
         self.own = Some((record, person));
         self
     }
 
     /// The person whose own record `node` is in, when the decision is about
-    /// one ([`Self::with_own_record`]).
+    /// one ([`Self::with_own_resource`]).
     #[must_use]
     pub fn owner_of(&self, node: &TreePath) -> Option<&'a str> {
         let (record, person) = self.own?;

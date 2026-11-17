@@ -1241,7 +1241,7 @@ impl<R> Edit<R> {
     /// record but the record itself starts at the field after it. A record
     /// read nests its fields under such a name (a timeline's `project`), and
     /// callers send `project.name` back.
-    pub(crate) fn past_record_name(
+    pub(crate) fn past_resource_name(
         self,
         root: crate::Shape,
         names: &[&str],

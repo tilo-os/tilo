@@ -15,7 +15,7 @@ use tilo_actions::remote::{
 };
 use tilo_lock::MutexRecover as _;
 use tilo_session_client::engine::Engine;
-use ui::history_source::feed::{ChangeLog, RecordKey};
+use ui::history_source::feed::{ChangeLog, DocumentKey};
 
 /// The device's replica of its workspaces, once the session opened it, and each workspace's log.
 #[derive(Default)]
@@ -28,6 +28,27 @@ impl Feeds {
     /// Read the workspaces' records from `engine` from now on.
     pub(crate) fn keep(&self, engine: Arc<Engine>) {
         let _ = self.engine.set(engine);
+    }
+
+    /// What wakes a waiter when a write lands in one of this device's workspaces: the replica's
+    /// own arrivals, which the session tells every landing from another device or app to.
+    /// `None` before the session opened its replica, and a waiter then waits until its own
+    /// deadline.
+    pub(crate) fn watching(&self) -> Option<Pending<()>> {
+        let engine = self.engine.get()?;
+        let mut landed = engine.arrivals().watching();
+        landed.mark_unchanged();
+        let runtime = tilo_rt::try_app().ok()?;
+        let (changed, change) = tilo_actions::remote::pending();
+        drop(runtime.spawn(async move {
+            tokio::select! {
+                _ = landed.changed() => {}
+                // Nobody reads the answer any more: nothing to wake.
+                () = changed.abandoned() => return,
+            }
+            changed.complete(());
+        }));
+        Some(change)
     }
 }
 
@@ -55,7 +76,7 @@ impl Feeds {
                 reason: CHANGE_FEED_UNAVAILABLE.into(),
             });
         };
-        let records: Vec<RecordKey> =
+        let records: Vec<DocumentKey> =
             engine
                 .records(workspace)
                 .map_err(|reason| ActionHostError::Unavailable {
@@ -67,7 +88,7 @@ impl Feeds {
             &records,
             |(app, record)| {
                 engine
-                    .record_revision(workspace, app, record)
+                    .document_revision(workspace, app, record)
                     .ok()
                     .flatten()
             },

@@ -44,18 +44,18 @@ pub(crate) fn import(context: &HostContext) -> Result<(), String> {
     if imports.is_empty() {
         return Ok(());
     }
-    let author = context.author().key();
+    let author = context.author().clone();
     context
-        .migrate_record(move |doc| apply(doc, imports, &author).map(|()| true))
+        .migrate_resource(move |doc| apply(doc, imports, author).map(|()| true))
         .map(drop)
 }
 
 fn apply(
     doc: &mut automerge::AutoCommit,
     imports: Vec<ui::tilo_resource::Invoke<Calendar>>,
-    author: &str,
+    author: ui::tilo_resource::MemberId,
 ) -> Result<(), String> {
-    let mut replica = Replica::<Calendar>::from_doc(doc.clone()).as_author(author);
+    let mut replica = Replica::<Calendar>::from_doc(doc.clone()).as_member(author);
     for import in imports {
         replica
             .apply_confirmed(import)
@@ -77,7 +77,12 @@ mod tests {
         .unwrap();
         let mut replica = Replica::<Calendar>::new();
         let mut doc = replica.doc_mut().clone();
-        apply(&mut doc, vec![import], "firstboot").unwrap();
+        apply(
+            &mut doc,
+            vec![import],
+            ui::tilo_resource::MemberId::person("firstboot"),
+        )
+        .unwrap();
         let held = <Calendar as ui::tilo_resource::Resource>::read(&doc).unwrap();
         assert_eq!(held.events.len(), 1);
         assert_eq!(held.events[0].title, "Kept");

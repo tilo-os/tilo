@@ -151,7 +151,8 @@ impl Session {
         query: &InvocationsQuery,
     ) -> Result<Invocations, Outcome> {
         let id = self
-            .relay
+            .connection
+            .relay()
             .enter(&self.connection, workspace)
             .await
             .map_err(|error| refused(&error))?;

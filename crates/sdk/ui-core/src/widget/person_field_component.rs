@@ -9,7 +9,7 @@ use super::PersonField;
 #[derive(Component, Default)]
 #[component(name = "PersonField", role = "ComboBox")]
 pub struct PersonFieldProps {
-    /// The person's identity and the binding a pick writes (empty for nobody).
+    /// The binding a pick writes: the person picked, empty for nobody.
     #[component(bind(ty = Person))]
     pub value: Bound<String>,
     /// The people offered after "Me" and "No one": the workspace's members and agents.
@@ -26,7 +26,9 @@ impl Described for PersonField {
         let shown = value.clone();
         Self::from_state(key, &value.state, people.unwrap_or_default(), me).on_change(move |who| {
             shown.edited(crate::component::Value::Text(
-                who.map_or_else(String::new, |who| who.identity),
+                who.map_or_else(String::new, |who| {
+                    crate::component::actor_text(&who.identity)
+                }),
             ));
         })
     }

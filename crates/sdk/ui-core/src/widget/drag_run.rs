@@ -914,6 +914,12 @@ impl DragRun {
 pub const ITEM_PAYLOAD: &str = "drag-run-item";
 
 impl Widget for DragRun {
+    /// The things that can be dragged, each where the run puts it.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("div");
+        cx.children();
+    }
+
     fn update(
         &mut self,
         _state: &crate::widget::AppModel,

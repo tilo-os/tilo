@@ -69,7 +69,7 @@ pub struct AdmissionFacts {
     /// Host-verified effective actor, including a delegated agent's identity.
     pub actor_id: tilo_actions::MemberId,
     pub app_id: String,
-    pub record_id: String,
+    pub document_id: String,
     pub resource: String,
     pub action: String,
     pub revision: Option<String>,
@@ -481,7 +481,7 @@ mod tests {
             },
             actor_id: tilo_actions::MemberId::agent("agent"),
             app_id: "notes".into(),
-            record_id: "record".into(),
+            document_id: "record".into(),
             resource: "document/body".into(),
             action: "append".into(),
             revision: Some("revision".into()),

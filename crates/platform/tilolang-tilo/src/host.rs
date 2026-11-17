@@ -57,13 +57,13 @@ pub enum HostError {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Offered {
     /// What the app calls the action on this resource, for one whose presentation follows its
-    /// subject (`label: if t.done { "Reopen" } else { "Complete" }`); `None` for one offered as
+    /// target (`label: if t.done { "Reopen" } else { "Complete" }`); `None` for one offered as
     /// its package publishes it.
     pub label: Option<String>,
     /// The icon name its presentation gives there.
     pub icon: Option<String>,
     /// Whether it can run on the resource now, and why not; `None` when the app keeps nothing
-    /// its subject decides, and offers it as it is.
+    /// its target decides, and offers it as it is.
     pub availability: Option<tilo_actions::Availability>,
 }
 
@@ -297,7 +297,7 @@ pub(crate) fn value_of(
 /// The value of the type `ty` an argument given as `json` stands for, as the API publishes the
 /// parameter ([`crate::surface::published_param`]): a record by the catalogue's reference to it
 /// (or its resource id), a plain enum by the name of its case, an actor as the workspace
-/// subject it is, lists and options as plain JSON. A value encoded as the runtime stores it
+/// target it is, lists and options as plain JSON. A value encoded as the runtime stores it
 /// ([`from_json`]) is taken as it is.
 fn value_of_ty(host: &HostInner, meta: &Meta, json: &Json, ty: &Ty) -> Result<Value, String> {
     match (ty, json) {
@@ -363,7 +363,7 @@ fn value_of_ty(host: &HostInner, meta: &Meta, json: &Json, ty: &Ty) -> Result<Va
                 fields: std::collections::BTreeMap::new(),
             }))
         }
-        (Ty::Actor, Json::Object(subject)) if subject.len() == 1 => {
+        (Ty::Actor, Json::Object(target)) if target.len() == 1 => {
             // A member as arguments name them (`{"person": id}`), else an actor as values
             // carry one.
             match serde_json::from_value::<tilolang_runtime::ids::MemberId>(json.clone()) {
@@ -475,7 +475,7 @@ fn published_roots(meta: &Meta) -> Meta {
 /// published parameter declares ([`crate::surface::published_param`]), which the broker binds
 /// before it delivers, and which [`value_of`] reads back as the same value. A record by the
 /// catalogue's reference to it, of its own type, so a union or a type of another app says which
-/// it is; a plain enum by its case's name; an actor as the workspace subject it is; an option
+/// it is; a plain enum by its case's name; an actor as the workspace target it is; an option
 /// as its value, or null; lists and tuples item by item; rich text as its text, or encoded
 /// whole when it holds more than text. `owner` finds the package of an app the type names.
 pub fn argument_json(
@@ -631,7 +631,7 @@ impl HostInner {
     }
 
     /// Whether the action `action` can run on the published resource `resource` now: whether it
-    /// can apply to it where a view offers it at all, and the requirements its subject alone
+    /// can apply to it where a view offers it at all, and the requirements its target alone
     /// decides, as its app says them, in the person at the window's eyes. `None` when the app
     /// keeps neither, or when one cannot be read.
     ///
@@ -645,14 +645,14 @@ impl HostInner {
     }
 
     /// What the action `action` offers on the published resource `resource` now, as its app says
-    /// it: what it is called there and the icon beside it, when the app presents it per subject,
+    /// it: what it is called there and the icon beside it, when the app presents it per target,
     /// whether it can run on it now — and what reading all of that read of the workspace, so a
     /// caller keeping the answer asks again only when one of those fields moves ([`Reading`]).
     /// `None` when the app presents nothing of the action and keeps no requirement it can
     /// decide, or when one cannot be read.
     fn offered_reading(&self, resource: &str, action: &str) -> Option<(Offered, Reading)> {
         // What asking reads of the app's package: the action's declaration and the type of its
-        // subject. Copied out of the registry by value, not the package: a package is the whole
+        // target. Copied out of the registry by value, not the package: a package is the whole
         // app's compiled metadata, and a window asks this once for each action of each row it
         // shows, so cloning it here would cost more than reading the requirements.
         let (app, has_guard, has_applies, has_present, declared) = {
@@ -661,7 +661,7 @@ impl HostInner {
                 .iter()
                 .find(|package| package.meta.actions.iter().any(|held| held.id == action))?;
             let meta = package.meta.actions.iter().find(|held| held.id == action)?;
-            let declared = package.meta.subject_of(&meta.params)?.id.clone();
+            let declared = package.meta.target_of(&meta.params)?.id.clone();
             (
                 package.meta.app.clone(),
                 meta.guard,
@@ -745,9 +745,9 @@ impl HostInner {
         // A requirement is the app's, and the app is what can read it: an action published
         // while its rule held, or one an agent addresses by name, is refused here, before it
         // runs, with its rule's reason.
-        if let Some(subject) = request.resource
+        if let Some(target) = request.resource
             && let Some(tilo_actions::Availability::Unavailable { reason, .. }) =
-                self.availability(subject, request.action_id)
+                self.availability(target, request.action_id)
         {
             return Err(reason);
         }
@@ -846,11 +846,11 @@ impl HostInner {
     ) -> Result<PlannedArgs, String> {
         let mut given: Vec<Option<Value>> = Vec::new();
         let mut params = action.params.iter();
-        if let (Some(subject), Some(declared)) =
-            (request.resource, package.meta.subject_of(&action.params))
+        if let (Some(target), Some(declared)) =
+            (request.resource, package.meta.target_of(&action.params))
         {
-            let target = ResourceRef::parse_id(subject, declared.id.clone())
-                .ok_or_else(|| format!("`{subject}` is not a resource id"))?;
+            let target = ResourceRef::parse_id(target, declared.id.clone())
+                .ok_or_else(|| format!("`{target}` is not a resource id"))?;
             given.push(Some(Value::resource(&target)));
             params.next();
         }
@@ -1165,8 +1165,8 @@ impl Host {
     }
 
     /// Whether the action published as `action` can run on the published resource `resource`
-    /// now, as its app says: the requirements its subject alone decides hold for the person at the window, or the
-    /// first that does not and why. `None` when the app keeps no requirement its subject could
+    /// now, as its app says: the requirements its target alone decides hold for the person at the window, or the
+    /// first that does not and why. `None` when the app keeps no requirement its target could
     /// decide, and the action is offered as it is.
     #[must_use]
     pub fn availability(&self, resource: &str, action: &str) -> Option<tilo_actions::Availability> {
@@ -1499,7 +1499,7 @@ impl Host {
     }
 
     /// Run each loaded package's migrations (`migration action`): once on each resource of the
-    /// migration's subject type that the migration has not run on, whether an earlier version
+    /// migration's target type that the migration has not run on, whether an earlier version
     /// of the package wrote the resource or this one, as an action of the package version
     /// (the app acting by itself), which records in the same change that it
     /// ran. A field the new build keeps as `RichText` where the old one kept `Text` has its
@@ -1521,7 +1521,7 @@ impl Host {
                 let Some(ty) = migration
                     .params
                     .first()
-                    .and_then(|subject| package.meta.type_named(&subject.ty))
+                    .and_then(|target| package.meta.type_named(&target.ty))
                 else {
                     continue;
                 };
@@ -1534,7 +1534,7 @@ impl Host {
                     {
                         continue;
                     }
-                    let subject = Value::resource(&ResourceRef::root(&doc, ty.id.clone()));
+                    let target = Value::resource(&ResourceRef::root(&doc, ty.id.clone()));
                     self.inner
                         .store
                         .set_migrating(Some((migration.id.clone(), doc.clone())));
@@ -1544,7 +1544,7 @@ impl Host {
                     let outcome = self
                         .inner
                         .runtime
-                        .invoke_action(&by, (migration.id.as_str(), vec![subject]));
+                        .invoke_action(&by, (migration.id.as_str(), vec![target]));
                     self.inner.store.set_migrating(None);
                     match outcome {
                         Ok(InvokeOutcome::Done(_)) => ran = ran.saturating_add(1),
@@ -1712,7 +1712,7 @@ impl Host {
 
     /// The argument of the type `ty` (as metadata writes it) of an action of `meta` that
     /// `json` gives, read as the API reads an invocation's arguments: a resource by its id, a
-    /// case by its name, a person as the workspace subject they are.
+    /// case by its name, a person as the workspace target they are.
     pub fn argument(&self, meta: &Meta, json: &Json, ty: &str) -> Result<Value, String> {
         value_of(&self.inner, meta, json, ty)
     }

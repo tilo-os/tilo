@@ -23,7 +23,7 @@ pub(super) struct OpenedByChip {
 /// name's.
 fn agent_colour(run: &OpenedBy) -> vello::peniko::Color {
     let (red, green, blue) =
-        crate::presence::member_color(&crate::permissions::MemberId::agent(&run.run), None);
+        crate::presence::member_color(&crate::permissions::MemberId::agent(&run.run));
     vello::peniko::Color::from_rgb8(red, green, blue)
 }
 

@@ -137,7 +137,8 @@ pub fn canvas_section(
         "Show a resource: `invoke` with `\"operation\": \"{}\"` and `\"parameters\": \
          {{\"resource\": …}}` (an id below, or one a program answered; add `\"view\"` beside it \
          when it has several). Without `x` and `y` it stands beside this conversation, or the \
-         place already showing it comes forward.",
+         place already showing it comes forward; `\"beside\": <id>` stands it next to the place \
+         showing that resource instead (\"put my notes next to the inbox\").",
         place.id()
     );
 
@@ -153,6 +154,18 @@ pub fn canvas_section(
         for offer in &steps {
             revealed.reveal(offer.id());
             s.push_str(&super::summary::summary_line(catalogue, offer));
+            // How a step's own value is written ("a package and a view
+            // (`so.tilo.shell:strips`)"): its first sentence, so "switch to
+            // strips" is one call rather than one that asks first.
+            if let Some(said) = offer
+                .descriptor
+                .description
+                .as_deref()
+                .map(first_sentence)
+                .filter(|said| !said.is_empty())
+            {
+                let _ = writeln!(s, "    {said}");
+            }
         }
     }
     let mut by_place: BTreeMap<&str, Vec<&Offer>> = BTreeMap::new();
@@ -212,6 +225,15 @@ pub fn canvas_section(
     s
 }
 
+/// The first sentence of `text`, on one line.
+fn first_sentence(text: &str) -> String {
+    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    match line.find(". ").and_then(|end| line.get(..=end)) {
+        Some(first) => first.to_owned(),
+        None => line,
+    }
+}
+
 /// The apps whose things a canvas step `offer` with `parameters` shows or
 /// arranges: the app of the resource it places (`tl:<app>:…`), and the apps a
 /// place it acts on is named by (its window's title and its app's name).
@@ -228,15 +250,18 @@ pub fn apps_shown(
         }
         other => other,
     };
-    let mut apps = Vec::new();
-    if let Some(app) = parameters
-        .get("resource")
-        .and_then(serde_json::Value::as_str)
-        .and_then(|resource| resource.strip_prefix(TILOLANG_PREFIX))
-        .and_then(|rest| rest.split_once(':'))
-        .map(|(app, _)| app.to_owned())
-    {
-        apps.push(app);
+    let mut apps: Vec<String> = Vec::new();
+    // What it shows, and what it stands next to: "put my notes next to the inbox" is done in
+    // Notes and in Mail by the one place.
+    for key in ["resource", "beside"] {
+        if let Some(app) = parameters
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .and_then(tilolang_app_of)
+            .filter(|app| !apps.iter().any(|seen| seen == app))
+        {
+            apps.push(app.to_owned());
+        }
     }
     if offer.address().resource.starts_with(PLACE_PREFIX) {
         let label = offer.descriptor.resource_label.to_lowercase();

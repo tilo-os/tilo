@@ -22,7 +22,7 @@
 //!   items with theirs, each carried out on the part [`Chained::part_for`]
 //!   names when it is invoked. The palette, agents, scripts and the app's
 //!   own surface reach the parts through it, checked against the
-//!   participant's roles in the workspace like the app's own actions (the parts
+//!   member's roles in the workspace like the app's own actions (the parts
 //!   carry the app record's grants), attributed to whoever invokes them and
 //!   written into the part's history.
 //! - **Held where the app is.** The parts are records of the app's own
@@ -35,7 +35,7 @@
 //! An app declares its chain in [`ResourceApp::records`](super::ResourceApp::records)
 //! (`records.chain::<Part>()`), so it is opened and published with the
 //! window, and reaches it from a view or surface with
-//! [`RecordEnv::chain`](super::RecordEnv::chain). Edits of a part are not
+//! [`ResourceEnv::chain`](super::ResourceEnv::chain). Edits of a part are not
 //! undone with the app's own: they are recorded in the part's history, and
 //! the chain publishes the history verbs (`undo`, `redo`, `restore`,
 //! `checkpoint`) naming the part they change, so a person, an agent or the
@@ -63,12 +63,14 @@ use tilo_resource::{Invoke, Reader, Resource};
 use ui_core::automerge::transaction::Transactable as _;
 use ui_core::automerge::{ChangeHash, ObjType, ROOT, ReadDoc as _, Value};
 use ui_core::permissions::{LivePermissions, PermissionScope, TreePath};
-use ui_core::record::{DocumentCheckout, DocumentId, RecordOpenError, RecordStore, ResourceType};
+use ui_core::resource::{
+    DocumentCheckout, DocumentId, ResourceOpenError, ResourceStore, ResourceType,
+};
 
 use super::dispatch::Dispatcher;
 use super::history::{PART_EDIT_TYPE, PartEdit};
 use super::live::Live;
-use super::record::RecordApi;
+use super::record::ResourceApi;
 
 /// The operation type a chain's published actions are carried out under:
 /// the host applies the action to the part of the chain it names.
@@ -189,8 +191,8 @@ struct Unopened {
     retry: bool,
 }
 
-impl From<RecordOpenError> for Unopened {
-    fn from(error: RecordOpenError) -> Self {
+impl From<ResourceOpenError> for Unopened {
+    fn from(error: ResourceOpenError) -> Self {
         Self {
             retry: error.writer_busy(),
             reason: error.to_string(),
@@ -210,8 +212,8 @@ impl From<String> for Unopened {
 /// What a window holds a chain with: the store of the app's records, who
 /// edits, and what they may do in the workspace.
 #[derive(Clone)]
-pub(crate) struct WorkspaceRecords {
-    pub(crate) store: RecordStore,
+pub(crate) struct WorkspaceResources {
+    pub(crate) store: ResourceStore,
     pub(crate) me: tilo_resource::MemberId,
     pub(crate) permissions: Option<LivePermissions>,
     pub(crate) app_id: &'static str,
@@ -242,7 +244,7 @@ type Base<P> = Rc<dyn Fn() -> Rc<<<P as Chained>::Base as Resource>::State>>;
 /// A chain held for a window: its parts, read as they change. See the
 /// [module docs](self).
 pub(crate) struct ChainState<P: Chained> {
-    workspace: WorkspaceRecords,
+    workspace: WorkspaceResources,
     base: Base<P>,
     /// The chain the parts belong to.
     chain: DocumentId,
@@ -257,7 +259,7 @@ pub(crate) struct ChainState<P: Chained> {
     /// publishes before it has a head.
     empty: Rc<P::State>,
     revision: Cell<u64>,
-    /// The store's [`RecordStore::kept_revision`] when the window last
+    /// The store's [`ResourceStore::kept_revision`] when the window last
     /// looked for a newer head and at the parts it waits for.
     looked: Cell<Option<u64>>,
     published: RefCell<Option<((u64, u64), tilo_actions::ResourceSpec)>>,
@@ -280,10 +282,10 @@ pub(crate) struct ChainState<P: Chained> {
     /// kept with the app's records: every window of the app shows them and
     /// applies them in order once the part is here, across a closed window
     /// and a restart.
-    waiting_record: DocumentCheckout,
-    /// Whether [`Self::waiting_record`] was looked for on this device.
+    waiting_resource: DocumentCheckout,
+    /// Whether [`Self::waiting_resource`] was looked for on this device.
     unsent_looked: Cell<bool>,
-    /// What [`Self::waiting_record`] writes into this chain, as a part holding only
+    /// What [`Self::waiting_resource`] writes into this chain, as a part holding only
     /// that reads ([`ChainState::unwritten`]), at the record's heads.
     unwritten: RefCell<Unwritten<P>>,
     /// Whether the actions that waited are being applied now.
@@ -330,7 +332,7 @@ const PART_ARRIVING: &str = "the part is on its way from the workspace";
 
 impl<P: Chained> ChainState<P> {
     /// Hold the chain in `workspace`, with its head when this device has one.
-    pub(crate) fn open(workspace: WorkspaceRecords, base: Base<P>) -> Option<Self> {
+    pub(crate) fn open(workspace: WorkspaceResources, base: Base<P>) -> Option<Self> {
         Self::open_at(workspace, base, P::chain())
     }
 
@@ -338,7 +340,7 @@ impl<P: Chained> ChainState<P> {
     /// messages of one direct conversation, which lives beside the record
     /// the two people share ([`Chained::chain_beside`]).
     pub(crate) fn open_at(
-        workspace: WorkspaceRecords,
+        workspace: WorkspaceResources,
         base: Base<P>,
         chain: DocumentId,
     ) -> Option<Self> {
@@ -351,7 +353,7 @@ impl<P: Chained> ChainState<P> {
             .ok()?
             .state()
             .clone();
-        let id = ui_core::record::chain_resource_id(&chain);
+        let id = ui_core::resource::chain_resource_id(&chain);
         let state = Self {
             base,
             chain,
@@ -369,7 +371,7 @@ impl<P: Chained> ChainState<P> {
             written: RefCell::default(),
             undone: RefCell::default(),
             part_search: RefCell::default(),
-            waiting_record: unsent_checkout(&workspace.me),
+            waiting_resource: unsent_checkout(&workspace.me),
             unsent_looked: Cell::new(false),
             unwritten: RefCell::default(),
             draining: Cell::new(false),
@@ -427,9 +429,9 @@ impl<P: Chained> ChainState<P> {
     /// not said it has no part at all, and opening the chain's head
     /// ([`DocumentId::chain_head`]) found none of it here. That open is what
     /// asks the store's workspace for the head — a page's hosts, or a native
-    /// app's — and it answers `RecordOpenError::Arriving` until the part
+    /// app's — and it answers `ResourceOpenError::Arriving` until the part
     /// arrives, or until the workspace answers it has none
-    /// ([`RecordStore::workspace_answered`]).
+    /// ([`ResourceStore::workspace_answered`]).
     fn head_on_its_way(&self) -> bool {
         let head = self.chain.chain_head();
         if self.workspace.store.workspace_answered(&head) {
@@ -440,8 +442,8 @@ impl<P: Chained> ChainState<P> {
         matches!(
             self.workspace
                 .store
-                .try_open_record(&DocumentCheckout::new(head, self.kind.clone())),
-            Err(RecordOpenError::Arriving | RecordOpenError::Busy)
+                .try_open_resource(&DocumentCheckout::new(head, self.kind.clone())),
+            Err(ResourceOpenError::Arriving | ResourceOpenError::Busy)
         )
     }
 
@@ -567,12 +569,7 @@ impl<P: Chained> ChainState<P> {
                 Write::Done(index, created) => {
                     // Only what the window's person did themselves: an
                     // agent's step is its own to take back.
-                    if invoker.acting.by.key()
-                        == ActionInvoker::member(self.workspace.me.clone())
-                            .acting
-                            .by
-                            .key()
-                    {
+                    if invoker.acting.by.member_id() == Some(&self.workspace.me) {
                         self.written.borrow_mut().push(index);
                         self.undone.borrow_mut().clear();
                     }
@@ -608,7 +605,7 @@ impl<P: Chained> ChainState<P> {
             .open_unsent(false)
             .then(|| {
                 self.workspace.store.read(
-                    &self.waiting_record.id,
+                    &self.waiting_resource.id,
                     ui_core::automerge::AutoCommit::base_heads,
                 )
             })
@@ -664,26 +661,26 @@ impl<P: Chained> ChainState<P> {
     /// with `create`, start it where nothing of it is here.
     fn open_unsent(&self, create: bool) -> bool {
         let store = &self.workspace.store;
-        if store.is_ready(&self.waiting_record.id) {
+        if store.is_ready(&self.waiting_resource.id) {
             return true;
         }
         if self.unsent_looked.replace(true) && !create {
             return false;
         }
-        match store.open_if_held(&self.waiting_record) {
+        match store.open_if_held(&self.waiting_resource) {
             Ok(_) => true,
             // Nothing of it here, or a store that keeps no canonical records
             // (a test's): started as every record is.
-            Err(RecordOpenError::MissingRecord | RecordOpenError::IdentityMismatch) if create => {
-                self.create(&self.waiting_record, |_| Ok(()))
+            Err(ResourceOpenError::MissingResource | ResourceOpenError::IdentityMismatch) if create => {
+                self.create(&self.waiting_resource, |_| Ok(()))
                     .map_err(|error| {
                         tracing::warn!(kind = P::KIND, %error, "the record of waiting writes cannot be started");
                     })
                     .is_ok()
             }
-            Err(RecordOpenError::MissingRecord | RecordOpenError::IdentityMismatch) => false,
+            Err(ResourceOpenError::MissingResource | ResourceOpenError::IdentityMismatch) => false,
             // Read by whatever runs now: looked for again at the next refresh.
-            Err(RecordOpenError::Busy) => {
+            Err(ResourceOpenError::Busy) => {
                 self.unsent_looked.set(false);
                 false
             }
@@ -701,7 +698,7 @@ impl<P: Chained> ChainState<P> {
         }
         self.workspace
             .store
-            .read(&self.waiting_record.id, |doc| {
+            .read(&self.waiting_resource.id, |doc| {
                 read_unsent::<P>(doc, &self.chain)
             })
             .unwrap_or_default()
@@ -759,7 +756,7 @@ impl<P: Chained> ChainState<P> {
             &mut ui_core::automerge::AutoCommit,
         ) -> Result<T, ui_core::automerge::AutomergeError>,
     ) -> Result<T, String> {
-        let id = &self.waiting_record.id;
+        let id = &self.waiting_resource.id;
         let edited = self
             .workspace
             .store
@@ -781,8 +778,8 @@ impl<P: Chained> ChainState<P> {
 
     /// Whether to look for a newer head and at the parts waited for now:
     /// the store was told a record arrived or what the workspace said of one
-    /// ([`RecordStore::note_kept`], [`RecordStore::announce`],
-    /// [`RecordStore::note_workspace_answered`]), each of which wakes the window.
+    /// ([`ResourceStore::note_kept`], [`ResourceStore::announce`],
+    /// [`ResourceStore::note_workspace_answered`]), each of which wakes the window.
     /// Not while a frame reads the store (a view's sync): opening a part
     /// takes the store's writer, so the look waits for the frame's settle,
     /// where the window takes up what it was sent, and the view's sync reads
@@ -931,7 +928,7 @@ impl<P: Chained> ChainState<P> {
         if !self.workspace.store.is_ready(&checkout.id) {
             self.workspace
                 .store
-                .try_open_record(&checkout)
+                .try_open_resource(&checkout)
                 .map_err(Unopened::from)?;
         }
         self.follow(index).map_err(|reason| Unopened {
@@ -947,7 +944,7 @@ impl<P: Chained> ChainState<P> {
     /// so it is open here and the workspace's record sync asks the workspace for its
     /// history, which merges in as it arrives. It is waited for until then
     /// ([`Self::waiting`]); its arrival, or the workspace saying it has none of
-    /// it, wakes the window ([`RecordStore::wake_on_arrival`]).
+    /// it, wakes the window ([`ResourceStore::wake_on_arrival`]).
     pub(crate) fn hold(&self, index: u64) -> Result<(), String> {
         match self.open_or_start(index) {
             Ok(Opened::Held) => {}
@@ -999,8 +996,8 @@ impl<P: Chained> ChainState<P> {
             let checkout = self.checkout(index);
             if !self.workspace.store.is_ready(&checkout.id)
                 && matches!(
-                    self.workspace.store.try_open_record(&checkout),
-                    Err(RecordOpenError::MissingRecord)
+                    self.workspace.store.try_open_resource(&checkout),
+                    Err(ResourceOpenError::MissingResource)
                 )
             {
                 self.workspace.store.want(checkout.id);
@@ -1052,13 +1049,13 @@ impl<P: Chained> ChainState<P> {
         let checkout = self.checkout(index);
         let mut opened = Opened::Held;
         if !self.workspace.store.is_ready(&checkout.id) {
-            match self.workspace.store.try_open_record(&checkout) {
+            match self.workspace.store.try_open_resource(&checkout) {
                 Ok(_) => {}
-                Err(RecordOpenError::Arriving) => return Ok(Opened::Asked),
+                Err(ResourceOpenError::Arriving) => return Ok(Opened::Asked),
                 // Nothing of it on this device, or a store that keeps no
                 // canonical records (a test's) and has no record it could
                 // open: it is started as every record is.
-                Err(RecordOpenError::MissingRecord | RecordOpenError::IdentityMismatch) => {
+                Err(ResourceOpenError::MissingResource | ResourceOpenError::IdentityMismatch) => {
                     self.create(&checkout, |doc| {
                         P::initialize(doc).map_err(|error| error.to_string())
                     })?;
@@ -1081,16 +1078,16 @@ impl<P: Chained> ChainState<P> {
         checkout: &DocumentCheckout,
         initialize: impl Fn(&mut ui_core::automerge::AutoCommit) -> Result<(), String>,
     ) -> Result<(), String> {
-        match self.workspace.store.reserve_record(checkout) {
+        match self.workspace.store.reserve_resource(checkout) {
             Ok(mut reservation) => reservation
                 .initialize(initialize)
                 .map_err(|error| error.to_string()),
             // A store that keeps no canonical records (a test's) creates it
             // the way it creates every record.
-            Err(RecordOpenError::IdentityMismatch) => {
+            Err(ResourceOpenError::IdentityMismatch) => {
                 self.workspace
                     .store
-                    .create_record(checkout)
+                    .create_resource(checkout)
                     .map_err(|error| error.to_string())?;
                 self.workspace
                     .store
@@ -1325,7 +1322,7 @@ impl<P: Chained> ChainState<P> {
 
     /// The chain as it is published: the head's actions and every held
     /// part's items, each carried out through [`CHAIN_ACTION_TYPE`] on the
-    /// part it changes; checked against the participant's roles in the workspace
+    /// part it changes; checked against the member's roles in the workspace
     /// as the app's own actions are.
     pub(crate) fn publish(&self) -> tilo_actions::ResourceSpec {
         let revision = (self.revision(), ui_core::i18n::I18nManager::revision());
@@ -1373,7 +1370,7 @@ impl<P: Chained> ChainState<P> {
             }
             // What an item holds as a resource of its own (a rich-text
             // body) is read through the same read, from the part keeping it.
-            if let Some(table) = P::RECORD_TABLE {
+            if let Some(table) = P::RESOURCE_TABLE {
                 offer_nested_reads::<P>(&mut child.children, table, &self.id);
             }
             // Shown where the app's window shows it, as its search hit
@@ -1449,7 +1446,7 @@ impl<P: Chained> ChainState<P> {
     /// reading on walks back through the chat a part at a time.
     pub(crate) fn read(&self, payload: &[u8]) -> Result<serde_json::Value, String> {
         let read = ChainRead::of(payload)?;
-        let table = P::RECORD_TABLE.ok_or_else(|| format!("{} answer no reads", P::LABEL))?;
+        let table = P::RESOURCE_TABLE.ok_or_else(|| format!("{} answer no reads", P::LABEL))?;
         if let Some(item) = read.item.as_deref() {
             return self.read_item(table, item);
         }
@@ -1487,7 +1484,7 @@ impl<P: Chained> ChainState<P> {
                 at = *index;
                 skip = 0;
             }
-            let items = tilo_resource::table::record_items(table, &**state);
+            let items = tilo_resource::table::resource_items(table, &**state);
             // What the part holds now, newest first: a cursor counted against
             // the part as it was reads from its end where items went since.
             let newest_first: Vec<(&str, tilo_resource::Id, String)> = items
@@ -1724,7 +1721,7 @@ fn route_at(
     resource
 }
 
-impl<P: Chained> RecordApi for ChainState<P> {
+impl<P: Chained> ResourceApi for ChainState<P> {
     fn id(&self) -> &str {
         &self.id
     }
@@ -1835,13 +1832,13 @@ impl<P: Chained> super::record::sealed::Hold<P> for PartRecord<P> {
         _storage: super::record::sealed::Storage<'_>,
     ) -> Option<super::record::sealed::Api> {
         Some(super::record::sealed::Api(
-            Rc::clone(&self.chain) as Rc<dyn RecordApi>
+            Rc::clone(&self.chain) as Rc<dyn ResourceApi>
         ))
     }
 }
 
 /// The chain as a record whose actions a view binds
-/// ([`ViewCx::record_actions`](super::ViewCx::record_actions)): its verbs and
+/// ([`ViewCx::resource_actions`](super::ViewCx::resource_actions)): its verbs and
 /// every held part's items, carried out on the part each names, whether or
 /// not a part is held yet (a first issue made in an empty tracker).
 impl<P: Chained> super::record::sealed::Hold<P> for Chain<P> {
@@ -1858,7 +1855,7 @@ impl<P: Chained> super::record::sealed::Hold<P> for Chain<P> {
         _storage: super::record::sealed::Storage<'_>,
     ) -> Option<super::record::sealed::Api> {
         Some(super::record::sealed::Api(
-            Rc::clone(&self.state) as Rc<dyn RecordApi>
+            Rc::clone(&self.state) as Rc<dyn ResourceApi>
         ))
     }
 }
@@ -2231,7 +2228,7 @@ impl<P: Chained> Chain<P> {
         me: &tilo_resource::MemberId,
         base: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
     ) -> Option<Self> {
-        Self::detached_in(RecordStore::in_memory(), app_id, me, base)
+        Self::detached_in(ResourceStore::in_memory(), app_id, me, base)
     }
 
     /// [`Self::detached`], held in `store`: one device's records of the
@@ -2239,12 +2236,12 @@ impl<P: Chained> Chain<P> {
     /// another one.
     #[must_use]
     pub fn detached_in(
-        store: RecordStore,
+        store: ResourceStore,
         app_id: &'static str,
         me: &tilo_resource::MemberId,
         base: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
     ) -> Option<Self> {
-        let workspace = WorkspaceRecords {
+        let workspace = WorkspaceResources {
             store,
             me: me.clone(),
             permissions: None,
@@ -2298,7 +2295,7 @@ fn detached_dispatch<P: Chained>(
     me: &tilo_resource::MemberId,
 ) -> Dispatcher<P> {
     dispatching(state, me, |apply| {
-        Dispatcher::<P>::new(app_id, state.id(), false, Some(me)).for_workspace_record::<P>(
+        Dispatcher::<P>::new(app_id, state.id(), false, Some(me)).for_workspace_resource::<P>(
             state.id(),
             false,
             apply,
@@ -2359,7 +2356,7 @@ fn unsent_checkout(me: &tilo_resource::MemberId) -> DocumentCheckout {
     let id = me
         .person_id()
         .and_then(|person| DocumentId::of_member(person, UNSENT_KIND))
-        .unwrap_or_else(|| ui_core::record::person::record_id(&kind));
+        .unwrap_or_else(|| ui_core::resource::person::document_id(&kind));
     DocumentCheckout::new(id, kind)
 }
 
@@ -2414,14 +2411,14 @@ pub(crate) struct Chains {
     held: RefCell<HeldChains>,
     /// The child records held, by their container's address.
     children: RefCell<BTreeMap<String, Rc<dyn Any>>>,
-    apis: RefCell<Vec<Rc<dyn RecordApi>>>,
+    apis: RefCell<Vec<Rc<dyn ResourceApi>>>,
 }
 
 impl Chains {
     /// The chain of `P`, opened in `workspace` on first use.
     pub(crate) fn open<P: Chained>(
         &self,
-        workspace: Option<&WorkspaceRecords>,
+        workspace: Option<&WorkspaceResources>,
         base: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
     ) -> Option<Rc<ChainState<P>>> {
         let chain = P::chain();
@@ -2438,7 +2435,7 @@ impl Chains {
     /// ([`Chained::chain_beside`]), opened in `workspace` on first use.
     pub(crate) fn open_beside<P: Chained>(
         &self,
-        workspace: Option<&WorkspaceRecords>,
+        workspace: Option<&WorkspaceResources>,
         base: &DocumentId,
         base_state: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
     ) -> Option<Rc<ChainState<P>>> {
@@ -2450,7 +2447,7 @@ impl Chains {
     /// keeps beside its own (a chat, whose parts hold its messages).
     pub(crate) fn open_at<P: Chained>(
         &self,
-        workspace: &WorkspaceRecords,
+        workspace: &WorkspaceResources,
         chain: &DocumentId,
         base_state: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
     ) -> Option<Rc<ChainState<P>>> {
@@ -2482,17 +2479,17 @@ impl Chains {
         );
         self.apis
             .borrow_mut()
-            .push(Rc::clone(state) as Rc<dyn RecordApi>);
+            .push(Rc::clone(state) as Rc<dyn ResourceApi>);
     }
 
     /// The children of `C` the parent lists, held in `workspace` on first use:
     /// published and answered beside the chains, through the same API.
-    pub(crate) fn open_children<C: super::children::ChildRecord>(
+    pub(crate) fn open_children<C: super::children::ChildResource>(
         &self,
-        workspace: Option<&WorkspaceRecords>,
+        workspace: Option<&WorkspaceResources>,
         parent: impl Fn() -> Rc<<C::Parent as Resource>::State> + 'static,
     ) -> Option<Rc<super::children::ChildrenState<C>>> {
-        let key = ui_core::record::children_resource_id(&C::parent_record(), C::KIND);
+        let key = ui_core::resource::children_resource_id(&C::parent_resource(), C::KIND);
         if let Some(held) = self.children.borrow().get(&key) {
             return Rc::clone(held)
                 .downcast::<super::children::ChildrenState<C>>()
@@ -2507,11 +2504,11 @@ impl Chains {
             .insert(key, Rc::clone(&state) as Rc<dyn Any>);
         self.apis
             .borrow_mut()
-            .push(Rc::clone(&state) as Rc<dyn RecordApi>);
+            .push(Rc::clone(&state) as Rc<dyn ResourceApi>);
         Some(state)
     }
 
-    pub(crate) fn apis(&self) -> Vec<Rc<dyn RecordApi>> {
+    pub(crate) fn apis(&self) -> Vec<Rc<dyn ResourceApi>> {
         self.apis.borrow().clone()
     }
 
@@ -2523,7 +2520,7 @@ impl Chains {
         payload: &[u8],
         live: &mut ui_core::widget::Edits<'_>,
     ) -> Result<tilo_actions::ActionOutput, String> {
-        let request: super::record::RecordAction =
+        let request: super::record::ResourceAction =
             tilo_actions::decode_json(payload).map_err(|error| error.to_string())?;
         let api = self
             .apis

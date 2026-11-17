@@ -32,8 +32,8 @@ pub use crate::migration_entry::EntryKind;
 pub use crate::migration_entry::relative;
 #[cfg(target_os = "linux")]
 pub use linux::{
-    AccessMode, InstalledScratchFacts, InstalledScratchIdentity, ParticipantNamespace,
-    ResolvedSource, RetainedSource, capture, capture_mounted_entry, mount_authenticated_read_only,
+    AccessMode, InstalledScratchFacts, InstalledScratchIdentity, ResolvedSource, RetainedSource,
+    VolumeNamespace, capture, capture_mounted_entry, mount_authenticated_read_only,
     mount_read_only, mounted_record_namespace, original_record_namespace, resolve_flatpak_source,
     retain_access, retain_scoped_source,
 };

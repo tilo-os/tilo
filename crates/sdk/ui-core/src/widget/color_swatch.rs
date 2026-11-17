@@ -574,6 +574,29 @@ impl crate::widget::controls::ActionControls for ColorSwatchPicker {
 }
 
 impl Widget for ColorSwatchPicker {
+    /// Colour swatches as a page's own radio group: each a real swatch with its
+    /// name, the chosen one checked.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        use crate::composition::{Control, ControlOption};
+        let options = self
+            .swatches
+            .iter()
+            .enumerate()
+            .map(|(index, swatch)| {
+                ControlOption::new(swatch.spoken_name())
+                    .with_colour(swatch.color)
+                    .with_target(format!("swatch:{index}"))
+                    .selected(self.selected == Some(index))
+            })
+            .collect();
+        cx.control(Control::Choices {
+            list: "radiogroup",
+            item: "radio",
+            label: None,
+            options,
+        });
+    }
+
     crate::described!();
 
     crate::provides!(

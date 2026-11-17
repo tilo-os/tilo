@@ -20,42 +20,33 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use collab_types::presence::{ShellPresence, ShellSelection, agent_rgb};
+use collab_types::presence::{ShellPresence, ShellSelection};
 use tilo_actions::remote::{ActorPlace, Caller, ExecutionLease, RemoteActionTarget};
 use tilo_actions::{InteractionPhase, InvocationId};
 use tilo_live::presence::{Board, Device};
 use tilo_relay_protocol::host_voice::HostWords;
-use tilo_relay_protocol::live::LiveRecord;
+use tilo_relay_protocol::live::LiveResource;
 use tilo_session_client::presence::now_ms;
 use tilo_session_client::{Cmd, Link, Outbox, narration};
 
-use super::{CatalogueQuery, InvokeRequest, Outcome, invoke_arguments, record_of as route_of};
+use super::{CatalogueQuery, InvokeRequest, Outcome, invoke_arguments, resource_of as route_of};
 use tilo_relay_protocol::WorkspaceId;
 
 /// How soon a run leaves once the session that is the run ended.
 const ENDED_WITHIN: Duration = Duration::from_millis(250);
 
-/// The colour `caller`'s runs are drawn in: the agent's own, never its display name's nor its
-/// session's, so one agent is one colour in every session and on every surface that draws it. It
-/// is the colour the workspace's record of its agents gives an agent kept by its person
+/// The colour `caller`'s runs are drawn in: the agent member's own, never its display name's nor
+/// its session's, so one agent is one colour in every session and on every surface that draws it
 /// ([`collab_types::presence::PresenceHue::of_member`]); a caller that names no agent (a key) is
 /// drawn as its run.
 fn colour_of(caller: &Caller) -> [u8; 3] {
-    let (r, g, b) = match caller.acting().agent_id() {
-        Some(agent) => {
-            collab_types::presence::identity_rgb(collab_types::presence::PresenceHue::of_member(
-                &collab_types::MemberId::agent(agent),
-                caller.acting_for_person(),
-            ))
-        }
-        None => agent_rgb(
-            caller
-                .agent_session()
-                .map(|run| run.id)
-                .as_deref()
-                .unwrap_or(""),
-        ),
-    };
+    let member = collab_types::MemberId::agent(caller.acting().agent_id().map_or_else(
+        || caller.agent_session().map(|run| run.id).unwrap_or_default(),
+        str::to_owned,
+    ));
+    let (r, g, b) = collab_types::presence::identity_rgb(
+        collab_types::presence::PresenceHue::of_member(&member),
+    );
     [r, g, b]
 }
 
@@ -69,7 +60,7 @@ struct Voice {
     /// What it is doing now: the action it takes.
     activity: Option<String>,
     /// The record it works in, and what its last action left selected there.
-    focus: Option<LiveRecord>,
+    focus: Option<LiveResource>,
     selection: Option<ShellSelection>,
     /// The sequence of its narration on the live plane.
     narrated: u64,
@@ -284,8 +275,8 @@ impl Sessions {
 }
 
 /// The record `provider` names in `cluster`, as a run's presence names it.
-fn live(provider: &str, cluster: &str) -> Option<LiveRecord> {
-    crate::participant::actions::record_of(provider, cluster).map(|route| LiveRecord {
+fn live(provider: &str, cluster: &str) -> Option<LiveResource> {
+    crate::member::actions::resource_of(provider, cluster).map(|route| LiveResource {
         app: route.app_id,
         record: route.record,
     })

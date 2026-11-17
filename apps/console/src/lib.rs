@@ -19,7 +19,7 @@ mod workspaces;
 
 use ui::time::{Duration, SystemTime};
 
-use ui::framework::{Publishes, RecordEnv};
+use ui::framework::{Publishes, ResourceEnv};
 use ui::prelude::*;
 use ui::tilo_actions::remote::InvokeArgument;
 use ui::tilo_actions::remote::RemoteActionTarget;
@@ -170,11 +170,11 @@ impl Reads {
 
 /// A server the app reads and asks through: the workspaces' history or the MCP server.
 #[derive(Clone)]
-pub(crate) struct Records(RecordEnv<Console>);
+pub(crate) struct Records(ResourceEnv<Console>);
 
 impl Records {
     pub(crate) fn of(cx: &ViewCx<Console>) -> Self {
-        Self(RecordEnv::clone(cx))
+        Self(ResourceEnv::clone(cx))
     }
 
     fn ask(&self, target: RemoteActionTarget, argument: InvokeArgument) {

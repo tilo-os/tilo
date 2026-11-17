@@ -51,6 +51,7 @@ use tilo_user_identity::{DeviceCapabilities, RevocationList};
 use crate::harness::hosted::{Hosted, Laptop, Options, Unlisted};
 use crate::harness::page::Page as Browser;
 use crate::support::{Device, WORKSPACE, enrol, workspace};
+use tilo_actions::MemberId;
 
 const NOTES: &str = "so.tilo.notes";
 const SHEETS: &str = "so.tilo.sheets";
@@ -75,7 +76,7 @@ async fn start_with(root: &SigningKey, host: &Device, state: &Path, model: Model
 async fn stop(hosted: Hosted) {
     let retained = hosted
         .relay
-        .workspace_records()
+        .workspace_documents()
         .retained(workspace())
         .await
         .unwrap();
@@ -115,10 +116,10 @@ impl Browser {
                 // refuses to open what came before it.
                 let page = match crate::common::open(
                     app,
-                    "ada",
+                    &MemberId::person("ada"),
                     ReplicaActor::Owner,
                     Seed::Existing {
-                        record: route_record(&route.record),
+                        record: route_document(&route.record),
                         changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
                     },
                 ) {
@@ -402,11 +403,11 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
 
 /// The record a document route names. A workspace-record app (Notes, Chat)
 /// publishes its package-primary record under the empty record id.
-fn route_record(record: &str) -> ui::record::DocumentId {
+fn route_document(record: &str) -> ui::resource::DocumentId {
     if record.is_empty() {
-        ui::record::DocumentId::package_primary()
+        ui::resource::DocumentId::package_primary()
     } else {
-        ui::record::DocumentId::parse(record).unwrap()
+        ui::resource::DocumentId::parse(record).unwrap()
     }
 }
 
@@ -436,11 +437,17 @@ struct Page {
 
 impl Page {
     fn create(browser: &Browser, app: &str) -> Self {
-        let mut page = crate::common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
+        let mut page = crate::common::open(
+            app,
+            &MemberId::person("ada"),
+            ReplicaActor::Owner,
+            Seed::New,
+        )
+        .unwrap();
         let route = DocumentRoute {
             app_id: app.into(),
             cluster_id: WORKSPACE.into(),
-            record: page.wire_record().to_owned(),
+            record: page.wire_document().to_owned(),
         };
         browser
             .peer
@@ -467,10 +474,10 @@ impl Page {
             {
                 let mut app = crate::common::open(
                     SHEETS,
-                    "bea",
+                    &MemberId::person("bea"),
                     ReplicaActor::Owner,
                     Seed::Existing {
-                        record: route_record(&creator.route.record),
+                        record: route_document(&creator.route.record),
                         changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
                     },
                 )
@@ -637,10 +644,10 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
         {
             let replayed = crate::common::open(
                 SHEETS,
-                "ada",
+                &MemberId::person("ada"),
                 ReplicaActor::Owner,
                 Seed::Existing {
-                    record: route_record(&page.route.record),
+                    record: route_document(&page.route.record),
                     changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
                 },
             );

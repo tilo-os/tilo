@@ -199,7 +199,7 @@ struct VariantOptions {
     /// `opens_path` declares the effect opens the file its `path` names;
     /// `opens_path = "csv,tsv"` limits it to those extensions.
     opens_path: Option<Vec<String>>,
-    participant: bool,
+    presence: bool,
     edit: bool,
     member: bool,
     kind: Option<String>,
@@ -335,8 +335,8 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 } else {
                     Vec::new()
                 });
-            } else if meta.path.is_ident("participant") {
-                options.participant = true;
+            } else if meta.path.is_ident("presence") {
+                options.presence = true;
             } else if meta.path.is_ident("edit") {
                 options.edit = true;
             } else if meta.path.is_ident("member") {
@@ -355,7 +355,7 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 return Err(meta.error(
                     "expected `label`, `keywords`, `icon`, `view`, `row`, `job`, `cancellable`, `returns` (`returns = Type` for the value's type), `content`, \
                      `destructive`, `privileged`, `sensitive`, `idempotent`, \
-                     `own_device`, `attended`, `risk`, `phrase`, `audience`, `untrusted`, `opens_path`, `participant`, `edit`, `member`, \
+                     `own_device`, `attended`, `risk`, `phrase`, `audience`, `untrusted`, `opens_path`, `presence`, `edit`, `member`, \
                      `item = field`, `offload(...)`, `host_render`, `tag = ...`, `outside_with` or `kind`",
                 ));
             }
@@ -614,13 +614,13 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             || quote!(::core::option::Option::None),
             |extensions| quote!(::core::option::Option::Some(&[#(#extensions),*])),
         );
-        if options.participant && !options.view && !options.edit {
+        if options.presence && !options.view && !options.edit {
             return Err(syn::Error::new(
                 variant.span(),
-                "`participant` declares a view of the invoking participant: add `view`",
+                "`presence` declares a view of the invoking presence: add `view`",
             ));
         }
-        let participant = options.participant;
+        let presence = options.presence;
         let edits = options.edit;
         let member = options.member;
         if options.item.is_some() && fields.is_empty() {
@@ -754,7 +754,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 audience: #krate::__private::Audience::#audience,
                 untrusted: #untrusted,
                 opens: #opens,
-                participant: #participant,
+                presence: #presence,
                 edits: #edits,
                 member: #member,
                 item: #item,

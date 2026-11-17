@@ -1981,6 +1981,8 @@ impl Widget for DesktopSurface {
         if let Some(row) = self.shown_row() {
             row.sync(state, path);
         }
+        // The views a person works in where a window embeds them, with the windows.
+        self.live_shares.stage.sync(state, path);
     }
 
     fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
@@ -2089,14 +2091,21 @@ impl Widget for DesktopSurface {
                 Some(node)
             })
             .collect();
+        // The views a person works in where a window embeds them: each at its place's size, out
+        // of the flow, placed when the layout is applied.
+        let embedded = self.live_shares.stage.build_layout(taffy, theme, node_map);
         let arrivals = self.arrival_hints.build_layout(taffy, theme, node_map);
         let hung = self.hung_apps.build_layout(taffy, theme, node_map);
         // The rows, each over the whole surface and drawing only in its
-        // displays' lanes, come first, then the arrival hints and the cards of
-        // apps that stopped answering. Search, the notifications and the
-        // confirmations are drawn over the windows, by the host above them, not
-        // in this tree.
-        let children: Vec<NodeId> = rows.into_iter().chain([arrivals, hung]).collect();
+        // displays' lanes, come first, then the views windows embed to work in,
+        // then the arrival hints and the cards of apps that stopped answering.
+        // Search, the notifications and the confirmations are drawn over the
+        // windows, by the host above them, not in this tree.
+        let children: Vec<NodeId> = rows
+            .into_iter()
+            .chain(embedded)
+            .chain([arrivals, hung])
+            .collect();
         let style = Style {
             display: ui::taffy::Display::Flex,
             flex_direction: ui::taffy::FlexDirection::Column,
@@ -2118,6 +2127,7 @@ impl Widget for DesktopSurface {
             self.arrival_hints.apply_layout(taffy, arrivals, inner);
             self.hung_apps.apply_layout(taffy, hung, inner);
         }
+        self.live_shares.stage.apply_layout(taffy);
         let reveal = self.reveal.take();
         let shown = self.shown;
         // A strip that is not drawn yet keeps its reveal: the window it opens is framed when the
@@ -2190,14 +2200,24 @@ impl Widget for DesktopSurface {
         self.drain_liveness_choices();
         let focused_presence = {
             let shared = self.shared.borrow();
-            navigation::active_route(&shared.tree)
-                .and_then(|ids| {
-                    let row = self.rows.get(&ids.strip)?;
-                    let group = row.groups.iter().find(|g| g.id == ids.group)?;
-                    group.active_host()
-                })
+            // A view the person works in where a window embeds it is where their caret is: the
+            // others in its record see them there, as they would in a window on it.
+            let embedded = self
+                .live_shares
+                .stage
+                .keyboard_host()
                 .map(|host| ui::presence::capability::subtree_presence(host))
-                .unwrap_or_default()
+                .filter(|presence| !presence.is_empty());
+            embedded.unwrap_or_else(|| {
+                navigation::active_route(&shared.tree)
+                    .and_then(|ids| {
+                        let row = self.rows.get(&ids.strip)?;
+                        let group = row.groups.iter().find(|g| g.id == ids.group)?;
+                        group.active_host()
+                    })
+                    .map(|host| ui::presence::capability::subtree_presence(host))
+                    .unwrap_or_default()
+            })
         };
         {
             let mut shared = self.shared.borrow_mut();
@@ -2237,6 +2257,10 @@ impl Widget for DesktopSurface {
         drop(shared);
         self.draw_embeds(scene, transform, text, theme, presence);
         self.draw_overlays(scene, transform, text, theme, presence);
+        // A window's first frame presents as it is drawn, after this frame's update pass: noted
+        // here, the status published for this frame says it is drawn, and no later pass has to
+        // come for it.
+        self.sync_drawn();
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -2272,7 +2296,7 @@ impl Widget for DesktopSurface {
             }
         }
         let children = ctx.taffy.children(ctx.node_id).unwrap_or_default();
-        if let [.., _, hung, _] = children[..] {
+        if let [.., hung] = children[..] {
             let path = ctx.path.clone();
             self.hung_apps
                 .handle_event(event, &mut ctx.reborrow(&path, hung));
@@ -2281,7 +2305,7 @@ impl Widget for DesktopSurface {
                 return;
             }
         }
-        if let [.., arrivals, _, _] = children[..] {
+        if let [.., arrivals, _] = children[..] {
             let path = ctx.path.clone();
             self.arrival_hints
                 .handle_event(event, &mut ctx.reborrow(&path, arrivals));
@@ -2289,6 +2313,10 @@ impl Widget for DesktopSurface {
                 self.reveal_chosen_arrival();
                 return;
             }
+        }
+        // A view a window embeds to work in takes what is meant for it before the window under it.
+        if self.live_shares.stage.handle_event(event, ctx) {
+            return;
         }
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
@@ -2393,6 +2421,7 @@ impl Widget for DesktopSurface {
             .map(|row| row as &dyn Widget)
             .collect();
         rows.into_iter()
+            .chain(self.live_shares.stage.working())
             .chain([
                 &self.arrival_hints as &dyn Widget,
                 &self.hung_apps as &dyn Widget,
@@ -2407,6 +2436,9 @@ impl Widget for DesktopSurface {
         for row in self.rows.values_mut() {
             request.visit(row)?;
         }
+        for embedded in self.live_shares.stage.working_mut() {
+            request.visit(embedded)?;
+        }
         Ok(())
     }
 
@@ -2416,9 +2448,13 @@ impl Widget for DesktopSurface {
             .into_iter()
             .map(|row| row as &mut (dyn Widget + '_))
             .collect();
+        let embedded = self.live_shares.stage.working_mut();
         let arrivals = &mut self.arrival_hints as &mut (dyn Widget + '_);
         let hung = &mut self.hung_apps as &mut (dyn Widget + '_);
-        rows.into_iter().chain([arrivals, hung]).collect()
+        rows.into_iter()
+            .chain(embedded)
+            .chain([arrivals, hung])
+            .collect()
     }
 
     fn set_platform_conventions(&mut self, conventions: ui::platform::PlatformConventions) {
@@ -2534,7 +2570,8 @@ impl Widget for DesktopSurface {
         let row = self
             .shown_row()
             .map_or(StructureChange::None, Widget::take_structure_change);
-        own.join(relayout).join(row)
+        let embedded = self.live_shares.stage.take_structure_change();
+        own.join(relayout).join(row).join(embedded)
     }
 
     /// The shown strip lays out again in the nodes it keeps, under the gutter the surface leaves

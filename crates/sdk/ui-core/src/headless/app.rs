@@ -24,7 +24,7 @@
 //!
 //! What a test then asserts on is the state behind the resource, which is
 //! what a member sees: the record's document
-//! ([`RecordStore::read`](crate::record::RecordStore::read)) and the resources
+//! ([`ResourceStore::read`](crate::resource::ResourceStore::read)) and the resources
 //! the app publishes back ([`HeadlessApp::resources`]). A click is still
 //! available ([`HeadlessApp::frame_mut`]) for the thing a click alone proves —
 //! hit-testing, a hit's geometry, what a frame paints — and nothing else.

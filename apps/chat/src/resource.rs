@@ -46,7 +46,7 @@ impl Chat {
             .map(|(id, channel)| conversation_entry(id, &channel.name, &channel.topic));
         // A conversation the record holds as an item: a group of people, or a person and an
         // agent. What it is called is its own name, which a kept one is made with, else what its
-        // participants are called; the row shows those participants beside it.
+        // members are called; the row shows those members beside it.
         let conversations = self
             .channels
             .iter()
@@ -57,7 +57,7 @@ impl Chat {
                     &self.display_names(id, None, &crate::projection::AgentNames::new()),
                     "",
                 )
-                .showing(self.participant_rows(id))
+                .showing(self.member_rows(id))
             });
         let categories = self.categories.iter().map(|(id, category)| {
             SearchEntry::new(&category.name, "Category").anchored(anchor("categories", id))
@@ -90,21 +90,18 @@ impl Chat {
 
     /// The people in the conversation `id`, as a row shows them: named by the
     /// record when it knows them, else by what their own entry is called.
-    fn participant_rows(&self, id: &Id) -> Vec<IndexPerson> {
-        self.conversation_participants(id)
+    fn member_rows(&self, id: &Id) -> Vec<IndexPerson> {
+        self.conversation_members(id)
             .into_iter()
-            .map(|participant| IndexPerson {
+            .map(|member| IndexPerson {
                 name: self
                     .people
-                    .find(&crate::record::member_slot(&participant))
+                    .find(&crate::record::member_slot(&member))
                     .map(|person| person.name.trim().to_owned())
                     .unwrap_or_default(),
-                anchor: item_resource_id::<Self>(
-                    "people",
-                    &crate::record::member_slot(&participant),
-                ),
-                identity: participant.id().to_owned(),
-                agent: !participant.is_person(),
+                anchor: item_resource_id::<Self>("people", &crate::record::member_slot(&member)),
+                identity: member.id().to_owned(),
+                agent: !member.is_person(),
             })
             .collect()
     }
@@ -217,7 +214,7 @@ impl ResourceApp for ChatShell {
     const TITLE: &'static str = "Chat";
     const TITLE_KEY: &'static str = "chat-app-title";
     const ICON: Option<&'static str> = Some("chat");
-    const WORKSPACE_RECORD: bool = true;
+    const WORKSPACE_RESOURCE: bool = true;
 
     /// The chat's messages, kept in parts beside the workspace's chat record.
     fn records(records: &mut ui::framework::Records<'_>) {
@@ -252,7 +249,7 @@ impl ResourceApp for ChatShell {
         } else {
             ChatRuntime::Unavailable
         };
-        let identity = LocalIdentity::for_participant(&me);
+        let identity = LocalIdentity::for_member(&me);
         let models = if live {
             // The host supplies its default capability before any explicit
             // mount-local loans. The most recent loan is authoritative, even
@@ -296,6 +293,8 @@ impl ResourceApp for ChatShell {
         } else {
             app
         };
+        // Where an answer to a question says it was pressed.
+        app.device = cx.device().map(str::to_owned);
         app.attach_framework(cx.dispatcher());
         if let Some(chain) = cx.chain::<crate::parts::ChatPart>() {
             app.attach_chain(chain);
@@ -403,11 +402,7 @@ impl ResourceApp for ChatShell {
         fixture.start(crate::demo::demo(crate::model::ME));
         if fixture.scenario() == Some("agent-work") {
             for (_, invoke) in agent_work_steps() {
-                fixture.version(
-                    demo_agent(),
-                    crate::demo::NOW * 1000,
-                    invoke,
-                );
+                fixture.version(demo_agent(), crate::demo::NOW * 1000, invoke);
             }
         }
     }
@@ -436,7 +431,7 @@ impl ResourceApp for ChatShell {
         if cx.host().is_some_and(|host| host.capture().is_some()) {
             return Vec::new();
         }
-        let creator = LocalIdentity::for_participant(cx.me());
+        let creator = LocalIdentity::for_member(cx.me());
         vec![Chat::BEGIN_CHAT.with(chat::BeginChat {
             name: creator.name,
             initials: creator.initials,
@@ -453,7 +448,10 @@ impl ResourceApp for ChatShell {
 #[cfg(feature = "samples")]
 pub(crate) fn part_scenario(
     scenario: Option<&str>,
-) -> (Option<ChatPart>, Vec<(ui::tilo_resource::MemberId, Invoke<ChatPart>)>) {
+) -> (
+    Option<ChatPart>,
+    Vec<(ui::tilo_resource::MemberId, Invoke<ChatPart>)>,
+) {
     let me = crate::model::ME;
     if scenario == Some("starter") {
         return (None, Vec::new());
@@ -687,10 +685,7 @@ pub(crate) fn agent_summons() -> (Id, crate::record::Message) {
 /// of the work it took on, by the agent.
 #[cfg(feature = "samples")]
 pub(crate) fn agent_work_part_steps() -> Vec<(ui::tilo_resource::MemberId, Invoke<ChatPart>)> {
-    vec![(
-        demo_agent(),
-        agent_work(&Id::from_raw(DEMO_SUMMONS)),
-    )]
+    vec![(demo_agent(), agent_work(&Id::from_raw(DEMO_SUMMONS)))]
 }
 
 /// The demo agent's record of the work `summons` asked of it.

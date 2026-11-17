@@ -348,7 +348,8 @@ impl TileSource for RecordWindows {
 #[test]
 fn a_window_opens_a_resource_on_its_record_through_the_desktop_s_session() {
     use ui::tilo_actions::remote::{
-        APPLICATION_OPEN_ACTION, ActionHost as _, Caller, InvokeRequest, application_record_target,
+        APPLICATION_OPEN_ACTION, ActionHost as _, Caller, InvokeRequest,
+        application_resource_target,
     };
     let mut minter = IdMinter::new(7);
     let chat = tab(&mut minter, "Chat");
@@ -374,7 +375,7 @@ fn a_window_opens_a_resource_on_its_record_through_the_desktop_s_session() {
     let open = |workspace: &str| -> InvokeRequest {
         serde_json::from_value(serde_json::json!({
             "invocation": ui::tilo_actions::InvocationId::new(),
-            "target": application_record_target(workspace, "so.tilo.notes", "n:plan", "plan", APPLICATION_OPEN_ACTION),
+            "target": application_resource_target(workspace, "so.tilo.notes", "n:plan", "plan", APPLICATION_OPEN_ACTION),
         }))
         .unwrap()
     };
@@ -407,7 +408,7 @@ fn a_window_opens_a_resource_on_its_record_through_the_desktop_s_session() {
 #[test]
 fn a_window_asks_another_app_for_an_action_through_the_desktop_s_session() {
     use ui::tilo_actions::remote::{
-        ActionHost as _, Caller, InvokeRequest, application_record_target,
+        ActionHost as _, Caller, InvokeRequest, application_resource_target,
     };
     let mut minter = IdMinter::new(7);
     let chat = tab(&mut minter, "Chat");
@@ -433,7 +434,7 @@ fn a_window_asks_another_app_for_an_action_through_the_desktop_s_session() {
     let ask = |argument: serde_json::Value| -> InvokeRequest {
         serde_json::from_value(serde_json::json!({
             "invocation": ui::tilo_actions::InvocationId::new(),
-            "target": application_record_target("workspace", "so.tilo.notes", "n:plan", "plan", "pin"),
+            "target": application_resource_target("workspace", "so.tilo.notes", "n:plan", "plan", "pin"),
             "argument": argument,
         }))
         .unwrap()

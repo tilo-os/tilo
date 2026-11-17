@@ -696,7 +696,7 @@ mod over_the_plane {
     const TOP: &str = include_str!("../../../browser/paint-stream/tests/fixtures/layers.top.json");
 
     /// The relay the test's planes meet on: in-process, with no one to admit,
-    /// since a local plane is its own relay's participant.
+    /// since a local plane is its own relay's member.
     fn relay() -> Arc<Relay> {
         struct Nobody;
         impl RelayAuthority for Nobody {

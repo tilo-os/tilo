@@ -11,7 +11,7 @@
 //! - A `Collection` gives each item a stable id (`cx.id()`), so concurrent
 //!   adds keep both items and an edit follows its item wherever it moves.
 //! - Each edit of a field and each verb is one undo step and one attributed
-//!   version. Undo takes back the local participant's own, not a
+//!   version. Undo takes back the local member's own, not a
 //!   member's.
 //!
 //! The next item's title is typed into a form: local to this window, never

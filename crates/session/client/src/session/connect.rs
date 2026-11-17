@@ -66,7 +66,18 @@ impl Dial {
     /// The dialer this session reaches its host through, with this device's
     /// statement that its endpoint speaks for it (empty where none is
     /// needed); `None` before the first connect.
+    /// The dialer a plane of this session's own opens, and the statement that its endpoint
+    /// speaks for the device; `None` when this session runs no plane.
+    ///
+    /// A session lent the endpoint its device's own session runs joins no plane of its own: the
+    /// device has one session in each workspace's live plane, and a second one under the same key
+    /// shadows the broadcast the device publishes its presence on, so the people around it hear
+    /// the cached group and then silence. The device's own session opens the plane instead.
     pub(super) fn plane(&self) -> Option<(Arc<Dialer>, Vec<u8>)> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.lent.is_some() {
+            return None;
+        }
         let dialer = self.dialer.clone()?;
         Some((dialer, self.delegation.clone().unwrap_or_default()))
     }

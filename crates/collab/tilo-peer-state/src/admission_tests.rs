@@ -240,7 +240,7 @@ tilo_test_env::scenario! {
             workspace_changes: seed_workspace(workspace, &ac, &[ac.clone(), bc.clone()]).unwrap(),
             documents: vec![SeedDocument {
                 app_id: "test.app".into(),
-                record_id: "tab:1".into(),
+                document_id: "tab:1".into(),
                 kind: "test".into(),
                 bytes: document.save(),
             }],
@@ -519,7 +519,7 @@ tilo_test_env::scenario! {
                         .unwrap(),
                     documents: vec![SeedDocument {
                         app_id: "test.app".into(),
-                        record_id: "tab:1".into(),
+                        document_id: "tab:1".into(),
                         kind: "test".into(),
                         bytes: document.save(),
                     }],
@@ -1173,7 +1173,7 @@ pub(crate) fn seeded() -> (StatePeer, SigningKey, SigningKey, DeviceCert, System
                     .unwrap(),
                 documents: vec![SeedDocument {
                     app_id: "test.app".into(),
-                    record_id: "tab:1".into(),
+                    document_id: "tab:1".into(),
                     kind: "test".into(),
                     bytes: document.save(),
                 }],
@@ -1601,7 +1601,7 @@ tilo_test_env::scenario! {
     }
 
     phase concurrent_receipts_for_one_invite_keep_the_redemption_that_reached_it_first;
-    // Two participants may redeem one invitation at once, each before it holds
+    // Two key holders may redeem one invitation at once, each before it holds
     // the other's receipt. An invitation admits one person: every receiver keeps
     // the redemption that reached it first and refuses the other, whichever of
     // the two arrives first.
@@ -2592,7 +2592,7 @@ fn durability_receipt_is_distinct_from_acceptance_and_survives_restore() {
                     .unwrap(),
                 documents: vec![SeedDocument {
                     app_id: "test.app".into(),
-                    record_id: "tab:1".into(),
+                    document_id: "tab:1".into(),
                     kind: "test".into(),
                     bytes: doc.save(),
                 }],

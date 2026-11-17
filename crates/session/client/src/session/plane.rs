@@ -6,7 +6,7 @@
 //! that bridges anything — seals its tracks under the workspace scope's
 //! channel content keys ([`route`]) and opens only what the devices its
 //! governance admits published ([`crate::replica`]'s
-//! participants). The carrier is the one every device dials: a direct iroh
+//! key holders). The carrier is the one every device dials: a direct iroh
 //! session to the device that serves the workspace ([`tilo_live::native`]),
 //! its grant this device's certificate and its signed statement that the
 //! page's endpoint speaks for it. This module is the session's bookkeeping
@@ -53,7 +53,7 @@ pub(crate) fn route(workspace: &str) -> DocumentRoute {
     DocumentRoute {
         app_id: collab_types::scope::MEDIA_APP.to_owned(),
         cluster_id: workspace.to_owned(),
-        record: collab_types::scope::WORKSPACE_RECORD.to_owned(),
+        record: collab_types::scope::WORKSPACE_RESOURCE.to_owned(),
     }
 }
 
@@ -540,14 +540,14 @@ impl Task {
                 );
                 continue;
             };
-            let Some(participants) = self.replicas.participants(&route) else {
+            let Some(key_holders) = self.replicas.key_holders(&route) else {
                 self.planes.note_unasked(
                     workspace_id,
                     "Its workspace's governance names none of its devices here yet.",
                 );
                 continue;
             };
-            let members: BTreeSet<[u8; 32]> = participants
+            let members: BTreeSet<[u8; 32]> = key_holders
                 .iter()
                 .map(|device| *device.as_bytes())
                 .collect();

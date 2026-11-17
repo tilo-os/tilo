@@ -1,13 +1,13 @@
 //! Views kept its answers in the workspace's record, one `kept` for everyone; it now keeps each
 //! person's views in their own record (`records: .own`). A person's own record, opened for the
 //! first time on a device that holds the workspace's record of Views, starts as that record
-//! (`collaboration::record::save::open_stored_adopting`): every answer they saw, kept ones kept,
+//! (`collaboration::document::save::open_stored_adopting`): every answer they saw, kept ones kept,
 //! under the ids it had, drawn as the view it was. The workspace's record is left as it was.
 
 use std::rc::Rc;
 
 use automerge::AutoCommit;
-use collaboration::record::save::{open_stored_adopting, record_document, workspace_document};
+use collaboration::document::save::{open_stored_adopting, resource_document, workspace_document};
 use durable_store::{DurableStore, MemoryStore};
 use tilolang_runtime::{Actor, InvokeOutcome, Value};
 
@@ -124,7 +124,7 @@ fn a_kept_answer_moves_into_its_keepers_own_views_with_its_id() {
         .unwrap()
         .storage_key();
     let (doc, _writer) = open_stored_adopting(
-        record_document(&documents, VIEWS, WORKSPACE, &key).unwrap(),
+        resource_document(&documents, VIEWS, WORKSPACE, &key).unwrap(),
         Some(workspace_document(&documents, VIEWS, WORKSPACE).unwrap()),
     );
     let (after, _) = Replica::new(

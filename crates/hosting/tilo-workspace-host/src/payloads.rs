@@ -34,10 +34,10 @@ pub struct Route {
     /// Workspace (cluster) id.
     pub cluster_id: String,
     /// Record wire name.
-    pub record_id: String,
+    pub document_id: String,
     /// The member's own record this is, as the frame says
     /// ([`neighbour_wire::NeighbourMsg::AppDocument`]'s `own`).
-    pub own: Option<collab_types::OwnRecord>,
+    pub own: Option<collab_types::OwnResource>,
 }
 
 /// What a checkpoint body is, once the adapter has confirmed it is a whole

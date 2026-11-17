@@ -11,7 +11,7 @@
     clippy::panic,
     clippy::too_many_lines,
     clippy::significant_drop_tightening,
-    reason = "in a test these are the assertion, not a hazard; one test is one transcript between a native participant and a page"
+    reason = "in a test these are the assertion, not a hazard; one test is one transcript between a native member and a page"
 )]
 
 use std::sync::Arc;

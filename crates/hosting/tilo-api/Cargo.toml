@@ -22,6 +22,8 @@ iroh-base.workspace = true
 iroh.workspace = true
 # The relays the grant's endpoint dials the person's devices through.
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
+# Which host serves a call: the same ranking the workspace's devices use.
+tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 collab-types = { path = "../../collab/collab-types" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-session-client = { path = "../../session/client" }

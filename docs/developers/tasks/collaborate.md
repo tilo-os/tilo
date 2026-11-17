@@ -18,7 +18,7 @@ Bind controls to generated descriptors through `ViewCx`. One action becomes
 one attributed version and undo step; a bulk operation belongs in one action.
 Use `Collection` item ids from `ActionCx::id()` so an edit follows its item.
 `String` fields merge concurrent text edits; booleans and numbers resolve as
-registers. Put visual caches and participant-local state outside the shared
+registers. Put visual caches and member-local state outside the shared
 model. External effects need their own effect contract; replaying a resource
 edit must not repeat a network request or file write.
 

@@ -574,17 +574,18 @@ const found = (name, nth = 0) => `(() => {
   if (root) walk(root);
   const matches = found.filter(n => n.name === ${JSON.stringify(name)} && n.bounds);
   const nth = ${nth};
-  return JSON.stringify(matches[nth < 0 ? matches.length + nth : nth] ?? null);
+  const match = matches[nth < 0 ? matches.length + nth : nth];
+  // '' while it is not there, so a wait on this reads it as not yet.
+  return match ? JSON.stringify(match) : '';
 })()`;
-const find = (tab, name, nth = 0) => tab.evaluate(found(name, nth));
+const find = async (tab, name, nth = 0) => (await tab.evaluate(found(name, nth))) || 'null';
 // The first node named `name` the desktop publishes, once it does, or null.
 // The tree is asked for once (the runtime then publishes every change to it)
 // and the wait ends on the page's own changes, so it costs the page no turns.
 const published = async (tab, name, what, timeout = stepLimit(3), nth = 0) => {
   await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
-  // `found` answers "null" (a string, so true) when the node is not there.
   const node = await tab.waitFor(found(name, nth), {timeout}).catch(() => null);
-  if (!node || node === 'null') {
+  if (!node) {
     await dump(tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
     await failed(`${what} never appeared: ${name}`, tab);
   }

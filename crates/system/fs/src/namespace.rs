@@ -14,8 +14,8 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use fs_protocol::{
     ContentRevisionV1, FILE_BINDING_VERSION, FileActor, FileBindingV1, FileDocumentId,
-    FileMutationParticipantRole, FileMutationTransactionManifest, FileNameV1, FileNodeKind,
-    MAX_FILE_NAME_BYTES,
+    FileMutationTransactionManifest, FileNameV1, FileNodeKind, MAX_FILE_NAME_BYTES,
+    TransactionFileRole,
 };
 use fuser::{FileAttr, FileType, INodeNo};
 use iroh_blobs::Hash;
@@ -29,7 +29,7 @@ pub use fs_protocol::tree::ROOT_ID;
 // the same document the mount writes.
 use fs_protocol::tree::{
     CONTENT_REVISION_KEY, DOCUMENT_ID_KEY, NODES_KEY, PLACEMENT_NAME_KEY, ROOT_DOCUMENT_ID_KEY,
-    TRASH_ID, record_node_id,
+    TRASH_ID, document_node_id,
 };
 const RECORD_ID_MIGRATION_DOMAIN: &[u8] = b"tilo.collaborative-fs.namespace-record-id.v1";
 /// Bounded fixed-point rounds for sibling name conflicts: each round gives a losing
@@ -55,7 +55,7 @@ pub use leases::{LeaseRequest, VersionFence, WriteLease};
 pub use posix::{DEFAULT_DIR_MODE, DEFAULT_FILE_MODE, PosixAttrs};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LiveRecordBlobRoots {
+pub struct LiveDocumentBlobRoots {
     pub document_id: FileDocumentId,
     pub manifest: Option<Hash>,
     pub thumbnail: Option<Hash>,
@@ -70,19 +70,19 @@ pub(crate) struct LiveBlobOwner {
 }
 
 #[derive(Clone, Copy, Debug, thiserror::Error, PartialEq, Eq)]
-pub enum LiveRecordBlobScanError {
+pub enum LiveDocumentBlobScanError {
     #[error("live-record blob scan limit must be between 1 and {MAX_LIVE_RECORD_BLOB_SCAN}")]
     InvalidLimit,
     #[error("live namespace exceeds the blob scan limit of {limit} records")]
     LimitExceeded { limit: usize },
     #[error("live namespace record is missing its stable record identity")]
-    MissingRecordIdentity,
+    MissingDocumentIdentity,
 }
 
 #[derive(Clone, Copy, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum BindingProjectionError {
     #[error("signed binding does not match a unique stable record")]
-    UnknownOrDuplicateRecord,
+    UnknownOrDuplicateDocument,
     #[error("signed binding parent is not a unique live directory")]
     UnknownParent,
     #[error("signed binding changes the immutable node kind")]
@@ -102,7 +102,7 @@ pub enum TransactionProjectionError {
     #[error("signed transaction is invalid")]
     InvalidTransaction,
     #[error("transaction records do not resolve uniquely")]
-    UnknownOrDuplicateRecord,
+    UnknownOrDuplicateDocument,
     #[error("transaction structural precondition no longer holds")]
     PreconditionFailed,
     #[error("replacement has incompatible node kinds")]
@@ -191,7 +191,7 @@ pub(crate) struct InodeView {
 /// The record UUID is the durable identity. `path` is projection metadata: it is
 /// replaced on a rename or move and never accepted as an authority token.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct IndexedRecord {
+pub struct IndexedDocument {
     pub document_id: FileDocumentId,
     pub node_id: String,
     pub parent_id: String,
@@ -224,24 +224,24 @@ struct TreeIndex {
     /// The nodes carrying each stable record id, live or trashed; a node's record id is
     /// written once, when the node is created or migrated.
     records: HashMap<FileDocumentId, BTreeSet<String>>,
-    record_of: HashMap<String, FileDocumentId>,
+    document_of: HashMap<String, FileDocumentId>,
 }
 
 impl TreeIndex {
-    fn bind_record(&mut self, id: &str, document_id: FileDocumentId) {
-        if self.record_of.get(id) == Some(&document_id) {
+    fn bind_document(&mut self, id: &str, document_id: FileDocumentId) {
+        if self.document_of.get(id) == Some(&document_id) {
             return;
         }
-        self.unbind_record(id);
+        self.unbind_document(id);
         self.records
             .entry(document_id)
             .or_default()
             .insert(id.to_string());
-        self.record_of.insert(id.to_string(), document_id);
+        self.document_of.insert(id.to_string(), document_id);
     }
 
-    fn unbind_record(&mut self, id: &str) {
-        let Some(document_id) = self.record_of.remove(id) else {
+    fn unbind_document(&mut self, id: &str) {
+        let Some(document_id) = self.document_of.remove(id) else {
             return;
         };
         if let Some(ids) = self.records.get_mut(&document_id) {
@@ -314,10 +314,10 @@ impl TreeIndex {
 /// Order-independent digest of the record index: the wrapping 256-bit sum of one digest
 /// per row, so adding or removing a row updates it in O(1) instead of rehashing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct RecordIndexDigest([u64; 4]);
+struct DocumentIndexDigest([u64; 4]);
 
-impl RecordIndexDigest {
-    fn row(record: &IndexedRecord) -> [u64; 4] {
+impl DocumentIndexDigest {
+    fn row(record: &IndexedDocument) -> [u64; 4] {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"tilo.fs.namespace-record-index.row.v2\0");
         hasher.update(record.document_id.0.as_bytes());
@@ -336,7 +336,7 @@ impl RecordIndexDigest {
         limbs
     }
 
-    fn add(&mut self, record: &IndexedRecord) {
+    fn add(&mut self, record: &IndexedDocument) {
         let row = Self::row(record);
         let mut carry = false;
         for (limb, value) in self.0.iter_mut().zip(row) {
@@ -347,7 +347,7 @@ impl RecordIndexDigest {
         }
     }
 
-    fn remove(&mut self, record: &IndexedRecord) {
+    fn remove(&mut self, record: &IndexedDocument) {
         let row = Self::row(record);
         let mut borrow = false;
         for (limb, value) in self.0.iter_mut().zip(row) {
@@ -372,13 +372,13 @@ pub struct Namespace {
     next_id: u64,
     /// Stable-record catalogue for the mount's paged record projection, updated with
     /// structural mutations rather than rebuilt by every page request.
-    record_index: BTreeMap<FileDocumentId, IndexedRecord>,
-    record_index_order: Vec<FileDocumentId>,
-    record_index_revision: String,
+    document_index: BTreeMap<FileDocumentId, IndexedDocument>,
+    document_index_order: Vec<FileDocumentId>,
+    document_index_revision: String,
     /// Stable record identities that are currently multiply bound; they stay absent from
     /// the public index until a full reconciliation proves the ambiguity gone.
-    record_index_ambiguous: HashSet<FileDocumentId>,
-    record_index_digest: RecordIndexDigest,
+    document_index_ambiguous: HashSet<FileDocumentId>,
+    document_index_digest: DocumentIndexDigest,
     tree: TreeIndex,
     /// Every node carries a record id. Local creation always writes one, so only a
     /// document import can clear this (and each import re-runs the migration), which keeps
@@ -395,7 +395,7 @@ pub struct Namespace {
     /// delta. Encoding a delta regenerates its changes from the op set, so one per changed
     /// file is quadratic in a changeset.
     #[cfg(test)]
-    record_index_rebuilds: u64,
+    document_index_rebuilds: u64,
     /// Changes whenever changes another replica made are merged into the document, where
     /// concurrent edits and content conflicts can only arrive. Drawn from a process-wide
     /// counter so no two instances share a value.
@@ -405,7 +405,7 @@ pub struct Namespace {
     #[cfg(test)]
     conflict_scans: std::sync::Arc<std::sync::atomic::AtomicU64>,
     #[cfg(test)]
-    record_index_page_reads: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    document_index_page_reads: std::sync::Arc<std::sync::atomic::AtomicU64>,
     #[cfg(test)]
     node_entry_reads: std::sync::Arc<std::sync::atomic::AtomicU64>,
     node_lookups: std::sync::Arc<std::sync::atomic::AtomicU64>,
@@ -514,23 +514,23 @@ impl Namespace {
             next_ino: ROOT_INO + 1,
             author,
             next_id,
-            record_index: BTreeMap::new(),
-            record_index_order: Vec::new(),
-            record_index_revision: String::new(),
-            record_index_ambiguous: HashSet::new(),
-            record_index_digest: RecordIndexDigest::default(),
+            document_index: BTreeMap::new(),
+            document_index_order: Vec::new(),
+            document_index_revision: String::new(),
+            document_index_ambiguous: HashSet::new(),
+            document_index_digest: DocumentIndexDigest::default(),
             tree: TreeIndex::default(),
             document_ids_complete: false,
             placed_since_resolve: HashSet::new(),
             cycle_scan_pending: true,
             #[cfg(test)]
-            record_index_rebuilds: 0,
+            document_index_rebuilds: 0,
             merge_generation: next_merge_generation(),
             opened_ms: tilo_clock::unix_now_ns() / 1_000_000,
             #[cfg(test)]
             conflict_scans: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[cfg(test)]
-            record_index_page_reads: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            document_index_page_reads: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[cfg(test)]
             node_entry_reads: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             node_lookups: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -548,7 +548,7 @@ impl Namespace {
         let _ = ns
             .doc
             .put(&ROOT, ROOT_DOCUMENT_ID_KEY, root_document_id.0.to_string());
-        ns.rebuild_record_index();
+        ns.rebuild_document_index();
         Ok(ns)
     }
 
@@ -574,7 +574,7 @@ impl Namespace {
         }
         let mut ns = Self::over(doc, nodes, author, max_local)?;
         ns.ensure_document_ids();
-        ns.rebuild_record_index();
+        ns.rebuild_document_index();
         Ok(ns)
     }
 
@@ -709,7 +709,7 @@ impl Namespace {
         self.cycle_scan_pending = true;
         self.placed_since_resolve.clear();
         self.ensure_document_ids();
-        self.rebuild_record_index();
+        self.rebuild_document_index();
         Ok(Vec::new())
     }
 
@@ -753,10 +753,10 @@ impl Namespace {
     }
 
     /// Reconstruct the index once while loading or after an opaque remote merge. Serving a
-    /// record-index page never calls this: page work is a slice of `record_index`. Every
+    /// record-index page never calls this: page work is a slice of `document_index`. Every
     /// mutation this replica makes on its own refreshes only the nodes it changed
     /// ([`Self::index_refresh_node`]).
-    fn rebuild_record_index(&mut self) {
+    fn rebuild_document_index(&mut self) {
         let NodeWalk {
             tree,
             rows: raw,
@@ -770,7 +770,7 @@ impl Namespace {
                 .or_default()
                 .insert(id.clone());
         }
-        let mut record_index = BTreeMap::new();
+        let mut document_index = BTreeMap::new();
         let mut queue = VecDeque::from([(ROOT_ID.to_string(), String::from("/"))]);
         let mut visited = HashSet::from([ROOT_ID.to_string()]);
         while let Some((parent, parent_path)) = queue.pop_front() {
@@ -793,9 +793,9 @@ impl Namespace {
                 if occurrences.get(&document_id) != Some(&1) {
                     continue;
                 }
-                record_index.insert(
+                document_index.insert(
                     document_id,
-                    IndexedRecord {
+                    IndexedDocument {
                         document_id,
                         node_id: id.clone(),
                         parent_id: item.parent_id.clone(),
@@ -805,21 +805,21 @@ impl Namespace {
                 );
             }
         }
-        self.record_index_digest = RecordIndexDigest::default();
-        for record in record_index.values() {
-            self.record_index_digest.add(record);
+        self.document_index_digest = DocumentIndexDigest::default();
+        for record in document_index.values() {
+            self.document_index_digest.add(record);
         }
-        self.record_index = record_index;
-        self.record_index_order = self.record_index.keys().copied().collect();
-        self.record_index_ambiguous = occurrences
+        self.document_index = document_index;
+        self.document_index_order = self.document_index.keys().copied().collect();
+        self.document_index_ambiguous = occurrences
             .into_iter()
             .filter_map(|(document_id, count)| (count > 1).then_some(document_id))
             .collect();
-        self.update_record_index_revision();
+        self.update_document_index_revision();
         self.cycle_scan_pending = self.find_cycle(None).is_some();
         #[cfg(test)]
         {
-            self.record_index_rebuilds = self.record_index_rebuilds.saturating_add(1);
+            self.document_index_rebuilds = self.document_index_rebuilds.saturating_add(1);
         }
     }
 
@@ -850,7 +850,7 @@ impl Namespace {
             let is_dir = NodeKind::from_str(&str_at(&self.doc, &node, "kind").unwrap_or_default())
                 == NodeKind::Dir;
             if let Some(node_document_id) = node_document_id {
-                tree.bind_record(&id, node_document_id);
+                tree.bind_document(&id, node_document_id);
             }
             if let Some(document_id) = document_id {
                 let count = occurrences
@@ -883,7 +883,7 @@ impl Namespace {
     /// Fold what an apply brought into the structural index and the catalogue: the nodes the
     /// patches touched, and the subtrees a placement change moved, so receiving one of a
     /// peer's edits costs that edit rather than the workspace. Only opening a document reads
-    /// every node ([`Self::rebuild_record_index`]).
+    /// every node ([`Self::rebuild_document_index`]).
     ///
     /// Takes the patches the caller armed before the apply
     /// ([`ChangeTrackedDoc::arm_patches`]) and disarms.
@@ -893,7 +893,7 @@ impl Namespace {
             // A document root without a record identity is a legacy snapshot migrating through
             // a peer: its node ids are derived for the whole document, which is the load path.
             self.ensure_document_ids();
-            self.rebuild_record_index();
+            self.rebuild_document_index();
             self.doc.disarm_patches();
             return;
         }
@@ -937,10 +937,10 @@ impl Namespace {
             records.extend(self.root_document_id());
         }
         for id in touched {
-            records.extend(self.tree.record_of.get(id).copied());
+            records.extend(self.tree.document_of.get(id).copied());
             if self.node(id).is_none() {
                 self.tree.remove(id);
-                self.tree.unbind_record(id);
+                self.tree.unbind_document(id);
                 continue;
             }
             let placement = self.tree.placement.get(id).cloned();
@@ -954,24 +954,24 @@ impl Namespace {
                 moved.push(id.clone());
             }
             match self.node_document_id(id) {
-                Some(record) => self.tree.bind_record(id, record),
-                None => self.tree.unbind_record(id),
+                Some(record) => self.tree.bind_document(id, record),
+                None => self.tree.unbind_document(id),
             }
-            records.extend(self.tree.record_of.get(id).copied());
+            records.extend(self.tree.document_of.get(id).copied());
         }
         for record in &records {
-            if let Some(row) = self.record_index.get(record).cloned()
-                && self.tree.record_of.get(&row.node_id) != Some(record)
+            if let Some(row) = self.document_index.get(record).cloned()
+                && self.tree.document_of.get(&row.node_id) != Some(record)
             {
                 self.index_drop_row(&row);
             }
-            if self.record_occurrences(*record) == 1 {
-                self.record_index_ambiguous.remove(record);
+            if self.document_occurrences(*record) == 1 {
+                self.document_index_ambiguous.remove(record);
             } else {
-                self.record_index_ambiguous.insert(*record);
+                self.document_index_ambiguous.insert(*record);
             }
             self.index_refresh_bound_nodes(*record);
-            self.update_record_index_revision();
+            self.update_document_index_revision();
         }
         for id in &moved {
             self.index_refresh_subtree(id);
@@ -988,7 +988,7 @@ impl Namespace {
         }
     }
 
-    fn record_occurrences(&self, document_id: FileDocumentId) -> usize {
+    fn document_occurrences(&self, document_id: FileDocumentId) -> usize {
         let bound = self
             .tree
             .nodes_of(document_id)
@@ -1025,54 +1025,54 @@ impl Namespace {
         let _ = self
             .doc
             .put(&node, DOCUMENT_ID_KEY, document_id.0.to_string());
-        self.tree.bind_record(id, document_id);
+        self.tree.bind_document(id, document_id);
     }
 
     /// Snapshot one bounded canonical page, ordered by stable record UUID, cloning at most
     /// `limit` entries.
-    pub fn indexed_record_page(&self, offset: usize, limit: usize) -> Vec<IndexedRecord> {
+    pub fn indexed_document_page(&self, offset: usize, limit: usize) -> Vec<IndexedDocument> {
         #[cfg(test)]
-        self.record_index_page_reads
+        self.document_index_page_reads
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let end = offset
             .saturating_add(limit)
-            .min(self.record_index_order.len());
-        self.record_index_order
+            .min(self.document_index_order.len());
+        self.document_index_order
             .get(offset..end)
             .unwrap_or_default()
             .iter()
-            .filter_map(|document_id| self.record_index.get(document_id))
+            .filter_map(|document_id| self.document_index.get(document_id))
             .cloned()
             .collect()
     }
 
     #[must_use]
-    pub fn indexed_record_count(&self) -> usize {
-        self.record_index_order.len()
+    pub fn indexed_document_count(&self) -> usize {
+        self.document_index_order.len()
     }
 
     #[must_use]
-    pub fn indexed_record(&self, document_id: FileDocumentId) -> Option<IndexedRecord> {
-        self.record_index.get(&document_id).cloned()
+    pub fn indexed_document(&self, document_id: FileDocumentId) -> Option<IndexedDocument> {
+        self.document_index.get(&document_id).cloned()
     }
 
     /// Opaque generation captured when the index changed. Reading it is O(1): serving a
     /// manifest or page must never enumerate Automerge heads to validate a cursor.
     #[must_use]
-    pub fn indexed_record_revision(&self) -> &str {
-        &self.record_index_revision
+    pub fn indexed_document_revision(&self) -> &str {
+        &self.document_index_revision
     }
 
     /// O(1): derived from the row count and the incrementally maintained row digest, so a
     /// create does not rehash the whole catalogue.
-    fn update_record_index_revision(&mut self) {
+    fn update_document_index_revision(&mut self) {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"tilo.fs.namespace-record-index.v2\0");
-        hasher.update(&(self.record_index_order.len() as u64).to_be_bytes());
-        for limb in self.record_index_digest.0 {
+        hasher.update(&(self.document_index_order.len() as u64).to_be_bytes());
+        for limb in self.document_index_digest.0 {
             hasher.update(&limb.to_le_bytes());
         }
-        self.record_index_revision = hasher.finalize().to_hex().to_string();
+        self.document_index_revision = hasher.finalize().to_hex().to_string();
     }
 
     /// Bring one node's catalogue row in line with the document: a create, a rename, a move and
@@ -1084,20 +1084,20 @@ impl Namespace {
         let Some(document_id) = self.document_id_for_id(id) else {
             return;
         };
-        let existing = self.record_index.get(&document_id).cloned();
+        let existing = self.document_index.get(&document_id).cloned();
         if let Some(row) = existing.as_ref().filter(|row| row.node_id != id) {
             // A duplicate durable identity is withheld until a full reconciliation can represent
             // the ambiguity fail-closed.
             let row = row.clone();
             self.index_drop_row(&row);
-            self.record_index_ambiguous.insert(document_id);
-            self.update_record_index_revision();
+            self.document_index_ambiguous.insert(document_id);
+            self.update_document_index_revision();
             return;
         }
-        let desired = if self.record_index_ambiguous.contains(&document_id) {
+        let desired = if self.document_index_ambiguous.contains(&document_id) {
             None
         } else {
-            self.path_for_id(id).map(|path| IndexedRecord {
+            self.path_for_id(id).map(|path| IndexedDocument {
                 document_id,
                 node_id: id.to_string(),
                 parent_id: self.parent_of(id).unwrap_or_default(),
@@ -1114,7 +1114,7 @@ impl Namespace {
         if let Some(row) = desired {
             self.index_admit_row(row);
         }
-        self.update_record_index_revision();
+        self.update_document_index_revision();
     }
 
     /// Re-path `root` and every node below it after a placement change, so a moved subtree
@@ -1137,34 +1137,34 @@ impl Namespace {
         }
     }
 
-    fn index_drop_row(&mut self, row: &IndexedRecord) {
-        self.record_index.remove(&row.document_id);
-        self.record_index_digest.remove(row);
-        if let Ok(position) = self.record_index_order.binary_search(&row.document_id) {
-            self.record_index_order.remove(position);
+    fn index_drop_row(&mut self, row: &IndexedDocument) {
+        self.document_index.remove(&row.document_id);
+        self.document_index_digest.remove(row);
+        if let Ok(position) = self.document_index_order.binary_search(&row.document_id) {
+            self.document_index_order.remove(position);
         }
     }
 
-    fn index_admit_row(&mut self, row: IndexedRecord) {
-        self.record_index_digest.add(&row);
+    fn index_admit_row(&mut self, row: IndexedDocument) {
+        self.document_index_digest.add(&row);
         let position = self
-            .record_index_order
+            .document_index_order
             .binary_search(&row.document_id)
             .unwrap_or_else(|position| position);
-        self.record_index_order.insert(position, row.document_id);
-        self.record_index.insert(row.document_id, row);
+        self.document_index_order.insert(position, row.document_id);
+        self.document_index.insert(row.document_id, row);
     }
 
     #[cfg(test)]
     #[must_use]
-    pub fn record_index_rebuild_count(&self) -> u64 {
-        self.record_index_rebuilds
+    pub fn document_index_rebuild_count(&self) -> u64 {
+        self.document_index_rebuilds
     }
 
     #[cfg(test)]
     #[must_use]
-    pub fn record_index_page_read_count(&self) -> u64 {
-        self.record_index_page_reads
+    pub fn document_index_page_read_count(&self) -> u64 {
+        self.document_index_page_reads
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
@@ -1214,7 +1214,7 @@ impl Namespace {
     fn name_of(&self, id: &str) -> Option<FileNameV1> {
         read_name(&self.doc, &self.node(id)?, "name")
     }
-    fn unique_node_id_for_record(&self, document_id: FileDocumentId) -> Option<String> {
+    fn unique_node_id_for_document(&self, document_id: FileDocumentId) -> Option<String> {
         if self.document_id_for_id(ROOT_ID) == Some(document_id) {
             return Some(ROOT_ID.to_string());
         }
@@ -1463,15 +1463,15 @@ impl Namespace {
         if binding.parent.is_none() {
             return self.apply_signed_root_binding(binding);
         }
-        let parent_record = binding
+        let parent_document = binding
             .parent
             .ok_or(BindingProjectionError::UnknownParent)?;
         let expected_kind = match binding.kind {
             FileNodeKind::File => NodeKind::File,
             FileNodeKind::Directory => NodeKind::Dir,
         };
-        let parent_id = self.resolve_signed_parent(parent_record)?;
-        let existing = self.signed_record_node(binding.document_id)?;
+        let parent_id = self.resolve_signed_parent(parent_document)?;
+        let existing = self.signed_document_node(binding.document_id)?;
         if let Some(id) = existing {
             if self.kind_of(&id) != expected_kind {
                 return Err(BindingProjectionError::KindMismatch);
@@ -1535,7 +1535,7 @@ impl Namespace {
     }
 
     /// Admit a binding only to create a missing node, never to move, resurrect or tombstone an
-    /// existing one: transaction participants make their pre-transaction nodes available to the
+    /// existing one: transaction files make their pre-transaction nodes available to the
     /// projector without letting a stale ordinary binding undo the transaction on replay.
     pub fn apply_signed_binding_create_only(
         &mut self,
@@ -1547,7 +1547,7 @@ impl Namespace {
         if binding.parent.is_none() {
             return self.apply_signed_root_binding(binding);
         }
-        if self.signed_record_node(binding.document_id)?.is_some() || binding.tombstoned {
+        if self.signed_document_node(binding.document_id)?.is_some() || binding.tombstoned {
             return Ok(false);
         }
         let expected_kind = match binding.kind {
@@ -1599,13 +1599,13 @@ impl Namespace {
 
     fn resolve_signed_parent(
         &self,
-        parent_record: FileDocumentId,
+        parent_document: FileDocumentId,
     ) -> Result<String, BindingProjectionError> {
-        if self.document_id_for(ROOT_INO) == Some(parent_record) {
+        if self.document_id_for(ROOT_INO) == Some(parent_document) {
             return Ok(ROOT_ID.to_string());
         }
         let id = self
-            .unique_live_node_for_record(parent_record)
+            .unique_live_node_for_document(parent_document)
             .ok_or(BindingProjectionError::UnknownParent)?;
         if self.kind_of(&id) != NodeKind::Dir {
             return Err(BindingProjectionError::UnknownParent);
@@ -1615,7 +1615,7 @@ impl Namespace {
 
     /// The one node carrying a stable record id, whether currently live or trashed. Duplicate
     /// identities stay fail-closed.
-    fn signed_record_node(
+    fn signed_document_node(
         &self,
         document_id: FileDocumentId,
     ) -> Result<Option<String>, BindingProjectionError> {
@@ -1627,7 +1627,7 @@ impl Namespace {
             return Ok(None);
         };
         if matches.next().is_some() {
-            return Err(BindingProjectionError::UnknownOrDuplicateRecord);
+            return Err(BindingProjectionError::UnknownOrDuplicateDocument);
         }
         Ok(Some(id.clone()))
     }
@@ -1757,16 +1757,16 @@ impl Namespace {
     ) -> Result<Option<Vec<u8>>, TransactionProjectionError> {
         match manifest.operation {
             fs_protocol::FileMutationOperation::RestoreContent { prior_revision, .. } => {
-                let participant = manifest
-                    .participants
+                let transaction_file = manifest
+                    .files
                     .first()
                     .ok_or(TransactionProjectionError::InvalidTransaction)?;
-                let revision = participant
+                let revision = transaction_file
                     .proposed_content_revision
                     .ok_or(TransactionProjectionError::InvalidTransaction)?;
                 let ino = self
-                    .ensure_ino_for_document_id(participant.document_id)
-                    .ok_or(TransactionProjectionError::UnknownOrDuplicateRecord)?;
+                    .ensure_ino_for_document_id(transaction_file.document_id)
+                    .ok_or(TransactionProjectionError::UnknownOrDuplicateDocument)?;
                 let current = self.content_revision_for(ino);
                 if current == Some(revision) {
                     return Ok(None);
@@ -1809,8 +1809,8 @@ impl Namespace {
         manifest: &FileMutationTransactionManifest,
     ) -> Result<Option<Vec<u8>>, TransactionProjectionError> {
         let fs_protocol::FileMutationOperation::MergeContentConflict {
-            source_record,
-            parent_record,
+            source_document,
+            parent_document,
             source_name,
             ..
         } = &manifest.operation
@@ -1818,16 +1818,16 @@ impl Namespace {
             return Err(TransactionProjectionError::InvalidTransaction);
         };
         let source = manifest
-            .participants
+            .files
             .first()
-            .filter(|participant| participant.role == FileMutationParticipantRole::MergeSource)
+            .filter(|transaction_file| transaction_file.role == TransactionFileRole::MergeSource)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
         let source_id = self
-            .unique_node_id_for_record(*source_record)
-            .ok_or(TransactionProjectionError::UnknownOrDuplicateRecord)?;
+            .unique_node_id_for_document(*source_document)
+            .ok_or(TransactionProjectionError::UnknownOrDuplicateDocument)?;
         let ino = self.ino_for_id(&source_id);
         let parent_id = self
-            .unique_node_id_for_record(*parent_record)
+            .unique_node_id_for_document(*parent_document)
             .ok_or(TransactionProjectionError::PreconditionFailed)?;
         let current = self.content_revision_for(ino);
         if current == source.proposed_content_revision {
@@ -1858,9 +1858,9 @@ impl Namespace {
         delta: &[u8],
     ) -> Result<(), TransactionProjectionError> {
         let fs_protocol::FileMutationOperation::KeepBothContentConflict {
-            source_record,
-            sibling_record,
-            parent_record,
+            source_document,
+            sibling_document,
+            parent_document,
             source_name,
             sibling_name,
             ..
@@ -1869,22 +1869,22 @@ impl Namespace {
             return Err(TransactionProjectionError::InvalidTransaction);
         };
         let source = manifest
-            .participants
+            .files
             .iter()
-            .find(|participant| participant.role == FileMutationParticipantRole::KeepBothSource)
+            .find(|transaction_file| transaction_file.role == TransactionFileRole::KeepBothSource)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
         let sibling = manifest
-            .participants
+            .files
             .iter()
-            .find(|participant| participant.role == FileMutationParticipantRole::KeepBothSibling)
+            .find(|transaction_file| transaction_file.role == TransactionFileRole::KeepBothSibling)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
         let mut candidate = self.clone();
         let source_id = candidate
-            .unique_node_id_for_record(*source_record)
-            .ok_or(TransactionProjectionError::UnknownOrDuplicateRecord)?;
+            .unique_node_id_for_document(*source_document)
+            .ok_or(TransactionProjectionError::UnknownOrDuplicateDocument)?;
         let source_ino = candidate.ino_for_id(&source_id);
         let parent_id = candidate
-            .unique_node_id_for_record(*parent_record)
+            .unique_node_id_for_document(*parent_document)
             .ok_or(TransactionProjectionError::PreconditionFailed)?;
         let current_source = candidate.content_revision_for(source_ino);
         if candidate.parent_of(&source_id) != Some(parent_id.clone())
@@ -1899,7 +1899,7 @@ impl Namespace {
             .apply_incremental(delta)
             .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
         let sibling_id = candidate
-            .unique_node_id_for_record(*sibling_record)
+            .unique_node_id_for_document(*sibling_document)
             .ok_or(TransactionProjectionError::PreconditionFailed)?;
         let sibling_ino = candidate.ino_for_id(&sibling_id);
         if candidate.parent_of(&sibling_id) != Some(parent_id)
@@ -1933,9 +1933,9 @@ impl Namespace {
         manifest: &FileMutationTransactionManifest,
     ) -> Result<Option<Vec<u8>>, TransactionProjectionError> {
         let fs_protocol::FileMutationOperation::KeepBothContentConflict {
-            source_record,
-            sibling_record,
-            parent_record,
+            source_document,
+            sibling_document,
+            parent_document,
             source_name,
             sibling_name,
             ..
@@ -1944,26 +1944,26 @@ impl Namespace {
             return Err(TransactionProjectionError::InvalidTransaction);
         };
         let source = manifest
-            .participants
+            .files
             .iter()
-            .find(|participant| participant.role == FileMutationParticipantRole::KeepBothSource)
+            .find(|transaction_file| transaction_file.role == TransactionFileRole::KeepBothSource)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
         let sibling = manifest
-            .participants
+            .files
             .iter()
-            .find(|participant| participant.role == FileMutationParticipantRole::KeepBothSibling)
+            .find(|transaction_file| transaction_file.role == TransactionFileRole::KeepBothSibling)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
         let source_id = self
-            .unique_node_id_for_record(*source_record)
-            .ok_or(TransactionProjectionError::UnknownOrDuplicateRecord)?;
+            .unique_node_id_for_document(*source_document)
+            .ok_or(TransactionProjectionError::UnknownOrDuplicateDocument)?;
         let source_ino = self.ino_for_id(&source_id);
         let parent_id = self
-            .unique_node_id_for_record(*parent_record)
+            .unique_node_id_for_document(*parent_document)
             .ok_or(TransactionProjectionError::PreconditionFailed)?;
         let parent_ino = self.ino_for_id(&parent_id);
 
         // Exact replay after the full namespace snapshot was persisted.
-        if let Some(sibling_id) = self.unique_node_id_for_record(*sibling_record) {
+        if let Some(sibling_id) = self.unique_node_id_for_document(*sibling_document) {
             let sibling_ino = self.ino_for_id(&sibling_id);
             if self.parent_of(&source_id) == Some(parent_id.clone())
                 && self.name_of(&source_id).as_deref() == Some(source_name.as_bytes())
@@ -1996,7 +1996,7 @@ impl Namespace {
             .create_projected_file(
                 parent_ino,
                 sibling_name,
-                *sibling_record,
+                *sibling_document,
                 sibling_hash.as_ref(),
                 sibling_revision.byte_len,
                 manifest.timestamp_ms,
@@ -2021,7 +2021,7 @@ impl Namespace {
 
     #[allow(
         clippy::too_many_lines,
-        reason = "Replacement projection keeps signature/participant checks, replay detection, namespace preconditions, rename, and revision installation in order."
+        reason = "Replacement projection keeps signature and file checks, replay detection, namespace preconditions, rename, and revision installation in order."
     )]
     fn apply_replacement_transaction_in_place(
         &mut self,
@@ -2032,28 +2032,28 @@ impl Namespace {
             source_name,
             destination_parent,
             destination_name,
-            source_record,
-            replaced_record,
+            source_document,
+            replaced_document,
         } = &manifest.operation
         else {
             return Err(TransactionProjectionError::InvalidTransaction);
         };
-        let source_participant = manifest
-            .participants
+        let source_file = manifest
+            .files
             .iter()
-            .find(|value| value.role == FileMutationParticipantRole::Source)
+            .find(|value| value.role == TransactionFileRole::Source)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
-        let replaced_participant = manifest
-            .participants
+        let replaced_file = manifest
+            .files
             .iter()
-            .find(|value| value.role == FileMutationParticipantRole::Replaced)
+            .find(|value| value.role == TransactionFileRole::Replaced)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
         let source_id = self
-            .unique_node_id_for_record(*source_record)
-            .ok_or(TransactionProjectionError::UnknownOrDuplicateRecord)?;
+            .unique_node_id_for_document(*source_document)
+            .ok_or(TransactionProjectionError::UnknownOrDuplicateDocument)?;
         let replaced_id = self
-            .unique_node_id_for_record(*replaced_record)
-            .ok_or(TransactionProjectionError::UnknownOrDuplicateRecord)?;
+            .unique_node_id_for_document(*replaced_document)
+            .ok_or(TransactionProjectionError::UnknownOrDuplicateDocument)?;
 
         let source_live = self.reaches_root(&source_id);
         let replaced_live = self.reaches_root(&replaced_id);
@@ -2103,10 +2103,10 @@ impl Namespace {
             return Err(TransactionProjectionError::NonEmptyDirectory);
         }
         let destination_parent_id = self
-            .unique_node_id_for_record(*destination_parent)
+            .unique_node_id_for_document(*destination_parent)
             .ok_or(TransactionProjectionError::PreconditionFailed)?;
         let source_parent_id = self
-            .unique_node_id_for_record(*source_parent)
+            .unique_node_id_for_document(*source_parent)
             .ok_or(TransactionProjectionError::PreconditionFailed)?;
         if source_id == destination_parent_id
             || self.is_ancestor(&source_id, &destination_parent_id)
@@ -2124,7 +2124,7 @@ impl Namespace {
         ) {
             return Err(TransactionProjectionError::PreconditionFailed);
         }
-        if let Some(revision) = &source_participant.proposed_content_revision
+        if let Some(revision) = &source_file.proposed_content_revision
             && !self.set_content_revision_preserving_preview(
                 source_ino,
                 revision,
@@ -2133,7 +2133,7 @@ impl Namespace {
         {
             return Err(TransactionProjectionError::ContentProjectionFailed);
         }
-        debug_assert_eq!(replaced_participant.document_id, *replaced_record);
+        debug_assert_eq!(replaced_file.document_id, *replaced_document);
         Ok(Some(self.save_incremental()))
     }
 
@@ -2192,14 +2192,14 @@ impl Namespace {
         if self.document_id_for(ROOT_INO) == Some(document_id) {
             return Some(ROOT_INO);
         }
-        let only = self.unique_live_node_for_record(document_id)?;
+        let only = self.unique_live_node_for_document(document_id)?;
         Some(self.ino_for_id(&only))
     }
 
     /// The one live node bound to `document_id`, `None` when there is none or more than one. The
     /// structural index knows every node carrying the id, so this costs O(nodes of the record ×
     /// depth), not a scan of the tree; each candidate is checked against the document.
-    fn unique_live_node_for_record(&self, document_id: FileDocumentId) -> Option<String> {
+    fn unique_live_node_for_document(&self, document_id: FileDocumentId) -> Option<String> {
         let mut live = self
             .tree
             .nodes_of(document_id)
@@ -2264,10 +2264,10 @@ impl Namespace {
     pub fn live_document_ids_for_direct_blob(
         &self,
         hash: Hash,
-        max_live_records: usize,
-    ) -> Result<Vec<FileDocumentId>, LiveRecordBlobScanError> {
+        max_live_documents: usize,
+    ) -> Result<Vec<FileDocumentId>, LiveDocumentBlobScanError> {
         let mut records: Vec<_> = self
-            .live_record_blob_roots(max_live_records)?
+            .live_document_blob_roots(max_live_documents)?
             .into_iter()
             .filter(|roots| roots.manifest == Some(hash) || roots.thumbnail == Some(hash))
             .map(|roots| roots.document_id)
@@ -2279,12 +2279,12 @@ impl Namespace {
 
     /// Minimal live record graph the content store uses to resolve manifest chunks. Crate-private,
     /// so a caller checking one requested blob cannot disclose another record's roots.
-    pub fn live_record_blob_roots(
+    pub fn live_document_blob_roots(
         &self,
-        max_live_records: usize,
-    ) -> Result<Vec<LiveRecordBlobRoots>, LiveRecordBlobScanError> {
-        if max_live_records == 0 || max_live_records > MAX_LIVE_RECORD_BLOB_SCAN {
-            return Err(LiveRecordBlobScanError::InvalidLimit);
+        max_live_documents: usize,
+    ) -> Result<Vec<LiveDocumentBlobRoots>, LiveDocumentBlobScanError> {
+        if max_live_documents == 0 || max_live_documents > MAX_LIVE_RECORD_BLOB_SCAN {
+            return Err(LiveDocumentBlobScanError::InvalidLimit);
         }
         let mut live_count = 0usize;
         let mut roots = Vec::new();
@@ -2293,18 +2293,18 @@ impl Namespace {
                 continue;
             }
             live_count = live_count.saturating_add(1);
-            if live_count > max_live_records {
-                return Err(LiveRecordBlobScanError::LimitExceeded {
-                    limit: max_live_records,
+            if live_count > max_live_documents {
+                return Err(LiveDocumentBlobScanError::LimitExceeded {
+                    limit: max_live_documents,
                 });
             }
             let document_id = self
                 .document_id_for_id(&id)
-                .ok_or(LiveRecordBlobScanError::MissingRecordIdentity)?;
+                .ok_or(LiveDocumentBlobScanError::MissingDocumentIdentity)?;
             let manifest = self.node_hash(&id);
             let thumbnail = self.thumbnail_for_id(&id);
             if manifest.is_some() || thumbnail.is_some() {
-                roots.push(LiveRecordBlobRoots {
+                roots.push(LiveDocumentBlobRoots {
                     document_id,
                     manifest,
                     thumbnail,
@@ -2565,7 +2565,7 @@ impl Namespace {
         // Node identity is derived from the stable record identity, not from the local author
         // counter, so a peer rebuilding this record from the signed log creates the same Automerge
         // object key and the two namespaces merge instead of making two nodes for one record.
-        let derived = record_node_id(document_id);
+        let derived = document_node_id(document_id);
         let id = if self.node(&derived).is_some() {
             if self.document_id_for_id(&derived) == Some(document_id) {
                 return None;
@@ -2593,7 +2593,7 @@ impl Namespace {
             .put(&obj, DOCUMENT_ID_KEY, document_id.0.to_string());
         self.tree
             .place(&id, parent_id.to_string(), name.to_vec().into());
-        self.tree.bind_record(&id, document_id);
+        self.tree.bind_document(&id, document_id);
         self.index_refresh_node(&id);
         Some(id)
     }

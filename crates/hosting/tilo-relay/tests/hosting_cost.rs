@@ -376,7 +376,7 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
                     .zip(1u8..)
                     .map(|((app, record), actor)| SeedDocument {
                         app_id: (*app).into(),
-                        record_id: (*record).into(),
+                        document_id: (*record).into(),
                         kind: "text".into(),
                         bytes: text_document(actor),
                     })

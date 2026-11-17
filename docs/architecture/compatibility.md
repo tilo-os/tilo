@@ -55,11 +55,38 @@ the machinery `tilo device swap` uses on a development machine:
    two minutes, the session starts `tilo-live-update-session.service`
    (`live:session`): it merges the whole update, restarts the changed session
    services and restarts every desktop in place through `tilo-session`
-   (SIGUSR1): the login, the lock and the windows stay.
-5. A restarted unit that fails, or a desktop that does not come back within
-   20 s, puts the previous layer back, restarts the same parts again and
+   (SIGUSR1): the login and the lock stay, and so do the windows. A Tilo
+   app's window is reopened by the new desktop in the tab it stood in. Every
+   other app (one of the machine's own, anything the Tilo runtime does not
+   draw) was started behind an app keeper (`tilo-app-keeper`) and keeps
+   running: the keeper is that app's display and holds its windows while no
+   desktop is there. The launcher starts the keeper inside the app's scope and
+   the app as the keeper's child, and the keeper's directory under
+   `$XDG_RUNTIME_DIR/tilo-session/kept/` records the launch. The desktop that
+   ends leaves such an app untouched only when this is an in-place restart and
+   its keeper answered the desktop in that run; a logout ends it with
+   everything else. The desktop that follows takes each keeper back: it checks
+   that the app's process is the one the keeper started, counts it as a launch
+   of its own again (memory tiers, the pressure watch, its end report, ending
+   it at logout), lets the saved tab of its app wait for its window instead of
+   starting the app again, and attaches the keeper, which shows the windows'
+   last pictures at once. Nothing watches memory pressure in the seconds
+   between the two desktops; the kernel's OOM kill of the app's group is the
+   backstop, and the end is reported as a memory end from the group's events
+   once the new desktop takes it back. An app that ended while no desktop was
+   there is reported from the record its keeper left. A keeper started by an
+   older desktop that speaks another version of its interface is left running
+   and not taken back.
+5. A restarted unit that fails, or a desktop that does not become usable again
+   within 60 s, puts the previous layer back, restarts the same parts again and
    marks the update failed; it then applies with the next restart of the
-   machine, which the session asks for.
+   machine, which the session asks for. "Usable" is not "a compositor process
+   is running": the session publishes a record once every enabled output has
+   shown its first frame — the lock surface instead, when it starts locked —
+   and the windows this device left open are being asked for. That record names
+   the process and its kernel start time, so one a previous run left is never
+   taken for this one's. A desktop that comes back and crashes within a few
+   seconds still counts as not back.
 
 The state the session reads is `/run/tilo/live-update/state.json`. A layer is
 immutable once merged, and every apply builds a fresh one from the mounted
@@ -77,6 +104,7 @@ because it boots the staged deployment that holds them.
 | App ↔ shell (shell-ui) | `ui::floating_surface::FLOATING_SURFACE_PROTOCOL_VERSION` | `crates/sdk/ui-core/interface.toml` | the app's first frame on its shell-ui connection; the launcher, from the manifest |
 | App ↔ runtime (the session services the launcher connects) | `runtime_portal::RUNTIME_INTERFACE_VERSION` | `crates/runtime/runtime-portal/interface.toml` | the launcher, before it connects any service |
 | Device ↔ device (handshake, relay frames, peer-sync messages) | `neighbour_wire::PEER_PROTOCOL_VERSION` | `crates/collab/neighbour-wire/interface.toml` | the first field of the certified handshake's `Hello` and `HelloAck` (relay sessions, compute, environments, the HTTPS carrier), and of the `IdentityHello` a device announces on a workspace, whose index never moves |
+| Session ↔ app keeper (the control socket of a kept app) | `tilo_app_keeper::wire::INTERFACE_VERSION` | `crates/session/app-keeper/interface.toml` | the session's `Hello`, the first message on every connection: a keeper at another version (one started by an older session build, still running its app) answers `VersionMismatch` and keeps displaying |
 | Store package format (`.tapp`, its manifest, and the registry's snapshots, version indexes and channel authorizations) | `registry_types::PACKAGE_FORMAT_VERSION` (`tilo_app_package::TAPP_FORMAT_VERSION` is it) | `crates/packaging/tilo-app-package/interface.toml` | the archive header, when a package is read; a snapshot's `protocol`, when the catalogue is verified |
 
 - A reader keeps every format it understands: `tilo_app_package::tapp::READABLE_FORMATS`

@@ -38,8 +38,8 @@ pub(crate) struct ResourceType {
     pub(crate) readable: bool,
     /// [`Resource::HAS_FACTS`].
     pub(crate) facts: bool,
-    /// [`Resource::RECORD_TABLE`].
-    pub(crate) record_table: Option<&'static tilo_resource::table::ModelTable>,
+    /// [`Resource::RESOURCE_TABLE`].
+    pub(crate) resource_table: Option<&'static tilo_resource::table::ModelTable>,
     /// [`Resource::local_operations`].
     pub(crate) local_operations: fn() -> Vec<tilo_actions::ActionSpec>,
     /// Whether a resource id names one of the resource's items, or a part
@@ -62,7 +62,7 @@ impl ResourceType {
             label: R::LABEL,
             readable: R::READABLE,
             facts: R::HAS_FACTS,
-            record_table: R::RECORD_TABLE,
+            resource_table: R::RESOURCE_TABLE,
             local_operations: R::local_operations,
             item_of: |id| tilo_resource::items::item_of_resource::<R>(id).is_some(),
             opens_as_item: tilo_resource::kind::opens_as_item::<R>,
@@ -108,7 +108,7 @@ pub(crate) trait TypedRoot {
     fn read(&self, doc: &AutoCommit) -> Result<Rc<dyn Any>, ModelError>;
 
     /// Run the views' updaters over what changed since `followed`, the live
-    /// revision they last followed, and place the participants the change
+    /// revision they last followed, and place the presences the change
     /// landed.
     fn follow_change(&self, doc: &AutoCommit, followed: &Cell<u64>);
 
@@ -116,11 +116,11 @@ pub(crate) trait TypedRoot {
     /// up the views' jobs.
     fn drain(&self, revision: u64);
 
-    /// Note that `participant` applied `action`, where the resource lands
+    /// Note that `presence` applied `action`, where the resource lands
     /// them.
     fn note_applied(
         &self,
-        participant: &tilo_actions::ParticipantId,
+        presence: &tilo_actions::PresenceId,
         action: &tilo_actions::EncodedAction,
     );
 
@@ -408,11 +408,11 @@ impl<R: Resource> TypedRoot for Typed<R> {
 
     fn note_applied(
         &self,
-        participant: &tilo_actions::ParticipantId,
+        presence: &tilo_actions::PresenceId,
         action: &tilo_actions::EncodedAction,
     ) {
         for applied in own_actions::<R>(action) {
-            self.live.note_applied(participant.clone(), applied);
+            self.live.note_applied(presence.clone(), applied);
         }
     }
 

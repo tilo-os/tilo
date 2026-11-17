@@ -7,7 +7,7 @@
 //!
 //! Nothing here can carry a key: no variant holds a signing key, a
 //! certificate's secret half or a session. The worker receives app ids,
-//! record ids, the participant's public name, Automerge bytes and the read
+//! record ids, the member's public name, Automerge bytes and the read
 //! policy a caller already holds, and returns descriptors, outputs and
 //! unsigned Automerge bytes the supervisor admits before it signs them.
 //!
@@ -91,7 +91,7 @@ pub(crate) enum Request {
     Open {
         app_id: String,
         workspace: String,
-        participant: String,
+        member: tilo_actions::MemberId,
         /// JSON `ReplicaActor`: a bot's standing nests maps postcard
         /// cannot describe.
         actor: String,
@@ -140,7 +140,7 @@ pub(crate) enum Request {
         arguments: String,
         confirm: bool,
         /// JSON `ActionInvoker` admitted for this invocation, when not the
-        /// participant itself.
+        /// member itself.
         invoker: Option<String>,
         /// JSON `ActionContext` of this invocation.
         context: Option<String>,
@@ -149,19 +149,19 @@ pub(crate) enum Request {
     },
     /// The holder's own changes since the last call.
     TakeMutation,
-    /// Merge another participant's durable change.
+    /// Merge another member's durable change.
     Apply { snapshot: bool, bytes: Vec<u8> },
-    /// Merge another participant's durable change into `record`, one the
+    /// Merge another member's durable change into `record`, one the
     /// held record's app keeps beside it (a part of its chain).
-    ApplyRecord {
+    ApplyDocument {
         record: String,
         snapshot: bool,
         bytes: Vec<u8>,
     },
     /// The holder's own changes to the records held beside the held one
     /// since the last call.
-    TakeRecordMutations,
-    /// Where the last operation left the participant.
+    TakeDocumentMutations,
+    /// Where the last operation left the member.
     Presence,
     /// Take the held record's store to come from its workspace's hosts
     /// ([`crate::Replica::ask_workspace_for_missing`]).
@@ -172,7 +172,7 @@ pub(crate) enum Request {
     /// it is another person's own.
     Answered {
         record: String,
-        answer: ui::record::WorkspaceAnswer,
+        answer: ui::resource::WorkspaceAnswer,
     },
     /// Load an existing document of `app_id` to discover its views
     /// ([`Mode::Views`]).
@@ -264,7 +264,7 @@ pub(crate) enum Reply {
     Mutation(Option<(bool, Vec<u8>)>),
     /// The holder's changes to records held beside the held one: each
     /// record's id, whether it is a whole document, and the bytes.
-    RecordMutations(Vec<(String, bool, Vec<u8>)>),
+    DocumentMutations(Vec<(String, bool, Vec<u8>)>),
     /// JSON `(LiveAnchor, LiveAnchor)`.
     Presence(Option<String>),
     /// Record ids the held record's store asks its workspace's hosts for.

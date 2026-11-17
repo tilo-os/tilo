@@ -23,8 +23,8 @@ pub fn canonical_app_id(tile: &TileContent) -> Option<AppId> {
 
 /// Every window in a workspace document's layout that names the record it
 /// shows, as the raw record id string. Parsing it is the reader's business.
-pub fn record_routes(doc: &AutoCommit) -> BTreeMap<TabId, String> {
-    crate::shared_record::read(doc, None)
+pub fn document_routes(doc: &AutoCommit) -> BTreeMap<TabId, String> {
+    crate::shared_resource::read(doc, None)
         .map(|desktop| desktop.records.into_iter().collect())
         .unwrap_or_default()
 }

@@ -114,20 +114,20 @@ pub enum PersonalFabricPayload {
     NearbyTransfer(PersonalNearbyTransferFrame),
     /// One signed mutation of a record in the person's own store. Its scope is
     /// implied by the route: the fabric only ever joins one person's devices.
-    /// `record_id` is the sealed wire name, as on a workspace topic.
+    /// `document_id` is the sealed wire name, as on a workspace topic.
     Document {
         app_id: String,
-        record_id: String,
+        document_id: String,
         envelope: Box<collab_types::SignedOp>,
     },
     /// A device of the person asking for content one of `app_id`'s person
     /// records references. Its scope is the person's, implied by the route.
-    RecordContentWant {
+    DocumentContentWant {
         app_id: String,
         hash: String,
     },
     /// One bounded piece of that content, for the device that asked alone.
-    RecordContentPiece {
+    DocumentContentPiece {
         app_id: String,
         hash: String,
         total: u64,
@@ -145,9 +145,9 @@ pub enum PersonalFabricPayload {
         stamp: crate::fabric::FabricStamp,
         outputs: Vec<crate::fabric::DisplayOutputObservation>,
     },
-    /// Word to the device that asked ([`Self::RecordContentWant`]) that this
+    /// Word to the device that asked ([`Self::DocumentContentWant`]) that this
     /// one keeps none of that content.
-    RecordContentLacks {
+    DocumentContentLacks {
         app_id: String,
         hash: String,
     },
@@ -207,7 +207,7 @@ pub enum NetCmd {
     /// and their changes to it from then on. A workspace that sends records
     /// when they are opened sends nothing of a record before this. `own` names it this device's
     /// person's own record, which the hosts answer as theirs even before anything of it is written.
-    OpenRecord {
+    OpenDocument {
         ws: WorkspaceId,
         channel: [u8; 32],
         own: Option<tilo_relay_protocol::OwnedChannel>,
@@ -378,16 +378,16 @@ pub enum NetEvent {
     /// An authenticated durable host finished subscribing to this workspace.
     /// Distinct from a direct peer arrival: the shell uses this edge to seed
     /// transport-level checkpoints for future first-time/offline devices.
-    /// `records_when_opened`: this host sends a device only the workspace's
+    /// `documents_when_opened`: this host sends a device only the workspace's
     /// governance, its shared desktop and the heads of its chained records,
     /// and every other record once the device opens it
-    /// ([`NetCmd::OpenRecord`]), so a record that is not here is not new
+    /// ([`NetCmd::OpenDocument`]), so a record that is not here is not new
     /// until the host answered it holds none of it
     /// ([`Self::HostRecordOpened`]).
     HostReady {
         ws: WorkspaceId,
         peer: PeerId,
-        records_when_opened: bool,
+        documents_when_opened: bool,
     },
     /// A host answered a record this device opened: it sent everything it
     /// retains of it, as that record's frames before this event (none when
@@ -396,7 +396,7 @@ pub enum NetEvent {
     HostRecordOpened {
         ws: WorkspaceId,
         channel: [u8; 32],
-        answer: tilo_relay_protocol::RecordAnswer,
+        answer: tilo_relay_protocol::DocumentAnswer,
     },
     Msg {
         ws: WorkspaceId,
@@ -615,11 +615,11 @@ enum InternalEvent {
 enum HostEvent {
     Ready,
     /// The host answered a record this device opened
-    /// ([`RelayCoeditSession::open_record`]): what it sent of it, as that
+    /// ([`RelayCoeditSession::open_resource`]): what it sent of it, as that
     /// record's frames before this event, or that it is not this device's.
-    RecordOpened {
+    DocumentOpened {
         channel: [u8; 32],
-        answer: tilo_relay_protocol::RecordAnswer,
+        answer: tilo_relay_protocol::DocumentAnswer,
     },
     /// A member joined or left the host's live plane.
     Member {
@@ -724,8 +724,8 @@ impl ProtocolHandler for SurfaceStreamProtocol {
                         | NeighbourMsg::SurfaceKeyframeRequest { .. }
                         | NeighbourMsg::SurfaceViewRequest { .. }
                         | NeighbourMsg::RemoteAction { .. }
-                        | NeighbourMsg::RecordContentPiece { .. }
-                        | NeighbourMsg::RecordContentLacks { .. }
+                        | NeighbourMsg::DocumentContentPiece { .. }
+                        | NeighbourMsg::DocumentContentLacks { .. }
                 ) {
                     tracing::warn!(peer = %peer, "invalid message on direct surface/control ALPN");
                     continue;
@@ -768,8 +768,8 @@ async fn enqueue_surface_event(
                 | NeighbourMsg::SurfaceKeyframeRequest { .. }
                 | NeighbourMsg::SurfaceViewRequest { .. }
                 | NeighbourMsg::RemoteAction { .. }
-                | NeighbourMsg::RecordContentPiece { .. }
-                | NeighbourMsg::RecordContentLacks { .. }
+                | NeighbourMsg::DocumentContentPiece { .. }
+                | NeighbourMsg::DocumentContentLacks { .. }
                 | NeighbourMsg::SurfaceStreamStart { .. }
                 | NeighbourMsg::SurfaceStreamEnd { .. }
                 | NeighbourMsg::PermissionGrant { .. },
@@ -1238,7 +1238,7 @@ impl ActorState {
             // Every host of the workspace that retains records opens this one
             // for this device: what it holds of it, then its changes. Asking
             // a session that already opened it asks nothing again.
-            Some(NetCmd::OpenRecord { ws, channel, own }) => {
+            Some(NetCmd::OpenDocument { ws, channel, own }) => {
                 let sessions: Vec<_> = self
                     .host_sessions
                     .iter()
@@ -1254,7 +1254,7 @@ impl ActorState {
                 for session in sessions {
                     let opened = match &own {
                         Some(own) => session.open_own_record(own.clone()),
-                        None => session.open_record(channel),
+                        None => session.open_resource(channel),
                     };
                     if let Err(error) = opened {
                         tracing::debug!(ws = %ws, %error, "could not ask a host for a record");
@@ -1682,7 +1682,12 @@ impl ActorState {
     /// native session holds. Only a workspace host's is news to the
     /// shell: this device's own host and the person's devices are no
     /// durable hosts it seeds.
-    fn host_ready(&self, ws: WorkspaceId, peer: EndpointId, records_when_opened: bool) -> NetEvent {
+    fn host_ready(
+        &self,
+        ws: WorkspaceId,
+        peer: EndpointId,
+        documents_when_opened: bool,
+    ) -> NetEvent {
         // The workspace's own host caught this device up: the workspace holds what it
         // holds. Another host on the topic (a personal relay, a peer) says
         // nothing about the workspace's host, whose link has its own word.
@@ -1692,7 +1697,7 @@ impl ActorState {
         NetEvent::HostReady {
             ws,
             peer,
-            records_when_opened,
+            documents_when_opened,
         }
     }
 
@@ -1700,7 +1705,7 @@ impl ActorState {
         let RecordContentDelivery { ws, target, msg } = delivery;
         if !matches!(
             msg,
-            NeighbourMsg::RecordContentPiece { .. } | NeighbourMsg::RecordContentLacks { .. }
+            NeighbourMsg::DocumentContentPiece { .. } | NeighbourMsg::DocumentContentLacks { .. }
         ) {
             tracing::warn!(
                 ws = %ws,
@@ -1779,7 +1784,7 @@ impl ActorState {
         // an action frame (up to a catalogue page) is worth waiting for.
         let budget = if matches!(
             msg,
-            NeighbourMsg::RecordContentPiece { .. } | NeighbourMsg::RecordContentLacks { .. }
+            NeighbourMsg::DocumentContentPiece { .. } | NeighbourMsg::DocumentContentLacks { .. }
         ) {
             Duration::from_secs(2)
         } else {
@@ -1830,8 +1835,8 @@ impl ActorState {
             return;
         }
         match msg {
-            NeighbourMsg::RecordContentPiece { .. }
-            | NeighbourMsg::RecordContentLacks { .. }
+            NeighbourMsg::DocumentContentPiece { .. }
+            | NeighbourMsg::DocumentContentLacks { .. }
             | NeighbourMsg::RemoteInput { .. }
             | NeighbourMsg::SurfaceKeyframeRequest { .. }
             | NeighbourMsg::SurfaceViewRequest { .. }
@@ -2254,10 +2259,10 @@ impl ActorState {
                 let when_opened = self
                     .host_sessions
                     .get(&(ws, peer))
-                    .is_some_and(|runtime| runtime.session.records_when_opened());
+                    .is_some_and(|runtime| runtime.session.documents_when_opened());
                 Some(self.host_ready(ws, peer, when_opened))
             }
-            HostEvent::RecordOpened { channel, answer } => Some(NetEvent::HostRecordOpened {
+            HostEvent::DocumentOpened { channel, answer } => Some(NetEvent::HostRecordOpened {
                 ws,
                 channel,
                 answer,
@@ -2625,7 +2630,7 @@ impl ActorState {
                     .send(NetEvent::HostReady {
                         ws,
                         peer,
-                        records_when_opened: runtime.session.records_when_opened(),
+                        documents_when_opened: runtime.session.documents_when_opened(),
                     })
                     .await;
             }
@@ -3233,7 +3238,7 @@ fn host_event_kind(event: &HostEvent) -> &'static str {
     match event {
         HostEvent::Message { msg, .. } => msg.kind(),
         HostEvent::Ready => "HostReady",
-        HostEvent::RecordOpened { .. } => "HostRecordOpened",
+        HostEvent::DocumentOpened { .. } => "HostRecordOpened",
         HostEvent::Member { .. } => "HostMember",
         HostEvent::Closed => "HostClosed",
     }
@@ -3597,8 +3602,8 @@ fn host_event(
         // how much. The records are the workspace's state, applied as they
         // come; the count is what says a record the workspace has none of is
         // new here.
-        HostInbound::RecordOpened { channel, answer } => {
-            HostEvent::RecordOpened { channel, answer }
+        HostInbound::DocumentOpened { channel, answer } => {
+            HostEvent::DocumentOpened { channel, answer }
         }
         // Nothing here holds these: a call's audio is the session's, carried
         // by the relay session the call itself holds, and a host keeps what a
@@ -3620,7 +3625,7 @@ fn host_event(
                 msg: NeighbourMsg::RemoteAction { frame },
             }
         }
-        HostInbound::RecordContent { from, frame } => record_content_event(&from, &frame)?,
+        HostInbound::DocumentContent { from, frame } => record_content_event(&from, &frame)?,
         HostInbound::Delta { author, data }
         | HostInbound::Presence {
             author,
@@ -3644,13 +3649,13 @@ fn host_event(
 }
 
 /// Whether `data`, a delta this device is receiving, is of a record the
-/// device opened ([`RelayCoeditSession::open_record`]): the host sends it in
+/// device opened ([`RelayCoeditSession::open_resource`]): the host sends it in
 /// the record's order, its history first, which a device that restarts
 /// reads its records from. Each write is decided by its place in that
 /// order, never by when it arrived.
-fn opened_record(data: &[u8], session: &RelayCoeditSession) -> bool {
+fn opened_resource(data: &[u8], session: &RelayCoeditSession) -> bool {
     tilo_relay_session::retention_metadata(data)
-        .is_some_and(|(channel, _)| session.opened_record(&channel))
+        .is_some_and(|(channel, _)| session.opened_resource(&channel))
 }
 
 fn spawn_host_pump(
@@ -3684,7 +3689,7 @@ fn spawn_host_pump(
                 break;
             };
             let replay = replaying.load(Ordering::Acquire)
-                || matches!(&inbound, HostInbound::Delta { data, .. } if opened_record(data, &session));
+                || matches!(&inbound, HostInbound::Delta { data, .. } if opened_resource(data, &session));
             let Some(event) = host_event(inbound, ws, host, &replaying, replay) else {
                 continue;
             };
@@ -3802,7 +3807,7 @@ fn record_content_event(from: &[u8; 32], frame: &[u8]) -> Option<HostEvent> {
     let author = EndpointId::from_bytes(from).ok()?;
     let msg = postcard::from_bytes(frame).ok()?;
     let fingerprint = match msg {
-        NeighbourMsg::RecordContentPiece { .. } | NeighbourMsg::RecordContentLacks { .. } => {
+        NeighbourMsg::DocumentContentPiece { .. } | NeighbourMsg::DocumentContentLacks { .. } => {
             message_fingerprint(frame)
         }
         // A viewer's input repeats itself (the same key pressed twice): it is

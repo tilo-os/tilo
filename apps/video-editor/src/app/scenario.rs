@@ -247,7 +247,7 @@ pub(super) struct CaptureStaging {
     scenario: ShotScenario,
     applied: bool,
     interaction_applied: bool,
-    /// Other participants: a capture cannot wait on a collaboration socket,
+    /// Other members: a capture cannot wait on a collaboration socket,
     /// so it stages the very frames a peer would have sent and the draw
     /// reads them through the identical path.
     pub(super) presence: Option<PresenceCtx>,
@@ -549,7 +549,7 @@ impl VideoEditorApp {
         use ui::permissions::MemberId;
         let mut ctx = PresenceCtx::empty();
         // Clips to hand out, one per track walked from the top, so the pick is the same on
-        // every run and two participants are never stacked on one lane. The first lands on
+        // every run and two members are never stacked on one lane. The first lands on
         // the topmost track, where a name chip has no room above it and falls inside the
         // clip.
         let clips: Vec<(ClipId, f64, f64)> = self

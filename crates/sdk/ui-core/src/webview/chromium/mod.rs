@@ -90,7 +90,7 @@ struct Shared {
     popups: Mutex<VecDeque<super::Popup>>,
     unadopted: Mutex<HashMap<u32, Arc<Shared>>>,
     selection_text: AtomicBool,
-    /// The host sends `page_record` and `page_changed` of its own accord
+    /// The host sends `page_resource` and `page_changed` of its own accord
     /// (`page_events`).
     page_events: AtomicBool,
     text_input: Mutex<super::text_input::Transactions>,
@@ -2527,9 +2527,9 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
             let (request_id, result) = super::page::decode_result(value)?;
             WebViewEvent::PageResult { request_id, result }
         }
-        "page_record" => {
-            let (seq, entry) = super::page::decode_record_event(value)?;
-            WebViewEvent::PageRecord { seq, entry }
+        "page_resource" => {
+            let (seq, entry) = super::page::decode_resource_event(value)?;
+            WebViewEvent::PageResource { seq, entry }
         }
         "page_changed" => WebViewEvent::PageChanged(super::page::decode_changed_event(value)?),
         "clipboard" | "clipboard_read" => page_clipboard::decode(value)?,

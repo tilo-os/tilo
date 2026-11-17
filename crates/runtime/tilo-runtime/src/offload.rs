@@ -28,7 +28,7 @@ use std::{
 
 use iroh::{Endpoint, EndpointAddr, EndpointId};
 use neighbour_wire::offer::{Answer, MAX_WORK_INPUTS, Power, Route, Work};
-use tilo_action_broker::record_content::{ContentState, RouteContent};
+use tilo_action_broker::document_content::{ContentState, RouteContent};
 use tilo_action_broker::route::CrdtRoute;
 use tilo_actions::offload::{ActionOffload, OffloadFuture, OffloadRequest, Offloaded};
 use tilo_actions::remote::{InvokeRequest, Pending, pending};
@@ -359,7 +359,7 @@ impl OffloadPeers for PlanePeers {
             // has nothing to answer with, and waiting for it costs the run
             // here more than it could ever save.
             let targets: Vec<EndpointAddr> = plane
-                .participants(&workspace)
+                .key_holders(&workspace)
                 .await
                 .into_iter()
                 .filter(|key| reachable(&workspace, *key))

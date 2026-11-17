@@ -11,7 +11,7 @@
 use super::App;
 use crate::collaboration::CollabRequest;
 use crate::collaboration::handoff::{HandoffReport, HandoffRequest, Successor};
-use crate::record::transfer::{self, Retirement};
+use crate::resource::transfer::{self, Retirement};
 
 impl App {
     /// Run `f` on the document this window shows.
@@ -24,7 +24,7 @@ impl App {
         }
         let sync = self
             .actions
-            .bound_record_sync
+            .bound_document_sync
             .as_mut()
             .ok_or("primary record is unavailable")?;
         let _scope = sync.binding.enter().map_err(|error| format!("{error:?}"))?;
@@ -43,14 +43,14 @@ impl App {
         if self.prepare_primary_document()? {
             let sync = self
                 .actions
-                .bound_record_sync
+                .bound_document_sync
                 .as_ref()
                 .ok_or("primary record is unavailable")?;
             let _scope = sync.binding.enter().map_err(|error| format!("{error:?}"))?;
             return sync
                 .binding
                 .records
-                .try_flush_record(&sync.binding.checkout.id);
+                .try_flush_resource(&sync.binding.checkout.id);
         }
         self.checkpoint_app_document()
     }
@@ -160,7 +160,7 @@ impl App {
     /// nobody edits it here any more.
     fn stop_editing_retired_document(&mut self) {
         let viewer = crate::permissions::PermissionContext::read_only;
-        if let Some(sync) = self.actions.bound_record_sync.as_ref() {
+        if let Some(sync) = self.actions.bound_document_sync.as_ref() {
             let read_only = viewer(&sync.binding.permissions.borrow());
             sync.binding.permissions.set(read_only);
         }
@@ -241,7 +241,7 @@ mod tests {
             app_id: "dev.tilo.handoff".into(),
             cluster_id: uuid::Uuid::new_v4(),
             record: Some("continuation:31".into()),
-            record_kind: None,
+            resource_type: None,
             handle: None,
         }));
         manager.poll();
@@ -464,7 +464,7 @@ mod owner_view_tests {
                     app_id: "dev.tilo.handoff".into(),
                     cluster_id: uuid::Uuid::new_v4(),
                     record: Some("continuation:31".into()),
-                    record_kind: None,
+                    resource_type: None,
                     handle: None,
                 })
         );
@@ -507,7 +507,7 @@ mod owner_view_tests {
                     app_id: route.app_id,
                     cluster_id: route.cluster_id,
                     record: Some(record.into()),
-                    record_kind: None,
+                    resource_type: None,
                     handle: None,
                 })
         );
@@ -645,7 +645,7 @@ mod owner_view_tests {
                         app_id: route.app_id.clone(),
                         cluster_id: route.cluster_id,
                         record: route.record.clone(),
-                        record_kind: None,
+                        resource_type: None,
                         handle: None,
                     })
             );
@@ -778,7 +778,7 @@ mod owner_view_tests {
                             app_id: route.app_id,
                             cluster_id: route.cluster_id,
                             record: route.record,
-                            record_kind: None,
+                            resource_type: None,
                             handle: None
                         })
                 );

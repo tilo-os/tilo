@@ -449,7 +449,7 @@ pub(super) fn bound_resource_id(binding: &CallbackBinding, id: &str) -> Semantic
 
 /// The resource a component's node `id` is ([`bound_resource_id`]), or `None` when `id` is no
 /// component's resource node.
-pub(crate) fn component_record(id: &SemanticId) -> Option<&str> {
+pub(crate) fn component_resource(id: &SemanticId) -> Option<&str> {
     let mut parts = id.as_str().strip_prefix("ri:")?.splitn(3, ':');
     let (_instance, _lifetime) = (parts.next()?, parts.next()?);
     parts.next()

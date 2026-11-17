@@ -467,7 +467,7 @@ mod tests {
             assert_eq!(ui::author_line(&by_agent), "Scribe for Ada Lovelace");
             assert_eq!(by_agent.rgb(), (10, 20, 30));
             let attribution = by_agent.attribution.unwrap();
-            assert_eq!(attribution.acting.by.key(), "agent:scribe");
+            assert_eq!(attribution.acting.by, ui::tilo_actions::Actor::Member(ui::tilo_actions::MemberId::agent("scribe")));
             assert_eq!(attribution.acting.acted_for_person().map(str::to_owned), Some(hex::encode(person)));
             let by_person = authors.resolve_file_actor(&person, &laptop_key).unwrap();
             assert_eq!(by_person.name, "Ada Lovelace");

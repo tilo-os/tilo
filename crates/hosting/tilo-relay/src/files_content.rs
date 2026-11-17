@@ -4,7 +4,7 @@
 //! A workspace's file truth is its Files app record: the tree as one Automerge
 //! document, whose nodes name each file's content by hash and never carry the
 //! bytes ([`fs::tree_record`]), and the bytes themselves, which travel beside
-//! the record as its content ([`tilo_action_broker::record_content`]) between
+//! the record as its content ([`tilo_action_broker::document_content`]) between
 //! the members the host carries them for. A member keeps the files it wrote
 //! and answers whoever asks; a member that leaves — a VM host that was
 //! suspended, evicted or replaced, a laptop that went offline — takes the only
@@ -12,7 +12,7 @@
 //!
 //! So the host keeps them. It reads each governed workspace's tree, the record
 //! it already holds and opens, sealed or not
-//! ([`Workspaces::record_document`]); for every file the tree names it asks
+//! ([`Workspaces::resource_document`]); for every file the tree names it asks
 //! the workspace's members for the content it does not keep yet, on its own
 //! presence, as a member asks ([`Workspaces::ask_members`]). A file's content
 //! is its manifest and the chunks that manifest lists, so it asks for the
@@ -61,7 +61,7 @@ use fs_protocol::tree::{TREE_KIND, Tree};
 use neighbour_wire::content::ContentWants;
 use tilo_lock::MutexRecover as _;
 
-use crate::workspaces::{ContentKeeper, RecordWrite, Workspaces};
+use crate::workspaces::{ContentKeeper, ResourceWrite, Workspaces};
 use tilo_content::WorkspaceStores;
 
 /// The app whose record a workspace's tree is.
@@ -118,7 +118,7 @@ pub struct FilesContent {
 
 /// The record a workspace's tree is, as the device that publishes it names it.
 fn tree_record() -> String {
-    collab_types::person_record_id(TREE_KIND)
+    collab_types::person_document_id(TREE_KIND)
 }
 
 fn now_ms() -> u64 {
@@ -146,7 +146,7 @@ impl FilesContent {
         self.workspaces.keep_content(&keeper);
         // Subscribed before the first read, so a write that lands while the
         // trees are read is read too.
-        let mut writes = self.workspaces.record_writes();
+        let mut writes = self.workspaces.document_writes();
         let mut governance = self.workspaces.governance_changes();
         self.read_all().await;
         let mut read = ticker(READ_EVERY);
@@ -198,7 +198,7 @@ impl FilesContent {
 
     /// Note that `write` reached a workspace's tree, which is read again once
     /// the writes it takes settle.
-    fn written(&self, write: &RecordWrite) {
+    fn written(&self, write: &ResourceWrite) {
         if write.app != FILES_APP {
             return;
         }
@@ -266,7 +266,7 @@ impl FilesContent {
             return;
         };
         self.state.lock_recover().reopened.remove(workspace);
-        let Ok(tree) = Tree::of_record(&record) else {
+        let Ok(tree) = Tree::of_document(&record) else {
             tracing::debug!(workspace, "a workspace's tree does not read as one");
             return;
         };
@@ -299,7 +299,7 @@ impl FilesContent {
     async fn record(&self, workspace: &str) -> Option<Vec<u8>> {
         match self
             .workspaces
-            .record_document(workspace, FILES_APP, &tree_record())
+            .resource_document(workspace, FILES_APP, &tree_record())
             .await
         {
             Ok(record) => record,
@@ -457,7 +457,7 @@ mod tests {
                 ("report.txt", &report, 300_000, ROOT_ID),
                 ("build.bin", &build, 3_145_728, ROOT_ID),
             ]);
-            let files = referenced(&Tree::of_record(&record).unwrap());
+            let files = referenced(&Tree::of_document(&record).unwrap());
             assert_eq!(files, [report, build]);
         }
 
@@ -465,14 +465,14 @@ mod tests {
         {
             let deleted = "d3".repeat(32);
             let record = tree_of(&[("gone.txt", &deleted, 12, TRASH_ID)]);
-            assert!(referenced(&Tree::of_record(&record).unwrap()).is_empty());
+            assert!(referenced(&Tree::of_document(&record).unwrap()).is_empty());
         }
 
         phase a_tree_no_mount_wrote_references_nothing;
         {
             let mut doc = AutoCommit::new();
             doc.put_object(ROOT, NODES_KEY, ObjType::Map).unwrap();
-            assert!(referenced(&Tree::of_record(&doc.save()).unwrap()).is_empty());
+            assert!(referenced(&Tree::of_document(&doc.save()).unwrap()).is_empty());
         }
     }
 }

@@ -117,7 +117,7 @@ fn sealed_at(
         peer: peer_handle(&key.verifying_key().to_bytes()),
         app_id: APP.into(),
         cluster_id: WORKSPACE.into(),
-        record_id: RECORD.into(),
+        document_id: RECORD.into(),
         envelope: Box::new(op),
         own: None,
     }
@@ -171,7 +171,7 @@ async fn a_member_syncs_with_the_host_and_a_late_joiner_catches_up_from_its_stor
                 workspace_changes: seed_workspace(WORKSPACE, &host_cert, &devices).unwrap(),
                 documents: vec![SeedDocument {
                     app_id: APP.into(),
-                    record_id: RECORD.into(),
+                    document_id: RECORD.into(),
                     kind: "test".into(),
                     bytes: document.save(),
                 }],
@@ -793,7 +793,7 @@ async fn what_the_host_wrote_long_ago_reaches_a_member_that_links_later() {
                 workspace_changes: seed_workspace(WORKSPACE, &host_cert, &devices).unwrap(),
                 documents: vec![SeedDocument {
                     app_id: APP.into(),
-                    record_id: RECORD.into(),
+                    document_id: RECORD.into(),
                     kind: "test".into(),
                     bytes: document.save(),
                 }],

@@ -43,6 +43,11 @@ pub(crate) struct Restore {
     held_checked: Option<Instant>,
     /// Whether the layout has been laid out from the workspaces' layouts, which happens once.
     seeded: bool,
+    /// Whether the session has begun restoring at all: its first look at the layouts ran, even
+    /// when there was nothing to lay out (a device with no workspace yet).
+    begun: bool,
+    /// Whether the windows of the apps kept across a restart have been given their tabs and shown.
+    kept_shown: bool,
 }
 
 /// A window the person left open, and the app that opens it again.
@@ -65,6 +70,17 @@ struct Opening {
 }
 
 impl Restore {
+    /// The session has begun restoring the windows this device left open: it has looked at the
+    /// layouts, whether or not they held any to open.
+    pub(crate) fn begin(&mut self) {
+        self.begun = true;
+    }
+
+    /// Whether the restore has begun: what says a desktop is usable, beside its first frames.
+    pub(crate) fn started(&self) -> bool {
+        self.seeded || self.begun
+    }
+
     /// Take up the windows `tree` holds the first time this session lays the layout out from the
     /// workspaces' layouts: every window that opens again, the ones on the shell in front first, then
     /// the rest in the order the person left them. Whether this is that first time, in which case
@@ -146,6 +162,11 @@ impl Restore {
             // stay as they are.
             return;
         };
+        if self.started() && !self.kept_shown {
+            self.kept_shown = true;
+            self.claim_kept(desktop, apps.take_kept_windows());
+            apps.attach_kept();
+        }
         self.release_admitted(desktop, awaited);
         loop {
             if let Some(opening) = &self.opening {
@@ -186,6 +207,29 @@ impl Restore {
             if self.open(desktop, apps, saved) {
                 return;
             }
+        }
+    }
+
+    /// Give each window of an app that stayed running through an in-place restart (`windows`, by
+    /// the app id it shows) the saved tab of its app it stood in: the tab waits for that window,
+    /// which comes once the app is shown again, and the app is not started a second time. A saved
+    /// tab no kept window claims opens as it would have.
+    fn claim_kept(&mut self, desktop: &DesktopHost, windows: Vec<String>) {
+        for window in windows {
+            let Some(at) = self
+                .waiting
+                .iter()
+                .position(|saved| tilo_desktop_policy::app_ids_match(&window, &saved.app))
+            else {
+                continue;
+            };
+            let Some(saved) = self.waiting.remove(at) else {
+                continue;
+            };
+            desktop.with_policy(|policy| {
+                policy.note_in_tab(saved.tab, "");
+                policy.adopt(&saved.app, saved.tab);
+            });
         }
     }
 
@@ -447,7 +491,7 @@ mod tests {
     /// written beside it, is asked for as before.
     #[test]
     fn a_window_bound_to_the_device_that_opened_it_is_not_asked_for_on_another() {
-        use tilo_desktop_model::shared_record::device;
+        use tilo_desktop_model::shared_resource::device;
 
         const NOTES: u64 = 4001;
         const BROWSER: u64 = 4002;

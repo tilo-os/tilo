@@ -1044,7 +1044,7 @@ fn a_record_open_opens_its_app() {
         ("so.tilo.notes", "derived:default@tab:0000000000000000"),
         ("so.tilo.notes", "plain"),
     ] {
-        let address = surface::open_record_address(app, record);
+        let address = surface::open_document_address(app, record);
         assert_eq!(
             address.resource,
             format!("record.{app}.{record}"),
@@ -1052,7 +1052,7 @@ fn a_record_open_opens_its_app() {
         );
         assert_eq!(surface::opens(&address), Some(app), "{address:?}");
         assert_eq!(
-            surface::opens_record(&address),
+            surface::opens_document(&address),
             Some((app, record)),
             "{address:?}"
         );
@@ -1060,16 +1060,16 @@ fn a_record_open_opens_its_app() {
             app: app.to_owned(),
             broker_peer_id: None,
             broker_provider: None,
-            descriptor: open_record_descriptor(app, record, None),
+            descriptor: open_document_descriptor(app, record, None),
         };
         assert_eq!(tilo_agent::tools::opened_app(&offer), Some(app));
     }
     let new = ActionAddress::new("app.so.tilo.notes", surface::OPEN_ACTION);
     assert_eq!(surface::opens(&new), Some("so.tilo.notes"));
-    assert_eq!(surface::opens_record(&new), None);
+    assert_eq!(surface::opens_document(&new), None);
     let edit = ActionAddress::new("record.so.tilo.notes.plain", "edit");
     assert_eq!(surface::opens(&edit), None);
-    assert_eq!(surface::opens_record(&edit), None);
+    assert_eq!(surface::opens_document(&edit), None);
 }
 
 /// The workspace's documents are offered by their titles, also while another
@@ -1780,7 +1780,7 @@ fn a_first_turn_for_real_apps_is_bounded_and_its_prefix_shared() {
             &catalogue_of_apps,
             app,
             "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71",
-            "measure",
+            &tilo_actions::MemberId::person("measure"),
             &crate::ReplicaActor::Agent,
             crate::Seed::New,
         )

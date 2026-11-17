@@ -871,6 +871,140 @@ impl ConversationList {
 }
 
 impl Widget for ConversationList {
+    /// The conversation as a page's own list: each line by its author, then its words and the
+    /// time it arrived.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        use crate::composition::TextLook;
+        let theme = cx.theme();
+        cx.element("ul");
+        let body = theme.text(TextRole::Body);
+        let caption = theme.text(TextRole::Caption);
+        let author_style = theme.text(TextRole::Caption).strong();
+        let rows = &self.cache.layout.rows;
+        if rows.is_empty() {
+            // A page never paints the list, so it lays its lines out itself when no paint has.
+            let step = self.rect.height() / crate::num::f64_of_usize(self.lines.len().max(1));
+            for (index, line) in self.lines.iter().enumerate() {
+                let y0 = self.rect.y0 + step * crate::num::f64_of_usize(index);
+                let item = cx.part(
+                    &format!("line:{index}"),
+                    "ConversationLine",
+                    Rect::new(self.rect.x0, y0, self.rect.x1, y0 + step),
+                );
+                item.tag = Some("li");
+                let caption_h = f64::from(caption.line_height_px());
+                let mut at = y0;
+                if !line.author.is_empty() {
+                    let look =
+                        TextLook::new(line.author.clone(), &author_style, Some(theme.text_dim))
+                            .with_max_lines(Some(1));
+                    let part = item.part(
+                        "author",
+                        "Text",
+                        Rect::new(self.rect.x0, at, self.rect.x1, at + caption_h),
+                    );
+                    part.tag = Some("p");
+                    part.own = Some(crate::composition::Own::Text(look));
+                    at += caption_h;
+                }
+                let look = TextLook::new(line.body.clone(), &body, Some(theme.text_primary));
+                let part = item.part(
+                    "body",
+                    "Text",
+                    Rect::new(self.rect.x0, at, self.rect.x1, y0 + step),
+                );
+                part.tag = Some("p");
+                part.own = Some(crate::composition::Own::Text(look));
+                if let Some(delivery) = line.delivery {
+                    let look = TextLook::new(delivery.label(), &caption, Some(theme.text_dim))
+                        .with_max_lines(Some(1));
+                    let part = item.part(
+                        "delivery",
+                        "Text",
+                        Rect::new(self.rect.x0, y0 + step - caption_h, self.rect.x1, y0 + step),
+                    );
+                    part.tag = Some("p");
+                    part.own = Some(crate::composition::Own::Text(look));
+                }
+            }
+            return;
+        }
+        for (index, row) in rows.iter().enumerate() {
+            let (y0, y1) = row.band();
+            match row {
+                Row::Divider { label, .. } => {
+                    let part = cx.words(
+                        &format!("day:{index}"),
+                        "li",
+                        Rect::new(self.rect.x0, y0, self.rect.x1, y1),
+                        TextLook::new(label.clone(), &caption, Some(theme.text_dim))
+                            .with_max_lines(Some(1)),
+                    );
+                    part.semantics =
+                        Some(crate::a11y::AccessNode::new(crate::a11y::Role::Heading {
+                            level: 3,
+                        }));
+                }
+                Row::Line {
+                    index: at,
+                    bubble,
+                    text,
+                    text_width,
+                    author,
+                    caption: caption_rect,
+                    ..
+                } => {
+                    let Some(line) = self.lines.get(*at) else {
+                        continue;
+                    };
+                    let item = cx.part(
+                        &format!("line:{index}"),
+                        "ConversationLine",
+                        Rect::new(self.rect.x0, y0, self.rect.x1, y1),
+                    );
+                    item.tag = Some("li");
+                    if let Some(author_rect) = author {
+                        let look = TextLook::new(
+                            if line.author.is_empty() {
+                                crate::widget::conversation::t("conversation-draft")
+                            } else {
+                                line.author.clone()
+                            },
+                            &author_style,
+                            Some(theme.text_dim),
+                        )
+                        .with_max_lines(Some(1));
+                        let part = item.part("author", "Text", *author_rect);
+                        part.tag = Some("p");
+                        part.own = Some(crate::composition::Own::Text(look));
+                    }
+                    let body_part = item.part(
+                        "body",
+                        "Text",
+                        Rect::new(text.x, text.y, text.x + f64::from(*text_width), bubble.y1),
+                    );
+                    body_part.tag = Some("p");
+                    body_part.own = Some(crate::composition::Own::Text(TextLook::new(
+                        line.body.clone(),
+                        &body,
+                        Some(theme.text_primary),
+                    )));
+                    let mut spoken = Vec::new();
+                    if let Some(state) = line.delivery {
+                        spoken.push(state.label());
+                    }
+                    if !spoken.is_empty() {
+                        let look = TextLook::new(spoken.join(", "), &caption, Some(theme.text_dim))
+                            .with_max_lines(Some(1));
+                        let part = item.part("delivery", "Text", *caption_rect);
+                        part.tag = Some("p");
+                        part.own = Some(crate::composition::Own::Text(look));
+                    }
+                }
+            }
+        }
+    }
+
     fn needs_redraw(&self) -> bool {
         crate::widget::redraw_or_children(self.dirty, self)
     }

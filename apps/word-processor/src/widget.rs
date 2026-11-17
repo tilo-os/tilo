@@ -75,8 +75,8 @@ mod pagination;
 mod paint;
 mod panels;
 #[cfg(test)]
-mod participant_tests;
-mod participants;
+mod presence_tests;
+mod presences;
 mod proofing;
 mod review;
 mod semantic_geometry;
@@ -574,10 +574,10 @@ fn block_presence_key(block_id: &str) -> PresenceKey {
         .0
 }
 
-pub use ui::ParticipantPresence;
+pub use ui::ViewPresence;
 
-fn participant_presence_payload(
-    view: &crate::actions::participant::ParticipantView,
+fn presence_payload(
+    view: &crate::actions::presence::PresenceView,
     doc: &AutoCommit,
 ) -> Option<ui::PresencePayload> {
     let ctx = view.ctx(doc)?;
@@ -893,7 +893,7 @@ pub struct Editor {
     paint_damage: ui::widget::paint_damage::PaintDamage,
     ime_rect: Option<Rect>,
     color_picker: StyleColorPicker,
-    participants: participants::ParticipantViews,
+    presences: presences::PresenceViews,
     staged_scenario: Option<String>,
     layout: Option<(
         ui::framework::Setting<proofing::WriterLayout>,
@@ -901,7 +901,9 @@ pub struct Editor {
     )>,
     record_file: Option<PathBuf>,
     bound: BoundRows,
-    pending_local: Option<(LocalVersion, crate::actions::participant::ParticipantView)>,
+    pending_local: Option<(LocalVersion, crate::actions::presence::PresenceView)>,
+    /// The workspace's names for its members: what a saved file calls the writer of a comment.
+    people: Option<ui::framework::People>,
     #[cfg(test)]
     last_dispatched: Option<crate::actions::RichTextAction>,
 }
@@ -909,7 +911,7 @@ pub struct Editor {
 #[derive(Default)]
 struct BoundRows {
     local: Vec<ui::framework::LiveRow>,
-    participants: HashMap<tilo_actions::ParticipantId, Vec<ui::framework::LiveRow>>,
+    presences: HashMap<tilo_actions::PresenceId, Vec<ui::framework::LiveRow>>,
 }
 
 /// Committed heads plus the open transaction's size: changes whenever an edit applied.
@@ -1125,12 +1127,13 @@ impl Editor {
             paint_damage: ui::widget::paint_damage::PaintDamage::default(),
             ime_rect: None,
             color_picker: StyleColorPicker::default(),
-            participants: participants::ParticipantViews::default(),
+            presences: presences::PresenceViews::default(),
             staged_scenario: None,
             layout: None,
             record_file: None,
             bound: BoundRows::default(),
             pending_local: None,
+            people: None,
             #[cfg(test)]
             last_dispatched: None,
         }
@@ -1140,10 +1143,12 @@ impl Editor {
         &mut self,
         live: ui::framework::Live<crate::framework::Document>,
         dispatcher: ui::framework::Dispatcher<crate::framework::Document>,
+        people: ui::framework::People,
     ) {
         self.inner.attach(dispatcher.clone());
         self.dispatch = Some(dispatcher);
         self.source = Some(live);
+        self.people = Some(people);
     }
 
     #[cfg(test)]
@@ -1181,10 +1186,10 @@ impl Editor {
 
     pub(crate) fn search_rows(&self) -> Vec<ui::framework::LiveRow> {
         match ui::invocation_scope::current_viewer() {
-            Some(participant) => self
+            Some(presence) => self
                 .bound
-                .participants
-                .get(&participant)
+                .presences
+                .get(&presence)
                 .cloned()
                 .unwrap_or_default(),
             None => self.bound.local.clone(),
@@ -1545,7 +1550,14 @@ impl Editor {
         if self.inner.containers.is_none() {
             return Err("document has no writable path or initialized body".into());
         }
-        let file = crate::model::export_copy(state)?;
+        let people = self.people.clone();
+        let file = crate::model::export_copy(state, &|member| {
+            people
+                .as_ref()
+                .and_then(|people| people.member(member))
+                .map(|candidate| candidate.name)
+                .unwrap_or_default()
+        })?;
         format
             .export(file.as_ref(), self.inner.content_store())
             .map_err(|e| {

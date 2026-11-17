@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use tilo_resource::{
-    Collection, Id, JsonSchema, Model, ModelError, Refusal, SharedRecord, resource,
+    Collection, Id, JsonSchema, Model, ModelError, Refusal, SharedResource, resource,
 };
 
 /// How many people one projection may carry, so a large imported book stays one
@@ -571,7 +571,7 @@ impl ContactDirectory {
     }
 }
 
-impl SharedRecord for ContactDirectory {
+impl SharedResource for ContactDirectory {
     const OWNER: &'static str = tilo_app_id::apps::CONTACTS;
     const EDITORS: &'static [&'static str] = &["so.tilo.messages"];
 }

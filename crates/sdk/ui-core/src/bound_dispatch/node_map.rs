@@ -389,7 +389,7 @@ impl<'m> NodeSweep<'m> {
         if let Some((held, _)) = &self.held
             && (std::ptr::eq(*held, binding) || held.enters_same_scope(binding))
         {
-            binding.check_record()?;
+            binding.check_resource()?;
             return Ok(());
         }
         self.held = None;

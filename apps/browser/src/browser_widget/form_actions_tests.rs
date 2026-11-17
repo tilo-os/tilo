@@ -14,7 +14,7 @@ use ui::tilo_actions::{
     ActionFailure, ActionInvoker, ActionSpec, ApiError, InvocationUpdate, ParamType,
 };
 use ui::tilo_resource::Replica;
-use ui::webview::{FormSubmit, PageFailure, PageNavigation, PageRecordNote, WebViewEngine as _};
+use ui::webview::{FormSubmit, PageFailure, PageNavigation, PageResourceNote, WebViewEngine as _};
 
 use super::*;
 use crate::effects::BrowserEffect;
@@ -72,7 +72,7 @@ fn reply(url: &str, message: &str, data: serde_json::Value) -> PageReply {
         image: None,
         navigation: PageNavigation::None,
         loading: false,
-        record: PageRecordNote::default(),
+        record: PageResourceNote::default(),
     }
 }
 

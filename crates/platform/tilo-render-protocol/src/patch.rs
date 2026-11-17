@@ -142,10 +142,10 @@ impl ResourceRef {
     }
 }
 
-/// A participant: their identity, and what the room calls them.
+/// Who acted, and what the workspace calls them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Actor {
-    pub id: String,
+    pub id: tilo_actions::Actor,
     pub name: String,
 }
 
@@ -992,7 +992,7 @@ mod tests {
     fn maps_offered_actions_and_list_splices_round_trip_and_apply() {
         let who = |id: &str| {
             Value::Actor(Actor {
-                id: id.to_owned(),
+                id: tilo_actions::MemberId::person(id).into(),
                 name: id.to_owned(),
             })
         };

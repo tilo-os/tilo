@@ -228,7 +228,7 @@ fn stage_with(
     // rendering. Transient save feedback belongs to the captured scene;
     // its lifetime is separate from unfinished placeholder work.
     harness
-        .flush_component_records()
+        .flush_component_resources()
         .map_err(LaunchError::Operation)?;
     harness
         .wait_for_visuals(SETTLE)
@@ -242,7 +242,7 @@ fn stage_with(
     // be by the time anyone looked: a capture shows the record saved, not a
     // write still in flight.
     harness
-        .flush_component_records()
+        .flush_component_resources()
         .map_err(LaunchError::Operation)?;
     // How long staging took is not a wait anyone saw: the save status shows
     // the state the record is in, not a stall the machine's speed decided.

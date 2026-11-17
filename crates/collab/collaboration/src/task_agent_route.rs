@@ -30,7 +30,7 @@ impl CollaborationManager {
             Some(agent_id.into()),
             Some(SdkJoinIdentity {
                 presentation: identity.presentation.clone(),
-                participant_kind: "agent",
+                member_kind: "agent",
                 signer: identity.document_signer(),
             }),
             "agent",

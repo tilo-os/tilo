@@ -27,15 +27,32 @@ impl Checker<'_> {
         if m == "count" && args.is_empty() {
             return Ex::host(Imp::CollCount, vec![list], Ty::Int);
         }
-        let lambda = match args {
-            [a] if a.name.is_none() => super::super::optional::lambda_of(&a.value),
-            _ => None,
+        // `map` and `flat_map` also take the item's place in the list, from 0, as the lambda's second
+        // parameter: `.map((x, i) -> ...)` lays items out by where they stand (a bar per reading).
+        let (lambda, place) = match args {
+            [a] if a.name.is_none() => match &a.value.kind {
+                ExprKind::Lambda { params, body }
+                    if params.len() == 2 && matches!(m, "map" | "flat_map") =>
+                {
+                    (
+                        Some((params[0].clone(), (**body).clone())),
+                        Some(params[1].clone()),
+                    )
+                }
+                _ => (super::super::optional::lambda_of(&a.value), None),
+            },
+            _ => (None, None),
         };
         let Some((param, body)) = lambda else {
+            let also = if matches!(m, "map" | "flat_map") {
+                format!(", or the item and its place from 0, as `.{m}((x, i) -> ...)`")
+            } else {
+                String::new()
+            };
             self.err(
                 "E051",
                 span,
-                format!("`.{m}` takes one lambda such as `.{m}(x -> x.done)`, or a key path such as `.{m}(.done)`"),
+                format!("`.{m}` takes one lambda such as `.{m}(x -> x.done)`, or a key path such as `.{m}(.done)`{also}"),
             );
             for a in args {
                 if !matches!(a.value.kind, ExprKind::Lambda { .. }) {
@@ -65,6 +82,9 @@ impl Checker<'_> {
         let item = Ex::local(fl.item_local, elem.clone());
         self.push_sink();
         self.bind_local(&param.name, fl.item_local);
+        if let Some(place) = &place {
+            self.bind_local(&place.name, fl.idx_local);
+        }
         let (result, result_ty) = if m == "map" {
             let v = self.expr(&body, None);
             let out_ty = Ty::List(Box::new(v.ty.clone()));

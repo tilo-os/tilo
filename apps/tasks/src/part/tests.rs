@@ -420,3 +420,69 @@ fn a_change_costs_the_same_in_a_tracker_ten_times_the_size() {
         "the record a change is written to is no larger: {record_small} then {record_large} bytes"
     );
 }
+
+/// Giving an issue to an agent asks it, for whoever gave it; the agent's own
+/// message in the thread answers that ask, and a person writing in the thread
+/// afterwards asks it again.
+#[test]
+fn giving_an_issue_to_an_agent_asks_it_until_it_answers() {
+    use ui::tilo_resource::MemberId;
+    let asks =
+        |part: &Replica<IssuePart>| crate::model::agent_asks(part.state().unwrap().issues.iter());
+    let mut ada = Replica::<IssuePart>::new().as_author("ada");
+    ada.set_now_ms(1_000);
+    ada.apply(IssuePart::CREATE.with(NewIssue::titled(nb("Plan the launch"))))
+        .unwrap();
+    let issue = ada.state().unwrap().issues.iter().next().unwrap().0.clone();
+    assert!(asks(&ada).is_empty(), "nobody asked yet");
+
+    ada.apply(IssuePart::ASSIGN.with(issue_part::Assign {
+        issue: issue.clone(),
+        assignee: Some("agent:claude".into()),
+    }))
+    .unwrap();
+    let asked = asks(&ada);
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert_eq!(asked[0].agent, "claude");
+    assert_eq!(
+        asked[0].person,
+        MemberId::person("ada"),
+        "it works for whoever gave it the issue"
+    );
+    assert_eq!(asked[0].issue, issue);
+
+    let mut agent = ada.fork().as_agent_for("claude", "ada");
+    agent.set_now_ms(2_000);
+    agent
+        .apply(IssuePart::COMMENT.with(issue_part::Comment {
+            issue: issue.clone(),
+            text: nb("The plan is in the launch note"),
+            origin: None,
+        }))
+        .unwrap();
+    ada.sync_with(&mut agent).unwrap();
+    assert!(asks(&ada).is_empty(), "its message answers the ask");
+
+    ada.set_now_ms(3_000);
+    ada.apply(IssuePart::COMMENT.with(issue_part::Comment {
+        issue: issue.clone(),
+        text: nb("Add the press list too"),
+        origin: None,
+    }))
+    .unwrap();
+    let asked = asks(&ada);
+    assert_eq!(
+        asked.len(),
+        1,
+        "a person's later message asks again: {asked:?}"
+    );
+    assert_eq!(asked[0].words, "Add the press list too");
+
+    // Given to a person, it asks no agent.
+    ada.apply(IssuePart::ASSIGN.with(issue_part::Assign {
+        issue,
+        assignee: Some(crate::model::person_assignee("jane").0),
+    }))
+    .unwrap();
+    assert!(asks(&ada).is_empty());
+}

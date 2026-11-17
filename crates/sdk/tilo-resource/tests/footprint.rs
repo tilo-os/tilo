@@ -1,4 +1,4 @@
-use tilo_resource::footprint::{RECORD_UNIT, UNIT_INDEX, units_of};
+use tilo_resource::footprint::{RESOURCE_UNIT, UNIT_INDEX, units_of};
 use tilo_resource::{ActionCx, Collection, Id, Model, Replica, Resource, resource};
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -90,10 +90,10 @@ tilo_test_env::scenario! {
                 .writes
                 .clone()
         };
-        assert_eq!(writes("start-thread"), [RECORD_UNIT, "threads.*"]);
-        assert_eq!(writes("reply"), [RECORD_UNIT, "threads.*"]);
-        assert_eq!(writes("summarize"), [RECORD_UNIT, "threads.*"]);
-        assert_eq!(writes("sneak-thread"), [RECORD_UNIT]);
+        assert_eq!(writes("start-thread"), [RESOURCE_UNIT, "threads.*"]);
+        assert_eq!(writes("reply"), [RESOURCE_UNIT, "threads.*"]);
+        assert_eq!(writes("summarize"), [RESOURCE_UNIT, "threads.*"]);
+        assert_eq!(writes("sneak-thread"), [RESOURCE_UNIT]);
     }
 
     phase a_change_names_the_units_it_touched_from_the_documents_index;
@@ -122,7 +122,7 @@ tilo_test_env::scenario! {
         let units = units_of(review.doc(), &patches);
         assert_eq!(
             units.into_iter().collect::<Vec<_>>(),
-            [RECORD_UNIT.to_owned(), format!("threads/{thread}")]
+            [RESOURCE_UNIT.to_owned(), format!("threads/{thread}")]
         );
 
         let before = review.heads();

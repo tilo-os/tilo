@@ -24,8 +24,8 @@
 pub(crate) use tilo_relay_store::bounded;
 #[doc(hidden)]
 pub mod compaction;
+pub(crate) mod document_sync;
 pub(crate) mod governed_access;
-pub(crate) mod record_sync;
 pub(crate) mod replay;
 pub(crate) mod resume;
 #[doc(hidden)]
@@ -696,7 +696,7 @@ mod tests {
                 let tmp = tempfile::tempdir().unwrap();
                 let root = tmp.path().to_path_buf();
                 let gate = std::sync::Arc::new(std::sync::Barrier::new(4));
-                // Spawn every participant before joining: interleaving spawn/join
+                // Spawn every key holder before joining: interleaving spawn/join
                 // would deadlock the barrier.
                 let mut workers = Vec::with_capacity(4);
                 for _ in 0..4 {

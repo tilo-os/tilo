@@ -170,7 +170,7 @@ impl Joined {
         &self,
         workspace: WorkspaceId,
         request: OwnerCommitRequest,
-        record_kind: Option<String>,
+        resource_type: Option<String>,
     ) -> Result<OwnerCommitReceipt, String> {
         let binding = request.binding()?;
         let CommitOperation::Document {
@@ -191,7 +191,7 @@ impl Joined {
             .own_host
             .get()
             .ok_or("this profile runs no workspace host")?;
-        let (held, changes, generation, own_record) =
+        let (held, changes, generation, own_resource) =
             self.owner.with_current(workspace, |view| {
                 let now = SystemTime::now();
                 Ok((
@@ -208,7 +208,7 @@ impl Joined {
                 ))
             })?;
         if !held {
-            let kind = record_kind
+            let kind = resource_type
                 .as_deref()
                 .ok_or_else(|| format!("{app} named no kind for a new record"))?;
             if !own_host.creation.allows(&app, kind) {
@@ -224,9 +224,9 @@ impl Joined {
             peer: neighbour_wire::peer_handle(&own),
             app_id: app.clone(),
             cluster_id: workspace.to_string(),
-            record_id: record.clone(),
+            document_id: record.clone(),
             envelope: Box::new(envelope.clone()),
-            own: own_record,
+            own: own_resource,
         };
         let digest =
             *blake3::hash(&postcard::to_allocvec(&message).map_err(|error| error.to_string())?)
@@ -374,14 +374,14 @@ impl Joined {
         for message in kept.frames.iter().rev() {
             let neighbour_wire::NeighbourMsg::AppDocument {
                 app_id,
-                record_id,
+                document_id,
                 envelope,
                 ..
             } = message
             else {
                 continue;
             };
-            if app_id != app || record_id != record {
+            if app_id != app || document_id != record {
                 continue;
             }
             kept_of_the_record = kept_of_the_record.saturating_add(1);

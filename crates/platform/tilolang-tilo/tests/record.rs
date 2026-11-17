@@ -203,7 +203,7 @@ fn window_over(
         app_id: route.app_id.clone(),
         cluster_id: route.cluster_id,
         record: route.record.clone(),
-        record_kind: None,
+        resource_type: None,
         handle: Some(me.to_owned()),
     }));
     let _ = manager.poll();
@@ -710,12 +710,15 @@ fn a_tilolang_edit_in_a_workspace_another_host_governs_is_undone() {
     record.flush();
     assert_eq!(
         record.save_status(),
-        collaboration::record::RecordSaveStatus::Saved
+        collaboration::document::ResourceSaveStatus::Saved
     );
     let heads = record.doc().get_heads();
-    let mut store =
-        collaboration::record::save::workspace_document(&documents, APP, &workspace_id.to_string())
-            .unwrap();
+    let mut store = collaboration::document::save::workspace_document(
+        &documents,
+        APP,
+        &workspace_id.to_string(),
+    )
+    .unwrap();
     drop(record);
     let mut stored = store
         .load_complete()

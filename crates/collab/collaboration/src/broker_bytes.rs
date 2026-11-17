@@ -27,10 +27,8 @@ impl ByteMeter {
         self.add(value.capacity());
     }
 
-    /// A member's id as its key is written: `agent:<id>`, `bot:<id>`, or a
-    /// person's bare root key.
     pub(super) fn member(&mut self, member: &tilo_actions::MemberId) {
-        self.add(member.key().len());
+        self.add(member.id().len());
     }
 
     pub(super) fn bytes(&mut self, value: &Vec<u8>) {
@@ -90,7 +88,7 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
         CollabRequest::Hello {
             app_id,
             record,
-            record_kind,
+            resource_type,
             handle,
             ..
         } => {
@@ -98,7 +96,7 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             if let Some(record) = record {
                 meter.string_capacity(record);
             }
-            if let Some(kind) = record_kind {
+            if let Some(kind) = resource_type {
                 meter.string_capacity(kind);
             }
             if let Some(handle) = handle {
@@ -186,7 +184,7 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
                 meter.string_capacity(&group.kind);
             }
         }
-        CollabRequest::RecordLocalEffect { address, update } => {
+        CollabRequest::ResourceLocalEffect { address, update } => {
             meter.string_capacity(&address.resource);
             meter.string_capacity(&address.action);
             serialized_bytes(update, &mut meter);
@@ -213,7 +211,7 @@ pub(super) fn command_bytes(command: &SdkCommand) -> Option<usize> {
             if let Some(record) = &hello.route.record {
                 meter.string_capacity(record);
             }
-            if let Some(kind) = &hello.record_kind {
+            if let Some(kind) = &hello.resource_type {
                 meter.string_capacity(kind);
             }
             if let Some(handle) = &hello.handle {
@@ -230,13 +228,13 @@ pub(super) fn command_bytes(command: &SdkCommand) -> Option<usize> {
             }
             meter.finish()
         }
-        SdkCommand::Join(route, record_kind) => {
+        SdkCommand::Join(route, resource_type) => {
             let mut meter = ByteMeter(Some(std::mem::size_of::<SdkCommand>()));
             meter.string_capacity(&route.app_id);
             if let Some(record) = &route.record {
                 meter.string_capacity(record);
             }
-            if let Some(kind) = record_kind {
+            if let Some(kind) = resource_type {
                 meter.string_capacity(kind);
             }
             meter.finish()
@@ -465,19 +463,19 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             }
             "Handoff"
         }
-        CollabEvent::RecordsArrived { records } => {
+        CollabEvent::ResourcesArrived { records } => {
             meter.add_product(records.capacity(), std::mem::size_of::<String>());
             for record in records {
                 meter.string_capacity(record);
             }
-            "RecordsArrived"
+            "ResourcesArrived"
         }
-        CollabEvent::RecordUnavailable { route } => {
+        CollabEvent::ResourceUnavailable { route } => {
             meter.string_capacity(&route.app_id);
             if let Some(record) = &route.record {
                 meter.string_capacity(record);
             }
-            "RecordUnavailable"
+            "ResourceUnavailable"
         }
         CollabEvent::DocumentSnapshotRequested { route } => {
             meter.string_capacity(&route.app_id);
@@ -597,22 +595,22 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             }
             "NativeMediaCommandResult"
         }
-        CollabEvent::RecordContent { route, hash, bytes } => {
+        CollabEvent::DocumentContent { route, hash, bytes } => {
             meter.string_capacity(&route.app_id);
             if let Some(record) = &route.record {
                 meter.string_capacity(record);
             }
             meter.string_capacity(hash);
             meter.bytes(bytes);
-            "RecordContent"
+            "DocumentContent"
         }
-        CollabEvent::RecordContentState { route, hash, .. } => {
+        CollabEvent::DocumentContentState { route, hash, .. } => {
             meter.string_capacity(&route.app_id);
             if let Some(record) = &route.record {
                 meter.string_capacity(record);
             }
             meter.string_capacity(hash);
-            "RecordContentState"
+            "DocumentContentState"
         }
         CollabEvent::RealtimeCommandResult { result, .. } => {
             match result {

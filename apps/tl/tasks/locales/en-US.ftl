@@ -129,6 +129,8 @@ d-rs3ubifz-assignee = Assignee
 
 d-rs3ubifz-title = Title
 
+d-rs3ubifz-remind = Remind
+
 d-zjuy7y7f = New project
     .doc = Starts a project.
     .w-new-project = New project

@@ -389,8 +389,16 @@ impl Shared {
             // A report is read where it lands, not floated over the window it was written over: it
             // is filed in the channel and nothing opens.
             Addressed::Report(destination) => {
-                let key = by.map(|invoker: &tilo_actions::ActionInvoker| invoker.acting.by.key());
-                let from = key.as_deref().unwrap_or(CHAT);
+                // The app the report was sent from: what its picked things came from.
+                let from = by
+                    .and_then(|invoker: &tilo_actions::ActionInvoker| {
+                        invoker
+                            .acting
+                            .app
+                            .as_ref()
+                            .or_else(|| invoker.acting.by.app())
+                    })
+                    .map_or(CHAT, |app| app.as_str());
                 let report = destination.report(from, attached, text)?;
                 (
                     destination.workspace.clone(),

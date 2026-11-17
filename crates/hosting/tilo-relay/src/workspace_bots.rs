@@ -1,7 +1,7 @@
 //! The bots installed in a workspace this host governs, run on the host.
 //!
 //! The host follows the workspace's records through its own copy: each member
-//! write it takes in ([`Workspaces::record_writes`]) wakes the bots that watch
+//! write it takes in ([`Workspaces::document_writes`]) wakes the bots that watch
 //! that record, which read the changes after their cursor as record events
 //! ([`tilo_agent_session::bot::events_since`]). A bot acts through its
 //! own confined replica of the record, as the installation for its
@@ -26,7 +26,7 @@ use tilo_resource::Resource as _;
 use tilo_user_identity::DeviceCert;
 
 use crate::moderation::{ReplicaApi, files_a_report};
-use crate::workspaces::{RecordWrite, Workspaces};
+use crate::workspaces::{ResourceWrite, Workspaces};
 
 /// The app whose record holds the workspace's reports and decisions.
 use ui::apps::CHAT;
@@ -105,7 +105,7 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
     /// Answer the workspace's reports at start, then each time a member's write
     /// to the chat files one, until the workspace is no longer governed here.
     pub async fn run(mut self) {
-        let mut writes = self.workspaces.record_writes();
+        let mut writes = self.workspaces.document_writes();
         loop {
             if let Err(error) = self.wake().await {
                 tracing::warn!(workspace = %self.workspace, %error, "moderation agent did not finish a look");
@@ -122,7 +122,7 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
         }
     }
 
-    fn watches(&self, write: &RecordWrite) -> bool {
+    fn watches(&self, write: &ResourceWrite) -> bool {
         write.workspace == self.workspace && write.app == CHAT && write.record.is_empty()
     }
 
@@ -177,7 +177,7 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
             let taken = |error: tilo_agent_session::AppError| error.to_string();
             Ok::<_, String>((
                 replica.take_mutation().map_err(taken)?,
-                replica.take_record_mutations().map_err(taken)?,
+                replica.take_document_mutations().map_err(taken)?,
             ))
         })
         .await
@@ -195,22 +195,22 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
     }
 
     /// The parts of the chat's messages the workspace holds, each whole.
-    async fn parts(&self) -> Result<Vec<(ui::record::DocumentId, Vec<u8>)>, String> {
+    async fn parts(&self) -> Result<Vec<(ui::resource::DocumentId, Vec<u8>)>, String> {
         let mut parts = Vec::new();
         for (app, record) in self
             .workspaces
-            .record_routes(&self.workspace)
+            .document_routes(&self.workspace)
             .await
             .map_err(|error| error.to_string())?
         {
-            let Some(part) = ui::record::DocumentId::parse(&record)
+            let Some(part) = ui::resource::DocumentId::parse(&record)
                 .filter(|record| app == CHAT && chat::parts::part_index(record).is_some())
             else {
                 continue;
             };
             if let Some(bytes) = self
                 .workspaces
-                .record_document(&self.workspace, CHAT, &record)
+                .resource_document(&self.workspace, CHAT, &record)
                 .await
                 .map_err(|error| error.to_string())?
             {
@@ -222,7 +222,7 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
 
     async fn record(&self) -> Result<Option<Vec<u8>>, String> {
         self.workspaces
-            .record_document(&self.workspace, CHAT, "")
+            .resource_document(&self.workspace, CHAT, "")
             .await
             .map_err(|error| error.to_string())
     }
@@ -284,7 +284,7 @@ fn bot_replica(
     workspace: &str,
     installer: &str,
     bytes: Vec<u8>,
-    parts: Vec<(ui::record::DocumentId, Vec<u8>)>,
+    parts: Vec<(ui::resource::DocumentId, Vec<u8>)>,
 ) -> Result<Replica, String> {
     let bot = Grantee::bot(MODERATION_INSTALLATION);
     let grant = Grant::new(
@@ -304,14 +304,14 @@ fn bot_replica(
         &AppCatalogue::native(),
         CHAT,
         workspace,
-        &format!("bot:{MODERATION_INSTALLATION}"),
+        &tilo_actions::MemberId::bot(MODERATION_INSTALLATION),
         ReplicaActor::Bot {
             installation: MODERATION_INSTALLATION.into(),
             installer: installer.into(),
             standing,
         },
         Seed::Existing {
-            record: ui::record::DocumentId::package_primary(),
+            record: ui::resource::DocumentId::package_primary(),
             changes: vec![bytes],
         },
     )
@@ -319,7 +319,7 @@ fn bot_replica(
     for (part, bytes) in parts {
         // A part it cannot hold leaves only that part's posts out of its
         // look, not every report.
-        if let Err(error) = replica.apply_record(&part, &DocumentMutation::Snapshot(bytes)) {
+        if let Err(error) = replica.apply_document(&part, &DocumentMutation::Snapshot(bytes)) {
             tracing::warn!(record = %part.as_str(), %error, "moderation agent leaves out a part of the chat");
         }
     }
@@ -356,10 +356,10 @@ where
 /// keeps one per workspace (chat), else the workspace's default record, which every
 /// member's first window of the app opens.
 #[must_use]
-pub fn workspace_record(catalogue: &tilo_agent_session::AppCatalogue, app: &str) -> String {
+pub fn workspace_resource(catalogue: &tilo_agent_session::AppCatalogue, app: &str) -> String {
     match catalogue.get(app) {
-        Some(definition) if !definition.keeps_workspace_record() => {
-            ui::record::DocumentId::workspace_default()
+        Some(definition) if !definition.keeps_workspace_resource() => {
+            ui::resource::DocumentId::workspace_default()
                 .as_str()
                 .to_owned()
         }

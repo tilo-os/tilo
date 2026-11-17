@@ -190,7 +190,7 @@ fn singleton_bands_doc() -> AutoCommit {
 fn rows(doc: &mut AutoCommit) -> Vec<HistoryEntry> {
     let mut authors = AuthorDirectory::new();
     // Two known people; anyone else falls through to the honest
-    // "Unknown participant" path.
+    // "Unknown member" path.
     authors.register(
         &hex_actor("alice"),
         tilo_ui::HistoryAuthor::new("Alice", 210.0, short(&hex_actor("alice"))),

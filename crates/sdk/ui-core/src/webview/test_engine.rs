@@ -325,7 +325,7 @@ impl TestEngine {
     }
 
     /// Say, as a ready host does, whether this engine sends
-    /// [`WebViewEvent::PageRecord`] and [`WebViewEvent::PageChanged`] of its
+    /// [`WebViewEvent::PageResource`] and [`WebViewEvent::PageChanged`] of its
     /// own accord. It says it does not until a test sets it.
     pub fn set_page_events(&self, tells: bool) {
         self.lock_inner().page_events = tells;
@@ -334,11 +334,11 @@ impl TestEngine {
     /// A person typed straight into the page: the engine set `entry` down at
     /// the place `seq` of its record and says so, as no action's answer
     /// carries it. Delivered on the next drain.
-    pub fn emit_page_record(&self, seq: u64, mut entry: serde_json::Value) {
+    pub fn emit_page_resource(&self, seq: u64, mut entry: serde_json::Value) {
         if let Some(fields) = entry.as_object_mut() {
             fields.insert("seq".into(), seq.into());
         }
-        self.push_event(WebViewEvent::PageRecord { seq, entry });
+        self.push_event(WebViewEvent::PageResource { seq, entry });
     }
 
     /// The page changed a field or a form of itself, or a person typed into
@@ -461,7 +461,7 @@ impl TestEngine {
                 PageNavigation::None
             },
             loading: false,
-            record: super::PageRecordNote::default(),
+            record: super::PageResourceNote::default(),
         })
     }
 

@@ -139,14 +139,14 @@ pub fn presence_id(
         .find_map(|(id, name)| name.eq_ignore_ascii_case(&row.label).then(|| id.clone()))
 }
 
-/// The strip and window `participant_id` is on in the active workspace.
+/// The strip and window `member_id` is on in the active workspace.
 #[must_use]
-pub fn place_of(desktop: &Layout, participant_id: &str) -> Option<Place> {
+pub fn place_of(desktop: &Layout, member_id: &str) -> Option<Place> {
     let workspace = desktop.active_workspace()?;
     let tab_id = workspace
         .present
         .iter()
-        .find(|here| here.device == participant_id)?
+        .find(|here| here.device == member_id)?
         .tab?;
     workspace.strips.iter().enumerate().find_map(|(at, strip)| {
         let tab = strip

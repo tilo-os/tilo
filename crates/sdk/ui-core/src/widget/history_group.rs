@@ -42,7 +42,7 @@ pub struct NamedRange {
 /// onto `tilo_ui::history_source::groups::clear_name`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GroupNameRequest {
-    pub record_id: Option<String>,
+    pub document_id: Option<String>,
     pub start: HistoryEntryId,
     pub end: HistoryEntryId,
     pub label: String,
@@ -101,7 +101,7 @@ impl OpFamily {
 pub struct HistoryGroup {
     pub key: String,
     pub name: Option<String>,
-    pub record_id: Option<String>,
+    pub document_id: Option<String>,
     pub named_by: Option<HistoryAuthor>,
     /// The kind of explicit work unit (`task`, `agent-run`, `shortcut`, …)
     /// the band is, when its changes share one rather than a person's name.
@@ -657,7 +657,7 @@ fn finish_group(
         name: named
             .map(|n| n.label.clone())
             .filter(|label| !label.is_empty()),
-        record_id: named
+        document_id: named
             .filter(|named| named.persisted)
             .map(|named| named.id.clone()),
         named_by: named.and_then(|n| n.named_by.clone()),
@@ -860,7 +860,7 @@ mod tests {
                 assert_eq!(groups.len(), 1);
                 assert_eq!(groups[0].name.as_deref(), Some("Prepare launch brief"));
                 assert_eq!(
-                    groups[0].record_id, None,
+                    groups[0].document_id, None,
                     "an automatic action group is not a persisted named range"
                 );
                 assert_eq!(groups[0].authors.len(), 2);

@@ -77,7 +77,11 @@ fn is_destructive(context: &tilo_actions::ActionContext, destructive: &[String])
 /// counts when the person made it or someone (an agent, a Shortcut) made it
 /// for them.
 #[must_use]
-pub fn activity_of(source: &Source<'_>, person: &str, since_ms: i64) -> Vec<Activity> {
+pub fn activity_of(
+    source: &Source<'_>,
+    person: &tilo_action_policy::MemberId,
+    since_ms: i64,
+) -> Vec<Activity> {
     let Source {
         app,
         record,
@@ -92,10 +96,10 @@ pub fn activity_of(source: &Source<'_>, person: &str, since_ms: i64) -> Vec<Acti
             before = Some(hash);
             continue;
         };
-        let by_person = context.invoker.as_ref().filter(|invoker| {
-            invoker.acting.person_id() == Some(person)
-                || invoker.acting.acted_for_person() == Some(person)
-        });
+        let by_person = context
+            .invoker
+            .as_ref()
+            .filter(|invoker| invoker.acting.members().contains(&person));
         if let Some(invoker) = by_person.filter(|_| version.time_ms >= since_ms) {
             let what = context
                 .what

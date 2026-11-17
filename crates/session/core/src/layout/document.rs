@@ -1,7 +1,7 @@
 //! The layout a page keeps: one automerge document, whose own change history is what happened to the
 //! layout, who did it and when.
 //! A native session keeps no such document: the workspaces' shared records hold its layout, and every
-//! member shows them ([`tilo_desktop_model::shared_record`]).
+//! member shows them ([`tilo_desktop_model::shared_resource`]).
 //! The layout is no second copy anywhere: the tree a host draws is a projection of this document, a
 //! pass that finds the layout changed writes one change of it, and a version restored from the
 //! history is another change on top. What is written is the form that opens again — a running
@@ -18,7 +18,9 @@ use automerge::AutoCommit;
 use automerge::transaction::Transactable as _;
 use tilo_actions::ActionContext;
 use tilo_desktop_model::ownership::Authors;
-use tilo_desktop_model::{Layout as Tree, STATE_SCHEMA_VERSION, TabId, desktop_doc, shared_record};
+use tilo_desktop_model::{
+    Layout as Tree, STATE_SCHEMA_VERSION, TabId, desktop_doc, shared_resource,
+};
 use ui::permissions::MemberId;
 use ui::state::UndoLog;
 
@@ -149,7 +151,7 @@ impl LayoutDocument {
     /// entry says who asked and what they did, so the history names it and the step is the person's
     /// to take back. It is a change of the layout and never a frame of a drag: an action asked for is
     /// written as it is made. Whether the layout changed at all.
-    pub fn record_action(
+    pub fn resource_action(
         &self,
         desktop: &Tree,
         time: i64,
@@ -168,7 +170,7 @@ impl LayoutDocument {
         if doc.pending_ops() == 0 {
             return false;
         }
-        shared_record::commit_change(&mut doc, &self.person, time, None);
+        shared_resource::commit_change(&mut doc, &self.person, time, None);
         self.keep(&mut doc);
         true
     }
@@ -206,7 +208,7 @@ impl LayoutDocument {
             doc.rollback();
             return false;
         }
-        shared_record::commit_change(&mut doc, &self.person, time, asked);
+        shared_resource::commit_change(&mut doc, &self.person, time, asked);
         // One change of the layout is one step of the person's: what they did here is theirs to take
         // back, whichever of their agents asked; so is a change asked for that only moves the view,
         // a width or a maximization, which is a step like any other when an action asks for it. How

@@ -68,7 +68,7 @@ impl Connection {
         directories: &Rc<LocalActionDirectoryRegistry>,
         route: &CrdtRoute,
         person: &Person,
-        claimed_participant: &str,
+        claimed_presence: &str,
     ) -> Self {
         let peer = state.next_peer_id();
         let service = Rc::new(AppConnection {
@@ -90,7 +90,7 @@ impl Connection {
             .join_channel_as(
                 &route.channel_key(),
                 &person.presentation(&route.cluster_id),
-                claimed_participant,
+                claimed_presence,
             )
             .await
             .unwrap();
@@ -202,7 +202,7 @@ impl wire::DirectorySource for CachedDirectory {
 
 fn rows() -> Vec<runtime_collab::ActionDirectoryRow> {
     let mut rows = Vec::new();
-    for (id, label, kind, participant) in [
+    for (id, label, kind, presence) in [
         (
             "account:secret",
             "Secret account label",
@@ -223,10 +223,8 @@ fn rows() -> Vec<runtime_collab::ActionDirectoryRow> {
         ),
     ] {
         let mut contract = ActionContract::view();
-        if participant {
-            contract
-                .tags
-                .push(tilo_actions::PARTICIPANT_VIEW_TAG.into());
+        if presence {
+            contract.tags.push(tilo_actions::PRESENCE_VIEW_TAG.into());
         }
         let descriptor = runtime_collab::ExportedAction {
             did: None,
@@ -432,7 +430,7 @@ async fn cached_private_metadata_is_filtered_on_wire_and_bridge_for_authenticate
                 (&viewer, false),
                 (&other_device, true),
             ] {
-                // Every foreign person claims the owner's participant name. The
+                // Every foreign person claims the owner's presence name. The
                 // certified root, not this wire label, must decide disclosure.
                 let client =
                     Connection::join(&state, &directories, &route, person, &owner.id()).await;
@@ -706,7 +704,7 @@ async fn document_read_views_are_disclosed_without_exposing_the_publishers_priva
             for authenticated_publisher in [true, false] {
                 if !authenticated_publisher {
                     // No publisher certificate must not turn the workspace owner
-                    // or a caller-supplied participant label into its identity.
+                    // or a caller-supplied presence label into its identity.
                     fixture
                         .directories
                         .directories
@@ -881,7 +879,7 @@ fn a_read_of_the_record_discloses_it_to_agents_and_a_private_view_does_not() {
         }
     };
     let agent = BrokerActor::agent("claude-code");
-    let read = row(&[tilo_actions::RECORD_READ_TAG]);
+    let read = row(&[tilo_actions::RESOURCE_READ_TAG]);
     let question = directory_row_question(&read).unwrap();
     assert!(question.disclosed_to(&agent, Some("publisher")));
     let private = row(&[]);

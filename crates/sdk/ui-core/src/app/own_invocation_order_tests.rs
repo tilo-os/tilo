@@ -11,7 +11,7 @@ struct Probe {
     owner: crate::bound_dispatch::CallbackBinding,
     invocations: Invocations,
     /// A record the window keeps beside the one it shows, when it keeps one.
-    beside: Option<crate::record::StoredRecord>,
+    beside: Option<crate::resource::StoredResource>,
     _temp: tempfile::TempDir,
 }
 
@@ -30,8 +30,8 @@ impl crate::widget::Decorator for KeepsBeside {
     fn inner_mut(&mut self) -> &mut (dyn crate::widget::Widget + 'static) {
         self.content.as_mut()
     }
-    fn record_owners(&self) -> Vec<crate::history_mode::HistoryOwner> {
-        let mut owners = self.content.record_owners();
+    fn resource_owners(&self) -> Vec<crate::history_mode::HistoryOwner> {
+        let mut owners = self.content.resource_owners();
         owners.push(self.owner.clone());
         owners
     }
@@ -50,7 +50,7 @@ fn probe_keeping_beside(beside: bool) -> Probe {
     let definition = crate::application_test_support::runner_probe_definition();
     let temp = tempfile::tempdir().unwrap();
     let workspace = uuid::Uuid::new_v4().to_string();
-    let mut owners = crate::record::RecordOwners::new(temp.path().into());
+    let mut owners = crate::resource::ResourceOwners::new(temp.path().into());
     let records = owners.open(&definition.app_id, &workspace).unwrap();
     let views = Rc::new(
         crate::application_view::InstanceViewStore::new(
@@ -81,12 +81,12 @@ fn probe_keeping_beside(beside: bool) -> Probe {
         App::from_component(component, crate::application_test_support::runner_inputs()).unwrap();
     let owner = app.root_widget.callback_binding().unwrap();
     let beside = beside.then(|| {
-        crate::record::workspace::WorkspaceRecords::in_workspace(
+        crate::resource::workspace::WorkspaceResources::in_workspace(
             owners.clone(),
             workspace.clone(),
             crate::application_test_support::author(),
         )
-        .open_record("so.tilo.chat", "tilo.workspace.emoji", &|_| Ok(()))
+        .open_resource("so.tilo.chat", "tilo.workspace.emoji", &|_| Ok(()))
         .unwrap()
     });
     if let Some(record) = &beside {
@@ -228,7 +228,7 @@ tilo_test_env::scenario! {
         let beside = probe
             .beside
             .as_ref()
-            .and_then(crate::record::StoredRecord::route)
+            .and_then(crate::resource::StoredResource::route)
             .expect("the record kept beside syncs on its own route");
         let first = probe.invoke_effect();
         probe.pump_until_answered();

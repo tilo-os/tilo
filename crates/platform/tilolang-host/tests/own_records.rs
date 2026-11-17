@@ -121,7 +121,7 @@ fn member(bus: &Rc<Bus>, workspace: uuid::Uuid, person: &str, bundle: &Arc<Bundl
         app_id: route.app_id.clone(),
         cluster_id: route.cluster_id,
         record: route.record.clone(),
-        record_kind: None,
+        resource_type: None,
         handle: Some(person.to_owned()),
     }));
     let _ = manager.poll();

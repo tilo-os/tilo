@@ -46,7 +46,7 @@ impl Task {
         // refused. It lands when its first write does.
         if !self
             .engine
-            .holds_record(&route.cluster_id, &route.app_id, &route.record)
+            .holds_resource(&route.cluster_id, &route.app_id, &route.record)
         {
             return;
         }
@@ -155,7 +155,7 @@ impl Task {
             self.reports.emit(&crate::Event::HostReady {
                 ws: workspace_id,
                 peer,
-                records_when_opened: when_opened,
+                documents_when_opened: when_opened,
             });
         }
     }
@@ -170,9 +170,9 @@ impl Task {
         match envelope {
             Envelope::Ready {
                 workspace_id,
-                records_when_opened,
+                documents_when_opened,
                 ..
-            } => self.ready(workspace_id, records_when_opened),
+            } => self.ready(workspace_id, documents_when_opened),
             Envelope::NotAuthorised {
                 workspace_id,
                 refusal,
@@ -196,12 +196,13 @@ impl Task {
             // This session's token for its host's fetch proxy, which dies
             // with the connection.
             Envelope::FetchGrant { token } => self.grant_fetch_proxy(&token),
+            Envelope::PersonalList { list } => self.personal_list(&list),
             said @ Envelope::HostSaid { .. } => self.heard_from_host(&said),
-            Envelope::RecordOpened {
+            Envelope::DocumentOpened {
                 workspace_id,
                 channel,
                 answer,
-            } => self.record_opened(workspace_id, channel, answer),
+            } => self.resource_opened(workspace_id, channel, answer),
             Envelope::CompactRequest {
                 workspace_id,
                 request,
@@ -229,7 +230,7 @@ impl Task {
                 }
                 self.acknowledge(op, Err(refusal));
             }
-            content @ Envelope::RecordContent { .. } => self.record_content(content, now),
+            content @ Envelope::DocumentContent { .. } => self.document_content(content, now),
             envelope => {
                 if let Some(event) = addressed(
                     envelope,
@@ -259,13 +260,24 @@ impl Task {
         }
     }
 
+    /// The host says the person's workspaces changed: the list as it is now,
+    /// for whoever shows it beside the workspaces this device remembered.
+    fn personal_list(&self, list: &[u8]) {
+        match serde_json::from_slice::<tilo_relay_session::workspaces::PersonalList>(list) {
+            Ok(list) => self.reports.emit(&crate::Event::Personal(Box::new(list))),
+            Err(error) => {
+                tracing::warn!(%error, "the host's workspace list did not decode");
+            }
+        }
+    }
+
     /// A coedit delta: its body, when it carries one, is the workspace's
     /// content from `author`.
     ///
     /// Every write a host sends was signed by its author when it was made,
     /// whether the host relays it as it arrives, replays a newcomer what its
     /// store kept or answers for a record a device opens
-    /// ([`Task::open_record`]): it is decided as of its own timestamp, so a
+    /// ([`Task::open_resource`]): it is decided as of its own timestamp, so a
     /// chat written an hour ago and opened now reads. Whether a write in the
     /// clear is a record's base or a downgrade is where it stands in the
     /// record, before its seal or after, which the replica decides.
@@ -292,8 +304,8 @@ impl Task {
 
     /// A surface this page asked for is the peer's, not a record's content: it is kept for
     /// deciding, and what waited for it is decided at the top of the session loop.
-    fn record_content(&mut self, envelope: Envelope, now: u64) {
-        let Envelope::RecordContent { ref frame, .. } = envelope else {
+    fn document_content(&mut self, envelope: Envelope, now: u64) {
+        let Envelope::DocumentContent { ref frame, .. } = envelope else {
             return;
         };
         let device = self.config.cert.device_public_key;
@@ -309,7 +321,7 @@ impl Task {
     }
 
     /// Follow what `workspace_id`'s governance says now: who its members are,
-    /// and the channel commits that waited for a participant it now admits.
+    /// and the channel commits that waited for a member it now admits.
     pub(super) fn follow_governance(&mut self, workspace_id: WorkspaceId) {
         self.planes_due.insert(workspace_id);
         self.land_admitted(workspace_id);
@@ -348,7 +360,7 @@ impl Task {
         }
         self.pump_channels(true);
         // A record opened before the governance admitted it waits with its
-        // channel unopened: opening it here asks the participants for the keys
+        // channel unopened: opening it here asks the members for the keys
         // the writes it holds wait on.
         let unopened: Vec<DocumentRoute> =
             self.engine.held_writes().lock().keys().cloned().collect();
@@ -502,14 +514,14 @@ impl Task {
             ref message @ neighbour_wire::NeighbourMsg::AppDocument {
                 ref app_id,
                 ref cluster_id,
-                ref record_id,
+                ref document_id,
                 ref envelope,
                 ..
             } => {
                 let route = DocumentRoute {
                     app_id: app_id.clone(),
                     cluster_id: cluster_id.clone(),
-                    record: record_id.clone(),
+                    record: document_id.clone(),
                 };
                 // A workspace the host resumes after it lagged can replay an entry
                 // its live deliveries already carried; the page takes it once.
@@ -749,7 +761,7 @@ impl Task {
             };
             let channel = neighbour_wire::app_document_channel(&route.app_id, &route.record);
             if client
-                .send(Envelope::OpenRecord {
+                .send(Envelope::OpenDocument {
                     workspace_id,
                     channel,
                     own: self.own_channel(&route),
@@ -786,17 +798,17 @@ fn addressed(envelope: Envelope, host: [u8; 32], host_user: [u8; 32]) -> Option<
             from: from_device_public_key,
             frame,
         })),
-        Envelope::RecordContent {
+        Envelope::DocumentContent {
             workspace_id,
             from_device_public_key,
             frame,
             ..
-        } => Some(Event::RecordContent {
+        } => Some(Event::DocumentContent {
             ws: workspace_id,
             from: from_device_public_key,
             frame,
         }),
-        Envelope::RecordContentRefused {
+        Envelope::DocumentContentRefused {
             workspace_id,
             refusal,
         } => Some(Event::ContentRefused {

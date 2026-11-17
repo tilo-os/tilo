@@ -36,9 +36,11 @@ use tilo_actions::remote::{
     ActionHostError, Caller, InvokeArgument, InvokeRequest, person_accounts, person_models,
 };
 use tilo_mail_session::{Attachment, LiveMailSession};
+use tilo_net::proxy::host::Destinations;
 use tilo_user_identity::DeviceCert;
 
 use super::Workspaces;
+use super::person_models::kept_location;
 
 impl Workspaces {
     /// Where this host keeps `person`'s own accounts and model providers,
@@ -143,47 +145,13 @@ impl Workspaces {
             _ => Err(ActionHostError::UnknownAction),
         }
     }
-
-    /// Answer a [`person_models::PROVIDER`] request.
-    pub(super) fn person_models_invoke(
-        &self,
-        workspace_id: Option<collab_types::WorkspaceId>,
-        caller: &Caller,
-        certificate: Option<&DeviceCert>,
-        request: &InvokeRequest,
-    ) -> Result<Value, ActionHostError> {
-        let person = Self::asking_person(caller, certificate, workspace_id)?;
-        let root = self.person_settings_root(&person);
-        match request.target.address.action.as_str() {
-            person_models::LIST => answer(&providers(&root)),
-            person_models::ADD_PROVIDER => {
-                let adding: person_models::AddProvider = argument(request, "a provider to add")?;
-                answer(&add_provider(&root, &adding))
-            }
-            person_models::SET_KEY => {
-                let setting: SetKey = argument(request, "a key to keep")?;
-                answer(&set_key(&root, setting))
-            }
-            person_models::REMOVE_KEY => {
-                let provider = provider_argument(request)?;
-                answer(&remove_key(&root, &provider))
-            }
-            person_models::REMOVE_PROVIDER => {
-                let provider = provider_argument(request)?;
-                answer(&remove_provider(&root, &provider))
-            }
-            person_models::SET_ASSIGNMENT => {
-                let choosing: SetAssignment = argument(request, "a model choice")?;
-                answer(&set_assignment(&root, choosing))
-            }
-            _ => Err(ActionHostError::UnknownAction),
-        }
-    }
 }
 
 /// Turn one action's answer into what the caller reads, or the reason it was
 /// refused.
-fn answer<T: serde::Serialize>(outcome: &Result<T, String>) -> Result<Value, ActionHostError> {
+pub(super) fn answer<T: serde::Serialize>(
+    outcome: &Result<T, String>,
+) -> Result<Value, ActionHostError> {
     match outcome {
         Ok(value) => serde_json::to_value(value).map_err(|error| ActionHostError::Refused {
             reason: error.to_string(),
@@ -201,7 +169,7 @@ fn invalid(reason: &str) -> ActionHostError {
 }
 
 /// The arguments of a request, as the value its action names.
-fn argument<T: serde::de::DeserializeOwned>(
+pub(super) fn argument<T: serde::de::DeserializeOwned>(
     request: &InvokeRequest,
     what: &str,
 ) -> Result<T, ActionHostError> {
@@ -224,7 +192,7 @@ fn account_argument(request: &InvokeRequest) -> Result<String, ActionHostError> 
 }
 
 /// The `provider` a removing action names.
-fn provider_argument(request: &InvokeRequest) -> Result<String, ActionHostError> {
+pub(super) fn provider_argument(request: &InvokeRequest) -> Result<String, ActionHostError> {
     let value: Map<String, Value> = argument(request, "the provider")?;
     value
         .get("provider")
@@ -235,7 +203,7 @@ fn provider_argument(request: &InvokeRequest) -> Result<String, ActionHostError>
 }
 
 /// The person's own vault, every sign-in and key of theirs sealed in it.
-fn credentials(root: &Path) -> Result<accounts::AccountCredentials, String> {
+pub(super) fn credentials(root: &Path) -> Result<accounts::AccountCredentials, String> {
     accounts::AccountCredentials::open_in(root)
 }
 
@@ -627,7 +595,7 @@ async fn mark_with(session: Session, root: &Path, marking: MarkMail) -> Result<(
 }
 
 /// The providers the person keeps, their models and what runs where.
-fn providers(root: &Path) -> Result<ModelProviders, String> {
+pub(super) fn providers(root: &Path) -> Result<ModelProviders, String> {
     let config = provider_config(root);
     let vault = credentials(root)?;
     Ok(providers_of(&config, &vault))
@@ -659,7 +627,7 @@ fn providers_of(
 }
 
 /// One provider as the pane reads it.
-fn view_of(
+pub(super) fn view_of(
     profile: &agent_provider_config::ProviderProfile,
     vault: &accounts::AccountCredentials,
 ) -> ProviderView {
@@ -691,12 +659,12 @@ fn view_of(
 }
 
 /// The person's own model configuration.
-fn provider_config(root: &Path) -> agent_provider_config::ProviderConfig {
+pub(super) fn provider_config(root: &Path) -> agent_provider_config::ProviderConfig {
     let store = settings_store::profile(root);
     agent_provider_config::ProviderConfig::load_in(&*store)
 }
 
-fn save_provider_config(
+pub(super) fn save_provider_config(
     root: &Path,
     config: &agent_provider_config::ProviderConfig,
 ) -> Result<(), String> {
@@ -705,19 +673,23 @@ fn save_provider_config(
 }
 
 /// The vault id a provider's key is kept under, apart from every account's.
-fn key_id(provider: &str) -> accounts::AccountId {
+pub(super) fn key_id(provider: &str) -> accounts::AccountId {
     accounts::AccountId::from(format!("provider:{provider}"))
 }
 
-fn add_provider(root: &Path, adding: &person_models::AddProvider) -> Result<ProviderView, String> {
+/// Keep the provider `adding` names, at an address this host calls
+/// (`destinations`, [`kept_location`]).
+pub(super) fn add_provider(
+    root: &Path,
+    adding: &person_models::AddProvider,
+    destinations: Destinations,
+) -> Result<ProviderView, String> {
     let name = adding.name.trim();
     if name.is_empty() {
         return Err("A provider needs a name".into());
     }
     let endpoint = adding.endpoint.trim();
-    if !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
-        return Err("A provider's endpoint is a URL".into());
-    }
+    let location = kept_location(endpoint, destinations)?;
     let mut config = provider_config(root);
     let protocol = match adding.protocol {
         person_models::Protocol::OpenAiCompatible => {
@@ -730,7 +702,7 @@ fn add_provider(root: &Path, adding: &person_models::AddProvider) -> Result<Prov
         label: name.to_owned(),
         protocol,
         endpoint: endpoint.to_owned(),
-        location: agent_provider_config::EndpointLocation::Hosted,
+        location,
         credential: None,
         enabled: true,
         ..Default::default()
@@ -741,7 +713,7 @@ fn add_provider(root: &Path, adding: &person_models::AddProvider) -> Result<Prov
     Ok(view)
 }
 
-fn set_key(root: &Path, setting: SetKey) -> Result<ProviderView, String> {
+pub(super) fn set_key(root: &Path, setting: SetKey) -> Result<ProviderView, String> {
     if setting.key.trim().is_empty() {
         return Err("An API key cannot be empty".into());
     }
@@ -765,7 +737,7 @@ fn set_key(root: &Path, setting: SetKey) -> Result<ProviderView, String> {
     Ok(view_of(&profile, &vault))
 }
 
-fn remove_key(root: &Path, provider: &str) -> Result<ProviderView, String> {
+pub(super) fn remove_key(root: &Path, provider: &str) -> Result<ProviderView, String> {
     let config = provider_config(root);
     let profile = config
         .profiles
@@ -779,7 +751,7 @@ fn remove_key(root: &Path, provider: &str) -> Result<ProviderView, String> {
     Ok(view_of(profile, &vault))
 }
 
-fn remove_provider(root: &Path, provider: &str) -> Result<ModelProviders, String> {
+pub(super) fn remove_provider(root: &Path, provider: &str) -> Result<ModelProviders, String> {
     let mut config = provider_config(root);
     let before = config.profiles.len();
     config.profiles.retain(|profile| profile.id != provider);
@@ -800,7 +772,10 @@ fn remove_provider(root: &Path, provider: &str) -> Result<ModelProviders, String
     providers(root)
 }
 
-fn set_assignment(root: &Path, choosing: SetAssignment) -> Result<ModelProviders, String> {
+pub(super) fn set_assignment(
+    root: &Path,
+    choosing: SetAssignment,
+) -> Result<ModelProviders, String> {
     let mut config = provider_config(root);
     let kind = agent_provider_config::Interaction::from_id(&choosing.kind)
         .ok_or_else(|| "That is not a kind of work".to_owned())?;
@@ -866,6 +841,7 @@ mod tests {
                 protocol: person_models::Protocol::OpenAiCompatible,
                 endpoint: "https://api.openai.com/v1".into(),
             },
+            Destinations::Public,
         )
         .expect("a provider is added");
         assert!(!added.configured);
@@ -916,6 +892,7 @@ mod tests {
                 protocol: person_models::Protocol::Anthropic,
                 endpoint: "https://api.anthropic.com".into(),
             },
+            Destinations::Public,
         )
         .expect("a provider is added");
         set_key(
@@ -949,6 +926,7 @@ mod tests {
                     protocol: person_models::Protocol::OpenAiCompatible,
                     endpoint: endpoint.into(),
                 },
+                Destinations::Public,
             );
             assert!(refused.is_err(), "{name} {endpoint}");
         }

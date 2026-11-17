@@ -62,6 +62,11 @@ echo "created: $(jq -r .name <<<"$created") on $(jq -r .host <<<"$created")"
 The rows you list carry the role you hold in each workspace: `owner` for one of your own, else the role
 you were invited with.
 
+The API in front of the hosts keeps no workspace itself. It checks the key against the grant it carries
+and forwards each call to the host that serves that workspace best right now, so the same key works
+through any of our front doors and through yours. When only hosts that hold a workspace's encrypted data
+are online, none that can read it, the call is refused in plain words rather than answered.
+
 ## Running your own host
 
 You can point the SDKs, the command and an agent's MCP client at a Tilo host you run. Everything above

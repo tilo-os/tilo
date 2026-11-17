@@ -84,13 +84,13 @@ pub mod sync_folder;
 pub mod thumbs;
 #[cfg(feature = "filesystem")]
 pub mod transport_gate;
+/// The workspace tree as the Files app's person record.
+#[cfg(feature = "filesystem")]
+pub mod tree_document;
 /// Putting a file into that tree from a host or a page that holds the record
 /// and no folder of its own.
 #[cfg(feature = "filesystem")]
 pub mod tree_put;
-/// The workspace tree as the Files app's person record.
-#[cfg(feature = "filesystem")]
-pub mod tree_record;
 #[cfg(feature = "filesystem")]
 pub mod unsaved;
 #[cfg(feature = "filesystem")]
@@ -135,7 +135,7 @@ pub use identity::{
     load_workspace_share_issuer, revocation_list_path,
 };
 #[cfg(feature = "filesystem")]
-pub use namespace::history::{HistoryError, RecordHistorySnapshot};
+pub use namespace::history::{DocumentHistorySnapshot, HistoryError};
 #[cfg(feature = "filesystem")]
 pub use namespace::{Namespace, ROOT_INO, TransactionProjectionError};
 #[cfg(feature = "filesystem")]

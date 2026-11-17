@@ -55,6 +55,9 @@ impl Shared {
     /// device changed there: what every device in a workspace sees of its strips and windows
     /// ([`layout::Layouts`]).
     pub(crate) fn follow_layouts(&self) {
+        // The first look begins this session's restore: a desktop that has drawn is usable once
+        // the windows this device left open are being asked for, or there are none to ask for.
+        self.restore.borrow_mut().begin();
         let Some(engine) = &self.engine else {
             return;
         };

@@ -365,7 +365,7 @@ pub(super) async fn handle_host_said(
     }
 }
 
-/// Handle `RecordContentWant`: fan a member's request for content out to the
+/// Handle `DocumentContentWant`: fan a member's request for content out to the
 /// workspace's other members, as presence was fanned out, and answer it here
 /// from what the host keeps ([`answer_content`]).
 #[expect(
@@ -378,14 +378,14 @@ pub(super) async fn handle_content_want(
     subscribed: &[WorkspaceId],
     mut env: Envelope,
 ) -> Result<Option<Envelope>, PeerError> {
-    let Envelope::RecordContentWant {
+    let Envelope::DocumentContentWant {
         workspace_id,
         from_device_public_key,
         frame,
     } = &mut env
     else {
         return Err(PeerError::Protocol(
-            "handle_content_want called with a non-RecordContentWant envelope".into(),
+            "handle_content_want called with a non-DocumentContentWant envelope".into(),
         ));
     };
     // A sender's claim is not transport evidence: the host stamps its own.
@@ -456,7 +456,7 @@ fn answer_content(
         for frame in frames {
             runtime.route_lossy(
                 &member,
-                Envelope::RecordContent {
+                Envelope::DocumentContent {
                     workspace_id,
                     to_device_public_key: member,
                     from_device_public_key: host,
@@ -471,13 +471,13 @@ fn answer_content(
 /// to, stamped with the authenticated sender. Never stored, never fanned
 /// out, never answered: a piece that cannot be delivered is dropped, and
 /// the device that wanted it asks again.
-pub(super) async fn route_record_content(
+pub(super) async fn route_document_content(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     subscribed: &[WorkspaceId],
     envelope: Envelope,
 ) {
-    let Envelope::RecordContent {
+    let Envelope::DocumentContent {
         workspace_id,
         to_device_public_key: to,
         frame,
@@ -487,7 +487,7 @@ pub(super) async fn route_record_content(
         return;
     };
     if !subscribed.contains(&workspace_id)
-        || frame.len() > crate::transport::MAX_RECORD_CONTENT_FRAME_BYTES
+        || frame.len() > crate::transport::MAX_DOCUMENT_CONTENT_FRAME_BYTES
     {
         return;
     }
@@ -523,7 +523,7 @@ pub(super) async fn route_record_content(
         // The sender's person is told, and when the budget holds it again:
         // the piece is not passed on, so whatever they shared stops here.
         if limits.tell_refused(&peer.user_public_key, tilo_clock::now()) {
-            let _ = session.outbound.try_send(Envelope::RecordContentRefused {
+            let _ = session.outbound.try_send(Envelope::DocumentContentRefused {
                 workspace_id,
                 refusal: limited.refusal(),
             });
@@ -540,7 +540,7 @@ pub(super) async fn route_record_content(
         }
         return;
     }
-    let stamped = Envelope::RecordContent {
+    let stamped = Envelope::DocumentContent {
         workspace_id,
         to_device_public_key: to,
         from_device_public_key: peer.device_public_key,

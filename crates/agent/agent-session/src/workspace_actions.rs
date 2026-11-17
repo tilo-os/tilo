@@ -10,7 +10,7 @@
 //!   (`record:<app>:<record>`, the token agents use) and the workspace's own
 //!   provider (`workspace:<workspace>`) offering `app.<app>#open`. A query naming
 //!   no provider lists rows for the records open on the workspace's shared
-//!   desktop, the most recently changed next, up to [`DEFAULT_ROWS_RECORDS`];
+//!   desktop, the most recently changed next, up to [`DEFAULT_DOCUMENTS`];
 //!   naming a record's provider lists every action that record publishes.
 //! - **Invoke.** The record is held as a replica of its resource in its own
 //!   confined app worker ([`ConfinedReplica`]) from what the service opened
@@ -39,13 +39,13 @@
 //! that grants no document invocation authority.
 //!
 //! The service joins each workspace as the host's own device ([`HostDevice`], from
-//! the [`WorkspaceRecordsLink`] the host supplies): a member of the workspace's
-//! channels like any other, admitted by the workspace's participants. It reads
+//! the [`WorkspaceDocumentsLink`] the host supplies): a member of the workspace's
+//! channels like any other, admitted by the workspace's members. It reads
 //! only records it holds keys for and writes nothing in the clear. When the
 //! host device itself takes part in the workspace's channels (a workspace the host
 //! governs), it cannot be admitted to them a second time; the host hands the
 //! service the keys it holds instead
-//! ([`WorkspaceRecordsLink::host_keys`]), for each record a request reads or
+//! ([`WorkspaceDocumentsLink::host_keys`]), for each record a request reads or
 //! acts on, fresh for every act.
 
 mod arguments;
@@ -53,6 +53,7 @@ mod bounded;
 mod canonical;
 mod catalogue;
 mod catch_up;
+mod change;
 mod content;
 mod feedback;
 mod found;
@@ -79,7 +80,9 @@ mod tree_put;
 pub(super) use arguments::invoke_arguments;
 pub use content::MAX_PUT_BYTES;
 pub use host_actions::HostActions;
-pub use link::{FeedbackReviewer, HostDevice, ViewDocument, ViewReadPolicy, WorkspaceRecordsLink};
+pub use link::{
+    FeedbackReviewer, HostDevice, ViewDocument, ViewReadPolicy, WorkspaceDocumentsLink,
+};
 pub use terminal::{ShellRan, TERMINAL_APP, Watching, WorkspaceShell};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
@@ -88,14 +91,14 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tilo_relay_protocol::WorkspaceId;
-use tilo_session_client::engine::RecordReading;
+use tilo_session_client::engine::ResourceReading;
 use tilo_session_client::{Cmd, Event, Link, Outbox};
 
 use crate::apps::{AppCatalogue, Seed};
 use crate::host::CatalogueFactory;
-use crate::participant::actions::{Outcome, api_outcome, record_of, record_provider};
+use crate::member::actions::{Outcome, api_outcome, record_provider, resource_of};
 use crate::worker::{ConfinedReplica, ConfinedViews};
-use crate::workspace_records::WorkspaceRecords;
+use crate::workspace_documents::WorkspaceDocuments;
 use catch_up::{catch_up, hold_parts};
 use collab_types::DocumentMutation;
 use jobs::Jobs;
@@ -107,19 +110,19 @@ use tilo_actions::InteractionPhase;
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, APPLICATION_START_ACTION,
     ActionHostError, ActorPlace, Caller, CataloguePage, CatalogueQuery, CatalogueRow, Completer,
-    Confirmation, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
-    ReceiptStatus, RemoteActionMessage, application_provider, application_provider_record, pending,
-    provider_workspace,
+    Confirmation, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest,
+    MAX_REMOTE_WAIT, Pending, ReceiptStatus, RemoteActionMessage, application_provider,
+    application_provider_resource, pending, provider_workspace,
 };
 use tilo_actions::{
-    ActionFailure, ActionOutput, ConfirmationPolicy, InvocationId, InvocationUpdate,
+    ActionFailure, ActionOutput, ConfirmationPolicy, InvocationId, InvocationUpdate, MemberId,
 };
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use ui::permissions::policy::{ActionKind, Answer, TreePath};
 
 /// Records whose rows a catalogue naming no provider lists.
-pub const DEFAULT_ROWS_RECORDS: usize = 12;
+pub const DEFAULT_DOCUMENTS: usize = 12;
 /// Records kept held between requests; the least recently used is dropped.
 const MAX_MOUNTED: usize = 24;
 /// How long a request waits for the service to join a workspace.
@@ -188,6 +191,14 @@ enum Job {
         after: Option<String>,
         done: Completer<Result<tilo_actions::remote::ChangePage, ActionHostError>>,
     },
+    /// A caller waits for what it follows in a workspace to change
+    /// ([`tilo_actions::remote::ActionHost::changed`]): a write landing in the workspace's
+    /// records, or who is in it moving.
+    Changed {
+        workspace_id: WorkspaceId,
+        caller: Caller,
+        done: Completer<Result<(), ActionHostError>>,
+    },
     /// A page of a workspace's runs ([`runs`]).
     Invocations {
         workspace_id: WorkspaceId,
@@ -211,6 +222,9 @@ enum Job {
     /// A workspace's notebook or folder took a write: its notes and their files in the
     /// folder are brought into step ([`notes_folder`]).
     NotesFolder(WorkspaceId),
+    /// A record written since its name was last read: its name in its app's index is
+    /// read again ([`publish`]).
+    Rename(WorkspaceId, DocumentRoute),
 }
 
 impl Job {
@@ -227,9 +241,11 @@ impl Job {
             Self::Search { .. } => "search",
             Self::Changes { .. } => "changes",
             Self::Invocations { .. } => "invocations",
+            Self::Changed { .. } => "changed",
             Self::Joined(_) => "joined",
             Self::Forget(_) => "forget",
             Self::NotesFolder(_) => "notes-folder",
+            Self::Rename(..) => "rename",
         }
     }
 
@@ -244,8 +260,10 @@ impl Job {
             | Self::Search { workspace_id, .. }
             | Self::Changes { workspace_id, .. }
             | Self::Invocations { workspace_id, .. }
+            | Self::Changed { workspace_id, .. }
             | Self::Arrived { workspace_id, .. }
-            | Self::NotesFolder(workspace_id) => Some(*workspace_id),
+            | Self::NotesFolder(workspace_id)
+            | Self::Rename(workspace_id, _) => Some(*workspace_id),
             Self::Feedback { .. } | Self::Ran(_) | Self::Joined(_) | Self::Forget(_) => None,
         }
     }
@@ -258,9 +276,10 @@ impl Job {
         match self {
             Self::Catalogue { query, .. } => catalogue_keys(query),
             // Every record the workspace holds is searched and followed.
-            Self::Search { .. } | Self::Changes { .. } | Self::Invocations { .. } => {
-                Keys::Workspace
-            }
+            Self::Search { .. }
+            | Self::Changes { .. }
+            | Self::Invocations { .. }
+            | Self::Changed { .. } => Keys::Workspace,
             Self::Feedback { .. }
             | Self::Invoke { .. }
             | Self::Ran(_)
@@ -270,7 +289,8 @@ impl Job {
             | Self::Arrived { .. }
             | Self::Joined(_)
             | Self::Forget(_)
-            | Self::NotesFolder(_) => Keys::Joined,
+            | Self::NotesFolder(_)
+            | Self::Rename(..) => Keys::Joined,
         }
     }
 }
@@ -282,7 +302,7 @@ const SLOW_JOB: Duration = Duration::from_secs(2);
 
 struct Shared {
     ledger: Mutex<Ledger>,
-    link: OnceLock<Arc<dyn WorkspaceRecordsLink>>,
+    link: OnceLock<Arc<dyn WorkspaceDocumentsLink>>,
     jobs: Mutex<Option<Jobs>>,
     /// How the service joins workspaces, once its thread runs.
     host_device: OnceLock<HostDevice>,
@@ -302,6 +322,8 @@ struct Shared {
     witnesses: bounded::Witnesses,
     /// Workspaces whose notes and folder wait for a pass to bring them into step.
     projecting: Mutex<HashSet<WorkspaceId>>,
+    /// Records whose name in their app's index waits to be read again.
+    renaming: Mutex<HashSet<DocumentRoute>>,
 }
 
 /// The host's page actions over every record of its workspaces.
@@ -328,6 +350,7 @@ impl WorkspaceActions {
                 puts: tilo_actions::remote::HostedContentPuts::default(),
                 witnesses: bounded::Witnesses::default(),
                 projecting: Mutex::default(),
+                renaming: Mutex::default(),
             }),
             catalogue,
         }
@@ -336,7 +359,7 @@ impl WorkspaceActions {
     /// Start serving `link`'s workspaces on the service's threads, one for
     /// each worker of the app worker pool ([`crate::worker::pool_size`]),
     /// and start the pool's workers. A second call is ignored.
-    pub fn attach(&self, link: Arc<dyn WorkspaceRecordsLink>) -> Result<(), String> {
+    pub fn attach(&self, link: Arc<dyn WorkspaceDocumentsLink>) -> Result<(), String> {
         if self.shared.link.set(Arc::clone(&link)).is_err() {
             return Ok(());
         }
@@ -391,15 +414,15 @@ impl WorkspaceActions {
     /// record, or open a new one, through the host: the worker runs it under
     /// their own current standing, and refuses what it does not allow.
     fn admits(&self, caller: &Caller, request: &InvokeRequest) -> bool {
-        let on_record = record_of(&request.target.provider, "").is_some();
+        let on_resource = resource_of(&request.target.provider, "").is_some();
         let link_request =
-            request.target.address.action == ui::tilo_resource::share::SHARE_LINK && on_record;
+            request.target.address.action == ui::tilo_resource::share::SHARE_LINK && on_resource;
         let on_workspace = provider_workspace(&request.target.provider).is_some();
         // Showing a record on the workspace's layout, as an agent's work opens
         // what it changed in front of the people there.
         let shows = application_provider(&request.target.provider).is_some()
             && request.target.address.action == APPLICATION_OPEN_ACTION;
-        let member_request = (on_record || on_workspace || shows) && speaks_for_a_member(caller);
+        let member_request = (on_resource || on_workspace || shows) && speaks_for_a_member(caller);
         link_request || member_request || self.authorized(caller)
     }
 
@@ -446,7 +469,7 @@ impl WorkspaceActions {
     /// Whether a write to `app`'s record is one [`Self::notes_folder_written`] follows.
     #[must_use]
     pub fn follows_notes_folder(app: &str) -> bool {
-        app == notes_folder::NOTES_APP || app == tilo_fs::tree_record::FILES_APP
+        app == notes_folder::NOTES_APP || app == tilo_fs::tree_document::FILES_APP
     }
 
     /// Whether `caller` started invocation `id` here.
@@ -600,15 +623,32 @@ impl WorkspaceActions {
                     result,
                 })
             }
+            // What a call follows of the workspace is read again on either scope when a write
+            // lands in its records, so the device need not tell them apart.
+            RemoteActionMessage::ChangedRequest { correlation, .. } => {
+                let (done, answer) = pending();
+                let job = Job::Changed {
+                    workspace_id,
+                    caller: caller.clone(),
+                    done,
+                };
+                if let Err(Job::Changed { done, .. }) = self.submit(job) {
+                    done.complete(Err(unavailable()));
+                }
+                answer.map(move |result| RemoteActionMessage::ChangedResponse {
+                    correlation,
+                    result,
+                })
+            }
             RemoteActionMessage::FeedbackResponse { .. }
             | RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }
-            | RemoteActionMessage::RecordRead { .. }
-            | RemoteActionMessage::RecordReading { .. }
-            | RemoteActionMessage::RetiredRecordRequest
-            | RemoteActionMessage::RetiredRecordResponse
+            | RemoteActionMessage::ResourceRead { .. }
+            | RemoteActionMessage::ResourceReading { .. }
+            | RemoteActionMessage::RetiredResourceRequest
+            | RemoteActionMessage::RetiredResourceResponse
             | RemoteActionMessage::ConfirmationRequest { .. }
             | RemoteActionMessage::ConfirmationResponse { .. }
             | RemoteActionMessage::Confirm { .. }
@@ -620,6 +660,7 @@ impl WorkspaceActions {
             | RemoteActionMessage::ContentLinkResponse { .. }
             | RemoteActionMessage::SearchResponse { .. }
             | RemoteActionMessage::ChangesResponse { .. }
+            | RemoteActionMessage::ChangedResponse { .. }
             | RemoteActionMessage::CatalogueChanged { .. } => return None,
         })
     }
@@ -775,17 +816,17 @@ struct Mounted {
 }
 
 /// Whether the wire record `record` is a part of a chain an app keeps
-/// beside its own record ([`ui::record::DocumentId::part`]): held with that
+/// beside its own record ([`ui::resource::DocumentId::part`]): held with that
 /// record, never on its own.
 fn is_part(record: &str) -> bool {
-    ui::record::DocumentId::parse(record).is_some_and(|id| id.chain_part().is_some())
+    ui::resource::DocumentId::parse(record).is_some_and(|id| id.chain_part().is_some())
 }
 
 /// How a person reads the record `record` of `app` in a message or a log: an
 /// app's own record of the workspace travels with no id
-/// ([`ui::record::DocumentId::package_primary`]), so it is named for its app
+/// ([`ui::resource::DocumentId::package_primary`]), so it is named for its app
 /// rather than left blank.
-fn named_record(app: &str, record: &str) -> String {
+fn named_document(app: &str, record: &str) -> String {
     if record.is_empty() {
         format!("{app}'s own record")
     } else {
@@ -793,9 +834,9 @@ fn named_record(app: &str, record: &str) -> String {
     }
 }
 
-/// [`named_record`] of the record at `route`.
+/// [`named_document`] of the record at `route`.
 pub(super) fn named(route: &DocumentRoute) -> String {
-    named_record(&route.app_id, &route.record)
+    named_document(&route.app_id, &route.record)
 }
 
 /// What running an action came to: its answer and where it left its actor.
@@ -841,13 +882,13 @@ impl WorkspaceState {
                 &route.record,
                 held,
             )? {
-                RecordReading::Captured { heads, bytes, .. } => {
+                ResourceReading::Captured { heads, bytes, .. } => {
                     Some((DocumentMutation::Snapshot(bytes), heads))
                 }
-                RecordReading::Changes { heads, bytes, .. } => {
+                ResourceReading::Changes { heads, bytes, .. } => {
                     Some((DocumentMutation::Incremental(bytes), heads))
                 }
-                RecordReading::Unchanged(_) | RecordReading::Pending => None,
+                ResourceReading::Unchanged(_) | ResourceReading::Pending => None,
             },
         )
     }
@@ -858,7 +899,7 @@ impl WorkspaceState {
             .engine
             .record_update(&route.cluster_id, &route.app_id, &route.record, None)?
         {
-            RecordReading::Captured { heads, bytes, .. } => Ok((bytes, heads)),
+            ResourceReading::Captured { heads, bytes, .. } => Ok((bytes, heads)),
             _ => Err(format!("the workspace holds no {} yet", named(route))),
         }
     }
@@ -941,7 +982,7 @@ struct Workspace {
     /// be sent, never one the workspace lacks.
     when_opened: bool,
     /// The records this member asked the workspace's host for and that it
-    /// has not answered yet ([`Event::RecordOpened`]).
+    /// has not answered yet ([`Event::DocumentOpened`]).
     asked: HashSet<DocumentRoute>,
     /// The records the host answered for, asked once: a chain's head arrives
     /// on the route of the part it names, never its own, so asking until it
@@ -958,13 +999,15 @@ struct Workspace {
     undecided: BTreeSet<DocumentRoute>,
     /// The workspace's records in the session's replica, once a write to one
     /// named the workspace.
-    records: Option<WorkspaceRecords>,
+    records: Option<WorkspaceDocuments>,
     /// What the host says for the runs it executes here ([`session_voice`]).
     sessions: session_voice::Sessions,
     /// What changed in its records, for those following it ([`found`]).
     changes: ui::history_source::feed::ChangeLog,
     /// What its records' histories say of its runs ([`runs`]).
     run_index: invocations::Index,
+    /// Who waits for what a watch of this workspace follows to change ([`change::Watchers`]).
+    watchers: change::Watchers,
 }
 
 impl Drop for Workspace {
@@ -1004,99 +1047,8 @@ impl Workspace {
             records: None,
             changes: ui::history_source::feed::ChangeLog::new(),
             run_index: invocations::Index::default(),
+            watchers: change::Watchers::default(),
         })
-    }
-
-    fn pump(&mut self, workspace_id: WorkspaceId) {
-        // The records a run of writes landed in, once each. What a landing
-        // reads is the record as it stands at the read, so one per record
-        // answers for all of a run's landings — and a busy workspace's writes
-        // otherwise cost a read for every write since the last request.
-        let mut landed: Vec<DocumentRoute> = Vec::new();
-        for event in self.member.take(workspace_id) {
-            match event {
-                Event::HostReady {
-                    ws: ready,
-                    records_when_opened,
-                    ..
-                } if ready == workspace_id => {
-                    self.ready = true;
-                    self.when_opened = records_when_opened;
-                }
-                Event::RecordOpened {
-                    ws: opened,
-                    route: Some(route),
-                    answer,
-                    ..
-                } if opened == workspace_id => {
-                    tracing::debug!(
-                        app = %route.app_id,
-                        record = %route.record,
-                        ?answer,
-                        asked = self.asked.contains(&route),
-                        "workspace actions: the workspace answered for a record"
-                    );
-                    // The host sent all it holds of a record this member
-                    // asked for, and sends its changes from now on: none
-                    // means it holds none of it. Another person's own record
-                    // is answered as theirs: not absent, never founded here.
-                    if self.asked.remove(&route) {
-                        match answer {
-                            tilo_session_client::RecordAnswer::Sent { frames: 0 } => {
-                                self.absent.insert(route.clone());
-                            }
-                            tilo_session_client::RecordAnswer::NotYours => {
-                                self.not_yours.insert(route.clone());
-                            }
-                            tilo_session_client::RecordAnswer::Sent { .. } => {}
-                        }
-                        self.answered.insert(route);
-                    }
-                }
-                Event::Landed { route, .. } => {
-                    if WorkspaceId::parse(&route.cluster_id) != Some(workspace_id) {
-                        continue;
-                    }
-                    if !landed.contains(&route) {
-                        landed.push(route);
-                    }
-                }
-                _ => {}
-            }
-        }
-        for route in landed {
-            let engine = self.peer.engine();
-            // Undecided: the replica holds the record and cannot read it yet. Keys that
-            // arrived for a record it holds nothing of leave nothing undecided.
-            // Asked without reading the record out, as a write lands for every post;
-            // this device's own writes not taken in yet leave only a read to decide.
-            let reads = engine
-                .record_revision(&route.cluster_id, &route.app_id, &route.record)
-                .and_then(|revision| match revision {
-                    Some(_) => Ok(true),
-                    None => engine
-                        .record(&route.cluster_id, &route.app_id, &route.record)
-                        .map(|read| read.is_some()),
-                });
-            let undecided = match reads {
-                Ok(reads) => !reads,
-                Err(_) => engine.records(&route.cluster_id).is_ok_and(|records| {
-                    records
-                        .iter()
-                        .any(|(app, record)| *app == route.app_id && *record == route.record)
-                }),
-            };
-            if undecided {
-                self.undecided.insert(route.clone());
-            } else {
-                self.undecided.remove(&route);
-            }
-            self.records
-                .get_or_insert_with(|| {
-                    WorkspaceRecords::new(&route.cluster_id, Arc::clone(self.peer.engine()))
-                })
-                .landed(&route);
-        }
     }
 
     /// The workspace as the session's replica holds it now.
@@ -1140,7 +1092,7 @@ impl Workspace {
         &mut self,
         workspace_id: WorkspaceId,
         needs: Needs<'_>,
-        link: Option<&dyn WorkspaceRecordsLink>,
+        link: Option<&dyn WorkspaceDocumentsLink>,
     ) -> Result<(), ActionHostError> {
         self.pump(workspace_id);
         if !self.ready {
@@ -1176,7 +1128,7 @@ impl Workspace {
         let sealed = self.sealed(workspace_id, needs);
         match needs {
             Needs::Act { app_id, record } if !sealed.is_empty() => {
-                let record = named_record(app_id, record);
+                let record = named_document(app_id, record);
                 Err(ActionHostError::Unavailable {
                     reason: format!("the host does not hold the keys to {record} yet"),
                 })
@@ -1199,7 +1151,7 @@ impl Workspace {
     }
 
     /// Hold the keys the host device hands over for `routes`
-    /// ([`WorkspaceRecordsLink::host_keys`]), noting each in `handed`. The
+    /// ([`WorkspaceDocumentsLink::host_keys`]), noting each in `handed`. The
     /// session then opens what it held for them and wakes the wait. A record
     /// to act on whose keys the host refuses is refused at once; a listing
     /// goes on without it.
@@ -1207,7 +1159,7 @@ impl Workspace {
         &self,
         routes: Vec<DocumentRoute>,
         needs: Needs<'_>,
-        link: &dyn WorkspaceRecordsLink,
+        link: &dyn WorkspaceDocumentsLink,
         handed: &mut HashSet<DocumentRoute>,
     ) -> Result<(), ActionHostError> {
         for route in routes {
@@ -1267,7 +1219,7 @@ struct Worker {
     host_device: HostDevice,
     catalogue: AppCatalogue,
     shared: Arc<Shared>,
-    participant: String,
+    member: ui::permissions::policy::PersonId,
     workspaces: HashMap<WorkspaceId, Workspace>,
     mounted: BTreeMap<DocumentRoute, Mounted>,
     /// The replicas callers served within bounds act through ([`bounded`]).
@@ -1298,6 +1250,8 @@ struct Worker {
     /// The notebook and folder of the workspaces whose notes were projected last, as the
     /// last pass left them ([`notes_folder::Followed`]).
     notes_followed: HashMap<WorkspaceId, notes_folder::Followed>,
+    /// When each record's name was last read for its app's index ([`publish`]).
+    named: HashMap<DocumentRoute, Instant>,
 }
 
 /// The API's answer for an action it has nothing by that address.
@@ -1355,7 +1309,7 @@ fn take_all(
     holder: &DocumentRoute,
 ) -> Result<Vec<(DocumentRoute, DocumentMutation)>, crate::apps::AppError> {
     let own = app.take_mutation()?;
-    let beside = match app.take_record_mutations() {
+    let beside = match app.take_document_mutations() {
         Ok(beside) => beside,
         Err(error) => {
             if let Some(own) = own {
@@ -1398,11 +1352,15 @@ impl Shared {
 }
 
 impl Worker {
-    fn new(link: &dyn WorkspaceRecordsLink, catalogue: AppCatalogue, shared: Arc<Shared>) -> Self {
+    fn new(
+        link: &dyn WorkspaceDocumentsLink,
+        catalogue: AppCatalogue,
+        shared: Arc<Shared>,
+    ) -> Self {
         let host_device = link.host_device();
         let _ = shared.host_device.set(host_device.clone());
         Self {
-            participant: hex::encode(link.user_public_key()),
+            member: ui::permissions::policy::PersonId::from_root(link.user_public_key()),
             host_device,
             catalogue,
             shared,
@@ -1418,24 +1376,27 @@ impl Worker {
             canonical: canonical::CanonicalReads::default(),
             notes_failures: HashMap::new(),
             notes_followed: HashMap::new(),
+            named: HashMap::new(),
         }
     }
 
     fn run(mut self, jobs: &mpsc::Receiver<(Instant, Job)>) {
         loop {
-            let due = match (
+            let due = [
                 self.joining_until(),
                 session_voice::next_due(&self.workspaces),
-            ) {
-                (Some(joining), Some(voice)) => Some(joining.min(voice)),
-                (joining, voice) => joining.or(voice),
-            };
+                self.watchers_until(),
+            ]
+            .into_iter()
+            .flatten()
+            .min();
             let next = match due {
                 Some(until) => jobs.recv_timeout(until.saturating_duration_since(Instant::now())),
                 None => jobs
                     .recv()
                     .map_err(|_| mpsc::RecvTimeoutError::Disconnected),
             };
+            self.expire_watchers();
             match next {
                 Ok((queued, job)) => {
                     self.admit(queued, job);
@@ -1450,6 +1411,7 @@ impl Worker {
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     self.give_up_joining();
                     self.tick_voices();
+                    self.expire_watchers();
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
@@ -1748,6 +1710,11 @@ impl Worker {
                     after,
                     done,
                 } => done.complete(self.changes(workspace_id, &caller, after.as_deref())),
+                Job::Changed {
+                    workspace_id,
+                    caller,
+                    done,
+                } => self.watch(workspace_id, &caller, done),
                 Job::Invocations {
                     workspace_id,
                     caller,
@@ -1756,6 +1723,7 @@ impl Worker {
                 } => done.complete(self.invocations(workspace_id, &caller, &query)),
                 Job::Joined(workspace_id) => self.resume(workspace_id),
                 Job::NotesFolder(workspace_id) => self.notes_pass(workspace_id),
+                Job::Rename(workspace_id, route) => self.rename(workspace_id, &route),
                 Job::Forget(workspace_id) => self.forget(workspace_id),
                 Job::Content {
                     workspace_id,
@@ -1905,7 +1873,7 @@ impl Worker {
             return Ok(holder);
         }
         let (bytes, heads) = state.document(route)?;
-        let record = reads::record_id(&route.record)?;
+        let record = reads::document_id(&route.record)?;
         let holders: Vec<DocumentRoute> = state
             .records
             .iter()
@@ -1927,7 +1895,7 @@ impl Worker {
             };
             match mounted
                 .app
-                .apply_record(&record, &DocumentMutation::Snapshot(bytes.clone()))
+                .apply_document(&record, &DocumentMutation::Snapshot(bytes.clone()))
             {
                 Ok(()) => {
                     mounted.parts.insert(route.clone(), Some(heads));
@@ -1967,10 +1935,10 @@ impl Worker {
                 &self.catalogue,
                 &route.app_id,
                 &route.cluster_id,
-                &self.participant,
+                &MemberId::Person(self.member.clone()),
                 &crate::ReplicaActor::Owner,
                 Seed::Existing {
-                    record: reads::record_id(&route.record)?,
+                    record: reads::document_id(&route.record)?,
                     changes: vec![bytes],
                 },
             )
@@ -2064,12 +2032,12 @@ impl Worker {
     ) -> Result<CataloguePage, ActionHostError> {
         let refuse = || ActionHostError::UnknownAction;
         let (wanted, provider) = exact_view_query(query)?;
-        let route_hint = record_of(provider, "").ok_or_else(refuse)?;
+        let route_hint = resource_of(provider, "").ok_or_else(refuse)?;
         let link = self.shared.link.get().cloned().ok_or_else(refuse)?;
         let first = link
             .view_read_policy(workspace, caller, &route_hint.app_id, &route_hint.record)
             .ok_or_else(refuse)?;
-        let route = record_of(provider, &first.workspace).ok_or_else(refuse)?;
+        let route = resource_of(provider, &first.workspace).ok_or_else(refuse)?;
         let source = link
             .view_document(workspace, caller, &route)
             .map_err(|reason| ActionHostError::Unavailable { reason })?;
@@ -2128,7 +2096,7 @@ impl Worker {
         // Only an exact registered-read target is answered here; a listing
         // lists registered reads beside the record's own rows.
         let target = query.target.as_ref()?;
-        let mut route = record_of(provider, "")?;
+        let mut route = resource_of(provider, "")?;
         let link = self.shared.link.get()?.clone();
         if self.canonical.registers_none(&route.app_id) {
             return None;
@@ -2318,7 +2286,7 @@ impl Worker {
     /// `target`, its empty resource naming the record's own: a caller that
     /// knows the app but not its code (the desktop asking a connector) names
     /// its actions so.
-    fn with_record_resource(
+    fn with_document_resource(
         &self,
         target: &tilo_actions::remote::RemoteActionTarget,
         app_id: &str,
@@ -2328,7 +2296,7 @@ impl Worker {
             && let Some(definition) = self.catalogue.get(app_id)
         {
             definition
-                .record_kind
+                .resource_type
                 .as_str()
                 .clone_into(&mut target.address.resource);
         }
@@ -2376,10 +2344,10 @@ impl Worker {
             return self.open_in_workspace(workspace_id, caller, request, (named, &state));
         }
         let workspace = workspace.ok_or_else(unknown_action)?;
-        let route = record_of(&target.provider, &workspace)
+        let route = resource_of(&target.provider, &workspace)
             .filter(|route| self.catalogue.get(&route.app_id).is_some())
             .ok_or_else(unknown_action)?;
-        let target = &self.with_record_resource(target, &route.app_id);
+        let target = &self.with_document_resource(target, &route.app_id);
         let arguments = invoke_arguments(&request.argument);
         // What the record publishes, its own API runs. What only its
         // committed source publishes — a canonical read of it — is asked of
@@ -2504,7 +2472,7 @@ impl Worker {
                     || target.address.action == APPLICATION_START_ACTION
             })
             // Files is the workspace's own folder, not an app this host runs.
-            .filter(|app| self.catalogue.has(app) || *app == tilo_fs::tree_record::FILES_APP)
+            .filter(|app| self.catalogue.has(app) || *app == tilo_fs::tree_document::FILES_APP)
             .map(str::to_owned)
     }
 
@@ -2534,7 +2502,7 @@ impl Worker {
             return Err(unknown());
         }
         let person = if self.acts_for_owner(caller) {
-            self.participant.clone()
+            self.member.clone()
         } else {
             self.bounded(caller)
                 .filter(|who| self.admits_bounded(workspace_id, who))
@@ -2555,7 +2523,7 @@ impl Worker {
             .get(app)
             .map(|definition| definition.title().to_owned())
             .ok_or_else(unknown)?;
-        let layout = crate::participant::desktop_route(named);
+        let layout = crate::member::desktop_route(named);
         // Read, not acted on: a layout this host cannot open yet refuses nothing, it only goes
         // without the window.
         let state = self
@@ -2570,7 +2538,7 @@ impl Worker {
         let route = DocumentRoute {
             app_id: app.to_owned(),
             cluster_id: named.to_owned(),
-            record: application_provider_record(&target.provider)
+            record: application_provider_resource(&target.provider)
                 .unwrap_or_default()
                 .to_owned(),
         };
@@ -2588,7 +2556,7 @@ impl Worker {
         let Some(held) = workspace
             .records
             .as_ref()
-            .and_then(WorkspaceRecords::desktop)
+            .and_then(WorkspaceDocuments::desktop)
         else {
             return Ok(ActionOutput::default());
         };
@@ -2636,14 +2604,14 @@ impl Worker {
 
     /// Whether `caller` is the host's own person, whom the service acts for.
     fn serves_as_owner(&self, caller: &Caller) -> bool {
-        caller.acting().person_id() == Some(self.participant.as_str())
+        caller.acting().person_id() == Some(self.member.as_str())
     }
 
     /// Whether `caller` is the host's own person or an agent one of their
     /// devices handed its session to: who may open records, show them on the
     /// shared layout and run commands in the workspace's shell.
     fn acts_for_owner(&self, caller: &Caller) -> bool {
-        acts_for(caller, &self.participant)
+        acts_for(caller, &self.member)
     }
 
     fn try_registered_read(
@@ -2652,7 +2620,7 @@ impl Worker {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<Option<ActionOutput>, Box<Outcome>> {
-        let Some(hint) = record_of(&request.target.provider, "") else {
+        let Some(hint) = resource_of(&request.target.provider, "") else {
             return Ok(None);
         };
         let Some(link) = self.shared.link.get() else {
@@ -2732,7 +2700,7 @@ impl Worker {
     ) -> Result<ActionOutput, Outcome> {
         let refused = |reason: String| Outcome::Rejected(ActionHostError::Refused { reason });
         let (creator, actor, permissions) = match who {
-            None => (self.participant.clone(), crate::ReplicaActor::Owner, None),
+            None => (self.member.clone(), crate::ReplicaActor::Owner, None),
             Some(who) => {
                 let policy = self
                     .policy_for(workspace_id, who, workspace, None)
@@ -2757,7 +2725,7 @@ impl Worker {
             if self
                 .catalogue
                 .get(app)
-                .is_some_and(ui::application::ApplicationDefinition::keeps_workspace_record)
+                .is_some_and(ui::application::ApplicationDefinition::keeps_workspace_resource)
             {
                 let route = DocumentRoute {
                     app_id: app.to_owned(),
@@ -2774,14 +2742,20 @@ impl Worker {
                     });
                 }
             }
-            let hosted =
-                ConfinedReplica::open(&self.catalogue, app, workspace, &creator, &actor, Seed::New)
-                    .map_err(|error| refused(error.to_string()))?;
+            let hosted = ConfinedReplica::open(
+                &self.catalogue,
+                app,
+                workspace,
+                &MemberId::Person(creator),
+                &actor,
+                Seed::New,
+            )
+            .map_err(|error| refused(error.to_string()))?;
             let hosted = self.lend(hosted, workspace);
             let route = DocumentRoute {
                 app_id: app.to_owned(),
                 cluster_id: workspace.to_owned(),
-                record: hosted.wire_record().to_owned(),
+                record: hosted.wire_document().to_owned(),
             };
             let genesis = hosted
                 .take_mutation()
@@ -2937,9 +2911,9 @@ fn opens_as_its_own(app: &ui::application::ApplicationDefinition, record: &str) 
     // the workspace's named records where it keeps none: the index is read where it is kept,
     // never mounted as the app's record.
     if record.is_empty() {
-        return app.keeps_workspace_record();
+        return app.keeps_workspace_resource();
     }
-    !app.keeps_workspace_record() || collab_types::person_record_kind(record).is_none()
+    !app.keeps_workspace_resource() || collab_types::person_resource_type(record).is_none()
 }
 
 #[cfg(test)]

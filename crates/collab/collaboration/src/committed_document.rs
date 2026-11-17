@@ -709,7 +709,7 @@ mod tests {
     #[test]
     fn only_a_person_route_opens_its_committed_document() {
         assert!(!opens_committed_document("agent"));
-        assert!(!opens_committed_document(super::super::SERVICE_PARTICIPANT));
+        assert!(!opens_committed_document(super::super::SERVICE_MEMBER));
         assert!(opens_committed_document("person"));
     }
     #[tokio::test]
@@ -1513,7 +1513,7 @@ async fn capture_using(
 /// whichever part of the chain is the newest, which holds nothing of its own and so is neither read
 /// nor followed here. The host sends that part on the part's own route, and the app holds it from
 /// there. Answered with nothing, the chain has no part at all, which the app is told
-/// ([`CollabEvent::RecordUnavailable`]) so that it starts the first.
+/// ([`CollabEvent::ResourceUnavailable`]) so that it starts the first.
 pub(super) async fn ask_chain_head(
     channel: &runtime_collab::ChannelHandle,
     spec: &RouteSpec,
@@ -1537,7 +1537,7 @@ pub(super) async fn ask_chain_head(
             // the head at all: the chain starts its first part.
             Ok(Reply::Absent | Reply::Legacy) => {
                 if !inbound
-                    .send_durable(CollabEvent::RecordUnavailable {
+                    .send_durable(CollabEvent::ResourceUnavailable {
                         route: spec.clone(),
                     })
                     .await
@@ -1577,9 +1577,9 @@ fn set_read_ready(inbound: &InboundBridge, ready: &AtomicBool, value: bool) {
 pub(super) struct NativeReadJoin {
     pub(super) client: runtime_collab::CollabClient,
     pub(super) presentation: Vec<u8>,
-    pub(super) participant_handle: String,
-    pub(super) participant_kind: String,
-    pub(super) record_kind: String,
+    pub(super) member_handle: String,
+    pub(super) member_kind: String,
+    pub(super) resource_type: String,
 }
 impl NativeReadJoin {
     async fn renew(
@@ -1595,9 +1595,9 @@ impl NativeReadJoin {
                 .join_channel_as_kind(
                     &key,
                     &self.presentation,
-                    &self.participant_handle,
-                    super::broker_participant_kind(&self.participant_kind),
-                    &self.record_kind,
+                    &self.member_handle,
+                    super::broker_member_kind(&self.member_kind),
+                    &self.resource_type,
                 )
                 .await
                 .map_err(|_| "original committed read renewal was not admitted")?;
@@ -1704,7 +1704,7 @@ async fn until_merged(read: &CommittedDocument, reads: &Reads, live: impl Fn() -
     }
 }
 
-/// Whether a route joined as `participant_kind` asks the broker for its
+/// Whether a route joined as `member_kind` asks the broker for its
 /// committed document. The broker serves committed reads only to a process
 /// the launcher holds custody of for that app, which an agent never is, so it
 /// refuses an agent's open. An agent works through the actions its session invokes, not
@@ -1712,8 +1712,8 @@ async fn until_merged(read: &CommittedDocument, reads: &Reads, live: impl Fn() -
 /// A headless service (`CollaborationManager::for_service`) holds no document
 /// either: it publishes actions and answers them, and its workspace never holds a
 /// record of it to read.
-fn opens_committed_document(participant_kind: &str) -> bool {
-    !matches!(participant_kind, "agent" | super::SERVICE_PARTICIPANT)
+fn opens_committed_document(member_kind: &str) -> bool {
+    !matches!(member_kind, "agent" | super::SERVICE_MEMBER)
 }
 
 #[allow(
@@ -1727,7 +1727,7 @@ pub(super) async fn install(
     join: NativeReadJoin,
 ) -> Result<bool, String> {
     let key = spec.channel_id();
-    if !opens_committed_document(join.participant_kind.as_str()) {
+    if !opens_committed_document(join.member_kind.as_str()) {
         open_on_own_channel(inbound, &key)?;
         return Ok(false);
     }
@@ -1768,7 +1768,7 @@ pub(super) async fn install(
         Reply::Absent => {
             absent = true;
             if !inbound
-                .send_durable(CollabEvent::RecordUnavailable {
+                .send_durable(CollabEvent::ResourceUnavailable {
                     route: spec.clone(),
                 })
                 .await
@@ -1954,7 +1954,7 @@ pub(super) async fn install(
                     revision = None;
                     if !std::mem::replace(&mut absent, true)
                         && !inbound
-                            .send_durable(CollabEvent::RecordUnavailable {
+                            .send_durable(CollabEvent::ResourceUnavailable {
                                 route: spec.clone(),
                             })
                             .await

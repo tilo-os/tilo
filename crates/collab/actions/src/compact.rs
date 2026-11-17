@@ -85,7 +85,7 @@ const WORDS: &[&str] = &[
     "actor",
     "kind",
     "on_behalf_of",
-    "participant",
+    "member",
     "id",
     "label",
     // The actions resources carry.

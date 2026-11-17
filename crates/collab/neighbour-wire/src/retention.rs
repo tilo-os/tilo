@@ -94,11 +94,11 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
         ),
         NeighbourMsg::AppDocument {
             app_id,
-            record_id,
+            document_id,
             envelope,
             ..
         } => {
-            let channel = app_document_channel(app_id, record_id);
+            let channel = app_document_channel(app_id, document_id);
             // Content-key ciphertext carries its storage class in the signed
             // encryption metadata, so a host retains encrypted history
             // without reading it. A single-use MLS application message is
@@ -111,10 +111,10 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
         }
         // Governance is replayable state a device that was offline must
         // still receive, and none of it is content: the group's genesis, its newest frame, and the latest access request of each
-        // device. Each genesis is kept for good: of two, every participant
+        // device. Each genesis is kept for good: of two, every key holder
         // follows the lower. Every later frame replaces the one before: a
         // joining device needs only the commit that adds it, and one that
-        // missed a commit asks again. The participant that wrote the winner
+        // missed a commit asks again. The key holder that wrote the winner
         // of two commits on one epoch publishes it again, so the newest is
         // the winner. Keeping every commit and Welcome
         // made each newcomer replay the group's whole history, every
@@ -189,7 +189,7 @@ mod tests {
             peer: 1,
             app_id: "app".into(),
             cluster_id: "workspace".into(),
-            record_id: "doc".into(),
+            document_id: "doc".into(),
             envelope: Box::new(envelope),
             own: None,
         }

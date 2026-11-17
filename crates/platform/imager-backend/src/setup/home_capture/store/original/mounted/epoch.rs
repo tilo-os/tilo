@@ -11,7 +11,7 @@ pub(in crate::setup::home_capture) struct MountedReadEpoch {
 }
 struct ReadState {
     sources: Vec<OriginalMountedSource>,
-    participants: ParticipantReads,
+    volumes: VolumeReads,
     record_file: File,
     record_bytes: Vec<u8>,
     record: MountedRecord,
@@ -28,7 +28,7 @@ impl MountedReadEpoch {
             .lock()
             .map_err(|_| failure("Mounted read custody poisoned"))?;
         state.verify(cancel)?;
-        state.participants.qualification_owned_roots()?;
+        state.volumes.qualification_owned_roots()?;
         let expected = [Path::new("mounted-directory"), Path::new("mounted-file")];
         if state.sources.len() != expected.len() {
             return Err(failure(
@@ -94,10 +94,10 @@ impl MountedReadEpoch {
         }
         let record: MountedRecord = serde_json::from_slice(&record_bytes)?;
         record.validate(&primary.intent)?;
-        let participants = if own_missing {
-            ParticipantReads::review_for_export(&primary.intent, &record.entries, cancel)?
+        let volumes = if own_missing {
+            VolumeReads::review_for_export(&primary.intent, &record.entries, cancel)?
         } else {
-            ParticipantReads::review(&primary.intent, &record.entries, Some(cancel))?
+            VolumeReads::review(&primary.intent, &record.entries, Some(cancel))?
         };
         let mut sources = Vec::with_capacity(record.entries.len());
         let opened = (|| {
@@ -106,8 +106,8 @@ impl MountedReadEpoch {
                 sources.push(OriginalMountedSource {
                     placement: entry.placement.decode().map_err(io::Error::other)?,
                     kind: entry.binding.kind(),
-                    file: if entry.participant.is_some() {
-                        participants.open_entry(entry)?
+                    file: if entry.volume.is_some() {
+                        volumes.open_entry(entry)?
                     } else {
                         primary.source.open_original_mounted_entry(&entry.binding)?
                     },
@@ -117,12 +117,12 @@ impl MountedReadEpoch {
         })();
         if let Err(error) = opened {
             drop(sources);
-            participants.retire()?;
+            volumes.retire()?;
             return Err(error);
         }
         let state = ReadState {
             sources,
-            participants,
+            volumes,
             record_file,
             record_bytes,
             record,
@@ -257,7 +257,7 @@ impl ReadState {
     fn retire(self) -> io::Result<()> {
         let Self {
             sources,
-            participants,
+            volumes,
             record_file,
             record_bytes,
             record,
@@ -266,7 +266,7 @@ impl ReadState {
         // The boot admission still holds the primary owning source lease; this
         // epoch closes its independent clone before retiring foreign mounts.
         drop((sources, record_file, record_bytes, record, primary));
-        participants.retire()
+        volumes.retire()
     }
     fn verify(&self, cancel: &std::sync::atomic::AtomicBool) -> io::Result<()> {
         check_cancel(cancel)?;
@@ -294,10 +294,10 @@ impl ReadState {
         {
             return Err(failure("Mounted record changed during source use"));
         }
-        self.participants.verify(&self.primary.intent, None)?;
+        self.volumes.verify(&self.primary.intent, None)?;
         for (entry, source) in self.record.entries.iter().zip(&self.sources) {
-            let renewed = if entry.participant.is_some() {
-                self.participants.open_entry(entry)?
+            let renewed = if entry.volume.is_some() {
+                self.volumes.open_entry(entry)?
             } else {
                 self.primary
                     .source
@@ -310,7 +310,7 @@ impl ReadState {
                 return Err(failure("Mounted source changed during use"));
             }
         }
-        self.participants.verify(&self.primary.intent, None)?;
+        self.volumes.verify(&self.primary.intent, None)?;
         self.primary.revalidate()
     }
 }

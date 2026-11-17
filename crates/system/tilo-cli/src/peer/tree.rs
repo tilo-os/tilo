@@ -5,7 +5,7 @@
 //! ([`fs_protocol::tree`]), whose nodes name each file's content by hash; the
 //! bytes travel beside it as the record's content
 //! ([`super::content`]). Tilo OS publishes the tree from its filesystem daemon
-//! on the desktop session ([`tilo_fs::tree_record`]); here the session is this
+//! on the desktop session ([`tilo_fs::tree_document`]); here the session is this
 //! device's own session with the workspace's host, the one a browser tab
 //! keeps, and the tree goes over it the way a tab's records do: opened by its
 //! route, written with [`Outbox::write`], and read back from the session's
@@ -24,7 +24,7 @@ use collab_types::DocumentMutation;
 use tilo_fs::namespace::Namespace;
 use tilo_lock::MutexRecover as _;
 use tilo_relay_protocol::WorkspaceId;
-use tilo_session_client::engine::RecordReading;
+use tilo_session_client::engine::ResourceReading;
 use tilo_session_client::{Cmd, DocumentRoute, Event, Link, Outbox as _};
 
 use super::content::SessionContent;
@@ -81,7 +81,7 @@ pub(crate) fn route(workspace: WorkspaceId) -> DocumentRoute {
     DocumentRoute {
         app_id: FILES_APP.to_owned(),
         cluster_id: workspace.to_string(),
-        record: collab_types::person_record_id(fs_protocol::tree::TREE_KIND),
+        record: collab_types::person_document_id(fs_protocol::tree::TREE_KIND),
     }
 }
 
@@ -241,9 +241,9 @@ impl Sync {
             matches!(
                 event,
                 Event::Landed { .. }
-                    | Event::RecordOpened { .. }
+                    | Event::DocumentOpened { .. }
                     | Event::Refused { .. }
-                    | Event::RecordContent { .. }
+                    | Event::DocumentContent { .. }
                     | Event::HostReady { .. }
             )
         });
@@ -255,7 +255,7 @@ impl Sync {
                 self.take(event);
             }
             if !self.paused.load(std::sync::atomic::Ordering::Relaxed) {
-                self.pull_paced();
+                self.pull_paced().await;
                 self.push();
                 self.content.reask(&self.link);
             }
@@ -265,7 +265,7 @@ impl Sync {
                 moved = changes.changed() => if moved.is_err() { return },
                 _ = keep.tick() => if self.keeping.due(Instant::now()) {
                     let started = Instant::now();
-                    self.keep();
+                    self.keep().await;
                     self.keeping.ran(started, Instant::now());
                 },
                 () = tokio::time::sleep(LOOK_AGAIN) => {}
@@ -277,10 +277,10 @@ impl Sync {
     fn open(&self) {
         let _ = self
             .link
-            .send(Cmd::OpenRecordAt(self.workspace, self.route.clone()));
+            .send(Cmd::OpenDocumentAt(self.workspace, self.route.clone()));
         let _ = self.link.send(Cmd::OpenRoute(self.route.clone()));
         // And on the workspace's plane, whose host answers what it holds.
-        let _ = self.link.engine().open_record(
+        let _ = self.link.engine().open_resource(
             &self.workspace.to_string(),
             &self.route.app_id,
             &self.route.record,
@@ -293,12 +293,12 @@ impl Sync {
             Event::Refused { route, refusal, .. } if route == self.route => {
                 tracing::warn!(%refusal, workspace = %self.workspace, "the workspace refused a change to its files");
             }
-            Event::RecordContent { ws, frame, .. } if ws == self.workspace => {
+            Event::DocumentContent { ws, frame, .. } if ws == self.workspace => {
                 self.content.piece(&frame);
             }
             // The host sent all it holds of the tree, none when the workspace has none yet:
             // this device's first change founds it.
-            Event::RecordOpened {
+            Event::DocumentOpened {
                 route: Some(route), ..
             } if route == self.route => {
                 self.standing.lock_recover().opened = true;
@@ -310,7 +310,7 @@ impl Sync {
     /// [`Self::pull`], paced while the session holds writes of this device's that its replica
     /// has not taken in: a read then overlays them on the whole record, so it costs the whole
     /// tree each time, and all it can bring is another device's change, which waits a moment.
-    fn pull_paced(&mut self) {
+    async fn pull_paced(&mut self) {
         let holding = self
             .link
             .engine()
@@ -318,18 +318,20 @@ impl Sync {
             .lock()
             .contains_key(&self.route);
         if !holding {
-            self.pull();
+            self.pull().await;
             return;
         }
         let now = Instant::now();
         if self.pulling.due(now) {
-            self.pull();
+            self.pull().await;
             self.pulling.ran(now, Instant::now());
         }
     }
 
-    /// Merge what the record holds that this namespace has not merged yet.
-    fn pull(&mut self) {
+    /// Merge what the record holds that this namespace has not merged yet. The merge runs
+    /// away from the runtime's workers: a tree's first merge walks every node it brings, and a
+    /// worker inside it stops answering agents, mounts and stops for as long as it takes.
+    async fn pull(&mut self) {
         let engine = self.link.engine();
         let workspace = self.workspace.to_string();
         let reading = engine.record_update(
@@ -339,13 +341,13 @@ impl Sync {
             self.merged.as_deref(),
         );
         let (mutation, heads) = match reading {
-            Ok(RecordReading::Captured { heads, bytes, .. }) => {
+            Ok(ResourceReading::Captured { heads, bytes, .. }) => {
                 (DocumentMutation::Snapshot(bytes), heads)
             }
-            Ok(RecordReading::Changes { heads, bytes, .. }) => {
+            Ok(ResourceReading::Changes { heads, bytes, .. }) => {
                 (DocumentMutation::Incremental(bytes), heads)
             }
-            Ok(RecordReading::Unchanged(_)) => {
+            Ok(ResourceReading::Unchanged(_)) => {
                 self.unread = None;
                 return;
             }
@@ -357,25 +359,32 @@ impl Sync {
                 self.note_answered(&workspace);
                 return;
             }
-            Ok(RecordReading::Pending) => {
+            Ok(ResourceReading::Pending) => {
                 self.note_answered(&workspace);
                 return;
             }
         };
-        let resolution = {
-            let mut namespace = self.namespace.lock_recover();
-            let merged = match &mutation {
+        let namespace = Arc::clone(&self.namespace);
+        let resolution = match tokio::task::spawn_blocking(move || {
+            let mut namespace = namespace.lock_recover();
+            match &mutation {
                 DocumentMutation::Snapshot(bytes) => {
                     namespace.adopt_or_merge_remote_and_resolve(bytes)
                 }
                 DocumentMutation::Incremental(bytes) => namespace.apply_remote_and_resolve(bytes),
-            };
-            match merged {
-                Ok(resolution) => resolution,
-                Err(error) => {
-                    tracing::warn!(%error, "the workspace's tree does not merge here");
-                    return;
-                }
+            }
+            .map_err(|error| error.to_string())
+        })
+        .await
+        {
+            Ok(Ok(resolution)) => resolution,
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "the workspace's tree does not merge here");
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "the workspace's tree merge could not run");
+                return;
             }
         };
         self.unread = None;
@@ -409,7 +418,7 @@ impl Sync {
         let answer =
             self.link
                 .engine()
-                .record_answer(workspace, &self.route.app_id, &self.route.record);
+                .resource_answer(workspace, &self.route.app_id, &self.route.record);
         if holds_none(answer) {
             self.standing.lock_recover().opened = true;
         }
@@ -503,8 +512,35 @@ impl Sync {
         }
     }
 
-    /// Keep the namespace on disk, so a restart starts where this one was.
-    fn keep(&mut self) {
+    /// Keep the namespace on disk, so a restart starts where this one was. Saving walks the
+    /// whole tree, so it runs away from the runtime's workers like a merge does.
+    async fn keep(&mut self) {
+        let namespace = Arc::clone(&self.namespace);
+        let kept = self.kept.clone();
+        let kept_heads = self.kept_heads.clone();
+        let written = tokio::task::spawn_blocking(move || {
+            let (heads, bytes) = {
+                let mut namespace = namespace.lock_recover();
+                let heads = namespace.heads();
+                if heads == kept_heads {
+                    return Ok(None);
+                }
+                (heads, namespace.save())
+            };
+            tilo_files::native::atomic::write_with_mode(&kept, &bytes, 0o600)?;
+            Ok::<_, std::io::Error>(Some(heads))
+        })
+        .await;
+        match written {
+            Ok(Ok(Some(heads))) => self.kept_heads = heads,
+            Ok(Ok(None)) => {}
+            Ok(Err(error)) => tracing::warn!(%error, "the workspace's tree is not kept on disk"),
+            Err(error) => tracing::warn!(%error, "keeping the workspace's tree could not run"),
+        }
+    }
+
+    /// [`Self::keep`], on this thread: where the sync stops there is no runtime to run it on.
+    fn keep_now(&mut self) {
         let (heads, bytes) = {
             let mut namespace = self.namespace.lock_recover();
             let heads = namespace.heads();
@@ -522,8 +558,8 @@ impl Sync {
 
 /// Whether the host's `answer` about the tree (`None` while it owes one) says the workspace has
 /// none of it.
-fn holds_none(answer: Option<tilo_relay_protocol::RecordAnswer>) -> bool {
-    answer == Some(tilo_relay_protocol::RecordAnswer::Sent { frames: 0 })
+fn holds_none(answer: Option<tilo_relay_protocol::DocumentAnswer>) -> bool {
+    answer == Some(tilo_relay_protocol::DocumentAnswer::Sent { frames: 0 })
 }
 
 /// What a namespace has to send after `sent`.
@@ -567,7 +603,7 @@ fn record_heads(heads: &[[u8; 32]]) -> Vec<automerge::ChangeHash> {
 
 impl Drop for Sync {
     fn drop(&mut self) {
-        self.keep();
+        self.keep_now();
     }
 }
 
@@ -601,11 +637,11 @@ mod tests {
         // It sent frames of the tree: the workspace holds one, though it may not read here
         // yet (a write still on its way), and a tree founded now would go out whole beside it.
         assert!(!super::holds_none(Some(
-            tilo_relay_protocol::RecordAnswer::Sent { frames: 3 }
+            tilo_relay_protocol::DocumentAnswer::Sent { frames: 3 }
         )));
         // It sent none: the workspace has no tree, and this device's first change founds it.
         assert!(super::holds_none(Some(
-            tilo_relay_protocol::RecordAnswer::Sent { frames: 0 }
+            tilo_relay_protocol::DocumentAnswer::Sent { frames: 0 }
         )));
     }
 
@@ -641,7 +677,7 @@ mod tests {
             record.get_missing_deps(&[]).is_empty(),
             "every change the record took builds on changes it holds"
         );
-        let tree = fs_protocol::tree::Tree::of_record(&record.save()).unwrap();
+        let tree = fs_protocol::tree::Tree::of_document(&record.save()).unwrap();
         assert!(
             tree.nodes
                 .values()
@@ -700,7 +736,7 @@ mod tests {
             record.get_missing_deps(&[]).is_empty(),
             "each write builds on the last"
         );
-        let tree = fs_protocol::tree::Tree::of_record(&record.save()).unwrap();
+        let tree = fs_protocol::tree::Tree::of_document(&record.save()).unwrap();
         let files = tree
             .nodes
             .values()
@@ -735,7 +771,7 @@ mod tests {
         // What the host keeps: both writes, every change built on one it holds.
         let mut record = automerge::AutoCommit::load(&[first, next].concat()).unwrap();
         assert!(record.get_missing_deps(&[]).is_empty());
-        let tree = fs_protocol::tree::Tree::of_record(&record.save()).unwrap();
+        let tree = fs_protocol::tree::Tree::of_document(&record.save()).unwrap();
         for name in [&b"contract.txt"[..], b"handbook.md"] {
             assert!(
                 tree.nodes.values().any(|node| node.name.as_bytes() == name),

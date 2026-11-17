@@ -34,7 +34,7 @@ fn a_route_whose_first_read_never_answers_holds_up_nothing_else() {
     let started = Instant::now();
     let events = poll_until(&mut manager, |events| {
         events.iter().any(
-            |event| matches!(event, CollabEvent::RecordUnavailable { route } if *route == other),
+            |event| matches!(event, CollabEvent::ResourceUnavailable { route } if *route == other),
         )
     });
     assert!(

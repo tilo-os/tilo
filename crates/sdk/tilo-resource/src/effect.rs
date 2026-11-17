@@ -37,7 +37,7 @@
 //! arguments are decoded, so no effect writes where its process happens to
 //! run.
 //!
-//! A variant that only changes what this participant sees — open a snippet,
+//! A variant that only changes what this presence sees — open a snippet,
 //! reveal a tag, show a result — is a `view`: published as a `View`
 //! operation (any reader may invoke it, a member may not move someone
 //! else's view, repeating it is harmless), answered by the same handler.
@@ -103,8 +103,8 @@
 //! `opens_path` (opens the file its `path` names in this instance, which is
 //! how an app launched with a file opens it; `opens_path = "csv,tsv"` only
 //! those types),
-//! `participant` (a view that moves only the invoking participant's own
-//! view, such as an agent's caret, so a remote participant may invoke it),
+//! `presence` (a view that moves only the invoking presence's own
+//! view, such as an agent's caret, so a remote presence may invoke it),
 //! `member` (any member of a workspace may ask the workspace's host to run it
 //! for themselves on the workspace's record, as linking their own account
 //! elsewhere),
@@ -626,7 +626,7 @@ pub struct EffectRow {
     pub audience: tilo_actions::Audience,
     pub untrusted: bool,
     pub opens: Option<&'static [&'static str]>,
-    pub participant: bool,
+    pub presence: bool,
     pub edits: bool,
     pub member: bool,
     pub item: Option<&'static str>,
@@ -758,10 +758,10 @@ pub struct EffectDecl {
     /// of any type when empty, else of these extensions: how a caller that
     /// launched the app with a file opens it ([`tilo_actions::OPENS_PATH_TAG`]).
     pub opens: Option<&'static [&'static str]>,
-    /// A view that changes only the invoking participant's own view (an
-    /// agent's caret, its Find), so a remote participant may invoke it
+    /// A view that changes only the invoking presence's own view (an
+    /// agent's caret, its Find), so a remote presence may invoke it
     /// without moving anybody else's.
-    pub participant: bool,
+    pub presence: bool,
     /// A view of the invoker that submits only edits of this record (typing
     /// at the invoker's caret): its kind is Undoable, offered to whoever may
     /// edit, and the edits it submits are checked like any other.
@@ -879,7 +879,7 @@ impl EffectDecl {
             audience: row.audience,
             untrusted: row.untrusted,
             opens: row.opens,
-            participant: row.participant,
+            presence: row.presence,
             edits: row.edits,
             member: row.member,
             item: row.item,
@@ -996,8 +996,8 @@ impl EffectDecl {
                         format!("{}{extension}", tilo_actions::OPENS_PATH_EXTENSION_PREFIX)
                     }));
                 }
-                if self.participant {
-                    tags.push(tilo_actions::PARTICIPANT_VIEW_TAG.to_owned());
+                if self.presence {
+                    tags.push(tilo_actions::PRESENCE_VIEW_TAG.to_owned());
                 }
                 if self.edits {
                     tags.push(EDITS_TAG.to_owned());

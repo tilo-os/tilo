@@ -27,7 +27,7 @@ use crate::resource::{
 };
 use crate::scan::{Entry, ScanCancellation, ScanResult};
 use ui::format::{count, size};
-use ui::framework::PersonRecord;
+use ui::framework::PersonResource;
 use ui::tilo_resource::AbsolutePath;
 use ui::widget::DrawChild;
 
@@ -159,7 +159,7 @@ struct Nav {
     history: Rc<RefCell<Vec<PathBuf>>>,
     finished: Rc<RefCell<Option<ScanResult>>>,
     recent: LocalState<Rc<RecentFolders>>,
-    recents: Option<(PersonRecord<RecentFolders>, String)>,
+    recents: Option<(PersonResource<RecentFolders>, String)>,
     device: Rc<str>,
     places: Rc<Vec<Place>>,
     needs: ui::attention::Presses,

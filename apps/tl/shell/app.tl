@@ -105,7 +105,7 @@ view bar() {
                         .center
                     } else if part.kind == .people or part.kind == .status {
                         .trailing
-                    } else if part.kind == .space { .space } else { .leading },
+                    } else if part.kind == .spacer { .space } else { .leading },
                 ) {
                     bar_part(part)
                 }
@@ -116,9 +116,9 @@ view bar() {
 
 /// Whether the canvas's bar keeps a part (`canvas.md` §7, "The canvas is the whole screen"): the
 /// time, the status cluster (which on the canvas is the notices and the person, `bar_part`), a
-/// question put to the person, and the space that spreads them.
+/// question put to the person, and the spacer that spreads them.
 fn canvas_keeps(part: BarPart) -> Bool {
-    part.kind == .clock or part.kind == .status or part.kind == .people or part.kind == .space
+    part.kind == .clock or part.kind == .status or part.kind == .people or part.kind == .spacer
 }
 
 /// Whether a part of the bar gives way on a bar narrower than a wide one: the strip and the
@@ -153,7 +153,7 @@ fn bar_is_narrow(width: Float) -> Bool {
 /// way: what a glance needs — the clock, the workspace, the connection, the charge, the
 /// notifications and the person's own face — keeps its room.
 view bar_part(part: BarPart) {
-    if part.kind == .space {
+    if part.kind == .spacer {
         spacer
     } else if part.kind == .clock {
         clock()

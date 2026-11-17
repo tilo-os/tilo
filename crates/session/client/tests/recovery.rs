@@ -13,7 +13,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use tilo_session_client::{Cmd, Event, FailureSubject, LocalState, Outbox, TransportPhase};
+use tilo_session_client::{Cmd, Event, FailureKind, LocalState, Outbox, TransportPhase};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::support::{
@@ -82,7 +82,7 @@ async fn refresh_asks_the_restarted_host_for_the_workspace_again() {
         status
             .failures
             .iter()
-            .all(|failure| failure.subject != FailureSubject::Admission)
+            .all(|failure| failure.kind != FailureKind::Admission)
     );
     peer.close();
     host.relay.shutdown().await;
@@ -225,13 +225,13 @@ async fn page_failures_are_scoped_offer_their_recovery_and_clear() {
     peer.set_local_state(route(), LocalState::Failed);
     peer.set_local_state(route(), LocalState::Failed);
     peer.report_failure(
-        FailureSubject::Surface("tilo-desktop-1".into()),
+        FailureKind::Surface("tilo-desktop-1".into()),
         "gpu-device-lost",
         "lost",
     )
     .unwrap();
     peer.report_failure(
-        FailureSubject::Asset {
+        FailureKind::Asset {
             surface: "tilo-desktop-1".into(),
             asset: "4".into(),
         },
@@ -240,11 +240,11 @@ async fn page_failures_are_scoped_offer_their_recovery_and_clear() {
     )
     .unwrap();
     assert!(
-        peer.report_failure(FailureSubject::Session, "gpu-device-lost", "x")
+        peer.report_failure(FailureKind::Session, "gpu-device-lost", "x")
             .is_err()
     );
     assert!(
-        peer.report_failure(FailureSubject::Storage, "certificate-expired", "x")
+        peer.report_failure(FailureKind::Storage, "certificate-expired", "x")
             .is_err()
     );
     let recovery: Vec<_> = page_failures()
@@ -264,9 +264,9 @@ async fn page_failures_are_scoped_offer_their_recovery_and_clear() {
     peer.set_local_state(route(), LocalState::Durable);
     peer.clear_surface("tilo-desktop-1");
     assert!(page_failures().is_empty());
-    peer.report_failure(FailureSubject::Storage, "storage-quota", "full")
+    peer.report_failure(FailureKind::Storage, "storage-quota", "full")
         .unwrap();
-    peer.clear_failure(&FailureSubject::Storage);
+    peer.clear_failure(&FailureKind::Storage);
     assert!(page_failures().is_empty());
     peer.close();
     host.relay.shutdown().await;

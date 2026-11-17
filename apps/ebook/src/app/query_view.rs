@@ -313,7 +313,7 @@ impl BooksApp {
             self.elsewhere = Arc::new(books_elsewhere(entries, &self.library));
             // A segment built here is kept in the content store with the
             // book's row; without one it would not reach other devices. A
-            // participant who may not keep it there builds none: the books
+            // member who may not keep it there builds none: the books
             // here are searched from their own text.
             if self.content.is_some() && may_index {
                 self.query.index.build_missing(&self.library, entries);
@@ -459,7 +459,7 @@ impl BooksApp {
         self.dirty = true;
     }
 
-    /// Whether this participant may keep a book's index with its row.
+    /// Whether this member may keep a book's index with its row.
     fn may_index(&self) -> bool {
         self.dispatch.may_invoke(&crate::resource::index_book(
             "",

@@ -283,12 +283,12 @@ async fn indexed(
     page: &mut Browser,
     route: &DocumentRoute,
     name: &str,
-) -> Vec<tilo_desktop_search::providers::records::HeldRecord> {
+) -> Vec<tilo_desktop_search::providers::records::HeldDocument> {
     let index_route = DocumentRoute {
         record: String::new(),
         ..route.clone()
     };
-    let record = ui::record::DocumentId::from_route(&route.record).expect("a record route");
+    let record = ui::resource::DocumentId::from_route(&route.record).expect("a record route");
     let deadline = tilo_test_env::hang_deadline();
     loop {
         page.pump();
@@ -296,13 +296,13 @@ async fn indexed(
         for (_, bytes) in page.documents.get(&index_route).into_iter().flatten() {
             let _ = tilo_automerge::ApplyIncoming::load_incoming(&mut index, bytes);
         }
-        let held: Vec<_> = ui::record::index::discoverable_references(&index)
+        let held: Vec<_> = ui::resource::index::discoverable_references(&index)
             .into_iter()
             .map(
-                |checkout| tilo_desktop_search::providers::records::HeldRecord {
+                |checkout| tilo_desktop_search::providers::records::HeldDocument {
                     id: checkout.id.as_str().to_owned(),
                     kind: checkout.kind.as_str().to_owned(),
-                    name: ui::record::index::name_of(&index, &checkout.id),
+                    name: ui::resource::index::name_of(&index, &checkout.id),
                     package: route.app_id.clone(),
                     here: true,
                     workspace: None,
@@ -603,9 +603,9 @@ async fn an_agent_fills_a_form_and_writes_a_letter_on_a_hosted_workspace_with_no
     assert_eq!(hit.title, "application.pdf", "{found:?}");
     assert_eq!(
         Some(hit.id.as_str()),
-        ui::record::DocumentId::from_route(&pdf.record)
+        ui::resource::DocumentId::from_route(&pdf.record)
             .as_ref()
-            .map(ui::record::DocumentId::as_str),
+            .map(ui::resource::DocumentId::as_str),
         "the row is the agent's form"
     );
 

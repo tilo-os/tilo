@@ -29,7 +29,7 @@ use ui::application::{
 };
 use ui::application_view::InstanceViewStore;
 use ui::headless::FrameHarness;
-use ui::record::{DocumentCheckout, RecordOwners, RecordStore};
+use ui::resource::{DocumentCheckout, ResourceOwners, ResourceStore};
 use ui::state::State;
 use ui::widget::TileHost;
 
@@ -56,7 +56,7 @@ pub const TYPED_INTO: &str = "notes";
 
 /// What a component mounted in a window is given besides its own record.
 struct Host {
-    owners: RecordOwners,
+    owners: ResourceOwners,
     views: Rc<InstanceViewStore>,
 }
 
@@ -117,7 +117,7 @@ pub struct Demo {
     )]
     pub handle: DesktopHandle,
     /// Each window's record, as the store the app reads it through holds it.
-    records: Vec<(&'static str, DocumentCheckout, RecordStore)>,
+    records: Vec<(&'static str, DocumentCheckout, ResourceStore)>,
     /// The note's tab: the window a person types into.
     note_tab: TabId,
     /// A window woke since the host last ran the frame a wake asks for.
@@ -128,7 +128,7 @@ impl Demo {
     /// The shell, its six apps mounted and drawn.
     pub fn open() -> Self {
         let cache = ui::portable_storage::PortableStorage::new("profile", "device").unwrap();
-        let mut owners = RecordOwners::portable(cache.clone());
+        let mut owners = ResourceOwners::portable(cache.clone());
         let views = Rc::new(InstanceViewStore::portable(cache, "workspace").unwrap());
         let mut catalog = ApplicationCatalog::new();
         let mut records = vec![];
@@ -139,12 +139,12 @@ impl Demo {
             catalog.register(definition).unwrap();
             let id = minter.mint();
             let store = owners.open(definition.app_id(), "workspace").unwrap();
-            let checkout = tilo_desktop::records::component_record(
+            let checkout = tilo_desktop::records::component_resource(
                 definition.app_id(),
                 id,
-                definition.record_kind.clone(),
+                definition.resource_type.clone(),
             );
-            store.create_record(&checkout).unwrap();
+            store.create_resource(&checkout).unwrap();
             records.push((app_key, checkout, store));
             tabs.push(Tab {
                 id,
@@ -241,7 +241,7 @@ impl Demo {
         self.records.len()
     }
 
-    /// Change `app`'s record from outside its window, as another participant's
+    /// Change `app`'s record from outside its window, as another member's
     /// edit reaches it: their copy of the record, with their change, merges
     /// into this one, and the document moves under the app that shows it.
     pub fn change_elsewhere(&self, app: &str) {

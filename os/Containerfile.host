@@ -41,6 +41,10 @@ ARG RPMS_REF
 # guest, xfsprogs makes a state disk, libcap gives the jail helper what it needs,
 # util-linux's setpriv drops to the service's uid, tar unpacks the member
 # identity, and gzip unpacks the Firecracker release below, which is a tarball.
+# Then the base's desktop pieces leave: the SSH server, its clients and the VPN
+# plugins (a server is reached at its console and through Tilo's own transport),
+# the image-signing tools, git, fwupd and the modem manager. mokutil stays,
+# because the base's shim requires it and removing it breaks a protected package.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         chrony \
         firewalld \
@@ -48,9 +52,12 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         ca-certificates \
         NetworkManager \
         curl grep gzip libcap passt sed shadow-utils skopeo tar util-linux xfsprogs \
-    && rpm -q --qf '%{NAME}\n' openssl sbsigntools efitools mokutil pesign nss-tools gnutls-utils git git-core \
-        openvpn NetworkManager-openvpn openssh openssh-clients openssh-server \
-        ModemManager fwupd 2>/dev/null | xargs -r dnf remove -y \
+    && dnf clean all \
+    && installed="$(rpm -qa --qf '%{NAME}\n')" \
+    && printf '%s\n' "$installed" | awk '/^(openssl|sbsigntools|efitools|pesign|nss-tools|gnutls-utils|git|git-core|openvpn|NetworkManager-openvpn|openssh|openssh-clients|openssh-server|ModemManager|fwupd)$/' \
+           | xargs -r dnf --disablerepo='*' remove -y \
+    && installed="$(rpm -qa --qf '%{NAME}\n')" \
+    && ! printf '%s\n' "$installed" | grep -Eq '^(openssl|sbsigntools|efitools|pesign|nss-tools|gnutls-utils|git|git-core|openvpn|NetworkManager-openvpn|openssh|openssh-clients|openssh-server|ModemManager|fwupd)$' \
     && dnf clean all
 
 ARG SOURCE_REVISION

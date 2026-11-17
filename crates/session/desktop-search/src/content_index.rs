@@ -58,20 +58,20 @@ impl SlotKey {
 /// person keeps: every window of an app in a workspace publishes the same
 /// entries, so all of them fill one slot (`tab:*`) instead of one per
 /// window ever opened.
-pub fn record_slot(record_id: &str) -> String {
-    let mut rest = record_id;
+pub fn record_slot(document_id: &str) -> String {
+    let mut rest = document_id;
     while let Some(derived) = rest.strip_prefix("derived:") {
         match derived.split_once('@') {
             Some((_, after)) => rest = after,
-            None => return record_id.to_owned(),
+            None => return document_id.to_owned(),
         }
     }
     match rest.strip_prefix("tab:") {
         Some(tab) if u64::from_str_radix(tab, 16).is_ok_and(|tab| tab != 0) => {
-            let roles = record_id.strip_suffix(rest).unwrap_or_default();
+            let roles = document_id.strip_suffix(rest).unwrap_or_default();
             format!("{roles}tab:*")
         }
-        _ => record_id.to_owned(),
+        _ => document_id.to_owned(),
     }
 }
 

@@ -76,7 +76,8 @@ fn a_boot_key_enrols_through_the_sessions_socket() {
         volume_uuid: [0x11; 16],
         keyslot: 2,
     };
-    let request = EnrolRequest::new(&boot_key, slot, None, half).expect("an enrolment request");
+    let request =
+        EnrolRequest::new(&boot_key, slot, None, None, half).expect("an enrolment request");
     let frame = encode_frame(&request).expect("a frame");
 
     // The session serves its socket once it has started.

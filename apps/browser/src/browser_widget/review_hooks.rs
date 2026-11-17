@@ -141,7 +141,8 @@ impl BrowserWidget {
                 20 * 60,
             ),
         ] {
-            self.history.record_at(url, title, now.saturating_sub(ago));
+            self.history
+                .document_at(url, title, now.saturating_sub(ago));
         }
         self.library_section = match section {
             "bookmarks" => LibrarySection::Bookmarks,
@@ -264,9 +265,9 @@ impl BrowserWidget {
     pub fn debug_show_history_paused(&mut self) {
         if self.history.is_empty() {
             self.history
-                .record_at("https://example.org/reading", "Existing reading", 2);
+                .document_at("https://example.org/reading", "Existing reading", 2);
             self.history
-                .record_at("https://www.rust-lang.org/learn", "Learn Rust", 1);
+                .document_at("https://www.rust-lang.org/learn", "Learn Rust", 1);
         }
         self.history_paused
             .store(true, std::sync::atomic::Ordering::Relaxed);

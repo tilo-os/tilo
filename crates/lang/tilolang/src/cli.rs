@@ -255,7 +255,7 @@ fn explain(b: &BuiltPackage, changes: &[(char, String)], what: &str) {
         let why = if *sign == '-' {
             "no longer declared; kept as retired, so its id is never reused"
         } else if name.ends_with(crate::ids::PRESENT_SUFFIX) {
-            "the view that presents an action on its subject (its `require`, `on:`, or a label or icon that follows the subject)"
+            "the view that presents an action on its target (its `require`, `on:`, or a label or icon that follows the target)"
         } else if name.starts_with("scenario ") {
             "a scenario's hidden action"
         } else if name.contains('#') {

@@ -23,7 +23,7 @@
 //! [`ChainPager`] is the mechanism, for a view that paints its own rows;
 //! [`ChainList`] is the same as a [`ListModel`] for a [`VirtualList`].
 //! Nothing here polls: the chain's [`Chain::revision`] moves, and the
-//! store wakes the window ([`ui_core::record::RecordStore::wake_on_arrival`]),
+//! store wakes the window ([`ui_core::resource::ResourceStore::wake_on_arrival`]),
 //! when a part's history arrives or the workspace says it has none of it, and
 //! opening a part waits for a pass where the app's records take writes
 //! ([`ChainPager::settle`]).

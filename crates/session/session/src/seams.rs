@@ -25,8 +25,8 @@ use tilo_action_broker::services::{
     WorkspaceMemberships,
 };
 use tilo_broker_core::services::{
-    ContentStoreServices, KeyboardShortcutServices, LegacyWorkspaceProjection, LocalPersonServices,
-    OwnDeviceActions, RecordChangeServices, RecordIndexChanges, SearchIndexServices,
+    ContentStoreServices, DocumentChangeServices, DocumentIndexChanges, KeyboardShortcutServices,
+    LegacyWorkspaceProjection, LocalPersonServices, OwnDeviceActions, SearchIndexServices,
     WorkspaceGovernanceServices, WorkspaceNodeActions,
 };
 use tilo_broker_core::steps::{ContinuationServices, HostStepServices};
@@ -117,7 +117,7 @@ seams! {
     agent_sessions: Arc<dyn tilo_broker_core::services::AgentSessions>,
     native_certificates: Arc<dyn tilo_action_broker::certificate_authority::CertificateAuthority>,
     local_person: Arc<dyn LocalPersonServices>,
-    record_changes: Arc<dyn RecordChangeServices>,
+    resource_changes: Arc<dyn DocumentChangeServices>,
     legacy_workspace: Arc<dyn LegacyWorkspaceProjection>,
     launcher: Arc<dyn LauncherServices>,
     published: Arc<dyn PublishedResources>,
@@ -127,7 +127,7 @@ seams! {
     host_steps: Vec<Arc<dyn HostStepServices>> => default,
     continuations: Arc<dyn ContinuationServices>,
     search_index: Arc<dyn SearchIndexServices>,
-    record_index_changes: Arc<dyn RecordIndexChanges>,
+    document_index_changes: Arc<dyn DocumentIndexChanges>,
     content_store: Arc<dyn ContentStoreServices>,
     workspace_control: Arc<dyn WorkspaceControlServices>,
     realtime: Arc<dyn RealtimeServices>,
@@ -146,7 +146,7 @@ seams! {
     workspace_grants: Arc<dyn WorkspaceGrants>,
     app_consents: Arc<dyn AppConsents>,
     launchable_catalogue: PathBuf,
-    record_content: Arc<tilo_action_broker::record_content::RouteContent>,
+    document_content: Arc<tilo_action_broker::document_content::RouteContent>,
     group_keys: KeyProvider,
     action_offload: Arc<dyn tilo_actions::offload::ActionOffload>,
     own_device: Arc<dyn OwnDeviceActions>,
@@ -160,7 +160,7 @@ pub(crate) fn document_reads(
     engine: Option<&Arc<crate::engine::Engine>>,
 ) -> Seam<Arc<dyn tilo_action_broker::services::NativeDocumentReads>> {
     Seam::when(engine.map(|engine| {
-        Arc::new(crate::record_reads::Records::new(Arc::clone(engine)))
+        Arc::new(crate::resource_reads::Records::new(Arc::clone(engine)))
             as Arc<dyn tilo_action_broker::services::NativeDocumentReads>
     }))
 }
@@ -215,7 +215,7 @@ pub(crate) const CALLED_SEAMS: &[(&str, &str)] = &[
         "ui::collaboration::browser_service_sessions",
         "browser_service_sessions",
     ),
-    ("ui::collaboration::record_content", "record_content"),
+    ("ui::collaboration::document_content", "document_content"),
     (
         "ui::collaboration::channel_live_activity",
         "live_activities",

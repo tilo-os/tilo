@@ -37,7 +37,7 @@ use ui::application::{
 use ui::application_view::InstanceViewStore;
 use ui::headless::FrameHarness;
 use ui::profiling::{FRAME_BUDGET_US, FrameTiming, PerfReport, StatSummary};
-use ui::record::{RecordOwners, RecordStore};
+use ui::resource::{ResourceOwners, ResourceStore};
 use ui::state::State;
 use ui::widget::TileHost;
 
@@ -121,7 +121,7 @@ impl Profile {
 }
 
 struct Host {
-    owners: RecordOwners,
+    owners: ResourceOwners,
     views: Rc<InstanceViewStore>,
     wakes: Vec<ui::wake::WakeHandle>,
 }
@@ -187,10 +187,10 @@ fn fixture(
 ) -> (
     Layout,
     ApplicationCatalogTileResolver<Host>,
-    Vec<RecordStore>,
+    Vec<ResourceStore>,
 ) {
     let cache = ui::portable_storage::PortableStorage::new("profile", "device").unwrap();
-    let mut owners = RecordOwners::portable(cache.clone());
+    let mut owners = ResourceOwners::portable(cache.clone());
     let views = Rc::new(InstanceViewStore::portable(cache, "workspace").unwrap());
     let mut catalog = ApplicationCatalog::new();
     let definitions = [
@@ -219,15 +219,15 @@ fn fixture(
                     next_tab += 1;
                     if profile == Profile::Apps {
                         let store = owners.open(definition.app_id(), "workspace").unwrap();
-                        let checkout = tilo_desktop::records::component_record(
+                        let checkout = tilo_desktop::records::component_resource(
                             definition.app_id(),
                             id,
-                            definition.record_kind.clone(),
+                            definition.resource_type.clone(),
                         );
                         // Chat's tabs of one workspace share the package's record, so a tab that is
                         // not the first opens what one before it made.
                         if created.insert((definition.app_id().to_string(), checkout.id.clone())) {
-                            store.create_record(&checkout).unwrap();
+                            store.create_resource(&checkout).unwrap();
                             store.with(&checkout.id, |doc| match which {
                                 0 => word_processor::initialize_empty_document(doc).unwrap(),
                                 1 => chat::demo::start(doc, "author", "Author", "AU").unwrap(),

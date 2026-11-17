@@ -94,17 +94,22 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_viewer_reads_the_tracker_but_cannot_change_it;
+    phase an_editor_changes_the_tracker_and_a_viewer_only_reads_it;
     {
         let mut app = open();
+        app.set_role(ui::Role::Editor);
         app.call_on(&chain(), "create", json!({ "title": "Pick the venue" }))
             .expect("create");
+        let issue = only(&app);
+        app.call_on(&issue_resource(&issue), "rename", json!({ "title": "Book the venue" }))
+            .expect("an editor renames an issue");
         app.set_role(ui::Role::Viewer);
         assert!(
             app.call_on(&chain(), "create", json!({ "title": "Another" })).is_err(),
             "a viewer creates nothing"
         );
-        assert_eq!(held(&app).len(), 1);
+        assert!(app.call_on(&issue_resource(&issue), "rename", json!({ "title": "x" })).is_err());
+        assert_eq!(held(&app).get(&issue).unwrap().title, "Book the venue");
     }
 
     phase a_project_is_made_listed_and_opened_by_its_address;
@@ -417,6 +422,7 @@ tilo_test_env::scenario! {
             let presence = app.harness().presence_mut();
             presence.set_display_name(ui::permissions::MemberId::person("bob"), "Bob");
             presence.set_display_name(ui::permissions::MemberId::agent("scribe"), "Scribe");
+            presence.set_display_name(ui::permissions::MemberId::person("scribe"), "Sam");
         }
         app.settle();
 
@@ -436,19 +442,25 @@ tilo_test_env::scenario! {
                 .unwrap_or_else(|error| panic!("pick {entry}: {error:?}"));
             app.settle();
         };
-        pick(&mut app, "tasks-issue-assignee-bob");
+        pick(&mut app, "tasks-issue-assignee-person-bob");
         assert_eq!(assignee(&app).as_deref(), Some("bob"));
         assert!(
             app.harness().a11y_node_named("Assignee: Bob").is_some(),
             "the chip says the person's name, never the record's spelling"
         );
-        pick(&mut app, "tasks-issue-assignee-scribe");
+        pick(&mut app, "tasks-issue-assignee-agent-scribe");
         assert_eq!(assignee(&app).as_deref(), Some("agent:scribe"));
         assert!(
             app.harness()
                 .a11y_node_named("Assignee: Scribe · Agent")
                 .is_some(),
             "an agent reads by name, and as an agent"
+        );
+        pick(&mut app, "tasks-issue-assignee-person-scribe");
+        assert_eq!(
+            assignee(&app).as_deref(),
+            Some("scribe"),
+            "a person whose id an agent also has is their own choice"
         );
         pick(&mut app, "tasks-issue-assignee-none");
         assert_eq!(assignee(&app), None);
@@ -1141,7 +1153,7 @@ fn new_issue_enabled(app: &mut TestApp<App>) -> bool {
 #[test]
 fn a_blank_new_issue_cannot_be_invoked() {
     let mut app = open();
-    app.settle();
+    app.set_role(ui::Role::Editor);
     assert!(!new_issue_enabled(&mut app), "a blank title disables it");
     app.harness()
         .click_named("tasks-list-new-create")
@@ -1185,6 +1197,8 @@ fn a_blank_new_issue_cannot_be_invoked() {
     app.settle();
     let titles: Vec<String> = held(&app).values().map(|issue| issue.title).collect();
     assert_eq!(titles, ["Ship it", "Write the notes"]);
+    // The window answers each description's editor views: the list stays published.
+    assert_eq!(app.harness().component_contract_violations(), []);
 }
 
 /// Its palette lists what a person looks for — the tracker's resources by

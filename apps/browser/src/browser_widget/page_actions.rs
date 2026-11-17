@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use ui::tilo_actions::{ActionInvoker, ActionSpec, InvocationId, InvocationUpdate};
 use ui::webview::{
-    FrameId, PageFailure, PageKey, PageNavigation, PageRecordNote, WebViewEngine as _,
+    FrameId, PageFailure, PageKey, PageNavigation, PageResourceNote, WebViewEngine as _,
 };
 
 use super::page_turns::{MAX_WAITING_PAGE_ACTIONS, PAGE_TURN_WAIT};
@@ -118,7 +118,7 @@ fn answer(message: &str) -> PageReply {
         image: None,
         navigation: PageNavigation::None,
         loading: false,
-        record: PageRecordNote::default(),
+        record: PageResourceNote::default(),
     }
 }
 /// Let the engine's answers arrive and read `invocation`'s, as the reply of
@@ -843,7 +843,7 @@ fn an_action_that_navigates_completes_on_the_page_it_opened() {
         image: None,
         navigation: ui::webview::PageNavigation::Started,
         loading: true,
-        record: PageRecordNote::default(),
+        record: PageResourceNote::default(),
     }));
     let click = start(
         &mut widget,
@@ -1888,7 +1888,7 @@ fn what_the_others_did_reaches_the_callers_output() {
     ]);
     let others = theirs.as_array().unwrap().clone();
     engine.push_page_reply(Ok(PageReply {
-        record: PageRecordNote {
+        record: PageResourceNote {
             seq: Some(6),
             others: others.clone(),
             others_earlier: 3,
@@ -1926,7 +1926,7 @@ fn what_the_others_did_reaches_the_callers_output() {
         "stale_element",
         "d1e3 belongs to a page this tab has left; read the page again",
     );
-    stale.record = PageRecordNote {
+    stale.record = PageResourceNote {
         seq: Some(7),
         others: others[1..].to_vec(),
         others_earlier: 0,
@@ -2251,9 +2251,9 @@ fn a_pages_forms_are_read_and_answered_by_the_names_they_ask_under() {
     engine.push_page_reply(Ok(PageReply {
         data: Some(placed.clone()),
         navigation: PageNavigation::Possible,
-        record: PageRecordNote {
+        record: PageResourceNote {
             seq: Some(1),
-            ..PageRecordNote::default()
+            ..PageResourceNote::default()
         },
         ..answer(
             "Placed 3 of 4 answers; the form now also asks \"Which country?\"; not sent, since \
@@ -2515,7 +2515,7 @@ fn answering_a_form_takes_its_turn_and_completes_on_the_page_it_sent_to() {
         data: Some(sent.clone()),
         navigation: PageNavigation::Started,
         loading: true,
-        record: PageRecordNote {
+        record: PageResourceNote {
             seq: Some(2),
             others: theirs.as_array().unwrap().clone(),
             others_earlier: 0,

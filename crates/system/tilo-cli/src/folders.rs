@@ -357,17 +357,9 @@ fn add(
         id
     } else {
         {
-            // A workspace made a moment ago may be one the peer listed before it
-            // existed: ask it to list again now rather than wait out its own
-            // hour of a kept list.
-            let (id, name) = listed(named)
-                .or_else(|| {
-                    crate::mcp::ask_peer_list_again();
-                    listed(named)
-                })
-                .with_context(|| {
-                    format!("none of your workspaces is called {named}; `tilo folders` lists them")
-                })?;
+            let (id, name) = listed(named).with_context(|| {
+                format!("none of your workspaces is called {named}; `tilo folders` lists them")
+            })?;
             folders.workspaces.insert(
                 id.clone(),
                 crate::peer::folders::Folder {

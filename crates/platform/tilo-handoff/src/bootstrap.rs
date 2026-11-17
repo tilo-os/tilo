@@ -399,13 +399,13 @@ pub(crate) fn install(
         .chars()
         .take(RECORD_ID_HEX_CHARS)
         .collect();
-    let record_id = format!("identity-{record_hex}");
+    let document_id = format!("identity-{record_hex}");
     tilo_files::native::atomic::write_with_mode(
-        &identity_dir.join(format!("{record_id}.json")),
+        &identity_dir.join(format!("{document_id}.json")),
         &record,
         0o600,
     )?;
-    runtime_identity::set_active_identity(identity_dir, &record_id)
+    runtime_identity::set_active_identity(identity_dir, &document_id)
         .map_err(|_| invalid("The joined identity could not be selected"))?;
     let store = tilo_identity_host::device_fleet::DeviceFleetStore::at(identity_dir, paths);
     for known in fleet.certificates {

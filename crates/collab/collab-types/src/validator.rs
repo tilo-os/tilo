@@ -124,13 +124,13 @@ pub struct InboundState {
 
     /// The record each artifact is, if known: the artifact's node is
     /// `workspace › app › record`; otherwise the artifact id stands in.
-    pub artifact_records: HashMap<ArtifactId, String>,
+    pub artifact_resources: HashMap<ArtifactId, String>,
 
     /// The record kind each artifact is, if known: which of its app's
     /// resources the record's changes are decided against.
     pub artifact_kinds: HashMap<ArtifactId, String>,
     /// The person (hex of their user root key) whose own record each artifact
-    /// is, as the write naming it said ([`crate::OwnRecord`]): only they are
+    /// is, as the write naming it said ([`crate::OwnResource`]): only they are
     /// granted anything in it, whatever their role.
     pub artifact_owners: HashMap<ArtifactId, String>,
 
@@ -178,7 +178,7 @@ impl Default for InboundState {
         Self {
             artifacts: HashMap::new(),
             artifact_apps: HashMap::new(),
-            artifact_records: HashMap::new(),
+            artifact_resources: HashMap::new(),
             artifact_kinds: HashMap::new(),
             artifact_owners: HashMap::new(),
             workspace: DEFAULT_WORKSPACE.to_owned(),
@@ -473,8 +473,8 @@ fn validate_authorized_op(
 
 /// The node of a collaborative record: `workspace › app › resource`.
 #[must_use]
-pub fn document_node(workspace: &str, app: &str, record: &str) -> TreePath {
-    TreePath::workspace(workspace).app(app).resource(record)
+pub fn document_node(workspace: &str, app: &str, document: &str) -> TreePath {
+    TreePath::workspace(workspace).app(app).resource(document)
 }
 
 /// The app segment of an artifact no app claims.
@@ -495,27 +495,27 @@ fn check_op_permission(
         return Err(ValidationError::UnknownArtifact(op.artifact));
     }
     let artifact = op.artifact.0.to_string();
-    let record = crate::receipt::Record {
+    let document = crate::receipt::WrittenDocument {
         workspace: &state.workspace,
         app: state
             .artifact_apps
             .get(&op.artifact)
             .map_or(UNKNOWN_APP, String::as_str),
-        record: state
-            .artifact_records
+        document: state
+            .artifact_resources
             .get(&op.artifact)
             .map_or(artifact.as_str(), String::as_str),
     };
     let mut cx = Context::at(0);
     if let Some(person) = state.artifact_owners.get(&op.artifact) {
-        cx = cx.with_own_record(record.record, person);
+        cx = cx.with_own_resource(document.document, person);
     }
     let allows = |node: &tilo_action_policy::TreePath, kind: ActionKind| {
         author.decide(node, kind, &cx).answer == Answer::Allow
     };
     match crate::receipt::decide_op(
         op,
-        &record,
+        &document,
         state.artifact_kinds.get(&op.artifact).map(String::as_str),
         None,
         &state.surfaces,

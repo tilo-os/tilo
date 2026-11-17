@@ -26,7 +26,7 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_client::Host;
 use tilo_session_client::device::{Entering, entry_request};
-use tilo_session_client::engine::RecordReading;
+use tilo_session_client::engine::ResourceReading;
 use tilo_session_client::{Cmd, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::UserIdentity;
 
@@ -136,7 +136,7 @@ async fn a_change_written_before_its_record_lands_waits_for_it() {
     assert!(
         !early
             .engine()
-            .holds_record(&chat.cluster_id, &chat.app_id, &chat.record),
+            .holds_resource(&chat.cluster_id, &chat.app_id, &chat.record),
         "the early page holds no record before it is founded"
     );
     early.write(chat.clone(), &first).unwrap();
@@ -160,7 +160,7 @@ async fn a_change_written_before_its_record_lands_waits_for_it() {
     guest.send(Cmd::Join(lounge.workspace_id)).unwrap();
     guest.send(Cmd::OpenRoute(chat.clone())).unwrap();
     guest
-        .send(Cmd::OpenRecordAt(lounge.workspace_id, chat.clone()))
+        .send(Cmd::OpenDocumentAt(lounge.workspace_id, chat.clone()))
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
@@ -169,7 +169,7 @@ async fn a_change_written_before_its_record_lands_waits_for_it() {
                 .engine()
                 .record_update(&chat.cluster_id, &chat.app_id, &chat.record, None)
             {
-                Ok(RecordReading::Captured { bytes, .. }) => {
+                Ok(ResourceReading::Captured { bytes, .. }) => {
                     let doc = AutoCommit::load(&bytes).unwrap();
                     let keys: Vec<String> = doc.keys(automerge::ROOT).collect();
                     if keys.len() == 3 {

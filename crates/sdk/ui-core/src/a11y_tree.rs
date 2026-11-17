@@ -38,7 +38,7 @@ mod pointed;
 #[path = "a11y_tree/walk.rs"]
 pub(crate) mod walk;
 use component_nodes::ComponentNodes;
-pub(crate) use component_nodes::component_record;
+pub(crate) use component_nodes::component_resource;
 pub(crate) use node_identity::AdmittedNodeNames;
 use node_identity::WidgetNodeMap;
 use reading_order::ReadingOrder;

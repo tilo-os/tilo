@@ -81,7 +81,7 @@ const CHAT: &str = "so.tilo.chat";
 /// Where the changes a repaired record leaves out are kept, under the host's
 /// state: `<workspace>/<app>/<record>/<hash>.change`, each as it was written.
 /// The host takes each in again once its record holds what it builds on.
-const ARCHIVE: &str = tilo_workspace_host::workspaces::repaired_records::REPAIRED_RECORDS;
+const ARCHIVE: &str = tilo_workspace_host::workspaces::repaired_documents::REPAIRED_DOCUMENTS;
 
 struct Args {
     state: PathBuf,
@@ -442,13 +442,13 @@ fn repair_workspace<'a>(
     Box::pin(async move {
         let mut reports = Vec::new();
         let routes = workspaces
-            .record_routes(workspace)
+            .document_routes(workspace)
             .await
             .map_err(|error| anyhow::anyhow!("{workspace}: {error}"))?;
         // A person's own record, sealed for their devices alone (their drafts),
         // is not the host's to read, nor to repair.
         let theirs = workspaces
-            .workspace_record_routes(workspace)
+            .workspace_document_routes(workspace)
             .await
             .map_err(|error| anyhow::anyhow!("{workspace}: {error}"))?;
         for (record_app, record) in routes {
@@ -456,7 +456,7 @@ fn repair_workspace<'a>(
                 continue;
             }
             let history = match workspaces
-                .record_history(workspace, &record_app, &record)
+                .document_history(workspace, &record_app, &record)
                 .await
             {
                 Ok(Some(history)) => history,
@@ -533,7 +533,7 @@ async fn apply(
         .join(workspace)
         .join(app)
         .join(if record.is_empty() {
-            tilo_workspace_host::workspaces::repaired_records::PRIMARY
+            tilo_workspace_host::workspaces::repaired_documents::PRIMARY
         } else {
             record
         });
@@ -546,13 +546,13 @@ async fn apply(
     report.archived = Some((analysis.left_out.len(), kept_at.clone()));
     let mut kept = analysis.kept.clone();
     workspaces
-        .compact_record_into(workspace, app, record, kept.save())
+        .compact_document_into(workspace, app, record, kept.save())
         .await
         .map_err(|error| anyhow::anyhow!("compact the record into its kept branch: {error}"))?;
     let governor = workspaces.serving_certificate().clone();
     let branches = analysis.branches.clone();
     workspaces
-        .author_workspace_record(workspace, &governor, (app, record), |doc| {
+        .author_workspace_document(workspace, &governor, (app, record), |doc| {
             for branch in &branches {
                 carry(doc, &branch.ancestor, &branch.document)
                     .map_err(|error| error.to_string())?;
@@ -576,7 +576,7 @@ async fn verify(workspaces: &Workspaces, reports: &mut [RecordReport]) {
             report.record.as_str(),
         );
         let only = BTreeSet::from([(app.to_owned(), record.to_owned())]);
-        match workspaces.whole_records(workspace, Some(&only)).await {
+        match workspaces.whole_documents(workspace, Some(&only)).await {
             Ok(whole) => {
                 report.reads_whole = Some(whole.is_whole());
                 if let Some((_, why)) = whole.unread.first() {
@@ -587,7 +587,7 @@ async fn verify(workspaces: &Workspaces, reports: &mut [RecordReport]) {
             }
             Err(error) => report.failed = Some(format!("the record does not read: {error}")),
         }
-        if let Ok(Some(bytes)) = workspaces.record_document(workspace, app, record).await
+        if let Ok(Some(bytes)) = workspaces.resource_document(workspace, app, record).await
             && let Ok(after) = AutoCommit::load(&bytes)
         {
             report.after = Some(count(app, record, &after).len());
@@ -856,7 +856,7 @@ fn build(
 /// The messages of a part of a chat's messages, by id; for any other record,
 /// the keys at its top.
 fn count(app: &str, record: &str, doc: &AutoCommit) -> BTreeSet<String> {
-    let part = ui::record::DocumentId::parse(record)
+    let part = ui::resource::DocumentId::parse(record)
         .is_some_and(|id| app == CHAT && chat::parts::part_index(&id).is_some());
     if part {
         return chat::messages::read_part(doc)
@@ -1173,7 +1173,7 @@ mod tests {
             .await
             .unwrap();
         let primary = workspaces
-            .record_document(workspace, CHAT, "")
+            .resource_document(workspace, CHAT, "")
             .await
             .unwrap()
             .unwrap();
@@ -1269,7 +1269,7 @@ mod tests {
         assert!(!report.repaired);
         assert!(
             !workspaces
-                .whole_records(workspace, Some(route))
+                .whole_documents(workspace, Some(route))
                 .await
                 .unwrap()
                 .is_whole()
@@ -1304,7 +1304,7 @@ mod tests {
         let route = BTreeSet::from([(CHAT.to_owned(), part())]);
         assert!(
             !workspaces
-                .whole_records(&workspace, Some(&route))
+                .whole_documents(&workspace, Some(&route))
                 .await
                 .unwrap()
                 .is_whole(),
@@ -1355,7 +1355,7 @@ mod tests {
         .map(str::to_owned)
         .collect();
         let read = workspaces
-            .record_document(&workspace, CHAT, &part())
+            .resource_document(&workspace, CHAT, &part())
             .await
             .unwrap()
             .unwrap();
@@ -1403,7 +1403,7 @@ mod tests {
             .await
             .unwrap();
         let primary = workspaces
-            .record_document(&workspace, CHAT, "")
+            .resource_document(&workspace, CHAT, "")
             .await
             .unwrap()
             .unwrap();
@@ -1435,7 +1435,7 @@ mod tests {
         let route = BTreeSet::from([(CHAT.to_owned(), part())]);
         assert!(
             !workspaces
-                .whole_records(&workspace, Some(&route))
+                .whole_documents(&workspace, Some(&route))
                 .await
                 .unwrap()
                 .is_whole()
@@ -1467,7 +1467,7 @@ mod tests {
         verify(&workspaces, &mut reports).await;
         assert_eq!(reports[0].reads_whole, Some(true), "{:?}", reports[0]);
         let read = workspaces
-            .record_document(&workspace, CHAT, &part())
+            .resource_document(&workspace, CHAT, &part())
             .await
             .unwrap()
             .unwrap();

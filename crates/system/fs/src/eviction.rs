@@ -18,8 +18,8 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::availability::{
-    AvailabilityRegistry, EvictionBlocker, EvictionDecision, EvictionRequirements,
-    RecordAvailability, RecordKind, pinned_in_snapshot,
+    AvailabilityRegistry, DocumentAvailability, EntryKind, EvictionBlocker, EvictionDecision,
+    EvictionRequirements, pinned_in_snapshot,
 };
 use crate::clock::unix_now_ms;
 use crate::{Hydrator, Namespace};
@@ -193,7 +193,7 @@ impl EvictionCoordinator {
             let version = self
                 .namespace
                 .lock_recover()
-                .record_version(document_id, current)
+                .document_version(document_id, current)
                 .0
                 .ok_or_else(|| {
                     anyhow::anyhow!("version history changed during eviction planning")
@@ -283,13 +283,13 @@ impl EvictionCoordinator {
 
     async fn catalog_for_targets(
         &self,
-        records: &[RecordAvailability],
+        records: &[DocumentAvailability],
         targets: &[FileDocumentId],
     ) -> anyhow::Result<EvictionCatalog> {
         let targets = targets.iter().copied().collect::<HashSet<_>>();
         let mut keys = Vec::new();
         for record in records {
-            if record.kind != RecordKind::File {
+            if record.kind != EntryKind::File {
                 continue;
             }
             let protects_current = targets.contains(&record.document_id)
@@ -313,7 +313,7 @@ impl EvictionCoordinator {
             keys.iter()
                 .map(|&(document_id, version_id)| {
                     namespace
-                        .record_version(document_id, version_id)
+                        .document_version(document_id, version_id)
                         .0
                         .map(|version| (document_id, version_id, version.content_hash))
                         .ok_or_else(|| {
@@ -985,10 +985,10 @@ fn plan(
         EvictionDecision::Allowed | EvictionDecision::AllowedDestructiveOverride => {}
     }
 
-    let target_record = registry
+    let target_document = registry
         .get(document_id)
-        .ok_or(PlanError::Denied(EvictionBlocker::UnknownRecord))?;
-    let target_version = target_record
+        .ok_or(PlanError::Denied(EvictionBlocker::UnknownDocument))?;
+    let target_version = target_document
         .current_version
         .ok_or(PlanError::TargetVersionUnknown)?;
     let target = catalog.get(document_id, target_version);
@@ -1001,7 +1001,7 @@ fn plan(
 
     let mut protected = HashSet::new();
     for record in registry.records() {
-        if record.kind != RecordKind::File {
+        if record.kind != EntryKind::File {
             continue;
         }
 
@@ -1081,7 +1081,7 @@ fn batch_plan_safe(
     let mut own_current = HashMap::<FileDocumentId, HashSet<Hash>>::new();
     let mut roots_valid = true;
     for record in registry.records() {
-        if record.kind != RecordKind::File {
+        if record.kind != EntryKind::File {
             continue;
         }
         let current_is_protected = if let Ok(policy) = registry.effective_policy(record.document_id)
@@ -1174,11 +1174,11 @@ fn batch_target_plan(
         registry.eviction_decision(document_id, now_ms, requirements, false),
         EvictionDecision::Allowed
     ) {
-        return Err(PlanError::Denied(EvictionBlocker::UnknownRecord));
+        return Err(PlanError::Denied(EvictionBlocker::UnknownDocument));
     }
     let record = registry
         .get(document_id)
-        .ok_or(PlanError::Denied(EvictionBlocker::UnknownRecord))?;
+        .ok_or(PlanError::Denied(EvictionBlocker::UnknownDocument))?;
     let version_id = record
         .current_version
         .ok_or(PlanError::TargetVersionUnknown)?;
@@ -1293,7 +1293,7 @@ fn sum_bytes(extents: &[BlobExtent]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::availability::RecordAvailability;
+    use crate::availability::DocumentAvailability;
     use tempfile::TempDir;
 
     fn hash(byte: u8) -> Hash {
@@ -1325,8 +1325,8 @@ mod tests {
         }
     }
 
-    fn resident_file(id: FileDocumentId, version: FileVersionId, now: u64) -> RecordAvailability {
-        let mut record = RecordAvailability::new(id, RecordKind::File);
+    fn resident_file(id: FileDocumentId, version: FileVersionId, now: u64) -> DocumentAvailability {
+        let mut record = DocumentAvailability::new(id, EntryKind::File);
         record.current_version = Some(version);
         record.residency = Residency::Resident { bytes: 30 };
         record.replicas = crate::availability::ReplicaEvidence {
@@ -1493,7 +1493,7 @@ mod tests {
             {
                 let child_id = FileDocumentId::new();
                 let missing = FileDocumentId::new();
-                let mut child = RecordAvailability::new(child_id, RecordKind::File);
+                let mut child = DocumentAvailability::new(child_id, EntryKind::File);
                 child.parent = Some(missing);
                 assert!(pinned_in_snapshot(&[child.clone()], child_id));
 

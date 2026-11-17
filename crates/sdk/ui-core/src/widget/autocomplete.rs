@@ -76,7 +76,7 @@ impl Suggestion {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SuggestionPerson {
-    pub identity: String,
+    pub identity: tilo_actions::Actor,
     pub hue: crate::tokens::PresenceHue,
     /// Software acting in the workspace rather than a person.
     pub agent: bool,
@@ -330,7 +330,7 @@ fn paint_item(
                 crate::agent_identity::AgentIdentityStyle::Solid,
             );
         } else {
-            crate::widget::AvatarFace::new(&s.label, &person.identity)
+            crate::widget::AvatarFace::new(&s.label, person.identity.id())
                 .presence(colour)
                 .paint(&mut PaintCtx::new(scene, transform, text, theme), mark);
         }
@@ -980,6 +980,56 @@ impl Autocomplete {
 }
 
 impl Widget for Autocomplete {
+    /// An autocomplete as a page's own: the field the person types in and, open,
+    /// the suggestions as real options.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        use crate::composition::{Control, ControlOption, InputKind};
+        let text = self.input.value().to_owned();
+        cx.control(Control::Entry {
+            input: InputKind::Search,
+            text,
+            placeholder: self.input.placeholder().to_owned(),
+            min: None,
+            max: None,
+            step: None,
+            steppers: false,
+            increase: None,
+            decrease: None,
+            secret: false,
+        });
+        if !self.open {
+            return;
+        }
+        let options = self
+            .list
+            .rows()
+            .iter()
+            .filter(|suggestion| suggestion.is_pickable())
+            .map(|suggestion| {
+                let key =
+                    crate::a11y::hash_key(&("autocomplete-suggestion", suggestion.value.as_str()));
+                // The rows are published under the widget's own route namespace.
+                let namespace = self.test_id().unwrap_or("autocomplete");
+                let option = ControlOption::new(suggestion.label.clone())
+                    .with_target(crate::composition::keyed_target(namespace, &[key]));
+                let detail = suggestion
+                    .detail
+                    .clone()
+                    .or_else(|| suggestion.shortcut.clone());
+                match detail {
+                    Some(detail) => option.with_detail(detail),
+                    None => option,
+                }
+            })
+            .collect();
+        cx.control(Control::Choices {
+            list: "listbox",
+            item: "option",
+            label: None,
+            options,
+        });
+    }
+
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
     fn set_interaction_environment(

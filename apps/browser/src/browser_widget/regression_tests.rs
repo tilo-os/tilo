@@ -93,7 +93,7 @@ fn the_newest_history_rows_open_however_long_the_history() {
     // in the alphabet.
     for n in 0..150_u64 {
         let url = format!("https://{}.test/", 850 + n);
-        widget.history.record_at(&url, "", 1_000_000 - n);
+        widget.history.document_at(&url, "", 1_000_000 - n);
     }
     let newest = history_resource_id("https://850.test/");
     assert!(

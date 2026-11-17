@@ -18,7 +18,7 @@ use collab_types::{ArtifactId, SignedOp};
 
 /// Upper bound on one stored record; a document frame plus envelope is far
 /// below it, so anything larger is corruption.
-const MAX_RECORD_BYTES: u32 = 8 * 1024 * 1024;
+const MAX_DOCUMENT_BYTES: u32 = 8 * 1024 * 1024;
 
 /// History written to its files but not yet synced to disk. The broker
 /// writes history under the lock its channels share, which the compositor's
@@ -109,7 +109,7 @@ impl ArtifactLog {
             let len = u32::from_le_bytes(<[u8; 4]>::try_from(header).unwrap_or([0xff; 4]));
             let start = offset.saturating_add(4);
             let end = start.saturating_add(len as usize);
-            let Some(record) = bytes.get(start..end).filter(|_| len <= MAX_RECORD_BYTES) else {
+            let Some(record) = bytes.get(start..end).filter(|_| len <= MAX_DOCUMENT_BYTES) else {
                 break;
             };
             let op = match postcard::from_bytes::<SignedOp>(record) {
@@ -161,7 +161,7 @@ impl ArtifactLog {
             let encoded = postcard::to_stdvec(op).map_err(std::io::Error::other)?;
             let len = u32::try_from(encoded.len())
                 .ok()
-                .filter(|len| *len <= MAX_RECORD_BYTES)
+                .filter(|len| *len <= MAX_DOCUMENT_BYTES)
                 .ok_or_else(|| std::io::Error::other("history record too large"))?;
             records.extend_from_slice(&len.to_le_bytes());
             let offset = self.end.saturating_add(records.len() as u64);
@@ -216,29 +216,29 @@ pub struct CollabHistoryStore {
     logs: HashMap<ArtifactId, ArtifactLog>,
     /// The `.record` files of the store, read once on first use and kept
     /// with every binding after.
-    records: Option<HashMap<ArtifactId, HeldRecord>>,
+    records: Option<HashMap<ArtifactId, HeldDocument>>,
 }
 
 /// The record an artifact's history is, as its `.record` file says.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct HeldRecord {
+struct HeldDocument {
     workspace: String,
     app_id: String,
-    record_id: String,
+    document_id: String,
 }
 
-impl HeldRecord {
+impl HeldDocument {
     fn encode(&self) -> String {
-        format!("{}\n{}\n{}", self.workspace, self.app_id, self.record_id)
+        format!("{}\n{}\n{}", self.workspace, self.app_id, self.document_id)
     }
 
     fn decode(text: &str) -> Option<Self> {
         let mut lines = text.split('\n');
-        let (workspace, app_id, record_id) = (lines.next()?, lines.next()?, lines.next()?);
+        let (workspace, app_id, document_id) = (lines.next()?, lines.next()?, lines.next()?);
         let held = Self {
             workspace: workspace.to_owned(),
             app_id: app_id.to_owned(),
-            record_id: record_id.to_owned(),
+            document_id: document_id.to_owned(),
         };
         (lines.next().is_none() && !workspace.is_empty() && !app_id.is_empty()).then_some(held)
     }
@@ -353,14 +353,14 @@ impl CollabHistoryStore {
         self.root.join(format!("{}.workspace", artifact.0))
     }
 
-    fn record_path(&self, artifact: ArtifactId) -> PathBuf {
+    fn resource_path(&self, artifact: ArtifactId) -> PathBuf {
         self.root.join(format!("{}.record", artifact.0))
     }
 
     /// The records this store holds history of, read from disk on first
     /// use. A file that does not parse (torn by a crash) names no record,
     /// and the log says which.
-    fn held_records(&mut self) -> &mut HashMap<ArtifactId, HeldRecord> {
+    fn held_documents(&mut self) -> &mut HashMap<ArtifactId, HeldDocument> {
         let root = &self.root;
         self.records.get_or_insert_with(|| {
             let entries = match fs::read_dir(root) {
@@ -398,7 +398,7 @@ impl CollabHistoryStore {
                             return None;
                         }
                     };
-                    let Some(held) = HeldRecord::decode(&text) else {
+                    let Some(held) = HeldDocument::decode(&text) else {
                         unreadable(&"contents are not workspace, app and record lines");
                         return None;
                     };
@@ -408,23 +408,23 @@ impl CollabHistoryStore {
         })
     }
 
-    /// Remember that `artifact`'s history is the record `record_id` of the
+    /// Remember that `artifact`'s history is the record `document_id` of the
     /// app `app_id` in the workspace `cluster_id` ([`Self::bind_workspace`] included),
     /// so a later session still knows the records it holds there
     /// ([`Self::records_in`]). The binding's sync is left to the caller.
-    pub fn bind_record(
+    pub fn bind_document(
         &mut self,
         artifact: ArtifactId,
         cluster_id: &str,
         app_id: &str,
-        record_id: &str,
+        document_id: &str,
     ) -> std::io::Result<Unsynced> {
-        let held = HeldRecord {
+        let held = HeldDocument {
             workspace: cluster_id.to_owned(),
             app_id: app_id.to_owned(),
-            record_id: record_id.to_owned(),
+            document_id: document_id.to_owned(),
         };
-        if self.held_records().get(&artifact) == Some(&held) {
+        if self.held_documents().get(&artifact) == Some(&held) {
             return Ok(Unsynced::default());
         }
         let workspace = self.bind_workspace(artifact, cluster_id)?;
@@ -432,7 +432,7 @@ impl CollabHistoryStore {
             .write(true)
             .create(true)
             .truncate(true)
-            .open(self.record_path(artifact))?;
+            .open(self.resource_path(artifact))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
@@ -441,17 +441,17 @@ impl CollabHistoryStore {
         file.write_all(held.encode().as_bytes())?;
         let mut unsynced = workspace;
         unsynced.defer(&file)?;
-        self.held_records().insert(artifact, held);
+        self.held_documents().insert(artifact, held);
         Ok(unsynced)
     }
 
     /// The records of the app `app_id` in the workspace `cluster_id` this store
     /// holds history of, this session or an earlier one.
     pub fn records_in(&mut self, app_id: &str, cluster_id: &str) -> Vec<String> {
-        self.held_records()
+        self.held_documents()
             .values()
             .filter(|held| held.app_id == app_id && held.workspace == cluster_id)
-            .map(|held| held.record_id.clone())
+            .map(|held| held.document_id.clone())
             .collect()
     }
 
@@ -609,7 +609,7 @@ mod tests {
         for seq in 101..=130 {
             let envelope = signed(&key, artifact, seq, sealed);
             channels
-                .record_history(
+                .document_history(
                     &crate::route::CrdtRoute::record("so.tilo.notes", "workspace-a", "page"),
                     &envelope,
                 )

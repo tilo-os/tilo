@@ -187,7 +187,7 @@ impl Widget for Owner {
     fn sync(&mut self, model: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
         let (doc, root) = crate::doc::document_ref(model, path);
         assert!(
-            crate::record::identity(doc).is_some(),
+            crate::resource::identity(doc).is_some(),
             "original canonical owner admission"
         );
         assert_eq!(
@@ -272,7 +272,7 @@ fn factory(
     _: RestoreInput,
 ) -> Result<AppComponent, crate::launch::LaunchError> {
     context
-        .initialize_new_record(|doc| {
+        .initialize_new_resource(|doc| {
             doc.put(ROOT, "body", "retained body")
                 .map_err(|e| e.to_string())?;
             doc.commit();
@@ -477,7 +477,7 @@ impl Fixture {
         self.frame.close_components();
         let reports = self.frame.take_component_close_reports();
         assert_eq!(reports.len(), 2);
-        assert!(reports.iter().all(|r| r.record_error.is_none()
+        assert!(reports.iter().all(|r| r.resource_error.is_none()
             && r.view_error.is_none()
             && r.teardown_error.is_none()));
     }

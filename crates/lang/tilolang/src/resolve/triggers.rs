@@ -183,7 +183,7 @@ impl Resolver<'_> {
                             sound = false;
                             continue;
                         }
-                        built.push(TriggerArg::Subject);
+                        built.push(TriggerArg::Target);
                     }
                     ast::ExprKind::Root(root) => match self.own_root(root) {
                         Some((key, id)) => {

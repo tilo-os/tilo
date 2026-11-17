@@ -209,12 +209,12 @@ impl RouteKeys {
     }
 
     /// The content secret of the members these keys belong to
-    /// ([`key_group::ContentKeys::record_content_secret`]), while
+    /// ([`key_group::ContentKeys::document_content_secret`]), while
     /// the current epoch's key is held.
     pub(super) fn content_secret(&self) -> Option<tilo_seal::SymmetricKey> {
         match &self.keys {
-            Keys::Content { keys, .. } => keys.record_content_secret().ok(),
-            Keys::Group(group) => group.content_keys().ok()?.record_content_secret().ok(),
+            Keys::Content { keys, .. } => keys.document_content_secret().ok(),
+            Keys::Group(group) => group.content_keys().ok()?.document_content_secret().ok(),
             Keys::Plain | Keys::Unsealable | Keys::Pending(_) => None,
         }
     }

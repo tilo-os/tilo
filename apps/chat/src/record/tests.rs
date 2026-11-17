@@ -279,7 +279,7 @@ tilo_test_env::scenario! {
         .unwrap();
         let state = bo.state().unwrap();
         let report = state.moderation.open_reports().next().unwrap();
-        assert_eq!(report.person, ADA, "a message report names its author");
+        assert_eq!(report.person, MemberId::person(ADA), "a message report names its author");
         assert_eq!(report.item, Some(message.to_string()));
         assert!(
             bo.apply(Chat::REPORT_PERSON.with(chat::ReportPerson {
@@ -295,7 +295,7 @@ tilo_test_env::scenario! {
         }))
         .unwrap();
         assert_eq!(
-            bo.state().unwrap().moderation.open_reports_on(ADA).count(),
+            bo.state().unwrap().moderation.open_reports_on(&MemberId::person(ADA)).count(),
             2
         );
 
@@ -794,7 +794,7 @@ tilo_test_env::scenario! {
                     category: Some(id(under)),
                     kind: None,
                     topic: None,
-                    participants: None,
+                    members: None,
                 }),
             )
             .unwrap();
@@ -1118,10 +1118,10 @@ fn reactors(group: &crate::model::Reaction) -> Vec<String> {
 }
 
 tilo_test_env::scenario! {
-    /// A direct conversation: its name for each participant, who posts to it and its one id.
+    /// A direct conversation: its name for each member, who posts to it and its one id.
     /// Each case was a test of its own, on a fixture of its own; a failure
     /// names the cases that failed.
-    fn a_conversation_is_named_and_shared_by_its_participants;
+    fn a_conversation_is_named_and_shared_by_its_members;
 
     phase a_person_the_workspace_has_no_name_for_goes_by_their_tag;
     {
@@ -1159,10 +1159,10 @@ tilo_test_env::scenario! {
         assert_eq!(row.name, "Ada", "each of them names the other");
     }
 
-    phase a_conversation_is_about_its_participants_not_who_may_read_it;
-    // A conversation's participants say who it is with, not who may use it:
+    phase a_conversation_is_about_its_members_not_who_may_read_it;
+    // A conversation's members say who it is with, not who may use it:
     // every member reads any conversation, and a member who is not one of its
-    // participants posts to it like anyone else.
+    // members posts to it like anyone else.
     {
         const CY: &str = "u_cy";
         let with_bo = Chat::direct_id([MemberId::person(ADA), MemberId::person(BO)]);
@@ -1175,13 +1175,13 @@ tilo_test_env::scenario! {
         let row = rows
             .iter()
             .find(|row| row.text == "in their conversation")
-            .expect("a member who is not a participant posts to the conversation");
+            .expect("someone who is not a member posts to the conversation");
         assert_eq!(row.author, MemberId::person(CY));
         assert_eq!(
             ada.chat
                 .state()
                 .unwrap()
-                .conversation_participants(&with_bo)
+                .conversation_members(&with_bo)
                 .len(),
             2,
             "and the conversation stays Ada's and Bo's"
@@ -1190,7 +1190,7 @@ tilo_test_env::scenario! {
 
     phase two_devices_opening_the_same_conversation_at_once_share_one;
     // Two devices opening the same conversation at once make one: its id names
-    // its participants, so neither has to write it first and neither can make a
+    // its members, so neither has to write it first and neither can make a
     // second.
     {
         let mut ada = Talk::new();
@@ -1214,7 +1214,7 @@ tilo_test_env::scenario! {
             "the conversation is never written first: its id is enough"
         );
         assert_eq!(
-            Chat::direct_participants(&from_ada).map(|participants| participants.len()),
+            Chat::direct_members(&from_ada).map(|members| members.len()),
             Some(2)
         );
     }

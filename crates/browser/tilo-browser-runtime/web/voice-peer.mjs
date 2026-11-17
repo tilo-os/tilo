@@ -84,7 +84,7 @@ export function createPeerVoice({peer, workspace, device = null, createCall = cr
     /** Call `listener(calls)` whenever a listing arrives; returns its removal. */
     onCalls(listener) { callListeners.add(listener); return () => callListeners.delete(listener); },
     /** Ask the host for the workspace's calls: `[{call, epoch, active, allowed,
-     * app, record, channel, participants}]`. */
+     * app, record, channel, members}]`. */
     list() {
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {

@@ -261,7 +261,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// The app's other records, where it keeps one per file (a PDF each): a line and a row for
     /// each, by the path that names it (`pdf-viewer@record:…`) and what it holds. Listing the
     /// app shows the record it acts in; these are the rest, so none of them goes unseen.
-    pub(super) async fn other_records(
+    pub(super) async fn other_resources(
         &self,
         parsed: &ParsedPath,
         resolved: &Resolved,
@@ -277,7 +277,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         for (provider, entry) in &running {
             if entry["app_id"].as_str() != Some(resolved.app_id.as_str())
                 || *provider == resolved.provider
-                || !tilo_actions::remote::is_record_provider(provider)
+                || !tilo_actions::remote::is_resource_provider(provider)
             {
                 continue;
             }

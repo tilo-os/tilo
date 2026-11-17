@@ -169,8 +169,8 @@ tilo_test_env::scenario! {
             ("ush-1-1", "echo hi > a.txt")
         );
         assert_eq!(
-            writes[0].invoker.as_ref().map(|invoker: &tilo_actions::ActionInvoker| invoker.acting.by.key()).as_ref(),
-            Some(&state.person),
+            writes[0].invoker.as_ref().map(|invoker: &tilo_actions::ActionInvoker| invoker.acting.by.clone()),
+            Some(tilo_actions::Actor::Member(tilo_actions::MemberId::person(state.person.clone()))),
             "attributed to the person"
         );
         undo_from_history(&state, &writes[0]);

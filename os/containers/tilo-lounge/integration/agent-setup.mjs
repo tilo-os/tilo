@@ -476,16 +476,22 @@ if (!firstSaid.includes(noteTitle)) await fail(`the first agent no longer reads 
 // note it wrote. The shell draws windows in one canvas, so what a window
 // shows is read from the semantics it publishes, as the other pages do, and
 // the window's own state says when it has presented (or what it says instead).
-const drawnWindow = app => `(() => {
+// A window is named in the status by its tab in hex, and by its tab's own
+// decimal in the navigation's route. It counts as here once its app runs on
+// its record (`landed`), drawn or not: a window on a strip the person is not
+// looking at is not drawn. One that could not open says why, and the wait
+// answers that at once rather than at its deadline.
+const openedWindow = app => `(() => {
   const entries = globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? [];
   const windows = globalThis.tiloMount?.state?.()?.windows ?? {};
   const found = entries.find(entry => entry.app === ${JSON.stringify(app)});
-  // A window is named in the status by its tab in hex, and by its tab's own
-  // decimal in the navigation's route.
-  return !!(found && windows[BigInt(found.route?.tab ?? '0').toString(16)]?.state === 'drawn');
+  const state = found ? windows[BigInt(found.route?.tab ?? '0').toString(16)] : null;
+  if (state?.state === 'could-not-open') return 'could not open: ' + (state.reason ?? '');
+  return state && (state.state === 'landed' || state.state === 'drawn') ? state.state : '';
 })()`;
-await until(first, drawnWindow('so.tilo.notes'),
-  'the person\'s tab showing the Notes window the second agent opened drawn', stepLimit(3));
+const opened = await until(first, openedWindow('so.tilo.notes'),
+  'the person\'s tab showing the Notes window the second agent opened', stepLimit(3));
+if (opened.startsWith('could not open')) await fail(`the Notes window the second agent opened ${opened}`);
 const windowText = `(() => {
   const out = [];
   const node = n => { for (const part of [n.name, n.value]) if (part) out.push(part); (n.children || []).forEach(node); };

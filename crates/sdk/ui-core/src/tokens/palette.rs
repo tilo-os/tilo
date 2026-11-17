@@ -453,7 +453,7 @@ impl Emphasis {
 }
 
 /// The presence palette's usable band: bright enough to read as colour, never so loud
-/// that one participant shouts.
+/// that one member shouts.
 pub const PRESENCE_LIGHTNESS: std::ops::RangeInclusive<f32> = 0.35..=0.90;
 /// See [`PRESENCE_LIGHTNESS`].
 pub const PRESENCE_CHROMA: std::ops::RangeInclusive<f32> = 0.04..=0.20;

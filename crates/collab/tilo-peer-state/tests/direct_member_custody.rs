@@ -511,7 +511,7 @@ async fn an_expired_sealed_write_is_renewed_sent_answered_and_leaves_custody() {
         hosted.member.owed_writes(workspace).unwrap().is_empty(),
         "custody ends empty"
     );
-    let writes = hosted.member.record_writes(workspace)[&(APP.to_owned(), RECORD.to_owned())];
+    let writes = hosted.member.document_writes(workspace)[&(APP.to_owned(), RECORD.to_owned())];
     assert_eq!((writes.pending, writes.refused), (0, 0));
     assert!(writes.durable >= 1, "the renewal is counted durable");
     let device = hosted.member_device();
@@ -532,7 +532,7 @@ async fn an_expired_sealed_write_is_renewed_sent_answered_and_leaves_custody() {
 }
 
 /// The value of the test record as `owner` holds it in `workspace`.
-fn record_value(
+fn document_value(
     owner: &NativeWorkspaceOwner,
     workspace: tilo_desktop_model::WorkspaceId,
 ) -> Option<String> {
@@ -612,12 +612,12 @@ async fn a_cleartext_write_that_waited_past_the_live_window_lands_on_the_host() 
         "custody ends empty"
     );
     assert_eq!(
-        record_value(&hosted.host, workspace).as_deref(),
+        document_value(&hosted.host, workspace).as_deref(),
         Some("written offline"),
         "the host's replica holds the member's edit"
     );
     assert_eq!(
-        record_value(&hosted.member, workspace).as_deref(),
+        document_value(&hosted.member, workspace).as_deref(),
         Some("written offline"),
         "the member's replica keeps its edit"
     );

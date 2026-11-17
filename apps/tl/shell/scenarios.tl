@@ -1635,9 +1635,9 @@ scenario "the frames style's settings" -> Layout {
     a_style_settings("so.tilo.shell:frames")
 }
 
-/// The spaces style's own settings, over the places they change.
-scenario "the spaces style's settings" -> Layout {
-    a_style_settings("so.tilo.shell:spaces")
+/// The frameless style's own settings, over the places they change.
+scenario "the frameless style's settings" -> Layout {
+    a_style_settings("so.tilo.shell:frameless")
 }
 
 /// The desktop style's own settings, over the shell they change.
@@ -1675,10 +1675,10 @@ scenario "a reference lands beside its place" -> Layout {
     a
 }
 
-/// Six places in two clusters on the framed canvas: one space per task, at three zoom levels as
-/// the person looks closer or further out. Each note is its app's editor composed in its frame;
-/// the terminal beside them is a window, shown in its well.
-scenario "a canvas of spaces" -> Layout {
+/// Six places in two clusters on the framed canvas: one cluster per task, at three zoom levels
+/// as the person looks closer or further out. Each note is its app's editor composed in its
+/// frame; the terminal beside them is a window, shown in its well.
+scenario "a canvas of clusters" -> Layout {
     let v = viewing
     v.style = "so.tilo.shell:frames"
     let a = root Layout
@@ -1721,15 +1721,15 @@ scenario "a canvas of spaces" -> Layout {
     a
 }
 
-/// The spaces canvas: the same places with no frame around them, so a resource's view stands as
-/// content and nearness groups it. Each note is its app's editor composed in place; the terminal
-/// beside them is a window, shown in its well.
+/// The frameless canvas: the same places with no frame around them, so a resource's view stands
+/// as content and nearness groups it. Each note is its app's editor composed in place; the
+/// terminal beside them is a window, shown in its well.
 scenario "resources standing as content" -> Layout {
     let v = viewing
-    v.style = "so.tilo.shell:spaces"
+    v.style = "so.tilo.shell:frameless"
     let a = root Layout
     let row = a_workspace(a, "Main")
-    let s = a_strip(a, row, "Spaces", 667)
+    let s = a_strip(a, row, "Frameless", 667)
     let strip = a.strips.find(st -> st.key == s)
     if let held = strip {
         held.canvas_x = 0

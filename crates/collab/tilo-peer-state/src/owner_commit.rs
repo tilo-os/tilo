@@ -27,7 +27,7 @@ pub enum CommitOperation {
         /// The member's own record `record` is, when it is one: the write
         /// carries it on the wire.
         #[serde(default)]
-        own: Option<collab_types::OwnRecord>,
+        own: Option<collab_types::OwnResource>,
     },
     /// Only the broker's redacted `WorkspaceEffectReceipt` encoding belongs here.
     /// Private arguments, results and error messages never cross this boundary.
@@ -301,15 +301,15 @@ pub trait OwnerCommitService: Send + Sync {
     /// record as the writing app named it when joining the record. The kind is
     /// the app's declaration of what it writes, never of a record anyone founds
     /// ahead of the write; the request and its receipt binding never include it.
-    fn commit_with_record_kind(
+    fn commit_with_resource_type(
         &self,
         request: OwnerCommitRequest,
-        record_kind: Option<String>,
+        resource_type: Option<String>,
     ) -> CommitFuture {
-        let _ = record_kind;
+        let _ = resource_type;
         self.commit(request)
     }
-    /// [`Self::commit_with_record_kind`] for a document write one of this
+    /// [`Self::commit_with_resource_type`] for a document write one of this
     /// device's local writers signed before the owner's turn: the write as
     /// the record took it, with its receipt. An owner holding the device's key
     /// signs a write that another writer's later-signed write passed again
@@ -319,9 +319,9 @@ pub trait OwnerCommitService: Send + Sync {
     fn commit_local_document(
         &self,
         request: OwnerCommitRequest,
-        record_kind: Option<String>,
+        resource_type: Option<String>,
     ) -> LocalDocumentFuture {
-        let commit = self.commit_with_record_kind(request.clone(), record_kind);
+        let commit = self.commit_with_resource_type(request.clone(), resource_type);
         Box::pin(async move { Ok((request, commit.await?)) })
     }
     /// Whether the owner can currently accept commits.
@@ -347,7 +347,7 @@ impl OwnerCommitReceipt {
             },
             CommitOperation::Document {
                 app: taken_app,
-                record: taken_record,
+                record: taken_document,
                 envelope: taken,
                 ..
             },
@@ -360,7 +360,7 @@ impl OwnerCommitReceipt {
         resigned.signature = envelope.signature;
         if asked.workspace != committed.workspace
             || app != taken_app
-            || record != taken_record
+            || record != taken_document
             || resigned != **envelope
         {
             return Err("the owner committed another write than the one asked".into());

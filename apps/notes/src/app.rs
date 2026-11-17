@@ -393,7 +393,7 @@ pub struct NotesApp {
     /// rect we never need outside of layout. Tracked locally for
     /// completeness.
     /// Last framework-owned durability projection; querying it never touches the record.
-    record_save_status: ui::record::RecordSaveStatus,
+    resource_save_status: ui::resource::ResourceSaveStatus,
     canonical_assets: Arc<std::sync::RwLock<HashMap<String, Vec<u8>>>>,
     /// Pasted or dropped images made smaller off the frame, to insert.
     shrunk_images: Arc<std::sync::Mutex<Vec<ShrunkImage>>>,
@@ -496,13 +496,13 @@ pub struct NotesApp {
     // The first measured width resolves the saved drawer and Sidebar intent once.
     pending_responsive_view: Option<(bool, bool)>,
     /// Whether the record's changes are on disk, as the framework reports it.
-    save_status: Option<ui::LocalState<ui::record::RecordSaveStatus>>,
+    save_status: Option<ui::LocalState<ui::resource::ResourceSaveStatus>>,
     /// A note to open once the notebook holds it.
     open_when_present: Option<PageId>,
     /// The notes the notebook holds, and the notes a search hit or an agent's
     /// `open` asked to show, shared with the framework's opener.
     opened: Rc<std::cell::RefCell<Opened>>,
-    /// Who the participants are, by name, once hosted: whom the header's
+    /// Who the members are, by name, once hosted: whom the header's
     /// reactions name, and whether anyone else shares the notebook.
     people: Option<ui::framework::People>,
     /// The framework's live notebook the window shows, and what of it the
@@ -797,7 +797,7 @@ impl NotesApp {
             shortcuts_return_to_tree: false,
             main_node: None,
             theme: Theme::dark(),
-            record_save_status: ui::record::RecordSaveStatus::MemoryOnly,
+            resource_save_status: ui::resource::ResourceSaveStatus::MemoryOnly,
             canonical_assets: Arc::new(std::sync::RwLock::new(HashMap::new())),
             shrunk_images: Arc::default(),
             canonical_asset_manifest: ui::tilo_resource::Map::new(),
@@ -894,14 +894,14 @@ impl NotesApp {
         // change. A pointer move, a scroll, a save landing or a key that
         // edited nothing leaves the note and its count where they were.
         let word_count = self.cached_word_count();
-        let save_status = match self.record_save_status {
-            ui::record::RecordSaveStatus::Saved => SaveStatus::Saved,
-            ui::record::RecordSaveStatus::Saving => SaveStatus::Saving,
-            ui::record::RecordSaveStatus::Failed(_) => SaveStatus::Failed,
-            ui::record::RecordSaveStatus::MemoryOnly => SaveStatus::SessionOnly,
+        let save_status = match self.resource_save_status {
+            ui::resource::ResourceSaveStatus::Saved => SaveStatus::Saved,
+            ui::resource::ResourceSaveStatus::Saving => SaveStatus::Saving,
+            ui::resource::ResourceSaveStatus::Failed(_) => SaveStatus::Failed,
+            ui::resource::ResourceSaveStatus::MemoryOnly => SaveStatus::SessionOnly,
         };
-        let save_problem = match &self.record_save_status {
-            ui::record::RecordSaveStatus::Failed(reason) => Some(reason.clone()),
+        let save_problem = match &self.resource_save_status {
+            ui::resource::ResourceSaveStatus::Failed(reason) => Some(reason.clone()),
             _ => None,
         };
         self.status.set_state(StatusBarState {
@@ -1593,7 +1593,7 @@ impl NotesApp {
 
     /// Apply one notebook action through the framework's dispatcher, which
     /// every affordance, the palette and agents share: checked against
-    /// the participant's permissions, applied by the replayable executor,
+    /// the member's permissions, applied by the replayable executor,
     /// attributed, one undo step and named in history.
     fn dispatch(
         &self,
@@ -1657,7 +1657,7 @@ impl NotesApp {
     /// follows from its first sync ([`Self::follow`]).
     pub(crate) fn empty_surface(
         author: &ui::permissions::MemberId,
-        save_status: ui::LocalState<ui::record::RecordSaveStatus>,
+        save_status: ui::LocalState<ui::resource::ResourceSaveStatus>,
     ) -> Self {
         let mut sidebar = PageSidebar::new();
         sidebar.sync_from_workspace(&Workspace::default());
@@ -1670,7 +1670,7 @@ impl NotesApp {
 
     /// Show whether the record's changes are on disk as `status` reports it:
     /// the framework's view of the record writer.
-    pub fn follow_save_status(&mut self, status: ui::LocalState<ui::record::RecordSaveStatus>) {
+    pub fn follow_save_status(&mut self, status: ui::LocalState<ui::resource::ResourceSaveStatus>) {
         self.save_status = Some(status);
     }
 
@@ -1831,7 +1831,7 @@ impl NotesApp {
             .is_none_or(|(live, seen)| *seen == Some((live.revision(), live.loads())))
     }
 
-    /// Name the participants through `people` from now on.
+    /// Name the members through `people` from now on.
     pub(crate) fn attach_people(&mut self, people: ui::framework::People) {
         self.people = Some(people);
     }
@@ -2932,9 +2932,9 @@ impl Widget for NotesApp {
         self.drain_header_requests();
         let (state, path) = ui::doc::document_ref(state, path);
         if let Some(saved) = self.save_status.as_ref().map(ui::LocalState::get)
-            && saved != self.record_save_status
+            && saved != self.resource_save_status
         {
-            self.record_save_status = saved;
+            self.resource_save_status = saved;
             self.refresh_status();
         }
         self.refresh_canonical_assets();
@@ -4390,8 +4390,8 @@ mod tests {
         host.settle();
         host.surface::<NotesApp, _>(|notes| {
             assert!(matches!(
-                notes.record_save_status,
-                ui::record::RecordSaveStatus::Failed(_)
+                notes.resource_save_status,
+                ui::resource::ResourceSaveStatus::Failed(_)
             ));
         })
         .unwrap();
@@ -4440,8 +4440,8 @@ mod tests {
         host.settle();
         host.surface::<NotesApp, _>(|notes| {
             assert_eq!(
-                notes.record_save_status,
-                ui::record::RecordSaveStatus::Saved,
+                notes.resource_save_status,
+                ui::resource::ResourceSaveStatus::Saved,
                 "the real owner must acknowledge the repaired writer"
             );
         })

@@ -130,7 +130,6 @@ pub(crate) enum TrayEffect {
 #[effect(operation = "so.tilo.session.agents")]
 pub(crate) enum AgentsEffect {
     /// End one agent session: its connection closes and its presence leaves the bar.
-    // The person's own: an agent is never offered it, nor asked about it.
     #[effect(label = "session-agents-stop", audience = "people")]
     StopAgent {
         #[param("The agent session, by its key")]

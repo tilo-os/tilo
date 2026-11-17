@@ -58,7 +58,7 @@ fn main() {
         app_id: app.clone(),
         cluster_id: route.cluster_id,
         record: None,
-        record_kind: None,
+        resource_type: None,
         handle: Some("person".to_owned()),
     });
     let _ = manager.poll();

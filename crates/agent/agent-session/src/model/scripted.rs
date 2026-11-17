@@ -164,7 +164,7 @@ impl ScriptedModel {
         if names_app {
             score = score.saturating_add(5);
         }
-        if tilo_agent::surface::opens_record(&descriptor.address).is_some() {
+        if tilo_agent::surface::opens_document(&descriptor.address).is_some() {
             score = score.saturating_add(1);
         }
         if has_quote && wants_text {

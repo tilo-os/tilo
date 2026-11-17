@@ -47,7 +47,7 @@ fn fixture() -> (StatePeer, SigningKey, SystemTime) {
                 .unwrap(),
             documents: vec![SeedDocument {
                 app_id: APP.into(),
-                record_id: String::new(),
+                document_id: String::new(),
                 kind: "chat".into(),
                 bytes: chat.save(),
             }],
@@ -182,7 +182,7 @@ tilo_test_env::scenario! {
                         workspace_changes: seed_workspace(WORKSPACE, &cert, &[cert.clone()]).unwrap(),
                         documents: vec![SeedDocument {
                             app_id: APP.into(),
-                            record_id: String::new(),
+                            document_id: String::new(),
                             kind: "chat".into(),
                             bytes: doc,
                         }],
@@ -480,7 +480,7 @@ fn policy(peer: &StatePeer) -> media::WorkspaceMediaV1 {
             media::CallV1 {
                 binding: media::ChatCallBindingV1 {
                     app_id: APP.into(),
-                    record_id: String::new(),
+                    document_id: String::new(),
                     channel_id: "voice".into(),
                     channel_object: object.to_string(),
                     chat_workspace_id: "home".into(),
@@ -769,7 +769,7 @@ fn members() -> (
             workspace_changes: changes,
             documents: vec![SeedDocument {
                 app_id: APP.into(),
-                record_id: String::new(),
+                document_id: String::new(),
                 kind: "chat".into(),
                 bytes: original.document(APP, "").unwrap(),
             }],

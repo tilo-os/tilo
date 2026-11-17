@@ -768,13 +768,24 @@ async fn history_names_a_minted_keys_agent_by_the_name_it_was_minted_with() {
         .flatten()
         .filter(|version| version["actor"]["by"]["member"]["agent"].is_string())
         .collect();
-    let (red, green, blue) = collab_types::presence::agent_rgb("Jane Doe's agent");
-    let colour = format!("#{red:02x}{green:02x}{blue:02x}");
+    // Each change wears the colour of the agent member that made it, as every surface paints it.
+    let colour = |agent: &str| {
+        let (red, green, blue) = collab_types::presence::identity_rgb(
+            collab_types::presence::PresenceHue::of_member(&collab_types::MemberId::agent(agent)),
+        );
+        format!("#{red:02x}{green:02x}{blue:02x}")
+    };
     assert!(
         !by_agent.is_empty()
             && by_agent.iter().all(|version| {
                 version["actor"]["name"] == "Jane Doe's agent"
-                    && version["actor"]["colour"] == colour.as_str()
+                    && version["actor"]["colour"]
+                        == colour(
+                            version["actor"]["by"]["member"]["agent"]
+                                .as_str()
+                                .unwrap_or(""),
+                        )
+                        .as_str()
             }),
         "{history}"
     );
@@ -978,7 +989,7 @@ async fn a_members_key_posts_a_long_history_into_the_lounges_chat() {
                             category: None,
                             kind: None,
                             topic: None,
-                            participants: None,
+                            members: None,
                         },
                     ),
                 )
@@ -1023,7 +1034,7 @@ async fn a_members_key_posts_a_long_history_into_the_lounges_chat() {
 
     // The chat holds every one of them, as its host keeps it.
     let kept = workspaces
-        .record_history(&lobby, "so.tilo.chat", chat::parts::part(0).route())
+        .document_history(&lobby, "so.tilo.chat", chat::parts::part(0).route())
         .await
         .unwrap()
         .expect("the host keeps the chat's part");

@@ -494,7 +494,7 @@ impl ActionHost for Writer {
                         provider: peer.to_string(),
                         app_id: APP.into(),
                         workspace: "workspace".into(),
-                        record_id: String::new(),
+                        document_id: String::new(),
                         browsable: true,
                     })
                     .collect(),

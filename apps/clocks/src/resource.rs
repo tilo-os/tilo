@@ -131,7 +131,7 @@ impl ResourceApp for ClocksShell {
             ),
             cx.live().clone(),
             cx.mode().is_live(),
-            (cx.record_id().cloned(), cx.opener()),
+            (cx.document_id().cloned(), cx.opener()),
         );
         let store = app.store.clone();
         if let Some(now) = cx.fixture::<ShotNow>() {
@@ -157,7 +157,7 @@ impl ResourceApp for ClocksShell {
         )
     }
 
-    fn launch_record(input: &LaunchInput<'_>) -> Option<ui::record::DocumentId> {
+    fn launch_resource(input: &LaunchInput<'_>) -> Option<ui::resource::DocumentId> {
         crate::native_timers::activation_record(input.arguments().first()?)
     }
 

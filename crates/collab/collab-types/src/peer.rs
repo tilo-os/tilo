@@ -55,7 +55,7 @@ pub enum PeerPresencePayload {
     /// An ephemeral, workspace-scoped relationship cue: the authenticated sender
     /// is following `target`, or has stopped when it is `None`. This is not
     /// a collaboration command and must never be persisted or interpreted as
-    /// permission to control another participant's view.
+    /// permission to control another member's view.
     ///
     /// Appended so new decoders continue to read every older postcard frame;
     /// older peers reject only this optional visual enhancement.

@@ -75,12 +75,19 @@ pub enum RelayError {
     /// The relay refused one of its own workspace operations, saying which
     /// case it was instead of leaving the caller to read it from words.
     RefusedWorkspace(WorkspaceRefusal),
+    /// No host answered with a session, so nothing that can read the
+    /// workspace is online.
+    NoHolder,
 }
 
 impl std::fmt::Display for RelayError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotFound => f.write_str("no such workspace of yours"),
+            Self::NoHolder => f.write_str(
+                "No device that can read this workspace is online. Open Tilo on a device that \
+                 holds it, then try again.",
+            ),
             // What the host refused is kept for the log: the person (or the
             // agent relaying it) reads what they can do about it.
             Self::Refused(reason) => {
@@ -170,7 +177,7 @@ impl Relay {
     ///
     /// # Errors
     /// The relay was not reached or takes no device sessions.
-    pub async fn connect(&self, key: &GrantKey) -> Result<Connection, RelayError> {
+    pub async fn connect(self: &Arc<Self>, key: &GrantKey) -> Result<Connection, RelayError> {
         let info = https::host_info(&self.host)
             .await
             .map_err(|error| RelayError::Unavailable(error.to_string()))?;
@@ -200,6 +207,7 @@ impl Relay {
         let connection = Connection {
             device,
             key: key.clone(),
+            relay: Arc::clone(self),
             host: self.name.clone(),
             entered: Mutex::default(),
             endpoint: tokio::sync::OnceCell::new(),
@@ -451,6 +459,9 @@ impl Relay {
 pub struct Connection {
     pub device: Device,
     pub key: GrantKey,
+    /// The host this session answers on: where the workspace it reaches is
+    /// served, and the one the front door forwarded the call to.
+    relay: Arc<Relay>,
     host: String,
     /// The workspaces it entered or is entering, by id: each joined once,
     /// and left with the session.
@@ -470,6 +481,12 @@ impl Drop for Connection {
 }
 
 impl Connection {
+    /// The host this session answers on.
+    #[must_use]
+    pub fn relay(&self) -> &Arc<Relay> {
+        &self.relay
+    }
+
     /// The grant's endpoint, bound the first time a workspace on one of the
     /// person's devices is entered.
     ///

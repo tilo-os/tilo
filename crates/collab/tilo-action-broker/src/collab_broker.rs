@@ -236,10 +236,10 @@ impl FanoutState {
     }
 
     /// The records local app windows hold, by the window instance the shell
-    /// launched each for; see [`AppBrokerState::window_records`].
-    pub fn window_records(&self) -> Vec<(u64, CrdtRoute)> {
+    /// launched each for; see [`AppBrokerState::window_resources`].
+    pub fn window_resources(&self) -> Vec<(u64, CrdtRoute)> {
         self.app_broker()
-            .map(|state| state.window_records())
+            .map(|state| state.window_resources())
             .unwrap_or_default()
     }
 
@@ -957,12 +957,12 @@ impl BrokerHandle {
         &self,
         app_id: &str,
         cluster_id: &str,
-        record_id: &str,
+        document_id: &str,
         resource: &str,
         action: &str,
     ) -> bool {
         self.fanout.app_broker().is_some_and(|state| {
-            state.has_live_published_action(app_id, cluster_id, record_id, resource, action)
+            state.has_live_published_action(app_id, cluster_id, document_id, resource, action)
         })
     }
 

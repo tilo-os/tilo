@@ -1,10 +1,11 @@
 //! Real certified HTTPS submit/retry and a canonical retained receipt.
 use super::*;
+use tilo_actions::MemberId;
 use tilo_agent_session::ReplicaActor;
 use tilo_session_client::Outbox;
 use ui::feedback::{Destination, Draft, Submission};
 
-async fn create_feedback_record(browser: &mut Browser) -> DocumentRoute {
+async fn create_feedback_document(browser: &mut Browser) -> DocumentRoute {
     let route = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: browser.cluster_id.clone(),
@@ -21,7 +22,7 @@ async fn create_feedback_record(browser: &mut Browser) -> DocumentRoute {
     }
     let source = browser.mount(&route);
     assert_eq!(
-        source.wire_record(),
+        source.wire_document(),
         "",
         "workspace-primary storage ids never cross the wire"
     );
@@ -115,10 +116,10 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
         )
         .await
         .unwrap();
-    let route = create_feedback_record(&mut browser).await;
+    let route = create_feedback_document(&mut browser).await;
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
     let submission = approved(&route);
-    let mut queued = participant(&mut browser, &route, &person);
+    let mut queued = member(&mut browser, &route, &person);
     queued
         .invoke(
             &ActionAddress::new(
@@ -135,8 +136,8 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     browser.peer.close();
     drop(browser);
     browser = Browser::open_workspace(&hosted, &device, &host, &workspace.workspace).await;
-    publish_participant(&mut browser, &route, &mutation);
-    submit_local_participant(&mut browser, &route, &submission, &person);
+    publish_member(&mut browser, &route, &mutation);
+    submit_local_member(&mut browser, &route, &submission, &person);
     assert_signed_canonical(&mut browser, &submission, &host.cert, &device.cert).await;
     let read_address = ActionAddress::new(
         chat::projection::item_id("feedback", &submission.id),
@@ -188,7 +189,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     ));
     assert_one_report(&mut browser, &route, &submission, &person).await;
     assert_local_only_report_is_not_a_receipt(&mut browser, &route, &submission).await;
-    let mut maintainer = participant(&mut browser, &route, &person);
+    let mut maintainer = member(&mut browser, &route, &person);
     maintainer
         .invoke(
             &ActionAddress::new(
@@ -201,7 +202,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
             false,
         )
         .unwrap();
-    publish_participant(
+    publish_member(
         &mut browser,
         &route,
         &maintainer.take_mutation().unwrap().unwrap(),
@@ -300,7 +301,7 @@ async fn the_owner_reviews_a_report_with_its_model_and_asks_nothing_else() {
         .await
         .unwrap();
     let mut browser = Browser::open_workspace(&hosted, &device, &host, &workspace.workspace).await;
-    let route = create_feedback_record(&mut browser).await;
+    let route = create_feedback_document(&mut browser).await;
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
     let submission = approved(&route);
     let prompt = ui::feedback::model_review::prompt([(0, "Thanks Ada, \u{2039}email\u{203A}")]);
@@ -378,7 +379,7 @@ async fn a_commenter_files_through_the_owner_and_cannot_triage() {
         .unwrap();
     let mut owner_browser =
         Browser::open_workspace(&hosted, &owner_device, &host, &workspace.workspace).await;
-    let route = create_feedback_record(&mut owner_browser).await;
+    let route = create_feedback_document(&mut owner_browser).await;
     owner_browser
         .peer
         .barrier()
@@ -567,13 +568,13 @@ async fn assert_local_only_report_is_not_a_receipt(
     );
 }
 
-fn submit_local_participant(
+fn submit_local_member(
     browser: &mut Browser,
     route: &DocumentRoute,
     submission: &Submission,
     person: &str,
 ) {
-    let mut replica = participant(browser, route, person);
+    let mut replica = member(browser, route, person);
     replica
         .invoke(
             &ActionAddress::new(
@@ -587,11 +588,11 @@ fn submit_local_participant(
         )
         .unwrap();
     if let Some(mutation) = replica.take_mutation().unwrap() {
-        publish_participant(browser, route, &mutation);
+        publish_member(browser, route, &mutation);
     }
 }
 
-fn participant(browser: &mut Browser, route: &DocumentRoute, person: &str) -> Replica {
+fn member(browser: &mut Browser, route: &DocumentRoute, person: &str) -> Replica {
     browser.pump();
     let changes = browser
         .documents
@@ -603,17 +604,17 @@ fn participant(browser: &mut Browser, route: &DocumentRoute, person: &str) -> Re
     crate::common::open_in(
         &route.cluster_id,
         &route.app_id,
-        person,
+        &MemberId::person(person),
         ReplicaActor::Owner,
         Seed::Existing {
-            record: ui::record::DocumentId::package_primary(),
+            record: ui::resource::DocumentId::package_primary(),
             changes,
         },
     )
     .unwrap()
 }
 
-fn publish_participant(
+fn publish_member(
     browser: &mut Browser,
     route: &DocumentRoute,
     mutation: &collab_types::DocumentMutation,

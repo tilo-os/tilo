@@ -34,7 +34,7 @@ fn responsive_nav_factory(
     _: RestoreInput,
 ) -> Result<AppComponent, crate::launch::LaunchError> {
     context
-        .initialize_new_record(|_| Ok(()))
+        .initialize_new_resource(|_| Ok(()))
         .map_err(crate::launch::LaunchError::Record)?;
     let root = crate::widget::ModelView::from_document(
         |doc, _| doc.get(ROOT, "setup").unwrap().is_some(),
@@ -66,10 +66,10 @@ fn responsive_nav_factory(
 #[test]
 fn responsive_nav_publication_tracks_layout_model_and_revocation() {
     let mut definition = crate::application_test_support::definition(responsive_nav_factory);
-    definition.workspace_record = true;
+    definition.workspace_resource = true;
     let temp = tempfile::tempdir().unwrap();
     let workspace = uuid::Uuid::new_v4().to_string();
-    let mut owners = crate::record::RecordOwners::new(temp.path().into());
+    let mut owners = crate::resource::ResourceOwners::new(temp.path().into());
     let records = owners.open(definition.app_id(), &workspace).unwrap();
     let views = Rc::new(
         crate::application_view::InstanceViewStore::new(

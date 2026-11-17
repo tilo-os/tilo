@@ -1,6 +1,6 @@
 //! What a peer's window becomes here, and what keeps it that way.
 //!
-//! Asserted against `shared_record::device::fold`, the function every
+//! Asserted against `shared_resource::device::fold`, the function every
 //! device folds its workspace's layout record with, rather than against a
 //! helper written to agree with it.
 
@@ -12,7 +12,7 @@
 
 use automerge::AutoCommit;
 use tilo_desktop_model::ownership::SharedDesktop;
-use tilo_desktop_model::shared_record::{self, device};
+use tilo_desktop_model::shared_resource::{self, device};
 use tilo_desktop_model::{
     AppKind, Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId,
@@ -59,7 +59,7 @@ fn workspace(identity: WorkspaceId, tab: Tab) -> Workspace {
 fn record(identity: WorkspaceId, tab: Tab) -> AutoCommit {
     let workspace = workspace(identity, tab);
     let mut doc = AutoCommit::new();
-    shared_record::write(
+    shared_resource::write(
         &mut doc,
         &SharedDesktop {
             tree: Layout {

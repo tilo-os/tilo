@@ -36,7 +36,7 @@ fn unadmitted(peer: &Link) -> usize {
 
 /// An edit published before the page holds its route's keys waits for
 /// them; a barrier called meanwhile waits with it until the host has made it
-/// durable, however late a participant admits the page.
+/// durable, however late a member admits the page.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_barrier_covers_an_edit_held_for_the_workspaces_replay() {
     let (root, _) = UserIdentity::generate("Ada", 1);
@@ -73,7 +73,7 @@ async fn a_barrier_covers_an_edit_held_for_the_workspaces_replay() {
         .health
         .records
         .into_iter()
-        .find(|record| record.record.record_id == route().record)
+        .find(|record| record.record.document_id == route().record)
         .map_or(0, |note| note.outgoing.durable_operations);
     assert_eq!(
         durable, 1,

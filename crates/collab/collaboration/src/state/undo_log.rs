@@ -372,7 +372,8 @@ impl UndoLog {
             || reach.device.wrote(&version.actor)
             || (self.any_device
                 && author.is_some_and(|author| {
-                    authors::actor_handle(&version.actor).is_some_and(|actor| actor == author.key())
+                    authors::actor_handle(&version.actor)
+                        .is_some_and(|actor| actor.as_bytes() == author.actor_bytes())
                 }));
         by && instance
             .is_none_or(|instance| presented.is_none_or(|step| step.instance_id == Some(instance)))

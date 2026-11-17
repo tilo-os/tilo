@@ -1,4 +1,4 @@
-//! The device key a participant signs its governance frames with: a
+//! The device key a key holder signs its governance frames with: a
 //! [`DeviceSigner`], so a browser's `WebCrypto` key works as well as a native
 //! `SigningKey`.
 

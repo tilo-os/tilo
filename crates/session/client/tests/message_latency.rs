@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use automerge::AutoCommit;
 use collab_types::DocumentMutation;
 use tilo_desktop_model::layout::{Strip, Tab, TileContent, WindowGroup};
-use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, SharedDesktop};
+use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT, SharedDesktop};
 use tilo_desktop_model::{StripId, WindowWidth, Workspace};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_session_client::{Cmd, Link, Outbox};
@@ -251,15 +251,15 @@ fn layout() -> DocumentRoute {
     DocumentRoute {
         app_id: DESKTOP_APP.into(),
         cluster_id: crate::support::WORKSPACE.into(),
-        record: DESKTOP_RECORD.into(),
+        record: DESKTOP_DOCUMENT.into(),
     }
 }
 
 /// The layout `peer` holds of the workspace as its model reads it, when it holds
 /// the record at all.
 fn layout_of(peer: &Link) -> SharedDesktop {
-    crate::support::record_of(peer, &layout())
-        .and_then(|doc| tilo_desktop_model::shared_record::read(&doc, None))
+    crate::support::resource_of(peer, &layout())
+        .and_then(|doc| tilo_desktop_model::shared_resource::read(&doc, None))
         .unwrap_or_default()
 }
 
@@ -291,10 +291,10 @@ fn window_opened(
     label: &str,
     (window, tab): (u64, u64),
 ) -> DocumentMutation {
-    let mut doc = crate::support::record_of(peer, &layout()).unwrap_or_default();
+    let mut doc = crate::support::resource_of(peer, &layout()).unwrap_or_default();
     doc.set_actor(automerge::ActorId::from(person.as_bytes().to_vec()));
     let heads = doc.get_heads();
-    let mut layout = tilo_desktop_model::shared_record::read(&doc, None).unwrap_or_default();
+    let mut layout = tilo_desktop_model::shared_resource::read(&doc, None).unwrap_or_default();
     let identity = tilo_desktop_model::WorkspaceId::parse(crate::support::WORKSPACE).unwrap();
     if !layout
         .tree
@@ -340,8 +340,8 @@ fn window_opened(
         focus_history: Vec::new(),
     });
     layout.authors.insert(tab, person.to_owned());
-    tilo_desktop_model::shared_record::write(&mut doc, &layout).expect("the layout is writable");
-    tilo_desktop_model::shared_record::commit_change(
+    tilo_desktop_model::shared_resource::write(&mut doc, &layout).expect("the layout is writable");
+    tilo_desktop_model::shared_resource::commit_change(
         &mut doc,
         person,
         tilo_clock::unix_now_ms_i64(),

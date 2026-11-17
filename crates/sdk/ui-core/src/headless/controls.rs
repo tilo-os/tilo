@@ -165,7 +165,8 @@ impl FrameHarness {
     /// The exact retained control locus for a semantic action, if uniquely available.
     pub fn semantic_locus(&self, interaction: &tilo_actions::SemanticInteraction) -> Option<Rect> {
         if !interaction.actor.is_person()
-            && let Some((_, rect)) = self.text_locus(&interaction.actor.by.key())
+            && let Some(member) = interaction.actor.by.member_id()
+            && let Some((_, rect)) = self.text_locus(member)
         {
             return Some(rect);
         }
@@ -175,9 +176,11 @@ impl FrameHarness {
 
     /// Where this frame shows `actor`'s caret or selection in text: the widget that draws it and its
     /// box, when a text widget here reports it.
-    fn text_locus(&self, actor: &str) -> Option<(*const dyn Widget, Rect)> {
-        let actor = crate::permissions::MemberId::parse(actor)?;
-        let (key, range) = crate::presence::capability::actor_text_range(&self.presence, &actor)?;
+    fn text_locus(
+        &self,
+        actor: &crate::permissions::MemberId,
+    ) -> Option<(*const dyn Widget, Rect)> {
+        let (key, range) = crate::presence::capability::actor_text_range(&self.presence, actor)?;
         crate::presence::capability::range_locus(self.root.as_ref(), &self.theme, key, range)
     }
 
@@ -190,12 +193,16 @@ impl FrameHarness {
     /// follower can look around until the next one. Answers whether the view
     /// went there.
     /// which invalidates; a frame where it finds nothing new changes nothing.
-    pub fn follow_view(&mut self, actor: &str, followed: &mut FollowedView) -> bool {
+    pub fn follow_view(
+        &mut self,
+        actor: &crate::permissions::MemberId,
+        followed: &mut FollowedView,
+    ) -> bool {
         let Some(interaction) = self
             .presence
             .agent_marker_interactions(crate::time::now())
             .into_iter()
-            .find(|interaction| interaction.actor.by.key() == actor)
+            .find(|interaction| interaction.actor.by.member_id() == Some(actor))
         else {
             return false;
         };
@@ -1272,21 +1279,25 @@ mod locus_tests {
         let view = Rect::new(0.0, 0.0, 400.0, 240.0);
         let edit = frame.semantic_locus(&event).expect("the edit's control");
         assert!(edit.y0 > view.y1, "the edit starts out of view: {edit:?}");
-        assert!(!frame.follow_view("someone-else", &mut FollowedView::default()));
+        assert!(!frame.follow_view(
+            &crate::permissions::MemberId::person("someone-else"),
+            &mut FollowedView::default()
+        ));
         assert_eq!(
             frame.semantic_locus(&event),
             Some(edit),
             "not following moves nothing"
         );
         let mut followed = FollowedView::default();
-        assert!(frame.follow_view("agent:scribe", &mut followed));
+        let scribe = crate::permissions::MemberId::agent("scribe");
+        assert!(frame.follow_view(&scribe, &mut followed));
         let edit = frame.semantic_locus(&event).expect("the edit's control");
         assert!(
             view.contains(edit.origin()) && edit.y1 <= view.y1,
             "in view: {edit:?}"
         );
         assert!(
-            !frame.follow_view("agent:scribe", &mut followed),
+            !frame.follow_view(&scribe, &mut followed),
             "each action is gone to once"
         );
     }
@@ -1307,11 +1318,15 @@ mod locus_tests {
         frame.relayout();
         agent_acting(&mut frame, "sheet:root");
         let mut followed = FollowedView::default();
-        assert!(!frame.follow_view("someone-else", &mut FollowedView::default()));
+        assert!(!frame.follow_view(
+            &crate::permissions::MemberId::person("someone-else"),
+            &mut FollowedView::default()
+        ));
         assert_eq!(opened.get(), 0, "not following switches nothing");
-        assert!(frame.follow_view("agent:scribe", &mut followed));
+        let scribe = crate::permissions::MemberId::agent("scribe");
+        assert!(frame.follow_view(&scribe, &mut followed));
         assert_eq!(opened.get(), 1, "the sheet's view opened");
-        assert!(!frame.follow_view("agent:scribe", &mut followed));
+        assert!(!frame.follow_view(&scribe, &mut followed));
         assert_eq!(opened.get(), 1, "opened once");
     }
 
@@ -1360,14 +1375,18 @@ mod locus_tests {
             edit.height() < 40.0,
             "the cursor is on the line, not the whole note: {edit:?}"
         );
-        assert!(!frame.follow_view("someone-else", &mut FollowedView::default()));
+        assert!(!frame.follow_view(
+            &crate::permissions::MemberId::person("someone-else"),
+            &mut FollowedView::default()
+        ));
         assert_eq!(
             frame.semantic_locus(&event),
             Some(edit),
             "not following moves nothing"
         );
         let mut followed = FollowedView::default();
-        assert!(frame.follow_view("agent:scribe", &mut followed));
+        let scribe = crate::permissions::MemberId::agent("scribe");
+        assert!(frame.follow_view(&scribe, &mut followed));
         let shown = frame
             .semantic_locus(&event)
             .expect("the agent's place in view");
@@ -1376,7 +1395,7 @@ mod locus_tests {
             "the words it wrote are in view: {shown:?}"
         );
         assert!(
-            !frame.follow_view("agent:scribe", &mut followed),
+            !frame.follow_view(&scribe, &mut followed),
             "each action is gone to once"
         );
     }
@@ -1399,7 +1418,10 @@ mod locus_tests {
         let mut followed = FollowedView::default();
         let mut moved = 0;
         for _ in 0..60 {
-            moved += usize::from(frame.follow_view("agent:scribe", &mut followed));
+            moved += usize::from(frame.follow_view(
+                &crate::permissions::MemberId::agent("scribe"),
+                &mut followed,
+            ));
             frame.relayout();
         }
         assert_eq!(moved, 1, "the view goes to the words once");

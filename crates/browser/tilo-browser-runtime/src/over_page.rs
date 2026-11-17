@@ -71,8 +71,12 @@ type MakeInvite = fn(
     &Wake,
 ) -> Box<dyn PageSheet>;
 
-type MakeWorkspaceSettings =
-    fn(crate::desktop::Shared, tilo_desktop::here::Here, Option<u32>) -> Box<dyn PageSheet>;
+type MakeWorkspaceSettings = fn(
+    crate::desktop::Shared,
+    tilo_desktop::here::Here,
+    Option<u32>,
+    Option<crate::workspace_settings::PageRecords>,
+) -> Box<dyn PageSheet>;
 
 type Wake = std::sync::Arc<dyn Fn() + Send + Sync>;
 
@@ -137,9 +141,15 @@ impl LazySheet {
         shared: crate::desktop::Shared,
         here: tilo_desktop::here::Here,
         peer: Option<u32>,
+        records: Option<crate::workspace_settings::PageRecords>,
     ) -> Self {
         Self::new(Box::new(move |code| {
-            (code.workspace_settings)(shared.clone(), std::rc::Rc::clone(&here), peer)
+            (code.workspace_settings)(
+                shared.clone(),
+                std::rc::Rc::clone(&here),
+                peer,
+                records.clone(),
+            )
         }))
     }
 

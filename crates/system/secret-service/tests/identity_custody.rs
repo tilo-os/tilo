@@ -313,7 +313,7 @@ fn identity_keys_prefer_the_secret_service_and_fall_back_truthfully_without_losi
     bus.stop_service();
     bus.start_service("device-b");
     assert!(bus.status().starts_with("locked"), "{}", bus.status());
-    let record_before = std::fs::read(&keyring).unwrap();
+    let resource_before = std::fs::read(&keyring).unwrap();
     let sealed_before = std::fs::read(&vault).unwrap();
     // App launch needs only public metadata; custody must still refuse the
     // identity host's attempt to retrieve the locked signing key.
@@ -341,7 +341,7 @@ fn identity_keys_prefer_the_secret_service_and_fall_back_truthfully_without_losi
     assert_eq!(protection(&identities, "locked"), KeyProtection::BrokerFile);
     assert_record_names(&locked, "broker-file-v1", 3);
     assert_private_key_file(&identities, 3);
-    assert_eq!(std::fs::read(&keyring).unwrap(), record_before);
+    assert_eq!(std::fs::read(&keyring).unwrap(), resource_before);
     assert_eq!(
         protection(&identities, "keyring"),
         KeyProtection::SecretService
@@ -360,7 +360,7 @@ fn identity_keys_prefer_the_secret_service_and_fall_back_truthfully_without_losi
 
     // 6. A damaged record fails loading by name and is never re-keyed.
     let truncated = identities.join("truncated.json");
-    let prefix = record_before.get(..record_before.len() / 2).unwrap();
+    let prefix = resource_before.get(..resource_before.len() / 2).unwrap();
     std::fs::write(&truncated, prefix).unwrap();
     std::fs::set_permissions(&truncated, std::fs::Permissions::from_mode(0o600)).unwrap();
     let Err(error) = runtime_identity::load_metadata_for_launch(&truncated) else {

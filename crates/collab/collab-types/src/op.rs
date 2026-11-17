@@ -202,12 +202,12 @@ impl DocumentMutation {
 /// Length-prefixing prevents ambiguous concatenations; domain separation keeps
 /// these ids distinct from user-minted UUIDs and other derived identifiers.
 #[must_use]
-pub fn document_artifact_id(app_id: &str, workspace_id: &str, record_id: &str) -> ArtifactId {
+pub fn document_artifact_id(app_id: &str, workspace_id: &str, document_id: &str) -> ArtifactId {
     ArtifactId(derived_document_uuid(
         DOCUMENT_ARTIFACT_DOMAIN,
         app_id,
         workspace_id,
-        record_id,
+        document_id,
     ))
 }
 
@@ -215,10 +215,10 @@ pub fn document_artifact_id(app_id: &str, workspace_id: &str, record_id: &str) -
 /// key seals it for this kind, sequence and record only, so a frame cannot
 /// be replayed under another sequence, record or kind.
 #[must_use]
-pub fn live_artifact_id(record_digest: &[u8; 32], kind: u8, seq: u64) -> ArtifactId {
+pub fn live_artifact_id(resource_digest: &[u8; 32], kind: u8, seq: u64) -> ArtifactId {
     let mut hash = Sha256::new();
     hash.update(LIVE_ARTIFACT_DOMAIN);
-    hash.update(record_digest);
+    hash.update(resource_digest);
     hash.update([kind]);
     hash.update(seq.to_le_bytes());
     let digest = hash.finalize();
@@ -270,12 +270,16 @@ pub fn next_unordered_document_sequence(now: SystemTime) -> u64 {
 /// record, so it stays stable across edits and scrollback or audit entries
 /// never mint arbitrary ids per op.
 #[must_use]
-pub fn document_attestation_id(app_id: &str, workspace_id: &str, record_id: &str) -> AttestationId {
+pub fn document_attestation_id(
+    app_id: &str,
+    workspace_id: &str,
+    document_id: &str,
+) -> AttestationId {
     AttestationId(derived_document_uuid(
         DOCUMENT_ATTESTATION_DOMAIN,
         app_id,
         workspace_id,
-        record_id,
+        document_id,
     ))
 }
 
@@ -316,11 +320,11 @@ pub enum WholeDocumentPayload {
 pub fn validate_document_payload_route(
     app_id: &str,
     workspace_id: &str,
-    record_id: &str,
+    document_id: &str,
     op: &SignedOp,
 ) -> Result<RoutedDocumentPayload, DocumentMutationError> {
-    if op.artifact != document_artifact_id(app_id, workspace_id, record_id)
-        || op.attestation_id != document_attestation_id(app_id, workspace_id, record_id)
+    if op.artifact != document_artifact_id(app_id, workspace_id, document_id)
+        || op.attestation_id != document_attestation_id(app_id, workspace_id, document_id)
     {
         return Err(DocumentMutationError::RouteMismatch);
     }
@@ -337,7 +341,7 @@ pub fn validate_document_payload_route(
     {
         return Ok(RoutedDocumentPayload::CleartextSegment(segment));
     }
-    match validate_whole_document_payload_route(app_id, workspace_id, record_id, op)? {
+    match validate_whole_document_payload_route(app_id, workspace_id, document_id, op)? {
         WholeDocumentPayload::Cleartext(mutation) => Ok(RoutedDocumentPayload::Cleartext(mutation)),
         WholeDocumentPayload::Encrypted { epoch } => Ok(RoutedDocumentPayload::Encrypted { epoch }),
     }
@@ -354,11 +358,11 @@ pub fn validate_document_payload_route(
 pub fn validate_whole_document_payload_route(
     app_id: &str,
     workspace_id: &str,
-    record_id: &str,
+    document_id: &str,
     op: &SignedOp,
 ) -> Result<WholeDocumentPayload, DocumentMutationError> {
-    if op.artifact != document_artifact_id(app_id, workspace_id, record_id)
-        || op.attestation_id != document_attestation_id(app_id, workspace_id, record_id)
+    if op.artifact != document_artifact_id(app_id, workspace_id, document_id)
+        || op.attestation_id != document_attestation_id(app_id, workspace_id, document_id)
     {
         return Err(DocumentMutationError::RouteMismatch);
     }
@@ -389,9 +393,9 @@ fn derived_document_uuid(
     domain: &[u8],
     app_id: &str,
     workspace_id: &str,
-    record_id: &str,
+    document_id: &str,
 ) -> uuid::Uuid {
-    derived_uuid(domain, &[app_id, workspace_id, record_id])
+    derived_uuid(domain, &[app_id, workspace_id, document_id])
 }
 
 /// The domain-separated id derived from `parts`: length-prefixed, so no two
@@ -722,7 +726,7 @@ impl SignedOp {
     /// one instead of a cleartext genesis a member, who reads only what the
     /// workspace's keys seal, could never account for.
     #[must_use]
-    pub fn is_whole_record(&self) -> bool {
+    pub fn is_whole_resource(&self) -> bool {
         self.kind == OpKind::Compaction
             || self.encryption.and_then(|metadata| metadata.retention())
                 == Some(ContentRetention::Checkpoint)

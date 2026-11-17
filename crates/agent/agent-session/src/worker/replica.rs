@@ -10,7 +10,7 @@ use tilo_actions::api::{ActionAddress, ActionDescriptor, ApiError};
 use tilo_automerge_isolate::{Applied, Dependencies};
 use tilo_content::ContentStore;
 use tilo_relay_protocol::live::LiveAnchor;
-use ui::record::DocumentId;
+use ui::resource::DocumentId;
 
 use super::process::{Lease, Stopped};
 use super::proto::{MAX_CONTENT_ITEM_BYTES, Mode, Reply, Request};
@@ -54,7 +54,7 @@ const MOST_SCANNED_VALUES: usize = 1 << 20;
 pub struct ConfinedReplica {
     app_id: String,
     workspace: String,
-    participant: String,
+    member: tilo_actions::MemberId,
     /// JSON [`ReplicaActor`], sent again to a revived worker.
     actor: String,
     record: DocumentId,
@@ -71,7 +71,7 @@ struct Inner {
     fresh: bool,
     /// An operation ran since the last take; the worker may hold changes.
     dirty: bool,
-    /// This participant's changes taken and put back ([`ConfinedReplica::put_back`]):
+    /// This member's changes taken and put back ([`ConfinedReplica::put_back`]):
     /// the next take returns them first.
     kept: Vec<u8>,
     /// The records the app keeps beside this one that are held with it
@@ -84,7 +84,7 @@ struct Inner {
     /// The record's store asks its workspace's hosts for what it lacks
     /// ([`ConfinedReplica::ask_workspace_for_missing`]), and the records they
     /// answered they hold none of: told again to a worker that replaces it.
-    asks_workspace: Option<BTreeMap<String, ui::record::WorkspaceAnswer>>,
+    asks_workspace: Option<BTreeMap<String, ui::resource::WorkspaceAnswer>>,
 }
 
 impl Inner {
@@ -133,13 +133,13 @@ fn changes_since(document: &mut AutoCommit, held: &mut AutoCommit) -> Option<Vec
 }
 
 impl ConfinedReplica {
-    /// Hold a record of `app_id` in `workspace` as `participant`, in a new
+    /// Hold a record of `app_id` in `workspace` as `member`, in a new
     /// confined worker: [`crate::Replica::open`].
     pub fn open(
         catalogue: &AppCatalogue,
         app_id: &str,
         workspace: &str,
-        participant: &str,
+        member: &tilo_actions::MemberId,
         actor: &ReplicaActor,
         seed: Seed,
     ) -> Result<Self, AppError> {
@@ -168,13 +168,13 @@ impl ConfinedReplica {
             .call(&Request::Open {
                 app_id: definition.app_id().to_owned(),
                 workspace: workspace.to_owned(),
-                participant: participant.to_owned(),
+                member: member.clone(),
                 actor: actor.clone(),
                 seed,
             })
             .map_err(|stopped| worker_error(stopped.to_string()))?;
         let record = match reply {
-            Reply::Opened { record } => super::serve::parse_record(&record)
+            Reply::Opened { record } => super::serve::parse_document(&record)
                 .filter(|record| expected.as_deref().is_none_or(|id| id == record.as_str()))
                 .ok_or_else(|| worker_error("the worker named another record"))?,
             Reply::Failed(reason) => return Err(open_error(&reason, app_id)),
@@ -183,7 +183,7 @@ impl ConfinedReplica {
         let replica = Self {
             app_id: definition.app_id().to_owned(),
             workspace: workspace.to_owned(),
-            participant: participant.to_owned(),
+            member: member.clone(),
             actor,
             record,
             content: None,
@@ -239,14 +239,14 @@ impl ConfinedReplica {
             .is_ok_and(|actor| matches!(actor, ReplicaActor::Agent))
     }
 
-    /// Collaboration route of this record: [`crate::Replica::wire_record`].
+    /// Collaboration route of this record: [`crate::Replica::wire_document`].
     #[must_use]
-    pub fn wire_record(&self) -> &str {
+    pub fn wire_document(&self) -> &str {
         self.record.route()
     }
 
     #[must_use]
-    pub const fn record_id(&self) -> &DocumentId {
+    pub const fn document_id(&self) -> &DocumentId {
         &self.record
     }
 
@@ -311,7 +311,7 @@ impl ConfinedReplica {
             .call(&Request::Open {
                 app_id: self.app_id.clone(),
                 workspace: self.workspace.clone(),
-                participant: self.participant.clone(),
+                member: self.member.clone(),
                 actor: self.actor.clone(),
                 seed: Some((self.record.as_str().to_owned(), vec![inner.mirror.save()])),
             })
@@ -322,7 +322,7 @@ impl ConfinedReplica {
                 // the mirrors hold them.
                 for (record, mirror) in &mut inner.beside {
                     match process
-                        .call(&Request::ApplyRecord {
+                        .call(&Request::ApplyDocument {
                             record: record.as_str().to_owned(),
                             snapshot: true,
                             bytes: mirror.save(),
@@ -387,14 +387,14 @@ impl ConfinedReplica {
     }
 
     /// What the record's store asks its workspace's hosts for:
-    /// [`crate::Replica::wanted_records`]. Empty when the worker cannot answer.
+    /// [`crate::Replica::wanted_resources`]. Empty when the worker cannot answer.
     #[must_use]
-    pub fn wanted_records(&self) -> Vec<DocumentId> {
+    pub fn wanted_resources(&self) -> Vec<DocumentId> {
         let reply = self.call(&mut self.lock(), &Request::Wanted);
         match reply {
             Ok(Reply::Wanted(records)) => records
                 .iter()
-                .filter_map(|record| super::serve::parse_record(record))
+                .filter_map(|record| super::serve::parse_document(record))
                 .collect(),
             _ => Vec::new(),
         }
@@ -409,7 +409,7 @@ impl ConfinedReplica {
     pub fn workspace_answered(
         &self,
         record: &DocumentId,
-        answer: ui::record::WorkspaceAnswer,
+        answer: ui::resource::WorkspaceAnswer,
     ) -> Result<(), AppError> {
         let mut inner = self.lock();
         if let Some(answered) = &mut inner.asks_workspace {
@@ -436,7 +436,7 @@ impl ConfinedReplica {
         }
     }
 
-    /// Every document operation the participant may perform now:
+    /// Every document operation the member may perform now:
     /// [`crate::Replica::survey`]. Empty when the worker cannot answer.
     #[must_use]
     pub fn survey(&self) -> Vec<ActionDescriptor> {
@@ -495,7 +495,7 @@ impl ConfinedReplica {
     /// now, or `None` when it holds none of it.
     pub fn changed_keys(
         &self,
-        record: &ui::record::DocumentId,
+        record: &ui::resource::DocumentId,
         mutation: &DocumentMutation,
     ) -> Option<Result<Vec<Vec<String>>, String>> {
         let (snapshot, bytes) = match mutation {
@@ -780,7 +780,7 @@ impl ConfinedReplica {
     /// Before an effect or view runs, put into the worker the content the
     /// record's document refers to that the workspace has and the worker does
     /// not hold: what an effect reads of the record (an export's pictures)
-    /// may have been placed by another participant, in another worker.
+    /// may have been placed by another member, in another worker.
     /// Document operations take nothing more than they name. Bounded by
     /// [`REFERENCED_CONTENT_ITEMS`] and [`REFERENCED_CONTENT_BYTES`]; what
     /// is left out is logged.
@@ -901,7 +901,7 @@ impl ConfinedReplica {
         read(self.lock().mirror.document())
     }
 
-    /// This participant's changes since the last call, or `None`:
+    /// This member's changes since the last call, or `None`:
     /// [`crate::Replica::take_mutation`]. The first call on a new record
     /// returns the whole document.
     ///
@@ -964,7 +964,7 @@ impl ConfinedReplica {
             }
             Reply::Mutation(Some((false, bytes))) => {
                 // What must be in the record is the worker's own change, not
-                // every change of the record: another participant's change
+                // every change of the record: another member's change
                 // that arrived before what it builds on waits in the mirror's
                 // queue, and is no reason to refuse this one. When the bytes
                 // name no single change of their own — a document, a bundle —
@@ -1008,7 +1008,7 @@ impl ConfinedReplica {
         }
     }
 
-    /// Merge another participant's durable change: [`crate::Replica::apply`].
+    /// Merge another member's durable change: [`crate::Replica::apply`].
     ///
     /// # Errors
     ///
@@ -1064,15 +1064,15 @@ impl ConfinedReplica {
         result
     }
 
-    /// Merge another participant's durable change into `record`: this
+    /// Merge another member's durable change into `record`: this
     /// one ([`Self::apply`]), or one its app keeps beside it, a part of its
-    /// chain ([`crate::Replica::apply_record`]), mirrored here as this one
+    /// chain ([`crate::Replica::apply_document`]), mirrored here as this one
     /// is. A change to a part not held yet waits for its whole document.
     ///
     /// # Errors
     ///
     /// As [`Self::apply`]; a record that is no part of a chain is refused.
-    pub fn apply_record(
+    pub fn apply_document(
         &self,
         record: &DocumentId,
         mutation: &DocumentMutation,
@@ -1117,7 +1117,7 @@ impl ConfinedReplica {
         };
         let reply = self.call(
             &mut inner,
-            &Request::ApplyRecord {
+            &Request::ApplyDocument {
                 record: record.as_str().to_owned(),
                 snapshot,
                 bytes: bytes.clone(),
@@ -1144,21 +1144,21 @@ impl ConfinedReplica {
         result
     }
 
-    /// This participant's changes to the records held beside this one since
+    /// This member's changes to the records held beside this one since
     /// the last call, by record, admitted here first:
-    /// [`crate::Replica::take_record_mutations`]. A part the worker started
+    /// [`crate::Replica::take_document_mutations`]. A part the worker started
     /// comes whole; it must be a part of a chain not held here yet.
     ///
     /// # Errors
     ///
     /// As [`Self::take_mutation`].
-    pub fn take_record_mutations(&self) -> Result<Vec<(DocumentId, DocumentMutation)>, AppError> {
+    pub fn take_document_mutations(&self) -> Result<Vec<(DocumentId, DocumentMutation)>, AppError> {
         let mut inner = self.lock();
         if !std::mem::take(&mut inner.beside_dirty) {
             return Ok(Vec::new());
         }
-        let taken = match self.call(&mut inner, &Request::TakeRecordMutations)? {
-            Reply::RecordMutations(taken) => taken,
+        let taken = match self.call(&mut inner, &Request::TakeDocumentMutations)? {
+            Reply::DocumentMutations(taken) => taken,
             Reply::Failed(reason) => {
                 // The worker kept its changes: they are asked for again.
                 inner.beside_dirty = true;
@@ -1220,15 +1220,15 @@ impl ConfinedReplica {
         }
     }
 
-    /// The records held beside this one ([`Self::apply_record`]), by id.
+    /// The records held beside this one ([`Self::apply_document`]), by id.
     #[must_use]
-    pub fn records_beside(&self) -> Vec<DocumentId> {
+    pub fn resources_beside(&self) -> Vec<DocumentId> {
         self.lock().beside.keys().cloned().collect()
     }
 
     /// Read `record` as the supervisor holds it: this one, or one held
     /// beside it. `None` for a record not held here.
-    pub fn read_record<R>(
+    pub fn read_resource<R>(
         &self,
         record: &DocumentId,
         read: impl FnOnce(&AutoCommit) -> R,
@@ -1240,8 +1240,8 @@ impl ConfinedReplica {
         inner.beside.get(record).map(read)
     }
 
-    /// [`Self::read_record`] through the record's history.
-    pub fn read_record_history<R>(
+    /// [`Self::read_resource`] through the record's history.
+    pub fn read_document_history<R>(
         &self,
         record: &DocumentId,
         read: impl FnOnce(&automerge::Automerge) -> R,
@@ -1454,7 +1454,7 @@ mod tests {
             &AppCatalogue::native(),
             "so.tilo.notes",
             WORKSPACE,
-            "maker",
+            &tilo_actions::MemberId::person("maker"),
             &ReplicaActor::Agent,
             Seed::New,
         )
@@ -1469,9 +1469,9 @@ mod tests {
         replica
     }
 
-    /// Two changes of another participant's on `replica`'s record, the second
+    /// Two changes of another member's on `replica`'s record, the second
     /// building on the first, each on its own: what arrives out of order.
-    fn another_participants_two_changes(replica: &ConfinedReplica) -> (Vec<u8>, Vec<u8>) {
+    fn another_members_two_changes(replica: &ConfinedReplica) -> (Vec<u8>, Vec<u8>) {
         let saved = replica.lock().mirror.save();
         let mut doc = tilo_automerge_isolate::load(&saved).unwrap();
         doc.set_actor(automerge::ActorId::random());
@@ -1499,12 +1499,12 @@ mod tests {
     }
 
     /// A change of the worker's own that waits for a dependency is not
-    /// published as if it were whole, and one of another participant's that
+    /// published as if it were whole, and one of another member's that
     /// waits is no reason to refuse it.
     #[test]
     fn the_workers_change_is_published_though_anothers_waits_for_what_it_builds_on() {
         let replica = begun();
-        let (first, second) = another_participants_two_changes(&replica);
+        let (first, second) = another_members_two_changes(&replica);
         // The second change arrives first: it builds on the first, which the
         // record does not hold yet, so it waits in the record's queue.
         replica

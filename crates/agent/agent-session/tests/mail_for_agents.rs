@@ -15,6 +15,7 @@
 
 use collab_types::DocumentMutation;
 use serde_json::{Value, json};
+use tilo_actions::MemberId;
 use tilo_actions::OperationKind;
 use tilo_actions::api::{ActionAddress, ActionDescriptor};
 use tilo_agent_session::apps::readable;
@@ -117,7 +118,7 @@ fn an_agent_reads_searches_drafts_and_exports_mail_delivered_without_a_server() 
         &catalogue,
         MAIL,
         WORKSPACE,
-        "assistant",
+        &MemberId::person("assistant"),
         &ReplicaActor::Agent,
         Seed::New,
     )
@@ -255,10 +256,10 @@ fn an_agent_reads_searches_drafts_and_exports_mail_delivered_without_a_server() 
         &catalogue,
         MAIL,
         WORKSPACE,
-        "ada",
+        &MemberId::person("ada"),
         ReplicaActor::Owner,
         Seed::Existing {
-            record: agent.record_id().clone(),
+            record: agent.document_id().clone(),
             changes: vec![snapshot],
         },
     )
@@ -293,7 +294,7 @@ fn an_agent_is_offered_adding_an_account_its_person_is_asked_for() {
         &AppCatalogue::native(),
         MAIL,
         WORKSPACE,
-        "assistant",
+        &MemberId::person("assistant"),
         &ReplicaActor::Agent,
         Seed::New,
     )

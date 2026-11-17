@@ -1,10 +1,10 @@
-//! Participant-independent catalogue schema.
+//! Presence-independent catalogue schema.
 //!
-//! A multi-participant app (Writer) builds a different resource tree for each
-//! participant's caret, selection and Find hits. What it publishes to the
+//! A multi-presence app (Writer) builds a different resource tree for each
+//! presence's caret, selection and Find hits. What it publishes to the
 //! broker, and what grants are checked against, must not be one caret's
 //! snapshot: that would churn the publication revision on every caret move
-//! and would hide operations that another participant could use.
+//! and would hide operations that another presence could use.
 //!
 //! Instead an app publishes its catalogue schema: stable addresses whose
 //! context-dependent preconditions are declared as flags
@@ -28,22 +28,22 @@ use crate::{
 pub const REQUIRES_TAG_PREFIX: &str = "tilo.requires.";
 
 /// Contract tag of a View operation that changes only the invoking
-/// participant's own view (its caret, selection or Find state). Only such an
-/// operation may be invoked by a remote participant: every other View
+/// presence's own view (its caret, selection or Find state). Only such an
+/// operation may be invoked by a remote presence: every other View
 /// operation moves the local person's private view and stays refused.
-pub const PARTICIPANT_VIEW_TAG: &str = "tilo.participant-view";
+pub const PRESENCE_VIEW_TAG: &str = "tilo.presence-view";
 
-/// A precondition on the invoking participant's view. Declared on the
+/// A precondition on the invoking presence's view. Declared on the
 /// published schema as an availability flag; checked against the invoker's
 /// own view at invoke time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ContextRequirement {
-    /// The participant has a caret in an editable region.
+    /// The presence has a caret in an editable region.
     Caret,
-    /// The participant has a non-empty selection.
+    /// The presence has a non-empty selection.
     Selection,
-    /// The participant has live Find results.
+    /// The presence has live Find results.
     FindHits,
 }
 
@@ -102,10 +102,10 @@ impl ActionContract {
         requirements
     }
 
-    /// Whether this View contract changes only the invoking participant's
-    /// view ([`PARTICIPANT_VIEW_TAG`]).
-    pub fn is_participant_view(&self) -> bool {
-        self.tags.iter().any(|tag| tag == PARTICIPANT_VIEW_TAG)
+    /// Whether this View contract changes only the invoking presence's
+    /// view ([`PRESENCE_VIEW_TAG`]).
+    pub fn is_presence_view(&self) -> bool {
+        self.tags.iter().any(|tag| tag == PRESENCE_VIEW_TAG)
     }
 
     fn add_tag(&mut self, tag: &str) {
@@ -117,7 +117,7 @@ impl ActionContract {
 
 impl ActionSpec {
     /// Declare a precondition on the invoker's view. The operation stays at
-    /// its stable address in every participant's tree and in the published
+    /// its stable address in every presence's tree and in the published
     /// schema; the invoker's tree refuses it when the precondition fails.
     #[must_use]
     pub fn requires(mut self, requirement: ContextRequirement) -> Self {
@@ -126,15 +126,15 @@ impl ActionSpec {
     }
 
     /// Declare that this View operation changes only the invoking
-    /// participant's own view, so a remote participant may invoke it.
+    /// presence's own view, so a remote presence may invoke it.
     #[must_use]
-    pub fn participant_view(mut self) -> Self {
-        self.type_mut().contract.add_tag(PARTICIPANT_VIEW_TAG);
+    pub fn presence_view(mut self) -> Self {
+        self.type_mut().contract.add_tag(PRESENCE_VIEW_TAG);
         self
     }
 }
 
-/// One participant-independent catalogue entry. Keyed by resource kind and
+/// One presence-independent catalogue entry. Keyed by resource kind and
 /// action id, never by the (possibly document- or view-derived) resource id.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogueSchemaEntry {
@@ -167,7 +167,7 @@ impl CatalogueSchemaEntry {
     }
 }
 
-/// Reduce a surveyed catalogue to its participant-independent schema:
+/// Reduce a surveyed catalogue to its presence-independent schema:
 /// entries keyed by resource kind, sorted, duplicates removed. Two
 /// catalogues that differ only in volatile resource ids, labels or order
 /// have the same schema.
@@ -200,7 +200,7 @@ mod tests {
         }
     }
 
-    /// Minimal multi-participant provider: each participant has its own
+    /// Minimal multi-presence provider: each presence has its own
     /// caret block and optional selection.
     struct TwoViews {
         views: std::collections::HashMap<String, (String, bool)>,
@@ -244,18 +244,18 @@ mod tests {
     }
 
     impl TwoViews {
-        /// The tree `participant` sees; `None` is the local window's.
-        fn resources_for(&self, participant: Option<&crate::ParticipantId>) -> Vec<ResourceSpec> {
-            let Some(participant) = participant else {
+        /// The tree `presence` sees; `None` is the local window's.
+        fn resources_for(&self, presence: Option<&crate::PresenceId>) -> Vec<ResourceSpec> {
+            let Some(presence) = presence else {
                 return tree(&self.own.0, self.own.1, false);
             };
             self.views
-                .get(participant.as_str())
+                .get(presence.as_str())
                 .map_or_else(Vec::new, |(caret, selected)| tree(caret, *selected, false))
         }
     }
 
-    /// The participant-independent schema every view publishes.
+    /// The presence-independent schema every view publishes.
     fn schema_tree() -> Vec<ResourceSpec> {
         let mut schema = tree("", false, true);
         schema.push(
@@ -292,12 +292,12 @@ mod tests {
                     .requires(ContextRequirement::Selection)
                     .requires(ContextRequirement::Selection)
                     .requires(ContextRequirement::Caret)
-                    .participant_view();
+                    .presence_view();
             assert_eq!(
                 spec.contract.requirements(),
                 vec![ContextRequirement::Caret, ContextRequirement::Selection]
             );
-            assert!(spec.contract.is_participant_view());
+            assert!(spec.contract.is_presence_view());
             assert_eq!(spec.contract.tags.len(), 3, "tags are not duplicated");
             assert!(matches!(
                 ContextRequirement::Selection.refusal(),
@@ -312,18 +312,18 @@ mod tests {
         {
             let before = provider("b1", false);
             let after = provider("b7", true);
-            let participant = crate::ParticipantId::new("window:t").unwrap();
-            // The participant's own trees differ (caret-derived ids, selection).
+            let presence = crate::PresenceId::new("window:t").unwrap();
+            // The presence's own trees differ (caret-derived ids, selection).
             assert_ne!(
-                api::survey(&before.resources_for(Some(&participant))).len(),
-                api::survey(&after.resources_for(Some(&participant))).len()
+                api::survey(&before.resources_for(Some(&presence))).len(),
+                api::survey(&after.resources_for(Some(&presence))).len()
             );
             let schema = catalogue_schema(&api::survey(&schema_tree()));
-            // Every operation a participant can reach has an entry in the schema,
+            // Every operation a presence can reach has an entry in the schema,
             // whatever its caret: grants checked against the schema cover it.
             for provider in [&before, &after] {
                 for entry in
-                    catalogue_schema(&api::survey(&provider.resources_for(Some(&participant))))
+                    catalogue_schema(&api::survey(&provider.resources_for(Some(&presence))))
                 {
                     assert!(
                         schema
@@ -353,7 +353,7 @@ mod tests {
         phase resolution_is_per_invoker;
         {
             let provider = provider("b7", true);
-            let agent = crate::ParticipantId::new("window:t").unwrap();
+            let agent = crate::PresenceId::new("window:t").unwrap();
             let address = api::ActionAddress::new("doc", "type-text");
             let agent_tree = provider.resources_for(Some(&agent));
             let own_tree = provider.resources_for(None);
@@ -365,13 +365,13 @@ mod tests {
                 api::encode(&own_tree, &address, None).unwrap().payload,
                 b"type@b1".to_vec()
             );
-            // Selection-scoped ops exist only in the tree of the participant
+            // Selection-scoped ops exist only in the tree of the presence
             // that has a selection.
             let bold = api::ActionAddress::new("doc", "toggle-mark");
             assert!(api::resolve(&agent_tree, &bold).is_some());
             assert!(api::resolve(&own_tree, &bold).is_none());
-            // An unknown participant gets no tree at all, not the default view.
-            let stranger = crate::ParticipantId::new("window:other").unwrap();
+            // An unknown presence gets no tree at all, not the default view.
+            let stranger = crate::PresenceId::new("window:other").unwrap();
             assert!(provider.resources_for(Some(&stranger)).is_empty());
         }
     }

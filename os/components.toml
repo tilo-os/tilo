@@ -162,6 +162,22 @@ files = [
   { from = "tilo-net-answers", to = "/usr/libexec/tilo-net-answers", mode = "0755" },
 ]
 
+# The app keeper: a small Wayland server a non-Tilo program (a VM's app
+# forwarder, a Wine program, a remote app) runs behind, inside its launch's
+# scope, so its windows stay open while the desktop restarts for an update.
+# It has no unit: each launch starts its own, and a running one is never
+# replaced (new launches take the new binary).
+[[component]]
+name = "app-keeper"
+kind = "userspace"
+scope = "session"
+packages = ["tilo-app-keeper"]
+bins = ["tilo-app-keeper"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-app-keeper", to = "/usr/libexec/tilo-app-keeper", mode = "0755" },
+]
+
 # The session audio helper: persistent audio transforms (balance, mono,
 # echo cancellation) and the hotplug policy, started by the compositor with
 # the session so the compositor drives no audio graph itself.

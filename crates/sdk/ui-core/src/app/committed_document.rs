@@ -11,7 +11,7 @@ impl App {
             return;
         }
         // An on-demand record asked for before it was here opens now.
-        self.unheld_record_arrived(&route);
+        self.unheld_resource_arrived(&route);
         self.committed_documents.push((route, read));
         self.pump_committed_documents();
     }
@@ -97,7 +97,7 @@ impl App {
                     // The same record published as the primary document.
                     let mut bound = self
                         .actions
-                        .bound_record_sync
+                        .bound_document_sync
                         .as_mut()
                         .filter(|sync| sync.publishes(store, checkout));
                     let applied = owner

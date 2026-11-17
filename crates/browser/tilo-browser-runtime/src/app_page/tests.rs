@@ -9,7 +9,7 @@ use ui::application::{AppComponent, HostContext, RestoreInput};
 use ui::automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use ui::launch::LaunchError;
 use ui::permissions::MemberId;
-use ui::record::{RecordOwners, ResourceType};
+use ui::resource::{ResourceOwners, ResourceType};
 use ui::widget::IconDescriptor;
 
 use super::*;
@@ -20,7 +20,7 @@ const INSTANCE: u64 = 3;
 
 /// A definition whose factory nothing here runs: what a page opens is decided
 /// before its component is built.
-fn definition(workspace_record: bool) -> ApplicationDefinition {
+fn definition(workspace_resource: bool) -> ApplicationDefinition {
     fn no_component(
         _: HostContext,
         _: LaunchTarget,
@@ -32,13 +32,13 @@ fn definition(workspace_record: bool) -> ApplicationDefinition {
         app_id: PACKAGE.into(),
         title: "Page probe".into(),
         icon: IconDescriptor::Glyph("P"),
-        record_kind: ResourceType::new("probe"),
+        resource_type: ResourceType::new("probe"),
         required: vec![],
         optional: vec![],
         opens: &[],
-        workspace_record,
-        member_record: false,
-        opens_before_record: false,
+        workspace_resource,
+        member_resource: false,
+        opens_before_resource: false,
         create: no_component,
     }
 }
@@ -50,18 +50,18 @@ fn author() -> MemberId {
 }
 
 /// The record a page naming none opens, as [`opening`] names it.
-fn default_record(definition: &ApplicationDefinition) -> DocumentCheckout {
+fn default_resource(definition: &ApplicationDefinition) -> DocumentCheckout {
     DocumentCheckout::new(
         DocumentId::derived("default", &DocumentId::for_tab(INSTANCE)),
-        definition.record_kind.clone(),
+        definition.resource_type.clone(),
     )
 }
 
 /// A page's store, whose records come from its workspace's host.
-fn page(definition: &ApplicationDefinition) -> (Rc<MemoryStore>, RecordStore) {
+fn page(definition: &ApplicationDefinition) -> (Rc<MemoryStore>, ResourceStore) {
     let memory = Rc::new(MemoryStore::queued());
     let mut owners =
-        RecordOwners::with_store(Rc::clone(&memory) as Rc<dyn durable_store::DurableStore>);
+        ResourceOwners::with_store(Rc::clone(&memory) as Rc<dyn durable_store::DurableStore>);
     let stores = Rc::new(RefCell::new(Vec::new()));
     let store = store(&mut owners, definition, WORKSPACE, true, &stores).unwrap();
     (memory, store)
@@ -69,10 +69,10 @@ fn page(definition: &ApplicationDefinition) -> (Rc<MemoryStore>, RecordStore) {
 
 /// The workspace's copy of `want`, as another device wrote it.
 fn written_elsewhere(want: &DocumentCheckout, body: &str) -> Vec<u8> {
-    let mut owners = RecordOwners::with_store(Rc::new(MemoryStore::queued()));
+    let mut owners = ResourceOwners::with_store(Rc::new(MemoryStore::queued()));
     let store = owners.open(PACKAGE, WORKSPACE).unwrap();
     store
-        .reserve_record(want)
+        .reserve_resource(want)
         .unwrap()
         .initialize(|doc| {
             let _ = doc.put(&ROOT, "body", body);
@@ -84,7 +84,7 @@ fn written_elsewhere(want: &DocumentCheckout, body: &str) -> Vec<u8> {
 
 /// What the page's replication does with a record the host sent and no window
 /// holds open: it keeps it in the page's storage and tells the store.
-fn arrives(memory: &MemoryStore, store: &RecordStore, id: &DocumentId, bytes: Vec<u8>) {
+fn arrives(memory: &MemoryStore, store: &ResourceStore, id: &DocumentId, bytes: Vec<u8>) {
     // An app's own document of the workspace is the workspace's index itself;
     // every other record is a document beneath it.
     let key = if id.is_package_primary() {
@@ -97,7 +97,7 @@ fn arrives(memory: &MemoryStore, store: &RecordStore, id: &DocumentId, bytes: Ve
 }
 
 /// What the record holds under `body`.
-fn body(store: &RecordStore, id: &DocumentId) -> Option<String> {
+fn body(store: &ResourceStore, id: &DocumentId) -> Option<String> {
     let doc = store.read(id, AutoCommit::clone)?;
     match doc.get(&ROOT, "body").ok().flatten()?.0 {
         ui::automerge::Value::Scalar(scalar) => match scalar.into_owned() {
@@ -121,14 +121,14 @@ tilo_test_env::scenario! {
     {
         let definition = definition(false);
         let (memory, store) = page(&definition);
-        let want = default_record(&definition);
+        let want = default_resource(&definition);
 
         assert!(matches!(
             opening(&definition, &store, None, false, INSTANCE, &author()).unwrap(),
             Opening::Arriving
         ));
         assert_eq!(
-            store.wanted_records(),
+            store.wanted_resources(),
             std::slice::from_ref(&want.id),
             "asked of the workspace"
         );
@@ -147,7 +147,7 @@ tilo_test_env::scenario! {
             Some("the workspace's"),
             "opened with the workspace's content"
         );
-        assert!(store.wanted_records().is_empty());
+        assert!(store.wanted_resources().is_empty());
     }
 
     phase a_record_is_new_only_once_the_workspace_answered_it_holds_none_of_it;
@@ -156,7 +156,7 @@ tilo_test_env::scenario! {
     {
         let definition = definition(false);
         let (_memory, store) = page(&definition);
-        let want = default_record(&definition);
+        let want = default_resource(&definition);
 
         assert!(matches!(
             opening(&definition, &store, None, false, INSTANCE, &author()).unwrap(),
@@ -167,7 +167,7 @@ tilo_test_env::scenario! {
             panic!("a record the workspace does not hold is a new one");
         };
         assert_eq!(id, want.id, "the new record is the one the page named");
-        assert!(store.wanted_records().is_empty());
+        assert!(store.wanted_resources().is_empty());
     }
 
     phase an_apps_own_document_of_the_workspace_waits_for_it_too;
@@ -177,7 +177,7 @@ tilo_test_env::scenario! {
     {
         let definition = definition(true);
         let (memory, store) = page(&definition);
-        let want = DocumentCheckout::package_primary(definition.record_kind.clone());
+        let want = DocumentCheckout::package_primary(definition.resource_type.clone());
 
         assert!(matches!(
             opening(&definition, &store, None, false, INSTANCE, &author()).unwrap(),
@@ -209,15 +209,15 @@ tilo_test_env::scenario! {
     // A page whose store keeps its own records creates a missing one, as before:
     // no workspace sends it.
     {
-        let mut owners = RecordOwners::with_store(Rc::new(MemoryStore::queued()));
+        let mut owners = ResourceOwners::with_store(Rc::new(MemoryStore::queued()));
         let store = owners.open(PACKAGE, WORKSPACE).unwrap();
         let definition = definition(false);
-        let want = default_record(&definition);
+        let want = default_resource(&definition);
         let Opening::New(id) = opening(&definition, &store, None, false, INSTANCE, &author()).unwrap() else {
             panic!("a record of the page's own is new");
         };
         assert_eq!(id, want.id);
-        assert!(store.wanted_records().is_empty());
+        assert!(store.wanted_resources().is_empty());
     }
 
     phase an_app_each_member_keeps_opens_the_persons_own_record;
@@ -226,8 +226,8 @@ tilo_test_env::scenario! {
     // to send the one another device of theirs wrote, then starts it as theirs.
     {
         let mut definition = definition(true);
-        definition.member_record = true;
-        let own = DocumentId::of_member(&author().key(), definition.record_kind.as_str())
+        definition.member_resource = true;
+        let own = DocumentId::of_member(author().id(), definition.resource_type.as_str())
             .expect("a root key names an own record");
         let (_memory, store) = page(&definition);
         assert!(matches!(
@@ -235,7 +235,7 @@ tilo_test_env::scenario! {
             Opening::Arriving
         ));
         assert_eq!(
-            store.wanted_records(),
+            store.wanted_resources(),
             std::slice::from_ref(&own),
             "the person's own record is asked for, not the workspace's"
         );
@@ -248,7 +248,7 @@ tilo_test_env::scenario! {
 
         // Theirs, once a device of theirs wrote it: that is what opens.
         let (memory, store) = page(&definition);
-        let checkout = DocumentCheckout::new(own.clone(), definition.record_kind.clone());
+        let checkout = DocumentCheckout::new(own.clone(), definition.resource_type.clone());
         arrives(&memory, &store, &own, written_elsewhere(&checkout, "mine"));
         let Opening::Target(LaunchTarget::Record { checkout, .. }) =
             opening(&definition, &store, None, false, INSTANCE, &author()).unwrap()
@@ -266,7 +266,7 @@ tilo_test_env::scenario! {
     {
         let definition = definition(false);
         let (_memory, store) = page(&definition);
-        let theirs = DocumentId::of_member(&"b0".repeat(32), definition.record_kind.as_str()).unwrap();
+        let theirs = DocumentId::of_member(&"b0".repeat(32), definition.resource_type.as_str()).unwrap();
         let Opening::Target(LaunchTarget::Record { checkout, .. }) = opening(
             &definition,
             &store,
@@ -279,18 +279,18 @@ tilo_test_env::scenario! {
             panic!("the link names the record");
         };
         assert!(matches!(
-            store.try_open_record(&checkout),
-            Err(RecordOpenError::Arriving)
+            store.try_open_resource(&checkout),
+            Err(ResourceOpenError::Arriving)
         ));
-        store.note_workspace_answer(theirs, ui::record::WorkspaceAnswer::NotYours);
-        let error = store.try_open_record(&checkout).unwrap_err();
-        assert!(matches!(error, RecordOpenError::NotYours));
+        store.note_workspace_answer(theirs, ui::resource::WorkspaceAnswer::NotYours);
+        let error = store.try_open_resource(&checkout).unwrap_err();
+        assert!(matches!(error, ResourceOpenError::NotYours));
         let Unbuilt::Failed(said) = Unbuilt::of(ui::launch::LaunchError::Record(error)) else {
             panic!("a record that is not theirs is no arrival");
         };
         assert!(said.contains("someone else"), "{said}");
         assert!(matches!(
-            Unbuilt::of(ui::launch::LaunchError::Record(RecordOpenError::MissingRecord)),
+            Unbuilt::of(ui::launch::LaunchError::Record(ResourceOpenError::MissingResource)),
             Unbuilt::Failed(_)
         ));
     }
@@ -304,9 +304,9 @@ tilo_test_env::scenario! {
         let (memory, store) = page(&definition);
         let saved = DocumentCheckout::new(
             DocumentId::derived("default", &DocumentId::for_tab(INSTANCE + 1)),
-            definition.record_kind.clone(),
+            definition.resource_type.clone(),
         );
-        let prepare = |store: &RecordStore| {
+        let prepare = |store: &ResourceStore| {
             let views = Rc::new(
                 ui::application_view::InstanceViewStore::with_store(
                     Rc::clone(&memory) as Rc<dyn durable_store::DurableStore>,
@@ -337,7 +337,7 @@ tilo_test_env::scenario! {
         };
         assert!(matches!(prepare(&store), Err(Unbuilt::Arriving)));
         assert_eq!(
-            store.wanted_records(),
+            store.wanted_resources(),
             std::slice::from_ref(&saved.id),
             "asked of the workspace"
         );

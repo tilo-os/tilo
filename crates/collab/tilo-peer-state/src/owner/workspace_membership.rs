@@ -18,7 +18,7 @@ impl NativeWorkspaceOwner {
     /// its custody of its key, outside the owner's turn: the workspace's admission decides it against the caller's
     /// grants, here and on every device that receives it. A device of the
     /// workspace's owner publishes the governance as a checkpoint; any other
-    /// member publishes the changes it made, which every participant admits
+    /// member publishes the changes it made, which every key holder admits
     /// as it admits every member's. Exact retries converge; changed
     /// invocation reuse never changes policy.
     ///
@@ -63,7 +63,7 @@ impl NativeWorkspaceOwner {
             }
             // What this device signs, it publishes: a device of the workspace's owner
             // its governance as a checkpoint, carrying its durable state; any
-            // other member the changes it made, which every participant admits.
+            // other member the changes it made, which every key holder admits.
             let writes_checkpoint = candidate
                 .peer
                 .signed_by_owner(&candidate.device().device_public_key);
@@ -129,7 +129,7 @@ impl NativeWorkspaceOwner {
                 }
                 Ok((receipt, changes))
             })?;
-            self.publish_record(workspace, &candidate, record, None)?;
+            self.publish_document(workspace, &candidate, record, None)?;
             self.0.governance_kept_here(workspace, hosted_here, changes);
             Ok(receipt)
         })

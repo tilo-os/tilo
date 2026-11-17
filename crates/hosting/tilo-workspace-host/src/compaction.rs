@@ -198,7 +198,7 @@ struct Inner {
     signatures: Mutex<HashMap<ChannelKey, Signatures>>,
     /// The record channels this host takes part in, whose sealed history it
     /// folds itself.
-    participant: std::sync::OnceLock<Arc<dyn ParticipantKeys>>,
+    group_keys: std::sync::OnceLock<Arc<dyn GroupKeys>>,
     /// The route of each channel found keyed here: only ever folded sealed
     /// once `resealing`.
     keyed: Mutex<HashMap<ChannelKey, Route>>,
@@ -213,7 +213,7 @@ pub(crate) type Opener<'a> = dyn Fn(&collab_types::SignedOp) -> Option<Vec<u8>> 
 /// The content keys of the record channels a host takes part in (the workspaces
 /// it governs as a node that may own workspaces). It is a member of each
 /// channel's group, so it reads and seals a sealed record like any member.
-pub(crate) trait ParticipantKeys: Send + Sync {
+pub(crate) trait GroupKeys: Send + Sync {
     /// The keys of `route`'s channel, when this host takes part in it.
     fn keys<'a>(
         &'a self,
@@ -290,17 +290,17 @@ impl Compactor {
             hold: Mutex::new(Duration::ZERO),
             forced: Mutex::default(),
             signatures: Mutex::default(),
-            participant: std::sync::OnceLock::new(),
+            group_keys: std::sync::OnceLock::new(),
             keyed: Mutex::default(),
             resealing: std::sync::atomic::AtomicBool::new(false),
         }))
     }
 
     /// Fold the sealed history of the channels `keys` names, as one of their
-    /// participants, instead of asking a member to.
+    /// key holders, instead of asking a member to.
     #[cfg(any(feature = "agents", feature = "web"))]
-    pub(crate) fn with_participant_keys(&self, keys: Arc<dyn ParticipantKeys>) {
-        let _ = self.0.participant.set(keys);
+    pub(crate) fn with_group_keys(&self, keys: Arc<dyn GroupKeys>) {
+        let _ = self.0.group_keys.set(keys);
     }
 
     /// Seal what the channels this host takes part in retain in the clear, from
@@ -539,7 +539,7 @@ impl Compactor {
         Ok(())
     }
 
-    /// Fold `channel`'s sealed history as a participant of `route`'s channel,
+    /// Fold `channel`'s sealed history as a key holder of `route`'s channel,
     /// when this host is one: open every sealed entry with the channel's keys,
     /// fold them as a cleartext channel is folded, and retain the snapshot
     /// sealed under the channel's current key, signed as this host. A
@@ -559,15 +559,15 @@ impl Compactor {
         route: &Route,
         (min_tail, repair): (usize, bool),
     ) -> Result<bool, String> {
-        let Some(participant) = self.0.participant.get() else {
+        let Some(group_keys) = self.0.group_keys.get() else {
             return Ok(false);
         };
-        let Some(keys) = participant.keys(route).await else {
+        let Some(keys) = group_keys.keys(route).await else {
             return Ok(false);
         };
         lock(&self.0.keyed).insert((workspace_id, channel), route.clone());
         let mut unsent = if repair {
-            participant.unsent(route).await
+            group_keys.unsent(route).await
         } else {
             Vec::new()
         };
@@ -579,7 +579,7 @@ impl Compactor {
             .plan_keyed(workspace, (workspace_id, channel), &keys, min_tail, &unsent)
             .await?;
         if !repair && planned.as_ref().is_some_and(|(folded, _)| folded.stuck) {
-            unsent = participant.unsent(route).await;
+            unsent = group_keys.unsent(route).await;
             if !unsent.is_empty() {
                 planned = self
                     .plan_keyed(workspace, (workspace_id, channel), &keys, min_tail, &unsent)
@@ -599,7 +599,7 @@ impl Compactor {
                 tracing::warn!(
                     workspace = %route.cluster_id,
                     app = %route.app_id,
-                    record = %route.record_id,
+                    record = %route.document_id,
                     writer = %hex::encode(write.author.as_bytes()),
                     seq = write.seq,
                     "the store folds a record without a write stuck behind a change its writer never sent; the write is kept in the store's archive"
@@ -750,7 +750,7 @@ impl Compactor {
 
     /// Fold `channel` of `workspace_id`, the channel of `route` this host takes part in, without
     /// the writes its governor finds stuck behind a change their own writer never sent
-    /// ([`ParticipantKeys::unsent`]), whatever its tail: a store that already holds such writes
+    /// ([`GroupKeys::unsent`]), whatever its tail: a store that already holds such writes
     /// (written before a page's writes waited for their record) is repaired when its host starts,
     /// rather than at the next fold its writes bring.
     #[cfg(any(feature = "agents", feature = "web"))]
@@ -865,7 +865,7 @@ impl Compactor {
                 request,
                 app_id: route.app_id.clone(),
                 cluster_id: route.cluster_id.clone(),
-                record: route.record_id.clone(),
+                record: route.document_id.clone(),
             })
             .is_err()
         {
@@ -1080,7 +1080,7 @@ fn plan_leaving_out(
         .collect();
     signatures.end_round();
     let sealed = sealed_tail(&checked, known);
-    // A channel a participant folds holds nothing in the clear: what was
+    // A channel a key holder folds holds nothing in the clear: what was
     // written before its channel was opened is sealed into its snapshot,
     // history and authors whole, however short.
     let reseal = reseal && open.is_some() && checked.iter().any(Checked::is_cleartext);
@@ -1590,7 +1590,7 @@ fn sealed_document_frames(
     )
 }
 
-/// `folded`, a fold of a sealed channel's `entries` as one of its participants, as one sealed
+/// `folded`, a fold of a sealed channel's `entries` as one of its key holders, as one sealed
 /// compaction write ([`collab_types::SealedCompaction`]): the snapshot sealed under the channel's
 /// key, naming exactly the writes it removes, each author's up to the highest. A device that
 /// opens the record is sent it and the writes since, and takes it as the record whole: what it
@@ -1638,7 +1638,7 @@ fn sealed_compaction_frames(
     }
     let route = &folded.route;
     let artifact =
-        collab_types::document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
+        collab_types::document_artifact_id(&route.app_id, &route.cluster_id, &route.document_id);
     let (metadata, compaction, segments) =
         sealed_compaction_payloads(keys, artifact, &superseded, &folded.snapshot)?;
     let author = key.verifying_key().to_bytes();
@@ -1654,8 +1654,8 @@ fn sealed_compaction_frames(
     let timestamp = std::time::UNIX_EPOCH
         .checked_add(Duration::from_nanos(now_ns))
         .unwrap_or(std::time::UNIX_EPOCH);
-    let channel =
-        *blake3::hash(format!("app\0{}\0{}", route.app_id, route.record_id).as_bytes()).as_bytes();
+    let channel = *blake3::hash(format!("app\0{}\0{}", route.app_id, route.document_id).as_bytes())
+        .as_bytes();
     std::iter::once((metadata, compaction))
         .chain(segments)
         .enumerate()
@@ -1667,7 +1667,7 @@ fn sealed_compaction_frames(
                 collab_types::document_attestation_id(
                     &route.app_id,
                     &route.cluster_id,
-                    &route.record_id,
+                    &route.document_id,
                 ),
                 collab_types::OpKind::Compaction,
                 timestamp,
@@ -1757,15 +1757,15 @@ fn frames_of(
     use ed25519_dalek::Signer as _;
     let author = key.verifying_key().to_bytes();
     let artifact =
-        collab_types::document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
+        collab_types::document_artifact_id(&route.app_id, &route.cluster_id, &route.document_id);
     let attestation =
-        collab_types::document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id);
+        collab_types::document_attestation_id(&route.app_id, &route.cluster_id, &route.document_id);
     let now_ns = tilo_clock::unix_now_ns();
     let timestamp = std::time::UNIX_EPOCH
         .checked_add(Duration::from_nanos(now_ns))
         .unwrap_or(std::time::UNIX_EPOCH);
-    let channel =
-        *blake3::hash(format!("app\0{}\0{}", route.app_id, route.record_id).as_bytes()).as_bytes();
+    let channel = *blake3::hash(format!("app\0{}\0{}", route.app_id, route.document_id).as_bytes())
+        .as_bytes();
     let encoded = DocumentMutation::Snapshot(snapshot.to_vec())
         .encode_frames()
         .map_err(|error| error.to_string())?;

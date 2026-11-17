@@ -109,7 +109,7 @@ fn shape(value: &Value) -> &'static str {
         Value::Opt(_) => "an option",
         Value::Case { .. } => "a case with fields",
         Value::Ref(_) => "a resource reference",
-        Value::Actor(_) => "a participant",
+        Value::Actor(_) => "a member",
         Value::Rich(_) => "rich text",
         Value::Error(_) => "an error",
         Value::Map(_) => "a map",

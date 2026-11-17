@@ -1,5 +1,5 @@
 //! Painting the laid-out document: the frame, page sheets, text, images,
-//! change and note decorations, footnotes and other participants' overlays.
+//! change and note decorations, footnotes and other presences' overlays.
 
 use super::block_layout::list_marker_x;
 use super::image_layout::{
@@ -21,7 +21,6 @@ use tilo_doc::model::Region;
 use tilo_doc::snapshot::BlockView;
 use ui::PresenceCtx;
 use ui::paint::with_alpha;
-use ui::permissions::MemberId;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
@@ -1202,15 +1201,17 @@ impl Editor {
             if rects.is_empty() {
                 continue;
             }
-            let user = MemberId::person(interaction.actor.by.key());
+            let Some(user) = interaction.actor.by.member_id() else {
+                continue;
+            };
             for rect in &rects {
-                presence.draw_peer_selection(scene, theme, ctf, &user, *rect);
+                presence.draw_peer_selection(scene, theme, ctf, user, *rect);
             }
             if let Some(bounds) = rects.first().copied() {
-                let label = presence.display_name(&user);
+                let label = presence.display_name(user);
                 presence.draw_peer_outline_labeled(
                     &mut ui::paint::PaintCtx::new(scene, ctf, text_renderer, theme),
-                    &user,
+                    user,
                     &label,
                     bounds,
                     3.0,

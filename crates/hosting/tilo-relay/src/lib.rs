@@ -110,6 +110,8 @@ pub mod web;
 #[cfg(feature = "web")]
 pub mod web_push;
 #[cfg(feature = "agents")]
+pub mod workspace_agents;
+#[cfg(feature = "agents")]
 pub mod workspace_bots;
 pub mod workspace_join;
 mod workspace_keys;
@@ -128,7 +130,7 @@ tilo_agent_session::app_worker!();
 #[cfg(not(target_arch = "wasm32"))]
 pub use tilo_workspace_host::{
     app_serving, compaction, environment, host, member_limits, metrics, payloads, peer,
-    presence_mailbox, store, surfaces, workspace, workspace_records, workspaces,
+    presence_mailbox, store, surfaces, workspace, workspace_documents, workspaces,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_workspace_host::{authority_epoch, handshake, workspace_access};

@@ -1077,6 +1077,57 @@ impl Dropdown {
 }
 
 impl Widget for Dropdown {
+    /// A chooser as a page's own: a button showing the value it holds (or what
+    /// it asks for) and, open, the rows it offers.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        use crate::composition::{Control, ControlOption, TextLook};
+        let theme = cx.theme();
+        let colors = &theme.tokens.colors;
+        let current = self.has_selected_value().then(|| {
+            TextLook::new(
+                self.selected_label().to_string(),
+                &self.label_style,
+                Some(colors.text_primary),
+            )
+            .with_max_lines(Some(1))
+        });
+        let caption = self.caption.as_deref().map(|caption| {
+            TextLook::new(
+                widget_text(caption),
+                &self.caption_style,
+                Some(colors.text_dim),
+            )
+            .with_max_lines(Some(1))
+        });
+        let icon = self
+            .leading_icon
+            .and_then(|icon| crate::composition::glyph(icon, 16.0, colors.text_dim, false));
+        let options = if self.open {
+            self.filtered()
+                .iter()
+                .filter_map(|&index| {
+                    let label = self.options.get(index)?.clone();
+                    let value = self.values.get(index)?.clone();
+                    Some(
+                        ControlOption::new(label)
+                            .with_value(value.clone())
+                            .selected(value == self.selected),
+                    )
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        cx.control(Control::Select {
+            current,
+            placeholder: self.placeholder.clone(),
+            options,
+            open: self.open,
+            caption,
+            icon,
+        });
+    }
+
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,

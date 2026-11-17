@@ -6567,8 +6567,8 @@ fn remote_carets_are_labelled_by_peer_name_or_id() {
         assert_eq!(carets.len(), 1);
         assert_eq!(carets[0].label, "Bob");
         assert_eq!(
-            carets[0].user.key(),
-            peer,
+            carets[0].user,
+            MemberId::person(peer),
             "the id stays the identity — it is what the caret is coloured by",
         );
     }
@@ -6589,7 +6589,11 @@ fn remote_carets_are_labelled_by_peer_name_or_id() {
             ui::presence::guest_label(),
             "a person nobody named is a guest, never their key",
         );
-        assert_eq!(carets[0].user.key(), peer, "the id stays the identity");
+        assert_eq!(
+            carets[0].user,
+            MemberId::person(peer),
+            "the id stays the identity"
+        );
     }
 }
 
@@ -6717,13 +6721,13 @@ fn remote_peers_resolve_independently_and_draw_through_production() {
         );
         let ya = carets
             .iter()
-            .find(|c| c.user.key() == "alice")
+            .find(|c| c.user == MemberId::person("alice"))
             .unwrap()
             .rect
             .y0;
         let yb = carets
             .iter()
-            .find(|c| c.user.key() == "bob")
+            .find(|c| c.user == MemberId::person("bob"))
             .unwrap()
             .rect
             .y0;

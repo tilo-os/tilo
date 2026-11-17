@@ -74,7 +74,7 @@ impl Inputs {
         for (index, input) in inputs.into_iter().enumerate() {
             check_input(&input.file)?;
             let identity = identity(&input.file)?;
-            // Cross-volume readers require independent participant records.
+            // Cross-volume readers require independent member records.
             if identity.0 != source_device && expected.is_none() {
                 return Err(refused("Mounted source needs independent volume custody"));
             }

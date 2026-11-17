@@ -141,7 +141,7 @@ view item(item: Todo) {
             assert_eq!(explicit[1], Value::Bool(false));
             assert!(
                 w.rt.complete_args(&id, vec![None, None]).is_err(),
-                "the subject has no default"
+                "the target has no default"
             );
         }
 
@@ -232,7 +232,7 @@ view item(item: Todo) {
             );
         }
 
-        phase the_label_reads_the_default_for_the_subject;
+        phase the_label_reads_the_default_for_the_target;
         {
             let w = World::new();
             let present = || {

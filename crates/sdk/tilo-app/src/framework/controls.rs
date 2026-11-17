@@ -87,7 +87,7 @@ thread_local! {
 /// A view opened a settings section of `P`, which lives in the person's own
 /// scope: a surface report lists its surface too, marked as the person's.
 pub(crate) fn opened_section<P: Resource>() {
-    record_opened::<P>(true);
+    resource_opened::<P>(true);
 }
 
 /// A view or the window opened a record of `P` beside the app's own: a
@@ -95,13 +95,13 @@ pub(crate) fn opened_section<P: Resource>() {
 /// it against it as against the app's own record. Whether it is the
 /// person's — kept in their store rather than in a workspace's — is the
 /// app's declaration's to say
-/// ([`ResourceApp::PERSON_RECORDS`](super::ResourceApp::PERSON_RECORDS)), not
+/// ([`ResourceApp::PERSON_RESOURCES`](super::ResourceApp::PERSON_RESOURCES)), not
 /// the open's.
-pub(crate) fn opened_record<P: Resource>() {
-    record_opened::<P>(false);
+pub(crate) fn opened_resource<P: Resource>() {
+    resource_opened::<P>(false);
 }
 
-fn record_opened<P: Resource>(person: bool) {
+fn resource_opened<P: Resource>(person: bool) {
     OPENED.with(|opened| {
         if let Some(opened) = opened.borrow_mut().as_mut()
             && !opened.iter().any(|surface| surface.kind == P::KIND)

@@ -28,7 +28,7 @@ impl AppBrokerState {
             })
             .max_by_key(|surface| {
                 (
-                    record.is_some_and(|record| surface.route.record_id == record),
+                    record.is_some_and(|record| surface.route.document_id == record),
                     surface.peer_id,
                 )
             })

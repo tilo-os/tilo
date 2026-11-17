@@ -1,7 +1,7 @@
-//! A participant's client of the collaboration plane: the workspaces it takes part in, who is here
+//! A member's client of the collaboration plane: the workspaces it takes part in, who is here
 //! in each of them, and this device's own word on them.
 //!
-//! A host brings the transport; the client says what a participant says on it. What only one host
+//! A host brings the transport; the client says what a member says on it. What only one host
 //! can do — a desktop's workspaces, channels, fabric and transfers — stays that host's.
 //!
 //! A page, an agent or a program is a device of its person through the relay transport the client
@@ -41,7 +41,7 @@ pub mod plane;
 pub mod presence;
 pub mod remote;
 mod replica;
-/// This session's presence tracks, as a participant's client says on them.
+/// This session's presence tracks, as a member's client says on them.
 pub mod saying;
 pub mod session;
 pub mod states;
@@ -55,7 +55,7 @@ pub use client::{Client, Presence};
 pub use custody::{MemoryPeerStore, PeerRecord, PeerStore};
 pub use health::{EntryHealth, PeerSnapshot, SessionHealth};
 pub use link::{
-    Entry, Events, Failure, FailureSubject, InboundActions, Link, LocalState, PAGE_FAILURE_CODES,
+    Entry, Events, Failure, FailureKind, InboundActions, Link, LocalState, PAGE_FAILURE_CODES,
     PeerStatus, Reports, TransportPhase,
 };
 pub use plane::{
@@ -73,7 +73,7 @@ pub use tilo_live::presence::Call as InCall;
 pub use tilo_live::presence::{LiveCall, LiveCaller};
 /// The route a record is opened and written by: what [`Cmd`]s and [`Event`]s name.
 pub use tilo_peer_state::document_frame::DocumentRoute;
-pub use tilo_relay_protocol::RecordAnswer;
+pub use tilo_relay_protocol::DocumentAnswer;
 
 /// Why an enrollment or an entry gave nothing.
 #[derive(Clone, Debug, PartialEq, Eq)]

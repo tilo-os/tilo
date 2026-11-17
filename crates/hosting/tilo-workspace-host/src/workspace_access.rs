@@ -78,7 +78,7 @@
 //! device that is no agent, an agent of another user, and any workspace this
 //! relay does not govern are refused; nothing is admitted by membership,
 //! enrolment or attachment. Being a governed member is what admits the agent
-//! to the workspace on the other planes and lets the workspace's participants admit it
+//! to the workspace on the other planes and lets the workspace's key holders admit it
 //! to the channels of its records.
 //!
 //! The workspace's admission mode is one value, so a governed workspace can never be

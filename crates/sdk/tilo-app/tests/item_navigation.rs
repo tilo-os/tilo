@@ -176,7 +176,7 @@ tilo_test_env::scenario! {
         let mut app = TestApp::<PagesApp>::new().unwrap();
         let page = item(&mut app, "Private page").unwrap();
         let invoker = tilo_actions::ActionInvoker::person("page-agent")
-            .with_participant(tilo_actions::ParticipantId::new("page-agent").unwrap());
+            .with_presence(tilo_actions::PresenceId::new("page-agent").unwrap());
         let error = app
             .call_by(invoker, page.id.as_str(), "open", serde_json::json!({}))
             .unwrap_err();

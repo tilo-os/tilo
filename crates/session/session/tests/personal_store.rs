@@ -39,7 +39,7 @@ fn op(device: &ed25519_dalek::SigningKey, cluster: &str, key: &str, value: &str)
         automerge::transaction::CommitOptions::default()
             .with_message(tilo_actions::FrameworkChange::Native.change_message()),
     );
-    // An app's first write of a record it created is the record whole, as every participant's is.
+    // An app's first write of a record it created is the record whole, as every member's is.
     let mutation = collab_types::DocumentMutation::Snapshot(document.save())
         .encode()
         .expect("a mutation encodes");

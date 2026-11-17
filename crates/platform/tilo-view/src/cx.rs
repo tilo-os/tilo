@@ -310,7 +310,7 @@ mod tests {
             },
             "page",
             Actor {
-                id: "Pat".to_owned(),
+                id: tilo_actions::MemberId::person("Pat").into(),
                 name: "Pat".to_owned(),
             },
             BTreeMap::new(),

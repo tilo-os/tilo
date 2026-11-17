@@ -25,8 +25,8 @@ pub mod child_records;
 pub mod child_resources;
 #[path = "confirmation.rs"]
 pub mod confirmation;
-#[path = "direct_records.rs"]
-pub mod direct_records;
+#[path = "direct_resources.rs"]
+pub mod direct_resources;
 #[path = "each_window.rs"]
 pub mod each_window;
 #[path = "edit_answers.rs"]
@@ -69,14 +69,14 @@ pub mod live_permissions;
 pub mod live_rows;
 #[path = "model_contract.rs"]
 pub mod model_contract;
-#[path = "other_records.rs"]
-pub mod other_records;
+#[path = "other_resources.rs"]
+pub mod other_resources;
 #[path = "outbox.rs"]
 pub mod outbox;
 #[path = "support/own_kinds.rs"]
 pub mod own_kinds;
-#[path = "person_records.rs"]
-pub mod person_records;
+#[path = "person_resources.rs"]
+pub mod person_resources;
 #[path = "private_windows.rs"]
 pub mod private_windows;
 #[path = "publication_per_keystroke.rs"]
@@ -122,5 +122,5 @@ pub mod window_content;
 pub mod window_view;
 #[path = "workspace_arrival.rs"]
 pub mod workspace_arrival;
-#[path = "workspace_records.rs"]
-pub mod workspace_records;
+#[path = "workspace_resources.rs"]
+pub mod workspace_resources;

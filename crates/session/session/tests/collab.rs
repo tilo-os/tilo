@@ -1500,3 +1500,39 @@ fn the_rosters_first_frame_on_the_shell_is_final() {
     );
     capture(&mut session, "roster-first-frame");
 }
+
+/// A send-to box finds the people of the workspace by the name everyone here calls them: the one
+/// list it searches is what the session publishes, and a member at their own device is in it.
+#[test]
+fn a_send_to_box_finds_a_person_here_by_name() {
+    let _settled = ui::motion::testing::settled();
+    let own = OwnPresence {
+        label: "Quinten".to_owned(),
+        ..OwnPresence::default()
+    };
+    let sync = Rc::new(Client::untethered(device(0xf0), own));
+    let mut session = session(&sync);
+    sync.hear(hello(0xbb, "ThinkPad"));
+    arrived_as(&sync, 0xbb, "Ben");
+    let recipients = crate::common::wait_for(
+        &mut session,
+        "Ben among whom a message goes to",
+        |session| {
+            session.settle_services();
+            let all: Vec<ui::floating_surface::Recipient> =
+                serde_json::from_value(session.read("session:send-to")?["recipients"].clone())
+                    .ok()?;
+            let found = ui::floating_surface::recipients_matching(&all, "Ben");
+            (!found.is_empty()).then_some(found)
+        },
+    );
+    // Ben the person, by the root Chat knows him by, never the device he is at.
+    assert_eq!(
+        (&recipients[0].kind, recipients[0].id.as_str()),
+        (
+            &ui::floating_surface::RecipientKind::Person,
+            person(0xbb).as_str()
+        ),
+        "{recipients:?}"
+    );
+}

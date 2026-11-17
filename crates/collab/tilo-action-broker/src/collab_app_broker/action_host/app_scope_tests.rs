@@ -394,12 +394,10 @@ tilo_test_env::scenario! {
 /// One live directory row, `read` of `workspace:atlas`.
 fn directory_rows() -> Vec<runtime_collab::ActionDirectoryRow> {
     let mut contract = ActionContract::view();
-    // A participant view is disclosed to anyone the workspace lets read it, as the
+    // A presence view is disclosed to anyone the workspace lets read it, as the
     // production directory fixtures' Atlas row is. A plain view would be the
     // publishing person's private UI, which this fixture names no person for.
-    contract
-        .tags
-        .push(tilo_actions::PARTICIPANT_VIEW_TAG.into());
+    contract.tags.push(tilo_actions::PRESENCE_VIEW_TAG.into());
     let descriptor = runtime_collab::ExportedAction {
         did: None,
         state: tilo_actions::ActionState::default(),
@@ -530,7 +528,7 @@ fn directory_fixture(app_id: &str) -> DirectoryFixture {
         peer_id: provider,
         app_id: app_id.into(),
         cluster_id: workspace_id.clone(),
-        record_id: "atlas".into(),
+        document_id: "atlas".into(),
     }]);
     DirectoryFixture {
         state,

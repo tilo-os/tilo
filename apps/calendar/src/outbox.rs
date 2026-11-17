@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ui::framework::{EffectAnswer, EffectCx, Effected, RecordEnv};
+use ui::framework::{EffectAnswer, EffectCx, Effected, ResourceEnv};
 
 use crate::account::AccountStore;
 use crate::caldav::{self, MutationResult, RemoveJob, UploadJob};
@@ -94,7 +94,7 @@ pub(crate) fn pending_copies(state: &Calendar) -> Vec<&RemoteCopy> {
         .collect()
 }
 
-pub(crate) fn drain(cx: &RecordEnv<Calendar>, accounts: &DeviceAccounts) {
+pub(crate) fn drain(cx: &ResourceEnv<Calendar>, accounts: &DeviceAccounts) {
     let owner = Rc::clone(accounts);
     let held = Rc::clone(accounts);
     cx.outbox(

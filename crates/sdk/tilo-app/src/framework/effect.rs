@@ -16,7 +16,7 @@
 //!
 //! An outside consequence a verb queued in an
 //! [`Outbox`](tilo_resource::Outbox) is carried out with
-//! [`RecordEnv::outbox`](super::RecordEnv::outbox): the framework runs the app's
+//! [`ResourceEnv::outbox`](super::ResourceEnv::outbox): the framework runs the app's
 //! handler in the live app on the device that owns the entry and records how
 //! it settled.
 
@@ -88,7 +88,7 @@ pub struct ChosenFile {
     /// file it can name: the same file chosen again, even renamed or moved,
     /// has the same identity, so an import can tell it already came in.
     /// `None` where files have no paths (a browser page).
-    pub identity: Option<ui_core::record::DocumentId>,
+    pub identity: Option<ui_core::resource::DocumentId>,
 }
 
 impl From<PickedContents> for ChosenFile {
@@ -97,7 +97,7 @@ impl From<PickedContents> for ChosenFile {
             identity: picked
                 .location
                 .as_deref()
-                .map(ui_core::record::DocumentId::identify_file),
+                .map(ui_core::resource::DocumentId::identify_file),
             name: picked.name,
             media_type: picked.media_type,
             bytes: picked.bytes,
@@ -133,7 +133,7 @@ impl Effected {
     }
 
     /// An outbox entry carried out, or failed for good: how it settled
-    /// ([`RecordEnv::outbox`](super::RecordEnv::outbox)). [`Self::value`] with the
+    /// ([`ResourceEnv::outbox`](super::ResourceEnv::outbox)). [`Self::value`] with the
     /// result alone settles it done.
     pub fn settled<O: serde::Serialize>(settled: &Settled<O>) -> Self {
         Self::value(settled)
@@ -699,7 +699,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
 
     /// Where the invoker asked this effect to act (its `#[param(place)]`
     /// argument): act there instead of at their caret. Once it succeeds
-    /// for a participant, they land there ([`Live::place_of`]).
+    /// for a presence, they land there ([`Live::place_of`]).
     pub fn place(&self) -> Option<&tilo_resource::Place> {
         self.inv.place.as_ref()
     }
@@ -747,7 +747,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     }
 
     /// The person this invocation runs for: its invoker, when a host
-    /// delivered it for someone, else the participant the view is for.
+    /// delivered it for someone, else the presence the view is for.
     /// `None` for a bot, an agent or an app acting, and in a past version.
     /// An effect that answers or changes what is someone's own ("my link")
     /// reads whose it is here, never from the view.
@@ -1723,7 +1723,7 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
                 owner: std::any::TypeId::of::<Then<R, H>>(),
             },
             place.as_ref(),
-            &|participant, place| live.land(participant, place),
+            &|presence, place| live.land(presence, place),
         )
     }
 
@@ -1801,13 +1801,13 @@ struct Answered<'a> {
 
 /// Start what an effect's handler answered: its output at once, or the job
 /// it started in `jobs`. `reply` tracks a job for an output a job's caller
-/// learns as the job's; `land` moves the participant where the effect was
+/// learns as the job's; `land` moves the presence where the effect was
 /// told to act once it succeeded.
 fn settle_start(
     jobs: &mut Running,
     answered: Answered<'_>,
     reply: &mut dyn FnMut() -> Progress,
-    land: &mut dyn FnMut(tilo_actions::ParticipantId),
+    land: &mut dyn FnMut(tilo_actions::PresenceId),
 ) -> Result<ResourceOperationStart, String> {
     let Answered {
         id,
@@ -1825,9 +1825,9 @@ fn settle_start(
             return Err(error);
         }
     };
-    // A participant told where to act is there now.
-    if let Some(participant) = ui_core::invocation_scope::current_participant() {
-        land(participant);
+    // A presence told where to act is there now.
+    if let Some(presence) = ui_core::invocation_scope::current_presence() {
+        land(presence);
     }
     match (answer, started, job) {
         (Effected::Done(output), started, false) => {
@@ -1923,7 +1923,7 @@ fn custody_parts(
 }
 
 /// Start in `jobs` what an effect's handler answered ([`settle_start`]),
-/// and move the participant to `place` through `land` once it succeeded.
+/// and move the presence to `place` through `land` once it succeeded.
 ///
 /// # Errors
 /// As [`settle_start`].
@@ -1933,7 +1933,7 @@ fn finish_start(
     answered: Answered<'_>,
     tracking: Tracking<'_>,
     place: Option<&tilo_resource::Place>,
-    land: &dyn Fn(tilo_actions::ParticipantId, tilo_resource::Place),
+    land: &dyn Fn(tilo_actions::PresenceId, tilo_resource::Place),
 ) -> Result<Option<ResourceOperationStart>, String> {
     let invocation = answered.invocation;
     let Tracking {
@@ -1962,9 +1962,9 @@ fn finish_start(
                 None,
             )
         },
-        &mut |participant| {
+        &mut |presence| {
             if let Some(place) = place {
-                land(participant, place.clone());
+                land(presence, place.clone());
             }
         },
     );
@@ -2077,7 +2077,7 @@ impl<R: Resource, E: Effect> ViewHandler for Handler<R, E> {
     }
 }
 
-/// A registered projection drain ([`RecordEnv::outbox`](super::RecordEnv::outbox)),
+/// A registered projection drain ([`ResourceEnv::outbox`](super::ResourceEnv::outbox)),
 /// as the view or surface that registered it holds it.
 ///
 /// A drain looks at the document after every change. When what it compares
@@ -2144,7 +2144,7 @@ type SettleEntry = Box<
 >;
 
 /// The drain of one [`Outbox`](tilo_resource::Outbox) on the device that
-/// owns its entries ([`RecordEnv::outbox`](super::RecordEnv::outbox)). Only
+/// owns its entries ([`ResourceEnv::outbox`](super::ResourceEnv::outbox)). Only
 /// reading, running and settling an entry know the resource and the entry's
 /// types ([`Effects::outbox`] builds them); the bookkeeping is compiled once.
 struct OutboxDrain {
@@ -2336,7 +2336,7 @@ impl Drainer for OutboxDrain {
 }
 
 /// A drain shared by the drains that run what is pending and, for
-/// [`RecordEnv::outbox_awaited`](super::RecordEnv::outbox_awaited), by those that
+/// [`ResourceEnv::outbox_awaited`](super::ResourceEnv::outbox_awaited), by those that
 /// run what an invocation queued.
 impl<D: Drainer> Drainer for Rc<RefCell<D>> {
     fn run(&mut self, state: &dyn Any, revision: u64) {

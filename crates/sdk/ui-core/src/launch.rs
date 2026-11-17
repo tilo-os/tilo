@@ -348,7 +348,7 @@ impl LaunchSpec {
 }
 
 pub enum LaunchError {
-    Record(crate::record::RecordOpenError),
+    Record(crate::resource::ResourceOpenError),
     Restore(crate::view::ThawError),
     DuplicateApplication(String),
     UnknownApplication(String),
@@ -360,7 +360,7 @@ pub enum LaunchError {
     /// so the caller can reopen or flush it.
     ComponentSetup {
         source: Box<LaunchError>,
-        record: Box<crate::record::DocumentCheckout>,
+        record: Box<crate::resource::DocumentCheckout>,
         recovery: LaunchRecovery,
     },
     /// A capture failed or closed dirty: `recovery` holds the close reports.
@@ -384,7 +384,7 @@ pub enum LaunchError {
     SubstituteFont(String),
     /// The record the launch opens is not on this device yet, and the workspace's join, still under
     /// way, brings it: the launch builds once the join is over instead of creating a copy here.
-    RecordNotHere,
+    ResourceNotHere,
 }
 
 impl fmt::Display for LaunchError {
@@ -431,7 +431,7 @@ impl fmt::Display for LaunchError {
             }
             Self::Scenario(message) | Self::Operation(message) => f.write_str(message),
             Self::SubstituteFont(problem) => write!(f, "refusing to capture: {problem}"),
-            Self::RecordNotHere => {
+            Self::ResourceNotHere => {
                 f.write_str("the record is not on this device yet; it arrives with the workspace")
             }
         }
@@ -487,7 +487,7 @@ impl fmt::Debug for LaunchError {
                 f.write_str("application definition cannot use legacy setup overrides")
             }
             Self::BindingMismatch => f.write_str("BindingMismatch"),
-            Self::RecordNotHere => f.write_str("RecordNotHere"),
+            Self::ResourceNotHere => f.write_str("ResourceNotHere"),
             Self::SubstituteFont(_) => f.write_str("SubstituteFont"),
         }
     }
@@ -548,7 +548,7 @@ pub struct LaunchRecovery {
 }
 
 struct RecoveryParts {
-    records: Option<crate::record::RecordStore>,
+    records: Option<crate::resource::ResourceStore>,
     reports: Vec<crate::application::ComponentCloseReport>,
 }
 
@@ -568,7 +568,7 @@ impl LaunchRecovery {
     /// Recovery owners for the current thread.
     #[must_use]
     pub fn new(
-        records: Option<crate::record::RecordStore>,
+        records: Option<crate::resource::ResourceStore>,
         reports: Vec<crate::application::ComponentCloseReport>,
     ) -> Self {
         Self {
@@ -580,7 +580,7 @@ impl LaunchRecovery {
 
     /// Only the store still holding the failed launch's record.
     #[must_use]
-    pub fn records(records: crate::record::RecordStore) -> Self {
+    pub fn records(records: crate::resource::ResourceStore) -> Self {
         Self::new(Some(records), Vec::new())
     }
 
@@ -602,7 +602,7 @@ impl LaunchRecovery {
 
     /// The record store, on the launching thread.
     #[must_use]
-    pub fn record_store(&self) -> Option<&crate::record::RecordStore> {
+    pub fn resource_store(&self) -> Option<&crate::resource::ResourceStore> {
         if self.here() {
             self.parts.records.as_ref()
         } else {
@@ -625,7 +625,7 @@ impl LaunchRecovery {
         mut self,
     ) -> Result<
         (
-            Option<crate::record::RecordStore>,
+            Option<crate::resource::ResourceStore>,
             Vec<crate::application::ComponentCloseReport>,
         ),
         Self,
@@ -641,7 +641,7 @@ impl LaunchRecovery {
     }
 
     /// The record store, taken out on the launching thread.
-    pub fn into_record_store(self) -> Result<Option<crate::record::RecordStore>, Self> {
+    pub fn into_resource_store(self) -> Result<Option<crate::resource::ResourceStore>, Self> {
         self.into_parts().map(|(records, _)| records)
     }
 
@@ -922,7 +922,7 @@ fn close_component_capture(driver: &mut FrameHarness) -> Result<(), LaunchError>
     driver.close_components();
     if driver.component_close_reports().iter().any(|report| {
         report.view_error.is_some()
-            || report.record_error.is_some()
+            || report.resource_error.is_some()
             || report.teardown_error.is_some()
     }) {
         return Err(LaunchError::ComponentCapture {
@@ -1040,11 +1040,11 @@ fn dispatch_definition_with(
                 eprintln!("headless: state open failed: {error}");
                 return Ok(DefinitionDispatch::Headless(3));
             }
-            Err(LaunchError::RecordNotHere) => {
+            Err(LaunchError::ResourceNotHere) => {
                 let parts = construction.map(|construction| construction.into_parts());
                 return Err(match parts {
                     Some((Some(manager), Some(scope))) => Unbuilt::NotHere { manager, scope },
-                    _ => Unbuilt::Failed(LaunchError::RecordNotHere),
+                    _ => Unbuilt::Failed(LaunchError::ResourceNotHere),
                 });
             }
             Err(error) => return Err(error.into()),
@@ -1179,7 +1179,7 @@ fn native_launch_manager(
         return Ok(crate::collaboration::CollaborationManager::disabled());
     }
     crate::collaboration::CollaborationManager::for_native_launch(
-        &spec.definition.record_kind,
+        &spec.definition.resource_type,
         native_connection(),
     )
     .map_err(LaunchError::from)
@@ -2063,12 +2063,12 @@ mod tests {
         let workspace = uuid::Uuid::new_v4();
         let mut _env_override = tilo_test_env::ScopedEnv::new();
         _env_override.set("TILO_WORKSPACE_ID", workspace.to_string());
-        let want = crate::record::DocumentCheckout::new(
-            crate::record::DocumentId::minted(),
-            crate::record::ResourceType::new("note"),
+        let want = crate::resource::DocumentCheckout::new(
+            crate::resource::DocumentId::minted(),
+            crate::resource::ResourceType::new("note"),
         );
         let mut history = automerge::AutoCommit::new();
-        assert!(crate::record::init_scoped(
+        assert!(crate::resource::init_scoped(
             &mut history,
             &want.id,
             &want.kind,
@@ -2092,14 +2092,14 @@ mod tests {
             );
         let construction =
             crate::collaboration::native_initial::NativeConstruction::enter(manager).unwrap();
-        let mut owners = crate::record::RecordOwners::new(
+        let mut owners = crate::resource::ResourceOwners::new(
             environment._directory.path().join("native-canonical"),
         );
         let records = owners
             .open("so.tilo.launch-fixture", &workspace.to_string())
             .unwrap();
         records
-            .open_existing_record_checked(&want)
+            .open_existing_resource_checked(&want)
             .expect("admitted remote history may populate missing local cache");
         records
             .read_checked(&want.id, |doc| {
@@ -2118,11 +2118,11 @@ mod tests {
             .unwrap();
         assert_eq!(joined(), 2);
         drop(construction);
-        let other = crate::record::DocumentCheckout::new(
-            crate::record::DocumentId::minted(),
+        let other = crate::resource::DocumentCheckout::new(
+            crate::resource::DocumentId::minted(),
             want.kind.clone(),
         );
-        assert!(records.open_existing_record_checked(&other).is_err());
+        assert!(records.open_existing_resource_checked(&other).is_err());
     }
 
     #[test]
@@ -2134,12 +2134,12 @@ mod tests {
         let workspace = uuid::Uuid::new_v4();
         let mut _env_override = tilo_test_env::ScopedEnv::new();
         _env_override.set("TILO_WORKSPACE_ID", workspace.to_string());
-        let want = crate::record::DocumentCheckout::new(
-            crate::record::DocumentId::minted(),
-            crate::record::ResourceType::new("note"),
+        let want = crate::resource::DocumentCheckout::new(
+            crate::resource::DocumentId::minted(),
+            crate::resource::ResourceType::new("note"),
         );
         let mut history = automerge::AutoCommit::new();
-        assert!(crate::record::init_scoped(
+        assert!(crate::resource::init_scoped(
             &mut history,
             &want.id,
             &want.kind,
@@ -2159,9 +2159,9 @@ mod tests {
             );
         let _construction =
             crate::collaboration::native_initial::NativeConstruction::enter(manager).unwrap();
-        let records = crate::record::RecordStore::open("so.tilo.launch-fixture");
+        let records = crate::resource::ResourceStore::open("so.tilo.launch-fixture");
         records
-            .open_existing_record_checked(&want)
+            .open_existing_resource_checked(&want)
             .expect("missing local cache is populated from the actual Existing read");
         records
             .read_checked(&want.id, |doc| {
@@ -2189,11 +2189,11 @@ mod tests {
         let workspace = uuid::Uuid::new_v4();
         let mut _env_override = tilo_test_env::ScopedEnv::new();
         _env_override.set("TILO_WORKSPACE_ID", workspace.to_string());
-        let want = crate::record::DocumentCheckout::package_primary(
-            crate::record::ResourceType::new("primary"),
+        let want = crate::resource::DocumentCheckout::package_primary(
+            crate::resource::ResourceType::new("primary"),
         );
         let mut history = automerge::AutoCommit::new();
-        assert!(crate::record::init_scoped(
+        assert!(crate::resource::init_scoped(
             &mut history,
             &want.id,
             &want.kind,
@@ -2211,11 +2211,11 @@ mod tests {
         let _construction =
             crate::collaboration::native_initial::NativeConstruction::enter(manager).unwrap();
         let mut owners =
-            crate::record::RecordOwners::new(environment._directory.path().join("primary"));
+            crate::resource::ResourceOwners::new(environment._directory.path().join("primary"));
         let records = owners
             .open("so.tilo.launch-fixture", &workspace.to_string())
             .unwrap();
-        records.open_existing_record_checked(&want).unwrap();
+        records.open_existing_resource_checked(&want).unwrap();
         assert_eq!(
             joined(),
             1,
@@ -2240,10 +2240,10 @@ mod tests {
         ) -> Result<PreparedComponentInputs, LaunchError> {
             let root = std::path::PathBuf::from(args.value("--fixture-root").unwrap());
             let workspace = args.value("--fixture-workspace").unwrap();
-            let id =
-                crate::record::DocumentId::parse(args.value("--fixture-record").unwrap()).unwrap();
-            let want = crate::record::DocumentCheckout::new(id, definition.record_kind.clone());
-            let mut owners = crate::record::RecordOwners::new(root.clone());
+            let id = crate::resource::DocumentId::parse(args.value("--fixture-record").unwrap())
+                .unwrap();
+            let want = crate::resource::DocumentCheckout::new(id, definition.resource_type.clone());
+            let mut owners = crate::resource::ResourceOwners::new(root.clone());
             let records = owners
                 .open(definition.app_id(), workspace)
                 .map_err(LaunchError::Record)?;
@@ -2269,7 +2269,7 @@ mod tests {
                 &target,
             )?;
             context
-                .read_record(|doc| {
+                .read_resource(|doc| {
                     assert_eq!(
                         doc.get(automerge::ROOT, "body")
                             .unwrap()
@@ -2296,12 +2296,12 @@ mod tests {
         }
         let environment = LaunchFixtureEnv::new();
         let workspace = uuid::Uuid::new_v4();
-        let id = crate::record::DocumentId::minted();
+        let id = crate::resource::DocumentId::minted();
         let mut history = automerge::AutoCommit::new();
-        assert!(crate::record::init_scoped(
+        assert!(crate::resource::init_scoped(
             &mut history,
             &id,
-            &crate::record::ResourceType::new("probe"),
+            &crate::resource::ResourceType::new("probe"),
             &workspace.to_string(),
             Some(&workspace.to_string())
         ));
@@ -2390,9 +2390,9 @@ mod tests {
         ) -> Result<PreparedComponentInputs, LaunchError> {
             let root = std::path::PathBuf::from(args.value("--fixture-root").unwrap());
             let workspace = args.value("--fixture-workspace").unwrap();
-            let id =
-                crate::record::DocumentId::parse(args.value("--fixture-record").unwrap()).unwrap();
-            let mut owners = crate::record::RecordOwners::new(root.clone());
+            let id = crate::resource::DocumentId::parse(args.value("--fixture-record").unwrap())
+                .unwrap();
+            let mut owners = crate::resource::ResourceOwners::new(root.clone());
             let records = owners
                 .open(definition.app_id(), workspace)
                 .map_err(LaunchError::Record)?;
@@ -2402,7 +2402,7 @@ mod tests {
             );
             // A fresh profile: the default record is only reserved here, and
             // the component factory writes its genesis after admission.
-            let context = HostContext::prepare_new_record(
+            let context = HostContext::prepare_new_resource(
                 definition,
                 crate::application::HostContextInputs {
                     records,
@@ -2424,7 +2424,7 @@ mod tests {
         }
         let environment = LaunchFixtureEnv::new();
         let workspace = uuid::Uuid::new_v4();
-        let id = crate::record::DocumentId::minted();
+        let id = crate::resource::DocumentId::minted();
         let manager = crate::collaboration::CollaborationManager::connected_fixture_for_test(
             probe::APP,
             workspace,
@@ -2486,9 +2486,9 @@ mod tests {
         use automerge::transaction::Transactable;
         let environment = LaunchFixtureEnv::new();
         let workspace = uuid::Uuid::new_v4();
-        let want = crate::record::DocumentCheckout::new(
-            crate::record::DocumentId::minted(),
-            crate::record::ResourceType::new("note"),
+        let want = crate::resource::DocumentCheckout::new(
+            crate::resource::DocumentId::minted(),
+            crate::resource::ResourceType::new("note"),
         );
         let mut history = automerge::AutoCommit::new();
         history.put(automerge::ROOT, "primary", "existing").unwrap();
@@ -2502,7 +2502,7 @@ mod tests {
         let _construction =
             crate::collaboration::native_initial::NativeConstruction::enter(manager).unwrap();
         let root = environment._directory.path().join("native-new");
-        let mut owners = crate::record::RecordOwners::new(root.clone());
+        let mut owners = crate::resource::ResourceOwners::new(root.clone());
         let records = owners
             .open("so.tilo.launch-fixture", &workspace.to_string())
             .unwrap();
@@ -2515,7 +2515,7 @@ mod tests {
         .unwrap();
         assert!(!directory.exists());
         assert!(
-            records.reserve_record(&want).is_err(),
+            records.reserve_resource(&want).is_err(),
             "Required native cannot mint a canonical writer from local absence"
         );
         assert!(
@@ -2574,7 +2574,7 @@ mod tests {
         let mut env_override = tilo_test_env::ScopedEnv::new();
         env_override.set("TILO_SVC_COLLAB_FD", "-1");
         let manager = crate::collaboration::CollaborationManager::for_native_launch(
-            &crate::record::ResourceType::new("launch-fixture.document"),
+            &crate::resource::ResourceType::new("launch-fixture.document"),
             crate::collaboration::NativeConnection::Launch,
         );
         drop(env_override);
@@ -2626,7 +2626,7 @@ mod prepared_launch_tests {
     ) -> Result<PreparedComponentInputs, LaunchError> {
         PREPARES.set(PREPARES.get().saturating_add(1));
         let root = PathBuf::from(args.value("--fixture-root").expect("explicit test root"));
-        let mut owners = crate::record::RecordOwners::new(root.clone());
+        let mut owners = crate::resource::ResourceOwners::new(root.clone());
         let records = owners.open(APP, WORKSPACE).map_err(LaunchError::Record)?;
         let views = Rc::new(
             crate::application_view::InstanceViewStore::new(root, DEVICE, WORKSPACE)
@@ -3038,14 +3038,14 @@ mod prepared_launch_tests {
                 .load(11)
                 .unwrap()
                 .unwrap();
-                let checkout = crate::record::DocumentCheckout::new(
-                    crate::record::DocumentId::parse(&saved.record_id).unwrap(),
-                    runner_probe_definition().record_kind.clone(),
+                let checkout = crate::resource::DocumentCheckout::new(
+                    crate::resource::DocumentId::parse(&saved.document_id).unwrap(),
+                    runner_probe_definition().resource_type.clone(),
                 );
-                let records = crate::record::RecordOwners::new(root)
+                let records = crate::resource::ResourceOwners::new(root)
                     .open(APP, WORKSPACE)
                     .unwrap();
-                records.try_open_record(&checkout).unwrap();
+                records.try_open_resource(&checkout).unwrap();
                 assert_eq!(
                     body(&records, &checkout),
                     "edited",
@@ -3110,7 +3110,7 @@ mod prepared_launch_tests {
                 .into_iter()
                 .find(|report| report.view_error.is_some())
                 .unwrap();
-            assert!(failed.record_error.is_none());
+            assert!(failed.resource_error.is_none());
             assert!(failed.view_retry.is_some());
             assert!(!temp.path().join("never.png").exists());
             std::fs::remove_file(root.join("instance-views")).unwrap();
@@ -3121,14 +3121,14 @@ mod prepared_launch_tests {
                     .load(11)
                     .unwrap()
                     .unwrap();
-            let checkout = crate::record::DocumentCheckout::new(
-                crate::record::DocumentId::parse(&saved.record_id).unwrap(),
-                runner_probe_definition().record_kind.clone(),
+            let checkout = crate::resource::DocumentCheckout::new(
+                crate::resource::DocumentId::parse(&saved.document_id).unwrap(),
+                runner_probe_definition().resource_type.clone(),
             );
-            let records = crate::record::RecordOwners::new(root)
+            let records = crate::resource::ResourceOwners::new(root)
                 .open(APP, WORKSPACE)
                 .unwrap();
-            records.try_open_record(&checkout).unwrap();
+            records.try_open_resource(&checkout).unwrap();
             assert_eq!(body(&records, &checkout), "edited");
         }
         {
@@ -3272,9 +3272,9 @@ mod prepared_launch_tests {
         args: &LaunchArgs,
     ) -> Result<PreparedComponentInputs, LaunchError> {
         let mut prepared = prepare(definition, args)?;
-        prepared.target = existing(&crate::record::DocumentCheckout::new(
-            crate::record::DocumentId::minted(),
-            definition.record_kind.clone(),
+        prepared.target = existing(&crate::resource::DocumentCheckout::new(
+            crate::resource::DocumentId::minted(),
+            definition.resource_type.clone(),
         ));
         Ok(prepared)
     }
@@ -3284,10 +3284,10 @@ mod prepared_launch_tests {
     ) -> Result<PreparedComponentInputs, LaunchError> {
         prepare_target(definition, args, LaunchTarget::New, permissions())
     }
-    fn corrupt_checkout() -> crate::record::DocumentCheckout {
-        crate::record::DocumentCheckout::new(
-            crate::record::DocumentId::for_file("/explicit-test-record"),
-            crate::record::ResourceType::new("probe"),
+    fn corrupt_checkout() -> crate::resource::DocumentCheckout {
+        crate::resource::DocumentCheckout::new(
+            crate::resource::DocumentId::for_file("/explicit-test-record"),
+            crate::resource::ResourceType::new("probe"),
         )
     }
     fn existing_preparer(

@@ -109,10 +109,20 @@ pub(crate) enum Hit {
     },
     /// Open the window a message shares, as a window of this person's own.
     OpenShare(Id),
+    /// Grow the window a message shares, to work in it where the
+    /// conversation shows it.
+    GrowShare(Id),
+    /// Make the window a message shares a miniature again.
+    ShrinkShare(Id),
     /// Stop sharing the window a message of yours shares.
     StopShare(Id),
     /// Let the others do this with the window a message of yours shares.
     SwitchShare(Id, crate::record::ShareAccess),
+    /// Give this answer to the question a message asks this person.
+    Answer {
+        msg: Id,
+        answer: String,
+    },
     /// Open the "Share a window" panel from the attach menu.
     ShareWindowPanel,
     /// What the people a window is shared with may do there.
@@ -124,8 +134,8 @@ pub(crate) enum Hit {
     CloseThread,
     /// Grab the floating call overlay to drag it (records the press point).
     CallDragHandle,
-    /// Toggle the participant list expand/collapse in the overlay.
-    CallParticipantsToggle,
+    /// Toggle the member list expand/collapse in the overlay.
+    CallMembersToggle,
     CallMute,
     /// Hear nothing of the call (and be muted), or hear it again.
     CallDeafen,
@@ -140,7 +150,7 @@ pub(crate) enum Hit {
     CallOpenWindow,
     /// Someone else in the call, by person id: opens how loud they play
     /// here.
-    CallParticipant(ui::tilo_resource::MemberId),
+    CallMember(ui::tilo_resource::MemberId),
     /// Toggle the right flap (members / thread).
     ToggleRightFlap,
     /// Show or hide the open channel's pinned messages in the detail drawer.
@@ -194,8 +204,11 @@ impl Hit {
                 format!("chat.open-resource:{msg}:{attachment}")
             }
             Self::OpenShare(id) => format!("chat.open-share:{id}"),
+            Self::GrowShare(id) => format!("chat.grow-share:{id}"),
+            Self::ShrinkShare(id) => format!("chat.shrink-share:{id}"),
             Self::StopShare(id) => format!("chat.stop-sharing:{id}"),
             Self::SwitchShare(id, access) => format!("chat.switch-share:{id}:{}", access.as_str()),
+            Self::Answer { msg, answer } => format!("chat.answer:{msg}:{answer}"),
             Self::ShareWindowPanel => "chat.share-window".into(),
             Self::ShareAccess(access) => format!("chat.share-access:{}", access.as_str()),
             Self::SharePick(tab) => format!("chat.share-pick:{tab}"),
@@ -220,11 +233,11 @@ impl Hit {
             Self::CallDeafen => "chat.call-deafen".into(),
             Self::CallCamera => "chat.call-camera".into(),
             Self::CallScreen => "chat.call-screen".into(),
-            Self::CallParticipantsToggle => "chat.call-participants".into(),
+            Self::CallMembersToggle => "chat.call-members".into(),
             Self::CallExpand => "chat.call-expand".into(),
             Self::CallLeave => "chat.call-leave".into(),
             Self::CallOpenWindow => "chat.call-open-window".into(),
-            Self::CallParticipant(id) => format!("chat.call-participant:{}", id.id()),
+            Self::CallMember(id) => format!("chat.call-member:{}", id.id()),
             other => format!("chat.control:{other:?}"),
         }
     }
@@ -448,6 +461,13 @@ impl ChatApp {
                         Role::Button,
                         false,
                     ),
+                    // An answer reads as its button does: the asker's own
+                    // words, or the words of the kind's own answers.
+                    Hit::Answer { msg, answer } => (
+                        content(self.question_answer_label(msg, answer)),
+                        Role::Button,
+                        false,
+                    ),
                     Hit::StartCall => (copy("chat-call-start-or-open"), Role::Button, false),
                     Hit::StopSharingLiveContext => (copy("chat-context-stop"), Role::Button, false),
                     Hit::ReplayRecording(message) => (
@@ -488,6 +508,30 @@ impl ChatApp {
                                     ),
                                     ("name", self.user_name(&m.author).into()),
                                 ],
+                            )
+                        })),
+                        Role::Button,
+                        false,
+                    ),
+                    Hit::GrowShare(message) => (
+                        content(
+                            self.message(message)
+                                .map_or_else(String::new, |m| self.grow_share_label(m)),
+                        ),
+                        Role::Button,
+                        false,
+                    ),
+                    Hit::ShrinkShare(message) => (
+                        content(self.message(message).map_or_else(String::new, |m| {
+                            crate::i18n::t_args(
+                                "chat-share-make-smaller",
+                                &[(
+                                    "title",
+                                    m.resource()
+                                        .map(|at| at.reference.label.clone())
+                                        .unwrap_or_default()
+                                        .into(),
+                                )],
                             )
                         })),
                         Role::Button,
@@ -650,10 +694,10 @@ impl ChatApp {
                         Role::ToggleButton,
                         self.call.sharing,
                     ),
-                    Hit::CallParticipantsToggle => (
-                        copy("chat-call-participants-show"),
+                    Hit::CallMembersToggle => (
+                        copy("chat-call-members-show"),
                         Role::ToggleButton,
-                        self.call.participants_expanded,
+                        self.call.members_expanded,
                     ),
                     Hit::CallExpand => (
                         copy("chat-call-expand-restore"),
@@ -662,9 +706,9 @@ impl ChatApp {
                     ),
                     Hit::CallLeave => (copy("chat-call-leave-action"), Role::Button, false),
                     Hit::CallOpenWindow => (copy("chat-call-open-window"), Role::Button, false),
-                    Hit::CallParticipant(id) => (
+                    Hit::CallMember(id) => (
                         content(crate::i18n::t_args(
-                            "chat-call-participant",
+                            "chat-call-member",
                             &[("name", self.user_name(id).into())],
                         )),
                         Role::Button,
@@ -740,7 +784,7 @@ impl ChatApp {
                         | Hit::CallLeave
                         | Hit::CallScreen
                         | Hit::CallExpand
-                        | Hit::CallParticipantsToggle
+                        | Hit::CallMembersToggle
                         | Hit::Attach
                         | Hit::Send
                         | Hit::RetrySend

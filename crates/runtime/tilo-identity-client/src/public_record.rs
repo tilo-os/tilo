@@ -8,7 +8,7 @@ use zeroize::Zeroizing;
 
 use crate::{IdentityMetadata, NotAvailable, ProfilePhoto};
 
-const MAX_RECORD_BYTES: u64 = 1024 * 1024;
+const MAX_DOCUMENT_BYTES: u64 = 1024 * 1024;
 
 #[derive(Deserialize)]
 struct PublicRecord {
@@ -33,7 +33,7 @@ struct PublicIdentity {
 /// decoded. The caller authenticates the public key on its own before trusting
 /// it.
 pub fn load_metadata_from_bytes(bytes: &[u8]) -> Result<IdentityMetadata, NotAvailable> {
-    if bytes.len() as u64 > MAX_RECORD_BYTES {
+    if bytes.len() as u64 > MAX_DOCUMENT_BYTES {
         return Err(invalid_record("identity record exceeds the size limit"));
     }
     let record: PublicRecord = serde_json::from_slice(bytes).map_err(|error| {
@@ -56,7 +56,7 @@ pub fn load_metadata_from_bytes(bytes: &[u8]) -> Result<IdentityMetadata, NotAva
 }
 
 pub fn load_metadata_from_path(path: &Path) -> Result<IdentityMetadata, NotAvailable> {
-    let bytes = read_private(path, MAX_RECORD_BYTES).map_err(NotAvailable::ConnectionFailed)?;
+    let bytes = read_private(path, MAX_DOCUMENT_BYTES).map_err(NotAvailable::ConnectionFailed)?;
     load_metadata_from_bytes(&bytes)
 }
 

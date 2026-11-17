@@ -155,7 +155,7 @@ fn receipts_checked<R: WorkspaceRead>(
             },
         )
         .map_err(read_error)?;
-    // Two participants may admit through one invitation at once, each
+    // Two key holders may admit through one invitation at once, each
     // before it holds the other's receipt: both receipts stay, as every
     // receiver holds them alike.
     for (key, values) in &receipts {

@@ -49,7 +49,7 @@ pub(crate) fn import(context: &HostContext) -> Result<(), String> {
         return Ok(());
     }
     let held = context
-        .read_record(<Contacts as ui::tilo_resource::Resource>::read)
+        .read_resource(<Contacts as ui::tilo_resource::Resource>::read)
         .map_err(|error| error.to_string())?
         .map_err(|error| error.to_string())?;
     let mut seen = std::collections::BTreeSet::new();
@@ -59,14 +59,18 @@ pub(crate) fn import(context: &HostContext) -> Result<(), String> {
     if cards.is_empty() {
         return Ok(());
     }
-    let author = context.author().key();
+    let author = context.author().clone();
     context
-        .migrate_record(move |doc| apply(doc, cards, &author).map(|()| true))
+        .migrate_resource(move |doc| apply(doc, cards, author).map(|()| true))
         .map(drop)
 }
 
-fn apply(doc: &mut automerge::AutoCommit, cards: Vec<Contact>, author: &str) -> Result<(), String> {
-    let mut replica = Replica::<Contacts>::from_doc(doc.clone()).as_author(author);
+fn apply(
+    doc: &mut automerge::AutoCommit,
+    cards: Vec<Contact>,
+    author: ui::tilo_resource::MemberId,
+) -> Result<(), String> {
+    let mut replica = Replica::<Contacts>::from_doc(doc.clone()).as_member(author);
     replica
         .apply_confirmed(Contacts::add_all(cards))
         .map_err(|error| error.to_string())?;
@@ -85,7 +89,12 @@ mod tests {
         );
         let mut replica = Replica::<Contacts>::new();
         let mut doc = replica.doc_mut().clone();
-        apply(&mut doc, parsed, "firstboot").unwrap();
+        apply(
+            &mut doc,
+            parsed,
+            ui::tilo_resource::MemberId::person("firstboot"),
+        )
+        .unwrap();
         let held = <Contacts as ui::tilo_resource::Resource>::read(&doc).unwrap();
         let card = held.contacts.iter().next().unwrap();
         assert_eq!(card.display_name(), "Ada Lovelace");

@@ -53,8 +53,8 @@ impl BarChipProps {
             .map(|who| {
                 Face::new(
                     &who.name,
-                    &who.identity,
-                    crate::presence::identity_colour(&who.identity),
+                    who.identity.id(),
+                    crate::presence::identity_colour(who.identity.id()),
                 )
             })
             .collect()
@@ -111,7 +111,7 @@ impl BarChip {
             chip = chip.label_width(width);
         }
         if let Some(who) = &self.props.tone {
-            chip = chip.tone(crate::presence::identity_colour(&who.identity));
+            chip = chip.tone(crate::presence::identity_colour(who.identity.id()));
         }
         chip
     }
@@ -136,6 +136,17 @@ impl BarChip {
 
 impl Widget for BarChip {
     crate::described!();
+    /// A bar chip as a page's own button: its face, composed by the code a page
+    /// links.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("button");
+        let theme = cx.theme();
+        let ground = theme.tokens.colors.surfaces.content;
+        match crate::composition::bar_chip_face(&self.face(theme, &[]), theme, ground) {
+            Some(face) => cx.face(face),
+            None => cx.picture(),
+        }
+    }
 
     fn build_layout(
         &mut self,

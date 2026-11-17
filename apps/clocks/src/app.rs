@@ -1355,7 +1355,7 @@ pub struct ClocksApp {
     presented: Option<(u64, u64)>,
     /// Whether this window is one someone uses: it rings and talks to the shell.
     live: bool,
-    record: Option<ui::record::DocumentId>,
+    record: Option<ui::resource::DocumentId>,
     opener: Option<ui::framework::OpenHere>,
     opened: bool,
     pub(crate) last_notification: Option<(String, String, String)>,
@@ -1377,7 +1377,7 @@ impl ClocksApp {
         document: Live<Clocks>,
         live: bool,
         (record, opener): (
-            Option<ui::record::DocumentId>,
+            Option<ui::resource::DocumentId>,
             Option<ui::framework::OpenHere>,
         ),
     ) -> Self {

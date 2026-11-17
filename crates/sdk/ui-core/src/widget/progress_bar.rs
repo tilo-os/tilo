@@ -332,6 +332,16 @@ fn pct_to_i64(pct: f32) -> i64 {
 }
 
 impl Widget for ProgressBar {
+    /// The browser's own bar: its value where it knows one, its label for a reader.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("progress");
+        cx.attr("max", "100");
+        if !self.indeterminate {
+            let pct = (self.progress.clamp(0.0, 1.0) * 100.0).round();
+            cx.attr("value", format!("{pct:.0}"));
+        }
+    }
+
     crate::described!();
 
     crate::provides!(

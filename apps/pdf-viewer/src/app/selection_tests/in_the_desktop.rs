@@ -12,7 +12,7 @@ use vello::kurbo::Point;
 use super::{PdfApp, glyph_at, past, text_pdf};
 
 struct Readers {
-    owners: ui::record::RecordOwners,
+    owners: ui::resource::ResourceOwners,
     state: std::path::PathBuf,
     queue: OwnerWakeQueue,
     pdf: std::path::PathBuf,
@@ -127,7 +127,7 @@ fn a_drag_in_a_desktop_window_selects_the_text_and_ctrl_c_copies_it() {
         seed_tree(&mut minter, "Shell", tabs),
         29,
         Box::new(Readers {
-            owners: ui::record::RecordOwners::new(state.clone()),
+            owners: ui::resource::ResourceOwners::new(state.clone()),
             state,
             queue: queue.clone(),
             pdf,

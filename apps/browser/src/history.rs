@@ -93,7 +93,7 @@ impl History {
     /// Record a visit to `url` with `title` at `now` (Unix seconds), so ranking
     /// stays testable. A known URL bumps its count and visit time and takes a
     /// non-empty title; a blank URL is ignored.
-    pub fn record_at(&mut self, url: &str, title: &str, now: u64) {
+    pub fn document_at(&mut self, url: &str, title: &str, now: u64) {
         let url = url.trim();
         if url.is_empty() || url.len() > MAX_HISTORY_URL_BYTES {
             return;
@@ -686,8 +686,8 @@ mod tests {
         {
             {
                 let mut h = History::new();
-                h.record_at("https://a.test", "First", 100);
-                h.record_at("https://a.test", "Second", 200);
+                h.document_at("https://a.test", "First", 100);
+                h.document_at("https://a.test", "Second", 200);
                 assert_eq!(h.len(), 1, "same URL collapses to one entry");
                 let e = &h.entries()[0];
                 assert_eq!(e.visit_count, 2, "revisit bumps the count");
@@ -697,8 +697,8 @@ mod tests {
 
             {
                 let mut h = History::new();
-                h.record_at("https://a.test", "Real Title", 100);
-                h.record_at("https://a.test", "   ", 200);
+                h.document_at("https://a.test", "Real Title", 100);
+                h.document_at("https://a.test", "   ", 200);
                 assert_eq!(
                     h.entries()[0].title,
                     "Real Title",
@@ -708,21 +708,21 @@ mod tests {
 
             {
                 let mut h = History::new();
-                h.record_at("   ", "nope", 100);
+                h.document_at("   ", "nope", 100);
                 assert!(h.is_empty(), "a blank URL is not recorded");
             }
 
             {
                 let mut h = History::new();
-                h.record_at("https://a.test", "A", 100);
-                h.record_at("https://b.test", "B", 100);
+                h.document_at("https://a.test", "A", 100);
+                h.document_at("https://b.test", "B", 100);
                 assert_eq!(h.len(), 2);
             }
 
             {
                 let mut h = History::new();
                 for index in 0..=MAX_HISTORY_ENTRIES {
-                    h.record_at(
+                    h.document_at(
                         &format!("https://{index}.example.test"),
                         "Page",
                         u64::try_from(index).unwrap_or(u64::MAX),
@@ -857,7 +857,7 @@ mod tests {
 
             let mut h = History::new();
             for i in 0..10 {
-                h.record_at(&format!("https://site{i}.test"), "Site", 1_000 + i as u64);
+                h.document_at(&format!("https://site{i}.test"), "Site", 1_000 + i as u64);
             }
             let out = h.suggest_at("site", 3, 5_000);
             assert_eq!(out.len(), 3, "the result is capped at the limit");

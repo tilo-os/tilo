@@ -84,10 +84,10 @@ fn dropped_input(
     let (app, record, sequence) = match message {
         NeighbourMsg::AppDocument {
             app_id,
-            record_id,
+            document_id,
             envelope,
             ..
-        } => (app_id.clone(), record_id.clone(), envelope.seq),
+        } => (app_id.clone(), document_id.clone(), envelope.seq),
         _ => (String::new(), String::new(), 0),
     };
     DroppedInput {
@@ -125,7 +125,7 @@ impl StatePeer {
         // already, it was asked for when it first came.
         let lacks_history = matches!(
             prerequisite,
-            MissingPrerequisite::CausalDependencies | MissingPrerequisite::RecordCheckpoint
+            MissingPrerequisite::CausalDependencies | MissingPrerequisite::DocumentCheckpoint
         );
         let deferred = |dropped, lacks_history| {
             AdmissionReport::new(
@@ -276,8 +276,8 @@ impl StatePeer {
     /// waits behind it ([`MissingPrerequisite::CausalDependencies`]).
     pub(super) fn holds_cleartext_of(&self, route: &Route) -> bool {
         let held = self.core.pending.iter().any(|(_, message, _)| {
-            matches!(message, NeighbourMsg::AppDocument { app_id, record_id, envelope, .. }
-                if *app_id == route.app && *record_id == route.record && envelope.encryption.is_none())
+            matches!(message, NeighbourMsg::AppDocument { app_id, document_id, envelope, .. }
+                if *app_id == route.app && *document_id == route.record && envelope.encryption.is_none())
         });
         held || self
             .missed
@@ -334,7 +334,7 @@ impl StatePeer {
                 self.missed.authors.insert(input.author);
             }
             Some(
-                MissingPrerequisite::RecordCheckpoint
+                MissingPrerequisite::DocumentCheckpoint
                 | MissingPrerequisite::CheckpointCoverage
                 | MissingPrerequisite::CausalDependencies,
             ) => {

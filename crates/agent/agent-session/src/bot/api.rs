@@ -25,19 +25,20 @@ use tilo_actions::context::Cause;
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueRow, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
-    ReceiptStatus, RecordAddress, RecordCopy, RecordReads, RecordWake,
+    ReceiptStatus, ResourceAddress, ResourceCopy, ResourceReads, ResourceWake,
 };
 use tilo_actions::{
-    ActionContext, ActionFailure, ActionInvoker, ActionOutput, InvocationId, InvocationUpdate,
+    ActionContext, ActionFailure, ActionInvoker, ActionOutput, Actor, InvocationId,
+    InvocationUpdate, MemberId,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::item_json::OutboxRow;
-use crate::participant::actions::{api_status, record_of, record_provider};
+use crate::member::actions::{api_status, record_provider, resource_of};
 use tilo_lock::MutexRecover as _;
 
 /// What the API needs of the bot's session and replicas.
-pub trait ApiParticipant: Send {
+pub trait ApiMember: Send {
     fn workspace(&self) -> &str;
     /// The held records and what each offers the bot now.
     /// Every operation of each held record, each in the row of the resource
@@ -67,7 +68,7 @@ pub trait ApiParticipant: Send {
     fn find_in_history(
         &self,
         step: &RunStep,
-        actor: &str,
+        actor: &Actor,
     ) -> Option<(DocumentRoute, ActionContext)>;
     /// The outbox stored at `field` of the record at `route`, in order.
     fn outbox(&self, route: &DocumentRoute, field: &str) -> Vec<OutboxRow>;
@@ -77,7 +78,7 @@ pub trait ApiParticipant: Send {
         &self,
         route: &DocumentRoute,
         step: &RunStep,
-        actor: &str,
+        actor: &Actor,
         field: &str,
     ) -> Vec<String>;
 }
@@ -87,15 +88,12 @@ pub trait ApiParticipant: Send {
 pub(crate) fn step_change(
     doc: &automerge::Automerge,
     step: &RunStep,
-    actor: &str,
+    actor: &Actor,
 ) -> Option<(automerge::Change, ActionContext)> {
     doc.get_changes(&[]).into_iter().rev().find_map(|change| {
         let context = ActionContext::from_change_message(change.message()?)?;
-        let by = context
-            .invoker
-            .as_ref()
-            .map(|invoker: &tilo_actions::ActionInvoker| invoker.acting.by.key());
-        (RunStep::of(&context).as_ref() == Some(step) && by.as_deref() == Some(actor))
+        let by = context.invoker.as_ref().map(|invoker| &invoker.acting.by);
+        (RunStep::of(&context).as_ref() == Some(step) && by == Some(actor))
             .then(|| (change.clone(), context))
     })
 }
@@ -106,7 +104,7 @@ pub(crate) fn step_change(
 pub(crate) fn queued_by_step(
     doc: &automerge::Automerge,
     step: &RunStep,
-    actor: &str,
+    actor: &Actor,
     field: &str,
 ) -> Vec<String> {
     let Some((change, _)) = step_change(doc, step, actor) else {
@@ -177,8 +175,8 @@ pub struct OutboxSpec {
 }
 
 /// The `ActionHost` one installation's runs act through.
-pub struct BotApi<P: ApiParticipant> {
-    participant: Arc<Mutex<P>>,
+pub struct BotApi<P: ApiMember> {
+    member: Arc<Mutex<P>>,
     installation: String,
     installer: String,
     outboxes: Vec<OutboxSpec>,
@@ -187,16 +185,16 @@ pub struct BotApi<P: ApiParticipant> {
     ledger: Mutex<HashMap<InvocationId, ReceiptStatus>>,
 }
 
-impl<P: ApiParticipant> BotApi<P> {
+impl<P: ApiMember> BotApi<P> {
     /// The API of installation `installation`, installed by `installer`.
     pub fn new(
-        participant: Arc<Mutex<P>>,
+        member: Arc<Mutex<P>>,
         installation: String,
         installer: String,
         outboxes: Vec<OutboxSpec>,
     ) -> Self {
         Self {
-            participant,
+            member,
             installation,
             installer,
             outboxes,
@@ -223,8 +221,8 @@ impl<P: ApiParticipant> BotApi<P> {
         self.cause.lock_recover().clone()
     }
 
-    fn actor(&self) -> String {
-        format!("bot:{}", self.installation)
+    fn actor(&self) -> Actor {
+        Actor::Member(MemberId::bot(self.installation.clone()))
     }
 
     fn its_own(&self, caller: &Caller) -> bool {
@@ -236,15 +234,15 @@ impl<P: ApiParticipant> BotApi<P> {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, P> {
-        self.participant.lock_recover()
+        self.member.lock_recover()
     }
 
     fn catalogue(&self, query: &CatalogueQuery) -> CataloguePage {
-        let participant = self.lock();
-        let workspace = participant.workspace().to_owned();
+        let member = self.lock();
+        let workspace = member.workspace().to_owned();
         let mut rows = Vec::new();
         let mut providers = Vec::new();
-        for (route, offered) in participant.offered() {
+        for (route, offered) in member.offered() {
             let provider = record_provider(&route);
             if query
                 .provider
@@ -257,7 +255,7 @@ impl<P: ApiParticipant> BotApi<P> {
                 provider: provider.clone(),
                 app_id: route.app_id.clone(),
                 workspace: workspace.clone(),
-                record_id: route.record.clone(),
+                document_id: route.record.clone(),
                 browsable: false,
             });
             rows.extend(offered.into_iter().map(|mut row| {
@@ -266,7 +264,7 @@ impl<P: ApiParticipant> BotApi<P> {
                 row
             }));
         }
-        drop(participant);
+        drop(member);
         let mut page = CataloguePage::from_rows(String::from("0"), rows, query);
         if query.provider.is_none() {
             page.providers = providers;
@@ -278,21 +276,15 @@ impl<P: ApiParticipant> BotApi<P> {
         // The name the step shows, if any: every member admits it only from
         // a bot its installation lets post under other names.
         let invoker = self.invoker().with_appearance(request.appearance.clone());
-        let mut participant = self.lock();
-        let route = record_of(&request.target.provider, participant.workspace())
-            .filter(|route| participant.holds(route))
+        let mut member = self.lock();
+        let route = resource_of(&request.target.provider, member.workspace())
+            .filter(|route| member.holds(route))
             .ok_or(ActionHostError::UnknownAction)?;
         let step = request.context.as_ref().and_then(RunStep::of);
         if let Some(step) = step.as_ref()
-            && let Some((route, done)) = participant.find_in_history(step, &self.actor())
+            && let Some((route, done)) = member.find_in_history(step, &self.actor())
         {
-            return self.answer_from_history(
-                participant,
-                &route,
-                &request.target.address,
-                step,
-                &done,
-            );
+            return self.answer_from_history(member, &route, &request.target.address, step, &done);
         }
         let arguments = match &request.argument {
             InvokeArgument::Json(map) => map.clone(),
@@ -309,7 +301,7 @@ impl<P: ApiParticipant> BotApi<P> {
             .find(|spec| spec.app_id == route.app_id);
         let before: Vec<String> = spec
             .map(|spec| {
-                participant
+                member
                     .outbox(&route, &spec.field)
                     .into_iter()
                     .map(|row| row.id)
@@ -321,7 +313,7 @@ impl<P: ApiParticipant> BotApi<P> {
             .clone()
             .unwrap_or_default()
             .with_caused_by(self.cause());
-        let output = match participant.invoke(
+        let output = match member.invoke(
             &route,
             &request.target.address,
             &arguments,
@@ -335,12 +327,12 @@ impl<P: ApiParticipant> BotApi<P> {
         let Some(spec) = spec else {
             return Ok(ReceiptStatus::Completed { output });
         };
-        let queued: Vec<OutboxRow> = participant
+        let queued: Vec<OutboxRow> = member
             .outbox(&route, &spec.field)
             .into_iter()
             .filter(|row| row.settled.is_none() && !before.contains(&row.id))
             .collect();
-        drop(participant);
+        drop(member);
         if queued.is_empty() {
             return Ok(ReceiptStatus::Completed { output });
         }
@@ -359,7 +351,7 @@ impl<P: ApiParticipant> BotApi<P> {
     ) -> Result<ReceiptStatus, ActionHostError> {
         let mut results = Vec::new();
         for row in queued {
-            // The worker is waited on without holding the participant, so
+            // The worker is waited on without holding the member, so
             // the runner's pump keeps taking in the session meanwhile.
             match spec.connector.perform(row.value) {
                 Ok(value) => {
@@ -424,7 +416,7 @@ impl<P: ApiParticipant> BotApi<P> {
     /// what the service answered rather than nothing.
     fn answer_from_history(
         &self,
-        participant: std::sync::MutexGuard<'_, P>,
+        member: std::sync::MutexGuard<'_, P>,
         route: &DocumentRoute,
         address: &ActionAddress,
         step: &RunStep,
@@ -439,16 +431,16 @@ impl<P: ApiParticipant> BotApi<P> {
                 output: ActionOutput::default(),
             });
         };
-        let mut queued = participant.queued_in_history(route, step, &self.actor(), &spec.field);
+        let mut queued = member.queued_in_history(route, step, &self.actor(), &spec.field);
         if let Some(item) = &done.item {
             queued.push(item.id.clone());
         }
-        let rows: Vec<OutboxRow> = participant
+        let rows: Vec<OutboxRow> = member
             .outbox(route, &spec.field)
             .into_iter()
             .filter(|row| queued.contains(&row.id))
             .collect();
-        drop(participant);
+        drop(member);
         let unsettled: Vec<OutboxRow> = rows
             .iter()
             .filter(|row| row.settled.is_none())
@@ -481,19 +473,19 @@ fn is_bot(caller: &Caller, installation: &str) -> bool {
 }
 
 /// The bot's record reads: what its runs read of the records it follows,
-/// from the copies it holds ([`ApiParticipant::record`]). A run reads the
+/// from the copies it holds ([`ApiMember::record`]). A run reads the
 /// records as they were brought up to before it, with its own changes since.
-struct BotReads<P: ApiParticipant> {
-    participant: Arc<Mutex<P>>,
+struct BotReads<P: ApiMember> {
+    member: Arc<Mutex<P>>,
     installation: String,
 }
 
-impl<P: ApiParticipant + 'static> RecordReads for BotReads<P> {
+impl<P: ApiMember + 'static> ResourceReads for BotReads<P> {
     fn answer_read(
         self: Arc<Self>,
         caller: &Caller,
         correlation: u64,
-        read: tilo_actions::remote::RecordReadRequest,
+        read: tilo_actions::remote::ResourceReadRequest,
     ) -> tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage> {
         tilo_actions::remote::answer_read(self, caller, correlation, read)
     }
@@ -501,20 +493,20 @@ impl<P: ApiParticipant + 'static> RecordReads for BotReads<P> {
     fn read(
         &self,
         caller: &Caller,
-        address: &RecordAddress,
-    ) -> Result<RecordCopy, ActionHostError> {
+        address: &ResourceAddress,
+    ) -> Result<ResourceCopy, ActionHostError> {
         if !is_bot(caller, &self.installation) {
             return Err(ActionHostError::NotPermitted);
         }
-        let participant = self.participant.lock_recover();
+        let member = self.member.lock_recover();
         let route = DocumentRoute {
             app_id: address.app.clone(),
-            cluster_id: participant.workspace().to_owned(),
+            cluster_id: member.workspace().to_owned(),
             record: address.record.clone(),
         };
-        match participant.record(&route) {
-            Ok(Some(document)) => Ok(RecordCopy::Document(document)),
-            Ok(None) => Ok(RecordCopy::Absent),
+        match member.record(&route) {
+            Ok(Some(document)) => Ok(ResourceCopy::Document(document)),
+            Ok(None) => Ok(ResourceCopy::Absent),
             Err(reason) => Err(ActionHostError::Refused { reason }),
         }
     }
@@ -524,8 +516,8 @@ impl<P: ApiParticipant + 'static> RecordReads for BotReads<P> {
     fn watch(
         &self,
         caller: &Caller,
-        _: &RecordAddress,
-        _: &RecordWake,
+        _: &ResourceAddress,
+        _: &ResourceWake,
     ) -> Result<(), ActionHostError> {
         if is_bot(caller, &self.installation) {
             Ok(())
@@ -562,7 +554,7 @@ fn update_of(invocation: InvocationId, status: &ReceiptStatus) -> Option<Invocat
     }
 }
 
-impl<P: ApiParticipant + 'static> ActionHost for BotApi<P> {
+impl<P: ApiMember + 'static> ActionHost for BotApi<P> {
     fn query(
         &self,
         caller: &Caller,
@@ -611,9 +603,9 @@ impl<P: ApiParticipant + 'static> ActionHost for BotApi<P> {
         update_of(*id, &status).map(|update| InvocationState::new(*id, update))
     }
 
-    fn record_reads(&self) -> Option<Arc<dyn RecordReads>> {
+    fn resource_reads(&self) -> Option<Arc<dyn ResourceReads>> {
         Some(Arc::new(BotReads {
-            participant: Arc::clone(&self.participant),
+            member: Arc::clone(&self.member),
             installation: self.installation.clone(),
         }))
     }

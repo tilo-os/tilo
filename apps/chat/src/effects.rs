@@ -63,7 +63,7 @@ pub enum ChatEffect {
     },
     /// Show or hide reasoning actually supplied by the provider, in the
     /// caller's own view.
-    #[effect(view, row, item = messages, audience = "agents", participant)]
+    #[effect(view, row, item = messages, audience = "agents", presence)]
     ShowAgentReasoning { message: String, expanded: bool },
     /// Open conversation
     #[effect(view, row, item = channels)]
@@ -80,7 +80,7 @@ pub enum ChatEffect {
     ///
     /// Scrolls the caller's own view to the message: the view its row
     /// discloses through, under the reader's read of the chat's messages.
-    #[effect(view, row, item = messages, participant)]
+    #[effect(view, row, item = messages, presence)]
     RevealMessage { message: String },
     /// Reveal message range
     #[effect(view, row, returns, item = messages, audience = "agents")]
@@ -97,11 +97,11 @@ pub enum ChatEffect {
     #[effect(view, row, item = people)]
     OpenPerson { user: String },
     /// Open the conversation with an agent: where search's agent hit goes.
-    #[effect(view, returns, participant)]
+    #[effect(view, returns, presence)]
     OpenAgent { agent: String },
     /// Open the conversation with a certified person public key: it changes
     /// only whose view is showing what.
-    #[effect(view, audience = "agents", participant)]
+    #[effect(view, audience = "agents", presence)]
     OpenDirectConversation { public_key: String },
     /// Send to the direct conversation with a certified person public key.
     #[effect(job, returns, audience = "agents")]
@@ -699,10 +699,7 @@ impl ChatApp {
                     message.author == *user
                         || message.mentions.iter().any(|mention| mention.user == *user)
                         || message.reactions.iter().any(|reaction| {
-                            reaction
-                                .reactors
-                                .iter()
-                                .any(|reactor| reactor.by == *user)
+                            reaction.reactors.iter().any(|reactor| reactor.by == *user)
                         })
                 })
                 .and_then(|message| self.channel(&message.channel))
@@ -898,8 +895,7 @@ impl ChatApp {
         // leaves that unsaid: "Reading agent", and "Helper for Ada" for one that wrote for a
         // person.
         let author = self.message_author_label(message, crate::identity::RoleWord::InBadge);
-        let agent = crate::host_model::is_provider_output(message)
-            || !message.author.is_person();
+        let agent = crate::host_model::is_provider_output(message) || !message.author.is_person();
         let mut row = LiveRow::new(
             item_row_id("messages", id),
             "chat.workspace.messages",

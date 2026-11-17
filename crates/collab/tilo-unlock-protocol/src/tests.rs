@@ -58,7 +58,8 @@ fn certificates_are_root_signed_and_tamper_evident() {
 
 #[test]
 fn enrol_request_proves_the_boot_key() {
-    let request = EnrolRequest::new(&boot_key(), slot(), None, Half::from_bytes([5; 32])).unwrap();
+    let request =
+        EnrolRequest::new(&boot_key(), slot(), None, None, Half::from_bytes([5; 32])).unwrap();
     assert_eq!(request.verify(), Ok(()));
     let mut swapped = request.clone();
     swapped.boot_public_key = SigningKey::from_bytes(&[6; 32]).verifying_key().to_bytes();

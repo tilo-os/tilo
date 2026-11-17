@@ -2,7 +2,7 @@
 //! brings one of them into the workspace in front.
 //!
 //! A workspace holds a record by naming it: each of its apps keeps a
-//! workspace index ([`ui::record::index`]) saying which records the workspace
+//! workspace index ([`ui::resource::index`]) saying which records the workspace
 //! holds and what kind each one is, one document per app and workspace.
 //! Every app of the workspace writes that index as a shared writer, so this
 //! session writes it too: naming a record there is the same act as the app
@@ -14,7 +14,7 @@
 //! one a peer brought into a workspace — is found by its name. Bringing it
 //! here is then one write, a reference into the workspace in front: no bytes
 //! move between the two workspaces' documents and no id is minted, because
-//! the id is the record. [`ui::record::index::duplicate`] is the deliberate
+//! the id is the record. [`ui::resource::index::duplicate`] is the deliberate
 //! act of copying one instead.
 //!
 //! Reading happens away from the session's loop: the indexes are small files
@@ -34,8 +34,8 @@ use std::sync::Arc;
 use crate::platform::Store;
 use crate::platform::records::{Reading, Watch};
 use durable_store::DurableStore;
-use tilo_desktop_search::providers::records::HeldRecord;
-use ui::record::DocumentCheckout;
+use tilo_desktop_search::providers::records::HeldDocument;
+use ui::resource::DocumentCheckout;
 
 /// A record one or more workspaces on this device hold: what search offers,
 /// without the names of the workspaces, which only the shell knows.
@@ -94,7 +94,7 @@ impl Records {
             _followed: crate::platform::records::follow(&root, &store, &changes),
             root: Some(root),
             // The session's index of what apps hold answers for their content
-            // ([`crate::record_index`]): the records are offered by name.
+            // ([`crate::resource_index`]): the records are offered by name.
             ..Self::read(store, changes, false)
         }
     }
@@ -105,7 +105,7 @@ impl Records {
     /// is brought here.
     ///
     /// Such a host keeps no index of what its apps hold, so each record is also read for what its
-    /// app tells search it holds ([`tilo_app::framework::record_index::hosted_entries`]): a note is found
+    /// app tells search it holds ([`tilo_app::framework::resource_index::hosted_entries`]): a note is found
     /// by its title and its words, and opens itself, whether or not a window has its notebook open.
     #[must_use]
     pub fn over(store: Store, changes: crate::platform::records::Changes) -> Self {
@@ -151,11 +151,11 @@ impl Records {
     /// `workspace` : one row per record, saying whether this workspace holds it and, when another
     /// one does, which.
     #[must_use]
-    pub fn held(&self, workspace: &str) -> Vec<HeldRecord> {
+    pub fn held(&self, workspace: &str) -> Vec<HeldDocument> {
         let held = self.latest();
         let names = self.names.borrow();
         held.iter()
-            .map(|record| HeldRecord {
+            .map(|record| HeldDocument {
                 id: record.id.clone(),
                 kind: record.kind.clone(),
                 name: record.name.clone(),
@@ -232,7 +232,7 @@ fn name_in(root: &Path, workspace: &str, package: &str, record: DocumentCheckout
         }
     };
     let mut doc = index.load_or_new();
-    if !ui::record::index::reference(&mut doc, &id, &kind) {
+    if !ui::resource::index::reference(&mut doc, &id, &kind) {
         return true;
     }
     match index.append(&mut doc) {
@@ -298,7 +298,7 @@ fn read_indexes(store: &dyn DurableStore, contents: Option<&Contents>) -> Vec<He
         }
     };
     let mut held: BTreeMap<String, Held> = BTreeMap::new();
-    let primary = ui::record::DocumentId::package_primary();
+    let primary = ui::resource::DocumentId::package_primary();
     for (package, workspace) in indexes {
         // The app's own record in the workspace (Notes' notebook, Tasks' tracker) is the document
         // that keeps the index, which names the other records and not itself: what it holds is
@@ -345,7 +345,7 @@ fn read_indexes(store: &dyn DurableStore, contents: Option<&Contents>) -> Vec<He
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut read = std::collections::HashMap::with_capacity(held.len());
         for record in &mut held {
-            let Some(mut doc) = record_document(store, record) else {
+            let Some(mut doc) = resource_document(store, record) else {
                 continue;
             };
             let heads = doc.get_heads();
@@ -357,9 +357,8 @@ fn read_indexes(store: &dyn DurableStore, contents: Option<&Contents>) -> Vec<He
             );
             let entries = match kept.remove(&key) {
                 Some((at, entries)) if at == heads => entries,
-                _ => {
-                    tilo_app::framework::record_index::hosted_entries(&record.package, &doc).into()
-                }
+                _ => tilo_app::framework::resource_index::hosted_entries(&record.package, &doc)
+                    .into(),
             };
             record.contents = Arc::clone(&entries);
             read.insert(key, (heads, entries));
@@ -371,13 +370,13 @@ fn read_indexes(store: &dyn DurableStore, contents: Option<&Contents>) -> Vec<He
 
 /// The document of `record`, as the first workspace naming it keeps it: what its app tells search
 /// it holds is read from it. `None` for a record whose document is not here yet.
-fn record_document(store: &dyn DurableStore, record: &Held) -> Option<automerge::AutoCommit> {
+fn resource_document(store: &dyn DurableStore, record: &Held) -> Option<automerge::AutoCommit> {
     let workspace = record.workspaces.first()?;
-    let primary = ui::record::DocumentId::package_primary();
+    let primary = ui::resource::DocumentId::package_primary();
     let route = if record.id == primary.as_str() {
         primary.route().to_owned()
     } else {
-        ui::record::DocumentId::parse(&record.id)?
+        ui::resource::DocumentId::parse(&record.id)?
             .route()
             .to_owned()
     };
@@ -389,7 +388,7 @@ mod tests {
     use super::*;
     use automerge::AutoCommit;
     use durable_store::{StorageKey, WriteOp};
-    use ui::record::{DocumentId, ResourceType};
+    use ui::resource::{DocumentId, ResourceType};
 
     const NOTES: &str = ui::apps::NOTES;
     const WORKSPACE: &str = "6d1c1f36-0000-4000-8000-000000000001";
@@ -413,8 +412,8 @@ mod tests {
             ResourceType::new("notes.notebook"),
         );
         let mut index = AutoCommit::new();
-        assert!(ui::record::index::reference(&mut index, &id, &kind));
-        assert!(ui::record::index::set_name(
+        assert!(ui::resource::index::reference(&mut index, &id, &kind));
+        assert!(ui::resource::index::set_name(
             &mut index,
             &id,
             Some("Groceries")
@@ -426,7 +425,7 @@ mod tests {
             &mut index,
         );
         let mut note = AutoCommit::new();
-        ui::record::init(&mut note, &id, &kind, WORKSPACE);
+        ui::resource::init(&mut note, &id, &kind, WORKSPACE);
         write(
             &store,
             &StorageKey::document(NOTES, WORKSPACE, id.storage_key()),
@@ -452,7 +451,7 @@ mod tests {
     fn wait_for(
         records: &Records,
         done: impl Fn(&Records) -> bool,
-    ) -> Vec<tilo_desktop_search::providers::records::HeldRecord> {
+    ) -> Vec<tilo_desktop_search::providers::records::HeldDocument> {
         let until = std::time::Instant::now()
             .checked_add(std::time::Duration::from_secs(2))
             .expect("the wait's bound fits in an Instant");

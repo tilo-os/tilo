@@ -213,7 +213,7 @@ pub(super) fn verify_installed(
             "its payload holds a file the package did not ship ({unexpected})"
         )));
     }
-    let record = integrity::read_record(
+    let record = integrity::read_resource(
         &integrity::record_dir(&package),
         &package.id,
         &package.package_id_hex,

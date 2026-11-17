@@ -13,7 +13,7 @@
 //!   route's checkpoint for peers that join later. What lands in this
 //!   device's replica of the workspace ([`Event::Landed`]) is read from
 //!   the session's engine and merges into the open record
-//!   (`RecordStore::merge_replica`, Automerge semantics, local undo untouched)
+//!   (`ResourceStore::merge_replica`, Automerge semantics, local undo untouched)
 //!   or, when no mount has it open, into the record's stored document so
 //!   opening it later shows them.
 //! - **The desktop** is the layout's own document
@@ -29,7 +29,7 @@
 //!
 //! A package's workspace-primary document travels with an empty record, as the
 //! native broker sends it; in the page's stores it is
-//! [`ui::record::DocumentId::package_primary`], kept at the workspace index.
+//! [`ui::resource::DocumentId::package_primary`], kept at the workspace index.
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
@@ -43,14 +43,14 @@ use durable_store::{DurableStore as _, MemoryStore, WriteOp};
 use neighbour_wire::content::ContentWants;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_session::sync::{Cmd, Event, Outbox};
-use tilo_session_client::engine::RecordReading;
-use tilo_session_client::{Events, Link, RecordAnswer};
+use tilo_session_client::engine::ResourceReading;
+use tilo_session_client::{DocumentAnswer, Events, Link};
 use ui::automerge::{AutoCommit, transaction::Transactable as _};
-use ui::collaboration::record_content::ContentLane;
-use ui::record::{RecordSync, WorkspaceAnswer};
+use ui::collaboration::document_content::ContentLane;
+use ui::resource::{DocumentSync, WorkspaceAnswer};
 use ui::state::DocumentReplica;
 
-use crate::replicated::{Attachment, DESKTOP_APP, DESKTOP_RECORD};
+use crate::replicated::{Attachment, DESKTOP_APP, DESKTOP_DOCUMENT};
 use tilo_relay_protocol::WorkspaceId;
 
 /// How often a page asks again what the workspace lets its person do: a role the
@@ -80,7 +80,7 @@ pub(crate) fn install() {
         device_of,
         committed_record,
         changes,
-        record_document,
+        resource_document,
         record_since,
         record_heads,
         content,
@@ -104,7 +104,7 @@ enum DesktopSending {
 
 struct Mounted {
     attachment: Attachment,
-    records: HashMap<(String, String), RecordSync>,
+    records: HashMap<(String, String), DocumentSync>,
     /// The heads, sorted, at which the workspace last read each record this mount has open, as
     /// the mount took them in: everything up to them is in its replica, so the next read brings
     /// only what changed since, not the record whole.
@@ -131,7 +131,7 @@ pub(crate) struct Joined {
     /// copy this page kept from before included.
     when_opened: bool,
     /// The records not here that this page asked the workspace for, as wire
-    /// `(app, record)` ([`ui::record::RecordStore::wanted_records`]).
+    /// `(app, record)` ([`ui::resource::ResourceStore::wanted_resources`]).
     asked: HashSet<(String, String)>,
     mounts: HashMap<u64, Mounted>,
     desktop: DocumentReplica,
@@ -197,7 +197,7 @@ pub(crate) struct Joined {
     admitted_at: std::collections::BTreeMap<String, u64>,
     /// Record routes whose commits this page published the workspace answered all of, since
     /// the last frame: what the record's windows said they did is said
-    /// (`RecordStore::workspace_settled`).
+    /// (`ResourceStore::workspace_settled`).
     settled: Arc<Mutex<Vec<DocumentRoute>>>,
     /// Content the open records' windows lacked and the page asked the
     /// workspace for, by the wire `(app, record)` that references it.
@@ -281,7 +281,7 @@ fn kept_content(
         tilo_session_client::surfaces::read(app, hash).or_else(|| {
             let joined = replica_of(id)?;
             let joined = joined.try_borrow().ok()?;
-            let open = joined.open_records().any(|(open, _)| open == app);
+            let open = joined.open_resources().any(|(open, _)| open == app);
             open.then(|| joined.content_store.read(hash)).flatten()
         })
     }
@@ -303,8 +303,13 @@ pub(crate) fn device_of(id: u32) -> Option<String> {
 pub(crate) fn has_record(id: u32, app: &str, record: &str) -> bool {
     replica_of(id).is_some_and(|replica| {
         let joined = replica.borrow();
-        joined.open_records().any(|(a, r)| a == app && r == record)
-            || joined.peer.engine().holds_record(&joined.uuid, app, record)
+        joined
+            .open_resources()
+            .any(|(a, r)| a == app && r == record)
+            || joined
+                .peer
+                .engine()
+                .holds_resource(&joined.uuid, app, record)
     })
 }
 
@@ -322,7 +327,7 @@ pub(crate) fn records(id: u32) -> Vec<(String, String)> {
         .unwrap_or_default()
         .into_iter()
         .collect();
-    records.extend(joined.open_records());
+    records.extend(joined.open_resources());
     records.into_iter().collect()
 }
 
@@ -340,7 +345,7 @@ pub(crate) fn changes() -> tilo_session::platform::records::Changes {
 
 /// Wire record `record` of `app` as peer `id` holds it now: the open
 /// record a mount has, else the workspace's replica of it.
-pub(crate) fn record_document(id: u32, app: &str, record: &str) -> Option<AutoCommit> {
+pub(crate) fn resource_document(id: u32, app: &str, record: &str) -> Option<AutoCommit> {
     let joined = replica_of(id)?;
     let joined = joined.borrow();
     for mounted in joined.mounts.values() {
@@ -348,8 +353,8 @@ pub(crate) fn record_document(id: u32, app: &str, record: &str) -> Option<AutoCo
             if store.app_and_home().0 != app {
                 continue;
             }
-            let Some(checkout) = store.open_records().into_iter().find(|checkout| {
-                tilo_desktop_surface::host::records::wire_record(&checkout.id) == record
+            let Some(checkout) = store.open_resources().into_iter().find(|checkout| {
+                tilo_desktop_surface::host::records::wire_document(&checkout.id) == record
             }) else {
                 continue;
             };
@@ -388,12 +393,12 @@ pub(crate) fn record_since(
         .engine()
         .record_update(&joined.uuid, app, record, Some(&held))
     {
-        Ok(RecordReading::Changes { heads, bytes, .. }) => Since::Changes {
+        Ok(ResourceReading::Changes { heads, bytes, .. }) => Since::Changes {
             heads: heads.into_iter().map(ui::automerge::ChangeHash).collect(),
             bytes,
         },
-        Ok(RecordReading::Unchanged(_) | RecordReading::Pending) => Since::Unchanged,
-        Ok(RecordReading::Captured { .. }) | Err(_) => Since::Whole,
+        Ok(ResourceReading::Unchanged(_) | ResourceReading::Pending) => Since::Unchanged,
+        Ok(ResourceReading::Captured { .. }) | Err(_) => Since::Whole,
     }
 }
 
@@ -509,7 +514,7 @@ pub(crate) fn committed_record(
     if workspace_uuid(id)? != workspace {
         return None;
     }
-    let mut doc = record_document(id, app, record)?;
+    let mut doc = resource_document(id, app, record)?;
     if doc.pending_ops() > 0 {
         doc.rollback();
     }
@@ -995,7 +1000,7 @@ impl Joined {
         ui::collaboration::RouteSpec::record(app, self.cluster, record)
     }
 
-    fn open_records(&self) -> impl Iterator<Item = (String, String)> + '_ {
+    fn open_resources(&self) -> impl Iterator<Item = (String, String)> + '_ {
         self.mounts.values().flat_map(|mounted| {
             let stores = mounted.attachment.stores.borrow();
             stores
@@ -1003,10 +1008,10 @@ impl Joined {
                 .filter(|store| store.app_and_home().1 == self.uuid)
                 .flat_map(|store| {
                     let app = store.app_and_home().0;
-                    store.open_records().into_iter().map(move |checkout| {
+                    store.open_resources().into_iter().map(move |checkout| {
                         (
                             app.clone(),
-                            tilo_desktop_surface::host::records::wire_record(&checkout.id)
+                            tilo_desktop_surface::host::records::wire_document(&checkout.id)
                                 .to_owned(),
                         )
                     })
@@ -1037,11 +1042,11 @@ impl Joined {
             match event {
                 Event::HostReady {
                     ws: workspace_id,
-                    records_when_opened,
+                    documents_when_opened,
                     ..
                 } if workspace_id == self.workspace => {
                     self.ready = true;
-                    self.when_opened = records_when_opened;
+                    self.when_opened = documents_when_opened;
                     self.moderation_due_ms.store(0, Ordering::Relaxed);
                     // A frame asks what this person may do here, and only now
                     // may it ask: every mount draws once more, so a page that
@@ -1052,7 +1057,7 @@ impl Joined {
                 Event::Landed { route, .. } if route.cluster_id == self.uuid => {
                     landed.insert(route);
                 }
-                Event::RecordContent {
+                Event::DocumentContent {
                     ws: workspace_id,
                     frame,
                     ..
@@ -1070,7 +1075,7 @@ impl Joined {
                     ws: workspace_id,
                     refusal,
                 } if workspace_id == self.workspace => self.content_refused(&refusal),
-                Event::RecordOpened {
+                Event::DocumentOpened {
                     ws: workspace_id,
                     route: Some(route),
                     answer,
@@ -1111,26 +1116,26 @@ impl Joined {
                 .contains_key(&(route.app_id.clone(), route.record.clone()));
             let replayed = !self.ready || !held;
             if let Ok(
-                RecordReading::Captured { heads, .. } | RecordReading::Changes { heads, .. },
+                ResourceReading::Captured { heads, .. } | ResourceReading::Changes { heads, .. },
             ) = &read
             {
                 self.read_heads
                     .insert((route.app_id.clone(), route.record.clone()), heads.clone());
             }
             let applied = match read {
-                Ok(RecordReading::Captured { bytes, heads, .. }) => {
+                Ok(ResourceReading::Captured { bytes, heads, .. }) => {
                     self.apply(&route, (bytes, &heads), replayed, &mut woken)
                 }
-                Ok(RecordReading::Changes { bytes, heads, .. })
+                Ok(ResourceReading::Changes { bytes, heads, .. })
                     if self.is_open(&route.app_id, &route.record) =>
                 {
                     self.apply_open_changes(&route, &bytes, &heads, replayed, &mut woken)
                 }
-                Ok(RecordReading::Changes { bytes, heads, .. }) => {
+                Ok(ResourceReading::Changes { bytes, heads, .. }) => {
                     self.apply_kept_changes(&route, bytes, &heads, replayed, &mut woken)
                 }
                 // Still arriving (its keys, or the checkpoint it builds on): it lands again.
-                Ok(RecordReading::Unchanged(_) | RecordReading::Pending) => Ok(()),
+                Ok(ResourceReading::Unchanged(_) | ResourceReading::Pending) => Ok(()),
                 Err(error) => Err(error),
             };
             if let Err(error) = applied {
@@ -1147,7 +1152,7 @@ impl Joined {
     /// changed since the store took it last, where it keeps the record. `None` while the
     /// record waits for the page's record worker to verify it (`crate::record_verify`): the
     /// records that are ready show meanwhile, and this one lands again once it is verified.
-    fn read_landed(&mut self, route: &DocumentRoute) -> Option<Result<RecordReading, String>> {
+    fn read_landed(&mut self, route: &DocumentRoute) -> Option<Result<ResourceReading, String>> {
         let kept = self.kept_heads(route);
         let read = tilo_automerge_isolate::away::deferring(|| {
             self.peer.engine().record_update(
@@ -1200,7 +1205,7 @@ impl Joined {
         }
         let device = self.peer.status().device;
         let now = crate::shell::now_ms();
-        let records: BTreeSet<(String, String)> = self.open_records().collect();
+        let records: BTreeSet<(String, String)> = self.open_resources().collect();
         for (app, record) in records {
             // The record's windows each queue on a lane of their own.
             for lane in ContentLane::on_route(&self.content_route(&app, &record)) {
@@ -1288,8 +1293,8 @@ impl Joined {
                 if store.app_and_home().0 != route.app_id {
                     continue;
                 }
-                let Some(checkout) = store.open_records().into_iter().find(|checkout| {
-                    tilo_desktop_surface::host::records::wire_record(&checkout.id) == route.record
+                let Some(checkout) = store.open_resources().into_iter().find(|checkout| {
+                    tilo_desktop_surface::host::records::wire_document(&checkout.id) == route.record
                 }) else {
                     continue;
                 };
@@ -1323,7 +1328,7 @@ impl Joined {
     /// The host answered `route`, a record this page opened or asked for,
     /// with `answer`: it retains nothing of it or holds it with no change in it,
     /// or it is another person's own. Each store holding or wanting it tells
-    /// what reads it ([`ui::record::RecordStore::note_workspace_answer`]), and a
+    /// what reads it ([`ui::resource::ResourceStore::note_workspace_answer`]), and a
     /// window that waited for it is built again: on a new record, or saying
     /// whose it is.
     fn workspace_answered(
@@ -1360,8 +1365,8 @@ impl Joined {
                 if store.app_and_home().0 != route.app_id {
                     continue;
                 }
-                if let Some(checkout) = store.open_records().into_iter().find(|checkout| {
-                    tilo_desktop_surface::host::records::wire_record(&checkout.id) == route.record
+                if let Some(checkout) = store.open_resources().into_iter().find(|checkout| {
+                    tilo_desktop_surface::host::records::wire_document(&checkout.id) == route.record
                 }) {
                     store.workspace_settled(&checkout.id);
                     woken.insert(id);
@@ -1391,8 +1396,8 @@ impl Joined {
                 if store.app_and_home().0 != app {
                     continue;
                 }
-                let Some(checkout) = store.open_records().into_iter().find(|checkout| {
-                    tilo_desktop_surface::host::records::wire_record(&checkout.id) == record
+                let Some(checkout) = store.open_resources().into_iter().find(|checkout| {
+                    tilo_desktop_surface::host::records::wire_document(&checkout.id) == record
                 }) else {
                     continue;
                 };
@@ -1462,8 +1467,8 @@ impl Joined {
                 if store.app_and_home().0 != app {
                     continue;
                 }
-                let Some(checkout) = store.open_records().into_iter().find(|checkout| {
-                    tilo_desktop_surface::host::records::wire_record(&checkout.id) == record
+                let Some(checkout) = store.open_resources().into_iter().find(|checkout| {
+                    tilo_desktop_surface::host::records::wire_document(&checkout.id) == record
                 }) else {
                     continue;
                 };
@@ -1493,8 +1498,8 @@ impl Joined {
         self.mounts.values().any(|mounted| {
             mounted.attachment.stores.borrow().iter().any(|store| {
                 store.app_and_home().0 == app
-                    && store.open_records().into_iter().any(|checkout| {
-                        tilo_desktop_surface::host::records::wire_record(&checkout.id) == record
+                    && store.open_resources().into_iter().any(|checkout| {
+                        tilo_desktop_surface::host::records::wire_document(&checkout.id) == record
                     })
             })
         })
@@ -1518,8 +1523,8 @@ impl Joined {
                 if store.app_and_home().0 != app {
                     continue;
                 }
-                let Some(checkout) = store.open_records().into_iter().find(|checkout| {
-                    tilo_desktop_surface::host::records::wire_record(&checkout.id) == record
+                let Some(checkout) = store.open_resources().into_iter().find(|checkout| {
+                    tilo_desktop_surface::host::records::wire_document(&checkout.id) == record
                 }) else {
                     continue;
                 };
@@ -1653,17 +1658,17 @@ impl Joined {
                 if home != self.uuid {
                     continue;
                 }
-                for checkout in store.open_records() {
+                for checkout in store.open_resources() {
                     let key = (
                         app.clone(),
-                        tilo_desktop_surface::host::records::wire_record(&checkout.id).to_owned(),
+                        tilo_desktop_surface::host::records::wire_document(&checkout.id).to_owned(),
                     );
                     // A record a join does not replay is asked for when a
                     // mount first opens it.
                     if !mounted.records.contains_key(&key)
                         && (self.when_opened
-                            || neighbour_wire::record_sync(&key.1)
-                                != neighbour_wire::RecordSync::Eager)
+                            || neighbour_wire::document_sync(&key.1)
+                                != neighbour_wire::DocumentSync::Eager)
                     {
                         opening.push(DocumentRoute {
                             app_id: app.clone(),
@@ -1684,9 +1689,9 @@ impl Joined {
                                         &heads.iter().map(|head| head.0).collect::<Vec<_>>(),
                                     ),
                                 );
-                                RecordSync::delivered(heads)
+                                DocumentSync::delivered(heads)
                             }
-                            None => RecordSync::new(),
+                            None => DocumentSync::new(),
                         }
                     });
                     let route = DocumentRoute {
@@ -1718,7 +1723,7 @@ impl Joined {
             }
             if self
                 .peer
-                .send(Cmd::OpenRecordAt(self.workspace, route))
+                .send(Cmd::OpenDocumentAt(self.workspace, route))
                 .is_err()
             {
                 return;
@@ -1762,7 +1767,7 @@ impl Joined {
                 if home != self.uuid {
                     continue;
                 }
-                for record in store.wanted_records() {
+                for record in store.wanted_resources() {
                     // A workspace that replays every chain's head answered
                     // for each with its replay: what this page holds of a
                     // chain is all of its head there is.
@@ -1774,7 +1779,7 @@ impl Joined {
                     }
                     let key = (
                         app.clone(),
-                        tilo_desktop_surface::host::records::wire_record(&record).to_owned(),
+                        tilo_desktop_surface::host::records::wire_document(&record).to_owned(),
                     );
                     if !self.asked.contains(&key) {
                         wanted.push(DocumentRoute {
@@ -1891,7 +1896,7 @@ impl Joined {
             let doc = self.desktop.document_mut();
             (DocumentMutation::Snapshot(doc.save()), doc.get_heads())
         };
-        let route = self.route(DESKTOP_APP, DESKTOP_RECORD);
+        let route = self.route(DESKTOP_APP, DESKTOP_DOCUMENT);
         if self.peer.write(route, &mutation.0).is_ok() {
             self.desktop.advance_outbound(mutation.1);
             self.desktop_sending = DesktopSending::Changes;
@@ -1911,7 +1916,7 @@ type Pending = (
 /// Who wrote the newest change of the workspace's desktop, as its message names
 /// them (`history_log::commit`).
 fn desktop_value(doc: &AutoCommit) -> Option<serde_json::Value> {
-    tilo_desktop_model::shared_record::read(doc, None)
+    tilo_desktop_model::shared_resource::read(doc, None)
         .and_then(|desktop| serde_json::to_value(desktop).ok())
 }
 
@@ -1922,10 +1927,10 @@ pub(crate) fn takes(event: &Event) -> bool {
         event,
         Event::HostReady { .. }
             | Event::Landed { .. }
-            | Event::RecordContent { .. }
+            | Event::DocumentContent { .. }
             | Event::Refused { .. }
             | Event::ContentRefused { .. }
-            | Event::RecordOpened { .. }
+            | Event::DocumentOpened { .. }
     )
 }
 
@@ -1949,11 +1954,11 @@ fn sorted_heads(heads: &[[u8; 32]]) -> Vec<[u8; 32]> {
 /// What a host's answer to an opened record tells the stores waiting for it, when it sent none
 /// of the record: it holds none, or the record is another person's own. An answer that sent frames
 /// tells them through the frames.
-fn answered_without_frames(answer: RecordAnswer) -> Option<WorkspaceAnswer> {
+fn answered_without_frames(answer: DocumentAnswer) -> Option<WorkspaceAnswer> {
     match answer {
-        RecordAnswer::Sent { frames: 0 } => Some(WorkspaceAnswer::HoldsNone),
-        RecordAnswer::NotYours => Some(WorkspaceAnswer::NotYours),
-        RecordAnswer::Sent { .. } => None,
+        DocumentAnswer::Sent { frames: 0 } => Some(WorkspaceAnswer::HoldsNone),
+        DocumentAnswer::NotYours => Some(WorkspaceAnswer::NotYours),
+        DocumentAnswer::Sent { .. } => None,
     }
 }
 

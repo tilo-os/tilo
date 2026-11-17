@@ -50,8 +50,8 @@
 //!
 //! ## Keys follow membership
 //!
-//! A workspace's group holds exactly the participant devices its membership
-//! lets read it, and every participant keeps a [`GroupPeer`]: any of them
+//! A workspace's group holds exactly the key-holding devices its membership
+//! lets read it, and every key holder keeps a [`GroupPeer`]: any of them
 //! writes the commit that brings the group in line, and every one refuses a
 //! commit the membership does not back ([`peer`]).
 

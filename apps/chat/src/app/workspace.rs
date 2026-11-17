@@ -1,5 +1,5 @@
 //! The workspace this window is in: taking it from the resource, adopting it with
-//! the presence context, and settling the participant this device is.
+//! the presence context, and settling the member this device is.
 
 use std::collections::HashMap;
 
@@ -30,9 +30,9 @@ impl ChatApp {
     #[must_use]
     pub(crate) fn with_agents_record(
         mut self,
-        record: Option<ui::framework::WorkspaceRecord<ui::tilo_workspace_agent::WorkspaceAgents>>,
+        record: Option<ui::framework::WorkspaceResource<ui::tilo_workspace_agent::WorkspaceAgents>>,
     ) -> Self {
-        self.agents_record = record;
+        self.agents_document = record;
         self
     }
 
@@ -44,7 +44,7 @@ impl ChatApp {
     /// names it always, so an author reads by its name whether or not it is
     /// running. Whether any name changed, so the window shows them again.
     pub(super) fn follow_agents(&mut self) -> bool {
-        let Some(record) = self.agents_record.clone() else {
+        let Some(record) = self.agents_document.clone() else {
             return false;
         };
         let state = record.get();
@@ -61,9 +61,9 @@ impl ChatApp {
         true
     }
 
-    /// Take the workspace's view of the participants off the presence store.
+    /// Take the workspace's view of the members off the presence store.
     ///
-    /// Called once per frame from `draw`. The presence store's participant
+    /// Called once per frame from `draw`. The presence store's member
     /// kinds come from the host's certified People projection; Chat never
     /// infers Agent identity from a payload kind, display name or id prefix.
     /// Names and colours remain presentation metadata and grant no authority.
@@ -72,7 +72,7 @@ impl ChatApp {
     /// it. Merging is how a peer who has gone keeps a name and a colour on
     /// everyone else's screen for the rest of the session: presence forgets
     /// them on leave, and anything downstream that only ever learned would go
-    /// on offering a departed participant in the `@` picker and painting their
+    /// on offering a departed member in the `@` picker and painting their
     /// colour behind a mention.
     /// Take this frame's workspace: who is here and in which call, their names
     /// and colours, the rosters of the calls, and the authority the window
@@ -84,7 +84,7 @@ impl ChatApp {
         // author reads by its name after it stopped working here too.
         let agents_changed = self.follow_agents();
         if agents_changed {
-            // A conversation's name is what its participants are called: read them
+            // A conversation's name is what its members are called: read them
             // again, as this pass does when the record moved.
             self.synced = None;
         }
@@ -131,7 +131,7 @@ impl ChatApp {
         // here. An answer naming nobody besides this window's own person is
         // still an answer — the workspace is otherwise empty.
         self.workspace_presence_answers = true;
-        self.adopt_own_participant(presence);
+        self.adopt_own_member(presence);
         self.workspace_voice = self
             .channels
             .iter()
@@ -169,14 +169,14 @@ impl ChatApp {
         }
     }
 
-    /// Take the workspace's answer to "which of these participants am I".
+    /// Take the workspace's answer to "which of these members am I".
     ///
     /// This window signs what it writes with the id its host gave it, the
     /// author every action of its person carries. A workspace that spells the
-    /// same participant differently names them too: lines recorded under
+    /// same member differently names them too: lines recorded under
     /// that spelling are still this person's, so their name stays beside
     /// them.
-    fn adopt_own_participant(&mut self, presence: &PresenceCtx) {
+    fn adopt_own_member(&mut self, presence: &PresenceCtx) {
         self.workspace_labels.clone_from(presence.labels());
         self.own_label = presence.self_label();
         if let Some(self_id) = presence.self_id()

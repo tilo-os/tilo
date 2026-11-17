@@ -46,7 +46,7 @@ impl StatePeer {
             peer,
             app_id,
             cluster_id,
-            record_id,
+            document_id,
             envelope,
             ..
         } = message
@@ -65,9 +65,9 @@ impl StatePeer {
             return Err("transport author or document workspace mismatch".into());
         }
         collab_types::verify_op(envelope).map_err(err)?;
-        if envelope.artifact != collab_types::document_artifact_id(app_id, cluster_id, record_id)
+        if envelope.artifact != collab_types::document_artifact_id(app_id, cluster_id, document_id)
             || envelope.attestation_id
-                != collab_types::document_attestation_id(app_id, cluster_id, record_id)
+                != collab_types::document_attestation_id(app_id, cluster_id, document_id)
         {
             return Err("artifact does not match route".into());
         }
@@ -76,7 +76,7 @@ impl StatePeer {
         }
         let at = if retained { envelope.timestamp } else { now };
         Ok(self
-            .authorize_document(&source, app_id, record_id, envelope, at)?
+            .authorize_document(&source, app_id, document_id, envelope, at)?
             .is_some())
     }
 }

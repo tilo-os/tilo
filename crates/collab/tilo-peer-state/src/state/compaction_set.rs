@@ -13,7 +13,7 @@ const MAX_GATHERED_BYTES: usize = super::MAX_COMPACTION_SET_BYTES;
 const MAX_GATHERED_PIECES: usize = super::MAX_COMPACTION_SET_OPS;
 /// Most records gathering a compaction at once; the one gathering longest
 /// goes first.
-const MAX_GATHERING_RECORDS: usize = 4;
+const MAX_GATHERING_DOCUMENTS: usize = 4;
 
 /// The pieces of segmented compactions this replica holds before it takes
 /// them, per record, oldest first. Never persisted: a store sends a
@@ -25,7 +25,7 @@ impl Gathering {
     fn put(&mut self, route: &Route, op: SignedOp) {
         let records = Arc::make_mut(&mut self.0);
         if !records.iter().any(|(held, _)| held == route) {
-            if records.len() >= MAX_GATHERING_RECORDS {
+            if records.len() >= MAX_GATHERING_DOCUMENTS {
                 records.remove(0);
             }
             records.push((route.clone(), Vec::new()));

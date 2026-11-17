@@ -3,7 +3,7 @@
 //! ([`tilo_actions::remote::ChangeFeed`]), asked of it across the wire.
 //!
 //! The search ranks what each record holds as its app tells search about it: the entries the app
-//! publishes to the search index ([`ui::framework::record_index::hosted_entries`]), one per
+//! publishes to the search index ([`ui::framework::resource_index::hosted_entries`]), one per
 //! resource of the record (a note by its title and its paragraphs, a file by its name), read in a
 //! confined app worker once per change of the record. A record whose app tells search nothing is
 //! ranked whole, by its text read app-agnostically from the document ([`crate::search`]). Each hit
@@ -13,13 +13,13 @@
 //! here and is not found by it.
 
 use tilo_actions::remote::{ChangePage, Found};
-use ui::history_source::feed::RecordKey;
+use ui::history_source::feed::DocumentKey;
 use ui::search::index_publication::IndexEntry;
 
 use super::{
     ActionHostError, Caller, CatalogueQuery, DocumentRoute, Needs, Worker, record_provider,
 };
-use crate::workspace_records::Reading;
+use crate::workspace_documents::Reading;
 use tilo_relay_protocol::WorkspaceId;
 
 /// The most records one search answers with.
@@ -231,7 +231,7 @@ impl Worker {
             Some(cluster_id) => self.records(&state, &cluster_id),
             None => Vec::new(),
         };
-        let records: Vec<RecordKey> = routes
+        let records: Vec<DocumentKey> = routes
             .iter()
             .map(|route| (route.app_id.clone(), route.record.clone()))
             .collect();
@@ -242,7 +242,7 @@ impl Worker {
             &records,
             |(app, record)| {
                 engine
-                    .record_revision(&cluster_id, app, record)
+                    .document_revision(&cluster_id, app, record)
                     .ok()
                     .flatten()
             },

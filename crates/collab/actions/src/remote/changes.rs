@@ -20,7 +20,7 @@ pub const CHANGE_FEED_UNAVAILABLE: &str =
 
 /// One change to one record of the workspace.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct RecordChanged {
+pub struct ResourceChanged {
     /// The app whose record it is.
     pub app: String,
     /// The record's id there; empty for the app's record of the workspace.
@@ -35,7 +35,7 @@ pub struct RecordChanged {
 /// The changes after a cursor, oldest first, and the cursor after them.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ChangePage {
-    pub changes: Vec<RecordChanged>,
+    pub changes: Vec<ResourceChanged>,
     /// Opaque: handed back as it is to read on from here.
     pub cursor: String,
 }

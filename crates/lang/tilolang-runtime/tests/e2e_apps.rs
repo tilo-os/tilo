@@ -2323,7 +2323,7 @@ mod cases {
         assert_eq!(row_titles(v.tree()), ["sourdough"]);
     }
 
-    /// An action whose requirement its subject does not meet is offered all the same, its
+    /// An action whose requirement its target does not meet is offered all the same, its
     /// control disabled with the requirement's reason as its description, and running it is
     /// refused with that reason: what a header's button says before a person presses it.
     #[test]

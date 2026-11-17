@@ -449,7 +449,7 @@ pub struct PdfApp {
     sig_stroke: Option<Vec<(f64, f64)>>,
     /// The person's own signature record: it follows them to their other devices and
     /// never reaches a member. Absent where the host keeps no person records.
-    signature: Option<ui::framework::PersonRecord<crate::signature::SignatureProfile>>,
+    signature: Option<ui::framework::PersonResource<crate::signature::SignatureProfile>>,
     signature_revision: Option<u64>,
     sig_pad_rect: Rect,
 
@@ -1067,7 +1067,7 @@ impl PdfApp {
 
     pub(crate) fn attach_signature(
         &mut self,
-        signature: ui::framework::PersonRecord<crate::signature::SignatureProfile>,
+        signature: ui::framework::PersonResource<crate::signature::SignatureProfile>,
     ) {
         self.signature = Some(signature);
         self.signature_revision = None;
@@ -1751,7 +1751,7 @@ impl PdfApp {
         }
     }
 
-    fn seed_record(&mut self, state: &AutoCommit) {
+    fn seed_resource(&mut self, state: &AutoCommit) {
         if self.read_only {
             self.seed_pending = true;
             return;
@@ -3405,7 +3405,7 @@ impl PdfApp {
         let Some(source) = self.record_source.clone() else {
             return;
         };
-        let looked = ui::collaboration::record_content::arrivals();
+        let looked = ui::collaboration::document_content::arrivals();
         if self.source_wait.is_some_and(|(_, at)| at == looked) {
             return;
         }
@@ -4039,7 +4039,7 @@ impl Widget for PdfApp {
 
         if self.has_document {
             if std::mem::take(&mut self.seed_pending) {
-                self.seed_record(state);
+                self.seed_resource(state);
             }
             self.reconcile_shared_page_plan(state);
         }

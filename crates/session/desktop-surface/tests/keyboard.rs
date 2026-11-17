@@ -564,7 +564,7 @@ fn factory(
     _: RestoreInput,
 ) -> Result<AppComponent, ui::launch::LaunchError> {
     context
-        .initialize_new_record(|doc| {
+        .initialize_new_resource(|doc| {
             doc.put(ROOT, "body", "").map_err(|e| e.to_string())?;
             doc.commit();
             Ok(())
@@ -615,7 +615,7 @@ fn factory(
 }
 
 struct Source {
-    owners: ui::record::RecordOwners,
+    owners: ui::resource::ResourceOwners,
     root: std::path::PathBuf,
     queue: OwnerWakeQueue,
     typed: Typed,
@@ -637,10 +637,10 @@ impl TileSource for Source {
             app_id: APP.into(),
             title: "Keyboard".into(),
             icon: IconDescriptor::Glyph("K"),
-            record_kind: ui::record::ResourceType::new("keyboard-test"),
-            workspace_record: false,
-            member_record: false,
-            opens_before_record: false,
+            resource_type: ui::resource::ResourceType::new("keyboard-test"),
+            workspace_resource: false,
+            member_resource: false,
+            opens_before_resource: false,
             required: vec![],
             optional: vec![],
             opens: &[],
@@ -811,7 +811,7 @@ impl Shell {
         let queue = OwnerWakeQueue::default();
         let typed = Typed::default();
         let source = Source {
-            owners: ui::record::RecordOwners::new(root.clone()),
+            owners: ui::resource::ResourceOwners::new(root.clone()),
             root: root.clone(),
             queue: queue.clone(),
             typed: Rc::clone(&typed),

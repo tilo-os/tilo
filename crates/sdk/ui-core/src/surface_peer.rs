@@ -427,7 +427,7 @@ mod tests {
             app_id: "so.tilo.topbar".into(),
             cluster_id: cluster,
             record: None,
-            record_kind: None,
+            resource_type: None,
             handle: None,
         })
         .expect("a surface joins");

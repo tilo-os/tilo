@@ -639,7 +639,7 @@ pub(crate) mod tests {
                         }],
                         apps: vec!["so.tilo.chat".into()],
                         appearance: true,
-                        triggers: vec!["connector".into(), "record_changed".into()],
+                        triggers: vec!["connector".into(), "resource_changed".into()],
                     },
                 },
             };

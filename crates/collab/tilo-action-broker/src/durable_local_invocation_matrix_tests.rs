@@ -322,7 +322,7 @@ mod durable_local_matrix {
                 },
                 argument: delivered.argument,
                 actor: delivered.actor,
-                participant: None,
+                presence: None,
             };
             let lease = (self.authorize)(&request).unwrap();
             lease.check().unwrap();

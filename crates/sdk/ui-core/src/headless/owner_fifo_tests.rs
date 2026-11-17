@@ -58,7 +58,7 @@ impl Widget for OwnerProbe {
     }
     fn sync(&mut self, model: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
         let (doc, _) = crate::doc::document_ref(model, path);
-        assert!(crate::record::identity(doc).is_some());
+        assert!(crate::resource::identity(doc).is_some());
         self.seen.syncs.set(self.seen.syncs.get() + 1);
         self.seen.order.borrow_mut().push(self.id);
         assert!(
@@ -116,15 +116,15 @@ impl AppWidget for OwnerProbe {
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("Q")
     }
-    fn record_save_status(&mut self, status: crate::record::RecordSaveStatus) {
+    fn resource_save_status(&mut self, status: crate::resource::ResourceSaveStatus) {
         self.seen.saves.set(self.seen.saves.get() + 1);
         self.seen
             .saved
-            .set(status == crate::record::RecordSaveStatus::Saved);
+            .set(status == crate::resource::ResourceSaveStatus::Saved);
         self.seen
             .heard
             .borrow_mut()
-            .push(status == crate::record::RecordSaveStatus::Saved);
+            .push(status == crate::resource::ResourceSaveStatus::Saved);
     }
 }
 thread_local! { static ORDER: RefCell<Rc<RefCell<Vec<u64>>>> = RefCell::new(Rc::new(RefCell::new(Vec::new()))); }
@@ -135,7 +135,7 @@ fn factory(
     _: RestoreInput,
 ) -> Result<AppComponent, crate::launch::LaunchError> {
     context
-        .initialize_new_record(|doc| {
+        .initialize_new_resource(|doc| {
             doc.put(ROOT, "body", "canonical owner body")
                 .map_err(|e| e.to_string())?;
             doc.commit();
@@ -209,7 +209,7 @@ impl Widget for HiddenOwners {
     ) -> Result<(), BoundDispatchError> {
         self.visits.set(self.visits.get() + 1);
         if self.refuse.get() {
-            return Err(BoundDispatchError::CrossRecordReentry);
+            return Err(BoundDispatchError::CrossResourceReentry);
         }
         for owner in &mut self.owners {
             owner.visit_components(request)?;
@@ -249,11 +249,9 @@ fn close(frame: &mut FrameHarness, expected: usize) {
     frame.close_components();
     let reports = frame.take_component_close_reports();
     assert_eq!(reports.len(), expected);
-    assert!(
-        reports.iter().all(|r| r.record_error.is_none()
-            && r.view_error.is_none()
-            && r.teardown_error.is_none())
-    );
+    assert!(reports.iter().all(|r| r.resource_error.is_none()
+        && r.view_error.is_none()
+        && r.teardown_error.is_none()));
 }
 // Land every owner's first write and take up every wake its store calls.
 //
@@ -437,7 +435,7 @@ fn busy_canonical_admission_requeues_taken_batch_without_touching_later_owners()
             assert!(matches!(
                 frame.service_pending_owner_models(),
                 Err(BoundDispatchError::Record(
-                    crate::record::RecordOpenError::Busy
+                    crate::resource::ResourceOpenError::Busy
                 ))
             ))
         })
@@ -459,7 +457,7 @@ fn unknown_original_custom_visitor_refusal_keeps_full_batch_for_explicit_retry()
     seen.wake.borrow().as_ref().unwrap().wake();
     assert!(matches!(
         frame.service_pending_owner_models(),
-        Err(BoundDispatchError::CrossRecordReentry)
+        Err(BoundDispatchError::CrossResourceReentry)
     ));
     assert_eq!(visits.get(), entered + 1);
     assert_eq!(seen.syncs.get(), before);
@@ -489,7 +487,7 @@ fn service_unwind_requeues_current_and_remaining_work_after_original_loans_unwin
     assert!(queue.has_pending());
     assert_eq!(sb.syncs.get(), before);
     host.records
-        .read(&id, |doc| assert!(crate::record::identity(doc).is_some()))
+        .read(&id, |doc| assert!(crate::resource::identity(doc).is_some()))
         .unwrap();
     assert_eq!(frame.service_pending_owner_models().unwrap(), 2);
     close(&mut frame, 2);
@@ -665,9 +663,9 @@ fn background_gate(case: &str, presentation: super::owner_background_work::Prese
                 .unwrap(),
         )
         .unwrap();
-    let mut reopened_owners = crate::record::RecordOwners::with_store(mirror);
+    let mut reopened_owners = crate::resource::ResourceOwners::with_store(mirror);
     let reopened = reopened_owners.open(probe::APP, probe::WORKSPACE).unwrap();
-    reopened.open_existing_record_checked(&checkout).unwrap();
+    reopened.open_existing_resource_checked(&checkout).unwrap();
     let persisted = reopened
         .read(&checkout.id, |doc| {
             doc.get(ROOT, "body")
@@ -791,7 +789,7 @@ fn background_refusal_retains_original_owner_for_retry_while_paint_unavailable()
     assert!(matches!(
         refused,
         Err(BoundDispatchError::Record(
-            crate::record::RecordOpenError::Busy
+            crate::resource::ResourceOpenError::Busy
         ))
     ));
     assert!(retained);
@@ -800,7 +798,7 @@ fn background_refusal_retains_original_owner_for_retry_while_paint_unavailable()
 
 fn memory_host(backend: Rc<durable_store::MemoryStore>) -> ProbeHost {
     let mut host = ProbeHost::new();
-    let mut owners = crate::record::RecordOwners::with_store(backend.clone());
+    let mut owners = crate::resource::ResourceOwners::with_store(backend.clone());
     host.views = Rc::new(
         crate::application_view::InstanceViewStore::with_store(
             backend,
@@ -840,23 +838,21 @@ fn close_memory(
     assert_eq!(reports.len(), expected);
     commit_accepted(backend, mirror);
     for report in &mut reports {
-        report.retry_record().unwrap();
+        report.retry_resource().unwrap();
         report.retry_view().unwrap();
     }
     commit_accepted(backend, mirror);
-    assert!(
-        reports.iter().all(|r| r.record_error.is_none()
-            && r.view_error.is_none()
-            && r.teardown_error.is_none())
-    );
+    assert!(reports.iter().all(|r| r.resource_error.is_none()
+        && r.view_error.is_none()
+        && r.teardown_error.is_none()));
 }
 fn reopened_body(
     backend: Rc<durable_store::MemoryStore>,
-    checkout: &crate::record::DocumentCheckout,
+    checkout: &crate::resource::DocumentCheckout,
 ) -> String {
-    let mut owners = crate::record::RecordOwners::with_store(backend);
+    let mut owners = crate::resource::ResourceOwners::with_store(backend);
     let records = owners.open(probe::APP, probe::WORKSPACE).unwrap();
-    records.open_existing_record_checked(checkout).unwrap();
+    records.open_existing_resource_checked(checkout).unwrap();
     records
         .read(&checkout.id, |doc| {
             doc.get(ROOT, "body")
@@ -902,8 +898,8 @@ fn background_queued_writer_accepts_acknowledges_and_reopens_before_paint_or_clo
         1,
         "original exact record was offered before paint/close"
     );
-    assert_eq!(before_ack, crate::record::RecordSaveStatus::Saving);
-    assert_eq!(after_ack, crate::record::RecordSaveStatus::Saved);
+    assert_eq!(before_ack, crate::resource::ResourceSaveStatus::Saving);
+    assert_eq!(after_ack, crate::resource::ResourceSaveStatus::Saved);
     assert_eq!(reopened, "background model write");
     assert!(no_paint);
 }
@@ -952,20 +948,23 @@ fn background_failed_ack_retries_checkpoint_on_real_new_wake_without_pending_cal
         offered_count, 1,
         "only already-offered bytes reach the host ACK subject"
     );
-    assert!(matches!(failed, crate::record::RecordSaveStatus::Failed(_)));
+    assert!(matches!(
+        failed,
+        crate::resource::ResourceSaveStatus::Failed(_)
+    ));
     assert_eq!(empty.unwrap(), 0);
     assert!(no_replay);
     assert_eq!(retry.unwrap(), 1);
     assert!(!retry_pending);
     assert!(matches!(
         replacement_before_ack,
-        crate::record::RecordSaveStatus::Failed(_)
+        crate::resource::ResourceSaveStatus::Failed(_)
     ));
     assert_eq!(pending_empty.unwrap(), 0);
     assert!(replacement_no_replay);
     assert_eq!(retry_writes.len(), 1);
     assert!(matches!(retry_writes[0].op, WriteOp::Replace(_)));
-    assert_eq!(saved, crate::record::RecordSaveStatus::Saved);
+    assert_eq!(saved, crate::resource::ResourceSaveStatus::Saved);
     assert_eq!(reopened, "background model write");
 }
 
@@ -1046,7 +1045,7 @@ fn background_synchronous_submit_refusal_retains_owner_then_real_retry_offers_ch
         refuse: Cell::new(false),
     });
     let mut host = ProbeHost::new();
-    let mut owners = crate::record::RecordOwners::with_store(backend.clone());
+    let mut owners = crate::resource::ResourceOwners::with_store(backend.clone());
     host.views = Rc::new(
         crate::application_view::InstanceViewStore::with_store(
             backend.clone(),
@@ -1080,7 +1079,10 @@ fn background_synchronous_submit_refusal_retains_owner_then_real_retry_offers_ch
     assert!(refused.result.is_err());
     assert!(retained);
     assert!(no_accepted);
-    assert!(matches!(failed, crate::record::RecordSaveStatus::Failed(_)));
+    assert!(matches!(
+        failed,
+        crate::resource::ResourceSaveStatus::Failed(_)
+    ));
     assert!(retried.attempted);
     assert_eq!(retried.completed, 1);
     assert!(retried.result.is_ok());
@@ -1121,7 +1123,7 @@ fn background_partial_batch_report_keeps_accepted_peer_bytes_before_later_busy_r
     assert!(matches!(
         report.result,
         Err(BoundDispatchError::Record(
-            crate::record::RecordOpenError::Busy
+            crate::resource::ResourceOpenError::Busy
         ))
     ));
     assert_eq!(accepted.len(), 1);

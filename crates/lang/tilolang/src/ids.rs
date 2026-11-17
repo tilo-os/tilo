@@ -269,7 +269,7 @@ pub const PRESENT_SUFFIX: &str = "~present";
 
 /// The qualified name of every declaration that gets an id: types (`Album`), fields (`Album.title`),
 /// actions, views and fns (`play`), anchors (`album_page#play`), scenarios (`scenario "a week of
-/// notes"`), and the presentation view of an action whose label, icon or state follow its subject
+/// notes"`), and the presentation view of an action whose label, icon or state follow its target
 /// (`pin~present`).
 pub fn declared_names(m: &Module) -> Vec<String> {
     let mut out = Vec::new();

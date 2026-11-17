@@ -173,7 +173,7 @@ impl ResourceRef {
         action: &str,
     ) -> tilo_actions::remote::RemoteActionTarget {
         match record {
-            Some(record) => tilo_actions::remote::application_record_target(
+            Some(record) => tilo_actions::remote::application_resource_target(
                 workspace,
                 app,
                 record,
@@ -310,7 +310,7 @@ mod tests {
             Some(("ws-1", "so.tilo.notes"))
         );
         assert_eq!(
-            tilo_actions::remote::application_provider_record(&target.provider),
+            tilo_actions::remote::application_provider_resource(&target.provider),
             Some("uuid:7")
         );
         assert_eq!(
@@ -319,7 +319,7 @@ mod tests {
         );
         let target = page.open_target("ws-1", "so.tilo.notes", None);
         assert_eq!(
-            tilo_actions::remote::application_provider_record(&target.provider),
+            tilo_actions::remote::application_provider_resource(&target.provider),
             None
         );
     }

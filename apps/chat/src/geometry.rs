@@ -49,7 +49,7 @@ pub(crate) struct Chrome {
     pub body: TextStyle,
     /// The floating call window around its video: the title bar above it,
     /// the inset beside and below it, the gap between its parts, its
-    /// connection line, one participant chip and its controls row.
+    /// connection line, one member chip and its controls row.
     pub call_title_h: f64,
     pub call_inset: f64,
     pub call_gap: f64,

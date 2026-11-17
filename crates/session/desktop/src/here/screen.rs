@@ -26,7 +26,7 @@ pub struct ScreenWindow {
     /// The app it shows.
     pub app: String,
     /// The short digest of the record it shows
-    /// (`tilo_relay_protocol::live::LiveRecord::short_digest`).
+    /// (`tilo_relay_protocol::live::LiveResource::short_digest`).
     pub record: [u8; 8],
     /// Where it is, in the unit square of the screen.
     pub rect: Rect,

@@ -2,7 +2,7 @@
 //! device or a cloud host governs. Their record is this profile's own file,
 //! never the desktop session's; each workspace syncs over one direct link
 //! with the host its enrollment pins, which also carries the workspace's
-//! channel governance between this device and its participants, as the host
+//! channel governance between this device and its key holders, as the host
 //! forwards what each member's link brings to the others.
 use neighbour_wire::NeighbourMsg;
 use std::{
@@ -31,7 +31,7 @@ use tokio::sync::Notify;
 
 #[path = "joined_content.rs"]
 mod content;
-pub(super) use content::record_content;
+pub(super) use content::document_content;
 #[path = "joined_hosted.rs"]
 mod hosted;
 pub(super) use hosted::RecordCreation;
@@ -59,7 +59,7 @@ pub(super) struct Joined {
     fanout: Arc<FanoutState>,
     sessions: Mutex<BTreeMap<WorkspaceId, WorkspaceSession>>,
     /// The profile's record-content service, once the broker runs.
-    content: std::sync::OnceLock<Arc<tilo_action_broker::record_content::RouteContent>>,
+    content: std::sync::OnceLock<Arc<tilo_action_broker::document_content::RouteContent>>,
     /// Channel governance the sessions received, for the channel service.
     governance: Mutex<Vec<InboundGovernance>>,
     /// Wakes the channel service's pump when governance arrives.
@@ -502,7 +502,8 @@ impl Joined {
             }
             if matches!(
                 message,
-                NeighbourMsg::RecordContentPiece { .. } | NeighbourMsg::RecordContentLacks { .. }
+                NeighbourMsg::DocumentContentPiece { .. }
+                    | NeighbourMsg::DocumentContentLacks { .. }
             ) {
                 self.content_arrived(workspace, author, &message);
                 return;
@@ -522,7 +523,7 @@ impl Joined {
                         RemoteDocument {
                             app_id: write.app_id,
                             cluster_id: write.cluster_id,
-                            record_id: write.record_id,
+                            document_id: write.document_id,
                             author: write.author,
                             replayed: write.replayed,
                             envelope: write.envelope,
@@ -728,13 +729,13 @@ impl OwnerCommitService for Joined {
     }
 
     fn commit(&self, request: OwnerCommitRequest) -> CommitFuture {
-        self.commit_with_record_kind(request, None)
+        self.commit_with_resource_type(request, None)
     }
 
-    fn commit_with_record_kind(
+    fn commit_with_resource_type(
         &self,
         request: OwnerCommitRequest,
-        record_kind: Option<String>,
+        resource_type: Option<String>,
     ) -> CommitFuture {
         let workspace = WorkspaceId::parse(&request.workspace);
         if workspace.is_some_and(|workspace| self.refused.contains(&workspace)) {
@@ -749,7 +750,7 @@ impl OwnerCommitService for Joined {
                 )));
             };
             return Box::pin(
-                async move { this.commit_hosted(workspace, request, record_kind).await },
+                async move { this.commit_hosted(workspace, request, resource_type).await },
             );
         }
         // Drafted again past its record's floor when this device's local writers signed out of

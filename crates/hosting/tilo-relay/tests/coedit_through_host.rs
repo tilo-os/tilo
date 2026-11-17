@@ -75,9 +75,9 @@ async fn recv_delta_into(session: &RelayCoeditSession, doc: &mut AutoCommit) {
             Inbound::Ready { .. }
             | Inbound::Presence { .. }
             | Inbound::RemoteAction { .. }
-            | Inbound::RecordContent { .. }
+            | Inbound::DocumentContent { .. }
             | Inbound::Member { .. }
-            | Inbound::RecordOpened { .. }
+            | Inbound::DocumentOpened { .. }
             | Inbound::Committed { .. }
             | Inbound::CommitRefused { .. }
             | Inbound::Voice(_) => {}
@@ -341,9 +341,9 @@ async fn catch_up_first_connection(
             }
             other @ (Inbound::Presence { .. }
             | Inbound::RemoteAction { .. }
-            | Inbound::RecordContent { .. }
+            | Inbound::DocumentContent { .. }
             | Inbound::Member { .. }
-            | Inbound::RecordOpened { .. }
+            | Inbound::DocumentOpened { .. }
             | Inbound::Committed { .. }
             | Inbound::CommitRefused { .. }
             | Inbound::Voice(_)) => {

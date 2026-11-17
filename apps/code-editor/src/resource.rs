@@ -6,7 +6,7 @@ use std::path::PathBuf;
 #[cfg(feature = "samples")]
 use ui::framework::Fixture;
 use ui::framework::{EffectCx, LaunchInput, ResourceApp, ViewCx};
-use ui::record::DocumentId;
+use ui::resource::DocumentId;
 use ui::tilo_resource::{ActionRef, Invoke, ResourceKind};
 use ui::widget::Element;
 
@@ -93,7 +93,7 @@ impl ResourceApp for CodeEditorShell {
         )
     }
 
-    fn launch_record(input: &LaunchInput<'_>) -> Option<DocumentId> {
+    fn launch_resource(input: &LaunchInput<'_>) -> Option<DocumentId> {
         let path = launched_path(input.argument()?);
         Some(DocumentId::derived(
             "code-editor",

@@ -3,7 +3,7 @@
 //! two halves that must agree about it.
 //!
 //! Presence is view state: it never reaches the actions or the record, so no
-//! undo stack holds "someone moved their playhead". A participant has one point
+//! undo stack holds "someone moved their playhead". A member has one point
 //! (their text caret while typing in a field, else their playhead) and one range
 //! (their selected clip), each published on the key of the place it is at, with
 //! times in milliseconds.
@@ -87,7 +87,7 @@ pub fn seconds(ticks: usize) -> f64 {
 
 const FACETS: usize = 2;
 
-/// Publishes the local participant's place one frame at a time.
+/// Publishes the local member's place one frame at a time.
 ///
 /// The host broadcasts a single key and payload per poll, only when it differs
 /// from the last, while the editor has two things to say at once. So this keeps
@@ -365,7 +365,7 @@ pub fn draw_peer_field_carets(
     }
 }
 
-/// What another process sends to appear as a participant. Returned as text
+/// What another process sends to appear as a member. Returned as text
 /// because the thing that needs it is not this program; a doc test asserts every
 /// key it names is the one the builders above produce.
 pub fn external_driver_recipe() -> &'static str {
@@ -396,7 +396,7 @@ pub fn external_driver_recipe() -> &'static str {
         "  pointer    the workspace scope               Pointer { x, y }\n",
         "\n",
         "Times are milliseconds. Uuids are hyphenated lower case. A caret and\n",
-        "a selection are one each per participant, so publishing a new one\n",
+        "a selection are one each per member, so publishing a new one\n",
         "moves it rather than adding a second.\n",
     )
 }
@@ -606,7 +606,7 @@ mod tests {
                 ctx.apply_remote_presence(MemberId::person("ada"), k, p);
             }
             let heads = peer_playheads(&ctx);
-            assert_eq!(heads.len(), 1, "one participant, one playhead: {heads:?}");
+            assert_eq!(heads.len(), 1, "one member, one playhead: {heads:?}");
             assert!((heads[0].at - 3.0).abs() < 1e-9);
         }
         {

@@ -174,7 +174,7 @@ fn keys(device: u8, vault: u8, admitted: &[u8]) -> (KeyProvider, tempfile::TempD
 }
 
 /// Found the call's channel, as the pass a session runs does: the first device that takes part
-/// creates the group once its wait is due, and the test's workspace has no other participant to
+/// creates the group once its wait is due, and the test's workspace has no other member to
 /// ask.
 #[allow(
     clippy::future_not_send,
@@ -402,7 +402,7 @@ async fn bound(client: &Client) {
 }
 
 /// The relay the test's planes meet on: in-process, with no one to admit,
-/// since a local plane is its own relay's participant.
+/// since a local plane is its own relay's member.
 fn relay() -> Arc<Relay> {
     struct Nobody;
     impl RelayAuthority for Nobody {

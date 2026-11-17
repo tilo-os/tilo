@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use tilo_sort::CompactSort as _;
 
 use collab_types::presence::{PresenceHue, Shown};
-use collab_types::{Member, MemberId, PersonId, assigned_colour};
+use collab_types::{Member, MemberId, PersonId};
 use tilo_desktop_model::{Layout, Present, Status, TabId, TileContent, Workspace};
 use ui::presence::{PresenceCtx, PresenceKey};
 
@@ -30,7 +30,7 @@ pub use collab_types::presence::{
 pub use screen::{Screen, ScreenWindow};
 pub use waves::{WAVE_AGAIN_MS, Wave, WaveEar, WaveFrom, WaveOut};
 
-/// The most bytes of a person's own words, as their live presence carries them (a participant's
+/// The most bytes of a person's own words, as their live presence carries them (a member's
 /// activity line).
 const MAX_OWN_WORDS_BYTES: usize = 96;
 
@@ -91,8 +91,8 @@ pub struct LiveMember {
     pub call: Option<String>,
     /// The colour they wear, `#rrggbb`, as their shell publishes it: the one
     /// they chose in their own card, or the one their identity derives.
-    /// Empty for a member that said none, whose colour is settled from their
-    /// identity here ([`HereState::colors`]).
+    /// Empty for a member that said none, who wears the colour who they are
+    /// gives them ([`HereState::colors`]).
     #[serde(default)]
     pub colour: String,
 }
@@ -733,7 +733,7 @@ impl HereState {
     }
 
     /// Say what this person is doing in their own words; `None` (or only spaces) clears it. On one
-    /// line, at most [`ui::MAX_STATUS_CHARS`] characters and as many bytes as a live participant's
+    /// line, at most [`ui::MAX_STATUS_CHARS`] characters and as many bytes as a live member's
     /// activity carries.
     pub fn set_own_words(&mut self, words: Option<String>) {
         let words = words
@@ -833,6 +833,21 @@ impl HereState {
             .find(|member| member.publisher == publisher)
             .and_then(|member| member.user.as_deref())
             .filter(|user| !user.is_empty())
+    }
+
+    /// The member the device `publisher` is here as: the agent or bot its presence names, else its
+    /// person, once heard.
+    #[must_use]
+    pub fn member_of(&self, publisher: &str) -> Option<MemberId> {
+        let named = self
+            .members
+            .iter()
+            .flatten()
+            .chain(self.own.as_ref())
+            .find(|member| member.publisher == publisher)
+            .and_then(|member| member.member.clone())
+            .filter(|member| !member.is_person());
+        named.or_else(|| self.user_of(publisher).map(MemberId::person))
     }
 
     /// Who `publisher` counts as: its person where known, else the device itself, so devices of one
@@ -987,77 +1002,35 @@ impl HereState {
         Some(color_in(&self.colors(), own))
     }
 
-    /// What colour everyone here is drawn in, by live publisher, this page included. Settled over
-    /// the whole workspace at once ([`ui::presence::settle_colors`]): two people here together
-    /// never share a colour while the ring has room for both, and every page, seeing the same
-    /// workspace, settles it alike. A person is settled by who they are (their user root) so their
-    /// other devices wear their colour; an agent by its own publisher, in the colour what it is
-    /// wears ([`ui::presence::participant_color`]) — the one its own shell publishes and its face,
-    /// its card and its marks wear in every app.
+    /// What colour everyone here is drawn in, by live publisher, this page included: the colour
+    /// the member claims (a person's choice in their own card, as their shell publishes it), else
+    /// the one who they are gives them ([`ui::presence::member_color`]), keyed by the member — a
+    /// person by their user root, so their other devices wear their colour, an agent by the
+    /// member it is, never by the key its session speaks from. The rule every app paints the
+    /// member by, so a face on the bar is the colour of their card, marks and caret in a window.
     ///
-    /// The colour someone claims for themselves is the one they wear: it is the colour they chose
-    /// in their own card, or the one their identity derives, as their shell publishes it — the same
-    /// colour their apps paint them in. Whoever else's identity names it steps to a free entry, so
-    /// two people who chose alike still read apart; this page's own person is honoured first, so
-    /// nobody here is ever drawn in their colour.
-    ///
-    /// A person's device is in the live layer before its certificate pairs it with its person. Until they do it has no entry here, and takes no part in the
-    /// settlement, so they are drawn neutral ([`ui::presence::UNSETTLED_RGB`]) rather than in a
-    /// colour keyed by their device that changes once their person is known.
+    /// A person's device is in the live layer before its certificate pairs it with its person.
+    /// Until it does it has no entry here, so it is drawn neutral
+    /// ([`ui::presence::UNSETTLED_RGB`]) rather than in a colour keyed by its device that changes
+    /// once its person is known.
     pub fn colors(&self) -> HashMap<String, (u8, u8, u8)> {
-        // Each device here, by the person it is (an agent by its own
-        // publisher), with the colour its shell claimed where it claimed one and the
-        // one its kind wears where it claimed none: [`ui::presence::participant_color`],
-        // the rule every surface asks.
-        let present: Vec<Settling<'_>> = self
-            .members
+        self.members
             .iter()
             .flatten()
             .chain(self.own.as_ref())
             .filter_map(|member| {
-                let id = member.publisher.as_str();
-                let agent = member.kind == "agent";
-                let key = if agent { id } else { self.user_of(id)? };
-                let claimed = ui::presence::parse_hex_color(&member.colour);
-                // Software steps clear of the person it is certified for, as its record and every
-                // app paint it.
-                let person = member
-                    .user
-                    .as_deref()
-                    .filter(|user| agent && !user.is_empty());
-                Some((
-                    id,
-                    key,
-                    claimed,
-                    ui::presence::member_color(
-                        &if agent {
-                            MemberId::agent(key)
-                        } else {
-                            MemberId::person(key)
-                        },
-                        person,
-                    ),
-                ))
+                let id = if member.kind == "agent" {
+                    member
+                        .member
+                        .clone()
+                        .unwrap_or_else(|| MemberId::agent(&member.publisher))
+                } else {
+                    MemberId::person(self.user_of(&member.publisher)?)
+                };
+                let rgb = ui::presence::parse_hex_color(&member.colour)
+                    .unwrap_or_else(|| ui::presence::member_color(&id));
+                Some((member.publisher.clone(), rgb))
             })
-            .collect();
-        let chosen: HashMap<String, (u8, u8, u8)> = present
-            .iter()
-            .filter_map(|(_, key, claimed, _)| claimed.map(|rgb| ((*key).to_owned(), rgb)))
-            .collect();
-        let naturals: Vec<(&str, (u8, u8, u8))> = present
-            .iter()
-            .map(|(_, key, _, natural)| (*key, *natural))
-            .collect();
-        // This page's own person is settled first: their colour is theirs, and nobody here is
-        // drawn in it.
-        let own = self
-            .own_id()
-            .and_then(|own| present.iter().find(|(id, _, _, _)| *id == own))
-            .map(|(_, key, _, _)| *key);
-        let settled = ui::presence::settle_colors_of(&naturals, &chosen, own);
-        present
-            .into_iter()
-            .filter_map(|(id, key, _, _)| settled.get(key).map(|rgb| (id.to_owned(), *rgb)))
             .collect()
     }
 
@@ -1158,7 +1131,7 @@ impl HereState {
     /// The numbers the people here are told apart by, this page's own person included. Keyed by
     /// person, so two devices of one person are one name to number, and numbered in the order the
     /// workspace admitted them, as its roster numbers them.
-    fn labels<'a>(&'a self) -> ui::presence::ParticipantLabels {
+    fn labels<'a>(&'a self) -> ui::presence::MemberLabels {
         let mut named: Vec<(&'a str, String)> = Vec::new();
         // One name per person, whoever of theirs spoke first: a device that has not said whose it
         // is yet does not keep their name out.
@@ -1178,7 +1151,7 @@ impl HereState {
             let label = member_name(member).map_or_else(guest_label, str::to_owned);
             add(&mut named, self.person_of(&member.publisher), label);
         }
-        ui::presence::ParticipantLabels::by_joining(named.iter().map(|(id, name)| {
+        ui::presence::MemberLabels::by_joining(named.iter().map(|(id, name)| {
             // A person is spelled by their root key, the one every record stores.
             let admitted = self.joined.get(*id).copied();
             (*id, name.as_str(), admitted)
@@ -1245,14 +1218,8 @@ impl HereState {
     }
 }
 
-/// One device here as the settlement reads it: its publisher, the person it
-/// is (an agent, itself), the colour its shell claimed for that person where it
-/// claimed one, and the colour its kind wears where it claimed none
-/// ([`ui::presence::participant_color`]).
-type Settling<'a> = (&'a str, &'a str, Option<(u8, u8, u8)>, (u8, u8, u8));
-
 /// `publisher` 's colour in `colors` ([`HereState::colors`]), or the neutral face while the
-/// workspace has not settled one for it.
+/// workspace does not know who they are yet.
 fn color_in(colors: &HashMap<String, (u8, u8, u8)>, publisher: &str) -> (u8, u8, u8) {
     colors
         .get(publisher)
@@ -1406,7 +1373,7 @@ pub fn place_here(tree: &mut Layout, people: &[Person], following: Option<&str>)
 
 /// The workspace's members, each in the colour it wears everywhere: its people with their roles,
 /// the agents admitted in it, its bots and anyone here its policy does not list yet. A person here
-/// now wears the colour this session settled for them; software the one its admission gave it.
+/// now wears the colour they show by here; everyone else the one who they are gives them.
 fn member_rows(workspace: &Workspace, people: &[Person], now: u64) -> Vec<Member> {
     let here = |id: &MemberId| people.iter().find(|person| member_id_of(person) == *id);
     let mut rows: Vec<Member> = workspace
@@ -1417,7 +1384,7 @@ fn member_rows(workspace: &Workspace, people: &[Person], now: u64) -> Vec<Member
             let person_id = PersonId::parse(&person).ok()?;
             let id = MemberId::person(person_id.clone());
             let (name, colour) = here(&id).map_or_else(
-                || (String::new(), assigned_colour(&id, None)),
+                || (String::new(), PresenceHue::of_member(&id)),
                 |person| (person.label.clone(), hue_of(person.rgb)),
             );
             let mut row = Member::of_person(
@@ -1430,12 +1397,10 @@ fn member_rows(workspace: &Workspace, people: &[Person], now: u64) -> Vec<Member
         .collect();
     for (agent, _) in workspace.agent_members_at(now) {
         let id = MemberId::agent(agent.clone());
-        let keeper = workspace
-            .agent_keeper(&agent)
-            .and_then(|keeper| PersonId::parse(keeper).ok());
-        let mut row = Member::of_software(id.clone(), agent, keeper.as_ref());
+        let mut row = Member::of_software(id.clone(), agent);
         if let Some(person) = here(&id) {
             row.name.clone_from(&person.label);
+            row.colour = hue_of(person.rgb);
         }
         rows.push(row);
     }
@@ -1445,7 +1410,7 @@ fn member_rows(workspace: &Workspace, people: &[Person], now: u64) -> Vec<Member
                 .clone()
                 .unwrap_or_else(|| bot.name.to_lowercase()),
         );
-        let mut row = Member::of_software(id, bot.name.clone(), None);
+        let mut row = Member::of_software(id, bot.name.clone());
         row.name.clone_from(&bot.name);
         rows.push(row);
     }
@@ -1469,8 +1434,8 @@ fn member_of_presence(person: &Person, id: &MemberId) -> Member {
             None,
         )
     } else {
-        let mut row = Member::of_software(id.clone(), person.label.clone(), None);
-        row.name.clone_from(&person.label);
+        let mut row = Member::of_software(id.clone(), person.label.clone());
+        row.colour = hue_of(person.rgb);
         row
     }
 }

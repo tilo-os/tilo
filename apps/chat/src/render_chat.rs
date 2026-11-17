@@ -34,7 +34,7 @@ use crate::app::{ChatApp, Hit, MenuTarget};
 use crate::model::{Message, Presence};
 use crate::paint::{band_at_least, elide, line_of, push_clip};
 
-/// How much of the participant's colour a mention *of you* keeps when it is
+/// How much of the member's colour a mention *of you* keeps when it is
 /// tinted toward the surface. A filled band, so it can be found by scanning.
 const MENTION_SELF_BAND_MIX: f32 = 0.78;
 
@@ -78,7 +78,7 @@ pub(crate) fn mention_colors(
     ground: Color,
 ) -> (Option<Color>, Color) {
     let colors = &theme.tokens.colors;
-    let own = colors.presence.of_rgb(app.participant_color(user));
+    let own = colors.presence.of_rgb(app.member_color(user));
     if !is_self {
         // Their colour, made legible on the surface the message is on.
         return (None, colors.ink_on(ground, own, MENTION_TEXT_CONTRAST));
@@ -150,7 +150,7 @@ impl ChatApp {
         }
     }
 
-    /// The colours mentions are painted in on `theme`, for every participant
+    /// The colours mentions are painted in on `theme`, for every member
     /// (a mention of you filled, anyone else's in their colour), and a
     /// fingerprint of what they were built from.
     pub(crate) fn mention_paint(&self, theme: &Theme) -> (u64, ui::widget::marks::MentionPaint) {
@@ -160,12 +160,12 @@ impl ChatApp {
             let (band, ink) = mention_colors(self, user, self.is_me(user), theme, ground);
             ui::widget::marks::MentionColors { ink, band }
         };
-        let participants = self.participant_ids();
+        let members = self.member_ids();
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         // Every message a frame lays out asks for this, so the fingerprint is
         // taken from the values themselves: a colour hashes as its components
-        // and a participant as their id, never as formatted text.
-        for (user, _) in &participants {
+        // and a member as their id, never as formatted text.
+        for (user, _) in &members {
             let painted = colors(user);
             user.hash(&mut hasher);
             painted.ink.components.map(f32::to_bits).hash(&mut hasher);
@@ -191,7 +191,7 @@ impl ChatApp {
             ink: theme.tokens.colors.text_primary,
             band: None,
         };
-        let map: std::collections::HashMap<String, ui::widget::marks::MentionColors> = participants
+        let map: std::collections::HashMap<String, ui::widget::marks::MentionColors> = members
             .into_iter()
             .map(|(user, _)| (user.key(), colors(user)))
             .collect();
@@ -399,10 +399,7 @@ impl ChatApp {
         parts: &crate::app::PaintedMessage,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        if m.author.is_bot()
-            || !m.author.is_person()
-            || crate::host_model::is_provider_output(m)
-        {
+        if m.author.is_bot() || !m.author.is_person() || crate::host_model::is_provider_output(m) {
             return;
         }
         let name = parts.author.as_ref().map(|(rect, _)| *rect);
@@ -437,7 +434,11 @@ impl ChatApp {
                 .appearance
                 .as_ref()
                 .and_then(|appearance| appearance.persona.as_ref()?.linked.as_deref())
-                .and_then(|person| self.users.iter().find(|user| user.id.person_id() == Some(person)));
+                .and_then(|person| {
+                    self.users
+                        .iter()
+                        .find(|user| user.id.person_id() == Some(person))
+                });
             Author::Bot {
                 bot_name: name,
                 // The roster does not name a bot's installer yet; the chip's
@@ -475,7 +476,7 @@ impl ChatApp {
     /// The colour `id` chose (or was given) as theirs: what their avatar,
     /// cursor and caret wear, before the theme's presence lightness.
     pub(crate) fn identity_colour(&self, id: &MemberId) -> Color {
-        let (red, green, blue) = self.participant_color(id);
+        let (red, green, blue) = self.member_color(id);
         Color::from_rgb8(red, green, blue)
     }
 
@@ -744,6 +745,7 @@ mod attach_picker;
 mod composer;
 mod members;
 mod messages;
+mod question;
 mod thread;
 
 pub(crate) use agent_work::agent_work_accessible_description;
@@ -772,6 +774,8 @@ pub(crate) struct RowM {
     work_h: f64,
     reasoning_h: f64,
     pub(crate) resource_h: f64,
+    /// The question the message asks, drawn under what it carries.
+    question_h: f64,
     att_h: f64,
     react_h: f64,
     edited_h: f64,
@@ -800,6 +804,7 @@ impl RowM {
             work_h: 0.0,
             reasoning_h: 0.0,
             resource_h: 0.0,
+            question_h: 0.0,
             att_h: 0.0,
             react_h: 0.0,
             edited_h: 0.0,
@@ -823,6 +828,7 @@ impl RowM {
             + self.work_h
             + self.reasoning_h
             + self.resource_h
+            + self.question_h
             + self.edited_h
             + self.att_h
             + self.react_h
@@ -903,6 +909,7 @@ mod tests {
             acting: None,
             author_name: None,
             share: None,
+            question: None,
             attempts: 0,
             sending: false,
         };
@@ -1093,6 +1100,7 @@ mod tests {
                 work_h: 96.0,
                 reasoning_h: 0.0,
                 resource_h: 0.0,
+            question_h: 0.0,
                 att_h: 0.0,
                 react_h: 0.0,
                 edited_h: 0.0,

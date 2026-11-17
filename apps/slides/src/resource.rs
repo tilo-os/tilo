@@ -5,7 +5,7 @@
 use ui::framework::Fixture;
 use ui::framework::{LaunchInput, ResourceApp, ViewCx};
 
-use ui::record::DocumentId;
+use ui::resource::DocumentId;
 use ui::tilo_resource::Invoke;
 use ui::widget::Element;
 
@@ -53,7 +53,7 @@ impl ResourceApp for SlidesShell {
         }
     }
 
-    fn launch_record(input: &LaunchInput<'_>) -> Option<DocumentId> {
+    fn launch_resource(input: &LaunchInput<'_>) -> Option<DocumentId> {
         input
             .argument()
             .map(|path| DocumentId::derived("slides", &DocumentId::identify_file(path)))

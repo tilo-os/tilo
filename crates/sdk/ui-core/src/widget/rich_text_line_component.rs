@@ -117,6 +117,11 @@ fn build(
 }
 
 impl crate::widget::Widget for DeclaredLine {
+    /// The line itself.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        crate::widget::Widget::html(&self.line, cx);
+    }
+
     fn needs_redraw(&self) -> bool {
         self.line.needs_redraw() || self.line.needs_animation_frame()
     }

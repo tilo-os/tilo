@@ -499,16 +499,16 @@ fn capture_replays_certificate_lineages_first() {
 /// other record whatever their hashes.
 #[test]
 fn capture_replays_governance_and_the_shared_desktop_before_other_records() {
-    use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD};
+    use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
     let tmp = tempfile::tempdir().unwrap();
     let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
     // A record whose channel orders before any other by hash.
     let other = raw_generation(&store, 0, 0x00);
-    store.learn_record([0x00; 32], "notes", "note-1");
-    store.learn_record(
-        neighbour_wire::app_document_channel(DESKTOP_APP, DESKTOP_RECORD),
+    store.learn_document([0x00; 32], "notes", "note-1");
+    store.learn_document(
+        neighbour_wire::app_document_channel(DESKTOP_APP, DESKTOP_DOCUMENT),
         DESKTOP_APP,
-        DESKTOP_RECORD,
+        DESKTOP_DOCUMENT,
     );
     fs::write(other.join("checkpoint.delta"), frame(1, 8, 10)).unwrap();
     fs::write(other.join("1.delta"), frame(1, 8, 11)).unwrap();
@@ -524,7 +524,7 @@ fn capture_replays_governance_and_the_shared_desktop_before_other_records() {
     };
     let desktop = hex::encode(neighbour_wire::app_document_channel(
         DESKTOP_APP,
-        DESKTOP_RECORD,
+        DESKTOP_DOCUMENT,
     ));
     let author = [0xfe; 32];
     fs::write(

@@ -694,11 +694,6 @@ pub fn account(reach: Reach<'_>, cmd: AccountCmd) -> ExitCode {
                         &serde_json::json!({"name": name, "labels": labels}),
                     )
                     .await?;
-                // This computer's folders learn of it now: a workspace of the
-                // person's own gets a folder by itself, and waiting for the
-                // peer's next list would be a minute of `tilo folders add`
-                // saying it is not there.
-                crate::mcp::ask_peer_list_again();
                 Ok(show(reach.json, &made, &workspace_line(&made)))
             }
             WorkspacesCmd::Branch {
@@ -717,9 +712,6 @@ pub fn account(reach: Reach<'_>, cmd: AccountCmd) -> ExitCode {
                         &serde_json::json!({"name": name, "labels": labels}),
                     )
                     .await?;
-                // The branch gets a folder of its own, as a created workspace
-                // does.
-                crate::mcp::ask_peer_list_again();
                 Ok(show(reach.json, &made, &workspace_line(&made)))
             }
             WorkspacesCmd::Unattended {
@@ -729,9 +721,6 @@ pub fn account(reach: Reach<'_>, cmd: AccountCmd) -> ExitCode {
             WorkspacesCmd::Rm { workspace: named } => {
                 let id = workspace_id(&client, &named).await?;
                 let deleted = client.delete(&format!("/v1/workspaces/{id}")).await?;
-                // Its folder goes with it now rather than at the peer's next
-                // list.
-                crate::mcp::ask_peer_list_again();
                 let mut said = format!("deleted {}", text(&deleted, "deleted"));
                 let revoked: Vec<&str> = deleted
                     .get("revoked_keys")

@@ -45,7 +45,7 @@ pub fn workspace_seed(
         // The workspace's shared desktop: every member's layout lands in it.
         documents: vec![SeedDocument {
             app_id: tilo_desktop_model::ownership::DESKTOP_APP.into(),
-            record_id: tilo_desktop_model::ownership::DESKTOP_RECORD.into(),
+            document_id: tilo_desktop_model::ownership::DESKTOP_DOCUMENT.into(),
             kind: tilo_desktop_model::ownership::DESKTOP_KIND.into(),
             bytes: AutoCommit::new().save(),
         }],

@@ -122,11 +122,11 @@ pub fn delivered_invocation() -> Option<tilo_actions::InvocationId> {
     CURRENT_INVOKERS.with_borrow(|invokers| invokers.last().and_then(|(_, invocation)| *invocation))
 }
 
-/// The participant whose view the current resolution builds, if any.
-pub fn current_participant() -> Option<tilo_actions::ParticipantId> {
+/// The presence whose view the current resolution builds, if any.
+pub fn current_presence() -> Option<tilo_actions::PresenceId> {
     CURRENT_INVOKERS.with_borrow(|invokers| {
         invokers
             .last()
-            .and_then(|(invoker, _)| invoker.participant.clone())
+            .and_then(|(invoker, _)| invoker.presence.clone())
     })
 }

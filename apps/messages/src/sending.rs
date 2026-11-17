@@ -4,7 +4,7 @@ use crate::{
     view::{Choice, Selection, Sources},
 };
 use tilo_messaging::{MessagingClient, SendRequest};
-use ui::framework::PersonRecord;
+use ui::framework::PersonResource;
 use ui::{
     LocalState,
     framework::{EffectAnswer, EffectCx, EffectStatus, Effected},
@@ -16,18 +16,18 @@ pub(crate) struct Sending {
     pub(crate) draft: LocalState<String>,
     pub(crate) operation: LocalState<String>,
     generation: LocalState<u64>,
-    drafts: Option<PersonRecord<crate::drafts::MessageDrafts>>,
+    drafts: Option<PersonResource<crate::drafts::MessageDrafts>>,
     open: LocalState<String>,
 }
 impl Sending {
     pub(crate) fn new(
         client: Option<MessagingClient>,
-        actor: Option<&str>,
-        drafts: Option<PersonRecord<crate::drafts::MessageDrafts>>,
+        actor: Option<&ui::tilo_resource::PersonId>,
+        drafts: Option<PersonResource<crate::drafts::MessageDrafts>>,
         direct: bool,
     ) -> Self {
         Self {
-            client: client.filter(|c| actor == Some(c.actor())),
+            client: client.filter(|c| actor.is_some_and(|actor| actor.as_str() == c.actor())),
             direct,
             draft: LocalState::new(String::new()),
             operation: LocalState::new(uuid::Uuid::new_v4().to_string()),

@@ -6,7 +6,7 @@
 //! button names it (`bar.action(Snippets::DELETE.with(id))`,
 //! `bar.effect(&View::ZoomIn)`): the entry takes its name, icon and
 //! destructive role from the declaration, and is disabled where the
-//! participant may not take it. Where it sits (the row or the menu, a menu
+//! member may not take it. Where it sits (the row or the menu, a menu
 //! button's items) and whether a toggle is on stay the app's, set on the
 //! entry it gets back like on any [`ToolbarAction`].
 //!
@@ -64,7 +64,7 @@ impl<R: Resource> BarActions<R> {
     /// The entry that submits `submit` (a verb, a field edit), named and
     /// pictured as its action is declared; a field edit, declared by no
     /// verb, has neither and is named by the app. Disabled where the
-    /// participant may not take it.
+    /// member may not take it.
     pub fn action(&self, submit: impl Submit<R>) -> ToolbarAction {
         let id = submit.action_id();
         let declarations = tilo_resource::vocabulary::<R>().declarations();
@@ -88,7 +88,7 @@ impl<R: Resource> BarActions<R> {
 
     /// The entry that invokes `effect`, named and pictured as it is
     /// declared, and answered by whoever answers the effect (a view effect
-    /// by the window's surface). Disabled where the participant may not
+    /// by the window's surface). Disabled where the member may not
     /// take it.
     pub fn effect<E: Effect>(&self, effect: &E) -> ToolbarAction {
         let declared = E::declaration(effect.id());

@@ -484,7 +484,7 @@ fn an_environments_device_is_confined_and_a_stopped_one_is_refused() {
     // The workspace lists it as a member device of the person, as it does
     // while the session runs: what it reaches is the register's to say.
     runtime.membership.devices.push(device);
-    let scope = crate::environment::EnvironmentScope::for_record(
+    let scope = crate::environment::EnvironmentScope::for_resource(
         WorkspaceId::parse(WORKSPACE).unwrap(),
         "so.tilo.browser",
         "record-1",

@@ -13,15 +13,15 @@ use automerge::{ObjId, ObjType, ReadDoc, ScalarValue, Value, ValueRef};
 /// Keys naming a message's sender as it shows them.
 const SENDER_KEYS: &[&str] = &["from", "sender"];
 
-/// The key naming a message's sender by participant id.
+/// The key naming a message's sender by member id.
 const AUTHOR_KEY: &str = "author";
 
 /// Keys holding what a message says, in the order its line shows them.
 const SAID_KEYS: &[&str] = &["subject", "text", "body"];
 
-/// Marks the participant id a line names its sender by: shown by name, or
+/// Marks the member id a line names its sender by: shown by name, or
 /// left out, by [`shown_line`], never read as words of the message.
-const PARTICIPANT_MARK: char = '\u{1f}';
+const MEMBER_MARK: char = '\u{1f}';
 
 /// The most values of one document visited for its messages.
 const MOST_VISITED: usize = 200_000;
@@ -36,7 +36,7 @@ const MOST_BYTES: usize = 256 * 1024;
 
 /// The messages of `doc`, one line each: `sender: what it says`, where
 /// what it says is its subject, text and body on one line. A sender named
-/// by participant id is kept marked for [`shown_line`].
+/// by member id is kept marked for [`shown_line`].
 #[must_use]
 pub fn message_text(doc: &impl ReadDoc) -> String {
     let mut walk = Walk {
@@ -48,13 +48,13 @@ pub fn message_text(doc: &impl ReadDoc) -> String {
 }
 
 /// `line`, one of [`message_text`], as a person reads it: a sender named by
-/// participant id shown by the name `name` gives it, or left out when it
+/// member id shown by the name `name` gives it, or left out when it
 /// gives none.
 #[must_use]
 pub fn shown_line(line: &str, name: impl Fn(&str) -> Option<String>) -> String {
     let Some((id, said)) = line
-        .strip_prefix(PARTICIPANT_MARK)
-        .and_then(|rest| rest.split_once(PARTICIPANT_MARK))
+        .strip_prefix(MEMBER_MARK)
+        .and_then(|rest| rest.split_once(MEMBER_MARK))
     else {
         return line.to_owned();
     };
@@ -64,16 +64,16 @@ pub fn shown_line(line: &str, name: impl Fn(&str) -> Option<String>) -> String {
     }
 }
 
-/// Whether `line` names its sender by participant id.
+/// Whether `line` names its sender by member id.
 #[must_use]
-pub fn names_participant(line: &str) -> bool {
-    line.starts_with(PARTICIPANT_MARK)
+pub fn names_member(line: &str) -> bool {
+    line.starts_with(MEMBER_MARK)
 }
 
-/// The names `doc` gives participants: each map holding an `id` and a
+/// The names `doc` gives members: each map holding an `id` and a
 /// `name` (a chat's roster).
 #[must_use]
-pub fn participant_names(doc: &impl ReadDoc) -> HashMap<String, String> {
+pub fn member_names(doc: &impl ReadDoc) -> HashMap<String, String> {
     let mut names = HashMap::new();
     let mut budget = MOST_VISITED;
     gather_names(doc, &automerge::ROOT, 0, (&mut budget, &mut names));
@@ -158,8 +158,8 @@ impl Walk {
         let sender = written.map(|from| from.trim().to_owned());
         let line = match (sender, author) {
             (Some(from), _) if !from.is_empty() => format!("{from}: {said}"),
-            (_, Some(id)) if !id.trim().is_empty() && !id.contains(PARTICIPANT_MARK) => {
-                format!("{PARTICIPANT_MARK}{}{PARTICIPANT_MARK}{said}", id.trim())
+            (_, Some(id)) if !id.trim().is_empty() && !id.contains(MEMBER_MARK) => {
+                format!("{MEMBER_MARK}{}{MEMBER_MARK}{said}", id.trim())
             }
             _ => said,
         };
@@ -260,13 +260,13 @@ mod tests {
                 "On my way",
             ]
         );
-        let names = participant_names(&doc);
+        let names = member_names(&doc);
         assert_eq!(names.get("ben-5920f2").map(String::as_str), Some("Ben"));
         let name = |id: &str| (id == "rae-cf1531").then(|| "Rae".to_owned());
         assert_eq!(shown_line(lines[0], name), "Rae: LR-2041 code entered");
         assert_eq!(shown_line(lines[0], |_| None), "LR-2041 code entered");
         assert_eq!(shown_line(lines[1], name), lines[1]);
-        assert!(names_participant(lines[0]) && !names_participant(lines[1]));
+        assert!(names_member(lines[0]) && !names_member(lines[1]));
     }
 
     #[test]

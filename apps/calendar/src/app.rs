@@ -224,7 +224,7 @@ pub struct CalendarApp {
     sample_accounts: bool,
     config_root: Option<std::path::PathBuf>,
     person_accounts: Option<(
-        ui::framework::PersonRecord<accounts::person::PersonAccounts>,
+        ui::framework::PersonResource<accounts::person::PersonAccounts>,
         Option<u64>,
     )>,
     contacts_requested: std::rc::Rc<std::cell::Cell<bool>>,
@@ -1970,7 +1970,7 @@ impl CalendarApp {
 
     pub(crate) fn follow_person_accounts(
         &mut self,
-        accounts: ui::framework::PersonRecord<accounts::person::PersonAccounts>,
+        accounts: ui::framework::PersonResource<accounts::person::PersonAccounts>,
     ) {
         self.person_accounts = Some((accounts, None));
         self.adopt_person_accounts();

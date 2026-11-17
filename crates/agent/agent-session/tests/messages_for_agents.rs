@@ -16,6 +16,7 @@
 use crate::common::catalogue;
 use collab_types::DocumentMutation;
 use serde_json::{Value, json};
+use tilo_actions::MemberId;
 use tilo_actions::OperationKind;
 use tilo_actions::api::{ActionAddress, ActionDescriptor};
 use tilo_agent_session::apps::readable;
@@ -109,9 +110,14 @@ fn messages_is_in_the_agents_catalogue() {
 #[allow(clippy::too_many_lines, reason = "one scenario, read top to bottom")]
 fn an_agent_reads_searches_answers_and_exports_sms_delivered_into_a_record() {
     let workspace = ContentStore::memory();
-    let agent = crate::common::confined(MESSAGES, "assistant", &ReplicaActor::Agent, Seed::New)
-        .expect("a Messages record is held in a confined worker")
-        .lending(workspace.clone());
+    let agent = crate::common::confined(
+        MESSAGES,
+        &MemberId::person("assistant"),
+        &ReplicaActor::Agent,
+        Seed::New,
+    )
+    .expect("a Messages record is held in a confined worker")
+    .lending(workspace.clone());
     assert_ne!(agent.worker_id(), Some(std::process::id()));
     let genesis = agent.take_mutation().unwrap().expect("a new record");
 
@@ -240,10 +246,10 @@ fn an_agent_reads_searches_answers_and_exports_sms_delivered_into_a_record() {
     };
     let mut page = crate::common::open(
         MESSAGES,
-        "ada",
+        &MemberId::person("ada"),
         ReplicaActor::Owner,
         Seed::Existing {
-            record: agent.record_id().clone(),
+            record: agent.document_id().clone(),
             changes: vec![snapshot],
         },
     )

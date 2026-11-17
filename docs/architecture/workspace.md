@@ -40,12 +40,12 @@ person's device.
 
 **Each device has a role in each workspace it holds:**
 
-- **Participant**: it holds the workspace's keys, reads and writes its state,
+- **Key holder**: it holds the workspace's keys, reads and writes its state,
   and can do work in it.
 - **Store**: it holds the workspace's encrypted data and serves it, and can
   read none of it.
 
-One device can be a participant in some workspaces and a store for others.
+One device can be a key holder in some workspaces and a store for others.
 The two roles add up: a workspace can have any number of each.
 
 **Each device decides how much it wants to do.** A server may want to store
@@ -159,7 +159,7 @@ it.
 
 **What a branch keeps**: the person, everything on the disk, every secret, and
 its workspaces. Membership names people, and a device certified by a member's
-root is that member's device, admitted by any participant when it first asks
+root is that member's device, admitted by any key holder when it first asks
 (§ Membership is a resource), so no workspace has to invite the branch.
 **What it gets new**: its device key (so its endpoint id, CRDT author and
 filesystem subject), its certificate, its name — the source's name with
@@ -201,7 +201,7 @@ sent to an endpoint id to the connection that registered under it last, so a
 second endpoint of the device's key takes the device's place there: a device
 that starts later, or comes back, then dials it through the relay and reaches
 an endpoint that answers nothing. And a second member key asked for as the same
-device has the group's participants commit one in and the other out, turn
+device has the group's key holders commit one in and the other out, turn
 about, for as long as both sessions run.
 
 ## State
@@ -264,7 +264,7 @@ renamed in the folder takes its note's title back.
 
 Membership and permissions are workspace state, changed by actions like any
 other state and checked by the action policy
-(`crates/collab/action-policy`). A participant with the grant admits a
+(`crates/collab/action-policy`). A key holder with the grant admits a
 member or a device and hands over the keys; there is no single device that
 owns the workspace's governance.
 
@@ -284,11 +284,11 @@ Each is a signed op: its author's device key, certified by the author's root,
 signs it, and the op names the ops it was written on (its causal heads), as
 every op does.
 
-Every participant replays the resource and checks every op under the action
+Every key holder replays the resource and checks every op under the action
 policy against the membership **as the op's author saw it**: the state at the
 op's own heads, not the receiver's current state. An op its author was not
 granted at that point is kept, so replicas stay byte-identical, but has no
-effect. No device decides for the others; every participant reaches the same
+effect. No device decides for the others; every key holder reaches the same
 answer from the same ops.
 
 **Administrators and whom a workspace is kept for.** An administrator is a
@@ -298,7 +298,7 @@ workspace's owner is structural, and on a host such as tilo.sh it is the host
 itself, so the person the host keeps the workspace for (who made it there, or
 whose account it belongs to) is named in the membership by a grant of its own,
 the keeper grant, which only the owner gives. The policy then decides, for
-every participant alike:
+every key holder alike:
 
 - the owner, the keeper and every administrator make administrators;
 - only the owner and the keeper unmake an administrator, change their role or
@@ -306,7 +306,7 @@ every participant alike:
   and anyone gives up their own administration or leaves;
 - an invitation can make its holder an administrator (an Editor's invitation
   in its own signed layout). Only someone who may make administrators issues
-  one, and every participant admitting its holder checks again that its
+  one, and every key holder admitting its holder checks again that its
   issuer, and the person a host signed it for, may make them; one that fails
   admits nobody.
 
@@ -337,40 +337,40 @@ batch may only add ops; a held op is never changed or dropped.
 
 **Admitting.** An invitation is a signed grant naming the role it gives and,
 when narrowed, the person it is for. Redeeming it writes the receipt, with
-its signed invitation, into the workspace's rows; every participant folds the
+its signed invitation, into the workspace's rows; every key holder folds the
 receipts it holds into the membership, checking the invitation at the joining
 time the workspace records for that person, so the invitation is judged once
-and every participant judges it the same. Any participant that holds the
+and every key holder judges it the same. Any key holder that holds the
 invitation admits it, with no particular device needed online. A member's own
 further devices need no invitation: a device certified by a member's root is
-that member's device, and any participant admits it when it first asks. Which
-role the device takes in the workspace (participant or store) is the member's
+that member's device, and any key holder admits it when it first asks. Which
+role the device takes in the workspace (key holder or store) is the member's
 choice, recorded in the same resource.
 
 ### Keys follow membership
 
 Content is sealed under content keys (`key-group`), one per key epoch.
 The key epoch's group is an MLS group whose members are exactly the
-workspace's participant devices: a projection of `workspace.members`, never a
+workspace's key-holding devices: a projection of `workspace.members`, never a
 second record of who belongs.
 
-- **Any participant commits.** When the membership resource admits a
-  participant device or removes one, any participant that sees the group
+- **Any key holder commits.** When the membership resource admits a
+  key-holding device or removes one, any key holder that sees the group
   differ from the projection writes the MLS commit that brings it in line:
   `Add` with a `Welcome` and the bundle of every past content key for an
   admitted device, `Remove` and a fresh key epoch for a removed one. A
-  participant checks every commit it receives against the projection at the
+  key holder checks every commit it receives against the projection at the
   commit's place and refuses one that adds or removes anyone the resource
   does not.
 - **One commit per epoch.** MLS orders commits linearly. When two
-  participants commit on the same epoch, every device keeps the commit with
+  key holders commit on the same epoch, every device keeps the commit with
   the lower hash; the other committer applies it and, if the group still
   differs from the projection, commits again on top. Commits only enact what
   the resource decided, so a lost race loses nothing.
 - **Removal does not wait for a commit.** From the op that removes a member,
-  every participant refuses that member's further ops, whatever key epoch
+  every key holder refuses that member's further ops, whatever key epoch
   they are sealed under. The commit that rotates the key comes from the next
-  participant online, and protects content written from then on.
+  key holder online, and protects content written from then on.
 - **Late joiners read everything.** The bundle in an admission carries the
   key of every past epoch, sealed to the joiner's first epoch, so a joiner
   reads the whole history locally. It grows with membership changes, never
@@ -946,7 +946,7 @@ the model but instead of it:
   group are the identity's certified devices that are not revoked — the
   identity decides, and no governor or workspace takes part. Any of those
   devices creates the group and admits the others
-  (`key_group::GroupPeer`), as a workspace's participants do.
+  (`key_group::GroupPeer`), as a workspace's key holders do.
 - **Settings outside the model.** `Settings<T>` with Personal, DeviceLocal and
   Shared scopes, the settings registry and `settings.json`. Settings are
   resources.

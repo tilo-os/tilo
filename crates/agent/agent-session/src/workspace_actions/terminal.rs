@@ -49,7 +49,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::{Job, Needs, Shared, Worker, caller_context, invoke_arguments, take_all};
-use crate::participant::actions::record_of;
+use crate::member::actions::resource_of;
 use tilo_relay_protocol::WorkspaceId;
 
 /// Terminal's app id: its session records are what the host runs.
@@ -207,8 +207,8 @@ impl Worker {
         if request.target.address.action != RUN {
             return None;
         }
-        let route =
-            record_of(&request.target.provider, "").filter(|route| route.app_id == TERMINAL_APP)?;
+        let route = resource_of(&request.target.provider, "")
+            .filter(|route| route.app_id == TERMINAL_APP)?;
         if !self.acts_for_owner(caller) && self.bounded(caller).is_none() {
             return None;
         }
@@ -307,7 +307,7 @@ impl Worker {
     /// the person on their own devices. The host's own person and their
     /// agents may. A key reaching this workspace alone runs what would be
     /// asked without the ask when its person let the workspace run commands
-    /// unattended ([`super::WorkspaceRecordsLink::runs_unattended`]); what
+    /// unattended ([`super::WorkspaceDocumentsLink::runs_unattended`]); what
     /// is refused stays refused. `Err` is the receipt that answers it instead: refused, or
     /// waiting for the person.
     #[allow(
@@ -485,8 +485,8 @@ impl Worker {
         if request.target.address.action != STOP {
             return None;
         }
-        let route =
-            record_of(&request.target.provider, "").filter(|route| route.app_id == TERMINAL_APP)?;
+        let route = resource_of(&request.target.provider, "")
+            .filter(|route| route.app_id == TERMINAL_APP)?;
         if !self.acts_for_owner(caller) {
             self.bounded(caller)?;
             let refused = |error| {

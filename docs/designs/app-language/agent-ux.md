@@ -12,11 +12,11 @@ popover with pickers. The menus themselves take no typed input.
 
 - **Every context menu takes typing.** A query field at the top filters its entries, with the
   ranking `filter_menu` already has (prefix, then substring). Enter on a match runs it. A
-  sentence, or no match, turns the menu into the composer with what was clicked as the subject.
+  sentence, or no match, turns the menu into the composer with what was clicked as the target.
   The "Tell an agent…" row goes away: typing is the way.
 - **Same for the window menu and desktop-thing menus** (today they offer only "Tell an
   agent…").
-- **One subject rule.** Right-click on an item: that item. Right-click inside a selection: the
+- **One target rule.** Right-click on an item: that item. Right-click inside a selection: the
   selection. tilo-app rows and `ContextMenuArea` (what tilolang lists use) do the same.
 - **Select and type:** with a selection in focus, typing a printable character opens the
   composer on it where the window doesn't take text input itself.
@@ -26,7 +26,7 @@ popover with pickers. The menus themselves take no typed input.
 
 ## 2. The composer
 
-- **Anchored, not covering.** It sits beside its subject and never hides it; on a phone it's a
+- **Anchored, not covering.** It sits beside its target and never hides it; on a phone it's a
   bottom sheet that rises with the keyboard.
 - **Pickers stay out of the way.** Agent, model and "decide / answer here / run as a task" are
   defaults the person can change, shown as one quiet line, not three controls before typing.
@@ -34,7 +34,7 @@ popover with pickers. The menus themselves take no typed input.
   100 ms), with the steps taken so far and a link to the run in Tasks. Stop is its own control,
   away from Send.
 - **Answers are rich.** Markdown, resources as chips that open, actions taken as rows that undo,
-  suggestions as cards with previews. The subject's context is shown as what it is (a resource
+  suggestions as cards with previews. The target's context is shown as what it is (a resource
   chip, an excerpt), never as raw markdown.
 
 ## 3. Answers as views
@@ -52,7 +52,7 @@ Resources are shared content; views belong to whoever chose them.
   first unless the viewer trusts them (the code-author grants of `tilo_action_policy`).
 - **An agent's answer is one.** The Tasks agent finishes with `plan` and a `view`; the Views host
   checks it (`run-block` answers `{"kind":"view","definition":…}`), Views' `answer` keeps it
-  written by the task, and `record-answer` opens it beside the subject. The person keeps or
+  written by the task, and `record-answer` opens it beside the target. The person keeps or
   discards it; each person's keep is their own.
 - **Sharing sends the definition.** Views' `send` puts it in a chat message (`send_view`); a
   reader adds it to their own views (`add`), its author whoever sent the message, as the log

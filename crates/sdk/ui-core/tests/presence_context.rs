@@ -94,8 +94,8 @@ tilo_test_env::scenario! {
 
             let peers = ctx.peers_on(&key);
             assert_eq!(peers.len(), 2);
-            assert!(peers.iter().any(|u| u.key() == "alice"));
-            assert!(peers.iter().any(|u| u.key() == "bob"));
+            assert!(peers.contains(&MemberId::person("alice")));
+            assert!(peers.contains(&MemberId::person("bob")));
         }
 
         {

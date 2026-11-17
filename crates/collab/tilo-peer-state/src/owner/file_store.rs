@@ -114,7 +114,7 @@ pub(crate) fn index_of(parts: &Path) -> PathBuf {
 /// Every file of the record at `path` as the disk holds it — the index and
 /// each workspace's file — sorted by path.
 #[cfg(test)]
-pub(crate) fn record_files(path: &Path) -> Result<Vec<(PathBuf, Vec<u8>)>, std::io::Error> {
+pub(crate) fn document_files(path: &Path) -> Result<Vec<(PathBuf, Vec<u8>)>, std::io::Error> {
     let mut files = Vec::new();
     let Ok(entries) = std::fs::read_dir(parts_of(path)) else {
         return Ok(files);
@@ -189,7 +189,7 @@ fn read_within(path: &Path, cap: usize) -> Result<Option<Vec<u8>>, String> {
 
 /// The record at `path`, empty when there is none, and the revision each
 /// workspace's file was written at.
-fn read_record(path: &Path) -> Result<(NativeAuthorityStorage, Held), String> {
+fn read_resource(path: &Path) -> Result<(NativeAuthorityStorage, Held), String> {
     let parts = parts_of(path);
     let Some(bytes) = read_bounded(&index_of(&parts))? else {
         return Ok((NativeAuthorityStorage::default(), Held::new()));
@@ -262,7 +262,7 @@ fn drop_recovery_projections(record: &mut NativeAuthorityStorage) {
 
 /// Compact JSON of one workspace's record, within its file's cap.
 pub(super) fn part_bytes(stored: &StoredWorkspace) -> Result<Vec<u8>, String> {
-    crate::owner::limits::preflight_record(stored, MAX_AUTHORITY_BYTES)
+    crate::owner::limits::preflight_document(stored, MAX_AUTHORITY_BYTES)
         .map_err(|error| error.to_string())?;
     let mut bytes = LimitedWriter::new(Vec::new(), MAX_AUTHORITY_BYTES);
     serde_json::to_writer(&mut bytes, stored).map_err(|error| error.to_string())?;
@@ -286,7 +286,7 @@ fn index_bytes(record: &NativeAuthorityStorage, held: &Held) -> Result<Vec<u8>, 
 /// Read the record kept at `path`: the index beside it and the workspace
 /// files the index names. Empty when there is none.
 pub fn read_file(path: &Path) -> Result<NativeAuthorityStorage, String> {
-    read_record(path).map(|(record, _)| record)
+    read_resource(path).map(|(record, _)| record)
 }
 
 /// Open the owner whose record is the file at `path`, starting empty.
@@ -299,7 +299,7 @@ pub fn open_file_with(
     path: &Path,
     host: Arc<dyn FileHost>,
 ) -> Result<NativeWorkspaceOwner, String> {
-    let (mut authority, held) = read_record(path)?;
+    let (mut authority, held) = read_resource(path)?;
     let migrated = crate::owner::enrollment::migrate_intents(&mut authority)?;
     let store = Arc::new(FileStore::at(path, host, held));
     let owner = NativeWorkspaceOwner::restore(

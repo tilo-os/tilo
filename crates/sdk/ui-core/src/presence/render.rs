@@ -79,7 +79,7 @@ fn marker_pigment(c: Color) -> Color {
 
 /// A peer's colour as this theme paints it: their identity colour
 /// ([`PresenceCtx::color_for`]) carried at the theme's presence lightness and
-/// chroma, so every participant is equally loud on every material. Every
+/// chroma, so every member is equally loud on every material. Every
 /// collab affordance resolves through this so they all agree on a peer's
 /// colour.
 pub(crate) fn color_for(ctx: &PresenceCtx, user: &MemberId, theme: &Theme) -> Color {
@@ -575,7 +575,7 @@ pub struct PeerCursor {
     pub pos: (f64, f64),
     pub label: String,
     pub color: Color,
-    /// Authenticated participant kind. Agents use diamond pointer geometry
+    /// Authenticated member kind. Agents use diamond pointer geometry
     /// and an icon-bearing chip, so identity does not depend on reading text.
     pub is_agent: bool,
     /// `1.0` normally; falls towards `0.0` as a quiet peer's pointer fades
@@ -1552,7 +1552,7 @@ fn draw_name_chip(ctx: &mut PaintCtx<'_>, color: Color, name: &str, anchor: Poin
     );
 }
 
-/// The ring a speaking participant's tile wears over its picture: their
+/// The ring a speaking member's tile wears over its picture: their
 /// colour, as strong as their voice is now (`level`, 0 to 1), a chrome rule
 /// thick on each side of the tile's edge.
 pub fn paint_speaking_ring(

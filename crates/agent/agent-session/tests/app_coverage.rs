@@ -15,6 +15,7 @@
 use std::fmt::Write as _;
 
 use crate::common::{Driveable, LOCAL_STATE, catalogue, find_edit};
+use tilo_actions::MemberId;
 use tilo_actions::api::ActionDescriptor;
 use tilo_agent_session::{Replica, ReplicaActor, Seed, StepAction};
 
@@ -52,7 +53,7 @@ fn every_web_app_takes_an_edit_through_its_published_operations() {
     for definition in catalogue.iter() {
         let app = crate::common::open(
             definition.app_id(),
-            "coverage-agent",
+            &MemberId::person("coverage-agent"),
             ReplicaActor::Agent,
             Seed::New,
         )
@@ -102,10 +103,14 @@ fn every_web_apps_record_reads_with_no_window_open() {
         let app = definition.app_id();
         // Opened the way a host holds a record for the action API: no window, so
         // nothing but the record's own declaration can answer.
-        let replica =
-            crate::common::confined(app, "reading-agent", &ReplicaActor::Agent, Seed::New)
-                .unwrap_or_else(|error| panic!("{app} did not open: {error}"));
-        let root = definition.record_kind.clone();
+        let replica = crate::common::confined(
+            app,
+            &MemberId::person("reading-agent"),
+            &ReplicaActor::Agent,
+            Seed::New,
+        )
+        .unwrap_or_else(|error| panic!("{app} did not open: {error}"));
+        let root = definition.resource_type.clone();
         let Some(descriptor) = replica.survey().into_iter().find(|descriptor| {
             descriptor.address.action == "read" && descriptor.address.resource == root.as_str()
         }) else {

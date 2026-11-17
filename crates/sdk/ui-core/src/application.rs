@@ -5,8 +5,9 @@ use crate::application_view::{
 };
 use crate::launch::LaunchError;
 use crate::permissions::{MemberId, PermissionContext, PermissionScope, SharedPermissions};
-use crate::record::{
-    DocumentCheckout, DocumentId, RecordOpenError, RecordReservation, RecordStore, ResourceType,
+use crate::resource::{
+    DocumentCheckout, DocumentId, ResourceOpenError, ResourceReservation, ResourceStore,
+    ResourceType,
 };
 use crate::view::{ThawError, View};
 use crate::wake::{WakeEvent, WakeHandle, WakeScope};
@@ -37,7 +38,7 @@ pub struct ApplicationDefinition {
     /// The app's name, as the definition's runtime learns it.
     pub title: Cow<'static, str>,
     pub icon: IconDescriptor,
-    pub record_kind: ResourceType,
+    pub resource_type: ResourceType,
     pub required: Vec<PermissionScope>,
     pub optional: Vec<PermissionScope>,
     /// Media types (`type/subtype`, lowercase) the component opens when a host hands it a file
@@ -47,15 +48,15 @@ pub struct ApplicationDefinition {
     /// The app keeps one record per workspace, the workspace (a conversation everyone in the workspace
     /// shares), rather than a record per window: every window of the app in the workspace opens it, and
     /// the first creates it.
-    pub workspace_record: bool,
+    pub workspace_resource: bool,
     /// The record a window opens when it names none is the person record of the workspace
     /// ([`DocumentId::of_member`]) rather than the workspace's record of the app: what it keeps there
     /// (their mail) only their devices read.
-    pub member_record: bool,
+    pub member_resource: bool,
     /// The app's window shows before the workspace's record is read: a record this device has opens
     /// off the frame, and the component takes it in when it is decoded
-    /// ([`HostContext::record_opening`]).
-    pub opens_before_record: bool,
+    /// ([`HostContext::resource_opening`]).
+    pub opens_before_resource: bool,
     pub create: ComponentFactory,
 }
 
@@ -95,7 +96,7 @@ pub enum RestoreInput {
 /// Host-supplied storage, identity and authority for one instance, checked by [`HostContext::prepare`]
 /// before any factory runs.
 pub struct HostContextInputs {
-    pub records: RecordStore,
+    pub records: ResourceStore,
     pub views: Rc<InstanceViewStore>,
     pub device_id: String,
     pub instance_id: InstanceId,
@@ -111,10 +112,10 @@ pub struct HostContext {
     app_id: String,
     instance_id: InstanceId,
     device_id: String,
-    records: RecordStore,
+    records: ResourceStore,
     views: Rc<InstanceViewStore>,
     record: DocumentCheckout,
-    reservation: Option<RecordReservation>,
+    reservation: Option<ResourceReservation>,
     permissions: SharedPermissions,
     author: MemberId,
     host_person: MemberId,
@@ -137,11 +138,11 @@ pub struct HostContext {
     capture: Option<Capture>,
     settings: crate::storage::SettingsDocument,
     /// Where the app keeps the person records on this device, when the host keeps them
-    /// ([`Self::provide_person_records`]).
-    person: Option<crate::record::person::PersonRecords>,
+    /// ([`Self::provide_person_resources`]).
+    person: Option<crate::resource::person::PersonResources>,
     /// Where the app opens the records every app of the workspace opens, when the host keeps them
-    /// ([`Self::provide_workspace_records`]).
-    workspace: Option<crate::record::workspace::WorkspaceRecords>,
+    /// ([`Self::provide_workspace_resources`]).
+    workspace: Option<crate::resource::workspace::WorkspaceResources>,
     /// The file areas the host gave it ([`Self::provide_files`]); the
     /// person otherwise.
     files: Option<crate::storage::AppFiles>,
@@ -154,6 +155,7 @@ pub struct HostContext {
     handoff: Option<PlaybackHandoff>,
     launch_options: Vec<LaunchOption>,
     private: bool,
+    embedded: bool,
     lent: Vec<Box<dyn std::any::Any>>,
 }
 
@@ -357,7 +359,7 @@ impl PendingReplacement {
 #[derive(Clone)]
 pub struct Reopener {
     host_person: MemberId,
-    records: RecordStore,
+    records: ResourceStore,
     views: Rc<InstanceViewStore>,
     device_id: String,
     instance_id: InstanceId,
@@ -368,10 +370,11 @@ pub struct Reopener {
     services: crate::host::HostServices,
     content: Option<tilo_content::ContentStore>,
     settings: crate::storage::SettingsDocument,
-    person: Option<crate::record::person::PersonRecords>,
-    workspace: Option<crate::record::workspace::WorkspaceRecords>,
+    person: Option<crate::resource::person::PersonResources>,
+    workspace: Option<crate::resource::workspace::WorkspaceResources>,
     files: Option<crate::storage::AppFiles>,
     private: bool,
+    embedded: bool,
     replacement: Rc<RefCell<Option<PendingReplacement>>>,
     /// The window this reopener opens in place of: what serves its image stores serves the window
     /// opened in its place too.
@@ -386,8 +389,8 @@ impl Reopener {
         definition: &ApplicationDefinition,
         record: DocumentId,
     ) -> Result<(HostContext, LaunchTarget), LaunchError> {
-        let checkout = DocumentCheckout::new(record.clone(), definition.record_kind.clone());
-        let (target, new_record) = match self.records.try_open_record(&checkout) {
+        let checkout = DocumentCheckout::new(record.clone(), definition.resource_type.clone());
+        let (target, new_resource) = match self.records.try_open_resource(&checkout) {
             Ok(_) => (
                 LaunchTarget::Record {
                     checkout,
@@ -395,7 +398,9 @@ impl Reopener {
                 },
                 None,
             ),
-            Err(crate::record::RecordOpenError::MissingRecord) => (LaunchTarget::New, Some(record)),
+            Err(crate::resource::ResourceOpenError::MissingResource) => {
+                (LaunchTarget::New, Some(record))
+            }
             Err(error) => return Err(LaunchError::Record(error)),
         };
         let mut context = HostContext::prepare_scoped(
@@ -410,7 +415,7 @@ impl Reopener {
                 action_context: self.action_context.clone(),
             },
             &target,
-            new_record,
+            new_resource,
         )?;
         context.host_person = self.host_person.clone();
         context.writes_as_author = self.writes_as_author;
@@ -421,6 +426,7 @@ impl Reopener {
         context.workspace.clone_from(&self.workspace);
         context.files.clone_from(&self.files);
         context.private = self.private;
+        context.embedded = self.embedded;
         crate::image_store::ImageStore::serve_successor(&self.window, &context.wake_handle());
         Ok((context, target))
     }
@@ -478,6 +484,7 @@ impl HostContext {
             workspace: self.workspace.clone(),
             files: self.files.clone(),
             private: self.private,
+            embedded: self.embedded,
             replacement: Rc::clone(&self.replacement),
             window: self.wake_handle(),
         }
@@ -515,19 +522,19 @@ impl HostContext {
     ///
     /// # Errors
     /// Rejects foreign namespaces, denied authority and occupied identities.
-    pub fn prepare_new_record(
+    pub fn prepare_new_resource(
         definition: &ApplicationDefinition,
         inputs: HostContextInputs,
-        record_id: DocumentId,
+        document_id: DocumentId,
     ) -> Result<Self, LaunchError> {
-        Self::prepare_scoped(definition, inputs, &LaunchTarget::New, Some(record_id))
+        Self::prepare_scoped(definition, inputs, &LaunchTarget::New, Some(document_id))
     }
 
     fn prepare_scoped(
         definition: &ApplicationDefinition,
         inputs: HostContextInputs,
         target: &LaunchTarget,
-        new_record_id: Option<DocumentId>,
+        new_document_id: Option<DocumentId>,
     ) -> Result<Self, LaunchError> {
         let HostContextInputs {
             records,
@@ -539,9 +546,9 @@ impl HostContext {
             action_context,
         } = inputs;
         validate_identity(definition.app_id()).map_err(LaunchError::Restore)?;
-        validate_identity(definition.record_kind.as_str()).map_err(LaunchError::Restore)?;
+        validate_identity(definition.resource_type.as_str()).map_err(LaunchError::Restore)?;
         validate_identity(&device_id).map_err(LaunchError::Restore)?;
-        validate_identity(&author.key()).map_err(LaunchError::Restore)?;
+        validate_identity(author.id()).map_err(LaunchError::Restore)?;
         let (profile, package, workspace) = records
             .canonical_namespace()
             .ok_or_else(|| mismatch("the record store names no namespace"))?;
@@ -558,32 +565,32 @@ impl HostContext {
         let (record, reservation) = match target {
             LaunchTarget::New => {
                 let checkout = DocumentCheckout::new(
-                    new_record_id.unwrap_or_else(DocumentId::minted),
-                    definition.record_kind.clone(),
+                    new_document_id.unwrap_or_else(DocumentId::minted),
+                    definition.resource_type.clone(),
                 );
                 if DocumentId::parse(checkout.id.as_str()).as_ref() != Some(&checkout.id) {
                     return Err(mismatch("a new record id that does not read back"));
                 }
                 let reservation = records
-                    .reserve_record(&checkout)
+                    .reserve_resource(&checkout)
                     .map_err(LaunchError::Record)?;
                 (checkout, Some(reservation))
             }
             LaunchTarget::PrimaryNew => {
-                if new_record_id.is_some() {
+                if new_document_id.is_some() {
                     return Err(mismatch("a package primary given another id"));
                 }
                 let checkout = DocumentCheckout::new(
                     DocumentId::package_primary(),
-                    definition.record_kind.clone(),
+                    definition.resource_type.clone(),
                 );
                 let reservation = records
-                    .reserve_record(&checkout)
+                    .reserve_resource(&checkout)
                     .map_err(LaunchError::Record)?;
                 (checkout, Some(reservation))
             }
             LaunchTarget::Record { checkout, .. } => {
-                if checkout.kind != definition.record_kind
+                if checkout.kind != definition.resource_type
                     || !checkout.id.is_package_primary()
                         && DocumentId::parse(checkout.id.as_str()).as_ref() != Some(&checkout.id)
                 {
@@ -591,7 +598,7 @@ impl HostContext {
                 }
                 if !records.is_opening(&checkout.id) {
                     records
-                        .try_open_record(checkout)
+                        .try_open_resource(checkout)
                         .map_err(LaunchError::Record)?;
                 }
                 (checkout.clone(), None)
@@ -636,11 +643,12 @@ impl HostContext {
             handoff: None,
             launch_options: Vec::new(),
             private: false,
+            embedded: false,
             lent: Vec::new(),
         })
     }
     /// Commit this instance's edits to its record under an actor of its author
-    /// ([`crate::record::author_writer`]) rather than the record's writer, which every instance sharing
+    /// ([`crate::resource::author_writer`]) rather than the record's writer, which every instance sharing
     /// the record's store writes as.
     pub fn write_as_author(&mut self) {
         self.writes_as_author = true;
@@ -714,8 +722,8 @@ impl HostContext {
         self.lent.push(service);
     }
     /// The record this context opened, while it is still opening off the frame
-    /// ([`RecordStore::begin_opening`]): the component shows before it, and takes it in.
-    pub fn record_opening(&self) -> Option<crate::record::RecordOpening> {
+    /// ([`ResourceStore::begin_opening`]): the component shows before it, and takes it in.
+    pub fn resource_opening(&self) -> Option<crate::resource::ResourceOpening> {
         self.records
             .is_opening(&self.record.id)
             .then(|| self.records.opening(&self.record))
@@ -741,6 +749,15 @@ impl HostContext {
     pub fn is_private(&self) -> bool {
         self.private
     }
+    /// Prepare the instance as a view another app's window embeds ([`crate::window_share`]): it
+    /// stands in that window, with no bar of its own, showing the one thing the window asked for.
+    pub fn provide_embedded(&mut self) {
+        self.embedded = true;
+    }
+    /// Whether the instance is a view another app's window embeds.
+    pub fn is_embedded(&self) -> bool {
+        self.embedded
+    }
     /// Explicit owner-bound producer capability, available before factory work.
     pub fn control_domain(&self) -> crate::ControlDomain {
         self.control_domain
@@ -755,17 +772,17 @@ impl HostContext {
     /// The store the record is kept in, with the app's other records of the same workspace: what an app
     /// holding records beside its (the parts of a chain) opens them in, so they sync on the same
     /// routes.
-    pub fn records(&self) -> &RecordStore {
+    pub fn records(&self) -> &ResourceStore {
         &self.records
     }
     /// The per-window records this app's windows kept in this workspace before it [kept one record per
-    /// workspace](ApplicationDefinition::keeps_workspace_record), read-only and sorted by id
-    /// ([`RecordStore::window_records`]).
-    pub fn window_records(&self) -> Vec<(DocumentId, AutoCommit)> {
+    /// workspace](ApplicationDefinition::keeps_workspace_resource), read-only and sorted by id
+    /// ([`ResourceStore::window_resources`]).
+    pub fn window_resources(&self) -> Vec<(DocumentId, AutoCommit)> {
         if !self.record.id.is_package_primary() {
             return Vec::new();
         }
-        self.records.window_records(&self.record.kind)
+        self.records.window_resources(&self.record.kind)
     }
     /// The application this context was prepared for.
     pub fn app_id(&self) -> &str {
@@ -779,11 +796,11 @@ impl HostContext {
     pub fn host_person(&self) -> &MemberId {
         &self.host_person
     }
-    /// A snapshot of the participant's permissions at this moment.
+    /// A snapshot of the member's permissions at this moment.
     pub fn permissions(&self) -> PermissionContext {
         self.permissions.borrow().clone()
     }
-    /// The participant's permissions as they change while the component runs (a role change, a revoked
+    /// The member's permissions as they change while the component runs (a role change, a revoked
     /// share).
     pub fn restrict_to_reading(&mut self) {
         let reading = self.permissions.borrow().read_only();
@@ -860,21 +877,21 @@ impl HostContext {
     pub fn provide_files(&mut self, files: crate::storage::AppFiles) {
         self.files = Some(files);
     }
-    /// Give the component the person records of this app ([`crate::record::person`]), kept beside the
+    /// Give the component the person records of this app ([`crate::resource::person`]), kept beside the
     /// record it shows.
-    pub fn provide_person_records(&mut self, records: crate::record::person::PersonRecords) {
+    pub fn provide_person_resources(&mut self, records: crate::resource::person::PersonResources) {
         self.person = Some(records);
     }
-    /// Give the component the records every app of its workspace opens ([`crate::record::workspace`]),
+    /// Give the component the records every app of its workspace opens ([`crate::resource::workspace`]),
     /// kept beside the record it shows.
-    pub fn provide_workspace_records(
+    pub fn provide_workspace_resources(
         &mut self,
-        records: crate::record::workspace::WorkspaceRecords,
+        records: crate::resource::workspace::WorkspaceResources,
     ) {
         self.workspace = Some(records);
     }
     /// The records every app of the workspace opens, when the host keeps them.
-    pub fn workspace_records(&self) -> Option<&crate::record::workspace::WorkspaceRecords> {
+    pub fn workspace_resources(&self) -> Option<&crate::resource::workspace::WorkspaceResources> {
         self.workspace.as_ref()
     }
     /// This device, as the host names it: stable across launches of the app on it, distinct on each of
@@ -883,14 +900,14 @@ impl HostContext {
         &self.device_id
     }
     /// The person records of this app, when the host keeps them.
-    pub fn person_records(&self) -> Option<&crate::record::person::PersonRecords> {
+    pub fn person_resources(&self) -> Option<&crate::resource::person::PersonResources> {
         self.person.as_ref()
     }
     /// Bring the record up to the storage version its app reads, before it
     /// is read: `migrate` makes at most one deterministic housekeeping change
     /// (two devices migrating the same document make the same one) and
     /// answers whether it changed anything.
-    pub fn migrate_record(
+    pub fn migrate_resource(
         &self,
         migrate: impl FnOnce(&mut AutoCommit) -> Result<bool, String>,
     ) -> Result<bool, String> {
@@ -899,17 +916,17 @@ impl HostContext {
     /// Read/project an existing or initialized document. No untracked sync mutation.
     /// # Errors
     /// A reserved or missing record cannot be read.
-    pub fn read_record<R>(
+    pub fn read_resource<R>(
         &self,
         read: impl FnOnce(&AutoCommit) -> R,
-    ) -> Result<R, RecordOpenError> {
+    ) -> Result<R, ResourceOpenError> {
         self.records
             .read(&self.record.id, read)
-            .ok_or(RecordOpenError::MissingRecord)
+            .ok_or(ResourceOpenError::MissingResource)
     }
-    /// Merge another participant's copy of the record, as their changes
+    /// Merge another member's copy of the record, as their changes
     /// arriving over sync are merged: validated first, attributed to them in
-    /// history, and never on this participant's undo stack. Returns whether
+    /// history, and never on this member's undo stack. Returns whether
     /// anything changed.
     pub fn merge_peer_document(&self, document: Vec<u8>) -> Result<bool, String> {
         self.records.merge_peer_document(&self.record, document)
@@ -917,22 +934,22 @@ impl HostContext {
     /// The unique owner transition from Reserved to Ready. Existing is never initialized.
     /// # Errors
     /// Refuses repeated initialization and preserves the reservation on schema/storage failure.
-    pub fn initialize_new_record(
+    pub fn initialize_new_resource(
         &mut self,
         initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
-    ) -> Result<(), RecordOpenError> {
-        let reservation = self.reservation.as_mut().ok_or(RecordOpenError::Busy)?;
+    ) -> Result<(), ResourceOpenError> {
+        let reservation = self.reservation.as_mut().ok_or(ResourceOpenError::Busy)?;
         reservation.initialize(initialize)?;
         self.reservation = None;
         Ok(())
     }
-    /// [`Self::initialize_new_record`], then `seed` the record as this author on this device.
-    pub fn initialize_new_record_seeded(
+    /// [`Self::initialize_new_resource`], then `seed` the record as this author on this device.
+    pub fn initialize_new_resource_seeded(
         &mut self,
         initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
         seed: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
-    ) -> Result<(), RecordOpenError> {
-        let reservation = self.reservation.as_mut().ok_or(RecordOpenError::Busy)?;
+    ) -> Result<(), ResourceOpenError> {
+        let reservation = self.reservation.as_mut().ok_or(ResourceOpenError::Busy)?;
         reservation.initialize_seeded(initialize, seed)?;
         self.reservation = None;
         Ok(())
@@ -944,8 +961,8 @@ impl HostContext {
             device_id: self.device_id.clone(),
             workspace_id: self.views.workspace_id().into(),
             instance_id: self.instance_id,
-            record_id: self.record.id.as_str().into(),
-            record_kind: self.record.kind.as_str().into(),
+            document_id: self.record.id.as_str().into(),
+            resource_type: self.record.kind.as_str().into(),
             view,
             application,
             shows: self.shows.borrow().clone(),
@@ -960,8 +977,8 @@ impl HostContext {
                     || saved.device_id != self.device_id
                     || saved.workspace_id != self.views.workspace_id()
                     || saved.instance_id != self.instance_id
-                    || saved.record_id != self.record.id.as_str()
-                    || self.record.kind.as_str() != saved.record_kind
+                    || saved.document_id != self.record.id.as_str()
+                    || self.record.kind.as_str() != saved.resource_type
                 {
                     return Err(mismatch(
                         "a saved view of another device, workspace or record",
@@ -982,34 +999,38 @@ impl Drop for HostContext {
 }
 impl ApplicationDefinition {
     /// The record a window of `author` opens when it names none, when the app keeps each member
-    /// ([`Self::member_record`]): their own record of the workspace.
+    /// ([`Self::member_resource`]): their own record of the workspace.
     #[must_use]
-    pub fn member_record_of(&self, author: &MemberId) -> Option<DocumentCheckout> {
-        self.member_record
-            .then(|| DocumentId::of_member(&author.key(), self.record_kind.as_str()))
+    pub fn member_resource_of(&self, author: &MemberId) -> Option<DocumentCheckout> {
+        self.member_resource
+            .then(|| author.person_id())
             .flatten()
-            .map(|id| DocumentCheckout::new(id, self.record_kind.clone()))
+            .and_then(|person| DocumentId::of_member(person, self.resource_type.as_str()))
+            .map(|id| DocumentCheckout::new(id, self.resource_type.clone()))
     }
 
     /// Whether the app keeps one record per workspace, its package primary, rather than a record per
-    /// window ([`Self::workspace_record`]).
-    pub fn keeps_workspace_record(&self) -> bool {
-        self.workspace_record
+    /// window ([`Self::workspace_resource`]).
+    pub fn keeps_workspace_resource(&self) -> bool {
+        self.workspace_resource
     }
 
     /// The launch target of an instance with no saved record: a new record of it, or the workspace's
-    /// record (created on first use) for an app that [keeps one](Self::keeps_workspace_record).
-    pub fn unsaved_target(&self, records: &RecordStore) -> Result<LaunchTarget, RecordOpenError> {
-        if !self.keeps_workspace_record() {
+    /// record (created on first use) for an app that [keeps one](Self::keeps_workspace_resource).
+    pub fn unsaved_target(
+        &self,
+        records: &ResourceStore,
+    ) -> Result<LaunchTarget, ResourceOpenError> {
+        if !self.keeps_workspace_resource() {
             return Ok(LaunchTarget::New);
         }
-        let checkout = DocumentCheckout::package_primary(self.record_kind.clone());
-        match records.try_open_record(&checkout) {
+        let checkout = DocumentCheckout::package_primary(self.resource_type.clone());
+        match records.try_open_resource(&checkout) {
             Ok(_) => Ok(LaunchTarget::Record {
                 checkout,
                 reveal: None,
             }),
-            Err(RecordOpenError::MissingRecord) => Ok(LaunchTarget::PrimaryNew),
+            Err(ResourceOpenError::MissingResource) => Ok(LaunchTarget::PrimaryNew),
             Err(error) => Err(error),
         }
     }
@@ -1056,7 +1077,7 @@ impl ApplicationDefinition {
         target: LaunchTarget,
         restore: RestoreInput,
     ) -> Result<AppComponent, LaunchError> {
-        if context.app_id != self.app_id || context.record.kind != self.record_kind {
+        if context.app_id != self.app_id || context.record.kind != self.resource_type {
             return Err(mismatch("a context of another app or record kind"));
         }
         if matches!(target, LaunchTarget::New) && context.record.id.is_package_primary()
@@ -1217,7 +1238,7 @@ pub struct AppComponent {
     registry_owner: Rc<()>,
     providers: Rc<RefCell<ProviderPayloads>>,
     /// The record durability last delivered to the root.
-    record_save: Option<crate::record::RecordSaveStatus>,
+    record_save: Option<crate::resource::ResourceSaveStatus>,
     /// Whether a change to the delivered durability has yet to be presented.
     save_status_changed: bool,
     /// What the record's store calls, from its thread, when the writes a "Saving…" waits on have
@@ -1416,7 +1437,7 @@ impl AppComponent {
     /// The changes the workspace refused and the record withdrew are delivered
     /// with it. Returns whether the delivered status changed or a refusal
     /// arrived.
-    pub(crate) fn project_record_save_status(&mut self) -> bool {
+    pub(crate) fn project_resource_save_status(&mut self) -> bool {
         let captured = self.callback_binding();
         let context = &self.context;
         let wake = std::sync::Arc::clone(self.save_wake.get_or_insert_with(|| {
@@ -1426,7 +1447,7 @@ impl AppComponent {
         let sampled = self
             .with_live_component(&captured, |binding, root, _registry| {
                 if root.take_save_retry()
-                    && let Err(error) = binding.records.try_flush_record(&binding.checkout.id)
+                    && let Err(error) = binding.records.try_flush_resource(&binding.checkout.id)
                 {
                     tracing::warn!(%error, "retrying a failed record save");
                 }
@@ -1444,13 +1465,13 @@ impl AppComponent {
                     root.record_said(text);
                 }
                 let mut status = binding.records.save_status(&binding.checkout.id).ok()?;
-                if status == crate::record::RecordSaveStatus::Saving {
+                if status == crate::resource::ResourceSaveStatus::Saving {
                     binding
                         .records
                         .wake_on_save_progress(&binding.checkout.id, wake);
                     status = binding.records.save_status(&binding.checkout.id).ok()?;
                 }
-                root.record_save_status(status.clone());
+                root.resource_save_status(status.clone());
                 Some((status, !refusals.is_empty() || !said.is_empty()))
             })
             .ok()
@@ -1481,7 +1502,7 @@ impl AppComponent {
     pub(crate) fn record_saving(&self) -> bool {
         if !matches!(
             &self.record_save,
-            Some(crate::record::RecordSaveStatus::Saving)
+            Some(crate::resource::ResourceSaveStatus::Saving)
         ) {
             return false;
         }
@@ -1490,7 +1511,7 @@ impl AppComponent {
             .records
             .save_status(&binding.checkout.id)
             .map_or(true, |status| {
-                status == crate::record::RecordSaveStatus::Saving
+                status == crate::resource::ResourceSaveStatus::Saving
             })
     }
 
@@ -1735,7 +1756,7 @@ impl AppComponent {
                 Ok(())
             };
         self.context
-            .read_record(|doc| restore(root, doc))
+            .read_resource(|doc| restore(root, doc))
             .map_err(|error| ThawError::State(error.to_string()))??;
         let (view, application) = self.capture_local_pair_owned(&saved.view)?;
         self.local_view = view;
@@ -1769,7 +1790,7 @@ impl AppComponent {
         };
         let _entry = self.context.wake_scope.enter();
         self.context
-            .read_record(|doc| crate::component_lifecycle::unsaved_documents(root, doc))
+            .read_resource(|doc| crate::component_lifecycle::unsaved_documents(root, doc))
             .unwrap_or_default()
     }
 
@@ -1836,7 +1857,7 @@ impl AppComponent {
             ),
             view_error: None,
             view_retry: None,
-            record_error: None,
+            resource_error: None,
             record_retry: None,
             record_retry_target: None,
             teardown_error: None,
@@ -1864,7 +1885,7 @@ impl AppComponent {
             recovery: None,
             view_error: None,
             view_retry: None,
-            record_error: None,
+            resource_error: None,
             record_retry: None,
             record_retry_target: None,
             teardown_error: None,
@@ -1895,7 +1916,7 @@ impl AppComponent {
             report.view_retry = Some(self.context.views.clone());
         }
         if let Err(error) = self.context.records.try_flush() {
-            report.record_error = Some(error);
+            report.resource_error = Some(error);
             report.record_retry = Some(self.context.records.clone());
         }
         // Parent View has already been captured. Each child still owns its live
@@ -2112,8 +2133,8 @@ pub struct ComponentCloseReport {
     pub recovery: Option<SavedInstanceView>,
     pub view_error: Option<String>,
     pub view_retry: Option<Rc<InstanceViewStore>>,
-    pub record_error: Option<String>,
-    pub record_retry: Option<RecordStore>,
+    pub resource_error: Option<String>,
+    pub record_retry: Option<ResourceStore>,
     /// Exact legacy owner for scoped close/retry; None keeps component close behavior.
     pub record_retry_target: Option<crate::DocumentId>,
     /// Reserved for fallible lifecycle results. Arbitrary app panics propagate.
@@ -2121,16 +2142,16 @@ pub struct ComponentCloseReport {
 }
 impl ComponentCloseReport {
     /// Retry the same dirty canonical owner, retaining it until durability succeeds.
-    pub fn retry_record(&mut self) -> Result<(), String> {
+    pub fn retry_resource(&mut self) -> Result<(), String> {
         if let Some(records) = &self.record_retry {
             match &self.record_retry_target {
-                Some(id) => records.try_flush_record(id),
+                Some(id) => records.try_flush_resource(id),
                 None => records.try_flush(),
             }
-            .inspect_err(|error| self.record_error = Some(error.clone()))?;
+            .inspect_err(|error| self.resource_error = Some(error.clone()))?;
             self.record_retry = None;
             self.record_retry_target = None;
-            self.record_error = None;
+            self.resource_error = None;
         }
         Ok(())
     }
@@ -2328,7 +2349,7 @@ mod bound_lifetime_tests {
     ) -> Result<AppComponent, LaunchError> {
         if matches!(target, LaunchTarget::New) {
             context
-                .initialize_new_record(|_| Ok(()))
+                .initialize_new_resource(|_| Ok(()))
                 .map_err(LaunchError::Record)?;
         }
         Ok(AppComponent::new(
@@ -2344,20 +2365,20 @@ mod bound_lifetime_tests {
         phase host_named_new_and_package_primary_keep_distinct_identity_contracts;
         {
             let temp = tempfile::tempdir().unwrap();
-            let mut owners = crate::record::RecordOwners::new(temp.path().into());
+            let mut owners = crate::resource::ResourceOwners::new(temp.path().into());
             let records = owners.open("dev.tilo.mount-probe", "A").unwrap();
             let views = Rc::new(InstanceViewStore::new(temp.path().into(), "D", "A").unwrap());
             let definition = ApplicationDefinition {
                 app_id: "dev.tilo.mount-probe".into(),
                 title: "Mount probe".into(),
                 icon: IconDescriptor::Glyph("P"),
-                record_kind: ResourceType::new("probe"),
+                resource_type: ResourceType::new("probe"),
                 required: vec![],
                 optional: vec![],
                 opens: &[],
-                workspace_record: false,
-                member_record: false,
-                opens_before_record: false,
+                workspace_resource: false,
+                member_resource: false,
+                opens_before_resource: false,
                 create: factory,
             };
             let supplied = DocumentId::for_tab(55);
@@ -2395,20 +2416,20 @@ mod bound_lifetime_tests {
         phase existing_package_primary_is_local_while_invalid_ordinary_records_are_rejected;
         {
             let temp = tempfile::tempdir().unwrap();
-            let mut owners = crate::record::RecordOwners::new(temp.path().into());
+            let mut owners = crate::resource::ResourceOwners::new(temp.path().into());
             let records = owners.open("dev.tilo.mount-probe", "A").unwrap();
             let views = Rc::new(InstanceViewStore::new(temp.path().into(), "D", "A").unwrap());
             let definition = ApplicationDefinition {
                 app_id: "dev.tilo.mount-probe".into(),
                 title: "Mount probe".into(),
                 icon: IconDescriptor::Glyph("P"),
-                record_kind: ResourceType::new("probe"),
+                resource_type: ResourceType::new("probe"),
                 required: vec![],
                 optional: vec![],
                 opens: &[],
-                workspace_record: false,
-                member_record: false,
-                opens_before_record: false,
+                workspace_resource: false,
+                member_resource: false,
+                opens_before_resource: false,
                 create: factory,
             };
             let prepare = |checkout| {
@@ -2434,22 +2455,22 @@ mod bound_lifetime_tests {
 
             let malformed = DocumentCheckout::new(
                 DocumentId::derived("invalid role", &DocumentId::for_tab(55)),
-                definition.record_kind.clone(),
+                definition.resource_type.clone(),
             );
             assert!(matches!(
                 prepare(malformed),
                 Err(LaunchError::BindingMismatch)
             ));
-            let foreign = DocumentCheckout::new(DocumentId::for_tab(56), definition.record_kind.clone());
+            let foreign = DocumentCheckout::new(DocumentId::for_tab(56), definition.resource_type.clone());
             assert!(matches!(
                 prepare(foreign),
                 Err(LaunchError::Record(
-                    crate::record::RecordOpenError::MissingRecord
+                    crate::resource::ResourceOpenError::MissingResource
                 ))
             ));
 
-            let primary = DocumentCheckout::package_primary(definition.record_kind.clone());
-            records.create_record(&primary).unwrap();
+            let primary = DocumentCheckout::package_primary(definition.resource_type.clone());
+            records.create_resource(&primary).unwrap();
             let context = prepare(primary).expect("an existing local package primary must reopen");
             assert!(context.record.id.is_package_primary());
         }
@@ -2458,7 +2479,7 @@ mod bound_lifetime_tests {
         {
             {
                 let temp = tempfile::tempdir().unwrap();
-                let mut owners = crate::record::RecordOwners::new(temp.path().into());
+                let mut owners = crate::resource::ResourceOwners::new(temp.path().into());
                 let records = owners.open("so.tilo.mount-probe", "A").unwrap();
                 let views =
                     Rc::new(InstanceViewStore::new(temp.path().to_path_buf(), "D", "A").unwrap());
@@ -2466,13 +2487,13 @@ mod bound_lifetime_tests {
                     app_id: "so.tilo.mount-probe".into(),
                     title: "Mount probe".into(),
                     icon: IconDescriptor::Glyph("P"),
-                    record_kind: ResourceType::new("probe"),
+                    resource_type: ResourceType::new("probe"),
                     required: vec![],
                     optional: vec![],
                     opens: &[],
-                    workspace_record: false,
-                    member_record: false,
-                    opens_before_record: false,
+                    workspace_resource: false,
+                    member_resource: false,
+                    opens_before_resource: false,
                     create: factory,
                 };
                 let prepare = |target: &LaunchTarget| {
@@ -2522,7 +2543,7 @@ mod bound_lifetime_tests {
                             binding
                                 .with_document(&mut AutoCommit::new(), |_, _| panic!("busy entry ran")),
                             Err(crate::bound_dispatch::BoundDispatchError::Record(
-                                RecordOpenError::Busy
+                                ResourceOpenError::Busy
                             ))
                         ));
                     })
@@ -2549,7 +2570,7 @@ mod bound_lifetime_tests {
 
             {
                 let temp = tempfile::tempdir().unwrap();
-                let mut owners = crate::record::RecordOwners::new(temp.path().into());
+                let mut owners = crate::resource::ResourceOwners::new(temp.path().into());
                 let records = owners.open("so.tilo.mount-probe", "A").unwrap();
                 let views =
                     Rc::new(InstanceViewStore::new(temp.path().to_path_buf(), "D", "A").unwrap());
@@ -2557,13 +2578,13 @@ mod bound_lifetime_tests {
                     app_id: "so.tilo.mount-probe".into(),
                     title: "Mount probe".into(),
                     icon: IconDescriptor::Glyph("P"),
-                    record_kind: ResourceType::new("probe"),
+                    resource_type: ResourceType::new("probe"),
                     required: vec![],
                     optional: vec![],
                     opens: &[],
-                    workspace_record: false,
-                    member_record: false,
-                    opens_before_record: false,
+                    workspace_resource: false,
+                    member_resource: false,
+                    opens_before_resource: false,
                     create: factory,
                 };
                 let context = HostContext::prepare(
@@ -2635,7 +2656,7 @@ mod portable_tests {
                 }
             }
             let cache = crate::portable_storage::PortableStorage::new("models", probe::DEVICE).unwrap();
-            let records = crate::record::RecordOwners::portable(cache.clone())
+            let records = crate::resource::ResourceOwners::portable(cache.clone())
                 .open(probe::APP, probe::WORKSPACE)
                 .unwrap();
             let views = Rc::new(InstanceViewStore::portable(cache, probe::WORKSPACE).unwrap());
@@ -2698,7 +2719,7 @@ mod portable_tests {
         {
             let cache =
                 crate::portable_storage::PortableStorage::new("profile", probe::DEVICE).unwrap();
-            let records = crate::record::RecordOwners::portable(cache.clone())
+            let records = crate::resource::ResourceOwners::portable(cache.clone())
                 .open(probe::APP, probe::WORKSPACE)
                 .unwrap();
             let definition = probe::definition(probe::probe_factory);
@@ -2742,7 +2763,7 @@ mod portable_tests {
                 let checkout = component.record().clone();
                 assert_eq!(component.checkpoint_for_close(), Vec::<String>::new());
                 let report = component.close();
-                assert_eq!(report.record_error, None);
+                assert_eq!(report.resource_error, None);
                 assert_eq!(report.view_error, None);
                 drop(component);
                 checkout
@@ -2754,16 +2775,16 @@ mod portable_tests {
                 temp,
             } = host;
             drop((records, owners, views));
-            let mut owners = crate::record::RecordOwners::new(root.clone());
+            let mut owners = crate::resource::ResourceOwners::new(root.clone());
             let records = owners.open(probe::APP, probe::WORKSPACE).unwrap();
-            assert!(records.open_record(&checkout), "the record was saved");
+            assert!(records.open_resource(&checkout), "the record was saved");
             assert_eq!(probe::body(&records, &checkout), "initialized");
             let saved = InstanceViewStore::new(root, probe::DEVICE, probe::WORKSPACE)
                 .unwrap()
                 .load(7)
                 .unwrap()
                 .expect("the View was saved");
-            assert_eq!(saved.record_id, checkout.id.as_str());
+            assert_eq!(saved.document_id, checkout.id.as_str());
             drop((records, owners, temp));
         }
 
@@ -2771,7 +2792,7 @@ mod portable_tests {
         {
             let cache =
                 crate::portable_storage::PortableStorage::new("profile", probe::DEVICE).unwrap();
-            let records = crate::record::RecordOwners::portable(cache.clone())
+            let records = crate::resource::ResourceOwners::portable(cache.clone())
                 .open(probe::APP, probe::WORKSPACE)
                 .unwrap();
             let views = Rc::new(InstanceViewStore::portable(cache.clone(), probe::WORKSPACE).unwrap());
@@ -2807,14 +2828,14 @@ mod portable_tests {
             let checkout = component.record().clone();
             assert!(records.is_ready(&checkout.id));
             let report = component.close();
-            assert!(report.record_error.is_some());
+            assert!(report.resource_error.is_some());
             assert!(report.view_error.is_some());
             for write in cache.pending_writes() {
                 cache.acknowledge(&write, Ok(())).unwrap();
             }
             records.try_flush().unwrap();
             let saved = views.load(7).unwrap().unwrap();
-            assert_eq!(saved.record_id, checkout.id.as_str());
+            assert_eq!(saved.document_id, checkout.id.as_str());
             views.save(&saved).unwrap();
             let mut denied = probe::definition(probe::probe_factory);
             denied.required.push(probe::denied_scope());

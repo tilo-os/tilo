@@ -134,6 +134,8 @@ impl Workspaces {
             .deletions
             .send((workspace.to_owned(), workspace_id));
         let _ = self.inner.changes.send(workspace.to_owned());
+        // Gone from every list that named it.
+        self.personal_changed();
         Ok(())
     }
 

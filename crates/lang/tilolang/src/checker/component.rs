@@ -304,7 +304,7 @@ impl Checker<'_> {
     /// resource the view is of.
     fn placed_item(&self, d: &Description, args: &[ast::Arg]) -> Option<Ty> {
         if d.name == "NavShell" {
-            return self.st.subject.as_ref().map(|(_, ty)| ty.clone());
+            return self.st.target.as_ref().map(|(_, ty)| ty.clone());
         }
         let value = args
             .iter()

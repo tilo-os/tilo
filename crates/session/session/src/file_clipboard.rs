@@ -186,7 +186,7 @@ impl NativeFileClipboard {
     /// What the filesystem says.
     pub(crate) fn attribute(agent: &str, paths: Vec<String>) -> Result<(), String> {
         let (red, green, blue) =
-            ui::presence::member_color(&ui::permissions::MemberId::agent(agent), None);
+            ui::presence::member_color(&ui::permissions::MemberId::agent(agent));
         blobs::with_session_blobs(|client| {
             client.attribute_writes(runtime_fs::blobs::WriteAttribution {
                 paths,

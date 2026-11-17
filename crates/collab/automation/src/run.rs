@@ -34,8 +34,8 @@ use tilo_actions::outcome::{ActionFailure, ActionOutput, InvocationId as ActionI
 use tilo_actions::params::{ActionArgs, ActionParam, ParamType, validate_json_schema};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CatalogueQuery, CatalogueRow, Confirmation,
-    InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, Pending, RECORD_READS_UNAVAILABLE,
-    ReceiptStatus, RecordAddress, RecordAsk, read_records,
+    InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, Pending, RESOURCE_READS_UNAVAILABLE,
+    ReceiptStatus, ResourceAddress, ResourceAsk, read_resources,
 };
 use uuid::Uuid;
 
@@ -1633,19 +1633,19 @@ impl<'a, H: ActionHost + Sync, K: InvocationHooks> Runner<'a, H, K> {
         let host = |error: ActionHostError| StepFailure::Host {
             error: Box::new(error),
         };
-        let reads = self.host.record_reads().ok_or_else(|| {
+        let reads = self.host.resource_reads().ok_or_else(|| {
             host(ActionHostError::Unavailable {
-                reason: RECORD_READS_UNAVAILABLE.into(),
+                reason: RESOURCE_READS_UNAVAILABLE.into(),
             })
         })?;
-        let ask = RecordAsk {
-            address: RecordAddress {
+        let ask = ResourceAsk {
+            address: ResourceAddress {
                 app: app.to_owned(),
                 record: record.to_owned(),
             },
             joined,
         };
-        let readings = read_records(
+        let readings = read_resources(
             reads.as_ref(),
             &self.caller,
             &[ask],

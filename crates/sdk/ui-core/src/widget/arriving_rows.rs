@@ -421,6 +421,12 @@ impl RowReserve {
 }
 
 impl Widget for RowReserve {
+    /// The room a row will take: nothing to read yet.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("div");
+        cx.attr("aria-hidden", "true");
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

@@ -23,7 +23,7 @@ pub fn lock(root: &Path) -> io::Result<advisory_lock::FileLock> {
             advisory_lock::TryLockError::Error(error) => error,
         },
     )?;
-    lock.record_owner()?;
+    lock.resource_owner()?;
     Ok(lock)
 }
 

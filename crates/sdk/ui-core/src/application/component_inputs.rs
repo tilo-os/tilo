@@ -6,16 +6,16 @@ use super::AppComponent;
 impl AppComponent {
     /// The durability last delivered, as sampled: what the root was told of its record's save, which a
     /// component at rest compares with the store's.
-    pub(crate) fn sampled_record_save(&self) -> Option<&crate::record::RecordSaveStatus> {
+    pub(crate) fn sampled_resource_save(&self) -> Option<&crate::resource::ResourceSaveStatus> {
         self.record_save.as_ref()
     }
 
     /// The record's save status as a sync would sample it now: a save still being written arms its
     /// progress wake first, as the sync's sample does, since some stores move a save on only once asked
-    /// to watch it ([`crate::record::RecordStore::wake_on_save_progress`]).
-    pub(crate) fn record_save_now(&self) -> Option<crate::record::RecordSaveStatus> {
+    /// to watch it ([`crate::resource::ResourceStore::wake_on_save_progress`]).
+    pub(crate) fn record_save_now(&self) -> Option<crate::resource::ResourceSaveStatus> {
         let binding = self.callback_binding();
-        if self.record_save == Some(crate::record::RecordSaveStatus::Saving)
+        if self.record_save == Some(crate::resource::ResourceSaveStatus::Saving)
             && let Some(wake) = &self.save_wake
         {
             binding

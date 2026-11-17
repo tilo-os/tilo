@@ -211,7 +211,7 @@ impl<'a> RowText<'a> {
         );
         let subject = message.thread_subject();
         let subject = if subject.trim().is_empty() {
-            crate::i18n::no_subject()
+            crate::i18n::untitled()
         } else {
             subject
         };

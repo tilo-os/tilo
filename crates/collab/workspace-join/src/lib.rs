@@ -80,7 +80,7 @@ pub const JOIN_COMPLETED_REFRESH: u16 = 409;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DocumentRow {
     pub app_id: String,
-    pub record_id: String,
+    pub document_id: String,
     pub heads: Vec<String>,
 }
 
@@ -128,7 +128,7 @@ struct TransportPinView<'a> {
 pub struct InviteGrant {
     pub workspace_id: WorkspaceId,
     /// Device that signs this invitation: a device of a member the workspace's
-    /// policy lets invite, which every participant checks on admission.
+    /// policy lets invite, which every key holder checks on admission.
     pub issuer: DeviceCert,
     pub role: Role,
     pub nonce: [u8; 16],

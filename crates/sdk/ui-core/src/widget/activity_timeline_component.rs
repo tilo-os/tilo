@@ -136,7 +136,15 @@ fn entry_id(key: &str) -> HistoryEntryId {
 
 fn entry_of(props: &ActivityEntryProps) -> HistoryEntry {
     let id = entry_id(&props.item.0);
-    let author = props.author.clone().unwrap_or_default();
+    let (name, short) = props
+        .author
+        .as_ref()
+        .map_or_else(Default::default, |author| {
+            (
+                author.name.clone(),
+                author.identity.id().chars().take(8).collect::<String>(),
+            )
+        });
     let timestamp = props.time.map_or(UNIX_EPOCH, |Moment(at)| {
         let at = u64::try_from(at.max(0)).unwrap_or(0);
         UNIX_EPOCH
@@ -145,11 +153,7 @@ fn entry_of(props: &ActivityEntryProps) -> HistoryEntry {
     });
     HistoryEntry {
         id,
-        author: HistoryAuthor::new(
-            author.name.clone(),
-            0.0,
-            author.identity.chars().take(8).collect::<String>(),
-        ),
+        author: HistoryAuthor::new(name, 0.0, short),
         entry_kind: props.kind.unwrap_or(EntryKind::Details),
         artifact_kind: artifact_of(props.artifact.unwrap_or_default()),
         timestamp,

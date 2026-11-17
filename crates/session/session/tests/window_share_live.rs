@@ -57,7 +57,7 @@ const REPAINT: Duration = Duration::from_secs(2);
 /// How often the keys of a workspace three devices of one person came into may have moved by the
 /// end of a test: once for each device, with room for a commit that lost a race and was made
 /// again. A device that asks for the workspace's keys under two member keys has the workspace's
-/// participants commit one in and the other out for as long as it runs, hundreds of times a test.
+/// members commit one in and the other out for as long as it runs, hundreds of times a test.
 const KEYS_MOVED_AT_MOST: u64 = 8;
 
 /// What `device`'s session says of its window shares: `sharing`, `starting`, `watching`,

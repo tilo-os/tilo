@@ -2100,7 +2100,7 @@ async fn interrupted_second_batch_preserves_entire_replay_until_reconnect() {
         Some(EnvelopeV2::State(Envelope::Ready {
             workspace_id: WorkspaceId::from_u128(7),
             pending_deltas: 25,
-            records_when_opened: false,
+            documents_when_opened: false,
         }))
     );
     assert!(reader.read_next().await.unwrap().is_none());
@@ -2210,7 +2210,7 @@ fn delivered_times(fixture: &mut Fixture) -> Vec<u64> {
     times
 }
 
-/// Any participant of a channel admits a device asking for it, so a member's
+/// Any key holder of a channel admits a device asking for it, so a member's
 /// access request reaches every member, whether this relay governs the workspace
 /// or not.
 #[tokio::test]

@@ -367,12 +367,12 @@ impl ActionContext {
     }
 
     /// Host-side rewrite of a caller-supplied context: the invoker becomes
-    /// exactly the authenticated `actor` and the host-derived `participant`,
+    /// exactly the authenticated `actor` and the host-derived `presence`,
     /// discarding whatever invoker the caller put in the envelope.
     #[must_use]
-    pub fn with_host_actor(mut self, actor: &Acting, participant: Option<ParticipantId>) -> Self {
+    pub fn with_host_actor(mut self, actor: &Acting, presence: Option<PresenceId>) -> Self {
         let mut invoker = ActionInvoker::admitted(actor);
-        invoker.participant = participant;
+        invoker.presence = presence;
         self.invoker = Some(invoker);
         self
     }
@@ -1091,32 +1091,32 @@ fn nonempty(value: &str) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
-/// Upper bound on a [`ParticipantId`] in bytes. Participants key bounded
+/// Upper bound on a [`PresenceId`] in bytes. Presences key bounded
 /// per-view maps in app workers; they are never free text.
-pub const MAX_PARTICIPANT_ID_BYTES: usize = 128;
+pub const MAX_PRESENCE_ID_BYTES: usize = 128;
 
-/// One participant in a shared record: a person's window or a host-minted
-/// execution. Each participant owns its own view state (caret, selection,
-/// Find), and the app builds that participant's resource tree from it
+/// One presence in a shared record: a person's window or a host-minted
+/// execution. Each presence owns its own view state (caret, selection,
+/// Find), and the app builds that presence's resource tree from it
 /// (the toolkit's `PublishesResources::resources_for`).
 ///
 /// Opaque, non-empty, ASCII-printable and at most
-/// [`MAX_PARTICIPANT_ID_BYTES`] bytes. It is a routing key for view state,
+/// [`MAX_PRESENCE_ID_BYTES`] bytes. It is a routing key for view state,
 /// never authority: the authenticated actor is [`ActionInvoker::acting`].
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
-pub struct ParticipantId(String);
+pub struct PresenceId(String);
 
-impl ParticipantId {
-    /// Validate and wrap a participant id.
+impl PresenceId {
+    /// Validate and wrap a presence id.
     pub fn new(id: impl Into<String>) -> Result<Self, String> {
         let id = id.into();
         if id.is_empty()
-            || id.len() > MAX_PARTICIPANT_ID_BYTES
+            || id.len() > MAX_PRESENCE_ID_BYTES
             || !id.bytes().all(|b| b.is_ascii_graphic())
         {
             return Err(format!(
-                "participant id must be 1..={MAX_PARTICIPANT_ID_BYTES} printable ASCII bytes"
+                "presence id must be 1..={MAX_PRESENCE_ID_BYTES} printable ASCII bytes"
             ));
         }
         Ok(Self(id))
@@ -1134,20 +1134,20 @@ impl ParticipantId {
     }
 }
 
-impl TryFrom<String> for ParticipantId {
+impl TryFrom<String> for PresenceId {
     type Error = String;
     fn try_from(value: String) -> Result<Self, Self::Error> {
         Self::new(value)
     }
 }
 
-impl From<ParticipantId> for String {
-    fn from(value: ParticipantId) -> Self {
+impl From<PresenceId> for String {
+    fn from(value: PresenceId) -> Self {
         value.0
     }
 }
 
-impl std::fmt::Display for ParticipantId {
+impl std::fmt::Display for PresenceId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
     }
@@ -1208,15 +1208,15 @@ impl InvokerDevice {
 }
 
 /// The invoker of one action: the authenticated acting tree, and optionally
-/// the participant whose view the invocation resolves against.
+/// the presence whose view the invocation resolves against.
 ///
-/// `participant: None` means the actor's single/default view (the local
+/// `presence: None` means the actor's single/default view (the local
 /// window for a person; the only view of a single-view app).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ActionInvoker {
     pub acting: Acting,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub participant: Option<ParticipantId>,
+    pub presence: Option<PresenceId>,
     /// The name and avatar a bot showed for this action. Set only by the
     /// API that admitted the invocation, and only for a bot allowed it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1241,7 +1241,7 @@ impl ActionInvoker {
     pub fn admitted(acting: &Acting) -> Self {
         Self {
             acting: acting.clone(),
-            participant: None,
+            presence: None,
             appearance: None,
             name: None,
             device: None,
@@ -1255,6 +1255,7 @@ impl ActionInvoker {
     }
 
     /// A person the host authenticated, acting for themselves.
+    #[track_caller]
     #[must_use]
     pub fn person(id: impl Into<tilo_action_policy::PersonId>) -> Self {
         Self::admitted(&Acting::person(id))
@@ -1276,8 +1277,8 @@ impl ActionInvoker {
     }
 
     #[must_use]
-    pub fn with_participant(mut self, participant: ParticipantId) -> Self {
-        self.participant = Some(participant);
+    pub fn with_presence(mut self, presence: PresenceId) -> Self {
+        self.presence = Some(presence);
         self
     }
 
@@ -1323,7 +1324,7 @@ impl ActionInvoker {
     /// The invoker an application worker may act on for one delivered
     /// invocation. `actor` is the actor the host authenticated and put on
     /// the delivery; `context` is the host-built provenance of the same
-    /// delivery. The participant, the person it acts for and the device it
+    /// delivery. The presence, the person it acts for and the device it
     /// works from are kept only when the context names this exact actor, or an
     /// automation acting for exactly that actor. A context the host did not rewrite for this actor
     /// therefore never routes to anybody's view.
@@ -1533,7 +1534,7 @@ mod tests {
         phase invoker_round_trips_and_is_enriched_from_ambient;
         {
             let invoker = ActionInvoker::agent("alpha")
-                .with_participant(ParticipantId::new("task-7").unwrap());
+                .with_presence(PresenceId::new("task-7").unwrap());
             let context = ActionContext::for_resource("r", "k", "l").with_invoker(invoker.clone());
             let message = context.change_message().unwrap();
             assert_eq!(
@@ -1560,15 +1561,15 @@ mod tests {
             let forged = ActionContext::for_resource("r", "k", "l").with_invoker(
                 ActionInvoker::person("owner")
                     .acting_for("other")
-                    .with_participant(ParticipantId::new("owner-window").unwrap()),
+                    .with_presence(PresenceId::new("owner-window").unwrap()),
             );
-            let task = ParticipantId::new("agent-alpha-view").unwrap();
+            let task = PresenceId::new("agent-alpha-view").unwrap();
             let rewritten = forged
                 .clone()
                 .with_host_actor(&crate::Acting::agent("alpha"), Some(task.clone()));
             assert_eq!(
                 rewritten.invoker,
-                Some(ActionInvoker::agent("alpha").with_participant(task))
+                Some(ActionInvoker::agent("alpha").with_presence(task))
             );
             let delegated = forged.with_host_actor(
                 &crate::Acting::agent("alpha").acting_for(crate::Acting::person("owner")),
@@ -1583,15 +1584,15 @@ mod tests {
             );
         }
 
-        phase delivered_invoker_keeps_the_participant_only_for_the_delivered_actor;
+        phase delivered_invoker_keeps_the_presence_only_for_the_delivered_actor;
         {
-            let participant = ParticipantId::new("agent-a-view").unwrap();
+            let presence = PresenceId::new("agent-a-view").unwrap();
             let context =
                 ActionContext::default()
-                    .with_host_actor(&crate::Acting::agent("a"), Some(participant.clone()));
+                    .with_host_actor(&crate::Acting::agent("a"), Some(presence.clone()));
             assert_eq!(
                 ActionInvoker::delivered(&MemberId::agent("a").into(), Some(&context)),
-                ActionInvoker::agent("a").with_participant(participant)
+                ActionInvoker::agent("a").with_presence(presence)
             );
             // A context naming another actor never routes to a view, and the
             // actor always comes from the delivery.
@@ -1614,13 +1615,13 @@ mod tests {
             );
         }
 
-        phase participant_ids_are_bounded;
+        phase presence_ids_are_bounded;
         {
-            assert!(ParticipantId::new("").is_err());
-            assert!(ParticipantId::new("has space").is_err());
-            assert!(ParticipantId::new("x".repeat(MAX_PARTICIPANT_ID_BYTES + 1)).is_err());
-            assert!(ParticipantId::new("x".repeat(MAX_PARTICIPANT_ID_BYTES)).is_ok());
-            assert!(serde_json::from_str::<ParticipantId>("\"\"").is_err());
+            assert!(PresenceId::new("").is_err());
+            assert!(PresenceId::new("has space").is_err());
+            assert!(PresenceId::new("x".repeat(MAX_PRESENCE_ID_BYTES + 1)).is_err());
+            assert!(PresenceId::new("x".repeat(MAX_PRESENCE_ID_BYTES)).is_ok());
+            assert!(serde_json::from_str::<PresenceId>("\"\"").is_err());
         }
     }
 

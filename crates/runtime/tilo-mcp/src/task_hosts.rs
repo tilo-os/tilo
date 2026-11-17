@@ -13,7 +13,9 @@ use std::io;
 use std::os::fd::OwnedFd;
 use std::sync::{Arc, Mutex};
 
-use runtime_portal::tilolang_host::{App, TaskFds, TaskRequest, encode_apps};
+use runtime_portal::tilolang_host::App;
+#[cfg(target_os = "linux")]
+use runtime_portal::tilolang_host::{TaskFds, TaskRequest, encode_apps};
 use tilo_lock::MutexRecover as _;
 
 /// What a task's programs may name in one workspace: the apps it compiles against, and what the
@@ -22,7 +24,7 @@ use tilo_lock::MutexRecover as _;
 pub struct Catalogue {
     pub apps: Vec<App>,
     /// The id each app keeps its records under, when it was renamed from an earlier one.
-    pub records_under: BTreeMap<String, String>,
+    pub documents_under: BTreeMap<String, String>,
     /// The apps whose records the API changes itself, rather than invoking their actions.
     pub changed_at_record: BTreeSet<String>,
 }
@@ -58,6 +60,18 @@ impl TaskHosts {
 }
 
 impl crate::TaskHosts for TaskHosts {
+    /// A task's host is a Linux program: anywhere else no program runs here, and the caller is
+    /// told so rather than the API failing to build.
+    #[cfg(not(target_os = "linux"))]
+    fn start(&self, workspace: &str, task: &str) -> io::Result<OwnedFd> {
+        let _ = (workspace, task, &self.person, &self.catalogue);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "a task's programs run on a Linux host",
+        ))
+    }
+
+    #[cfg(target_os = "linux")]
     fn start(&self, workspace: &str, task: &str) -> io::Result<OwnedFd> {
         let (server_end, host_end) = std::os::unix::net::UnixStream::pair()?;
         let catalogue = self.catalogue.catalogue(workspace);
@@ -68,7 +82,7 @@ impl crate::TaskHosts for TaskHosts {
             workspace: workspace.to_owned(),
             person: self.person.lock_recover().clone(),
             apps_len: encoded.len() as u64,
-            records_under: catalogue.records_under,
+            documents_under: catalogue.documents_under,
             changed_at_record: catalogue.changed_at_record,
         };
         std::thread::Builder::new()

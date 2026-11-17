@@ -98,7 +98,7 @@ impl Workspace {
             peer_id: hold,
             connection_id: hold,
             verified_identity: admitted,
-            record_kind: None,
+            resource_type: None,
             route_access: RouteAccess::Own,
             lease: None,
             _hold: None,
@@ -351,9 +351,9 @@ async fn a_signed_change_crosses_the_wire_to_the_channel_subscribers() {
                 DocumentMutation::Snapshot(b"automerge snapshot".to_vec())
                     .encode()
                     .unwrap(),
-                document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
+                document_artifact_id(&route.app_id, &route.cluster_id, &route.document_id),
                 collab_types::Ed25519PublicKey::from_bytes(device(5).verifying_key().to_bytes()),
-                document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
+                document_attestation_id(&route.app_id, &route.cluster_id, &route.document_id),
                 collab_types::OpKind::Change,
                 SystemTime::now(),
                 1,
@@ -463,7 +463,7 @@ async fn a_join_opens_a_handle_the_endpoint_then_works_in() {
                     .unwrap(),
                     member: None,
                     handle: String::new(),
-                    record_kind: None,
+                    resource_type: None,
                 }))
                 .await;
             assert!(
@@ -482,7 +482,7 @@ async fn a_join_opens_a_handle_the_endpoint_then_works_in() {
                     .unwrap(),
                     member: None,
                     handle: "Ada".into(),
-                    record_kind: None,
+                    resource_type: None,
                 }))
                 .await
             else {

@@ -70,7 +70,7 @@ impl WindowShows {
         }
         *self.shown.borrow_mut() = Some(path.clone());
         let saved = match self.views.load(self.unsaved.instance_id) {
-            Ok(Some(saved)) if saved.record_id == self.unsaved.record_id => saved,
+            Ok(Some(saved)) if saved.document_id == self.unsaved.document_id => saved,
             _ => self.unsaved.clone(),
         };
         let saved = SavedInstanceView {
@@ -91,8 +91,8 @@ pub struct SavedInstanceView {
     pub device_id: String,
     pub workspace_id: String,
     pub instance_id: u64,
-    pub record_id: String,
-    pub record_kind: String,
+    pub document_id: String,
+    pub resource_type: String,
     pub view: View,
     pub application: Option<ApplicationLocalView>,
     /// The file or folder the window shows, by its absolute path: the one it was opened on, or the
@@ -132,8 +132,8 @@ impl SavedInstanceView {
             &self.app_id,
             &self.device_id,
             &self.workspace_id,
-            &self.record_id,
-            &self.record_kind,
+            &self.document_id,
+            &self.resource_type,
         ] {
             validate_identity(identity)?;
         }
@@ -262,7 +262,7 @@ impl InstanceViewStore {
 
     fn namespace(&self) -> String {
         match &self.portable {
-            Some(cache) => crate::record::portable_namespace(cache),
+            Some(cache) => crate::resource::portable_namespace(cache),
             None => self.store.namespace().to_owned(),
         }
     }
@@ -332,7 +332,7 @@ impl InstanceViewStore {
     pub(crate) fn save_landing(
         &self,
         instance: &SavedInstanceView,
-    ) -> Result<Option<crate::record::transfer::Landing>, ThawError> {
+    ) -> Result<Option<crate::resource::transfer::Landing>, ThawError> {
         self.validate(instance, instance.instance_id)?;
         if self.ephemeral {
             return Ok(None);
@@ -355,7 +355,7 @@ impl InstanceViewStore {
         // thread, and a later read already sees the saved View.
         match self.store.flush_where_allowed(&key) {
             Ok(()) | Err(StoreError::Pending(_)) => {
-                Ok(Some(crate::record::transfer::Landing::new(key, revision)))
+                Ok(Some(crate::resource::transfer::Landing::new(key, revision)))
             }
             Err(error) => Err(storage_error(error)),
         }
@@ -365,12 +365,12 @@ impl InstanceViewStore {
 impl crate::launch::LaunchError {
     /// Whether the launch stopped only because the store thread is
     /// still opening a document for a thread that may not wait on the disk
-    /// ([`crate::record::RecordOpenError::Opening`]): asked again once the
+    /// ([`crate::resource::ResourceOpenError::Opening`]): asked again once the
     /// store wakes the caller, it goes on. Not a failure to show.
     #[must_use]
     pub fn is_opening(&self) -> bool {
         match self {
-            Self::Record(crate::record::RecordOpenError::Opening)
+            Self::Record(crate::resource::ResourceOpenError::Opening)
             | Self::Restore(crate::view::ThawError::Opening) => true,
             Self::ComponentSetup { source, .. } | Self::ComponentCapture { source, .. } => {
                 source.is_opening()
@@ -391,8 +391,8 @@ mod tests {
             device_id: "D".into(),
             workspace_id: "A".into(),
             instance_id,
-            record_id: "uuid:record".into(),
-            record_kind: "note".into(),
+            document_id: "uuid:record".into(),
+            resource_type: "note".into(),
             view: View::default(),
             application: None,
             shows: None,
@@ -405,7 +405,7 @@ mod tests {
         let views = InstanceViewStore::with_store(Rc::clone(&store), "D", "A").unwrap();
         assert!(views.load(7).unwrap().is_none());
         views.save(&saved(7)).unwrap();
-        assert_eq!(views.load(7).unwrap().unwrap().record_id, "uuid:record");
+        assert_eq!(views.load(7).unwrap().unwrap().document_id, "uuid:record");
         assert!(views.matches_namespace(store.namespace(), "D", "A"));
         let other = InstanceViewStore::with_store(store, "D", "B").unwrap();
         assert!(other.load(7).unwrap().is_none());

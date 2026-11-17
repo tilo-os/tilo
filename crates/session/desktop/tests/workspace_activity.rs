@@ -157,7 +157,7 @@ tilo_test_env::scenario! {
     phase workspace_activity_detached_record_origins_do_not_collide;
     {
         use tilo_desktop::activity::*;
-        use ui::record::{DocumentCheckout, DocumentId, ResourceType};
+        use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
         let workspace = Workspace::new(WorkspaceId::from_u128(9), "Design");
         let mut doc = AutoCommit::new();
         doc.put(ROOT, WORKSPACE_ID_KEY, workspace.id().to_string())
@@ -233,13 +233,13 @@ tilo_test_env::scenario! {
     }
 
     phase workspace_activity_lists_content_and_filters_by_the_people_it_names;
-    // Listing a read marker, or offering a filter for a participant no row can be attributed to, must
+    // Listing a read marker, or offering a filter for a member no row can be attributed to, must
     // fail this regression.
     {
         use automerge::{ActorId, transaction::CommitOptions};
         use tilo_actions::{ActionContext, ChangeKind};
         use tilo_desktop::activity::*;
-        use ui::record::{DocumentCheckout, DocumentId, ResourceType};
+        use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
         let workspace = Workspace::new(WorkspaceId::from_u128(9), "Design");
         let mut doc = AutoCommit::new();
         doc.put(ROOT, WORKSPACE_ID_KEY, workspace.id().to_string())
@@ -322,7 +322,7 @@ tilo_test_env::scenario! {
     phase workspace_activity_unsettled_refresh_retains_only_current_admission_rows;
     {
         use tilo_desktop::activity::*;
-        use ui::record::{DocumentCheckout, DocumentId, ResourceType};
+        use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
         let workspace = Workspace::new(WorkspaceId::from_u128(9), "Design");
         let mut doc = AutoCommit::new();
         doc.put(ROOT, WORKSPACE_ID_KEY, workspace.id().to_string())
@@ -376,7 +376,7 @@ tilo_test_env::scenario! {
     // checkpoints with nothing to show must fail this regression.
     {
         use automerge::transaction::CommitOptions;
-        use tilo_desktop_model::shared_record::device;
+        use tilo_desktop_model::shared_resource::device;
         use tilo_desktop_model::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
         let workspace = Workspace::new(WorkspaceId::from_u128(4), "Planning");
         let mut doc = AutoCommit::new();

@@ -26,7 +26,7 @@ use settings_store::notification_policy::NotificationPolicy;
 use tilo_action_broker::automation::chord_target;
 use tilo_action_broker::collab_broker::AppActionBroker;
 use tilo_actions::remote::Caller;
-use tilo_automation::dispatch::RecordEvent;
+use tilo_automation::dispatch::DocumentEvent;
 use tilo_automation::{InvocationId, ScheduleClaim, TriggerSpec};
 use tilo_desktop_model::WorkspaceId;
 use tilo_desktop_surface::DesktopHandle;
@@ -329,8 +329,10 @@ impl Automation {
         if !events.is_empty() {
             // A run's own first change is its claim: a firing another device already started is not
             // held for this one.
-            let started: BTreeSet<InvocationId> =
-                events.iter().filter_map(RecordEvent::started_run).collect();
+            let started: BTreeSet<InvocationId> = events
+                .iter()
+                .filter_map(DocumentEvent::started_run)
+                .collect();
             self.triggers.forget_started(&started);
             firings.extend(
                 self.triggers
@@ -408,7 +410,7 @@ impl Automation {
                 armed.shortcut.triggers.iter().any(|trigger| {
                     matches!(
                         trigger,
-                        TriggerSpec::RecordChanged { .. } | TriggerSpec::IncomingMessage { .. }
+                        TriggerSpec::ResourceChanged { .. } | TriggerSpec::IncomingMessage { .. }
                     )
                 })
             })

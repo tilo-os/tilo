@@ -168,7 +168,7 @@ tilo_test_env::scenario! {
 
 #[test]
 fn the_loaned_record_reads_at_committed_heads_and_nothing_else_discloses() {
-    let fixture = crate::history_mode::owner::RecordOwnerFixture::in_workspace(
+    let fixture = crate::history_mode::owner::ResourceOwnerFixture::in_workspace(
         983,
         "77777777-7777-4777-8777-777777777777",
     );
@@ -180,7 +180,7 @@ fn the_loaned_record_reads_at_committed_heads_and_nothing_else_discloses() {
         address: tilo_actions::ActionAddress::new("fixture.document", "read"),
         argument: None,
         actor: tilo_actions::Actor::Member(tilo_actions::MemberId::person("original-reader")),
-        participant: None,
+        presence: None,
     };
     let lease = crate::invocation_scope::PublishedInvocationLease::new(
         request,
@@ -221,7 +221,7 @@ fn the_loaned_record_reads_at_committed_heads_and_nothing_else_discloses() {
         .with_checked(&fixture.checkout.id, |document| {
             document.put(ROOT, "text", "local record").unwrap();
             document.commit();
-            let local = crate::invocation_scope::with_loaned_record(
+            let local = crate::invocation_scope::with_loaned_resource(
                 &fixture.store,
                 &fixture.checkout,
                 "fixture.app",
@@ -234,7 +234,7 @@ fn the_loaned_record_reads_at_committed_heads_and_nothing_else_discloses() {
             assert_eq!(local["record"]["appId"], "fixture.app");
             assert_eq!(local["record"]["recordId"], fixture.checkout.id.as_str());
             let mut copy = document.clone();
-            crate::invocation_scope::with_loaned_record(
+            crate::invocation_scope::with_loaned_resource(
                 &fixture.store,
                 &fixture.checkout,
                 "fixture.app",

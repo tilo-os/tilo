@@ -55,7 +55,7 @@ fn surface(peer: u64, app: &str, actions: Vec<ExportedAction>) -> BrokerActionSu
         provider: None,
         app_id: app.into(),
         cluster_id: Uuid::from_u128(1).to_string(),
-        record_id: String::new(),
+        document_id: String::new(),
         live: true,
         actions,
     }
@@ -91,7 +91,7 @@ pub(super) fn surfaces() -> Vec<BrokerActionSurface> {
     )];
     vec![
         surface(SESSION_PEER, "so.tilo.session", session_actions()),
-        surface(RECORDS_PEER, "so.tilo.session", record_actions()),
+        surface(RECORDS_PEER, "so.tilo.session", resource_actions()),
         surface(NOTES_PEER, "so.tilo.lang.notes", notes),
         surface(HOST_PEER, "so.tilo.desktop", host_actions()),
         surface(API_PEER, "so.tilo.agent", api),
@@ -201,7 +201,7 @@ fn place_steps(place: &str, label: &str) -> Vec<ExportedAction> {
 }
 
 /// The tilolang apps' records the session serves: the Tasks root and one task, and Mail.
-fn record_actions() -> Vec<ExportedAction> {
+fn resource_actions() -> Vec<ExportedAction> {
     vec![
         on(
             TASKS,

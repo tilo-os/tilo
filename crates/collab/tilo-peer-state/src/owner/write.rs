@@ -246,7 +246,7 @@ impl NativeWorkspaceOwner {
                 Ok((kept, changes))
             })?;
             if kept {
-                self.publish_record(workspace, &candidate, record, None)?;
+                self.publish_document(workspace, &candidate, record, None)?;
                 self.0.governance_kept_here(workspace, hosted_here, changes);
             }
             Ok(())
@@ -262,7 +262,7 @@ impl NativeWorkspaceOwner {
     ///
     /// A sealed history is never too long for a write of the device holding its keys: one that
     /// used most of its bound is compacted first ([`Self::compact_outgoing`]), and one the writes
-    /// would overflow is compacted then ([`Self::compact_record`]), the writes committed after
+    /// would overflow is compacted then ([`Self::compact_document`]), the writes committed after
     /// the compaction, which custody sends before them.
     ///
     /// # Errors
@@ -298,7 +298,7 @@ impl NativeWorkspaceOwner {
         // (one large write) would wait for them for good, its writes and every write custody
         // holds behind them with it.
         let compacted = self
-            .compact_record(workspace, (&full.0, &full.1), signer, now)
+            .compact_document(workspace, (&full.0, &full.1), signer, now)
             .await
             .unwrap_or_else(|error| {
                 tracing::warn!(%error, "a full sealed history stays uncompacted");
@@ -465,7 +465,7 @@ impl NativeWorkspaceOwner {
         })?;
         if stored.generation != candidate.generation() {
             // One durable publication for every write the turn took.
-            self.publish_record(workspace, candidate, stored, None)?;
+            self.publish_document(workspace, candidate, stored, None)?;
         }
         for message in carried {
             self.0.kept_here(workspace, &message);

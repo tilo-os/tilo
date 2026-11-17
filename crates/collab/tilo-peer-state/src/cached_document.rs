@@ -38,6 +38,9 @@ pub(crate) struct CachedDocument {
     stored: Arc<OnceLock<Stored>>,
     /// How the state this one was changed from was stored.
     before: Option<Stored>,
+    /// The lengths and digests of the document's stored parts ([`Self::stored_layout`]),
+    /// once asked: what a durable hash folds in, kept without the parts themselves.
+    layout: Arc<OnceLock<StoredLayout>>,
     /// [`Self::security_basis`], with the revocations it was worked out
     /// under.
     security_basis: Arc<OnceLock<SecurityBasis>>,
@@ -70,6 +73,26 @@ impl Stored {
         self.since.iter().map(|run| run.len()).sum()
     }
 }
+/// The lengths and digests of a document's stored parts: its saved base, and the changes made
+/// since it. [`CachedDocument::stored_layout`] answers it without keeping either.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StoredLayout {
+    pub(crate) base_len: usize,
+    pub(crate) base_digest: [u8; 32],
+    pub(crate) since_len: usize,
+    pub(crate) since_digest: [u8; 32],
+}
+
+/// The layout of a document a store already wrote.
+fn layout_of(stored: &Stored) -> StoredLayout {
+    StoredLayout {
+        base_len: stored.base.len(),
+        base_digest: *blake3::hash(&stored.base).as_bytes(),
+        since_len: stored.since_len(),
+        since_digest: *stored.since_digest.finalize().as_bytes(),
+    }
+}
+
 /// The derived views of one document state.
 struct Views {
     policy: Arc<OnceLock<Arc<PolicyData>>>,
@@ -110,6 +133,7 @@ impl From<AutoCommit> for CachedDocument {
             earlier: None,
             stored: Arc::default(),
             before: None,
+            layout: Arc::default(),
             security_basis: Arc::default(),
         }
     }
@@ -130,6 +154,7 @@ impl DerefMut for CachedDocument {
         }
         self.before = self.stored_before();
         self.stored = Arc::default();
+        self.layout = Arc::default();
         self.policy = Arc::default();
         self.identities = Arc::default();
         self.certificates = Arc::default();
@@ -337,6 +362,64 @@ impl CachedDocument {
     /// How this state is stored, or the state it was changed from.
     fn stored_before(&self) -> Option<Stored> {
         self.stored.get().cloned().or_else(|| self.before.clone())
+    }
+
+    /// The lengths and digests of the parts of [`Self::stored`], without the parts: what
+    /// [`crate::StatePeer::durable_hash`] folds in. A state a store already wrote answers the
+    /// split it was written in; one nothing wrote answers a whole saved base, the one form every
+    /// device of the workspace computes the same, and keeps the bytes for nobody. This is what
+    /// a session that stores nothing pays for a hash instead of a second copy of every record.
+    pub(crate) fn stored_layout(&self) -> StoredLayout {
+        use automerge::transaction::Transactable as _;
+        self.layout
+            .get_or_init(|| {
+                if let Some(stored) = self.stored.get() {
+                    return layout_of(stored);
+                }
+                // The split [`Self::stored`] would make for this state: the base of the state it
+                // was changed from while the changes since weigh no more than half of it, a
+                // base saved anew otherwise. Taken the same way here, so the two never disagree
+                // about the bytes a store would write.
+                let copy;
+                let committed = if self.doc.pending_ops() == 0 {
+                    &*self.doc
+                } else {
+                    let mut doc = AutoCommit::clone(&self.doc);
+                    let _ = doc.document();
+                    copy = doc;
+                    &copy
+                };
+                let doc = committed.committed_document();
+                if let Some(before) = &self.before
+                    && before
+                        .heads
+                        .iter()
+                        .all(|head| doc.get_change_meta_by_hash(head).is_some())
+                {
+                    let added = doc.save_after(&before.heads);
+                    crate::write_work::read(added.len());
+                    let since_len = before.since_len().saturating_add(added.len());
+                    if since_len.saturating_mul(2) <= before.base.len() {
+                        let mut since_digest = before.since_digest.clone();
+                        since_digest.update(&added);
+                        return StoredLayout {
+                            base_len: before.base.len(),
+                            base_digest: *blake3::hash(&before.base).as_bytes(),
+                            since_len,
+                            since_digest: *since_digest.finalize().as_bytes(),
+                        };
+                    }
+                }
+                let saved = AutoCommit::clone(committed).save();
+                crate::write_work::read(saved.len());
+                StoredLayout {
+                    base_len: saved.len(),
+                    base_digest: *blake3::hash(&saved).as_bytes(),
+                    since_len: 0,
+                    since_digest: *blake3::hash(&[]).as_bytes(),
+                }
+            })
+            .clone()
     }
     /// The document as a store keeps it: a saved base, then the changes
     /// made since it, which together are the document's storage

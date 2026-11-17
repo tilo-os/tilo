@@ -42,7 +42,7 @@ impl ActionAuthoritySampler {
         let person: &MemberId = &asker.user;
         let current = (self.sample)()?;
         if current.user != *person
-            || current.standing.person_id() != Some(person.key().as_str())
+            || current.standing.person_id() != person.person_id()
             || current.standing.acting.delegated()
             || current.action_authority.is_some()
         {

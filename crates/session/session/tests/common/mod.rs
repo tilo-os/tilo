@@ -484,7 +484,7 @@ pub fn canvas_word() -> String {
     shell_word("canvas", CANVAS)
 }
 
-/// The shell's own word for the name `declared` its views pass to a map (`canvas`, `spaces`,
+/// The shell's own word for the name `declared` its views pass to a map (`canvas`, `frameless`,
 /// `desktop`), in the language the session speaks, read from the shell's catalogue; `otherwise`
 /// where the shell names none.
 fn shell_word(declared: &str, otherwise: &str) -> String {
@@ -506,13 +506,13 @@ fn shell_word(declared: &str, otherwise: &str) -> String {
         .unwrap_or_else(|| otherwise.to_owned())
 }
 
-/// The map the style `style` (`so.tilo.shell:spaces`) draws its places in: the name its view passes
-/// (`canvas`, `spaces`, `desktop`) and the word an English shell names it by. `None` for a style
+/// The map the style `style` (`so.tilo.shell:frameless`) draws its places in: the name its view
+/// passes (`canvas`, `frameless`, `desktop`) and the word an English shell names it by. `None` for a style
 /// that draws no map of its own (the strips), whose bar's switch says which style it shows instead.
 fn style_map(style: &str) -> Option<(&'static str, &'static str)> {
     match style {
         "so.tilo.shell:frames" => Some(("canvas", CANVAS)),
-        "so.tilo.shell:spaces" => Some(("spaces", "Spaces")),
+        "so.tilo.shell:frameless" => Some(("frameless", "Frameless")),
         "so.tilo.shell:desktop" => Some(("desktop", "Desktop")),
         _ => None,
     }

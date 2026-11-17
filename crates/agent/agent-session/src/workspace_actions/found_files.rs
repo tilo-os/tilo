@@ -49,7 +49,7 @@ impl Worker {
                 .record(
                     cluster_id,
                     FILES_APP,
-                    &collab_types::person_record_id(TREE_KIND),
+                    &collab_types::person_document_id(TREE_KIND),
                 )
                 .ok()
                 .flatten()

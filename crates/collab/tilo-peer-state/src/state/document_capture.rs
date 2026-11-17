@@ -47,7 +47,7 @@ impl StatePeer {
     /// saves and opens nothing. `None` for a record not held. Equal revisions
     /// at two moments mean the record took no write between them.
     #[must_use]
-    pub fn record_revision(&self, app: &str, record: &str) -> Option<[u8; 32]> {
+    pub fn document_revision(&self, app: &str, record: &str) -> Option<[u8; 32]> {
         let document = self.core.documents.get(&Route {
             app: app.into(),
             record: record.into(),
@@ -172,9 +172,9 @@ pub fn changes_since(
 /// never answers a reader the workspace would not answer. A write that does not open with the
 /// keys the reader holds now ends what it holds until they do.
 #[derive(Default)]
-pub struct KeptRecord(Option<Opened>);
+pub struct KeptDocument(Option<Opened>);
 
-impl KeptRecord {
+impl KeptDocument {
     /// Whether a record is kept opened.
     #[must_use]
     pub fn is_open(&self) -> bool {
@@ -286,7 +286,7 @@ impl StatePeer {
         open: Option<OpenSealed<'_>>,
     ) -> Result<PeerDocumentCapture, PeerDocumentReadError> {
         let maximum = maximum.min(MAX_CAPTURE_BYTES);
-        let mut kept = KeptRecord::default();
+        let mut kept = KeptDocument::default();
         let document = self.open_document(reader, route, now, maximum, open, &mut kept)?;
         PeerDocumentCapture::from_document(document, maximum)
     }
@@ -313,7 +313,7 @@ impl StatePeer {
         now: SystemTime,
         maximum: usize,
         open: Option<OpenSealed<'_>>,
-        kept: &'a mut KeptRecord,
+        kept: &'a mut KeptDocument,
     ) -> Result<&'a Automerge, PeerDocumentReadError> {
         let document = match self.readable(reader, (app, record), now, open.is_some()) {
             Ok(document) => document,
@@ -426,7 +426,7 @@ fn open_history<'a>(
     document: &PeerDocument,
     open: OpenSealed<'_>,
     maximum: usize,
-    kept: &'a mut KeptRecord,
+    kept: &'a mut KeptDocument,
 ) -> Result<&'a Automerge, PeerDocumentReadError> {
     let base = document
         .covered_snapshot

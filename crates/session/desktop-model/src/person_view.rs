@@ -22,7 +22,7 @@ use crate::width::WindowWidth;
 /// The record of [`crate::ownership::DESKTOP_APP`] holding `person`'s view of a workspace's
 /// layout.
 #[must_use]
-pub fn record_of(person: &str) -> String {
+pub fn resource_of(person: &str) -> String {
     format!("view-of-{person}")
 }
 
@@ -344,7 +344,7 @@ mod tests {
     use super::*;
     use crate::layout::{Strip, Tab, TileContent, WindowGroup};
     use crate::ownership::SharedDesktop;
-    use crate::shared_record;
+    use crate::shared_resource;
     use crate::{Workspace, WorkspaceId};
 
     fn tab(id: u64, label: &str) -> Tab {
@@ -399,10 +399,10 @@ mod tests {
             ..SharedDesktop::default()
         };
         assert!(
-            shared_record::write(&mut doc, &shared).expect("a document that takes the layout"),
+            shared_resource::write(&mut doc, &shared).expect("a document that takes the layout"),
             "the record holds the layout"
         );
-        shared_record::read(&doc, None).expect("the layout").tree
+        shared_resource::read(&doc, None).expect("the layout").tree
     }
 
     tilo_test_env::scenario! {

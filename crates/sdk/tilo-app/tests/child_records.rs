@@ -4,7 +4,7 @@
 //! one writes the record the window holds, so each step goes through the
 //! window's own action path rather than the store beside it.
 
-use tilo_app::framework::ChildRecord;
+use tilo_app::framework::ChildResource;
 use tilo_app::prelude::*;
 use tilo_app::tilo_resource::Segment;
 use tilo_app::tilo_resource::children::Children as Container;
@@ -36,7 +36,7 @@ impl Topic {
     }
 }
 
-impl ChildRecord for Topic {
+impl ChildResource for Topic {
     type Parent = Workspace;
     fn container(parent: &Workspace) -> &Container {
         &parent.entries

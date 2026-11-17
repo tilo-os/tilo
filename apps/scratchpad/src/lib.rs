@@ -86,10 +86,10 @@ impl ResourceApp for Scratchpad {
             .with_inset(ui::tokens::Rhythm::Group)
             .with_child(Box::new(editor));
         let status = Text::from_state(&cx.save_status(), |status| match status {
-            RecordSaveStatus::MemoryOnly => crate::locales::CATALOG.t("scratchpad-memory-only"),
-            RecordSaveStatus::Saved | RecordSaveStatus::Saving | RecordSaveStatus::Failed(_) => {
-                String::new()
-            }
+            ResourceSaveStatus::MemoryOnly => crate::locales::CATALOG.t("scratchpad-memory-only"),
+            ResourceSaveStatus::Saved
+            | ResourceSaveStatus::Saving
+            | ResourceSaveStatus::Failed(_) => String::new(),
         })
         .with_id("save-status")
         .with_role(TextRole::Caption)

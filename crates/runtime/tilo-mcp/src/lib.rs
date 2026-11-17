@@ -10,6 +10,7 @@ pub mod session_api;
 pub mod task_hosts;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_hosts;
+mod turn;
 
 pub use images::MediaReader;
 use images::{IMAGES, MAX_IMAGE_BYTES, MAX_IMAGES, image_mime, take_images};
@@ -127,6 +128,9 @@ pub struct McpServer<H> {
     /// with where its latest phase falls in the watch's sequence
     /// ([`crate::watch`]).
     pub(crate) runs: std::sync::Mutex<Vec<agent::watch::Run>>,
+    /// Who waits for the next run event of this session: one of its invocations
+    /// starting, being held for its person, or ending ([`McpServer::runs_moved`]).
+    pub(crate) run_waiters: std::sync::Mutex<Vec<tilo_actions::remote::Completer<()>>>,
     /// What this session's invocations changed, oldest first: where taking
     /// one's run back finds its changes ([`McpServer::undo_run`]).
     pub(crate) undoable: std::sync::Mutex<std::collections::VecDeque<agent::Undoable>>,
@@ -675,6 +679,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             acted: std::sync::Mutex::default(),
             changing: std::sync::Mutex::default(),
             runs: std::sync::Mutex::default(),
+            run_waiters: std::sync::Mutex::default(),
             undoable: std::sync::Mutex::default(),
         }
     }
@@ -1616,7 +1621,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let Some((peer, _)) = instances.iter().rev().find(|(_, instance)| {
             instance["app_id"].as_str() == Some(app_id)
                 && matches!(
-                    instance["record_id"].as_str(),
+                    instance["document_id"].as_str(),
                     Some("" | "derived:default@tab:0000000000000000")
                 )
         }) else {
@@ -2958,7 +2963,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             }
             tilo_actions::ActionContext {
                 group: Some(run),
-                invoker: Some(tilo_actions::ActionInvoker::person(self.actor.clone())),
+                // Who acts is the caller the session was admitted as: an agent for its person,
+                // or the person themselves. Its actor names an agent `agent:<id>`, never a person.
+                invoker: Some(tilo_actions::ActionInvoker::admitted(self.caller.acting())),
                 gesture: STEP.try_with(|step| *step).ok(),
                 ..tilo_actions::ActionContext::default()
             }

@@ -999,6 +999,52 @@ impl Chip {
 
 impl Widget for Chip {
     crate::described!();
+    /// A chip as a page's own button (a chosen one a toggle button): its glyph
+    /// and its words on its pill.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        use crate::composition::{Face, TextLook, rgba8};
+        cx.element("button");
+        let theme = cx.theme();
+        let colors = &theme.tokens.colors;
+        let ink = colors.text_primary;
+        let leader = match self.lead {
+            ChipLead::Glyph(icon) => crate::composition::glyph(icon, 14.0, ink, false),
+            _ => None,
+        };
+        cx.face(Face {
+            icon: leader,
+            label: Some(
+                TextLook::new(
+                    self.label.clone(),
+                    &theme.text(crate::tokens::TextRole::Body),
+                    Some(ink),
+                )
+                .with_max_lines(Some(1)),
+            ),
+            detail: None,
+            trailing: self
+                .menu
+                .then(|| {
+                    crate::composition::glyph(
+                        crate::icons::Icon::ChevronDown,
+                        14.0,
+                        colors.text_dim,
+                        false,
+                    )
+                })
+                .flatten(),
+            fill: Some(rgba8(if self.selected {
+                colors.intent.accent
+            } else {
+                colors.surfaces.raised
+            })),
+            edge: Some(rgba8(colors.border_standard)),
+            radius: self.metrics.height / 2.0,
+            pad: self.metrics.pad_x,
+            gap: 6.0,
+            spread: false,
+        });
+    }
 
     crate::provides!(
         dyn crate::widget::controls::ActionControls,

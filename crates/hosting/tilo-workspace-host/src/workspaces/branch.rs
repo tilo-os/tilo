@@ -18,9 +18,9 @@
 //! 2. The branch is made as any workspace of the person's own is: governed here,
 //!    its governance new, the person its only member and its administrator, its
 //!    channels with keys of their own the first time a record of it is sealed.
-//! 3. Each record is forked into it (`ui::record::transfer::branch`: its whole
+//! 3. Each record is forked into it (`ui::resource::transfer::branch`: its whole
 //!    history under a writer of its own, one change naming the branch) and founded
-//!    there as the governor founds a record again (`sealed_records::refound`):
+//!    there as the governor founds a record again (`sealed_documents::refound`):
 //!    sealed under the branch's own keys where its records are sealed.
 //! 4. The content those records name is copied into the branch's content by what
 //!    keeps it ([`BranchContent`]).
@@ -100,7 +100,7 @@ mod copy {
     use automerge::AutoCommit;
 
     use super::{Branched, Workspaces};
-    use crate::workspaces::{CollaborationError, WorkspaceSummary, sealed_records};
+    use crate::workspaces::{CollaborationError, WorkspaceSummary, sealed_documents};
     use tilo_lock::RwLockRecover as _;
 
     /// A record by its app and id.
@@ -221,7 +221,7 @@ mod copy {
                 .collect();
             drop(peer);
             let read = self
-                .whole_records(source, Some(&comes))
+                .whole_documents(source, Some(&comes))
                 .await
                 .map_err(|error| NotMade::of("its records")(error.to_string()))?;
             if let Some(((app, record), why)) = read.unread.first() {
@@ -237,7 +237,7 @@ mod copy {
                     .map(|((app, record), bytes)| {
                         let source = AutoCommit::load(&bytes)
                             .map_err(|error| NotMade::record(&app, &record)(error.to_string()))?;
-                        let mut forked = ui::record::transfer::branch(&source, &branch)
+                        let mut forked = ui::resource::transfer::branch(&source, &branch)
                             .map_err(|error| NotMade::record(&app, &record)(error.to_string()))?;
                         Ok(((app, record), forked.save()))
                     })
@@ -322,7 +322,7 @@ mod copy {
             let now = tilo_clock::wall();
             let key = &self.inner.host.key;
             let mut candidate = governed.peer().clone();
-            sealed_records::refound(
+            sealed_documents::refound(
                 &mut candidate,
                 keys.as_ref(),
                 (app, record),

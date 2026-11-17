@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use file_explorer::{FileCommand, FileExplorerWidget};
-use fs::availability::{RecordAvailability, RecordKind};
+use fs::availability::{DocumentAvailability, EntryKind};
 use fs::{AvailabilityRegistry, ContentStore, Heuristics, Hydrator, Namespace, QuickFS, ROOT_INO};
 use fs_protocol::AvailabilityPolicy;
 use fs_protocol::Residency;
@@ -69,7 +69,7 @@ async fn files_reads_live_projections_and_applies_folder_pin_to_future_descendan
     let mut availability =
         AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
     for (_, document_id, _, bytes) in &expected {
-        let mut record = RecordAvailability::new(*document_id, RecordKind::File);
+        let mut record = DocumentAvailability::new(*document_id, EntryKind::File);
         record.residency = FsResidency::Resident { bytes: *bytes };
         availability.put(record).unwrap();
     }

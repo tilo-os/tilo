@@ -439,6 +439,12 @@ impl ReactionStrip {
     /// Lay `groups` out from `origin` within `max_width` (see [`layout`]);
     /// a pill new since the last layout starts arriving, a changed count
     /// cross-fading.
+    /// The pills and add button it last laid out, where they stand.
+    #[must_use]
+    pub fn current(&self) -> &StripLayout {
+        &self.layout
+    }
+
     pub fn layout(
         &mut self,
         groups: &[ReactionGroup],

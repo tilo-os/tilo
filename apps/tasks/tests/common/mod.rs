@@ -54,5 +54,5 @@ pub fn held(app: &TestApp<App>) -> Held {
 
 /// Where the issues' actions are published: the chain of their parts.
 pub fn chain() -> String {
-    ui::record::chain_resource_id(&tasks::part::chain())
+    ui::resource::chain_resource_id(&tasks::part::chain())
 }

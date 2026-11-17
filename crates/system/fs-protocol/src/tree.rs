@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use automerge::{ObjId, ObjType, ROOT, ReadDoc as _};
 use tilo_automerge::read::ReadTyped as _;
-use tilo_resource::{Delta, Doc, ModelError, NoAction, Resource, SharedRecord, Touch};
+use tilo_resource::{Delta, Doc, ModelError, NoAction, Resource, SharedResource, Touch};
 
 use crate::files::{FileDocumentId, FileNameV1, FileNodeKind};
 
@@ -14,12 +14,12 @@ pub const TREE_KIND: &str = "files.tree";
 /// derives it from the kind alone.
 #[must_use]
 pub fn document_id() -> String {
-    collab_types::person_record_id(TREE_KIND)
+    collab_types::person_document_id(TREE_KIND)
 }
 
 /// The app whose record a workspace's tree is: it declares the kind, and a
 /// host that keeps the tree reads it as that app's record.
-pub const FILES_APP: &str = <FilesTree as SharedRecord>::OWNER;
+pub const FILES_APP: &str = <FilesTree as SharedResource>::OWNER;
 
 /// The map of node objects, at the document's root.
 pub const NODES_KEY: &str = "nodes";
@@ -136,7 +136,7 @@ impl Tree {
     /// # Errors
     ///
     /// `record` is not a saved document, or the nodes it holds are malformed.
-    pub fn of_record(record: &[u8]) -> Result<Self, ModelError> {
+    pub fn of_document(record: &[u8]) -> Result<Self, ModelError> {
         let document = automerge::AutoCommit::load(record)?;
         FilesTree::read(&document)
     }
@@ -166,7 +166,7 @@ pub struct TreeEntry {
 /// A workspace's files, published as a record.
 ///
 /// The app that keeps the record declares it with its
-/// `ResourceApp::PERSON_RECORDS` (`PersonKind::shared`), and the daemon that
+/// `ResourceApp::PERSON_RESOURCES` (`PersonKind::shared`), and the daemon that
 /// mounts the tree joins the same route, so a device's changes reach the
 /// person's other devices and the members of a shared workspace.
 pub struct FilesTree;
@@ -183,7 +183,7 @@ impl Resource for FilesTree {
             return Ok(Tree::default());
         };
         let mut tree = Tree {
-            root_document_id: record_of(doc, &ROOT, ROOT_DOCUMENT_ID_KEY),
+            root_document_id: resource_of(doc, &ROOT, ROOT_DOCUMENT_ID_KEY),
             nodes: BTreeMap::new(),
         };
         for id in doc.keys(&nodes) {
@@ -209,7 +209,7 @@ impl Resource for FilesTree {
             return Ok(());
         }
         if delta.key(&ROOT, ROOT_DOCUMENT_ID_KEY) == Touch::Written {
-            state.root_document_id = record_of(doc, &ROOT, ROOT_DOCUMENT_ID_KEY);
+            state.root_document_id = resource_of(doc, &ROOT, ROOT_DOCUMENT_ID_KEY);
         }
         let touched = delta.under(&nodes);
         if touched.is_all() {
@@ -238,7 +238,7 @@ impl Resource for FilesTree {
     }
 }
 
-impl SharedRecord for FilesTree {
+impl SharedResource for FilesTree {
     const OWNER: &'static str = tilo_app_id::apps::FILE_EXPLORER;
 }
 
@@ -285,7 +285,7 @@ fn name_of(doc: &Doc, node: &ObjId, key: &str) -> Option<FileNameV1> {
         .or_else(|| doc.str_at(node, key).map(FileNameV1::from))
 }
 
-fn record_of(doc: &Doc, obj: &ObjId, key: &str) -> Option<FileDocumentId> {
+fn resource_of(doc: &Doc, obj: &ObjId, key: &str) -> Option<FileDocumentId> {
     doc.str_at(obj, key)
         .and_then(|value| uuid::Uuid::parse_str(&value).ok())
         .map(FileDocumentId)
@@ -306,7 +306,7 @@ fn entry_of(doc: &Doc, node: &ObjId) -> TreeEntry {
         size: doc.uint_at(node, SIZE_KEY).unwrap_or_default(),
         mtime: doc.uint_at(node, MTIME_KEY).unwrap_or_default(),
         author: doc.str_at(node, AUTHOR_KEY).filter(|name| !name.is_empty()),
-        document_id: record_of(doc, node, DOCUMENT_ID_KEY),
+        document_id: resource_of(doc, node, DOCUMENT_ID_KEY),
     }
 }
 
@@ -316,7 +316,7 @@ pub const RECORD_NODE_ID_PREFIX: &str = "record:";
 
 /// The node key every device derives for the record `document_id`.
 #[must_use]
-pub fn record_node_id(document_id: FileDocumentId) -> String {
+pub fn document_node_id(document_id: FileDocumentId) -> String {
     format!("{RECORD_NODE_ID_PREFIX}{}", document_id.0)
 }
 
@@ -478,7 +478,7 @@ pub fn place(
     let name = free_name(tree, parent, name);
     let nodes = tree_nodes(doc)?;
     let document_id = FileDocumentId::new();
-    let id = record_node_id(document_id);
+    let id = document_node_id(document_id);
     let node = doc.put_object(&nodes, &id, ObjType::Map)?;
     doc.put(&node, PARENT_KEY, parent)?;
     doc.put(&node, PREV_PARENT_KEY, parent)?;
@@ -646,7 +646,7 @@ mod placing_tests {
         assert_eq!(node.kind, FileNodeKind::File);
         assert_eq!(node.hash.as_deref(), Some(hash.as_str()));
         assert_eq!(node.size, 12);
-        assert_eq!(plan.id, record_node_id(node.document_id.unwrap()));
+        assert_eq!(plan.id, document_node_id(node.document_id.unwrap()));
         assert_eq!(tree.node(&docs.id).unwrap().kind, FileNodeKind::Directory);
         assert_eq!(folder_named(&tree, ROOT_ID, "docs"), Some(docs.id.clone()));
         assert_eq!(folder_named(&tree, ROOT_ID, "plan.md"), None);

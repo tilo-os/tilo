@@ -12,7 +12,7 @@ fn route() -> Route {
     Route {
         app_id: "so.tilo.notes".into(),
         cluster_id: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".into(),
-        record_id: "note-1".into(),
+        document_id: "note-1".into(),
         own: None,
     }
 }
@@ -48,9 +48,9 @@ fn signed_frames(
 ) -> Vec<Vec<u8>> {
     let route = route();
     let artifact =
-        collab_types::document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
+        collab_types::document_artifact_id(&route.app_id, &route.cluster_id, &route.document_id);
     let attestation =
-        collab_types::document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id);
+        collab_types::document_attestation_id(&route.app_id, &route.cluster_id, &route.document_id);
     mutation
         .encode_frames()
         .unwrap()
@@ -87,7 +87,7 @@ fn signed_frames(
                 peer: tilo_peer_state::peer_handle(&author),
                 app_id: route.app_id.clone(),
                 cluster_id: route.cluster_id.clone(),
-                record_id: route.record_id.clone(),
+                document_id: route.document_id.clone(),
                 envelope: Box::new(op),
                 own: None,
             })
@@ -1231,7 +1231,7 @@ async fn sealed_ask() -> SealedAsk {
     };
     assert_eq!(
         (sent, workspace_id, record),
-        (request, ws(), route().record_id)
+        (request, ws(), route().document_id)
     );
     SealedAsk {
         _tmp: tmp,

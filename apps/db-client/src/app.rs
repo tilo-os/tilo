@@ -680,7 +680,7 @@ impl Store {
     }
 
     /// Replace the shared SQL buffer with `sql` as the smallest splice, so a
-    /// member's concurrent typing survives. A view-only participant's buffer stays as
+    /// member's concurrent typing survives. A view-only member's buffer stays as
     /// it is.
     fn replace_editor_sql(&self, sql: &str) {
         self.submit(Record::paths().sql.replace(sql));

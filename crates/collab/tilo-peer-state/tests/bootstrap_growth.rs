@@ -90,7 +90,7 @@ fn fixture_with_documents_and_expiry(
             document.commit_edit("fixture", "fixture");
             SeedDocument {
                 app_id: APP.into(),
-                record_id: format!("tab-{index:02}"),
+                document_id: format!("tab-{index:02}"),
                 kind: "diagnostic".into(),
                 bytes: document.save(),
             }
@@ -219,8 +219,8 @@ tilo_test_env::scenario! {
                     .publication_mut()
                     .publish_document(
                         &row.app_id,
-                        &row.record_id,
-                        baseline.document(&row.app_id, &row.record_id).unwrap(),
+                        &row.document_id,
+                        baseline.document(&row.app_id, &row.document_id).unwrap(),
                         &key,
                         now,
                     )
@@ -279,9 +279,9 @@ tilo_test_env::scenario! {
         assert_eq!(fresh.replay_floors(), batched.replay_floors());
         for row in batched.rows() {
             assert_eq!(
-                fresh.durable_coverage(&row.app_id, &row.record_id).unwrap(),
+                fresh.durable_coverage(&row.app_id, &row.document_id).unwrap(),
                 batched
-                    .durable_coverage(&row.app_id, &row.record_id)
+                    .durable_coverage(&row.app_id, &row.document_id)
                     .unwrap()
             );
         }

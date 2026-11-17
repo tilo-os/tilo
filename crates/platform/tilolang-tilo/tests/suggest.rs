@@ -118,7 +118,7 @@ tilo_test_env::scenario! {
         let (inv, record) = suggest(&ada, "scout", &schedule_source(&task));
         assert_eq!(record.state, "suggested");
         assert_eq!(
-            record.subject.as_ref().map(ResourceRef::id_string),
+            record.target.as_ref().map(ResourceRef::id_string),
             Some(target(&task).id_string())
         );
         ada.commit();

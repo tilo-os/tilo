@@ -37,7 +37,7 @@ impl ActivityHost for Host {
     fn local_author(&self, authors: &mut ui::AuthorDirectory, actor: &str) -> Option<String> {
         self.inner.local_author(authors, actor)
     }
-    fn record_content(&self, workspace: &str, app: &str, hash: &str) -> Option<Vec<u8>> {
+    fn document_content(&self, workspace: &str, app: &str, hash: &str) -> Option<Vec<u8>> {
         self.content
             .borrow()
             .get(&(workspace.to_owned(), app.to_owned(), hash.to_owned()))
@@ -152,7 +152,7 @@ impl Fixture {
         let checkout =
             ui::DocumentCheckout::new(record.clone(), ui::ResourceType::new("terminal.session"));
         let mut doc = AutoCommit::new();
-        ui::record::init(&mut doc, &record, &checkout.kind, &workspace.to_string());
+        ui::resource::init(&mut doc, &record, &checkout.kind, &workspace.to_string());
         doc.commit();
         let host = Host::default();
         host.content.borrow_mut().insert(
@@ -459,7 +459,7 @@ tilo_test_env::scenario! {
             action.undo.as_ref().map(|undo| undo.action),
             Some(wire::DetailAction::UndoRecord)
         );
-        let query = wire::RecordQuery {
+        let query = wire::ResourceQuery {
             range: run.range.clone(),
             task: None,
             app_id: action.app_id.clone(),
@@ -605,7 +605,7 @@ impl Connection {
             let record = ui::DocumentId::for_file(file);
             let checkout = ui::DocumentCheckout::new(record.clone(), ui::ResourceType::new("note"));
             let mut doc = AutoCommit::new();
-            ui::record::init(&mut doc, &record, &checkout.kind, &workspace.to_string());
+            ui::resource::init(&mut doc, &record, &checkout.kind, &workspace.to_string());
             doc.commit();
             doc.set_actor(ActorId::from(b"claude-code-agent".as_slice()));
             doc.put(ROOT, "title", *file).unwrap();
@@ -651,7 +651,7 @@ impl Connection {
         let checkout =
             ui::DocumentCheckout::new(record.clone(), ui::ResourceType::new("terminal.session"));
         let mut doc = AutoCommit::new();
-        ui::record::init(&mut doc, &record, &checkout.kind, &workspace.to_string());
+        ui::resource::init(&mut doc, &record, &checkout.kind, &workspace.to_string());
         doc.commit();
         doc.set_actor(ActorId::from(b"claude-code-agent".as_slice()));
         ask(

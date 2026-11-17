@@ -6,9 +6,9 @@ pub(crate) mod continuation;
 /// Pure editor input primitives shared by keyboard, palette and agents.
 pub mod editing;
 pub(crate) mod image_place;
-/// Per-participant view state and its pure resource-context projection.
-pub mod participant;
-/// Per-participant view operations (caret, selection, Find) and their published specs.
+/// Per-presence view state and its pure resource-context projection.
+pub mod presence;
+/// Per-presence view operations (caret, selection, Find) and their published specs.
 pub mod view_ops;
 
 use automerge::AutoCommit;
@@ -1096,10 +1096,10 @@ mod tests {
         {
             let (mut state, ids) = seeded("Read this\n");
             let block = ids[0].clone();
-            let view = participant::ParticipantView {
-                caret: participant::ViewPoint::new(&block, 4),
-                anchor: Some(participant::ViewPoint::new(&block, 0)),
-                ..participant::ParticipantView::default()
+            let view = presence::PresenceView {
+                caret: presence::ViewPoint::new(&block, 4),
+                anchor: Some(presence::ViewPoint::new(&block, 0)),
+                ..presence::PresenceView::default()
             };
             let (replace, _) = editing::replace_selection(&view, &state.doc, "guide").unwrap();
             assert_eq!(
@@ -1160,10 +1160,10 @@ mod tests {
                 start: 0,
                 end: 4,
             };
-            let view = participant::ParticipantView {
-                caret: participant::ViewPoint::new(&block, 4),
-                anchor: Some(participant::ViewPoint::new(&block, 0)),
-                ..participant::ParticipantView::default()
+            let view = presence::PresenceView {
+                caret: presence::ViewPoint::new(&block, 4),
+                anchor: Some(presence::ViewPoint::new(&block, 0)),
+                ..presence::PresenceView::default()
             };
             assert!(
                 matches!(
@@ -1199,10 +1199,8 @@ mod tests {
             let content = tilo_content::ContentStore::memory();
             let bytes = b"content supplied by a preceding action";
             let hash = content.put(bytes).expect("test fixture fits the store");
-            let view = participant::ParticipantView::at(
-                participant::ViewPoint::new(&ids[0], 0),
-                RegionKind::Body,
-            );
+            let view =
+                presence::PresenceView::at(presence::ViewPoint::new(&ids[0], 0), RegionKind::Body);
             let resources = published_for(&caret_at(&ids[0]), &state.doc);
             assert!(
                 resources[0]
@@ -1361,6 +1359,14 @@ mod tests {
                 crate::model::Author::Member(ui::tilo_resource::MemberId::person("Jonas"))
             );
             assert_eq!(comments[0].replies[0].blocks[0].text, "Will do.");
+            let file =
+                crate::model::export_copy(&a.doc, &|member| format!("{} Weber", member.id()))
+                    .unwrap()
+                    .materialize();
+            assert_eq!(
+                file.comments[0].replies[0].author, "Jonas Weber",
+                "a file names the member who answered by the workspace's name for them"
+            );
 
             let resolve = verb(crate::model::DocumentAction::ResolveComment(
                 crate::model::document::ResolveComment {

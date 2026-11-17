@@ -13,7 +13,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ReadDoc as _};
 use collab_types::ArtifactKind;
 use ui::history_source::{AuthorDirectory, HistoryLog, HistorySource};
-use ui::record::{DocumentCheckout, DocumentId, ResourceType};
+use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
 use ui::widget::{HistoryEntry, HistoryEntryId};
 
 use super::ActivityTree;
@@ -268,8 +268,8 @@ pub struct FeedCoverage {
     /// it; observation resumes after producer settlement.
     pub pending_tree: bool,
     pub referenced_records: usize,
-    pub indexed_records: usize,
-    pub unavailable_records: Vec<DocumentCheckout>,
+    pub indexed_resources: usize,
+    pub unavailable_resources: Vec<DocumentCheckout>,
     pub capped_records: usize,
     pub excluded_apps: Vec<String>,
 }
@@ -277,7 +277,7 @@ pub struct FeedCoverage {
 impl FeedCoverage {
     pub fn is_complete(&self) -> bool {
         !self.pending_tree
-            && self.unavailable_records.is_empty()
+            && self.unavailable_resources.is_empty()
             && self.capped_records == 0
             && self.excluded_apps.is_empty()
     }
@@ -432,7 +432,7 @@ impl WorkspaceHistoryIndex {
             let doc = match record.document.as_mut() {
                 Some(doc) if doc.pending_ops() == 0 => doc,
                 _ => {
-                    coverage.unavailable_records.push(record.checkout.clone());
+                    coverage.unavailable_resources.push(record.checkout.clone());
                     // Keep the last settled rendering while this admitted owner is busy, but never
                     // carry rows from an owner absent from the new admission. Unavailable
                     // documents cannot establish seen heads.
@@ -462,7 +462,7 @@ impl WorkspaceHistoryIndex {
                     .with_authors(self.authors.clone())
                     .with_artifact_kind(artifact_kind(&record.checkout.kind))
                     .with_max_entries(limit)
-                    .without_record_genesis()
+                    .without_resource_genesis()
                     .entries_since(doc, &mut log),
                 doc,
             );
@@ -473,7 +473,7 @@ impl WorkspaceHistoryIndex {
                 .collect::<Vec<_>>();
             insert_rows(&mut by_id, &origin, rows);
             insert_rows(&mut by_id, &origin, folder);
-            coverage.indexed_records = coverage.indexed_records.saturating_add(1);
+            coverage.indexed_resources = coverage.indexed_resources.saturating_add(1);
         }
         self.logs = logs;
         let mut entries = by_id.into_values().collect::<Vec<_>>();

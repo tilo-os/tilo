@@ -124,7 +124,7 @@ fn local_keys_are_created_once_and_never_replaced_or_minted_beside_a_vault() {
             let root = tempfile::tempdir().unwrap();
             let dir = root.path().to_path_buf();
             let gate = std::sync::Arc::new(std::sync::Barrier::new(8));
-            // Spawn every participant before joining: interleaving spawn/join
+            // Spawn every member before joining: interleaving spawn/join
             // would deadlock the barrier.
             let mut workers = Vec::with_capacity(8);
             for _ in 0..8 {

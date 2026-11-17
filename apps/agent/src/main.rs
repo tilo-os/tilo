@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use tilo_agent::{Config, Session};
 
-/// A participant without a window: joins the session's collaboration broker
+/// A member without a window: joins the session's collaboration broker
 /// and answers the turns of the conversations it takes part in.
 ///
 /// Read by hand rather than through an argument-parser crate: the launcher
@@ -61,7 +61,7 @@ struct Cli {
 
 /// What `tilo-agent --help` prints.
 const USAGE: &str = "\
-A participant without a window: joins the session's collaboration broker and
+A member without a window: joins the session's collaboration broker and
 answers the turns of the conversations it takes part in.
 
 Usage: tilo-agent --workspace <UUID> [OPTIONS]
@@ -253,7 +253,7 @@ fn main() -> anyhow::Result<()> {
     }
     // What this run's invitation actually was: write on the app it was
     // asked to join, and nothing else. Widening this is a deployment
-    // decision, not something a headless participant grants itself.
+    // decision, not something a headless member grants itself.
     let agent_id = cli.agent_id.clone().unwrap_or_else(|| cli.name.clone());
     let permissions = {
         ui::permissions::PermissionContext::agent_granted_at(

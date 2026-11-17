@@ -92,7 +92,7 @@ fn edit_report(env: &Environment, route: &CrdtRoute) -> runtime_collab::LocalDoc
             agent: None,
             app_id: route.app_id.clone(),
             workspace: route.cluster_id.clone(),
-            document: route.record_id.clone(),
+            document: route.document_id.clone(),
         }),
         version: 1,
         invocation: uuid::Uuid::nil(),
@@ -409,7 +409,7 @@ async fn a_window_publishes_every_record_it_holds_and_withdraws_one_it_drops() {
                     .action_directory_roots()
                     .into_iter()
                     .filter(|root| state.connection_of(root.peer_id) == WINDOW)
-                    .map(|root| root.record_id)
+                    .map(|root| root.document_id)
                     .collect::<std::collections::BTreeSet<_>>()
             };
             assert_eq!(
@@ -427,7 +427,7 @@ async fn a_window_publishes_every_record_it_holds_and_withdraws_one_it_drops() {
                 canonical_route: Some(CanonicalActionRoute {
                     workspace: env.route.cluster_id.clone(),
                     app_id: env.route.app_id.clone(),
-                    record_id: id.into(),
+                    document_id: id.into(),
                 }),
                 max_results: 0,
                 ..Default::default()
@@ -689,13 +689,13 @@ async fn a_journaled_session_admits_the_app_its_launcher_started() {
                 .iter()
                 .find(|record| record.app != env.route.app_id)
                 .expect("a record every app of the workspace opens, kept by another app");
-            let workspace_record = CrdtRoute::record(
+            let workspace_resource = CrdtRoute::record(
                 shared.app,
                 env.route.cluster_id.clone(),
                 collab_types::workspace_document_id(shared.kind),
             );
             let kept = app
-                .join_channel(&workspace_record.channel_key(), &identity)
+                .join_channel(&workspace_resource.channel_key(), &identity)
                 .await
                 .expect("an app of the workspace joins its workspace's record");
 

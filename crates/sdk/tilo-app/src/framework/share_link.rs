@@ -16,8 +16,8 @@ use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::session_actions;
 use tilo_actions::remote::{CatalogueQuery, InvokeArgument, RemoteActionTarget, ViewResourceQuery};
 use tilo_reference::link::{
-    AppId, HostOrigin, Link, LinkSecrets, LinkTarget, Mode, RecordSegment, ResourceAddress, Scope,
-    WebEntry,
+    AppId, HostOrigin, Link, LinkSecrets, LinkTarget, Mode, ResourceAddress, ResourceSegment,
+    Scope, WebEntry,
 };
 use tilo_resource::share::{SHARE_INVITE_TYPE, SHARE_TYPE, ShareRequest};
 use ui_core::time::{Duration, Instant};
@@ -41,7 +41,7 @@ pub(crate) struct Publisher<'a> {
 struct Minting {
     provider: String,
     app: AppId,
-    record: RecordSegment,
+    record: ResourceSegment,
     resource: Option<ResourceAddress>,
     view: Option<String>,
     mode: Mode,
@@ -329,7 +329,7 @@ fn finish(url: &str, copied: Option<bool>) -> Minted {
 fn minting(request: &ShareRequest, publisher: &Publisher<'_>) -> Result<Minting, String> {
     let app = AppId::parse(publisher.app).map_err(|error| error.to_string())?;
     let record =
-        RecordSegment::new(publisher.record.unwrap_or("")).map_err(|error| error.to_string())?;
+        ResourceSegment::new(publisher.record.unwrap_or("")).map_err(|error| error.to_string())?;
     let provider = format!("record:{}:{}", app.as_str(), record.provider_part());
     let args = &request.args;
     let text = |name: &str| args.get(name).and_then(serde_json::Value::as_str);
@@ -348,7 +348,7 @@ fn minting(request: &ShareRequest, publisher: &Publisher<'_>) -> Result<Minting,
             .or_else(|| request.views.first()),
     };
     // Without a view the link names the record alone, which opens in its
-    // app: only a record's root offers the link so ([`tilo_resource::share::offer_record`]).
+    // app: only a record's root offers the link so ([`tilo_resource::share::offer_resource`]).
     let Some(view) = view else {
         let mode = match text("mode").unwrap_or("app") {
             "app" => Mode::App,

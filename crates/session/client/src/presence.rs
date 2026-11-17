@@ -11,7 +11,7 @@ use neighbour_wire::NeighbourMsg;
 use tilo_desktop_model::WorkspaceId;
 use tilo_live::presence;
 use tilo_live::presence::{Board, Device};
-use tilo_relay_protocol::live::{LiveAnchor, LiveRecord};
+use tilo_relay_protocol::live::{LiveAnchor, LiveResource};
 
 /// What this session says of itself here.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -278,7 +278,7 @@ pub fn view(
     label: &str,
     colour: [u8; 3],
     activity: Option<String>,
-    focus: Option<&LiveRecord>,
+    focus: Option<&LiveResource>,
     selection: Option<&(LiveAnchor, LiveAnchor)>,
 ) -> ShellPresence {
     ShellPresence {
@@ -302,7 +302,7 @@ pub fn view(
 }
 
 /// The window showing `focus`, by the record's short digest.
-fn window(focus: &LiveRecord) -> ShellWindow {
+fn window(focus: &LiveResource) -> ShellWindow {
     ShellWindow {
         app: focus.app.clone(),
         document: focus.short_digest(),

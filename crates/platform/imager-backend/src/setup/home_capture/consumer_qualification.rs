@@ -111,8 +111,8 @@ fn open_marker(root: &File, name: &str, expected: &[u8]) -> io::Result<()> {
     }
     exact_marker(&file, expected)
 }
-/// Called only on the real resolver/participant's independently validated full
-/// readonly source root. A marker proves disposable ownership, never a grant.
+/// Called only on a real volume's independently validated full readonly
+/// source root. A marker proves disposable ownership, never a grant.
 pub fn check_source_root_marker(root: &File) -> io::Result<()> {
     open_marker(root, ".tilo-original-source-qualification", SOURCE_MARKER)
 }

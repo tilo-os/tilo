@@ -3,7 +3,7 @@
 //! Every refusal a host sends ([`crate::transport::Envelope::CommitRefused`],
 //! [`crate::transport::Envelope::NotAuthorised`],
 //! [`crate::transport::Envelope::RemoteActionUndeliverable`],
-//! [`crate::transport::Envelope::RecordContentRefused`]) carries one
+//! [`crate::transport::Envelope::DocumentContentRefused`]) carries one
 //! [`Refusal`]. A device decides what to do by its variant: wait for the
 //! workspace to be ready, wait the time it says, ask the person, or give up.
 //! A person reads [`Refusal::plain`]; a log reads its [`Display`](std::fmt::Display).

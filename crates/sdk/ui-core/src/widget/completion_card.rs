@@ -91,7 +91,7 @@ pub(crate) fn paint(
     );
     if let Some(person) = &candidate.person {
         let colour = tokens.colors.presence.hue(person.hue);
-        crate::widget::AvatarFace::new(&candidate.name, &person.identity)
+        crate::widget::AvatarFace::new(&candidate.name, person.identity.id())
             .presence(colour)
             .paint(&mut PaintCtx::new(scene, transform, text, theme), mark_rect);
         x += mark + f64::from(tokens.spacing.s3);

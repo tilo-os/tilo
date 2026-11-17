@@ -42,7 +42,7 @@ use ui::widget::{
 use ui::{
     ActivityDigest, ActivityTimeline, AgentSession, AuthorDirectory, BandUndoRequest, ChangeRun,
     DocumentId, GroupNameRequest, HistoryComparison, HistoryFacetIndex, HistorySelectionDetail,
-    HistorySource, NamedRange, NarrativeRequest, format_relative_time, participant_display_label,
+    HistorySource, NamedRange, NarrativeRequest, format_relative_time, member_display_label,
 };
 
 use super::index::{
@@ -76,7 +76,7 @@ fn seed_roster_colours(authors: &mut AuthorDirectory, tree: &tilo_desktop_model:
         authors.register_member(
             &member.id,
             ui::history_source::author_coloured(
-                participant_display_label(&member.name),
+                member_display_label(&member.name),
                 ui::history_source::short_id(member.id.id()),
                 rgb,
             ),
@@ -99,7 +99,7 @@ pub enum ActivityView {
     CatchUp,
     /// Full granular history with grouping, filters, rename and revert.
     Explore,
-    /// Causal workspace checkpoints played as layout + participant changes.
+    /// Causal workspace checkpoints played as layout + member changes.
     Replay,
 }
 
@@ -183,7 +183,7 @@ fn author_is_local(author: &ui::widget::history::HistoryAuthor, local: &str) -> 
     author.name.eq_ignore_ascii_case(local)
         || author
             .name
-            .eq_ignore_ascii_case(&participant_display_label(local))
+            .eq_ignore_ascii_case(&member_display_label(local))
         || author.identity_short == ui::history_source::short_id(local)
 }
 
@@ -1352,12 +1352,12 @@ impl WorkspaceActivityPane {
         let Some((range, left_end, right_start)) = self.split_candidate() else {
             return false;
         };
-        let record_id = range.id.clone();
+        let document_id = range.id.clone();
         let label = range.label.clone();
         let right_label = format!("{label} — continued");
         if ui::history_groups::split_named_range(
             tree.document_mut(),
-            &record_id,
+            &document_id,
             &left_end,
             &right_start,
             &label,
@@ -3138,7 +3138,7 @@ fn describe_scope(scope: &Scope) -> String {
         Scope::FsPath(p) => p.clone(),
         // Record authority intentionally has no path: it follows the file across rename/move and
         // the stable id is not useful activity copy.
-        Scope::FsRecord(_) => t("activity-capability-one-shared-file"),
+        Scope::FsResource(_) => t("activity-capability-one-shared-file"),
         Scope::Device(d) => d.clone(),
         Scope::NetHost(h) => t_args("activity-capability-network", &[("host", h.into())]),
     }

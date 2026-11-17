@@ -1681,7 +1681,7 @@ async fn denied_paths_are_invisible_and_read_grants_are_read_only() {
         let fixture = document_fixture(Some((acl, ALICE)), "quickfs_doc_ro").await;
         let doc = fixture.dir.path().join("shared/notes.md");
 
-        let before = std::fs::read(&doc).expect("a read participant reads the shared document");
+        let before = std::fs::read(&doc).expect("a read-only member reads the shared document");
         assert!(
             String::from_utf8_lossy(&before).contains("Shared paragraph"),
             "the read must return the real document, not an empty stand-in: {:?}",
@@ -1734,7 +1734,7 @@ async fn denied_paths_are_invisible_and_read_grants_are_read_only() {
             assert_eq!(
                 outcome.err().map(|e| e.raw_os_error().unwrap_or(0)),
                 Some(libc::EROFS),
-                "{what}: a read participant must not be able to originate a change"
+                "{what}: a read-only member must not be able to originate a change"
             );
         }
 
@@ -1771,7 +1771,7 @@ async fn denied_paths_are_invisible_and_read_grants_are_read_only() {
             fixture2.dir.path().join("shared/notes.md"),
             b"# Authored\n\nBy Bob\n",
         )
-        .expect("an authoring participant may write the shared document");
+        .expect("a writing member may write the shared document");
         assert_ne!(
             fixture2.namespace.lock().unwrap().heads(),
             heads2,
@@ -2000,7 +2000,7 @@ async fn a_merged_change_reaches_inotify_on_its_directory() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_availability_change_reaches_inotify_on_its_directory() {
-    use fs::availability::{RecordAvailability, RecordKind, TransferError};
+    use fs::availability::{DocumentAvailability, EntryKind, TransferError};
 
     require_fuse!();
     let mount = signalled_mount().await;
@@ -2027,7 +2027,7 @@ async fn an_availability_change_reaches_inotify_on_its_directory() {
     assert!(!availability().unavailable());
     let (watcher, events) = watch_folder(&docs);
 
-    let mut unavailable = RecordAvailability::new(record, RecordKind::File);
+    let mut unavailable = DocumentAvailability::new(record, EntryKind::File);
     unavailable.transfer.last_error = Some(TransferError {
         message: fs_protocol::NO_PEER_DELIVERED_ERROR.into(),
         occurred_at_ms: 12,

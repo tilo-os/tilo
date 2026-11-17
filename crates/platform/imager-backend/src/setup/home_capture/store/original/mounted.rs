@@ -4,16 +4,16 @@ use super::*;
 #[cfg(all(test, feature = "native-capture-qualification"))]
 use crate::setup::GrantedHomeRoots;
 mod epoch;
-mod participants;
+mod volumes;
 use crate::setup::{
     RootKind,
     migration::check_cancel,
     migration_handoff::{EntryBinding, EntryKind},
 };
 pub(in crate::setup::home_capture) use epoch::MountedReadEpoch;
-use participants::{ParticipantReads, ParticipantSet, ParticipantWitness};
 use sha2::Digest;
 use std::os::unix::fs::MetadataExt;
+use volumes::{VolumeReads, VolumeStores, VolumeWitness};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -21,7 +21,7 @@ pub(super) struct MountedEntry {
     placement: NativePath,
     pub(super) binding: EntryBinding,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    participant: Option<ParticipantWitness>,
+    volume: Option<VolumeWitness>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -77,8 +77,10 @@ impl MountedRecord {
             crate::setup::migration_handoff::relative(&placement)?;
             entry.binding.validate()?;
             if entry.binding.volume() == &primary.home.home.volume {
-                if entry.participant.is_some() {
-                    return Err(failure("Primary-volume entry cannot borrow a participant"));
+                if entry.volume.is_some() {
+                    return Err(failure(
+                        "Primary-volume entry cannot borrow a foreign volume",
+                    ));
                 }
             } else {
                 if self.schema != 2 {
@@ -87,9 +89,9 @@ impl MountedRecord {
                     ));
                 }
                 entry
-                    .participant
+                    .volume
                     .as_ref()
-                    .ok_or_else(|| failure("Foreign root protected participant missing"))?
+                    .ok_or_else(|| failure("Foreign root's protected volume missing"))?
                     .validate(primary, &entry.binding)?;
             }
             if placements
@@ -208,11 +210,11 @@ impl Store {
         let roots =
             crate::setup::migration_review::TransferredHomeRoots::admit(report, inputs, cancel)?;
         roots.with_roots(cancel, |granted| {
-            let (witness, participants, aggregate_file, aggregate_bytes) =
+            let (witness, volumes, aggregate_file, aggregate_bytes) =
                 self.register_mounted_entries(home, plan, granted, peer, cancel)?;
             Ok(MountedRegistration {
                 primary: self.clone(),
-                participants,
+                volumes,
                 aggregate_file,
                 aggregate_bytes,
                 witness,
@@ -227,7 +229,7 @@ impl Store {
         granted: &[crate::setup::GrantedRoot<'_>],
         peer: &HostChannel,
         cancel: &std::sync::atomic::AtomicBool,
-    ) -> io::Result<(MountedWitness, ParticipantSet, File, Vec<u8>)> {
+    ) -> io::Result<(MountedWitness, VolumeStores, File, Vec<u8>)> {
         if rustix::process::geteuid().as_raw() != 0 || self.operation != plan.operation_id {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
@@ -279,7 +281,7 @@ impl Store {
         }
         // Stage every actual foreign filesystem before primary publication.
         // Leases/held grants remain alive until final primary ACK below.
-        let participants = ParticipantSet::stage(self, home, &primary, granted, peer, cancel)?;
+        let volumes = VolumeStores::stage(self, home, &primary, granted, peer, cancel)?;
         let mut entries = Vec::new();
         for root in &granted[1..] {
             crate::setup::migration::check_cancel(cancel)?;
@@ -293,7 +295,7 @@ impl Store {
                 root.file(),
                 kind,
             )?;
-            let participant = participants.witness_for(&binding);
+            let volume = volumes.witness_for(&binding);
             if binding.volume() == &primary.home.home.volume {
                 if NativePath::encode(&crate::setup::migration_handoff::mounted_record_namespace(
                     &binding,
@@ -303,19 +305,19 @@ impl Store {
                 {
                     return Err(failure("Mounted source protected namespace differs"));
                 }
-            } else if participant.is_none() {
+            } else if volume.is_none() {
                 return Err(failure(
-                    "Foreign root independently protected participant missing",
+                    "Foreign root's independently protected volume missing",
                 ));
             }
             entries.push(MountedEntry {
                 placement: NativePath::encode(root.placement()),
                 binding,
-                participant,
+                volume,
             });
         }
         let record = MountedRecord {
-            schema: if entries.iter().any(|entry| entry.participant.is_some()) {
+            schema: if entries.iter().any(|entry| entry.volume.is_some()) {
                 2
             } else {
                 1
@@ -334,7 +336,7 @@ impl Store {
             return Err(failure("Mounted registration peer changed"));
         }
         let name = format!("{}.mounted-roots.json", self.operation);
-        participants.verify(self, &peer.original_peer(), cancel)?;
+        volumes.verify(self, &peer.original_peer(), cancel)?;
         crate::setup::migration::check_cancel(cancel)?;
         match directory.open_read(OsStr::new(&name), Privacy::OwnerOnly) {
             Ok(file) => {
@@ -370,8 +372,8 @@ impl Store {
             ));
         }
         self.records.validate_destination()?;
-        participants.verify(self, &peer.original_peer(), cancel)?;
-        Ok((record.witness()?, participants, named, bytes))
+        volumes.verify(self, &peer.original_peer(), cancel)?;
+        Ok((record.witness()?, volumes, named, bytes))
     }
 }
 impl SourceReadContext {
@@ -442,14 +444,14 @@ impl SourceReadContext {
         record.validate(&self.intent)?;
         // Existing bounded metadata-only verifier has no cancellation input.
         // Cancellable source callbacks supply their live flag separately.
-        let participants = ParticipantReads::review(&self.intent, &record.entries, None)?;
+        let volumes = VolumeReads::review(&self.intent, &record.entries, None)?;
         let renewed = self.source.open_original_mounted_record(&namespace)?;
         if stamp(&file.metadata()?) != stamp(&renewed.metadata()?)
             || read_private(&renewed)? != bytes
         {
             return Err(failure("Mounted source record changed during reopen"));
         }
-        participants.verify(&self.intent, None)?;
+        volumes.verify(&self.intent, None)?;
         self.revalidate()
     }
 }
@@ -487,7 +489,7 @@ fn same_entry(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
 /// from a witness: the actual operation and per-volume leases survive RPC ACK.
 pub(in crate::setup::home_capture) struct MountedRegistration {
     primary: Arc<Store>,
-    participants: ParticipantSet,
+    volumes: VolumeStores,
     aggregate_file: File,
     aggregate_bytes: Vec<u8>,
     witness: MountedWitness,
@@ -506,8 +508,7 @@ impl MountedRegistration {
         &self,
         cancel: &std::sync::atomic::AtomicBool,
     ) -> io::Result<()> {
-        self.participants
-            .verify(&self.primary, &self.peer, cancel)?;
+        self.volumes.verify(&self.primary, &self.peer, cancel)?;
         self.primary.records.validate_destination()?;
         let directory = storage(&self.primary.records)?;
         let name = format!("{}.mounted-roots.json", self.primary.operation);
@@ -519,6 +520,6 @@ impl MountedRegistration {
             return Err(failure("Mounted aggregate changed before acknowledgement"));
         }
         self.primary.records.validate_destination()?;
-        self.participants.verify(&self.primary, &self.peer, cancel)
+        self.volumes.verify(&self.primary, &self.peer, cancel)
     }
 }

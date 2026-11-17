@@ -51,7 +51,7 @@ pub struct WidgetPresence {
     composing: HashSet<(PresenceKey, MemberId)>,
     views: HashMap<MemberId, crate::view::ViewSubset>,
     own: HashSet<MemberId>,
-    self_participant: Option<(MemberId, String)>,
+    self_member: Option<(MemberId, String)>,
     surface: Option<String>,
     /// Semantic activity is on screen: what widgets paint from it changes
     /// with the clock, not with this state.
@@ -98,7 +98,7 @@ impl PresenceCtx {
             composing: self.composing.keys().cloned().collect(),
             views: self.views.clone(),
             own: self.own.clone(),
-            self_participant: self.self_participant.clone(),
+            self_member: self.self_member.clone(),
             surface: self.surface.clone(),
             animating: self.has_visible_interactions(now),
             typing_steps: self.typing_steps(now),

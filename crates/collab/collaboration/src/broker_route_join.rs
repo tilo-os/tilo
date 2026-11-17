@@ -4,10 +4,10 @@
 
 use super::{
     BridgeState, DocumentRoute, InboundBridge, KeySignal, RouteLabel, RouteSpec, SdkCommand,
-    SdkJoinContext, SdkRoute, audio_output, broker_participant_kind, change_waits,
-    committed_document, follow_channel_keys, native_media, spawn_action_catalogue_stream,
-    spawn_content_stream, spawn_context_stream, spawn_invocation_stream, spawn_op_stream,
-    spawn_presence_stream, spawn_realtime_stream, tokio_mpsc,
+    SdkJoinContext, SdkRoute, audio_output, broker_member_kind, change_waits, committed_document,
+    follow_channel_keys, native_media, spawn_action_catalogue_stream, spawn_content_stream,
+    spawn_context_stream, spawn_invocation_stream, spawn_op_stream, spawn_presence_stream,
+    spawn_realtime_stream, tokio_mpsc,
 };
 use crate::time::Duration;
 use tilo_lock::MutexRecover as _;
@@ -29,8 +29,8 @@ pub(super) struct JoinInputs {
     pub(super) client: runtime_collab::CollabClient,
     pub(super) presentation: Vec<u8>,
     pub(super) person: Option<(String, Vec<u8>)>,
-    pub(super) participant_handle: Option<String>,
-    pub(super) participant_kind: &'static str,
+    pub(super) member_handle: Option<String>,
+    pub(super) member_kind: &'static str,
     pub(super) inbound_tx: InboundBridge,
     pub(super) media_routes: native_media::Routes,
 }
@@ -45,7 +45,7 @@ pub(super) type JoinedRoute = (RouteSpec, Result<SdkRoute, String>);
 pub(super) fn start_route_join(
     inputs: JoinInputs,
     spec: RouteSpec,
-    record_kind: String,
+    resource_type: String,
     joined: tokio_mpsc::UnboundedSender<JoinedRoute>,
 ) {
     tokio::task::spawn_local(async move {
@@ -55,22 +55,24 @@ pub(super) fn start_route_join(
             client: &inputs.client,
             presentation: &inputs.presentation,
             person: inputs.person.as_ref(),
-            participant_handle: inputs.participant_handle.as_deref(),
-            participant_kind: inputs.participant_kind,
+            member_handle: inputs.member_handle.as_deref(),
+            member_kind: inputs.member_kind,
             inbound_tx: &inputs.inbound_tx,
             media_routes: &inputs.media_routes,
         };
-        let result =
-            match tokio::time::timeout(ROUTE_JOIN_WAIT, join_route(&context, &spec, &record_kind))
-                .await
-            {
-                Ok(result) => result,
-                Err(_) => Err(format!(
-                    "{}: the record did not load within {} s",
-                    crate::ROUTE_JOIN_FAILED,
-                    ROUTE_JOIN_WAIT.as_secs()
-                )),
-            };
+        let result = match tokio::time::timeout(
+            ROUTE_JOIN_WAIT,
+            join_route(&context, &spec, &resource_type),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(format!(
+                "{}: the record did not load within {} s",
+                crate::ROUTE_JOIN_FAILED,
+                ROUTE_JOIN_WAIT.as_secs()
+            )),
+        };
         let _ = joined.send((spec, result));
     });
 }
@@ -110,7 +112,7 @@ pub(super) fn refuse_unjoined(command: SdkCommand, reason: &str, state: &BridgeS
 pub(super) async fn join_route(
     context: &SdkJoinContext<'_>,
     spec: &RouteSpec,
-    record_kind: &str,
+    resource_type: &str,
 ) -> Result<SdkRoute, String> {
     let SdkJoinContext {
         asks_channel_keys,
@@ -118,8 +120,8 @@ pub(super) async fn join_route(
         client,
         presentation,
         person,
-        participant_handle,
-        participant_kind,
+        member_handle,
+        member_kind,
         inbound_tx,
         media_routes,
     } = *context;
@@ -140,9 +142,9 @@ pub(super) async fn join_route(
         .join_channel_as_kind(
             &channel_id,
             identity_bytes,
-            participant_handle.unwrap_or(""),
-            broker_participant_kind(participant_kind),
-            record_kind,
+            member_handle.unwrap_or(""),
+            broker_member_kind(member_kind),
+            resource_type,
         )
         .await
     {
@@ -162,7 +164,7 @@ pub(super) async fn join_route(
     // acquiring every other app's inventory can prevent an unrelated app from
     // starting. This selects a consumer, not authority: broker admission and
     // per-action permissions are unchanged.
-    if participant_kind == "agent" {
+    if member_kind == "agent" {
         // Queue the first decision baseline before document traffic so an
         // agent cannot start deciding against stale local fallback data.
         spawn_action_catalogue_stream(&channel, inbound_tx).await?;
@@ -202,9 +204,9 @@ pub(super) async fn join_route(
         committed_document::NativeReadJoin {
             client: client.clone(),
             presentation: identity_bytes.to_vec(),
-            participant_handle: participant_handle.unwrap_or("").into(),
-            participant_kind: participant_kind.into(),
-            record_kind: record_kind.into(),
+            member_handle: member_handle.unwrap_or("").into(),
+            member_kind: member_kind.into(),
+            resource_type: resource_type.into(),
         },
     )
     .await?;
@@ -340,7 +342,7 @@ pub(super) async fn join_route(
             .ok();
     media_routes.insert(channel_id.clone(), channel.clone());
     if spec.record.is_none()
-        && participant_kind == "person"
+        && member_kind == "person"
         && crate::host::environment()
             .identity
             .collab_service_configured

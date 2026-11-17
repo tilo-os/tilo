@@ -262,7 +262,7 @@ pub trait CollabTransport: Send {
     /// named it. A change that arrives before the route's join resolved
     /// re-joins naming this kind, so a host creating the record knows what
     /// it holds.
-    fn joined_record_kind(&self, channel: &str) -> Option<collab_types::document::ResourceType> {
+    fn joined_resource_type(&self, channel: &str) -> Option<collab_types::document::ResourceType> {
         let _ = channel;
         None
     }
@@ -347,15 +347,15 @@ pub trait CollabTransport: Send {
         false
     }
 
-    /// Join `route`, whose record holds `record_kind`, through the existing
+    /// Join `route`, whose record holds `resource_type`, through the existing
     /// worker when committed custody needs it, returning the original
     /// committed history once it is available.
     fn prepare_committed_document(
         &mut self,
         route: RouteSpec,
-        record_kind: &str,
+        resource_type: &str,
     ) -> Option<super::CommittedDocument> {
-        let _ = (route, record_kind);
+        let _ = (route, resource_type);
         None
     }
 }

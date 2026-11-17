@@ -571,7 +571,7 @@ pub struct FilesState {
     widths_at_press: Option<std::collections::BTreeMap<String, u32>>,
     thumbs: Option<Arc<ThumbnailService>>,
     recent: crate::recent::RecentFiles,
-    recent_record: Option<ui::framework::PersonRecord<crate::recent::RecentRecord>>,
+    recent_record: Option<ui::framework::PersonResource<crate::recent::RecentRecord>>,
     open_request: crate::open_with::OpenRequest,
     document_candidates: crate::open_with::CandidateList,
     open_replies: crate::open_with::OpenReplies,
@@ -947,7 +947,7 @@ impl FilesState {
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::FileExplorer>,
         preferences: ui::framework::Setting<crate::resource::FilesPreferences>,
-        recent: Option<ui::framework::PersonRecord<crate::recent::RecentRecord>>,
+        recent: Option<ui::framework::PersonResource<crate::recent::RecentRecord>>,
         device: Option<String>,
         ops_drain: Option<ui::framework::Projection>,
     ) {
@@ -3874,10 +3874,12 @@ impl FilesState {
                             attribution.as_ref(),
                         )
                         .unwrap_or_else(|| {
-                            ui::widget::HistoryAuthor::new(
+                            ui::history_source::author_coloured(
                                 self.trusted_humans.display_name_or_fingerprint(&person),
-                                ui::history_source::stable_hue(&identity),
                                 identity.clone(),
+                                ui::presence::member_color(&ui::permissions::MemberId::person(
+                                    hex::encode(person.0),
+                                )),
                             )
                         });
                     let action = t(crate::model::provenance_key(&version.provenance));

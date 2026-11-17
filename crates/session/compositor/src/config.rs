@@ -65,6 +65,15 @@ pub struct DisplayConfig {
     /// connected at all, names no primary and the first display stands in, so the choice waits for
     /// the monitor to come back instead of being lost.
     pub primary: Option<String>,
+    /// This run continues a login whose desktop the wrapper is restarting in place: the displays
+    /// keep what they show until this run's first frame replaces it, the mode each connector
+    /// already runs is adopted rather than set again, and none of the hardware is reset on the way
+    /// in.
+    pub following_restart: bool,
+    /// The login's handover descriptor, when the wrapper opened one: this run writes a byte to it
+    /// once every display shows a frame of its own, which lets the run before it let go of the
+    /// picture it kept. `None` when no wrapper started this desktop.
+    pub restart_handover: Option<std::os::fd::RawFd>,
 }
 
 /// An output driven in HDR (a PQ BT.2020 signal): where SDR white sits and what the display reports

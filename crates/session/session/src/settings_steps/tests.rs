@@ -9,7 +9,7 @@ use serde_json::{Map, Value, json};
 use tilo_actions::ActionAddress;
 use tilo_actions::remote::{
     ActionHostError, Caller, CatalogueQuery, Confirmation, InvokeArgument, InvokeRequest,
-    PendingPoll, RemoteActionTarget, settings_records,
+    PendingPoll, RemoteActionTarget, settings_resources,
 };
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_identity_host::provisioning::IdentityStorage;
@@ -164,7 +164,7 @@ fn field_edit(section: &str, field: &str, value: &Value, confirmed: bool) -> Inv
         on_behalf_of: None,
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {
-            provider: settings_records::PROVIDER.to_owned(),
+            provider: settings_resources::PROVIDER.to_owned(),
             address: ActionAddress::new(section, "field-edit"),
         },
         argument: InvokeArgument::Json(Map::from_iter([("edit".to_owned(), edit)])),
@@ -207,7 +207,7 @@ fn settings_controls_change_the_settings_the_session_keeps() {
         broker.action_query(
             &person,
             &CatalogueQuery {
-                provider: Some(settings_records::PROVIDER.to_owned()),
+                provider: Some(settings_resources::PROVIDER.to_owned()),
                 max_results: 1024,
                 ..CatalogueQuery::default()
             },

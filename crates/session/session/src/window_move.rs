@@ -20,8 +20,8 @@ use tilo_action_broker::collab_broker::SessionFollowDispatcher;
 use tilo_app_launch::Launch;
 use tilo_compositor::Compositor;
 use tilo_desktop_model::{Layout, TabId, TileContent, Workspace, WorkspaceId};
-use ui::record::DocumentId;
-use ui::record::transfer::{Origin, Retirement, TransferError};
+use ui::resource::DocumentId;
+use ui::resource::transfer::{Origin, Retirement, TransferError};
 
 use crate::Shared;
 use crate::apps::launch_of;
@@ -1121,8 +1121,8 @@ mod tests {
     use tilo_desktop_model::{Strip, StripId};
     use tilo_desktop_policy::Window;
     use tilo_desktop_surface::surface::window_menu::MOVE_TO_WORKSPACE;
-    use ui::record::transfer::retirement;
-    use ui::record::{DocumentCheckout, RecordOwners, ResourceType};
+    use ui::resource::transfer::retirement;
+    use ui::resource::{DocumentCheckout, ResourceOwners, ResourceType};
 
     use crate::apps::Apps;
     use crate::{AppActions, Options, Session};
@@ -1292,12 +1292,12 @@ mod tests {
         fn showing(&self, body: &str) -> DocumentCheckout {
             let root = Self::profile(&self.from);
             let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new(NOTE));
-            let mut owners = RecordOwners::new(root);
+            let mut owners = ResourceOwners::new(root);
             let records = owners
                 .open(PROBE, &self.from)
                 .expect("the app's records of its workspace");
             records
-                .create_record(&checkout)
+                .create_resource(&checkout)
                 .expect("the record the window shows");
             records
                 .with(&checkout.id, |doc| {
@@ -1400,11 +1400,11 @@ mod tests {
     /// The app writes `body` into the record `id` of `workspace` : what it does while a window
     /// moves.
     fn edit_at(root: &Path, workspace: &str, id: &DocumentId, body: &str) {
-        let mut owners = RecordOwners::new(root.to_path_buf());
+        let mut owners = ResourceOwners::new(root.to_path_buf());
         let records = owners
             .open(PROBE, workspace)
             .expect("the app's records of its workspace");
-        records.open_record(&DocumentCheckout::new(id.clone(), ResourceType::new(NOTE)));
+        records.open_resource(&DocumentCheckout::new(id.clone(), ResourceType::new(NOTE)));
         records
             .with(id, |doc| {
                 doc.put(automerge::ROOT, "body", body)
@@ -1628,7 +1628,7 @@ mod tests {
             "what the app wrote before it closed came along"
         );
         assert_eq!(
-            ui::record::transfer::provenance(&kept),
+            ui::resource::transfer::provenance(&kept),
             vec![showing.id.clone()],
             "and the record it arrived from is its provenance"
         );

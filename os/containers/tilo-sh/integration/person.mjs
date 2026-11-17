@@ -1,6 +1,12 @@
 // A person in their own headless Chromium on the local tilo.sh, as a
 // visitor arrives there: a fresh profile opens the site and lands in the
-// Lounge as a new person. Then, as asked:
+// Lounge as a new person. A site that lets people in by invitation only (as
+// production's does) is entered as a newcomer enters it:
+//
+//   --invite LINK   they arrive through this invitation (stack.sh invite)
+//                   rather than the bare site, and press Join on its card.
+//
+// Then, as asked:
 //
 //   --follow LINK   they follow an invitation link and press Join on its card;
 //   --key NAME      they make an API key: `tilo keys create NAME` runs as a
@@ -57,7 +63,7 @@
 //                   is in the workspace it opens; with --answer it answers
 //                   there, with its own device key, as a device of theirs does.
 //
-// usage: node person.mjs SITE RELAY OUT_DIR [--follow LINK] [--key NAME --tilo BIN --api URL [--no-pages]] [--root FILE] [--passkey] [--answer FIFO] [--pair-link LINK]
+// usage: node person.mjs SITE RELAY OUT_DIR [--invite LINK] [--follow LINK] [--key NAME --tilo BIN --api URL [--no-pages]] [--root FILE] [--passkey] [--answer FIFO] [--pair-link LINK]
 //
 // Prints one JSON line: {arrivedMs, joinedMs, workspace, followed, key, entered}.
 // `arrivedMs` is a fresh visitor's entry: from navigating to the site to the
@@ -82,6 +88,7 @@ if (!site || !relay || !out) {
   console.error('usage: node person.mjs SITE RELAY OUT_DIR [--follow LINK] [--key NAME --tilo BIN --api URL [--no-pages]] [--root FILE]');
   process.exit(2);
 }
+const invite = option('--invite');
 const follow = option('--follow');
 const keyName = option('--key');
 const rootFile = option('--root');
@@ -173,8 +180,16 @@ if (pairLink) {
   report.workspace = membership.workspace;
   console.error(`ok: the browser paired to ${membership.userPublicKey} and was in ${membership.workspace} after ${report.pairedMs} ms`);
 } else {
-  await tab.navigate(site);
-  await until(`['done', 'stopped'].includes(document.documentElement.dataset.arrival)`, 'the page arriving');
+  await tab.navigate(invite ?? site);
+  // Through an invitation, its card names the workspace and offers Join:
+  // pressed as the newcomer presses it, and the page goes on arriving.
+  await until(`(() => {
+    if (['done', 'stopped'].includes(document.documentElement.dataset.arrival)) return true;
+    const join = ${JSON.stringify(Boolean(invite))}
+      && [...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Join');
+    if (join && !join.disabled && !join.dataset.pressed) { join.dataset.pressed = '1'; join.click(); }
+    return false;
+  })()`, invite ? 'the page arriving through the invitation' : 'the page arriving');
   if (await tab.evaluate('document.documentElement.dataset.arrival') !== 'done') {
     await finish(1, `the page stopped arriving: ${await text()}`);
   }
@@ -239,16 +254,19 @@ if (passkey) {
   // remembering them.
   await tab.send('Storage.clearDataForOrigin', {origin: new URL(site).origin, storageTypes: 'all'});
   await tab.navigate(site);
-  await until(`document.documentElement.dataset.arrival === 'done'`, 'the page arriving again');
+  // The site is invite-only, so a visitor it does not know meets the
+  // invite-only page; someone who has been here signs in from it with their
+  // passkey, as a person would.
+  await until(`!!document.querySelector('#arrival-sign-in-button')?.offsetParent`, 'the invite-only page offering a passkey');
+  const before = await tab.evaluate(`(async () => (${identityModule}).currentIdentity()?.userPublicKey ?? null)()`);
+  await tab.evaluate(`document.querySelector('#arrival-sign-in-button').click(); 1`);
+  await until(`document.documentElement.dataset.arrival === 'done' || !!document.querySelector('#arrival-sign-in-note')?.textContent`, 'the page arriving after the passkey');
   const back = await tab.evaluate(`(async () => {
-    const id = ${identityModule};
-    const before = id.currentIdentity()?.userPublicKey ?? null;
-    try {
-      const person = await id.signInWithPasskey({fetchEnvelope: root => id.fetchEnvelope(root, [${JSON.stringify(new URL(relay).origin)}])});
-      return JSON.stringify({before, person: person.userPublicKey});
-    } catch (error) { return JSON.stringify({error: String(error?.message ?? error), code: error?.code ?? error?.name}); }
+    const note = document.querySelector('#arrival-sign-in-note')?.textContent;
+    if (note && document.documentElement.dataset.arrival !== 'done') return JSON.stringify({before: ${JSON.stringify(before)}, error: note});
+    return JSON.stringify({before: ${JSON.stringify(before)}, person: (${identityModule}).currentIdentity()?.userPublicKey ?? null});
   })()`).then(JSON.parse);
-  if (back.error) await finish(1, `signing in with the passkey failed: ${back.error} (${back.code})`);
+  if (back.error) await finish(1, `signing in with the passkey failed: ${back.error}`);
   if (back.before === kept.person) await finish(1, 'the browser still held the person after it forgot the site');
   if (back.person !== kept.person) await finish(1, `the passkey signed in ${back.person}, not ${kept.person}`);
   report.passkey = {person: kept.person, rpIds: kept.rpIds};

@@ -210,7 +210,7 @@ mod cases {
         );
         assert!(
             !commands.contains(&"New task".to_owned()),
-            "the window's own subject gives its commands to the choice: {commands:?}"
+            "the window's own target gives its commands to the choice: {commands:?}"
         );
         // Run it: one command over the six.
         let today = button(tree, "Today");

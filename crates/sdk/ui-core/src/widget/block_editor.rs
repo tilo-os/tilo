@@ -1486,7 +1486,7 @@ impl BlockEditor {
         self
     }
 
-    /// Paint mentions in the colours `paint` gives each participant.
+    /// Paint mentions in the colours `paint` gives each member.
     pub fn set_mention_paint(&mut self, paint: Option<crate::widget::marks::MentionPaint>) {
         self.set_owner_mention_paint(paint);
     }
@@ -1507,7 +1507,7 @@ impl BlockEditor {
         self.insert_marked(text, None, "")
     }
 
-    /// Put a mention of the participant `id`, shown as `label` (`@Ada`), at
+    /// Put a mention of the member `id`, shown as `label` (`@Ada`), at
     /// the caret of the focused block, followed by a space. The label is one
     /// marked run, so it reads back as a reference, not as text that happens
     /// to start with `@`.

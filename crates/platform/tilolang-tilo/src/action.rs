@@ -109,7 +109,7 @@ pub struct Authorship {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suggested_by: Option<Actor>,
     /// How many items the change was made over ([`ChangeNote::count`]): one for an action
-    /// applied to its subject, as many as the items for one applied to many at once
+    /// applied to its target, as many as the items for one applied to many at once
     /// ([`tilolang_runtime::store::ChangeNote::count`]).
     #[serde(default = "one", skip_serializing_if = "crate::action::is_one")]
     pub count: u32,
@@ -135,12 +135,12 @@ pub fn invocation_id(run: &str) -> tilo_actions::InvocationId {
     ))
 }
 
-/// The count of a change made over its one subject.
+/// The count of a change made over its one target.
 fn one() -> u32 {
     1
 }
 
-/// Whether the change was made over its one subject.
+/// Whether the change was made over its one target.
 #[allow(
     clippy::trivially_copy_pass_by_ref,
     reason = "`skip_serializing_if` calls it with the field by reference"
@@ -1381,8 +1381,8 @@ pub fn edit_seed(index: usize) -> [u8; 8] {
 }
 
 /// The resource an action writes first, as the record read before the action wrote it: its
-/// published id, its type, and its title ([`DynAction::subject`]).
-pub type Subject = (String, &'static crate::schema::TypeSchema, Option<String>);
+/// published id, its type, and its title ([`DynAction::target`]).
+pub type Target = (String, &'static crate::schema::TypeSchema, Option<String>);
 
 impl Action for DynAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
@@ -1402,15 +1402,15 @@ impl Action for DynAction {
     }
 
     fn describe(&self, doc: &Doc) -> Option<Described> {
-        Some(self.described_with(|edit| read_subject(&self.app, edit, doc)))
+        Some(self.described_with(|edit| read_target(&self.app, edit, doc)))
     }
 }
 
 impl DynAction {
-    /// What the action did, as history names it, with `read` reading the subject of an edit of a
-    /// resource the record held before the action ([`read_subject`]).
+    /// What the action did, as history names it, with `read` reading the target of an edit of a
+    /// resource the record held before the action ([`read_target`]).
     #[must_use]
-    pub fn described_with(&self, read: impl FnOnce(&DynEdit) -> Option<Subject>) -> Described {
+    pub fn described_with(&self, read: impl FnOnce(&DynEdit) -> Option<Target>) -> Described {
         let _package = self.package_schemas();
         let args = self
             .args
@@ -1427,7 +1427,7 @@ impl DynAction {
         // History names the resource as it reads, by its title and never by its id: the item
         // the action wrote (a note of the notebook), else the record; one without a title yet
         // by what its type says it is called then ("Created Notebook", "Pin: Untitled").
-        let Some((at, schema, title)) = self.subject(read) else {
+        let Some((at, schema, title)) = self.target(read) else {
             return described;
         };
         described.on(at, title.unwrap_or_else(|| schema.untitled()))
@@ -1436,13 +1436,13 @@ impl DynAction {
     /// The resource this action writes first: its published id (an item of a record by its
     /// path), its type, and its title, the first text among its own fields. A resource the
     /// action creates is read from the record it creates; any other `read` reads.
-    fn subject(&self, read: impl FnOnce(&DynEdit) -> Option<Subject>) -> Option<Subject> {
+    fn target(&self, read: impl FnOnce(&DynEdit) -> Option<Target>) -> Option<Target> {
         // What it describes is what it wrote of a resource, not the run entry it records first.
         let edit = self
             .edits
             .iter()
             .map(DynEdit::bare)
-            .find(|edit| subject_of(edit))?;
+            .find(|edit| target_of(edit))?;
         match edit {
             DynEdit::Create { id, record } => {
                 let schema = record
@@ -1476,7 +1476,7 @@ impl DynAction {
 /// Whether `edit` (bare) is what an action that writes it first is described by: anything but
 /// the run entry it records first.
 #[must_use]
-pub fn subject_of(edit: &DynEdit) -> bool {
+pub fn target_of(edit: &DynEdit) -> bool {
     !matches!(edit, DynEdit::RunChunk { .. })
 }
 
@@ -1484,7 +1484,7 @@ pub fn subject_of(edit: &DynEdit) -> bool {
 /// its published id, its type, and its title. `None` for an edit that makes its resource (the
 /// action's own edits say what it is) or names none.
 #[must_use]
-pub fn read_subject(app: &str, edit: &DynEdit, doc: &Doc) -> Option<Subject> {
+pub fn read_target(app: &str, edit: &DynEdit, doc: &Doc) -> Option<Target> {
     {
         let (id, path) = match edit {
             DynEdit::Edit { id, edit } => {

@@ -306,7 +306,7 @@ fn accessible_block_text_edits_and_grapheme_selection_use_the_canonical_history_
     close_driver(&mut live);
     drop(live);
     let f = f.reopen();
-    f.records.try_open_record(&checkout).unwrap();
+    f.records.try_open_resource(&checkout).unwrap();
     let reopened = f
         .records
         .read(&checkout.id, |doc| read::page_block_snapshots(doc, f.child))

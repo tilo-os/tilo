@@ -117,8 +117,7 @@ fn card(
             .with_role(TextRole::Caption)
             .dimmed(),
     ));
-    if let Some(assignee) = &issue.assignee {
-        let who = people.actor(&assignee.0);
+    if let Some(who) = assignee(people, issue) {
         facts = facts.push(Box::new(if who.agent() {
             Badge::text(who.name).style(ChipStyle::Tinted(Tone::Info))
         } else {
@@ -155,4 +154,16 @@ fn card(
             None => card,
         },
     )
+}
+
+/// Whom `issue` is assigned to, as the views show them: a member of the workspace, or someone
+/// outside it by their name.
+pub(crate) fn assignee(
+    people: &ui::framework::People,
+    issue: &Issue,
+) -> Option<ui::framework::Actor> {
+    match issue.assigned_member() {
+        Some(member) => Some(people.actor_of(&member)),
+        None => issue.assigned_outsider().map(ui::framework::Actor::outside),
+    }
 }

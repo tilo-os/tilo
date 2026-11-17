@@ -9,7 +9,7 @@ const MOD: &str = "mod";
 fn report(replica: &mut Replica<Moderation>, person: &str, reason: &str) -> Result<(), String> {
     replica
         .apply(Moderation::REPORT.with(moderation::Report {
-            person: person.into(),
+            person: MemberId::person(person),
             app: Some("so.tilo.chat".into()),
             record: Some("general".into()),
             item: Some("m1".into()),
@@ -22,7 +22,7 @@ fn report(replica: &mut Replica<Moderation>, person: &str, reason: &str) -> Resu
 fn decide(outcome: Outcome, until_ms: Option<i64>, reports: Vec<String>) -> moderation::Decide {
     moderation::Decide {
         id: "d1".into(),
-        person: MALLORY.into(),
+        person: MemberId::person(MALLORY),
         reports,
         ruling: Ruling {
             outcome,
@@ -39,7 +39,8 @@ fn a_person_reports_someone_and_it_stays_open_until_decided() {
     let mut ada = Replica::<Moderation>::new().as_author(ADA);
     report(&mut ada, MALLORY, "spam").unwrap();
     let state = ada.state().unwrap();
-    let open: Vec<_> = state.open_reports_on(MALLORY).collect();
+    let mallory = MemberId::person(MALLORY);
+    let open: Vec<_> = state.open_reports_on(&mallory).collect();
     assert_eq!(open.len(), 1);
     assert_eq!(open[0].reporter, MemberId::person(ADA));
     assert_eq!(open[0].item.as_deref(), Some("m1"));
@@ -65,7 +66,7 @@ fn reports_are_bounded() {
     );
     assert!(
         ui::serde_json::from_value::<moderation::Report>(
-            ui::serde_json::json!({"person": MALLORY, "reason": "   "})
+            ui::serde_json::json!({"person": {"person": MALLORY}, "reason": "   "})
         )
         .is_err(),
         "a reason is needed, where the arguments are read"
@@ -173,7 +174,7 @@ fn a_decision_kept_as_json_strings_migrates_to_lists() {
             "decisions": {
                 "d1": {
                     "id": "d1",
-                    "person": "bob",
+                    "person": r#"{"person":"bob"}"#,
                     "reports": r#"["r1","r2"]"#,
                     "outcome": "ban",
                     "reasoning": "spam in every channel",

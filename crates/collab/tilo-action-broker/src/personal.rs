@@ -283,7 +283,7 @@ async fn deliver(
             RemoteDocument {
                 app_id: frame.app,
                 cluster_id: cluster,
-                record_id: frame.record,
+                document_id: frame.record,
                 author,
                 replayed: false,
                 envelope: frame.envelope,

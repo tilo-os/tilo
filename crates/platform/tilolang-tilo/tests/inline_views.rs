@@ -263,7 +263,7 @@ tilo_test_env::scenario! {
                 app,
                 action,
                 author,
-                subject,
+                target,
                 ..
             },
         ] = sent.as_slice()
@@ -278,7 +278,7 @@ tilo_test_env::scenario! {
             .expect("the action `done`");
         assert_eq!(app, CALLEE_APP);
         assert_eq!(action, &done.id);
-        assert_eq!(subject.as_ref(), Some(&item()));
+        assert_eq!(target.as_ref(), Some(&item()));
         assert_eq!(
             author.as_ref(),
             Some(&workspace.callee),

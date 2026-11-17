@@ -555,7 +555,7 @@ tilo_test_env::scenario! {
             requested: true,
             paused: false,
         });
-        let bot = Member::of_software(collab_types::MemberId::bot(installation), "Standup", None);
+        let bot = Member::of_software(collab_types::MemberId::bot(installation), "Standup");
         workspace.member_here(bot.clone());
         workspace.place_presence(Present {
             device: device.clone(),
@@ -594,7 +594,7 @@ tilo_test_env::scenario! {
         let agent = Member::named(collab_types::MemberId::agent("scribe"), "Release Notes Agent");
         workspace.member_here(agent.clone());
         workspace.place_presence(Present {
-            device: agent.id.key(),
+            device: "agent:scribe".to_owned(),
             ..Present::of(agent.id)
         });
         let desktop = Layout {
@@ -611,10 +611,9 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase an_agents_face_wears_the_colour_its_admission_assigned;
-    // One agent is one colour. Its admission assigns it once, clear of the colour of the person it
-    // acts for ([`collab_types::Member::of_software`]); the bar, the member list and the history
-    // that names the person it works for all read that assignment, so a face is never drawn in a
+    phase an_agents_face_wears_the_colour_its_member_row_stores;
+    // One agent is one colour: the one its member row stores ([`collab_types::Member::of_software`]),
+    // which the bar, the member list and the history all read, so a face is never drawn in a
     // colour of its own working out.
     {
         use tilo_desktop_model::{Workspace, WorkspaceId};
@@ -644,17 +643,13 @@ tilo_test_env::scenario! {
 
         let rows = roster_rows(&desktop, "local");
         let scribe = rows.iter().find(|row| row.id == "scribe").unwrap();
-        let assigned = ui::presence::member_color(&ui::permissions::MemberId::agent("agent:scribe"), Some("owner"));
+        let assigned = ui::presence::member_color(&ui::permissions::MemberId::agent("agent:scribe"));
         assert_eq!(
             scribe.color,
             Color::from_rgb8(assigned.0, assigned.1, assigned.2),
             "the bar wears the agent's assignment, by its member key"
         );
-        let row = collab_types::Member::of_software(
-            collab_types::MemberId::agent("scribe"),
-            "Scribe",
-            Some(&collab_types::PersonId::expect("owner")),
-        );
+        let row = collab_types::Member::of_software(collab_types::MemberId::agent("scribe"), "Scribe");
         let (red, green, blue) = collab_types::presence::identity_rgb(row.colour);
         assert_eq!(
             scribe.color,

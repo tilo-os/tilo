@@ -22,7 +22,7 @@ use super::*;
 use crate::workspaces::fixtures::{
     admit_view_reader, governor_with, project_standings, test_host_taking_part,
 };
-use crate::workspaces::sealed_records::fixtures::SealingMember;
+use crate::workspaces::sealed_documents::fixtures::SealingMember;
 use tilo_relay_protocol::WorkspaceId;
 
 const APP: &str = "so.tilo.notes";
@@ -59,7 +59,7 @@ async fn lounge() -> Lounge {
     member.capabilities = DeviceCapabilities::member();
     sign_device_cert(&mut member, &SigningKey::from_bytes(&[1; 32])).unwrap();
     workspaces
-        .author_workspace_record(&created.workspace, &cert, (APP, RECORD), |doc| {
+        .author_workspace_document(&created.workspace, &cert, (APP, RECORD), |doc| {
             doc.put(automerge::ROOT, "title", "Welcome")
                 .map_err(|error| error.to_string())
         })
@@ -176,7 +176,7 @@ impl Lounge {
             peer: tilo_peer_state::peer_handle(author.as_bytes()),
             app_id: APP.into(),
             cluster_id: self.workspace.clone(),
-            record_id: RECORD.into(),
+            document_id: RECORD.into(),
             envelope: Box::new(envelope),
             own: None,
         }
@@ -186,7 +186,7 @@ impl Lounge {
     async fn readable(&self) -> Option<String> {
         let bytes = self
             .workspaces
-            .record_document(&self.workspace, APP, RECORD)
+            .resource_document(&self.workspace, APP, RECORD)
             .await
             .unwrap()?;
         automerge::AutoCommit::load(&bytes)
@@ -202,7 +202,7 @@ impl Lounge {
     async fn kept(&self) -> Vec<NeighbourMsg> {
         let channel = neighbour_wire::app_document_channel(APP, RECORD);
         self.relay
-            .workspace_records()
+            .workspace_documents()
             .retained_settled(self.workspace_id)
             .await
             .unwrap()

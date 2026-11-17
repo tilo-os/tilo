@@ -17,7 +17,7 @@ use tilo_actions::remote::{
     Caller, Completer, ConfirmationQuestion, ConfirmationReply, Pending, pending,
     workspace_invocations,
 };
-use tilo_agent_session::workspace_actions::{HostDevice, ViewReadPolicy, WorkspaceRecordsLink};
+use tilo_agent_session::workspace_actions::{HostDevice, ViewReadPolicy, WorkspaceDocumentsLink};
 use tilo_relay_protocol::WorkspaceId;
 use ui::permissions::Role;
 use ui::permissions::policy::{ActionKind, Answer, Grant, Grantee, KindSet, TreePath};
@@ -81,7 +81,7 @@ impl Reading {
     }
 }
 
-impl WorkspaceRecordsLink for Reading {
+impl WorkspaceDocumentsLink for Reading {
     fn user_public_key(&self) -> [u8; 32] {
         self.member.endpoint.host_cert.user_public_key
     }
@@ -291,9 +291,9 @@ async fn a_member_lists_only_the_invocations_in_records_they_may_read_now() {
         &request(
             &tasks_provider,
             ActionAddress::new(
-                ui::record::chain_resource_id(&ui::record::DocumentId::derived(
+                ui::resource::chain_resource_id(&ui::resource::DocumentId::derived(
                     "issues",
-                    &ui::record::DocumentId::workspace_default(),
+                    &ui::resource::DocumentId::workspace_default(),
                 )),
                 "create",
             ),
@@ -441,7 +441,7 @@ async fn a_member_lists_only_the_invocations_in_records_they_may_read_now() {
 
 /// The runs of `listed` in `app`'s records, once `caller`'s listing holds a
 /// record of it: what the host lists once it read the record's history.
-async fn listed_with_record(
+async fn listed_with_document(
     actions: &tilo_agent_session::WorkspaceActions,
     workspace: WorkspaceId,
     caller: &Caller,
@@ -532,7 +532,7 @@ async fn a_persons_own_change_is_one_invocation_also_after_a_restart() {
     // Every reader of the notes lists the one act as one run, its call and
     // its change together.
     for reader in [&person, &owner] {
-        let listed = listed_with_record(&actions, workspace, reader, NOTES).await;
+        let listed = listed_with_document(&actions, workspace, reader, NOTES).await;
         assert_eq!(listed["total"], 1, "one act is one run: {listed}");
         let run = &listed["items"][0];
         assert_eq!(run["by"]["kind"], "person", "{run}");
@@ -550,7 +550,7 @@ async fn a_persons_own_change_is_one_invocation_also_after_a_restart() {
     drop(actions);
     let restarted = serving();
     for reader in [&person, &owner] {
-        let listed = listed_with_record(&restarted, workspace, reader, NOTES).await;
+        let listed = listed_with_document(&restarted, workspace, reader, NOTES).await;
         assert_eq!(listed["total"], 1, "{listed}");
         let run = &listed["items"][0];
         assert_eq!(run["remembered"], false, "{run}");

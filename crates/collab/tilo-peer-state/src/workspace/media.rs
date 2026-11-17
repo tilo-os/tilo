@@ -22,7 +22,7 @@ pub const MAX_POLICY_BYTES: usize = 256 * 1024;
 pub const MAX_CALLS: usize = 64;
 pub const MAX_DENIED_PER_CALL: usize = 128;
 pub const MAX_DENIED_TOTAL: usize = 512;
-pub const MAX_RECORD_BYTES: usize = 1024;
+pub const MAX_DOCUMENT_BYTES: usize = 1024;
 pub const MAX_CHANNEL_BYTES: usize = 128;
 pub const MAX_OBJECT_BYTES: usize = 256;
 pub const MAX_RESULT_BYTES: usize = 2048;
@@ -52,8 +52,8 @@ pub struct CallV1 {
 pub struct ChatCallBindingV1 {
     #[serde(deserialize_with = "app_string")]
     pub app_id: String,
-    #[serde(deserialize_with = "record_string")]
-    pub record_id: String,
+    #[serde(deserialize_with = "document_string")]
+    pub document_id: String,
     #[serde(deserialize_with = "channel_string")]
     pub channel_id: String,
     #[serde(deserialize_with = "object_string")]
@@ -324,7 +324,7 @@ pub fn validate(value: &WorkspaceMediaV1) -> Result<(), MediaPolicyError> {
         // second heap-backed set. This preserves the prior validation order.
         if value.calls.range(..*id).any(|(_, prior)| {
             prior.binding.app_id == call.binding.app_id
-                && prior.binding.record_id == call.binding.record_id
+                && prior.binding.document_id == call.binding.document_id
                 && prior.binding.channel_object == call.binding.channel_object
         }) {
             return Err(MediaPolicyError::Binding);
@@ -356,19 +356,19 @@ impl ChatCallBindingV1 {
     /// [`resolve_chat_binding`]).
     #[must_use]
     pub fn names_channel(&self, app: &str, record: &str, channel: &str) -> bool {
-        self.app_id == app && self.record_id == record && self.channel_id == channel
+        self.app_id == app && self.document_id == record && self.channel_id == channel
     }
 
     #[must_use]
     pub fn same_channel(&self, other: &Self) -> bool {
-        other.names_channel(&self.app_id, &self.record_id, &self.channel_id)
+        other.names_channel(&self.app_id, &self.document_id, &self.channel_id)
     }
 
     /// Structural validation of a Chat call binding.
     pub fn validate(&self) -> Result<(), MediaPolicyError> {
         binding::validate_fields(
             &self.app_id,
-            &self.record_id,
+            &self.document_id,
             &self.channel_id,
             &self.channel_object,
             &self.chat_workspace_id,
@@ -560,7 +560,7 @@ impl<'a> WireCursor<'a> {
 
     fn binding(&mut self) -> Result<(), MediaPolicyError> {
         self.string(64)?;
-        self.string(MAX_RECORD_BYTES)?;
+        self.string(MAX_DOCUMENT_BYTES)?;
         self.string(MAX_CHANNEL_BYTES)?;
         self.string(MAX_OBJECT_BYTES)?;
         self.string(MAX_CHANNEL_BYTES)
@@ -701,8 +701,8 @@ fn bounded_string<'de, D: Deserializer<'de>>(value: D, max: usize) -> Result<Str
 fn app_string<'de, D: Deserializer<'de>>(value: D) -> Result<String, D::Error> {
     bounded_string(value, 64)
 }
-fn record_string<'de, D: Deserializer<'de>>(value: D) -> Result<String, D::Error> {
-    bounded_string(value, MAX_RECORD_BYTES)
+fn document_string<'de, D: Deserializer<'de>>(value: D) -> Result<String, D::Error> {
+    bounded_string(value, MAX_DOCUMENT_BYTES)
 }
 fn channel_string<'de, D: Deserializer<'de>>(value: D) -> Result<String, D::Error> {
     bounded_string(value, MAX_CHANNEL_BYTES)
@@ -743,7 +743,7 @@ mod workspace_media_tests {
                 CallV1 {
                     binding: ChatCallBindingV1 {
                         app_id: "so.tilo.chat".into(),
-                        record_id: String::new(),
+                        document_id: String::new(),
                         channel_id: "voice".into(),
                         channel_object: "1@01".into(),
                         chat_workspace_id: "main".into(),
@@ -1156,8 +1156,10 @@ mod workspace_media_tests {
             ("65 calls", too_many_calls),
             ("129 denials in one call", too_many_denials),
             (
-                "a record id of 1025 bytes",
-                edited(|v| v.calls.get_mut(&[7; 32]).unwrap().binding.record_id = "x".repeat(1025)),
+                "a document id of 1025 bytes",
+                edited(|v| {
+                    v.calls.get_mut(&[7; 32]).unwrap().binding.document_id = "x".repeat(1025);
+                }),
             ),
             (
                 "a channel id of 129 bytes",
@@ -1196,7 +1198,7 @@ mod workspace_media_tests {
         let direction = edited(|v| v.calls.get_mut(&[7; 32]).unwrap().allowed.publish = false);
         let phase = edited(|v| v.calls.get_mut(&[7; 32]).unwrap().phase = CallPhaseV1::Ended);
         let rebound = edited(|v| {
-            v.calls.get_mut(&[7; 32]).unwrap().binding.record_id = "uuid:other".into();
+            v.calls.get_mut(&[7; 32]).unwrap().binding.document_id = "uuid:other".into();
             v.calls.get_mut(&[7; 32]).unwrap().epoch = 2;
         });
         let erased = edited(|v| v.calls.clear());

@@ -144,7 +144,7 @@ impl Ada {
             .unwrap();
         let approved = approve_one_over(host, &self.root, &self.laptop).await;
         assert_eq!(approved, shown, "the person compares codes");
-        let (cert, host_cert) = certifying.await.unwrap().unwrap();
+        let (cert, host_cert, _) = certifying.await.unwrap().unwrap();
         (key, cert, host_cert)
     }
 
@@ -235,7 +235,7 @@ async fn the_persons_root_pairs_a_new_device(carrier: Carrier) {
     .await
     .unwrap()
     .expect("an approval issues a certificate");
-    let (cert, host_cert) = asking.await.unwrap().unwrap();
+    let (cert, host_cert, _) = asking.await.unwrap().unwrap();
     assert_eq!(cert, issued);
     assert_eq!(cert.device_public_key, key.verifying_key().to_bytes());
     assert_eq!(
@@ -308,7 +308,7 @@ fn plane_route() -> DocumentRoute {
     DocumentRoute {
         app_id: collab_types::scope::MEDIA_APP.to_owned(),
         cluster_id: WORKSPACE.to_owned(),
-        record: collab_types::scope::WORKSPACE_RECORD.to_owned(),
+        record: collab_types::scope::WORKSPACE_RESOURCE.to_owned(),
     }
 }
 
@@ -447,15 +447,13 @@ async fn the_device_takes_part_in_a_call(carrier: Carrier) {
     peer.send(Cmd::VoiceJoin(workspace_id, workspace.call.call))
         .unwrap();
     let bob: VoiceGrant = voice(&events, &mut pending, "Bob's grant", |event| match event {
-        VoiceEvent::Granted { grant, .. } if grant.participants.len() == 2 => {
-            Some((**grant).clone())
-        }
+        VoiceEvent::Granted { grant, .. } if grant.members.len() == 2 => Some((**grant).clone()),
         _ => None,
     })
     .await;
     assert!(bob.directions.publish && bob.directions.subscribe);
     let alice = crate::call::native(&workspace.owner, |envelope| match envelope {
-        Envelope::VoiceGranted { grant, .. } if grant.participants.len() == 2 => Some(*grant),
+        Envelope::VoiceGranted { grant, .. } if grant.members.len() == 2 => Some(*grant),
         _ => None,
     })
     .await;

@@ -746,7 +746,7 @@ async fn retained_replay_failure_and_duplicate_retirement_are_recoverable() {
             Envelope::Ready {
                 workspace_id: WorkspaceId::from_u128(7),
                 pending_deltas: 3,
-                records_when_opened: false,
+                documents_when_opened: false,
             }
         ]
     );
@@ -1282,7 +1282,7 @@ async fn a_retired_private_action_frame_ends_the_session() {
 }
 
 /// A device opening a record is sent the record's retained frames and its
-/// `RecordOpened` with no live frame between them, however busy the
+/// `DocumentOpened` with no live frame between them, however busy the
 /// workspace is: a live change landing among them would reach the device
 /// ahead of the history it builds on.
 #[tokio::test]
@@ -1368,7 +1368,7 @@ async fn an_opened_records_answer_is_written_whole_before_live_frames() {
         tokio::task::yield_now().await;
     }
     write
-        .write_all(&send(&Envelope::OpenRecord {
+        .write_all(&send(&Envelope::OpenDocument {
             workspace_id: id,
             channel: record,
             own: None,
@@ -1394,8 +1394,8 @@ async fn an_opened_records_answer_is_written_whole_before_live_frames() {
             let Some(EnvelopeV2::State(frame)) = reader.read_next().await.unwrap() else {
                 continue;
             };
-            if let Envelope::RecordOpened {
-                answer: tilo_relay_protocol::RecordAnswer::Sent { frames },
+            if let Envelope::DocumentOpened {
+                answer: tilo_relay_protocol::DocumentAnswer::Sent { frames },
                 ..
             } = frame
             {

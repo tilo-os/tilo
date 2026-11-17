@@ -188,7 +188,7 @@ impl ResourceApp for SketchApp {
     }
 
     /// One sketch per traced image.
-    fn launch_record(input: &LaunchInput<'_>) -> Option<DocumentId> {
+    fn launch_resource(input: &LaunchInput<'_>) -> Option<DocumentId> {
         input
             .argument()
             .map(|path| DocumentId::derived("sketch", &DocumentId::for_file(path)))
@@ -235,7 +235,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase launch_actions_are_the_participants_own_undoable_edits;
+    phase launch_actions_are_the_members_own_undoable_edits;
     {
         let mut app = TestApp::<SketchApp>::launched(&["/pictures/harbour.png"]).unwrap();
         app.harness().relayout();
@@ -655,7 +655,7 @@ impl ResourceApp for GenesisApp {
         Box::new(cx.text(|sketch| sketch.source.clone()))
     }
 
-    fn launch_record(input: &LaunchInput<'_>) -> Option<DocumentId> {
+    fn launch_resource(input: &LaunchInput<'_>) -> Option<DocumentId> {
         input.argument().map(DocumentId::for_file)
     }
 

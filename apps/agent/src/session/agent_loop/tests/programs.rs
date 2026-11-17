@@ -38,7 +38,7 @@ fn surface(peer: u64, app: &str, actions: Vec<ExportedAction>) -> BrokerActionSu
         provider: None,
         app_id: app.into(),
         cluster_id: Uuid::from_u128(1).to_string(),
-        record_id: String::new(),
+        document_id: String::new(),
         live: true,
         actions,
     }
@@ -636,6 +636,132 @@ fn a_run_that_gets_no_further_is_told_to_finish_and_ends() {
         terminal(&f.sent.borrow()),
         TurnUpdate::Failed {
             message: crate::i18n::t("agent-failure-stalled")
+        }
+    );
+}
+
+/// What a program made, as the API answers a `new_note` that made "Groceries".
+fn made_note() -> Value {
+    const NOTES: &str = "so.tilo.lang.notes";
+    serde_json::json!({
+        "text": "n1 \"Groceries\"\nstep 1: 1 change in notes; `undo` takes it back",
+        "failed": false,
+        "answer": {"state": "done", "output": [], "changed": 1, "apps": [NOTES],
+            "steps": [{"app": NOTES, "action": "new_note",
+                "resources": [format!("tl:{NOTES}:root/notes:n")], "destructive": false}]},
+        "refs": [["n1", "@notes.Note:root/notes:n"]],
+    })
+}
+
+/// A request's first step may be a program, and the separate things the request asks for are
+/// listed on its first step: a program that carries them with its reply is the whole answer in
+/// one call. `parts` on a program used to refuse the whole turn ("unexpected argument parts").
+#[test]
+fn a_program_that_lists_the_parts_finishes_in_one_call() {
+    let world = World {
+        tilolang: true,
+        tl_programs: vec![("new_note", made_note())],
+        ..World::default()
+    };
+    let mut f = fixture(
+        "make a note with the groceries: eggs, milk, bread",
+        world,
+        vec![turn(
+            &[(
+                crate::programs::TILO,
+                serde_json::json!({
+                    "program": "notes.new_note(notes.notebook, title: \"Groceries\", body: \"- eggs\")",
+                    "confirm": true,
+                    "parts": [{"part": "a groceries note", "app": "so.tilo.lang.notes"}],
+                    "reply": "Made the note Groceries.",
+                }),
+            )],
+            64,
+        )],
+    );
+    f.session.run_task(&f.run).unwrap();
+    assert_eq!(f.script.bodies.lock().unwrap().len(), 1, "one model call");
+    assert_eq!(
+        terminal(&f.sent.borrow()),
+        TurnUpdate::Succeeded {
+            message: "Made the note Groceries.".into()
+        }
+    );
+}
+
+/// A program that made the change and carried no reply is followed by the words alone: the
+/// model reads that nothing is left to run, never a program answer it takes for a cue to run
+/// another (`print("ok")` with "ok" for its reply).
+#[test]
+fn a_change_without_its_reply_is_told_to_finish() {
+    let world = World {
+        tilolang: true,
+        tl_programs: vec![("new_note", made_note())],
+        ..World::default()
+    };
+    let mut f = fixture(
+        "make a note with the groceries: eggs, milk, bread",
+        world,
+        vec![
+            turn(
+                &[(
+                    crate::programs::TILO,
+                    serde_json::json!({
+                        "program": "notes.new_note(notes.notebook, title: \"Groceries\")",
+                        "confirm": true,
+                    }),
+                )],
+                64,
+            ),
+            turn(&[finish("Made the note Groceries.", true)], 64),
+        ],
+    );
+    f.session.run_task(&f.run).unwrap();
+    let read = {
+        let bodies = f.script.bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 2);
+        said_last(&bodies[1])
+    };
+    assert!(read.contains("Nothing is left to run"), "{read}");
+}
+
+/// A question is done by its answer: a program that read the board and printed what is on it did
+/// the part the model listed for the board, so its reply finishes the turn in the one call.
+/// A program that changed nothing used to leave the part undone and the finish refused ("these
+/// parts of the request have no successful operation yet").
+#[test]
+fn a_question_answered_by_a_program_does_its_part() {
+    let read = serde_json::json!({
+        "text": "- Write the launch post\n- Fix the sync bug",
+        "failed": false,
+        "answer": {"state": "done", "output": [], "steps": [], "changed": 0, "apps": []},
+    });
+    let world = World {
+        tilolang: true,
+        tl_programs: vec![("board.Card", read)],
+        ..World::default()
+    };
+    let mut f = fixture(
+        "what is on the board?",
+        world,
+        vec![turn(
+            &[(
+                crate::programs::TILO,
+                serde_json::json!({
+                    "program": "for c in find(board.Card) { print(\"- {c.title}\") }",
+                    "parts": [{"part": "what is on the board", "app": BOARD}],
+                    "reply": "{answer}",
+                }),
+            )],
+            64,
+        )],
+    );
+    f.session.run_task(&f.run).unwrap();
+    assert_eq!(f.script.bodies.lock().unwrap().len(), 1, "one model call");
+    assert_eq!(
+        terminal(&f.sent.borrow()),
+        TurnUpdate::Succeeded {
+            message: "- Write the launch post\n- Fix the sync bug".into()
         }
     );
 }

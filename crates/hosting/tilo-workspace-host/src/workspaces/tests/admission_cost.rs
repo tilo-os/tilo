@@ -227,7 +227,7 @@ async fn letting_one_more_person_in_costs_the_same_however_many_are_in() {
 /// The size of a workspace's record as written for the last of `members`
 /// people coming through the entry, without the peer state's parts it holds
 /// inline, and of the files beside it.
-async fn record_after(members: u32) -> (usize, u64) {
+async fn document_after(members: u32) -> (usize, u64) {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = test_host(dir.path(), &key, &cert).await;
@@ -244,7 +244,7 @@ async fn record_after(members: u32) -> (usize, u64) {
         .await
         .path
         .clone();
-    let mut record: super::super::record_format::StoredRecord =
+    let mut record: super::super::document_format::StoredResource =
         postcard::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
     record.peer.clear();
     let own = postcard::to_stdvec(&record).unwrap().len();
@@ -263,8 +263,8 @@ async fn record_after(members: u32) -> (usize, u64) {
 /// state's own layout.)
 #[tokio::test]
 async fn the_record_written_for_an_arrival_does_not_grow_with_the_workspace() {
-    let (small, small_beside) = record_after(10).await;
-    let (large, large_beside) = record_after(40).await;
+    let (small, small_beside) = document_after(10).await;
+    let (large, large_beside) = document_after(40).await;
     assert!(
         large <= small + 8,
         "the record of 40 people holds {large} B of its own, of 10 people {small} B"

@@ -9,7 +9,7 @@ use tilo_agent_session::AppCatalogue;
 use tilo_resource::Replica;
 use tilo_user_identity::DeviceCert;
 
-use super::workspace_record;
+use super::workspace_resource;
 use crate::workspaces::Workspaces;
 
 /// The Discord connector's app id, whose records the bridge keeps.
@@ -106,15 +106,15 @@ pub async fn connect(
     let catalogue = AppCatalogue::native();
     let owner = hex::encode(host.user_public_key);
     let (chat_record, guild_record) = (
-        workspace_record(&catalogue, CHAT),
-        workspace_record(&catalogue, APP),
+        workspace_resource(&catalogue, CHAT),
+        workspace_resource(&catalogue, APP),
     );
     workspaces
         .prepare_application(workspace, host, &catalogue, APP, &guild_record)
         .await
         .map_err(|error| format!("add the Discord record: {error}"))?;
     let guild = workspaces
-        .record_document(workspace, APP, &guild_record)
+        .resource_document(workspace, APP, &guild_record)
         .await
         .map_err(|error| error.to_string())?
         .ok_or("the Discord record is missing")?;
@@ -454,12 +454,12 @@ mod tests {
             let (workspaces, workspace, record) = (
                 workspaces.clone(),
                 workspace.clone(),
-                workspace_record(&catalogue, app),
+                workspace_resource(&catalogue, app),
             );
             async move {
                 automerge::AutoCommit::load(
                     &workspaces
-                        .record_document(&workspace, app, &record)
+                        .resource_document(&workspace, app, &record)
                         .await
                         .unwrap()
                         .unwrap(),

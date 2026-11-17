@@ -1749,7 +1749,7 @@ mod tests {
                     !argv
                         .iter()
                         .any(|a| a == runtime_identity::broker::BROKER_ENV_VAR),
-                    "a read-only participant must not receive a signing capability: {argv:?}"
+                    "a read-only member must not receive a signing capability: {argv:?}"
                 );
                 assert!(
                     !argv.iter().any(|a| a == host.to_str().unwrap()),
@@ -1781,7 +1781,7 @@ mod tests {
                     argv.windows(3).any(|w| w[0] == "--setenv"
                         && w[1] == runtime_identity::broker::BROKER_ENV_VAR
                         && w[2] == runtime_identity::broker::BROKER_CHILD_FD.to_string()),
-                    "an authoring participant gets a signing broker: {argv:?}"
+                    "an authoring member gets a signing broker: {argv:?}"
                 );
                 assert!(
                     argv.windows(3).any(|w| w[0] == "--setenv"

@@ -23,12 +23,12 @@ pub struct Subject {
     pub control: Option<Control>,
     /// The record the window shows, as the desktop knows it: what a
     /// recording of the window records.
-    pub record: Option<ShownRecord>,
+    pub record: Option<ShownResource>,
 }
 
 /// The record a window shows: its id in the workspace it is homed in.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ShownRecord {
+pub struct ShownResource {
     pub workspace: String,
     /// The record's id; empty for the app's own record of the workspace.
     pub record: String,
@@ -563,7 +563,7 @@ mod tests {
     /// Notes, showing a note.
     fn a_note() -> Subject {
         Subject {
-            record: Some(ShownRecord {
+            record: Some(ShownResource {
                 workspace: "demo".into(),
                 record: "note-1".into(),
             }),

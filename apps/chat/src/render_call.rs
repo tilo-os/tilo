@@ -1,6 +1,6 @@
 //! Rendering for the conferencing layers: the docked call "huddle" `PiP`, the
-//! expanded call overlay (a responsive participant grid, or — while someone is
-//! screen-sharing — a featured screen tile above a participant filmstrip), and
+//! expanded call overlay (a responsive member grid, or — while someone is
+//! screen-sharing — a featured screen tile above a member filmstrip), and
 //! the two floating popovers (emoji picker + edit history). The host tile is a
 //! real [`ui::widget::VideoPlayer`] laid out by the app; everything here is the
 //! chrome around it.
@@ -38,9 +38,9 @@ use crate::paint::{elide, line_in, line_of, text, width_of};
 /// membership (not hardcoded). The host (this peer) is listed first.
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "independent facts about one participant (talking, muted, deafened, audio only, sharing), each read on its own"
+    reason = "independent facts about one member (talking, muted, deafened, audio only, sharing), each read on its own"
 )]
-pub(crate) struct Participant {
+pub(crate) struct Member {
     user: MemberId,
     /// The call hears them now: their face rings.
     talking: bool,
@@ -53,7 +53,7 @@ pub(crate) struct Participant {
     silenced: bool,
 }
 
-impl Participant {
+impl Member {
     /// The mark beside their name: struck-out headphones while they hear
     /// nothing of the call, a muted microphone while they are muted, else a
     /// muted speaker while this person silenced them.
@@ -71,9 +71,9 @@ impl Participant {
 }
 
 /// How the expanded call overlay tiles the surface. A plain call packs every
-/// participant into a uniform [`CallStage::Grid`]; once someone shares their
+/// member into a uniform [`CallStage::Grid`]; once someone shares their
 /// screen it promotes to a [`CallStage::Share`] presentation stage — one large
-/// featured screen tile above a single-row participant filmstrip.
+/// featured screen tile above a single-row member filmstrip.
 pub(crate) enum CallStage {
     Grid(Vec<Rect>),
     Share { screen: Rect, strip: Vec<Rect> },
@@ -130,7 +130,7 @@ pub(crate) struct CallOverlayMetrics {
     pub button_chrome_w: f64,
     /// The size of a control label, for estimating an unmeasured one.
     pub label_size: f64,
-    /// Gap between participant tiles (`s3`).
+    /// Gap between member tiles (`s3`).
     pub tile_gap: f64,
     /// The shortest the screen-share filmstrip gets: one tile's disc,
     /// caption and name plate with the air between them.
@@ -251,12 +251,12 @@ impl ChatApp {
     }
 
     /// The local listening panel followed by authenticated remote audio streams.
-    /// This is not a complete participant or listener roster.
-    pub(crate) fn call_participants(&self) -> Vec<Participant> {
+    /// This is not a complete member or listener roster.
+    pub(crate) fn call_members(&self) -> Vec<Member> {
         let members: &[VoiceMember] = self.voice_in(&self.call.channel);
-        let mut out: Vec<Participant> = Vec::new();
+        let mut out: Vec<Member> = Vec::new();
         // Host = this peer.
-        out.push(Participant {
+        out.push(Member {
             user: self.me.id.clone(),
             talking: self
                 .native_voice
@@ -274,7 +274,7 @@ impl ChatApp {
             if m.user == self.me.id {
                 continue; // already the host tile
             }
-            out.push(Participant {
+            out.push(Member {
                 user: m.user.clone(),
                 talking: m.talking,
                 muted: m.muted,
@@ -287,11 +287,10 @@ impl ChatApp {
         out
     }
 
-    /// Whether to show the participant list expanded — the user's toggle,
+    /// Whether to show the member list expanded — the user's toggle,
     /// but auto-collapsing very large calls until summoned.
-    fn participants_should_show(&self, n: usize) -> bool {
-        self.call.participants_expanded
-            && (crate::call::CallState::auto_participants_expanded(n) || n <= 12)
+    fn members_should_show(&self, n: usize) -> bool {
+        self.call.members_expanded && (crate::call::CallState::auto_members_expanded(n) || n <= 12)
     }
 
     /// Follow who the call hears with each face's speaking ring, once per
@@ -302,7 +301,7 @@ impl ChatApp {
             return;
         }
         let heard: BTreeSet<MemberId> = self
-            .call_participants()
+            .call_members()
             .into_iter()
             .filter(|p| p.talking && !p.muted)
             .map(|p| p.user)
@@ -326,8 +325,8 @@ impl ChatApp {
     /// Everyone in the docked call, the one it shows large first: the other
     /// person it heard last, else the first other person, and this person
     /// only when alone. Yourself is who you need to see least.
-    fn huddle_participants(&self) -> Vec<Participant> {
-        let mut parts = self.call_participants();
+    fn huddle_members(&self) -> Vec<Member> {
+        let mut parts = self.call_members();
         let featured = self
             .call
             .featured
@@ -344,7 +343,7 @@ impl ChatApp {
     /// Who the docked call shows, the large tile's person first.
     #[cfg(test)]
     pub(crate) fn huddle_people(&self) -> Vec<String> {
-        self.huddle_participants()
+        self.huddle_members()
             .into_iter()
             .map(|p| p.user.id().to_owned())
             .collect()
@@ -352,7 +351,7 @@ impl ChatApp {
 
     /// Whether the docked call shows this person large: only while alone.
     pub(crate) fn huddle_features_me(&self) -> bool {
-        self.huddle_participants()
+        self.huddle_members()
             .first()
             .is_none_or(|p| self.is_me(&p.user))
     }
@@ -367,7 +366,7 @@ impl ChatApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let Some(p) = self.huddle_participants().into_iter().next() else {
+        let Some(p) = self.huddle_members().into_iter().next() else {
             return;
         };
         if self.is_me(&p.user) {
@@ -387,7 +386,7 @@ impl ChatApp {
             .paint(ctx, rect);
     }
 
-    /// Sample the participant reveal once per frame. Every geometry consumer
+    /// Sample the member reveal once per frame. Every geometry consumer
     /// subsequently reads the cached value, avoiding tiny wall-clock skew
     /// between the soft body, its controls, hit regions and native bounds.
     pub(crate) fn reconcile_huddle_motion(&mut self, tr: &mut TextRenderer, theme: &Theme) {
@@ -396,10 +395,10 @@ impl ChatApp {
             self.huddle_chip_rows = 0;
             return;
         }
-        // The participant strip opens only when there is someone beside you
+        // The member strip opens only when there is someone beside you
         // to show in it.
-        let parts = self.huddle_participants();
-        let open = parts.len() > 1 && self.participants_should_show(parts.len());
+        let parts = self.huddle_members();
+        let open = parts.len() > 1 && self.members_should_show(parts.len());
         self.call_chrome_motion.reconcile(open, theme);
         if !self.call.expanded {
             // The chips wrap inside the video's width; the window grows by
@@ -423,7 +422,7 @@ impl ChatApp {
 
     /// The call window's frame around its video, `[left, top, right,
     /// bottom]`: the title bar above, the inset beside, and the connection
-    /// line, the participant chips (as they reveal) and the controls below.
+    /// line, the member chips (as they reveal) and the controls below.
     fn huddle_frame(&self) -> [f64; 4] {
         let c = &self.chrome;
         let reveal = f64::from(self.call_chrome_motion.sampled.clamp(0.0, 1.0));
@@ -445,14 +444,14 @@ impl ChatApp {
         [left, self.chrome.header_h + top, right, bottom]
     }
 
-    /// The widest a participant's name stands beside their face.
+    /// The widest a member's name stands beside their face.
     fn huddle_name_max(theme: &Theme) -> f64 {
         8.0 * f64::from(theme.tokens.metrics.icon_lg)
     }
 
-    /// One participant beside the host in the call window: their face, their
+    /// One member beside the host in the call window: their face, their
     /// name and, while muted, a muted microphone.
-    fn huddle_face_width(&self, p: &Participant, tr: &mut TextRenderer, theme: &Theme) -> f64 {
+    fn huddle_face_width(&self, p: &Member, tr: &mut TextRenderer, theme: &Theme) -> f64 {
         let sp = &theme.tokens.spacing;
         let face = ui::widget::AvatarSize::Small.side(theme);
         let name = self.user_name(&p.user);
@@ -486,7 +485,7 @@ impl ChatApp {
     /// real [`VideoPlayer`](ui::widget::VideoPlayer) surface has no decoded
     /// frame. There is no camera in this environment, so instead of faking a
     /// video we show the local avatar and a plain label — the same treatment a
-    /// camera-off remote participant gets. Once a live capture feeds a frame,
+    /// camera-off remote member gets. Once a live capture feeds a frame,
     /// this yields to it automatically.
     pub(crate) fn draw_host_camera_off(
         &self,
@@ -591,7 +590,7 @@ impl ChatApp {
     }
 
     /// The call window: its video inside its frame. It grows continuously
-    /// with the participant reveal rather than stepping between two heights.
+    /// with the member reveal rather than stepping between two heights.
     pub(crate) fn huddle_panel(&self) -> Rect {
         let v = self.huddle_video();
         let [left, top, right, bottom] = self.huddle_frame();
@@ -626,10 +625,10 @@ impl ChatApp {
     }
 
     /// Who is in the call beside this person, each named by `name`. The
-    /// participants that matter are the others: a call is never only its
+    /// members that matter are the others: a call is never only its
     /// reader, so this person's own name is left out of every line.
     fn call_people(&self, name: impl Fn(&MemberId) -> String) -> Vec<String> {
-        self.call_participants()
+        self.call_members()
             .iter()
             .filter(|p| !self.is_me(&p.user))
             .map(|p| name(&p.user))
@@ -742,12 +741,12 @@ impl ChatApp {
         let panel = self.huddle_panel();
         let local = theme.on_ground(ui::chrome::panel_ground(theme));
         let v = self.huddle_video();
-        let parts = self.huddle_participants();
+        let parts = self.huddle_members();
         if let Some(featured) = parts.first() {
             let name = self.user_name(&featured.user);
             Self::name_plate(scene, tf, tr, theme, v, &name, featured.mark());
             if !self.is_me(&featured.user) {
-                ChatApp::push_hit(hits, v, Hit::CallParticipant(featured.user.clone()));
+                ChatApp::push_hit(hits, v, Hit::CallMember(featured.user.clone()));
             }
         }
         // A call that ended for a reason says it on the status line.
@@ -780,7 +779,7 @@ impl ChatApp {
         );
         self.draw_huddle_strip_header(PaintCtx::new(scene, tf, tr, &local), status, &parts, hits);
 
-        // Participant chips, shown when expanded and wrapping to the panel
+        // Member chips, shown when expanded and wrapping to the panel
         // width so the strip adapts to the headcount.
         let reveal = self.call_chrome_motion.sampled.clamp(0.0, 1.0);
         if reveal > 0.0 && others > 0 {
@@ -811,7 +810,7 @@ impl ChatApp {
         &self,
         paint: PaintCtx<'_>,
         band: Rect,
-        parts: &[Participant],
+        parts: &[Member],
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let PaintCtx {
@@ -824,7 +823,7 @@ impl ChatApp {
         let others = parts.len() > 1;
         if others {
             let icon_side = f64::from(theme.tokens.metrics.icon_sm);
-            let chevron = if self.participants_should_show(parts.len()) {
+            let chevron = if self.members_should_show(parts.len()) {
                 Icon::ChevronDown
             } else {
                 Icon::ChevronRight
@@ -857,7 +856,7 @@ impl ChatApp {
             band.x1 - x,
         );
         if others {
-            ChatApp::push_hit(hits, band, Hit::CallParticipantsToggle);
+            ChatApp::push_hit(hits, band, Hit::CallMembersToggle);
         }
     }
 
@@ -869,7 +868,7 @@ impl ChatApp {
         &self,
         paint: PaintCtx<'_>,
         status: Rect,
-        parts: &[Participant],
+        parts: &[Member],
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let PaintCtx {
@@ -931,7 +930,7 @@ impl ChatApp {
             ChatApp::push_hit(
                 hits,
                 Rect::new(x, y, x + w, y + h),
-                Hit::CallParticipant(p.user.clone()),
+                Hit::CallMember(p.user.clone()),
             );
             x += w + gap;
         }
@@ -1122,7 +1121,7 @@ impl ChatApp {
         // faces stack a third behind each other, and the names say who they
         // are without the stack growing with the headcount.
         let others: Vec<MemberId> = self
-            .call_participants()
+            .call_members()
             .iter()
             .filter(|p| !self.is_me(&p.user))
             .map(|p| p.user.clone())
@@ -1269,7 +1268,7 @@ impl ChatApp {
         // conversation does not show through between the tiles.
         ui::surface::region(scene, tf, self.rect, ui::surface::Region::Content, theme);
 
-        let parts = self.call_participants();
+        let parts = self.call_members();
         let sharer = self.screen_sharer();
         match self.overlay_stage() {
             // No share: host + remotes share one responsive grid that fills the
@@ -1282,7 +1281,7 @@ impl ChatApp {
                 }
             }
             // Someone is presenting: a large featured screen tile fills the band
-            // above a single-row participant filmstrip. The host keeps its own
+            // above a single-row member filmstrip. The host keeps its own
             // (camera) cell as the first strip tile; remotes follow.
             CallStage::Share { screen, strip } => {
                 if let Some(sharer) = &sharer {
@@ -1321,7 +1320,12 @@ impl ChatApp {
         );
         // The sharer's decoded screen takes over the tile once it arrives.
         if !is_me {
-            self.note_picture_tile(sharer.id(), ui::native_media::PictureSource::Screen, tf, rect);
+            self.note_picture_tile(
+                sharer.id(),
+                ui::native_media::PictureSource::Screen,
+                tf,
+                rect,
+            );
         }
         if let Some(img) = self.remote_screens.get(sharer.id()) {
             // All of a shared screen shows, letterboxed: nothing is cut off.
@@ -1416,13 +1420,13 @@ impl ChatApp {
             &you,
             self.call.muted.then_some(Icon::MicOff),
         );
-        // Each other participant's tile opens how loud they play here.
+        // Each other member's tile opens how loud they play here.
         let tiles = match self.overlay_stage() {
             CallStage::Grid(tiles) => tiles,
             CallStage::Share { strip, .. } => strip,
         };
-        for (p, rect) in self.call_participants().iter().zip(&tiles).skip(1) {
-            ChatApp::push_hit(hits, *rect, Hit::CallParticipant(p.user.clone()));
+        for (p, rect) in self.call_members().iter().zip(&tiles).skip(1) {
+            ChatApp::push_hit(hits, *rect, Hit::CallMember(p.user.clone()));
         }
 
         // Controls bar: auto-sized to its buttons and wrapped onto extra rows
@@ -1449,7 +1453,7 @@ impl ChatApp {
         }
     }
 
-    /// The band the expanded call fills with participant tiles: everything
+    /// The band the expanded call fills with member tiles: everything
     /// between the title and the controls bar, inset from the window edges.
     /// Deterministic (no text measurement) so the tile grid, the host
     /// [`VideoPlayer`](ui::widget::VideoPlayer) node built in `build_layout`,
@@ -1465,12 +1469,12 @@ impl ChatApp {
         Rect::new(r.x0 + inset, top, r.x1 - inset, bottom)
     }
 
-    /// Host-first participant tiles for the expanded call, packed to fill the
+    /// Host-first member tiles for the expanded call, packed to fill the
     /// whole content region at every width — the host is simply the first
     /// cell, so nothing is left empty beneath or beside it. A solo call yields
     /// a single tile spanning the full region.
     pub(crate) fn overlay_tiles(&self) -> Vec<Rect> {
-        let n = self.call_participants().len().max(1);
+        let n = self.call_members().len().max(1);
         grid_rects(
             self.overlay_content_region(),
             n,
@@ -1492,20 +1496,20 @@ impl ChatApp {
             .map(|m| m.user.clone())
     }
 
-    /// The expanded overlay's layout for the current call: a uniform participant
+    /// The expanded overlay's layout for the current call: a uniform member
     /// grid, or — while someone is screen-sharing — a large featured screen tile
-    /// above a single-row participant filmstrip. Deterministic (no text
+    /// above a single-row member filmstrip. Deterministic (no text
     /// measurement) so the tile geometry, the host [`VideoPlayer`] node built in
     /// `build_layout`, and every draw pass resolve identically on one frame.
     pub(crate) fn overlay_stage(&self) -> CallStage {
         let region = self.overlay_content_region();
-        let n = self.call_participants().len().max(1);
+        let n = self.call_members().len().max(1);
         if self.screen_sharer().is_some() {
             let m = &self.call_overlay_metrics;
             let gap = m.tile_gap;
-            // The screen dominates; participants ride a strip beneath it that
+            // The screen dominates; members ride a strip beneath it that
             // stays a minority of the surface. Clamped so a short window still
-            // leaves a strip that holds a participant's disc, caption and name
+            // leaves a strip that holds a member's disc, caption and name
             // plate, and a tall one doesn't over-grow it.
             let strip_h = (region.height() * 0.24)
                 .clamp(m.strip_min_h, 2.0 * m.strip_min_h)
@@ -1634,9 +1638,9 @@ impl ChatApp {
         (bar, out)
     }
 
-    /// Draw one remote participant's tile in the expanded grid. There is no
+    /// Draw one remote member's tile in the expanded grid. There is no
     /// camera capture wired to remote peers in this environment, so a tile
-    /// never fabricates a video frame: it shows the participant's avatar in
+    /// never fabricates a video frame: it shows the member's avatar in
     /// an empty viewfinder — the same honest treatment the host tile gets —
     /// plus their real camera state.
     fn draw_member_tile(
@@ -1646,7 +1650,7 @@ impl ChatApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         rect: Rect,
-        p: &Participant,
+        p: &Member,
     ) {
         self.draw_member_picture(scene, tf, tr, theme, rect, p);
         let name = self.user_name(&p.user);
@@ -1679,7 +1683,7 @@ impl ChatApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         rect: Rect,
-        p: &Participant,
+        p: &Member,
     ) {
         let is_stream = self
             .native_voice
@@ -1690,7 +1694,12 @@ impl ChatApp {
         // Their decoded camera picture takes over the tile once it arrives;
         // until then the tile shows them.
         if !is_stream && !p.audio_only {
-            self.note_picture_tile(p.user.id(), ui::native_media::PictureSource::Camera, tf, rect);
+            self.note_picture_tile(
+                p.user.id(),
+                ui::native_media::PictureSource::Camera,
+                tf,
+                rect,
+            );
         }
         if !is_stream && let Some(img) = self.remote_frames.get(p.user.id()) {
             let radius = self.tile_radius(theme);
@@ -2065,12 +2074,12 @@ fn viewfinder_block(
     })
 }
 
-/// The honest one-line caption shown under a remote participant's avatar in
+/// The honest one-line caption shown under a remote member's avatar in
 /// the expanded call grid. There is no remote camera capture wired up in this
 /// environment, so a tile must never imply a live feed: an audio-only peer
 /// reads "Camera off"; a camera-enabled peer whose frame doesn't reach us
 /// reads "No video".
-fn member_tile_caption(p: &Participant) -> String {
+fn member_tile_caption(p: &Member) -> String {
     crate::i18n::t(if p.audio_only {
         "chat-call-camera-off-caption"
     } else {
@@ -2078,7 +2087,7 @@ fn member_tile_caption(p: &Participant) -> String {
     })
 }
 
-/// Lay `n` participant tiles into a single centred row filling `region`'s
+/// Lay `n` member tiles into a single centred row filling `region`'s
 /// height — the presentation-stage filmstrip beneath the featured screen. Each
 /// tile is landscape-ish (capped at an equal share of the row width) and every
 /// returned rect stays inside `region`, so the strip never spills past the
@@ -2164,13 +2173,13 @@ fn grid_rects(region: Rect, n: usize, gap: f64) -> Vec<Rect> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AvatarSides, CallOverlayMetrics, Participant, filmstrip_rects, grid_rects,
-        member_tile_caption, pack_rows, viewfinder_block,
+        AvatarSides, CallOverlayMetrics, Member, filmstrip_rects, grid_rects, member_tile_caption,
+        pack_rows, viewfinder_block,
     };
     use vello::kurbo::Rect;
 
-    fn participant(audio_only: bool) -> Participant {
-        Participant {
+    fn member(audio_only: bool) -> Member {
+        Member {
             user: ui::tilo_resource::MemberId::person("u_x"),
             talking: false,
             muted: false,
@@ -2287,10 +2296,10 @@ mod tests {
             // fabricated video feed. Every caption is a truthful "camera state"
             // string (matching the host tile), never a claim of live video.
             {
-                assert_eq!(member_tile_caption(&participant(true)), "Camera off");
-                assert_eq!(member_tile_caption(&participant(false)), "No video");
+                assert_eq!(member_tile_caption(&member(true)), "Camera off");
+                assert_eq!(member_tile_caption(&member(false)), "No video");
                 for audio_only in [true, false] {
-                    let cap = member_tile_caption(&participant(audio_only)).to_lowercase();
+                    let cap = member_tile_caption(&member(audio_only)).to_lowercase();
                     assert!(
                         !cap.contains("live") && !cap.contains("streaming") && !cap.contains("feed"),
                         "caption must not imply a live feed: {cap:?}"
@@ -2330,7 +2339,7 @@ mod tests {
                     }
                 }
             }
-            // Phase: filmstrip_is_empty_for_no_participants.
+            // Phase: filmstrip_is_empty_for_no_members.
             {
                 assert!(filmstrip_rects(Rect::new(0.0, 0.0, 400.0, 120.0), 0, 12.0).is_empty());
             }

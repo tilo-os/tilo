@@ -6,6 +6,8 @@
 //!   `tilo-sibling-unlock@.service`, started by tilo-root-discover).
 //! * `enrol DEVICE`: add the sibling key slot and register it with the
 //!   owner's devices (`tilo-disk-encrypt enrol --sibling` runs it).
+//!   `--unattended` also asks the owner to accept this machine's boot chain,
+//!   so their devices release its half without a prompt.
 //! * `remove DEVICE`: remove the slot and its token.
 //! * `status DEVICE`: what is enrolled, without secrets.
 //! * `volumes`: every volume enrolled on this machine, without secrets
@@ -151,9 +153,17 @@ async fn unlock(device: &Path) -> Result<ExitCode> {
         }
     };
     say("asking your other devices to unlock this disk");
+    let attestation = material
+        .attestation
+        .clone()
+        .map(|key| exchange::AttestationSource {
+            tpm: tilo_sibling_unlock::tpm::Tpm::system(),
+            key,
+        });
     let peers = Peers {
         progress: &BootScreen,
         transcript: Some(Path::new(exchange::TRANSCRIPT)),
+        attestation: attestation.as_ref(),
     };
     let ask_dir = unlock::ask_dir();
     let volume = RealVolume(device);

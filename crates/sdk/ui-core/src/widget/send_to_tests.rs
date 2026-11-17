@@ -279,6 +279,28 @@ tilo_test_env::scenario! {
         assert_eq!(send_to.text, "look", "the words typed are the message");
     }
 
+    phase a_search_that_finds_nobody_says_so_on_a_line_of_its_own;
+    // A name nobody answers says so where the rows would stand: under the field, above the
+    // subject chips, never painted under them.
+    {
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let beside = Rect::new(40.0, 120.0, 212.0, 320.0);
+        let mut send_to = box_beside(beside, viewport);
+        let before = send_to.rect().height();
+        send_to.focus_first();
+        type_text(&mut send_to, "zz");
+        send_to.place(beside, Some(viewport));
+        let nothing = send_to.layout.nothing;
+        assert!(nothing.height() > 0.0, "the line saying nobody was found");
+        assert!(nothing.y0 >= send_to.layout.search.y1, "under the field");
+        let subject = send_to.layout.subjects.first().expect("the subject chip");
+        assert!(
+            subject.y0 >= nothing.y1,
+            "the subject chip stands under it: {subject:?} under {nothing:?}"
+        );
+        assert!(send_to.rect().height() > before, "the box makes way for it");
+    }
+
     phase a_recipient_chip_leads_with_what_it_is_and_carries_the_x_that_takes_it_off;
     {
         let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);

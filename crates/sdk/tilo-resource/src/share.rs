@@ -4,7 +4,7 @@
 //! Every resource that declares a view publishes both. A resource without a
 //! view has nothing a link could open, so it has no link, except a record's
 //! root: the record itself opens in its app, so its root always offers
-//! `share-link` ([`offer_record`]). The specs are bound here, where the views
+//! `share-link` ([`offer_resource`]). The specs are bound here, where the views
 //! are attached, so every way a resource is published (the resource itself, an
 //! item, a live row) offers them the same way; the framework's root answers
 //! them.
@@ -103,7 +103,7 @@ pub fn offer(resource: &mut tilo_actions::ResourceSpec) {
 /// Offer `share-link` on `root`, a record's root resource, even when it
 /// declares no view: the link then names the record, which opens in its app.
 /// A root with views offers both links as any resource does ([`offer`]).
-pub fn offer_record(root: &mut tilo_actions::ResourceSpec) {
+pub fn offer_resource(root: &mut tilo_actions::ResourceSpec) {
     offer(root);
     if root.actions.iter().any(|spec| spec.id == SHARE_LINK) {
         return;
@@ -288,7 +288,7 @@ mod tests {
                 root.actions.is_empty(),
                 "a resource without a view has no link"
             );
-            offer_record(&mut root);
+            offer_resource(&mut root);
             let ids: Vec<_> = root.actions.iter().map(|spec| spec.id.as_str()).collect();
             assert_eq!(
                 ids,
@@ -296,13 +296,13 @@ mod tests {
                 "the record opens in its app; it invites no one"
             );
             assert_eq!(params(&root.actions[0]), ["view", "mode"]);
-            offer_record(&mut root);
+            offer_resource(&mut root);
             assert_eq!(root.actions.len(), 1, "offered once");
 
             let mut viewed = tilo_actions::ResourceSpec::new("notes", "notes.page", "Page").with_view(
                 tilo_actions::ResourceViewSpec::new("page", "Page", "open-page"),
             );
-            offer_record(&mut viewed);
+            offer_resource(&mut viewed);
             let ids: Vec<_> = viewed.actions.iter().map(|spec| spec.id.as_str()).collect();
             assert_eq!(ids, [SHARE_LINK, SHARE_INVITE_LINK]);
         }

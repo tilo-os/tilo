@@ -69,7 +69,7 @@ pub fn route_of(
 }
 
 /// [`route_of`], for the records the app keeps under `records`: its own id, or for an app
-/// renamed the earliest id it had (`InstanceRequest::records_under`), whose record it keeps using
+/// renamed the earliest id it had (`InstanceRequest::documents_under`), whose record it keeps using
 /// where it is.
 #[must_use]
 pub fn route_under(
@@ -112,7 +112,7 @@ pub enum AdmitError {
         "the window was asked to open the record `{asked}`, but an instance of `{app}` opens \
          only its own record of the workspace"
     )]
-    OtherRecord { app: String, asked: String },
+    OtherResource { app: String, asked: String },
     #[error("the instance's connection could not join its workspace: {0}")]
     Join(String),
     #[error(transparent)]
@@ -646,7 +646,7 @@ impl TilolangHost {
         }
         // The record of an id the app had before, as the session names it: one the module says
         // it had. Whether the same publisher signed both the broker checks as it admits the join.
-        let records = match &request.records_under {
+        let records = match &request.documents_under {
             Some(records) if !bundle.meta.previously.contains(records) => {
                 return Err(AdmitError::Records {
                     app: request.app,
@@ -673,7 +673,7 @@ impl TilolangHost {
         if let Some(asked) = request.record.as_deref()
             && !opens_record(&route, asked)
         {
-            return Err(AdmitError::OtherRecord {
+            return Err(AdmitError::OtherResource {
                 app: request.app,
                 asked: asked.to_owned(),
             });

@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tilo_actions::remote::{Caller, Pending};
 use tilo_agent_session::bot::api::{BotApi, OutboxSpec, PerformError, Performer};
-use tilo_agent_session::bot::held::HeldRecords;
+use tilo_agent_session::bot::held::HeldDocuments;
 use tilo_agent_session::{AppCatalogue, ReplicaActor};
 use tilo_automation::dispatch::queue::{DeadLetter, Finished, FiringQueue};
 use tilo_automation::dispatch::{Armed, ConnectorEvent, Event, Firer, Firing, ScheduleEvent};
@@ -213,8 +213,8 @@ pub struct BotRunner {
     shortcut: Arc<Shortcut>,
     /// Apps whose records the bot reads and acts on.
     apps: BTreeSet<String>,
-    held: Arc<Mutex<HeldRecords>>,
-    api: Arc<BotApi<HeldRecords>>,
+    held: Arc<Mutex<HeldDocuments>>,
+    api: Arc<BotApi<HeldDocuments>>,
     connectors: BTreeMap<String, Arc<ConnectorProcess>>,
     progress: Progress,
     state_file: PathBuf,
@@ -251,7 +251,7 @@ impl BotRunner {
             .triggers
             .iter()
             .filter_map(|trigger| match trigger {
-                TriggerSpec::RecordChanged { kind, .. } => {
+                TriggerSpec::ResourceChanged { kind, .. } => {
                     catalogue.app_for_kind(kind).map(str::to_owned)
                 }
                 _ => None,
@@ -272,9 +272,10 @@ impl BotRunner {
             &shortcut,
             &connectors.keys().cloned().collect(),
         );
-        let held = Arc::new(Mutex::new(HeldRecords::new(
+        let held = Arc::new(Mutex::new(HeldDocuments::new(
             catalogue.clone(),
             workspace.clone(),
+            tilo_actions::MemberId::bot(bot.installation.clone()),
             ReplicaActor::Bot {
                 installation: bot.installation.clone(),
                 installer: installer.clone(),
@@ -366,7 +367,7 @@ impl BotRunner {
     /// catches up on everything since the kept cursors, so a restarted
     /// host answers what happened while it was down.
     pub async fn run(mut self) {
-        let mut writes = self.workspaces.record_writes();
+        let mut writes = self.workspaces.document_writes();
         let mut governance = self.workspaces.governance_changes();
         // Any connector's new event wakes the runner.
         let events = Arc::new(tokio::sync::Notify::new());
@@ -513,7 +514,7 @@ impl BotRunner {
             // part of a chat's messages) is what happened since: read whole.
             // So is a record every app of the workspace opens (the workspace's
             // emoji), which its first change creates.
-            let part = ui::record::DocumentId::parse(&record)
+            let part = ui::resource::DocumentId::parse(&record)
                 .is_some_and(|record| record.chain_part().is_some())
                 || collab_types::workspace_document(&app, &record).is_some();
             let since = match self.progress.records.get(&key).cloned() {
@@ -526,12 +527,12 @@ impl BotRunner {
             };
             // A part is of its own resource (a chat's messages), as its
             // record names it.
-            let kind = ui::record::identity(&doc)
+            let kind = ui::resource::identity(&doc)
                 .map(|checkout| checkout.kind.as_str().to_owned())
                 .or_else(|| {
                     self.catalogue
                         .get(&app)
-                        .map(|definition| definition.record_kind.as_str().to_owned())
+                        .map(|definition| definition.resource_type.as_str().to_owned())
                 })
                 .unwrap_or_default();
             for (event, _) in tilo_agent_session::bot::events_since(
@@ -649,7 +650,7 @@ impl BotRunner {
     /// Whether the program listens to the workspace's own governance.
     fn follows_governance(&self) -> bool {
         self.shortcut.triggers.iter().any(|trigger| {
-            matches!(trigger, TriggerSpec::RecordChanged { kind, .. } if kind == tilo_action_policy::roles::WORKSPACE_KIND)
+            matches!(trigger, TriggerSpec::ResourceChanged { kind, .. } if kind == tilo_action_policy::roles::WORKSPACE_KIND)
         })
     }
 
@@ -676,7 +677,7 @@ impl BotRunner {
         // with it.
         let mut routes = self.routes().await?;
         routes.sort_by_key(|(_, record)| {
-            ui::record::DocumentId::parse(record)
+            ui::resource::DocumentId::parse(record)
                 .is_some_and(|record| record.chain_part().is_some())
         });
         for (app, record) in routes {
@@ -778,7 +779,7 @@ impl BotRunner {
     }
 
     /// Who is in the workspace and in what role, as of now: `{"members":
-    /// [{"person", "role"}]}`, removed people left out. A program reads it
+    /// [{"member", "role"}]}`, removed people left out. A program reads it
     /// to judge an outside request by the requester's standing here.
     pub(crate) async fn workspace_input(&self) -> Result<Value, String> {
         let summary = self
@@ -788,8 +789,8 @@ impl BotRunner {
             .map_err(|error| error.to_string())?;
         // The workspace's root owns it whether or not governance lists the
         // person as a member.
-        let root = hex::encode(self.host.user_public_key);
-        let mut members = vec![serde_json::json!({ "person": root, "role": "owner" })];
+        let root = tilo_actions::MemberId::person(hex::encode(self.host.user_public_key));
+        let mut members = vec![serde_json::json!({ "member": root, "role": "owner" })];
         members.extend(
             summary
                 .members
@@ -803,7 +804,7 @@ impl BotRunner {
                         member.role.map(tilo_peer_state::join::Role::key)
                     };
                     serde_json::json!({
-                        "person": member.id.key(),
+                        "member": member.id,
                         "role": role,
                     })
                 }),
@@ -814,7 +815,7 @@ impl BotRunner {
     /// The workspace's own emoji as the workspace holds them now: `{"emoji":
     /// [{"name", "picture"}]}`, each picture its content address. The
     /// pictures live in the emoji record itself, which a bot does not hold
-    /// (`HeldRecords`), so the host reads them and keeps each in the
+    /// (`HeldDocuments`), so the host reads them and keeps each in the
     /// content store of every connector the bot runs, where an op that
     /// attaches it finds it.
     pub(crate) async fn emoji_input(&self) -> Result<Value, String> {
@@ -848,7 +849,7 @@ impl BotRunner {
     async fn routes(&self) -> Result<Vec<(String, String)>, String> {
         Ok(self
             .workspaces
-            .workspace_record_routes(&self.workspace)
+            .workspace_document_routes(&self.workspace)
             .await
             .map_err(|error| error.to_string())?
             .into_iter()
@@ -858,7 +859,7 @@ impl BotRunner {
 
     async fn read(&self, app: &str, record: &str) -> Result<Option<Vec<u8>>, String> {
         self.workspaces
-            .record_document(&self.workspace, app, record)
+            .resource_document(&self.workspace, app, record)
             .await
             .map_err(|error| error.to_string())
     }
@@ -1028,7 +1029,7 @@ pub fn governance_events(
     generation: u64,
     before: &BTreeMap<String, MemberMark>,
     after: &BTreeMap<String, MemberMark>,
-) -> Vec<tilo_automation::dispatch::RecordEvent> {
+) -> Vec<tilo_automation::dispatch::DocumentEvent> {
     use tilo_action_policy::roles::governance;
     let mut events = Vec::new();
     let mut verb = |verb: &str, person: &str, role: Option<&str>| {
@@ -1044,7 +1045,7 @@ pub fn governance_events(
         )
         .to_hex()
         .to_string();
-        events.push(tilo_automation::dispatch::RecordEvent {
+        events.push(tilo_automation::dispatch::DocumentEvent {
             workspace: workspace.to_owned(),
             record: String::new(),
             kind: tilo_action_policy::roles::WORKSPACE_KIND.to_owned(),

@@ -115,7 +115,7 @@ fn context(custody: &Arc<AtomicBool>) -> NativeDocumentReadContext {
     tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
     let custody = Arc::clone(custody);
     NativeDocumentReadContext {
-        record_kind: None,
+        resource_type: None,
         route: crate::collab_broker::CrdtRoute::record("so.tilo.notes", WORKSPACE, ""),
         certificate,
         revalidate: Arc::new(move || {
@@ -142,7 +142,7 @@ fn holds(
 ) -> bool {
     read_unchanged(
         service,
-        service.record_read(WORKSPACE, "so.tilo.notes", ""),
+        service.resource_read(WORKSPACE, "so.tilo.notes", ""),
         || Ok(context(custody)),
         &Arc::new(Budget::default()),
         known,
@@ -225,7 +225,7 @@ tilo_test_env::scenario! {
         assert!(
             read_unchanged(
                 service.as_ref(),
-                service.as_ref().record_read(WORKSPACE, "so.tilo.notes", ""),
+                service.as_ref().resource_read(WORKSPACE, "so.tilo.notes", ""),
                 || Err("committed read admission ended".into()),
                 &Arc::new(Budget::default()),
                 Some([1; 32]),
@@ -256,7 +256,7 @@ tilo_test_env::scenario! {
         assert!(
             read_unchanged(
                 service.as_ref(),
-                service.as_ref().record_read(WORKSPACE, "so.tilo.notes", ""),
+                service.as_ref().resource_read(WORKSPACE, "so.tilo.notes", ""),
                 || Ok(context(&custody)),
                 &budget,
                 Some([1; 32]),
@@ -270,7 +270,7 @@ tilo_test_env::scenario! {
         assert!(
             read_unchanged(
                 service.as_ref(),
-                service.as_ref().record_read(WORKSPACE, "so.tilo.notes", ""),
+                service.as_ref().resource_read(WORKSPACE, "so.tilo.notes", ""),
                 || Ok(context(&custody)),
                 &budget,
                 Some([1; 32]),

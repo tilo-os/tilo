@@ -168,7 +168,7 @@ impl ActionHost for StubHost {
             provider: "71".into(),
             app_id: "so.tilo.test".into(),
             workspace: self.workspace.clone().unwrap_or_else(|| "workspace".into()),
-            record_id: self.record.clone().unwrap_or_default(),
+            document_id: self.record.clone().unwrap_or_default(),
             browsable: true,
         }];
         if matches!(self.availability, CatalogueAvailability::Hidden)

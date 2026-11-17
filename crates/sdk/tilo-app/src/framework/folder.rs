@@ -9,11 +9,11 @@ use fs_protocol::tree::{FILES_APP, FilesTree, document_id};
 use ui_core::history_mode::folder::{FolderHistorySource, FolderVersions};
 
 use super::People;
-use super::workspace::WorkspaceRecord;
+use super::workspace::WorkspaceResource;
 
 /// The workspace's tree, as History reads its changes.
 struct WorkspaceFolder {
-    tree: WorkspaceRecord<FilesTree>,
+    tree: WorkspaceResource<FilesTree>,
     people: People,
 }
 
@@ -37,7 +37,7 @@ pub(crate) fn show(
     storage: &super::settings::ViewStorage,
     people: &People,
 ) {
-    if let Some(tree) = storage.shared_record::<FilesTree>(FILES_APP, &document_id()) {
+    if let Some(tree) = storage.shared_resource::<FilesTree>(FILES_APP, &document_id()) {
         source.show(std::rc::Rc::new(WorkspaceFolder {
             tree,
             people: people.clone(),

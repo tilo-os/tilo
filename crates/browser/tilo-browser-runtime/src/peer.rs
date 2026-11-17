@@ -34,11 +34,11 @@ use tilo_relay_client::https::{HttpClient, HttpFuture};
 use tilo_relay_client::{Answer, AnswerFuture};
 use tilo_relay_client::{DeviceSigner, Host, SignError, SignFuture};
 use tilo_relay_protocol::WorkspaceId;
-use tilo_relay_protocol::live::{LiveAnchor, LiveFrame, LiveRecord, OpsFrame, PreviewOp};
+use tilo_relay_protocol::live::{LiveAnchor, LiveFrame, LiveResource, OpsFrame, PreviewOp};
 use tilo_relay_protocol::web::{PageHost, PageHostAddress};
 use tilo_session::sync::{Cmd, Event, Outbox};
 use tilo_session_client::device::{Device, HostRefusal};
-use tilo_session_client::{Events, FailureSubject, Link, LocalState};
+use tilo_session_client::{Events, FailureKind, Link, LocalState};
 use tilo_session_client::{PeerConfig, PeerRecord, PeerStore};
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList, RevocationReason};
 use tilo_workspace_keys::VAULT_SECRET_APP as CHANNEL_VAULT_APP;
@@ -92,11 +92,11 @@ pub fn host_refusal(wire: &str) -> Result<String, JsError> {
 }
 
 /// The page store without a surface; a desktop surface; its asset.
-fn failure_subject(surface: Option<String>, asset: Option<String>) -> FailureSubject {
+fn failure_kind(surface: Option<String>, asset: Option<String>) -> FailureKind {
     match (surface, asset) {
-        (None, _) => FailureSubject::Storage,
-        (Some(surface), None) => FailureSubject::Surface(surface),
-        (Some(surface), Some(asset)) => FailureSubject::Asset { surface, asset },
+        (None, _) => FailureKind::Storage,
+        (Some(surface), None) => FailureKind::Surface(surface),
+        (Some(surface), Some(asset)) => FailureKind::Asset { surface, asset },
     }
 }
 
@@ -484,6 +484,8 @@ fn install_identity(cert: &DeviceCert, display_name: String) {
 struct Certified<'a> {
     cert: &'a DeviceCert,
     host_cert: &'a DeviceCert,
+    /// The name the host gave the device, which the page shows for it.
+    label: &'a str,
 }
 
 async fn post_decoded<T: serde::de::DeserializeOwned>(
@@ -530,7 +532,8 @@ pub async fn workspace_deleted(post: Function, workspace: String) -> Result<bool
 /// Certify this page's device key with the host its address names, as the
 /// answer to the pairing invite `inviteHex` (16 bytes as hex) the person's
 /// link named, if any. Calls `onPairingCode(code)` once the host queued the
-/// request. Resolves to `{cert, hostCert}` JSON for [`WasmPeer::start`].
+/// request. Resolves to `{cert, hostCert, label}` JSON for
+/// [`WasmPeer::start`], `label` being the name the host gave the device.
 #[wasm_bindgen(js_name = certifyDevice)]
 #[allow(
     clippy::arc_with_non_send_sync,
@@ -557,7 +560,7 @@ pub async fn certify_device(
         None => [0; 16],
     };
     let host = host_at(&address)?;
-    let (cert, host_cert) =
+    let (cert, host_cert, label) =
         tilo_relay_client::certify(&host, user, &label, invite, &signer, |code| {
             let _ = on_pairing_code.call1(&JsValue::NULL, &code.into());
         })
@@ -566,6 +569,7 @@ pub async fn certify_device(
     serde_json::to_string(&Certified {
         cert: &cert,
         host_cert: &host_cert,
+        label: &label,
     })
     .map_err(js_error)
 }
@@ -959,6 +963,7 @@ pub async fn certify_with_root(
     serde_json::to_string(&Certified {
         cert: &cert,
         host_cert: &host_cert,
+        label: &label,
     })
     .map_err(js_error)
 }
@@ -1199,15 +1204,15 @@ enum JsPreviewOp {
     Delete { at: String, len: u32 },
 }
 
-fn record_to_js(record: LiveRecord) -> JsRecord {
+fn record_to_js(record: LiveResource) -> JsRecord {
     JsRecord {
         app: record.app,
         record: record.record,
     }
 }
 
-fn record_from_js(record: JsRecord) -> LiveRecord {
-    LiveRecord {
+fn record_from_js(record: JsRecord) -> LiveResource {
+    LiveResource {
         app: record.app,
         record: record.record,
     }
@@ -1325,13 +1330,13 @@ impl From<tilo_relay_protocol::voice::Directions> for JsDirections {
     }
 }
 
-/// One call participant: device and person as hex.
+/// One call member: device and person as hex.
 #[derive(Serialize)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is its own field the page reads: publishes, camera, screen, muted, deafened"
 )]
-struct JsVoiceParticipant {
+struct JsVoiceMember {
     device: String,
     user: String,
     publishes: bool,
@@ -1344,19 +1349,17 @@ struct JsVoiceParticipant {
     deafened: bool,
 }
 
-fn voice_participants(
-    participants: Vec<tilo_relay_protocol::voice::VoiceParticipant>,
-) -> Vec<JsVoiceParticipant> {
-    participants
+fn voice_members(members: Vec<tilo_relay_protocol::voice::VoiceMember>) -> Vec<JsVoiceMember> {
+    members
         .into_iter()
-        .map(|participant| JsVoiceParticipant {
-            device: hex::encode(participant.device_public_key),
-            user: hex::encode(participant.user_public_key),
-            publishes: participant.publishes,
-            camera: participant.showing.camera,
-            screen: participant.showing.screen,
-            muted: participant.showing.muted,
-            deafened: participant.showing.deafened,
+        .map(|member| JsVoiceMember {
+            device: hex::encode(member.device_public_key),
+            user: hex::encode(member.user_public_key),
+            publishes: member.publishes,
+            camera: member.showing.camera,
+            screen: member.showing.screen,
+            muted: member.showing.muted,
+            deafened: member.showing.deafened,
         })
         .collect()
 }
@@ -1368,7 +1371,7 @@ struct JsVoiceGrant {
     call: String,
     epoch: u64,
     directions: JsDirections,
-    participants: Vec<JsVoiceParticipant>,
+    members: Vec<JsVoiceMember>,
 }
 
 /// A call of the workspace as `web/voice.mjs` lists it.
@@ -1382,7 +1385,7 @@ struct JsCall {
     app: String,
     record: String,
     channel: String,
-    participants: Vec<JsVoiceParticipant>,
+    members: Vec<JsVoiceMember>,
 }
 
 fn call_state(state: &tilo_relay_protocol::voice::CallState) -> serde_json::Value {
@@ -1521,9 +1524,9 @@ fn voice_event(
                                 active: summary.state.active,
                                 allowed: summary.state.allowed.into(),
                                 app: summary.app_id,
-                                record: summary.record_id,
+                                record: summary.document_id,
                                 channel: summary.channel_id,
-                                participants: voice_participants(summary.participants),
+                                members: voice_members(summary.members),
                             })
                             .collect(),
                     ),
@@ -1564,7 +1567,7 @@ fn voice_event(
                     call: hex::encode(grant.call),
                     epoch: grant.epoch,
                     directions: grant.directions.into(),
-                    participants: voice_participants(grant.participants),
+                    members: voice_members(grant.members),
                 },
             }
         }
@@ -1615,7 +1618,7 @@ impl JsCallOperation {
                 channel,
             } => CallOperation::Open {
                 app_id: app,
-                record_id: record,
+                document_id: record,
                 channel_id: channel,
             },
             Self::Start {
@@ -1625,7 +1628,7 @@ impl JsCallOperation {
                 allowed,
             } => CallOperation::Start {
                 app_id: app,
-                record_id: record,
+                document_id: record,
                 channel_id: channel,
                 allowed: Directions {
                     publish: allowed.publish,
@@ -1695,6 +1698,10 @@ pub struct WasmPeer {
     durable_events: Events,
     live_events: Events,
     voice_events: Events,
+    /// The person's workspace lists as their host sends them: what the
+    /// switcher offers without asking the host again.
+    personal_events: Events,
+    personal_list: RefCell<Option<tilo_relay_session::workspaces::PersonalList>>,
     /// Joined workspaces by workspace, to name them in call events.
     voice_workspaces: RefCell<std::collections::HashMap<WorkspaceId, String>>,
     listeners: Rc<RefCell<Vec<Function>>>,
@@ -1799,18 +1806,28 @@ impl WasmPeer {
             .map_err(js_error)
     }
 
-    /// The person's workspaces as their host lists them, in the page's shape: the question this
-    /// page's device asks ([`Device::personal_list`], the one the CLI's peer asks), so a page
-    /// offers every workspace of theirs, not only the ones this browser's storage still remembers.
+    /// The person's workspaces as their host lists them, in the page's shape: the list the host
+    /// sent this session as it changed, else the question this page's device asks once
+    /// ([`Device::personal_list`], the one the CLI's peer asks), so a page offers every workspace
+    /// of theirs, not only the ones this browser's storage still remembers.
     pub(crate) async fn personal_workspaces(&self) -> Result<serde_json::Value, JsError> {
-        let list = self
-            .device
-            .personal_list(
-                &tilo_relay_session::workspaces::WorkspaceLabels::new(),
-                None,
-            )
-            .await
-            .map_err(|refusal| js_error(refusal.message))?;
+        for event in self.personal_events.drain() {
+            if let Event::Personal(list) = event {
+                self.personal_list.borrow_mut().replace(*list);
+            }
+        }
+        let pushed = self.personal_list.borrow().clone();
+        let list = match pushed {
+            Some(list) => list,
+            None => self
+                .device
+                .personal_list(
+                    &tilo_relay_session::workspaces::WorkspaceLabels::new(),
+                    None,
+                )
+                .await
+                .map_err(|refusal| js_error(refusal.message))?,
+        };
         serde_json::to_value(&list).map_err(js_error)
     }
 }
@@ -1907,6 +1924,9 @@ impl WasmPeer {
             handle.events_where(crate::replication::takes),
             replication_store,
         )));
+        // The person's lists as the host sends them: read beside what this
+        // page remembered, never asked for again.
+        let personal_events = handle.events_where(|event| matches!(event, Event::Personal(_)));
         let listeners: Rc<RefCell<Vec<Function>>> = Rc::default();
         let changed = Arc::new(tokio::sync::Notify::new());
         handle.on_change({
@@ -1938,6 +1958,8 @@ impl WasmPeer {
             durable_events: handle.events_where(is_durable),
             live_events: handle.events_where(is_live),
             voice_events: handle.events_where(is_voice),
+            personal_events,
+            personal_list: RefCell::new(None),
             voice_workspaces: RefCell::default(),
             handle,
             device,
@@ -2175,7 +2197,7 @@ impl WasmPeer {
     }
 
     /// Say this page's `value` of itself in `workspace` (the live layer's
-    /// value, JSON: `{participant, place, layout, focus, selection, pointer,
+    /// value, JSON: `{member, place, layout, focus, selection, pointer,
     /// chat, reaction, wave, following}`): the board keeps what changed and
     /// publishes it on its own schedule, as every device's presence goes.
     /// Resolves to when it next has something to say, in `Date.now()` ms
@@ -2813,7 +2835,7 @@ impl WasmPeer {
     /// The workspace's records this page holds, as JSON `[{app, record}]`, so a
     /// page can hand a guest the record its desktop created.
     #[wasm_bindgen(js_name = workspaceRecords)]
-    pub fn workspace_records(&self) -> String {
+    pub fn workspace_resources(&self) -> String {
         let records: Vec<JsRecord> = crate::replication::records(self.id)
             .into_iter()
             .map(|(app, record)| JsRecord { app, record })
@@ -2884,14 +2906,14 @@ impl WasmPeer {
         message: &str,
     ) -> Result<(), JsError> {
         self.handle
-            .report_failure(failure_subject(surface, asset), code, message)
+            .report_failure(failure_kind(surface, asset), code, message)
             .map_err(js_error)
     }
 
-    /// Clear the failure `reportFailure` reported for the same subject.
+    /// Clear the failure `reportFailure` reported for the same kind.
     #[wasm_bindgen(js_name = clearFailure)]
     pub fn clear_failure(&self, surface: Option<String>, asset: Option<String>) {
-        self.handle.clear_failure(&failure_subject(surface, asset));
+        self.handle.clear_failure(&failure_kind(surface, asset));
     }
 
     /// Clear every failure of desktop surface `surface` and its assets.

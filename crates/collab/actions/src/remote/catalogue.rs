@@ -61,7 +61,7 @@ pub struct CanonicalActionRoute {
     pub workspace: String,
     pub app_id: String,
     /// Empty names the package-primary record, never any record.
-    pub record_id: String,
+    pub document_id: String,
 }
 
 /// One bounded request for catalogue rows. Every field narrows; the empty
@@ -327,7 +327,7 @@ pub struct CatalogueProvider {
     pub workspace: String,
     /// The publisher's own record, when it names one.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub record_id: String,
+    pub document_id: String,
     /// Whether it publishes a live directory worth browsing by parent.
     #[serde(default)]
     pub browsable: bool,

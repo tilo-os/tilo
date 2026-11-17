@@ -25,6 +25,7 @@ mod wake_check;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::os::fd::{AsRawFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -55,7 +56,7 @@ use smithay::backend::udev::{self, UdevBackend, UdevEvent};
 use smithay::output::{Mode as OutputMode, Output, PhysicalProperties, Scale, Subpixel};
 use smithay::reexports::calloop::{LoopHandle, RegistrationToken};
 use smithay::reexports::drm::control::{
-    Device as _, Mode as DrmMode, ModeFlags, ModeTypeFlags, connector, crtc,
+    Device as _, Mode as DrmMode, ModeFlags, ModeTypeFlags, connector, crtc, property,
 };
 use smithay::reexports::input::Libinput as LibinputContext;
 use smithay::reexports::rustix::fs::OFlags;
@@ -239,8 +240,139 @@ struct Inner {
     primary: Option<DrmNode>,
     config: DisplayConfig,
     active: bool,
+    /// This run continues an in-place restart of the login's desktop
+    /// ([`DisplayConfig::following_restart`]).
+    following_restart: bool,
+    /// How this run says its first frame is on every display, until it has.
+    handover: Option<Handover>,
     /// The last topology line written, so it is written when it changes.
     topology: String,
+}
+
+/// What a desktop restarting in place hands to the run that follows: the descriptor the login's
+/// wrapper opened, and the displays whose first frame of this run it still waits for. The run that
+/// ended keeps the old picture alive until the byte goes out, because a framebuffer is freed with
+/// the last descriptor of the device it was made on, and freeing one a plane still scans out
+/// switches that plane off.
+struct Handover {
+    fd: RawFd,
+    awaiting: HashSet<crtc::Handle>,
+}
+
+impl Handover {
+    /// A frame of this run was shown on `crtc`: with every display showing one, the byte goes out.
+    fn presented(&mut self, crtc: crtc::Handle) {
+        if !self.awaiting.remove(&crtc) || !self.awaiting.is_empty() {
+            return;
+        }
+        write_handover(self.fd);
+    }
+
+    /// Displays that are gone or dark owe no first frame any more.
+    fn retain(&mut self, lit: impl Fn(crtc::Handle) -> bool) {
+        self.awaiting.retain(|crtc| lit(*crtc));
+        if self.awaiting.is_empty() {
+            write_handover(self.fd);
+        }
+    }
+}
+
+/// Tell the run that kept the old picture that this one has put up a frame of its own.
+fn write_handover(fd: RawFd) {
+    // SAFETY: the descriptor is the wrapper's own, handed to this process as it started; it only
+    // ever takes one byte per run, and a run that cannot write it leaves the keeper to its timeout.
+    unsafe { libc::write(fd, b"1".as_ptr().cast(), 1) };
+}
+
+/// How long a keeper holds the old picture when the desktop that follows never says it has its own:
+/// a run that cannot start must not freeze the display for the login either.
+const KEEPER_WAIT_MS: libc::c_int = 60_000;
+
+/// Whether a teardown leaves the displays showing what they show: only an in-place restart, and
+/// only when the login's wrapper opened the descriptor that says the next run has replaced the
+/// picture. Every other way a desktop ends takes the hardware down as before.
+fn keeps_picture(restarting: bool, handover: Option<RawFd>) -> bool {
+    restarting && handover.is_some()
+}
+
+/// Empty the handover of bytes an earlier run wrote, so a keeper only wakes for the desktop it
+/// kept the picture for.
+fn drain_handover(fd: RawFd) {
+    let mut byte = 0u8;
+    let mut poll = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    loop {
+        // SAFETY: the descriptor is the wrapper's; a byte is read into a live buffer, and nothing
+        // is read once none waits.
+        if unsafe { libc::poll(&raw mut poll, 1, 0) } <= 0 {
+            break;
+        }
+        if unsafe { libc::read(fd, std::ptr::addr_of_mut!(byte).cast(), 1) } <= 0 {
+            break;
+        }
+    }
+}
+
+/// Whether a keeper keeps `fd` open: the device descriptors and the handover it was given, nothing
+/// else.
+fn keeper_keeps(fd: RawFd, keep: &[RawFd]) -> bool {
+    keep.contains(&fd)
+}
+
+/// Fork a process that holds `keep`'s descriptors until the desktop that follows writes its
+/// handover byte, or for at most [`KEEPER_WAIT_MS`]. The parent exits as it normally would, and the
+/// keeper is then the last holder of the framebuffers the planes scan out, so the picture stays
+/// until the new desktop replaces it; when it goes, the buffers are freed with nothing on a plane.
+///
+/// The child makes only calls that are safe after a fork in a threaded process: `close`, `poll`,
+/// `read` and `_exit`.
+fn fork_keeper(keep: &[RawFd]) -> Option<libc::pid_t> {
+    // SAFETY: see above; the child neither allocates nor takes a lock.
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        return None;
+    }
+    if pid > 0 {
+        return Some(pid);
+    }
+    // SAFETY: this is the child, and every call below is one of the four named above.
+    unsafe {
+        // The display socket, the buses and the flight recorder's pipe belong to the run that is
+        // ending. Closed first, so that the recorder sees it end.
+        for fd in 0..3 {
+            libc::close(fd);
+        }
+        let open_max = libc::sysconf(libc::_SC_OPEN_MAX);
+        let open_max = if open_max > 0 { open_max } else { 1024 };
+        for fd in 3..(open_max.min(65_536) as RawFd) {
+            if !keeper_keeps(fd, keep) {
+                libc::close(fd);
+            }
+        }
+        let handover = match keep.last() {
+            Some(fd) => *fd,
+            None => libc::_exit(0),
+        };
+        let mut byte = 0u8;
+        let mut poll = libc::pollfd {
+            fd: handover,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        loop {
+            let ready = libc::poll(&raw mut poll, 1, KEEPER_WAIT_MS);
+            if ready <= 0 {
+                break;
+            }
+            if libc::read(handover, std::ptr::addr_of_mut!(byte).cast(), 1) > 0 {
+                break;
+            }
+        }
+        libc::_exit(0);
+    }
 }
 
 impl Inner {
@@ -294,6 +426,7 @@ impl DrmBackend {
             BackendError(failure.to_string())
         })?;
         let seat = session.seat();
+        let following_restart = config.following_restart;
 
         let mut libinput =
             LibinputContext::new_with_udev(LibinputSessionInterface::from(session.clone()));
@@ -311,6 +444,8 @@ impl DrmBackend {
             primary: None,
             config,
             active: true,
+            following_restart,
+            handover: None,
             topology: String::new(),
         }));
 
@@ -324,6 +459,7 @@ impl DrmBackend {
             add_gpu(handle, &inner, &path);
         }
         scan_connectors(&inner, state);
+        arm_handover(&inner);
 
         let input = Rc::new(RefCell::new(libinput::Input::new(
             input_config::InputConfig::default(),
@@ -416,6 +552,37 @@ impl Backend for DrmBackend {
             .map_err(|error| BackendError(format!("switching to virtual terminal {vt}: {error:?}")))
     }
 
+    fn keep_picture(&mut self, restarting: bool) {
+        let mut inner = self.inner.borrow_mut();
+        let handover = inner.config.restart_handover;
+        if !keeps_picture(restarting, handover) {
+            return;
+        }
+        let Some(handover) = handover else {
+            return;
+        };
+        // A framebuffer is freed with the last descriptor of the open file it was made on, and
+        // freeing one that a plane still scans out switches that plane off. The descriptors are
+        // what the keeper holds, so the picture on every display survives this process.
+        let mut keep: Vec<RawFd> = inner
+            .gpus
+            .values()
+            .map(|gpu| gpu.manager.device().device_fd().as_raw_fd())
+            .collect();
+        keep.push(handover);
+        // Pausing leaves every connector, plane and mode as it is, gives up master for the run that
+        // follows and keeps the surfaces from clearing the hardware as they are dropped.
+        for gpu in inner.gpus.values_mut() {
+            gpu.manager.pause();
+        }
+        drop(inner);
+        drain_handover(handover);
+        if let Some(pid) = fork_keeper(&keep) {
+            tracing::info!(pid, "the displays keep their picture for the restart");
+        } else {
+            tracing::warn!("the displays cannot keep their picture for the restart");
+        }
+    }
     fn output_capabilities(&self) -> Vec<crate::settings_bridge::Capability> {
         let inner = self.inner.borrow();
         let profiles = color::color_profiles();
@@ -1049,9 +1216,14 @@ fn vblank(
     let Some(lit) = gpu.outputs.get_mut(&crtc) else {
         return;
     };
+    let mut retired = false;
     match lit.surface.frame_submitted() {
-        Ok(Some(Some(presentation))) => presentation.shown(state, vblank_shown(metadata)),
-        Ok(_) => {}
+        Ok(Some(Some(presentation))) => {
+            presentation.shown(state, vblank_shown(metadata));
+            retired = true;
+        }
+        Ok(Some(None)) => retired = true,
+        Ok(None) => {}
         Err(error) => tracing::warn!(?error, output = lit.output.name(), "page flip not retired"),
     }
     lit.queued = false;
@@ -1075,6 +1247,17 @@ fn vblank(
             }
         }
         None => {}
+    }
+    if retired {
+        let done = inner.handover.as_mut().is_some_and(|handover| {
+            handover.awaiting.is_empty() || {
+                handover.presented(crtc);
+                handover.awaiting.is_empty()
+            }
+        });
+        if done {
+            inner.handover = None;
+        }
     }
 }
 
@@ -1467,8 +1650,12 @@ fn open_gpu(
         .node_with_type(NodeType::Render)
         .and_then(Result::ok)
         .unwrap_or(node);
-    let (device, notifier) =
-        DrmDevice::new(fd.clone(), true).map_err(|error| failed("DRM device", error))?;
+    // Opening a device resets every connector and plane it finds, which is what a login wants and
+    // the opposite of what a desktop restarting in place does: its displays already run the modes
+    // it is about to ask for, and their planes hold the last picture.
+    let following_restart = inner.borrow().following_restart;
+    let (device, notifier) = DrmDevice::new(fd.clone(), !following_restart)
+        .map_err(|error| failed("DRM device", error))?;
     let gbm = GbmDevice::new(fd).map_err(|error| failed("GBM device", error))?;
     let renderer_formats = {
         let mut inner = inner.borrow_mut();
@@ -1491,7 +1678,7 @@ fn open_gpu(
         GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
     );
     let exporter = GbmFramebufferExporter::new(gbm.clone(), Some(render));
-    let manager = Manager::new(
+    let mut manager = Manager::new(
         device,
         allocator,
         exporter,
@@ -1499,6 +1686,9 @@ fn open_gpu(
         color::SDR_FORMATS,
         renderer_formats,
     );
+    // A desktop that restarts in place already has a picture on every plane: no warm-up frame of
+    // its own, so that picture stays until its first real frame replaces it.
+    manager.set_initial_frame(!following_restart);
 
     let vblank_inner = Rc::clone(inner);
     let dev_id = node.dev_id();
@@ -1585,7 +1775,52 @@ fn scan_connectors(inner: &Rc<RefCell<Inner>>, state: &mut State) {
         }
     }
     arrange_outputs(gpus, config, state);
+    let driven: HashSet<crtc::Handle> = gpus
+        .values()
+        .flat_map(|gpu| gpu.outputs.iter())
+        .filter(|(_, lit)| !lit.dark)
+        .map(|(crtc, _)| *crtc)
+        .collect();
     log_topology(&mut inner, state);
+    if let Some(handover) = inner.handover.as_mut() {
+        handover.retain(|crtc| driven.contains(&crtc));
+        if handover.awaiting.is_empty() {
+            inner.handover = None;
+        }
+    }
+}
+
+/// Start waiting for this run's first frame on every display, when it follows an in-place restart
+/// and the wrapper left a descriptor for it. With no display to wait for, the byte goes out at once:
+/// there is no picture to keep.
+fn arm_handover(inner: &Rc<RefCell<Inner>>) {
+    let mut inner = inner.borrow_mut();
+    if !inner.following_restart {
+        return;
+    }
+    let Some(fd) = inner.config.restart_handover else {
+        return;
+    };
+    // Apps this desktop starts must not inherit it.
+    // SAFETY: the descriptor is the wrapper's, handed to this process.
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFD);
+        if flags >= 0 {
+            libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+        }
+    }
+    let awaiting: HashSet<crtc::Handle> = inner
+        .gpus
+        .values()
+        .flat_map(|gpu| gpu.outputs.iter())
+        .filter(|(_, lit)| !lit.dark)
+        .map(|(crtc, _)| *crtc)
+        .collect();
+    if awaiting.is_empty() {
+        write_handover(fd);
+    } else {
+        inner.handover = Some(Handover { fd, awaiting });
+    }
 }
 
 /// The output name of a connector of the card at `path` : the connector's name (`HDMI-A-1`), or
@@ -1642,75 +1877,106 @@ fn scan_gpu(
         .iter()
         .filter(|info| !lit_connectors.contains(&info.handle()))
     {
-        let connector_name = format!("{}-{}", info.interface().as_str(), info.interface_id());
-        let name = output_name(&gpu.path, &connector_name, taken);
-        let modes: Vec<ModeInfo> = info
-            .modes()
-            .iter()
-            .map(|mode| ModeInfo {
-                width: mode.size().0,
-                height: mode.size().1,
-                refresh_mhz: mode.vrefresh().saturating_mul(1000),
-                preferred: mode.mode_type().contains(ModeTypeFlags::PREFERRED),
-                interlaced: mode.flags().contains(ModeFlags::INTERLACE),
-            })
-            .collect();
-        let Some(mode) = select_mode(&modes, config.modes.get(&name).copied())
-            .and_then(|index| info.modes().get(index))
-        else {
-            tracing::warn!(output = name, "connector advertises no usable mode");
-            continue;
-        };
-        let path = gpu.path.clone();
-        let attempt = |result| {
-            tracing::info!(
-                "{}",
-                topology::connector_attempt_line(&path, &name, mode.size(), result)
-            );
-        };
-        let Some(crtc) = free_crtc(gpu.manager.device(), &resources, info, &used) else {
-            attempt(topology::ConnectorAttempt::Failed(
-                "no free CRTC can drive this connector",
-            ));
-            continue;
-        };
-        // The person's scale for this connector, else the one its panel's density argues for: a
-        // monitor nobody has arranged yet comes up readable instead of at 100% with tiny text.
-        let (width, height) = mode.size();
-        let scale = config.scales.get(&name).copied().unwrap_or_else(|| {
-            crate::output::panel_scale((u32::from(width), u32::from(height)), info.size())
-        });
-        let lit = light(
-            gpu,
-            renderers,
-            state,
-            &Lighting {
-                primary,
-                info,
-                name: &name,
-                crtc,
-                mode: *mode,
-                scale,
-            },
+        light_connected(
+            gpu, primary, renderers, config, taken, state, &mut used, info,
         );
-        attempt(if lit.is_some() {
-            topology::ConnectorAttempt::Lit
-        } else {
-            topology::ConnectorAttempt::Failed("the modeset was refused")
-        });
-        if let Some(lit) = lit {
-            used.insert(crtc);
-            if let Some(transform) = config.transforms.get(&name) {
-                lit.output
-                    .change_current_state(None, Some(*transform), None, None);
-            }
-            if config.disabled.contains(&name) {
-                // Turned off by the person: known, not shown; its panel goes dark at the next power
-                // sync.
-                state.disable_output(&name);
-            }
-            gpu.outputs.insert(crtc, lit);
+    }
+}
+
+/// Light the connector `info` on a free CRTC and make it an output right of the others.
+fn light_connected(
+    gpu: &mut Gpu,
+    primary: DrmNode,
+    renderers: &mut Renderers,
+    config: &DisplayConfig,
+    taken: &HashSet<String>,
+    state: &mut State,
+    used: &mut HashSet<crtc::Handle>,
+    info: &connector::Info,
+) {
+    let Ok(resources) = gpu.manager.device().resource_handles() else {
+        tracing::warn!(path = %gpu.path.display(), "DRM resources unreadable");
+        return;
+    };
+    let connector_name = format!("{}-{}", info.interface().as_str(), info.interface_id());
+    let name = output_name(&gpu.path, &connector_name, taken);
+    let modes: Vec<ModeInfo> = info
+        .modes()
+        .iter()
+        .map(|mode| ModeInfo {
+            width: mode.size().0,
+            height: mode.size().1,
+            refresh_mhz: mode.vrefresh().saturating_mul(1000),
+            preferred: mode.mode_type().contains(ModeTypeFlags::PREFERRED),
+            interlaced: mode.flags().contains(ModeFlags::INTERLACE),
+        })
+        .collect();
+    let Some(mode) = select_mode(&modes, config.modes.get(&name).copied())
+        .and_then(|index| info.modes().get(index))
+    else {
+        tracing::warn!(output = name, "connector advertises no usable mode");
+        return;
+    };
+    let path = gpu.path.clone();
+    let attempt = |result| {
+        tracing::info!(
+            "{}",
+            topology::connector_attempt_line(&path, &name, mode.size(), result)
+        );
+    };
+    // A restart adopts the CRTC the connector is already driven from, so the first frame is a
+    // flip of the plane that is showing and not a mode set on another one.
+    let current = config
+        .following_restart
+        .then(|| current_crtc(gpu.manager.device(), info.handle()))
+        .flatten();
+    let Some(crtc) = free_crtc(gpu.manager.device(), &resources, info, used, current) else {
+        attempt(topology::ConnectorAttempt::Failed(
+            "no free CRTC can drive this connector",
+        ));
+        return;
+    };
+    // The person's scale for this connector, else the one its panel's density argues for: a
+    // monitor nobody has arranged yet comes up readable instead of at 100% with tiny text.
+    let (width, height) = mode.size();
+    let scale = config.scales.get(&name).copied().unwrap_or_else(|| {
+        crate::output::panel_scale((u32::from(width), u32::from(height)), info.size())
+    });
+    let lit = light(
+        gpu,
+        renderers,
+        state,
+        &Lighting {
+            primary,
+            info,
+            name: &name,
+            crtc,
+            mode: *mode,
+            scale,
+        },
+    );
+    attempt(if lit.is_some() {
+        topology::ConnectorAttempt::Lit
+    } else {
+        topology::ConnectorAttempt::Failed("the modeset was refused")
+    });
+    if let Some(mut lit) = lit {
+        used.insert(crtc);
+        // After a restart no warm-up frame was committed, so no vertical blank is owed: this
+        // run's first frame is the one that replaces the picture already on the plane.
+        if config.following_restart {
+            lit.queued = false;
         }
+        if let Some(transform) = config.transforms.get(&name) {
+            lit.output
+                .change_current_state(None, Some(*transform), None, None);
+        }
+        if config.disabled.contains(&name) {
+            // Turned off by the person: known, not shown; its panel goes dark at the next power
+            // sync.
+            state.disable_output(&name);
+        }
+        gpu.outputs.insert(crtc, lit);
     }
 }
 
@@ -1954,7 +2220,8 @@ fn light(
     let interval = refresh_interval(output_mode.refresh);
     tracing::info!(output = name, ?interval, "output lit");
     // Lighting the output is one commit, and it runs in the driver's commit tail: the frame it put
-    // up is this output's queued frame until its vblank, which is what proves the link came up.
+    // up is this output's queued frame until its vblank, which is what proves the link came up. A
+    // restart in place commits none: the plane already shows a frame, and none is owed.
     let now = Instant::now();
     Some(Lit {
         output,
@@ -2003,12 +2270,43 @@ fn free_crtc(
     resources: &smithay::reexports::drm::control::ResourceHandles,
     info: &connector::Info,
     used: &HashSet<crtc::Handle>,
+    current: Option<crtc::Handle>,
 ) -> Option<crtc::Handle> {
-    info.encoders()
+    let possible: Vec<crtc::Handle> = info
+        .encoders()
         .iter()
         .filter_map(|encoder| device.get_encoder(*encoder).ok())
         .flat_map(|encoder| resources.filter_crtcs(encoder.possible_crtcs()))
-        .find(|crtc| !used.contains(crtc))
+        .collect();
+    choose_crtc(&possible, used, current)
+}
+
+/// The CRTC to drive a connector from: the one it is already driven from when it can, else the
+/// first free one of `possible`. `used` holds the CRTCs this run already drives.
+fn choose_crtc(
+    possible: &[crtc::Handle],
+    used: &HashSet<crtc::Handle>,
+    current: Option<crtc::Handle>,
+) -> Option<crtc::Handle> {
+    current
+        .filter(|crtc| possible.contains(crtc) && !used.contains(crtc))
+        .or_else(|| possible.iter().copied().find(|crtc| !used.contains(crtc)))
+}
+
+/// The CRTC `connector` is already driven from, if it is on one: its `CRTC_ID` property.
+fn current_crtc(device: &DrmDevice, connector: connector::Handle) -> Option<crtc::Handle> {
+    let properties = device.get_properties(connector).ok()?;
+    let (ids, values) = properties.as_props_and_values();
+    ids.iter().zip(values.iter()).find_map(|(&id, &value)| {
+        let info = device.get_property(id).ok()?;
+        if info.name().to_bytes() != b"CRTC_ID" {
+            return None;
+        }
+        match info.value_type().convert_value(value) {
+            property::Value::CRTC(crtc) => crtc,
+            _ => None,
+        }
+    })
 }
 
 /// Where the next output goes: right of every output already laid out.
@@ -2032,6 +2330,31 @@ fn pointer_extent(state: &State) -> smithay::utils::Size<i32, smithay::utils::Lo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A handover pipe, as the wrapper makes one: the read end a keeper holds, the write end the
+    /// desktop that follows says its first frame is up on.
+    fn handover_pipe() -> (RawFd, RawFd) {
+        let mut fds = [0; 2];
+        // SAFETY: a pipe of two descriptors; the test owns both.
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        (fds[0], fds[1])
+    }
+
+    /// Whether the handover took a byte, taking it: one byte per desktop, and none twice.
+    fn took_handover_byte(read: RawFd) -> bool {
+        let mut poll = libc::pollfd {
+            fd: read,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one descriptor, no timeout.
+        if unsafe { libc::poll(&raw mut poll, 1, 0) } <= 0 {
+            return false;
+        }
+        let mut byte = 0u8;
+        // SAFETY: one byte into a live buffer.
+        unsafe { libc::read(read, std::ptr::addr_of_mut!(byte).cast(), 1) > 0 }
+    }
 
     tilo_test_env::scenario! {
         /// The backend's own small decisions.
@@ -2076,6 +2399,129 @@ mod tests {
             let card = Path::new("/dev/dri/card1");
             assert_eq!(output_name(card, "DP-1", &taken), "DP-1");
             assert_eq!(output_name(card, "HDMI-A-1", &taken), "card1/HDMI-A-1");
+        }
+    }
+
+    tilo_test_env::scenario! {
+        /// What a desktop restarting in place hands on, and what a teardown leaves alone.
+        fn a_restart_keeps_the_last_picture_until_the_desktop_that_follows_shows_its_own;
+
+        phase only_an_in_place_restart_with_the_logins_handover_keeps_the_picture;
+        {
+            assert!(keeps_picture(true, Some(5)), "the wrapper asked to restart");
+            assert!(
+                !keeps_picture(true, None),
+                "a restart nobody opened a handover for cannot say when to let go"
+            );
+            assert!(
+                !keeps_picture(false, Some(5)),
+                "a logout takes the displays down with the login"
+            );
+        }
+
+        phase a_restart_drives_each_connector_from_the_crtc_it_already_uses;
+        {
+            let crtc = |raw: u32| smithay::reexports::drm::control::from_u32(raw).expect("a crtc");
+            let possible = [crtc(1), crtc(2)];
+            let none = HashSet::new();
+            // The mode already runs on crtc 2: the first frame is a flip of its plane, not a mode
+            // set on crtc 1.
+            assert_eq!(
+                choose_crtc(&possible, &none, Some(crtc(2))),
+                Some(crtc(2)),
+                "the current crtc is adopted"
+            );
+            assert_eq!(
+                choose_crtc(&possible, &none, Some(crtc(9))),
+                Some(crtc(1)),
+                "a crtc this connector cannot use is no current one"
+            );
+            assert_eq!(
+                choose_crtc(&possible, &HashSet::from([crtc(2)]), Some(crtc(2))),
+                Some(crtc(1)),
+                "a crtc another connector already took is not adopted"
+            );
+            assert_eq!(
+                choose_crtc(&possible, &HashSet::from([crtc(1), crtc(2)]), Some(crtc(2))),
+                None,
+                "no crtc left is no output"
+            );
+            assert_eq!(
+                choose_crtc(&possible, &none, None),
+                Some(crtc(1)),
+                "a fresh login takes the first free crtc"
+            );
+        }
+
+        phase the_new_desktop_lets_the_old_picture_go_once_every_display_shows_its_own_frame;
+        {
+            let (read, write) = handover_pipe();
+            let crtc = |raw: u32| smithay::reexports::drm::control::from_u32(raw).expect("a crtc");
+            let mut handover = Handover {
+                fd: write,
+                awaiting: HashSet::from([crtc(1), crtc(2)]),
+            };
+            handover.presented(crtc(1));
+            assert!(!took_handover_byte(read), "one display is still owed");
+            handover.presented(crtc(1));
+            assert!(
+                !took_handover_byte(read),
+                "the same display twice is not the other one"
+            );
+            handover.presented(crtc(2));
+            assert!(took_handover_byte(read), "both displays show this run");
+            handover.presented(crtc(2));
+            assert!(
+                !took_handover_byte(read),
+                "the old picture is let go once"
+            );
+        }
+
+        phase a_display_that_goes_dark_or_away_is_no_longer_waited_for;
+        {
+            let (read, write) = handover_pipe();
+            let crtc = |raw: u32| smithay::reexports::drm::control::from_u32(raw).expect("a crtc");
+            let mut handover = Handover {
+                fd: write,
+                awaiting: HashSet::from([crtc(1), crtc(2)]),
+            };
+            handover.retain(|crtc| crtc == smithay::reexports::drm::control::from_u32(1).unwrap());
+            assert!(!took_handover_byte(read), "one display is still owed");
+            handover.presented(crtc(1));
+            assert!(took_handover_byte(read), "the last one showed its frame");
+
+            let (read, write) = handover_pipe();
+            let mut handover = Handover {
+                fd: write,
+                awaiting: HashSet::from([crtc(1)]),
+            };
+            handover.retain(|_| false);
+            assert!(
+                took_handover_byte(read),
+                "nothing is left to show a frame: the old picture need not stay"
+            );
+        }
+
+        phase a_keeper_keeps_only_the_devices_and_the_handover_it_was_given;
+        {
+            let keep = [7, 9];
+            assert!(keeper_keeps(7, &keep));
+            assert!(keeper_keeps(9, &keep));
+            assert!(
+                !keeper_keeps(1, &keep),
+                "the display socket and the recorder's pipe belong to the run that ends"
+            );
+        }
+
+        phase a_byte_a_run_before_wrote_is_not_taken_for_this_runs_first_frame;
+        {
+            let (read, write) = handover_pipe();
+            assert_eq!(unsafe { libc::write(write, b"1".as_ptr().cast(), 1) }, 1);
+            assert!(took_handover_byte(read), "the stale byte waits");
+            // The same byte is put back, and draining leaves nothing for the next keeper.
+            assert_eq!(unsafe { libc::write(write, b"1".as_ptr().cast(), 1) }, 1);
+            drain_handover(read);
+            assert!(!took_handover_byte(read), "the handover starts empty");
         }
     }
 }

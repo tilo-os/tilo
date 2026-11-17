@@ -15,7 +15,7 @@ use ui_core::i18n::EmbeddedCatalog;
 use ui_core::launch::LaunchError;
 use ui_core::permissions::MemberId;
 use ui_core::permissions::{ActionKind, LivePermissions, PermissionScope};
-use ui_core::record::{DocumentId, ResourceType};
+use ui_core::resource::{DocumentId, ResourceType};
 use ui_core::storage::AppStorage;
 use ui_core::widget::{Element, IconDescriptor};
 
@@ -29,7 +29,7 @@ use {
     ui_core::headless::FrameHarness,
     ui_core::launch::{LaunchArgs, LaunchSpec},
     ui_core::permissions::{PermissionContext, Role},
-    ui_core::record::DocumentCheckout,
+    ui_core::resource::DocumentCheckout,
 };
 
 use super::dispatch::Dispatcher;
@@ -49,8 +49,8 @@ pub struct AppName {
     pub title: &'static str,
     pub icon: Option<&'static str>,
     /// Each member of a workspace keeps their own record of the app, as the manifest that names
-    /// it says ([`ApplicationDefinition::member_record`]).
-    pub own_records: bool,
+    /// it says ([`ApplicationDefinition::member_resource`]).
+    pub own_resources: bool,
 }
 
 /// A framework app: one resource type and a view of it.
@@ -91,7 +91,7 @@ pub trait ResourceApp: 'static {
     /// `application/octet-stream`.
     const OPENS: &'static [&'static str] = &[];
     /// How many arguments (paths, URLs) a launch may name;
-    /// [`Self::launch_record`] and [`Self::launch`] receive them.
+    /// [`Self::launch_resource`] and [`Self::launch`] receive them.
     const ARGUMENTS: usize = 0;
     /// Whether the resource keeps document state whose versions History
     /// shows. An app whose state lives outside its document (a measurement,
@@ -100,19 +100,19 @@ pub trait ResourceApp: 'static {
     const DOCUMENT_HISTORY: bool = true;
     /// The app brings what its windows kept before it kept one record per
     /// workspace into that record in its own seed
-    /// ([`SeedCx::window_records`]), as Notes copies its pages by id. Every
+    /// ([`SeedCx::window_resources`]), as Notes copies its pages by id. Every
     /// app keeps one record per workspace, which every window of it there
     /// opens and the first one creates; without this the framework copies
     /// the earlier windows' records into it value by value
     /// (`adopt_windows`).
-    const WORKSPACE_RECORD: bool = false;
+    const WORKSPACE_RESOURCE: bool = false;
     /// Each window shows a resource of its own: a document an editor opened
     /// (Word Processor, Code Editor, Sheets), a terminal session. A window
     /// that names none starts a new one, and two windows show two of them
     /// (or one document together, when both open it); no window mirrors
     /// another. The documents earlier windows started stay in the workspace:
-    /// the app lists them with [`RecordEnv::window_documents`](super::RecordEnv::window_documents)
-    /// and opens one in a window with [`RecordEnv::open_here`](super::RecordEnv::open_here).
+    /// the app lists them with [`ResourceEnv::window_documents`](super::ResourceEnv::window_documents)
+    /// and opens one in a window with [`ResourceEnv::open_here`](super::ResourceEnv::open_here).
     /// Without it the app's record is its library and settings,
     /// one per workspace, which every window of the app there shows.
     const WINDOW_RESOURCE: bool = false;
@@ -120,23 +120,23 @@ pub trait ResourceApp: 'static {
     /// (`--purpose number` or `--purpose=number`): how this window runs
     /// rather than what it opens. [`Self::launch`] reads them from its
     /// [`LaunchInput::option`], views and surfaces from
-    /// [`RecordEnv::launch_option`](super::RecordEnv::launch_option).
+    /// [`ResourceEnv::launch_option`](super::ResourceEnv::launch_option).
     const OPTIONS: &'static [&'static str] = &[];
     /// The app's own switches, which take no value (`--debug-hit-areas`):
-    /// [`LaunchInput::flag`], [`RecordEnv::launch_flag`](super::RecordEnv::launch_flag).
+    /// [`LaunchInput::flag`], [`ResourceEnv::launch_flag`](super::ResourceEnv::launch_flag).
     const FLAGS: &'static [&'static str] = &[];
     /// Whether the app opens private windows (`--private`): a window on a
     /// profile of its own that is thrown away with the process — its record,
     /// settings and files never reach the person's — and that attaches to
     /// no runtime, so nothing it shows syncs or is shared. It holds none of
-    /// the person's own records ([`RecordEnv::person`](super::RecordEnv::person) answers `None`), and its
-    /// view tells with [`RecordEnv::is_private`](super::RecordEnv::is_private).
+    /// the person's own records ([`ResourceEnv::person`](super::ResourceEnv::person) answers `None`), and its
+    /// view tells with [`ResourceEnv::is_private`](super::ResourceEnv::is_private).
     const PRIVATE_WINDOWS: bool = false;
     /// The history of a file of the mounted filesystem the app shows (the
     /// file selected in a file manager), a History scope beside the
     /// resource's own: its versions are read, previewed and restored through
     /// the filesystem's projection, not the app's document. The app's
-    /// view names the file with [`RecordEnv::file_history`](super::RecordEnv::file_history).
+    /// view names the file with [`ResourceEnv::file_history`](super::ResourceEnv::file_history).
     const FILE_HISTORY: Option<FileHistory> = None;
     /// The History of the folder a window shows: every file's changes in it, one row per
     /// file and writer, read from the workspace's tree record, the one the window's rows
@@ -163,7 +163,7 @@ pub trait ResourceApp: 'static {
     /// depend on device services. A pending or failed import must leave the
     /// document unchanged; returning an error withholds the resource. Reopening
     /// retries the import, so retain acknowledged writes across pending retries.
-    fn import_record(context: &HostContext) -> Result<(), String> {
+    fn import_resource(context: &HostContext) -> Result<(), String> {
         let _ = context;
         Ok(())
     }
@@ -178,12 +178,12 @@ pub trait ResourceApp: 'static {
     /// index) opens a record this device holds off the frame, shows
     /// [`Self::opening`] meanwhile, and builds [`Self::view`] once the record
     /// is had. Only for an app that keeps one record per workspace.
-    const OPENS_BEFORE_RECORD: bool = false;
+    const OPENS_BEFORE_RESOURCE: bool = false;
 
     /// What the window shows while the workspace's record is read off the frame
-    /// ([`Self::OPENS_BEFORE_RECORD`]); `None` waits for the record. What it
+    /// ([`Self::OPENS_BEFORE_RESOURCE`]); `None` waits for the record. What it
     /// returns is handed to [`Self::view`] once the record is had, as a
-    /// service lent to the window ([`RecordEnv::take_lent`](super::RecordEnv::take_lent)):
+    /// service lent to the window ([`ResourceEnv::take_lent`](super::ResourceEnv::take_lent)):
     /// the view keeps showing it rather than building it again. A write it
     /// makes before then waits for the record ([`OpeningCx::record`]).
     fn opening(cx: &OpeningCx<'_>) -> Option<Box<dyn OpeningView>> {
@@ -213,7 +213,7 @@ pub trait ResourceApp: 'static {
     /// the workspace's default. Asked by a launcher that picks the record (the
     /// command line, a test host), before the record is opened, so it must
     /// not depend on anything but `input`.
-    fn launch_record(input: &LaunchInput<'_>) -> Option<DocumentId> {
+    fn launch_resource(input: &LaunchInput<'_>) -> Option<DocumentId> {
         let _ = input;
         None
     }
@@ -222,7 +222,7 @@ pub trait ResourceApp: 'static {
     /// `created` when this launch created the record, so actions that fill
     /// a new record (the source of a new project) are taken only then. They
     /// go through the same API as every control: checked against the
-    /// participant's permissions, attributed, undoable and in history. A
+    /// member's permissions, attributed, undoable and in history. A
     /// launch that shows something rather than changing the resource (a
     /// link to one item, a file to look at before acting on it) invokes one
     /// of the app's effects ([`Invoke::effect`]) through the same API. A
@@ -376,10 +376,10 @@ pub trait ResourceApp: 'static {
     /// app's committed surface whether or not a view has shown it.
     ///
     /// ```ignore
-    /// const PERSON_RECORDS: &'static [PersonKind] =
+    /// const PERSON_RESOURCES: &'static [PersonKind] =
     ///     &[PersonKind::shared::<accounts::person::PersonAccounts>()];
     /// ```
-    const PERSON_RECORDS: &'static [super::PersonKind] = &[];
+    const PERSON_RESOURCES: &'static [super::PersonKind] = &[];
 }
 
 /// What [`ResourceApp::opening`] builds with: who the window is for, the workspace, and the record
@@ -389,7 +389,7 @@ pub struct OpeningCx<'a> {
     pub(crate) device: &'a str,
     pub(crate) workspace: String,
     pub(crate) files: ui_core::storage::AppFiles,
-    pub(crate) record: ui_core::record::RecordOpening,
+    pub(crate) record: ui_core::resource::ResourceOpening,
 }
 
 impl OpeningCx<'_> {
@@ -405,13 +405,13 @@ impl OpeningCx<'_> {
         self.device
     }
 
-    /// The workspace the window shows, as [`RecordEnv::workspace`](super::RecordEnv::workspace) names it.
+    /// The workspace the window shows, as [`ResourceEnv::workspace`](super::ResourceEnv::workspace) names it.
     #[must_use]
     pub fn workspace(&self) -> &str {
         &self.workspace
     }
 
-    /// The app's private file areas, as [`RecordEnv::storage`](super::RecordEnv::storage) gives
+    /// The app's private file areas, as [`ResourceEnv::storage`](super::ResourceEnv::storage) gives
     /// them to the view.
     #[must_use]
     pub fn files(&self) -> ui_core::storage::AppFiles {
@@ -419,9 +419,9 @@ impl OpeningCx<'_> {
     }
 
     /// The workspace's record, being read off the frame: what a write before it is had waits for
-    /// ([`RecordOpening::document`](ui_core::record::RecordOpening::document)).
+    /// ([`ResourceOpening::document`](ui_core::resource::ResourceOpening::document)).
     #[must_use]
-    pub fn record(&self) -> &ui_core::record::RecordOpening {
+    pub fn record(&self) -> &ui_core::resource::ResourceOpening {
         &self.record
     }
 }
@@ -460,8 +460,8 @@ pub struct FileHistory {
 
 /// What [`ResourceApp::seed`] may read: who is creating the record, and the
 /// app's host — its settings, files and secrets on this device — when the
-/// record is created in a window. A participant without one (an agent, a
-/// workspace service: [`seed_record`](super::seed_record)) creates it with no
+/// record is created in a window. A member without one (an agent, a
+/// workspace service: [`seed_resource`](super::seed_resource)) creates it with no
 /// host: what a seed imports from the device is the device's own to seed.
 pub struct SeedCx<'a> {
     pub(crate) me: &'a MemberId,
@@ -471,7 +471,7 @@ pub struct SeedCx<'a> {
 
 impl SeedCx<'_> {
     /// Who is creating the record: the id their views read as
-    /// [`RecordEnv::me`](super::RecordEnv::me) and the seed's actions read as their author.
+    /// [`ResourceEnv::me`](super::ResourceEnv::me) and the seed's actions read as their author.
     pub fn me(&self) -> &MemberId {
         self.me
     }
@@ -481,21 +481,21 @@ impl SeedCx<'_> {
         self.device
     }
 
-    /// The app's host on this device; `None` for a participant without a
+    /// The app's host on this device; `None` for a member without a
     /// window.
     pub fn host(&self) -> Option<&HostContext> {
         self.host
     }
 
     /// What the app's windows in this workspace kept, one record each, from
-    /// before it [kept one record per workspace](ResourceApp::WORKSPACE_RECORD): every
+    /// before it [kept one record per workspace](ResourceApp::WORKSPACE_RESOURCE): every
     /// window default record of its kind on this device, read-only and in
     /// id order. The workspace's record is created once, so a seed that copies
     /// these into it migrates them exactly once; the records themselves are
     /// left as they were. Empty for any other record, and without a host.
-    pub fn window_records(&self) -> Vec<(DocumentId, tilo_resource::Doc)> {
+    pub fn window_resources(&self) -> Vec<(DocumentId, tilo_resource::Doc)> {
         self.host
-            .map(HostContext::window_records)
+            .map(HostContext::window_resources)
             .unwrap_or_default()
     }
 }
@@ -561,20 +561,20 @@ fn definition_of<A: ResourceApp>() -> ApplicationDefinition {
 fn application_definition(
     app: &AppHooks,
     opens: &'static [&'static str],
-    workspace_record: bool,
+    workspace_resource: bool,
     create: ComponentFactory,
 ) -> ApplicationDefinition {
     ApplicationDefinition {
         app_id: app.id().into(),
         title: app.title().into(),
         icon: icon(app),
-        record_kind: ResourceType::new(app.kind),
+        resource_type: ResourceType::new(app.kind),
         required: vec![],
         optional: vec![],
         opens,
-        workspace_record,
-        member_record: app.own_records(),
-        opens_before_record: workspace_record && app.opens_before_record,
+        workspace_resource,
+        member_resource: app.own_resources(),
+        opens_before_resource: workspace_resource && app.opens_before_resource,
         create,
     }
 }
@@ -613,18 +613,18 @@ pub(crate) struct AppHooks {
     flags: &'static [&'static str],
     catalog: fn() -> Option<&'static EmbeddedCatalog>,
     definition: fn() -> &'static ApplicationDefinition,
-    launch_record: fn(&LaunchInput<'_>) -> Option<DocumentId>,
+    launch_resource: fn(&LaunchInput<'_>) -> Option<DocumentId>,
     local_operations: fn() -> Vec<tilo_actions::ActionSpec>,
     declarations: fn() -> Rc<[tilo_resource::Declaration]>,
     /// Initialize a record the launch created: the resource's own
     /// initialization, the launch's genesis and the creator's seed.
-    new_record: NewRecord,
+    new_resource: NewResource,
     prepare_capture: fn(&mut HostContext, Option<&str>) -> Result<Run, LaunchError>,
     /// Read the record `context` opened, build the root over it and take
     /// the launch's actions on it; or why the record does not read.
     open: OpenRoot,
-    /// [`ResourceApp::OPENS_BEFORE_RECORD`].
-    opens_before_record: bool,
+    /// [`ResourceApp::OPENS_BEFORE_RESOURCE`].
+    opens_before_resource: bool,
     /// [`ResourceApp::opening`].
     pub(crate) opening: fn(&OpeningCx<'_>) -> Option<Box<dyn OpeningView>>,
     pub(crate) action_registry: fn() -> tilo_actions::ActionRegistry,
@@ -632,8 +632,8 @@ pub(crate) struct AppHooks {
     file_history_witness: fn() -> &'static ui_core::history_mode::HistoryDefinition,
 }
 
-/// [`AppHooks::new_record`] — the context, and what the launch named.
-type NewRecord = fn(
+/// [`AppHooks::new_resource`] — the context, and what the launch named.
+type NewResource = fn(
     &mut HostContext,
     &[String],
     Option<&ui_core::application::OpenFile>,
@@ -671,13 +671,13 @@ impl<A: ResourceApp> Hooks<A> {
         flags: A::FLAGS,
         catalog: A::catalog,
         definition: definition::<A>,
-        launch_record: A::launch_record,
+        launch_resource: A::launch_resource,
         local_operations: A::local_operations,
         declarations: declarations_of::<A::Resource>,
-        new_record: new_record::<A>,
+        new_resource: new_resource::<A>,
         prepare_capture: prepare_capture::<A>,
         open: open_root::<A>,
-        opens_before_record: A::OPENS_BEFORE_RECORD && !A::WINDOW_RESOURCE,
+        opens_before_resource: A::OPENS_BEFORE_RESOURCE && !A::WINDOW_RESOURCE,
         opening: A::opening,
         action_registry: action_registry::<A>,
         history: super::preview::history_definition::<A>,
@@ -707,9 +707,9 @@ impl AppHooks {
 
     /// Whether each member keeps their own record of the app's resource, as its manifest
     /// declares (`[resources] own`): a window naming no record opens theirs.
-    fn own_records(&self) -> bool {
+    fn own_resources(&self) -> bool {
         match (self.named)() {
-            Some(named) => named.own_records,
+            Some(named) => named.own_resources,
             None => app_fleet::scope(self.id, self.kind) == app_fleet::Scope::Member,
         }
     }
@@ -751,7 +751,7 @@ fn declarations_of<R: Resource>() -> Rc<[tilo_resource::Declaration]> {
 
 /// Who may edit the resource a root shows, and what it is built for.
 pub(crate) enum Editing {
-    /// The participant (`me`) and their permissions, followed while the app
+    /// The member (`me`) and their permissions, followed while the app
     /// runs, in a window someone uses or a capture.
     Live {
         permissions: LivePermissions,
@@ -774,7 +774,7 @@ fn write_scope(app: &AppHooks, run: &Run) -> PermissionScope {
         .launched
         .record
         .as_ref()
-        .map(ui_core::record::DocumentId::route)
+        .map(ui_core::resource::DocumentId::route)
     {
         Some(record) if own_kind => PermissionScope::Action {
             node: ui_core::permissions::TreePath::root()
@@ -819,7 +819,7 @@ impl RootShell {
             || permissions
                 .as_ref()
                 .is_some_and(|permissions| !permissions.check(&scope));
-        let run = run.for_participant(me.as_ref());
+        let run = run.for_member(me.as_ref());
         let storage =
             super::settings::ViewStorage::new(storage, hosted.attach(app.id(), app.title()));
         Self {
@@ -889,7 +889,7 @@ pub(crate) fn build_root<A: ResourceApp>(
     let published = tilo_resource::publish::<A::Resource>(app.kind, &label, reader.state());
     let live = Live::new(reader);
     let alive = Rc::new(());
-    let dispatch = Dispatcher::new(app.id(), app.kind, read_only, me.as_ref()).on_record(
+    let dispatch = Dispatcher::new(app.id(), app.kind, read_only, me.as_ref()).on_resource(
         run.launched
             .record
             .as_ref()
@@ -907,7 +907,7 @@ pub(crate) fn build_root<A: ResourceApp>(
     // so they are published before any view shows them.
     if permissions.is_some() {
         A::records(&mut super::Records::new(&storage).with_base(live.clone(), dispatch.clone()));
-        for record in A::PERSON_RECORDS {
+        for record in A::PERSON_RESOURCES {
             record.open(&storage);
         }
     }
@@ -1063,7 +1063,7 @@ fn write_genesis<R: Resource>(
 /// Initialize a record a launch of `A` created: the resource's own
 /// initialization and the launch's [`ResourceApp::genesis`] in the
 /// genesis, then the creator's [`ResourceApp::seed`].
-fn new_record<A: ResourceApp>(
+fn new_resource<A: ResourceApp>(
     context: &mut HostContext,
     arguments: &[String],
     file: Option<&ui_core::application::OpenFile>,
@@ -1082,13 +1082,13 @@ fn new_record<A: ResourceApp>(
     });
     // What the app's windows kept, one record each, before it kept one per
     // workspace; an app that adopts them in its own seed
-    // (`ResourceApp::WORKSPACE_RECORD`) has done so.
-    let windows = if A::WORKSPACE_RECORD {
+    // (`ResourceApp::WORKSPACE_RESOURCE`) has done so.
+    let windows = if A::WORKSPACE_RESOURCE {
         Vec::new()
     } else {
-        context.window_records()
+        context.window_resources()
     };
-    initialize_record(
+    initialize_resource(
         context,
         &mut |doc| {
             <A::Resource as Resource>::initialize(doc).map_err(|error| error.to_string())?;
@@ -1106,18 +1106,18 @@ fn new_record<A: ResourceApp>(
 }
 
 /// What initializing a new record writes into it.
-type RecordWrite<'a> = &'a mut dyn FnMut(&mut tilo_resource::Doc) -> Result<(), String>;
+type ResourceWrite<'a> = &'a mut dyn FnMut(&mut tilo_resource::Doc) -> Result<(), String>;
 
 /// Initialize the new record `context` opened: `genesis` into its genesis,
 /// then `seed`. Not generic over the app, so the record store's
 /// initialization is compiled once.
-fn initialize_record(
+fn initialize_resource(
     context: &mut HostContext,
-    genesis: RecordWrite<'_>,
-    seed: RecordWrite<'_>,
+    genesis: ResourceWrite<'_>,
+    seed: ResourceWrite<'_>,
 ) -> Result<(), LaunchError> {
     context
-        .initialize_new_record_seeded(|doc| genesis(doc), |doc| seed(doc))
+        .initialize_new_resource_seeded(|doc| genesis(doc), |doc| seed(doc))
         .map_err(LaunchError::Record)
 }
 
@@ -1130,9 +1130,9 @@ fn migrate_older(
     needs: fn(&tilo_resource::Doc) -> bool,
     migrate: &mut dyn FnMut(&mut tilo_resource::Doc) -> Result<bool, String>,
 ) -> Result<Result<(), String>, LaunchError> {
-    let older = context.read_record(needs).map_err(LaunchError::Record)?;
+    let older = context.read_resource(needs).map_err(LaunchError::Record)?;
     Ok(if older {
-        context.migrate_record(|doc| migrate(doc)).map(drop)
+        context.migrate_resource(|doc| migrate(doc)).map(drop)
     } else {
         Ok(())
     })
@@ -1154,7 +1154,7 @@ fn open_root<A: ResourceApp>(
     capture: bool,
     created: bool,
 ) -> Result<Result<Box<dyn ui_core::widget::AppWidget>, String>, LaunchError> {
-    if let Err(reason) = A::import_record(context) {
+    if let Err(reason) = A::import_resource(context) {
         return Ok(Err(reason));
     }
     let migrated = migrate_older(
@@ -1165,7 +1165,7 @@ fn open_root<A: ResourceApp>(
         },
     )?;
     let read = context
-        .read_record(|doc| {
+        .read_resource(|doc| {
             Reader::<A::Resource>::read(doc)
                 .map_err(|error| tilo_resource::Unreadable::of::<A::Resource>(doc, &error).reason)
         })
@@ -1177,7 +1177,7 @@ fn open_root<A: ResourceApp>(
     let root = build_root::<A>(reader, editing, context.storage(), hosted(context));
     if let Some(typed) = root.typed::<A::Resource>() {
         let record = typed.live.get();
-        let launch = root.launch().with_record(&*record);
+        let launch = root.launch().with_resource(&*record);
         if !capture || !launch.is_empty() {
             // A launch naming a link the app opens shows it as `open-link` does.
             let invokes = launch
@@ -1202,7 +1202,7 @@ fn opening_component(
     app: &'static AppHooks,
     mut context: HostContext,
     view: Box<dyn OpeningView>,
-    record: ui_core::record::RecordOpening,
+    record: ui_core::resource::ResourceOpening,
     restore: &RestoreInput,
 ) -> AppComponent {
     let arguments = context.take_launch_arguments();
@@ -1241,7 +1241,7 @@ pub(crate) fn hosted(context: &HostContext) -> super::settings::Hosted {
         // A private window keeps nothing of the person's: their own
         // records are not even opened.
         person: (!context.is_private())
-            .then(|| context.person_records().cloned())
+            .then(|| context.person_resources().cloned())
             .flatten(),
         device: Some(context.device_id().to_owned()),
         records: Some((
@@ -1250,7 +1250,7 @@ pub(crate) fn hosted(context: &HostContext) -> super::settings::Hosted {
             context.live_permissions(),
         )),
         workspace: context
-            .workspace_records()
+            .workspace_resources()
             .cloned()
             .map(|records| (records, context.wake_handle())),
     }
@@ -1307,7 +1307,7 @@ fn create_component(
     }
     // The workspace's record is being read off the frame: the window shows what the app shows
     // before it, and opens as below once the record is had.
-    if let Some(record) = context.record_opening() {
+    if let Some(record) = context.resource_opening() {
         let opening = OpeningCx {
             me: context.author(),
             device: context.device_id(),
@@ -1320,7 +1320,7 @@ fn create_component(
         }
         record.take_in(true).map_err(LaunchError::Record)?;
     }
-    let starting = start_record(app, &mut context, target)?;
+    let starting = start_resource(app, &mut context, target)?;
     window(app, context, starting)
 }
 
@@ -1344,15 +1344,15 @@ struct Starting {
 
 /// Open the record the launch starts on: create or replay it, then read its
 /// file, its arguments and options, and start the run they go with.
-fn start_record(
+fn start_resource(
     app: &'static AppHooks,
     context: &mut HostContext,
     target: &LaunchTarget,
 ) -> Result<Starting, LaunchError> {
     // A record of its own, or the workspace's record an app keeps one of
-    // (`ResourceApp::WORKSPACE_RECORD`), opened for the first time.
+    // (`ResourceApp::WORKSPACE_RESOURCE`), opened for the first time.
     let created = matches!(target, LaunchTarget::New | LaunchTarget::PrimaryNew);
-    record_content(context)?;
+    document_content(context)?;
     let file = context.take_open_file();
     let arguments = context.take_launch_arguments();
     let options = context.take_launch_options();
@@ -1362,12 +1362,12 @@ fn start_record(
         .map(|file| replay_of(app, context, file, created))
         .transpose()?;
     match &replay {
-        Some(recording) => initialize_record(context, &mut |_| Ok(()), &mut |doc| {
+        Some(recording) => initialize_resource(context, &mut |_| Ok(()), &mut |doc| {
             tilo_automerge::ApplyIncoming::merge_incoming(doc, &mut recording.doc().clone())
                 .map(drop)
                 .map_err(|error| error.to_string())
         })?,
-        None if created => (app.new_record)(context, &arguments, file.as_ref(), &options)?,
+        None if created => (app.new_resource)(context, &arguments, file.as_ref(), &options)?,
         None => {}
     }
     let capture = context.capture().is_some();
@@ -1389,6 +1389,7 @@ fn start_record(
         // the workspace may hold it, so the view waits for what the workspace holds.
         None => Run::live(context.content().cloned())
             .in_private(context.is_private())
+            .in_embedded(context.is_embedded())
             .awaiting_workspace(
                 matches!(target, LaunchTarget::PrimaryNew).then(ui_core::workspace_sync::holdings),
             ),
@@ -1526,24 +1527,25 @@ fn revealed(target: &LaunchTarget) -> Option<String> {
 /// content the record references and this device lacks is asked of the
 /// route, and content the app stores reaches the record's other readers.
 /// A capture keeps its fixture's store as it is: it reaches nothing outside.
-fn record_content(context: &mut HostContext) -> Result<(), LaunchError> {
+fn document_content(context: &mut HostContext) -> Result<(), LaunchError> {
     if context.capture().is_some() {
         return Ok(());
     }
     let Some(local) = context.content().cloned() else {
         return Ok(());
     };
-    let route = record_route(context)?;
-    let lane = ui_core::collaboration::record_content::ContentLane::of_window();
+    let route = resource_route(context)?;
+    let lane = ui_core::collaboration::document_content::ContentLane::of_window();
     // The window keeps its lane: another window of the app on this thread
     // reads its own, never this one's queue of wants.
-    ui_core::collaboration::record_content::keep_lane(&context.wake_handle(), Arc::clone(&lane));
+    ui_core::collaboration::document_content::keep_lane(&context.wake_handle(), Arc::clone(&lane));
     // Whatever carries the record's content for the process (a browser
     // page's replication) asks for and hands over this window's too, and
     // what it stores is sealed for the members of the record's workspace.
-    ui_core::collaboration::record_content::ContentLane::show_on_route(&route, &lane);
-    context
-        .provide_content(ui_core::collaboration::record_content::RecordContent::store(local, lane));
+    ui_core::collaboration::document_content::ContentLane::show_on_route(&route, &lane);
+    context.provide_content(
+        ui_core::collaboration::document_content::DocumentContent::store(local, lane),
+    );
     Ok(())
 }
 
@@ -1556,7 +1558,7 @@ fn record_content(context: &mut HostContext) -> Result<(), LaunchError> {
 /// # Errors
 /// A record whose workspace this host cannot name: a window opened outside
 /// every workspace, or on a profile opened by a name rather than an id.
-pub(super) fn record_route(
+pub(super) fn resource_route(
     context: &HostContext,
 ) -> Result<ui_core::collaboration::RouteSpec, LaunchError> {
     let record = context.record();
@@ -1591,13 +1593,13 @@ fn prepare_capture<A: ResourceApp>(
 }
 
 /// Merge into the record `context` opened what `write` writes into a fork
-/// of it, as another participant's changes arrive.
+/// of it, as another member's changes arrive.
 fn merge_peer(
     context: &HostContext,
     write: &mut dyn FnMut(&mut tilo_resource::Doc) -> Result<(), String>,
 ) -> Result<(), LaunchError> {
     let mut peer = context
-        .read_record(|doc| doc.clone().fork())
+        .read_resource(|doc| doc.clone().fork())
         .map_err(LaunchError::Record)?;
     write(&mut peer).map_err(LaunchError::Operation)?;
     context
@@ -1632,12 +1634,12 @@ pub(crate) fn prepare_on(
     named: Option<DocumentId>,
     inputs: ComponentRunnerInputs,
 ) -> Result<PreparedComponentInputs, LaunchError> {
-    let kind = definition.record_kind.clone();
+    let kind = definition.resource_type.clone();
     match named {
         // A launch naming the workspace's own record (a notification about
         // something in it) opens it as a launch naming nothing does.
-        Some(id) if !(id.is_package_primary() && definition.keeps_workspace_record()) => host
-            .prepare_record(
+        Some(id) if !(id.is_package_primary() && definition.keeps_workspace_resource()) => host
+            .prepare_resource(
                 definition,
                 instance,
                 DocumentCheckout::new(id, kind),
@@ -1683,10 +1685,11 @@ fn prepare_hooked(
         None
     };
     let (record, arguments) =
-        record_argument(restored.as_deref().unwrap_or_else(|| args.positionals()));
+        resource_argument(restored.as_deref().unwrap_or_else(|| args.positionals()));
     let options = launch_options(app, args);
-    let named = record
-        .or_else(|| (app.launch_record)(&LaunchInput::new(arguments, None).with_options(&options)));
+    let named = record.or_else(|| {
+        (app.launch_resource)(&LaunchInput::new(arguments, None).with_options(&options))
+    });
     // A recording replays in a private window: nothing it shows reaches
     // the person's records, devices or members.
     let private = (app.private_windows && args.has(PRIVATE_FLAG)) || names_recording(arguments);
@@ -1697,7 +1700,7 @@ fn prepare_hooked(
         || args.shots.is_some()
         || args.responsive_matrix.is_some()
         || args.native_audit;
-    if drives && let Some(record) = prepared.context.record_opening() {
+    if drives && let Some(record) = prepared.context.resource_opening() {
         record.take_in(true).map_err(LaunchError::Record)?;
     }
     hand_launch(definition, arguments, &mut prepared)?;
@@ -1808,7 +1811,7 @@ fn hand_launch_to(
 }
 
 /// Open, in the window `reopener` belongs to, what a launch of `app` naming
-/// `arguments` opens ([`ResourceApp::launch_record`], [`ResourceApp::launch`]):
+/// `arguments` opens ([`ResourceApp::launch_resource`], [`ResourceApp::launch`]):
 /// the component built for that record takes the window, its own record and
 /// history with it. The store's refusal of the record, an unreadable file
 /// or the app's refusal to build leaves the window as it is, and is the
@@ -1824,9 +1827,9 @@ fn open_in_place(
         let definition = (app.definition)();
         // A record named by its uri (one of the app's documents a list
         // offers) opens as a launch naming it does.
-        let (named, rest) = record_argument(&arguments);
+        let (named, rest) = resource_argument(&arguments);
         let record = named
-            .or_else(|| (app.launch_record)(&LaunchInput::new(rest, None)))
+            .or_else(|| (app.launch_resource)(&LaunchInput::new(rest, None)))
             .unwrap_or_else(DocumentId::minted);
         let (mut context, target) = reopener.prepare(definition, record)?;
         hand_launch_to(definition, rest, &mut context)?;
@@ -1871,14 +1874,14 @@ fn prepare_definition(
     definition: &ApplicationDefinition,
     args: &LaunchArgs,
 ) -> Result<PreparedComponentInputs, LaunchError> {
-    let (record, _) = record_argument(args.positionals());
+    let (record, _) = resource_argument(args.positionals());
     prepare_named(definition, args, record, false)
 }
 
 /// The record a launch names with a first argument
 /// `tilo-record:<id>` ([`DocumentId::uri`]), as the session launches an app to
 /// run an action on one of its records, and the arguments after it.
-fn record_argument(arguments: &[String]) -> (Option<DocumentId>, &[String]) {
+fn resource_argument(arguments: &[String]) -> (Option<DocumentId>, &[String]) {
     match arguments.split_first() {
         Some((first, rest)) => match DocumentId::from_uri(first) {
             Some(record) => (Some(record), rest),
@@ -1889,20 +1892,20 @@ fn record_argument(arguments: &[String]) -> (Option<DocumentId>, &[String]) {
 }
 
 #[cfg(all(test, tilo_native_runner))]
-mod record_argument_tests {
+mod resource_argument_tests {
     use super::*;
 
     #[test]
     fn a_record_uri_names_the_record_and_is_not_handed_to_the_app() {
         let record = DocumentId::minted();
         let arguments = vec![record.uri(), "--then".to_owned()];
-        let (named, rest) = record_argument(&arguments);
+        let (named, rest) = resource_argument(&arguments);
         assert_eq!(named, Some(record));
         assert_eq!(rest, ["--then".to_owned()]);
 
         let plain = vec!["notes.md".to_owned()];
-        assert_eq!(record_argument(&plain), (None, plain.as_slice()));
-        assert_eq!(record_argument(&[]), (None, [].as_slice()));
+        assert_eq!(resource_argument(&plain), (None, plain.as_slice()));
+        assert_eq!(resource_argument(&[]), (None, [].as_slice()));
     }
 }
 
@@ -2130,7 +2133,7 @@ pub fn launch_spec<A: ResourceApp>() -> LaunchSpec {
     let spec = if !A::ATTACHES_RUNTIME {
         spec.runtime_attachment(|_| false)
     } else if A::PRIVATE_WINDOWS {
-        // A private window is nobody's runtime participant: it neither syncs
+        // A private window is nobody's runtime member: it neither syncs
         // nor shares what it shows.
         spec.runtime_attachment(|args| !args.has(PRIVATE_FLAG))
     } else {
@@ -2199,7 +2202,7 @@ pub fn run<A: ResourceApp>() {
     }
     // A record search reads, with no window of this app: its document in,
     // what search finds in it out.
-    if let Some(code) = super::record_index::serve::<A>() {
+    if let Some(code) = super::resource_index::serve::<A>() {
         #[allow(
             clippy::exit,
             reason = "the record reader is the whole run of the binary"

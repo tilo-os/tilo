@@ -3,7 +3,7 @@
 //! history reads, and keeps nothing once the keys or the reader's standing
 //! no longer allow it.
 use super::*;
-use crate::KeptRecord;
+use crate::KeptDocument;
 use std::cell::Cell;
 
 /// The record as `reader` reads it through `kept` with `keys`, saved, and
@@ -12,7 +12,7 @@ fn read_kept(
     peer: &StatePeer,
     reader: [u8; 32],
     keys: &[&ContentKeys],
-    kept: &mut KeptRecord,
+    kept: &mut KeptDocument,
 ) -> Result<(AutoCommit, usize), crate::PeerDocumentReadError> {
     let opened = Cell::new(0_usize);
     let document = peer.open_document(
@@ -35,7 +35,7 @@ fn read_large(
     peer: &StatePeer,
     reader: [u8; 32],
     keys: &ContentKeys,
-    kept: &mut KeptRecord,
+    kept: &mut KeptDocument,
 ) -> (Result<AutoCommit, crate::PeerDocumentReadError>, usize) {
     let opened = Cell::new(0_usize);
     let read = peer
@@ -89,7 +89,7 @@ fn changes_after(
     peer: &StatePeer,
     reader: [u8; 32],
     keys: &ContentKeys,
-    kept: &mut KeptRecord,
+    kept: &mut KeptDocument,
     heads: &[[u8; 32]],
 ) -> Option<Vec<u8>> {
     let document = peer
@@ -150,7 +150,7 @@ tilo_test_env::scenario! {
         let mut first = Author::new(&f.host);
         let mut second = Author::new(&f.host);
         let mut third = Author::new(&f.host);
-        let mut kept = KeptRecord::default();
+        let mut kept = KeptDocument::default();
         let message = write(&f.host, &f.owner, &keys, &first.edit("value", "one"), f.now);
         admit(&mut f.host, &f.owner, message, f.now);
         let (mut replica, opened) = read_kept(&f.host, reader, &[&keys], &mut kept).unwrap();
@@ -212,7 +212,7 @@ tilo_test_env::scenario! {
         let keys = f.keys();
         let reader = f.authority.device_public_key;
         let mut author = Author::new(&f.host);
-        let mut kept = KeptRecord::default();
+        let mut kept = KeptDocument::default();
         for value in ["one", "two"] {
             let message = write(
                 &f.host,
@@ -256,7 +256,7 @@ tilo_test_env::scenario! {
             f.now,
         );
         admit(&mut f.host, &f.owner, message, f.now);
-        let mut kept = KeptRecord::default();
+        let mut kept = KeptDocument::default();
         read_kept(&f.host, reader, &[&before], &mut kept).unwrap();
         let after = f.rotate();
         let message = write(
@@ -300,7 +300,7 @@ tilo_test_env::scenario! {
             f.now,
         );
         admit(&mut f.host, &f.owner, message, f.now);
-        let mut kept = KeptRecord::default();
+        let mut kept = KeptDocument::default();
         read_kept(&f.host, editor.device_public_key, &[&keys], &mut kept).unwrap();
         assert!(kept.is_open());
         assert!(
@@ -345,7 +345,7 @@ tilo_test_env::scenario! {
         let keys = f.keys();
         let reader = f.authority.device_public_key;
         let mut author = Author::new(&f.host);
-        let mut kept = KeptRecord::default();
+        let mut kept = KeptDocument::default();
         let message = write(&f.host, &f.owner, &keys, &author.edit("value", "one"), f.now);
         admit(&mut f.host, &f.owner, message, f.now);
         read_kept(&f.host, reader, &[&keys], &mut kept).unwrap();
@@ -436,7 +436,7 @@ tilo_test_env::scenario! {
             whole.get(ROOT, "value").unwrap().unwrap().0.as_str(),
             Some("two")
         );
-        for kept in [&mut KeptRecord::default(), &mut KeptRecord::default()] {
+        for kept in [&mut KeptDocument::default(), &mut KeptDocument::default()] {
             let (read, _) = read_large(&f.host, reader, &keys, kept);
             let document = read.expect("the record reads without the write that was stopped");
             assert_eq!(

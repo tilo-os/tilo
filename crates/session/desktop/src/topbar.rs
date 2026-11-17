@@ -367,7 +367,7 @@ pub struct TopBarChrome {
     face_initials: Vec<char>,
     face_names: Vec<String>,
     /// Same index as `face_initials` . The workspace's colour for each, else
-    /// [`ui::presence::participant_color`].
+    /// [`ui::presence::member_color`].
     face_colors: Vec<Color>,
     /// Same index as `face_initials` : drawn with the agent mark.
     face_agents: Vec<bool>,

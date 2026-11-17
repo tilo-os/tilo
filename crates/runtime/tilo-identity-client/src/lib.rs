@@ -165,7 +165,7 @@ pub mod wire {
         CollaborationOp {
             workspace_id: String,
             app_id: String,
-            record_id: String,
+            document_id: String,
             unsigned_op: Vec<u8>,
         },
         /// The content keys of one document route of the bound workspace and app, once
@@ -175,7 +175,7 @@ pub mod wire {
         GroupKeys {
             workspace_id: String,
             app_id: String,
-            record_id: String,
+            document_id: String,
             known_generation: u64,
         },
     }
@@ -183,7 +183,7 @@ pub mod wire {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
     pub enum KeyAccess {
         Ready,
-        /// Asked the channel's participants for access and not admitted yet.
+        /// Asked the channel's key holders for access and not admitted yet.
         Waiting,
         Removed,
         /// The channel cannot be provisioned on this device right now.

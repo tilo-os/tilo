@@ -34,7 +34,7 @@ impl StatePeer {
             peer,
             app_id,
             cluster_id,
-            record_id,
+            document_id,
             envelope,
             ..
         } = message
@@ -50,7 +50,7 @@ impl StatePeer {
         collab_types::verify_op(envelope).map_err(err)?;
         let route = Route {
             app: app_id.clone(),
-            record: record_id.clone(),
+            record: document_id.clone(),
         };
         let Some(document) = self.core.documents.get(&route) else {
             return Err(format!(
@@ -60,7 +60,10 @@ impl StatePeer {
             .into());
         };
         let mutation = match collab_types::validate_whole_document_payload_route(
-            app_id, cluster_id, record_id, envelope,
+            app_id,
+            cluster_id,
+            document_id,
+            envelope,
         )
         .map_err(err)?
         {
@@ -77,7 +80,7 @@ impl StatePeer {
             }
         };
         Ok(LocalDocument {
-            admission: DocumentAdmission::from_op(cluster_id, app_id, record_id, envelope)?,
+            admission: DocumentAdmission::from_op(cluster_id, app_id, document_id, envelope)?,
             route,
             mutation,
         })
@@ -143,7 +146,7 @@ impl PeerOutbox<'_> {
         }
     }
     /// Whether the workspace this replica holds retired the write:
-    /// a participant or store refused that very write for good, or holds a
+    /// a key holder or store refused that very write for good, or holds a
     /// durable receipt that names it. Either is the workspace's answer that
     /// the frame is spent, and only those: a refusal that waits for another
     /// write retires nothing.
@@ -294,7 +297,7 @@ impl PeerOutboxMut<'_> {
             app_id: local.route.app,
             cluster_id: candidate.core.workspace.clone(),
             own,
-            record_id: local.route.record,
+            document_id: local.route.record,
             envelope: Box::new(renewal),
         };
         candidate.retained_document(&message, selected)?;

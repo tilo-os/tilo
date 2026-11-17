@@ -659,20 +659,20 @@ impl Session {
         // and noted where every write lands — the records' store, and the
         // index of what the broker receives from the apps and from peers.
         changes.waking(options.wake.handle());
-        let record_index = engine.as_ref().map(|engine| {
-            crate::record_index::RecordIndex::start(
+        let resource_index = engine.as_ref().map(|engine| {
+            crate::resource_index::RecordIndex::start(
                 std::sync::Arc::clone(engine)
-                    as std::sync::Arc<dyn crate::record_index::RecordSource>,
-                std::sync::Arc::new(crate::record_index::AppReader::of_device()),
+                    as std::sync::Arc<dyn crate::resource_index::RecordSource>,
+                std::sync::Arc::new(crate::resource_index::AppReader::of_device()),
                 Some(std::sync::Arc::clone(&options.content)),
                 crate::platform::records::Changes::clone(&changes),
             )
         });
-        let record_changes = record_index.clone().map(|index| {
-            index as std::sync::Arc<dyn tilo_broker_core::services::RecordIndexChanges>
+        let resource_changes = resource_index.clone().map(|index| {
+            index as std::sync::Arc<dyn tilo_broker_core::services::DocumentIndexChanges>
         });
         let channels = engine.as_ref().and_then(|engine| {
-            let settled = record_index.clone();
+            let settled = resource_index.clone();
             // Keys that arrived open records the loop read sealed: it reads the layouts again.
             let keys = engine.keys();
             let mut keyed = keys.generation();
@@ -697,7 +697,7 @@ impl Session {
         });
         // What this device holds is read once the channel service that opens its sealed records
         // runs: read before it, every sealed record reads as nothing.
-        if let Some(index) = &record_index {
+        if let Some(index) = &resource_index {
             index.sweep();
         }
         // The MCP server toward the person's other devices: answered on this device's
@@ -706,7 +706,7 @@ impl Session {
         let peer_documents = crate::sync::PeerDocuments::new(
             std::sync::Arc::clone(&channels_broker),
             std::sync::Arc::clone(&channels_fanout),
-            record_changes.clone(),
+            resource_changes.clone(),
             engine.as_ref().map(|engine| engine.arrivals()),
         );
         let sync = start_collaboration(
@@ -728,13 +728,13 @@ impl Session {
         // The content the workspaces' records reference: kept beside their
         // records under this session's state, and asked of the workspace's
         // other devices on the topic the records travel.
-        let record_content = crate::content::Plane::open(options.state.as_deref());
+        let document_content = crate::content::Plane::open(options.state.as_deref());
         if let Some(sync) = &sync {
-            sync.attach_content(std::sync::Arc::clone(&record_content));
+            sync.attach_content(std::sync::Arc::clone(&document_content));
             // What this session says when another of the person's devices
             // offers it work: the inputs its own content already keeps.
             if let Some(actions) = sync.device_actions() {
-                actions.attach_content(std::sync::Arc::clone(&record_content));
+                actions.attach_content(std::sync::Arc::clone(&document_content));
             }
         }
         // What other members send here is the workspaces' to admit: their
@@ -1208,8 +1208,8 @@ impl Session {
                     broker: std::sync::Arc::clone(&channels_broker),
                     keys: engine.as_ref().map(|engine| engine.keys()),
                 },
-                content: Some(std::sync::Arc::clone(&record_content)),
-                records: record_index,
+                content: Some(std::sync::Arc::clone(&document_content)),
+                records: resource_index,
                 fanout: std::sync::Arc::clone(&channels_fanout),
                 task_programs,
                 session_actions: Some(std::sync::Arc::clone(&session_actions)),
@@ -1298,7 +1298,7 @@ impl Session {
         );
         let undo_api: std::sync::Arc<dyn crate::task_undo::UndoApi> = host.clone();
         activity.attach_api(undo_api);
-        activity.attach_content(std::sync::Arc::clone(&record_content));
+        activity.attach_content(std::sync::Arc::clone(&document_content));
         let control = crate::test_control::Control::open(&options, host);
         tilo_startup_metrics::mark("control-socket-open");
         let server = crate::mcp_server::mount_named(
@@ -1798,6 +1798,13 @@ impl Session {
             .recovery
             .as_ref()
             .is_some_and(crate::recovery::Recovery::starts_locked);
+        // The machine's own desktop publishes what a live update waits for after a restart; a
+        // session in a window or a headless one is not what the wrapper brings back.
+        let ready = options
+            .recovery
+            .is_some()
+            .then(crate::ready::Desktop::claim)
+            .flatten();
         let mut session = Self {
             compositor,
             shared,
@@ -1815,6 +1822,7 @@ impl Session {
             lock_view: lock_view.map(crate::lock_screen::LockView::new),
             lock_shown: crate::lock_screen::LockShown::App,
             recovery: options.recovery.take(),
+            ready,
             update_finish: crate::update_finish::Finish::for_session(options.desktop.as_deref()),
             captures: options.captures,
             capture_io,
@@ -1840,7 +1848,7 @@ impl Session {
             portal: options.portal,
             launches: std::sync::Arc::clone(&options.launches),
             action_plane,
-            content: record_content,
+            content: document_content,
             control,
             liveness,
             automation,
@@ -2700,7 +2708,7 @@ impl Session {
             )
         });
         self.shared.notes.read(
-            &broker.state().window_records(),
+            &broker.state().window_resources(),
             &|instance| apps.get(&instance).cloned(),
             &live,
         );
@@ -2878,15 +2886,37 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
+        // One SIGTERM is both a logout and an in-place restart; the wrapper's marker in the
+        // login's private channel is what tells them apart, and the flight record keeps it. Only
+        // the machine's own desktop is what the wrapper restarts.
+        let restarting = self.recovery.is_some() && crate::restart::restarting();
+        tracing::info!(
+            restarting,
+            "{}",
+            if restarting {
+                "the desktop ends for an in-place restart"
+            } else {
+                "the desktop ends its login"
+            }
+        );
+        // The displays are left as they are for the desktop that follows: their last picture stays
+        // up, and the run that follows replaces it with its own first frame instead of a black one.
+        self.compositor.keep_picture(restarting);
         // A profile still recording is completed, its files written, before
         // the process goes.
         tilo_frame_metrics::profile::shutdown();
         // The shell the person left, written whatever ended the session.
         self.shared.keep_layout_now();
         // Its apps' display goes with it, and so do they: the apps outlive
-        // no session, whoever else still holds what started them.
+        // no session, whoever else still holds what started them. Only an
+        // in-place restart leaves the apps kept behind a keeper running, for
+        // the run that follows to take back.
         if let Some(launch) = &self.shared.launch {
-            launch.end_running();
+            launch.end_running(if restarting {
+                tilo_app_launch::Teardown::InPlaceRestart
+            } else {
+                tilo_app_launch::Teardown::Logout
+            });
         }
     }
 }

@@ -24,6 +24,8 @@ used in code.
   invocation. Not a member.
 - **Member**: a person, agent or bot in a workspace, with a role.
 - **Role**: what a member may do in a workspace.
+- **Presence**: one member in one open view (a window, an agent's private view). A member can have
+  several.
 
 Every change records who made it and who they acted for, as a graph:
 `(Quinten, Xaver) → Agent 1 → Automation 1 → change`. A change is allowed only if every person in
@@ -36,6 +38,7 @@ the graph may make it.
 - **Resource**: the unit of data. An app declares resource types; a chat message is a resource.
   Per-person data (drafts, recents, view state) is resources in the workspace that belong to a
   person.
+- **Target**: the resource an action is offered on: its first parameter.
 - **Personal resources**: resources that belong to no workspace: a person's devices and keys,
   logins, settings that apply everywhere, browsing history, signature.
 - **Document**: internal storage of one or more resources (an automerge document). Apps never see it.

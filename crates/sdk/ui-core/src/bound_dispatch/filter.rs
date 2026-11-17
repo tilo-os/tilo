@@ -1,4 +1,4 @@
-//! The permission filter over published resources: what the participant may invoke stays, the rest is
+//! The permission filter over published resources: what the member may invoke stays, the rest is
 //! withheld.
 
 use super::{CallbackBinding, ResourceSpec, SharedResource, same_offer};

@@ -1,6 +1,6 @@
 //! The `@` picker every rich-text field offers: typing `@` and a few letters lists the
 //! workspace's people and agents under the caret, narrowed as the name is typed, and
-//! picking one puts a mention of them in the text — one marked run naming their participant
+//! picking one puts a mention of them in the text — one marked run naming their member
 //! id ([`Mark::Mention`](super::Mark::Mention)), not prose that happens to start with `@`.
 
 use crate::i18n::widget_text;
@@ -111,7 +111,7 @@ pub fn query_at_caret(text: &str, caret: usize) -> Option<MentionQuery> {
 
 /// The candidates worth offering for `query`, best first, ranked as every list search ranks
 /// ([`crate::search::ranked_rows`]): a prefix of the whole name, then of a later word
-/// ("lov" finds "Ada Lovelace"), then the participant id.
+/// ("lov" finds "Ada Lovelace"), then the member id.
 #[must_use]
 pub fn rank<'a>(candidates: &'a [MentionCandidate], query: &str) -> Vec<&'a MentionCandidate> {
     let index = crate::search::ListIndex::default();
@@ -130,7 +130,7 @@ pub fn rank<'a>(candidates: &'a [MentionCandidate], query: &str) -> Vec<&'a Ment
     .collect()
 }
 
-/// The roster `presence` names merged with what an owner adds: one entry per participant
+/// The roster `presence` names merged with what an owner adds: one entry per member
 /// id, the roster's answer winning, sorted by name.
 #[must_use]
 pub fn merged_roster(presence: &PresenceCtx, extra: &[MentionCandidate]) -> Vec<MentionCandidate> {
@@ -375,14 +375,14 @@ impl MentionPicker {
 }
 
 /// The row a candidate shows as: their avatar, their name and, for anyone
-/// who is not simply a person, what they are. Its value is the participant
+/// who is not simply a person, what they are. Its value is the member
 /// id, because a document's mention records who it is.
 pub(crate) fn suggestion(candidate: &MentionCandidate) -> Suggestion {
     suggestion_with_value(candidate, candidate.id.key())
 }
 
-/// A participant as a completion offers them: their avatar and name; a pick writes `@name`
-/// and, in rich text, a mention of their participant id.
+/// A member as a completion offers them: their avatar and name; a pick writes `@name`
+/// and, in rich text, a mention of their member id.
 pub(crate) fn candidate(candidate: &MentionCandidate) -> crate::widget::completion::Candidate {
     let row = suggestion_with_value(candidate, candidate.label());
     let mut out = crate::widget::completion::Candidate::reference(
@@ -402,7 +402,7 @@ fn suggestion_with_value(candidate: &MentionCandidate, value: String) -> Suggest
         MemberId::Bot(_) => Some(widget_text("widget-mention-bot")),
     };
     let row = Suggestion::labelled(value, candidate.name.clone()).with_person(SuggestionPerson {
-        identity: candidate.id.key(),
+        identity: candidate.id.clone().into(),
         hue: candidate.hue,
         agent: !candidate.id.is_person(),
     });

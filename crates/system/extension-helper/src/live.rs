@@ -14,7 +14,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{self, Read as _};
 use std::os::fd::AsRawFd as _;
-use std::os::unix::fs::{MetadataExt as _, symlink};
+use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, symlink};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -30,7 +30,15 @@ const COMPONENTS: &str = "usr/share/tilo/components.toml";
 const GREETER_UNIT: &str = "greetd.service";
 const SANDBOX_VIEW_UNIT: &str = "tilo-sandbox-view.service";
 const SETTLE: Duration = Duration::from_secs(5);
-const DESKTOP_STABLE: Duration = Duration::from_secs(20);
+/// How long a restarted desktop is given to become usable, in place, before the update is called
+/// failed.
+const DESKTOP_BACK: Duration = Duration::from_secs(60);
+/// How long a desktop that published itself usable must stay so: one that comes back and then
+/// crashes still rolls the update back.
+const DESKTOP_STABLE: Duration = Duration::from_secs(3);
+/// How often a starting desktop is looked at.
+const DESKTOP_POLL: Duration = Duration::from_millis(250);
+/// How long a desktop may take to stop before the attempt is given up.
 const DESKTOP_EXIT: Duration = Duration::from_secs(30);
 const LOGIN_WRAPPER: &str = "tilo-session";
 const COMPOSITOR: &str = "tilo-session";
@@ -1222,6 +1230,8 @@ fn write_state(layout: &Layout, state: &State) -> Result<()> {
 pub struct Login {
     pub wrapper: u32,
     pub user: String,
+    /// The account the wrapper runs as: its runtime directory holds the desktop's records.
+    pub uid: u32,
 }
 
 #[expect(
@@ -1243,8 +1253,42 @@ pub trait LiveHost {
     fn start_no_block(&self, unit: &str);
     fn logins(&self) -> Vec<Login>;
     fn restart_desktop(&self, login: &Login) -> Result<()>;
-    fn desktop_back(&self, login: &Login, stable: Duration) -> bool;
+    /// Whether `login`'s wrapper is still the process it was.
+    fn login_alive(&self, login: &Login) -> bool;
+    /// The compositor `login`'s wrapper runs now, if any.
+    fn compositor(&self, login: &Login) -> Option<u32>;
+    /// Whether the compositor `pid` published that its desktop is usable.
+    fn desktop_ready(&self, login: &Login, pid: u32) -> bool;
+    /// The clock the wait below keeps, which a test host advances instead of sleeping.
+    fn now(&self) -> Instant;
     fn sleep(&self, duration: Duration);
+
+    /// Whether `login`'s desktop is back and has stayed usable for `stable`: the wrapper and the
+    /// compositor it started run, that compositor published its ready record, and nothing
+    /// changed since. A desktop that is alive but never ready is not back; one that becomes ready
+    /// and then goes is not either. Given up after [`DESKTOP_BACK`].
+    fn desktop_back(&self, login: &Login, stable: Duration) -> bool {
+        let started = self.now();
+        let mut ready: Option<(u32, Instant)> = None;
+        while self.now().saturating_duration_since(started) < DESKTOP_BACK {
+            if !self.login_alive(login) {
+                return false;
+            }
+            match (self.compositor(login), ready) {
+                (Some(pid), Some((ready_pid, since))) if pid == ready_pid => {
+                    if self.now().saturating_duration_since(since) >= stable {
+                        return true;
+                    }
+                }
+                (Some(pid), _) => {
+                    ready = self.desktop_ready(login, pid).then(|| (pid, self.now()));
+                }
+                (None, _) => ready = None,
+            }
+            self.sleep(DESKTOP_POLL);
+        }
+        false
+    }
 }
 
 fn systemctl(user: Option<&str>, args: &[&str]) -> Vec<String> {
@@ -1597,10 +1641,18 @@ impl LiveHost for crate::System {
             if comm(pid).as_deref() != Some(LOGIN_WRAPPER) || is_compositor(pid) {
                 continue;
             }
-            let Some(user) = entry.metadata().ok().and_then(|meta| user_name(meta.uid())) else {
+            let Some(metadata) = entry.metadata().ok() else {
                 continue;
             };
-            logins.push(Login { wrapper: pid, user });
+            let uid = metadata.uid();
+            let Some(user) = user_name(uid) else {
+                continue;
+            };
+            logins.push(Login {
+                wrapper: pid,
+                user,
+                uid,
+            });
         }
         logins
     }
@@ -1632,30 +1684,51 @@ impl LiveHost for crate::System {
         Ok(())
     }
 
-    fn desktop_back(&self, login: &Login, stable: Duration) -> bool {
-        let started = Instant::now();
-        let mut up_since: Option<(u32, Instant)> = None;
-        while started.elapsed() < stable.saturating_mul(3) {
-            if comm(login.wrapper).as_deref() != Some(LOGIN_WRAPPER) {
-                return false;
-            }
-            match (compositor_of(login.wrapper), up_since) {
-                (Some(pid), Some((since_pid, since))) if pid == since_pid => {
-                    if since.elapsed() >= stable {
-                        return true;
-                    }
-                }
-                (Some(pid), _) => up_since = Some((pid, Instant::now())),
-                (None, _) => up_since = None,
-            }
-            std::thread::sleep(Duration::from_millis(250));
-        }
-        false
+    fn login_alive(&self, login: &Login) -> bool {
+        comm(login.wrapper).as_deref() == Some(LOGIN_WRAPPER)
+    }
+
+    fn compositor(&self, login: &Login) -> Option<u32> {
+        compositor_of(login.wrapper)
+    }
+
+    fn desktop_ready(&self, login: &Login, pid: u32) -> bool {
+        desktop_ready(login, pid)
+    }
+
+    fn now(&self) -> Instant {
+        Instant::now()
     }
 
     fn sleep(&self, duration: Duration) {
         std::thread::sleep(duration);
     }
+}
+
+/// Whether `login`'s compositor `pid` published that its desktop is usable: the record it wrote
+/// names exactly that process, is a regular file `login`'s user owns, and is not a redirect. A
+/// record a previous run left names another process, so it never answers for this one.
+fn desktop_ready(login: &Login, pid: u32) -> bool {
+    let path = PathBuf::from(format!("/run/user/{}", login.uid))
+        .join(tilo_paths::login::SESSION_DIR)
+        .join(tilo_paths::login::DESKTOP_READY_FILE);
+    let Ok(file) = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&path)
+    else {
+        return false;
+    };
+    let Ok(metadata) = file.metadata() else {
+        return false;
+    };
+    if !metadata.is_file() || metadata.uid() != login.uid || metadata.len() > 64 {
+        return false;
+    }
+    let mut record = String::new();
+    file.take(64)
+        .read_to_string(&mut record)
+        .is_ok_and(|_| tilo_process::identity_names(&record, pid))
 }
 
 #[cfg(test)]

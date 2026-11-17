@@ -29,7 +29,7 @@ pub const AUTHOR_MARK: &str = "author";
 /// Mark `inserted`, just written at the document text index `at` of the text
 /// object `obj`, as written by the author of the action applying now, or,
 /// outside an action, by the actor a record write is lent
-/// ([`crate::action::RecordActorScope`]): a store writing an action's edits
+/// ([`crate::action::ResourceActorScope`]): a store writing an action's edits
 /// before it commits them as the action's change marks them as replaying the
 /// action does. Nothing is marked for an action with no invoker, or with no
 /// actor lent.

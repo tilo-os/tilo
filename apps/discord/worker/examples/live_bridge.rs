@@ -47,7 +47,7 @@ use tilo_net::Method;
 use tilo_relay::workspace_bots::discord::{self, DiscordLink};
 use tilo_relay::workspace_bots::installed::{self, BotRunner};
 use tilo_relay::workspace_bots::membership::{HostRootCertifier, keep_member};
-use tilo_relay::workspace_bots::workspace_record;
+use tilo_relay::workspace_bots::workspace_resource;
 use tilo_relay::workspaces::Workspaces;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use ui::tilo_actions::ActionContext;
@@ -228,7 +228,7 @@ impl Workspace {
         AutoCommit::load(
             &self
                 .workspaces
-                .record_document(&self.id, app, &workspace_record(&self.catalogue, app))
+                .resource_document(&self.id, app, &workspace_resource(&self.catalogue, app))
                 .await
                 .unwrap()
                 .unwrap(),
@@ -254,7 +254,7 @@ impl Workspace {
                 &self.cert,
                 &self.catalogue,
                 CHAT,
-                &workspace_record(&self.catalogue, CHAT),
+                &workspace_resource(&self.catalogue, CHAT),
                 change,
             )
             .await
@@ -264,7 +264,7 @@ impl Workspace {
     /// The chat's first part of messages, as the workspace holds it.
     async fn part(&self) -> AutoCommit {
         self.workspaces
-            .record_document(&self.id, CHAT, chat::parts::part(0).as_str())
+            .resource_document(&self.id, CHAT, chat::parts::part(0).as_str())
             .await
             .unwrap()
             .map(|bytes| AutoCommit::load(&bytes).unwrap())

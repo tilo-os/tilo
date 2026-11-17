@@ -32,7 +32,7 @@ pub struct StatusLineProps {
 fn said(props: StatusLineProps) -> (OwnedStatus, String) {
     let StatusLineProps { text, status, who } = props;
     let status = match (who, status) {
-        (Some(who), _) => OwnedStatus::Presence(who.identity),
+        (Some(who), _) => OwnedStatus::Presence(who.identity.id().to_owned()),
         (None, Some(RowStatus::Warning)) => OwnedStatus::Warning,
         (None, Some(RowStatus::Error)) => OwnedStatus::Error,
         (None, Some(RowStatus::Idle)) => OwnedStatus::Idle,
@@ -90,7 +90,7 @@ impl Described for ObjectHeader {
         let lead = match (who, icon) {
             (Some(who), _) => Some(ObjectLead::Avatar {
                 name: who.name,
-                identity: who.identity,
+                identity: who.identity.id().to_owned(),
                 image: None,
                 square,
             }),
@@ -115,7 +115,7 @@ impl Described for ObjectHeader {
         }
         match (who, icon) {
             (Some(who), _) => {
-                header = header.avatar(who.name, who.identity);
+                header = header.avatar(who.name, who.identity.id());
                 if square {
                     header = header.square();
                 }

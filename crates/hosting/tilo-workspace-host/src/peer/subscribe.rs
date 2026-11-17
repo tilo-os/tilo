@@ -192,7 +192,7 @@ pub(super) async fn subscribe(
     // opens on-demand records. A browser environment's device is replayed its
     // own record and nothing else of the workspace.
     if ws.lock().await.attached(&peer.device_public_key) {
-        ticket = ticket.with_every_record();
+        ticket = ticket.with_every_document();
     } else if let Some(scope) = session.environment(&peer.device_public_key) {
         let channel = scope.channel;
         ticket = ticket.with_channels(std::iter::once(channel).collect());

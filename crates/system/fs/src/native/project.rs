@@ -133,7 +133,7 @@ pub fn rename_entries<S: std::hash::BuildHasher>(
     out
 }
 
-fn record_key(e: &TreeEntry) -> Option<[u8; 16]> {
+fn document_key(e: &TreeEntry) -> Option<[u8; 16]> {
     e.record.map(|r| *r.0.as_bytes())
 }
 
@@ -349,7 +349,7 @@ impl Projector {
     ) -> Option<HashMap<PathBuf, Materialized>> {
         let mut wanted: Vec<(PathBuf, [u8; 16])> = tree
             .iter()
-            .filter_map(|e| Some((rel_path(&e.path), record_key(e)?)))
+            .filter_map(|e| Some((rel_path(&e.path), document_key(e)?)))
             .collect();
         // Outermost first: a directory's move carries its descendants.
         wanted.sort_by_key(|(p, _)| p.components().count());
@@ -467,7 +467,7 @@ impl Projector {
         let record = Materialized {
             dir: true,
             mtime_ms: e.mtime_ms,
-            record: record_key(e),
+            record: document_key(e),
             mode: Some(e.posix.mode),
             ..Materialized::default()
         };
@@ -706,7 +706,7 @@ impl Projector {
             && m.symlink == e.posix.symlink
         {
             let mut next = Materialized {
-                record: record_key(e),
+                record: document_key(e),
                 ..m.clone()
             };
             if !e.posix.symlink && m.mode != Some(e.posix.mode) {
@@ -806,7 +806,7 @@ impl Projector {
                 mtime_ms: e.mtime_ms,
                 placeholder,
                 local: None,
-                record: record_key(e),
+                record: document_key(e),
                 mode: Some(e.posix.mode),
                 symlink: e.posix.symlink,
                 fence: e.fence,

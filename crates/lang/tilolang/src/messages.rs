@@ -312,7 +312,7 @@ pub fn source_catalogue(meta: &PackageMeta) -> String {
         for word in meta.words.iter().filter(|word| word.view == action.id) {
             attribute(&mut out, &word.key, &pattern(&word.text));
         }
-        // What each argument is called where a person gives it; the subject is the record it runs on.
+        // What each argument is called where a person gives it; the target is the record it runs on.
         for param in meta.arguments(&action.params) {
             named(
                 &mut out,

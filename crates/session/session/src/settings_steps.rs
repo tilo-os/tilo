@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use tilo_actions::remote::settings_records as wire;
+use tilo_actions::remote::settings_resources as wire;
 use tilo_actions::remote::{ActionHostError, Pending, pending};
 use tilo_actions::{ActionDescriptor, ActionFailure, ActionSpec, ResourceSpec};
 use tilo_broker_core::steps::{HostStepOutcome, HostStepRequest, HostStepServices};

@@ -34,7 +34,7 @@ fn local_identity_is_one_stable_person_distinct_from_apps_and_peers() {
         ]);
 
         assert_ne!(
-            local_user_id().key(),
+            local_user_id().id(),
             local_app_id(),
             "the person at this machine must not be named by the application they opened"
         );
@@ -86,7 +86,7 @@ fn local_identity_is_one_stable_person_distinct_from_apps_and_peers() {
             "the person at this machine must not change between two actions"
         );
         assert!(
-            !first.key().trim().is_empty(),
+            !first.id().trim().is_empty(),
             "an empty id would collide with every other empty id"
         );
     }

@@ -21,7 +21,7 @@ pub const REQUIRED_PATH: &str = ".config/tilo/migration-startup-required";
 pub const RECORD_PATH: &str = ".config/tilo/migration-startup.json";
 mod native;
 
-const MAX_RECORD_BYTES: usize = 4 * 1024 * 1024;
+const MAX_DOCUMENT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ENTRY_BYTES: usize = 1024 * 1024;
 const MAX_ENTRIES: usize = 4096;
 
@@ -78,7 +78,7 @@ impl RecordBuilder {
         let bytes = self
             .bytes
             .checked_add(additional)
-            .filter(|n| *n <= MAX_RECORD_BYTES)
+            .filter(|n| *n <= MAX_DOCUMENT_BYTES)
             .ok_or_else(|| invalid("migration startup record exceeds consumer policy"))?;
         if !self.paths.insert(entry.relative.clone()) {
             return Err(invalid("duplicate imported autostart path"));
@@ -102,7 +102,7 @@ impl Write for EncodedSize {
         self.0 = self
             .0
             .checked_add(bytes.len())
-            .filter(|n| *n <= MAX_RECORD_BYTES)
+            .filter(|n| *n <= MAX_DOCUMENT_BYTES)
             .ok_or_else(|| invalid("migration startup record exceeds consumer policy"))?;
         Ok(bytes.len())
     }
@@ -371,7 +371,7 @@ fn read_root(root: &File) -> io::Result<Option<Record>> {
     }
     let record: Record = serde_json::from_slice(&bounded(
         policy_file(&tilo, RECORD_NAME)?,
-        MAX_RECORD_BYTES,
+        MAX_DOCUMENT_BYTES,
     )?)
     .map_err(|_| invalid("malformed migration startup record"))?;
     record.validate()?;

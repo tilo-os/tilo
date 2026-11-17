@@ -4,7 +4,7 @@
 use tilo_actions::ActionOutput;
 use tilo_actions::api::{ActionAddress, ActionDescriptor, ApiError};
 use tilo_actions::remote::ViewResourceQuery;
-use ui::record::DocumentId;
+use ui::resource::DocumentId;
 
 use super::process::{Lease, Stopped};
 use super::proto::{Mode, Reply, Request};
@@ -190,7 +190,7 @@ impl ConfinedTitles {
 
     /// What search finds in `doc`, a document of `app_id`: the entries its
     /// app publishes to the search index
-    /// ([`ui::framework::record_index::hosted_entries`]), each bounded as an
+    /// ([`ui::framework::resource_index::hosted_entries`]), each bounded as an
     /// index keeps it.
     pub(crate) fn entries(
         &mut self,

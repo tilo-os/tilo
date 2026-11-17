@@ -16,7 +16,7 @@ use std::sync::mpsc::TryRecvError;
 use ui::tilo_resource::{AbsolutePath, Invoke};
 
 use ui::framework::{
-    Dispatcher, EffectAnswer, EffectCx, Effected, Jobs, Live, PersonRecord, RecordEnv,
+    Dispatcher, EffectAnswer, EffectCx, Effected, Jobs, Live, PersonResource, ResourceEnv,
 };
 use ui::portal::{
     ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PickedContents, SaveDestination,
@@ -58,11 +58,11 @@ pub struct FileChooser {
     content: Element,
     tools: Tools,
     /// The recent artworks record and this device's id, in a live window.
-    recents: Option<(PersonRecord<ArtworkRecents>, String)>,
+    recents: Option<(PersonResource<ArtworkRecents>, String)>,
     live: Live<Artwork>,
     dispatch: Dispatcher<Artwork>,
     /// Where the window opens another of the workspace's artworks.
-    env: RecordEnv<Artwork>,
+    env: ResourceEnv<Artwork>,
     /// The Open chooser, until it answers.
     opening: Option<ContentsChannel>,
     /// Where saves and exports wait for the chooser and the write.
@@ -78,9 +78,9 @@ impl FileChooser {
     pub fn new(
         content: Element,
         tools: Tools,
-        recents: Option<(PersonRecord<ArtworkRecents>, String)>,
+        recents: Option<(PersonResource<ArtworkRecents>, String)>,
         live: Live<Artwork>,
-        env: RecordEnv<Artwork>,
+        env: ResourceEnv<Artwork>,
         jobs: Jobs<Artwork>,
     ) -> Self {
         Self {

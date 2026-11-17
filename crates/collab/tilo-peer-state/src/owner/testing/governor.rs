@@ -105,7 +105,7 @@ impl TestGovernor {
                 .unwrap(),
                 documents: vec![SeedDocument {
                     app_id: APP.into(),
-                    record_id: String::new(),
+                    document_id: String::new(),
                     kind: "chat".into(),
                     bytes: chat.save(),
                 }],
@@ -309,7 +309,7 @@ impl TestGovernor {
     }
 
     /// Let `person` exercise the governance `action` of this workspace, as an
-    /// administrator may: a participant a test needs to govern something
+    /// administrator may: a key holder a test needs to govern something
     /// without giving it the workspace's owner role.
     pub fn allow_governance(&mut self, person: &str, action: &str) -> Result<(), String> {
         let now = self.now();

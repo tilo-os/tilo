@@ -25,7 +25,7 @@
 //! using the app, when their own press reached one of its windows
 //! ([`crate::services::LauncherServices::person_initiated`]: a click, a key
 //! or a tap the compositor delivered, never input an agent or a remote
-//! participant sends through the shared device), which this open uses up;
+//! member sends through the shared device), which this open uses up;
 //! else it is refused.
 
 use tilo_actions::remote::{
@@ -77,7 +77,7 @@ impl AppBrokerState {
         person: &Caller,
         message: &RemoteActionMessage,
     ) -> Option<Result<RequestCaller, Box<RemoteActionMessage>>> {
-        if let RemoteActionMessage::RecordRead {
+        if let RemoteActionMessage::ResourceRead {
             on_behalf_of: Some(parent),
             ..
         } = message

@@ -604,7 +604,7 @@ mod tests {
                 let other = workspaces.create("Elsewhere").await.unwrap().workspace;
                 let governor = workspaces.serving_certificate().clone();
                 workspaces
-                    .author_workspace_record(&lounge, &governor, ("so.tilo.notes", ""), |doc| {
+                    .author_workspace_document(&lounge, &governor, ("so.tilo.notes", ""), |doc| {
                         doc.put(automerge::ROOT, "picture", picture)
                             .map_err(|error| error.to_string())?;
                         doc.put(automerge::ROOT, "avatar", earlier)

@@ -1,12 +1,12 @@
 use ui::theme::Theme;
 
-/// One sampled motion value owns the call huddle's participant reveal. The
+/// One sampled motion value owns the call huddle's member reveal. The
 /// panel silhouette, controls, hit regions, compositor presentation and native
 /// window allocation all read this same value, so a content-driven resize can
 /// never leave those layers a frame apart.
 #[derive(Debug)]
 pub(crate) struct CallChromeMotion {
-    /// The participants disclosing (`ui::motion::Disclose`).
+    /// The members disclosing (`ui::motion::Disclose`).
     transition: ui::motion::Presence,
     target_open: bool,
     initialized: bool,

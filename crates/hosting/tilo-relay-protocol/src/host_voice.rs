@@ -22,7 +22,7 @@ use collab_types::WorkspaceId;
 use collab_types::presence::{DESKTOP_APP, Payload, Presence, PresenceKey};
 use serde::{Deserialize, Serialize};
 
-use crate::live::{LiveRecord, SemanticFrame};
+use crate::live::{LiveResource, SemanticFrame};
 
 /// Version of [`HostSaid`] this build signs and reads. A frame at another
 /// version is dropped: a reader never guesses at what a host meant.
@@ -62,7 +62,7 @@ pub enum HostWords {
     /// the run ([`SemanticFrame::on_behalf`]).
     Narration {
         /// The record the action works in.
-        record: LiveRecord,
+        record: LiveResource,
         /// The action's semantic event.
         event: SemanticFrame,
     },

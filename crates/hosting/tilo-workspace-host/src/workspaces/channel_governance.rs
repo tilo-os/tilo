@@ -22,7 +22,7 @@ impl Workspaces {
     /// and to whoever catches up later, and handed to the workspace's direct
     /// link, which carries them to the member devices it holds. A member
     /// linked directly hears nothing the relay retains: without the link, the
-    /// host's access request never reaches the participants that could admit
+    /// host's access request never reaches the key holders that could admit
     /// it, nor its genesis or commits, so a host is never let into a channel
     /// a member opened while every member's request reaches the host. The
     /// link already carries what members send each other; this is the
@@ -236,7 +236,7 @@ impl Workspaces {
         &self,
         workspace_id: WorkspaceId,
         messages: Vec<neighbour_wire::NeighbourMsg>,
-    ) -> Result<Vec<crate::workspace_records::WorkspaceAdmission>, String> {
+    ) -> Result<Vec<crate::workspace_documents::WorkspaceAdmission>, String> {
         let mut admissions = Vec::with_capacity(messages.len());
         for message in messages {
             let commit = channel_commit(&message)?;
@@ -255,11 +255,11 @@ impl Workspaces {
 /// A channel governance message, retained as this relay's own.
 fn channel_commit(
     message: &neighbour_wire::NeighbourMsg,
-) -> Result<crate::workspace_records::HostCommit, String> {
+) -> Result<crate::workspace_documents::HostCommit, String> {
     let (channel, retention) = neighbour_wire::retention(message, false)
         .ok_or("channel governance has no retention channel")?;
     let body = postcard::to_stdvec(message).map_err(|error| error.to_string())?;
-    Ok(crate::workspace_records::HostCommit {
+    Ok(crate::workspace_documents::HostCommit {
         body,
         channel,
         checkpoint: retention == neighbour_wire::Retention::Checkpoint,

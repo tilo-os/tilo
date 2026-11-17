@@ -20,7 +20,7 @@ impl Worker {
     /// then the operations its committed source reads it by. Only the rows
     /// on the page are handed over, so a page costs its rows and not every
     /// item a record holds. A record that does not mount lists nothing.
-    pub(super) fn records_page(
+    pub(super) fn documents_page(
         &mut self,
         workspace_id: WorkspaceId,
         (caller, bounded): (&Caller, Option<&bounded::Bounded>),

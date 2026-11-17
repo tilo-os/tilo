@@ -30,7 +30,7 @@ impl TileSource for Components {
 /// `windows` Notes windows on one desktop, each on the fixture's notebook.
 fn notes_windows(
     f: &NotebookFixture,
-    checkout: &ui::record::DocumentCheckout,
+    checkout: &ui::resource::DocumentCheckout,
     windows: usize,
 ) -> FrameHarness {
     notes_windows_with(f, checkout, windows, |_| {})
@@ -38,7 +38,7 @@ fn notes_windows(
 
 fn notes_windows_with(
     f: &NotebookFixture,
-    checkout: &ui::record::DocumentCheckout,
+    checkout: &ui::resource::DocumentCheckout,
     windows: usize,
     sink: impl Fn(ui::WakeEvent) + Clone + Send + Sync + 'static,
 ) -> FrameHarness {

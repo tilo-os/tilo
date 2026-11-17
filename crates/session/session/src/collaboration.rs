@@ -142,12 +142,10 @@ impl Session {
                         None => (lines::waiting(), None),
                     };
                     // The colour the agent wears wherever it shows: its member's, the same for each
-                    // of its sessions, and clear of the colour of the person it works for — the one
-                    // rule and the one key every surface asks.
-                    let (r, g, b) = ui::presence::member_color(
-                        &ui::permissions::MemberId::agent(&present.agent),
-                        Some(&self.shared.person),
-                    );
+                    // of its sessions — the one rule and the one key every surface asks.
+                    let (r, g, b) = ui::presence::member_color(&ui::permissions::MemberId::agent(
+                        &present.agent,
+                    ));
                     let face = tilo_session_client::presence::view(
                         0,
                         ui::time::unix_now_ms(),
@@ -173,7 +171,7 @@ fn app_window(
     notes: &crate::continuations::Continuations,
     workspace: &str,
     app: &str,
-) -> Option<(tilo_relay_protocol::live::LiveRecord, String)> {
+) -> Option<(tilo_relay_protocol::live::LiveResource, String)> {
     let records = notes.records();
     let held = tree
         .workspaces
@@ -265,7 +263,7 @@ mod tests {
         GroupId, Layout, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth,
         Workspace, WorkspaceId,
     };
-    use tilo_relay_protocol::live::LiveRecord;
+    use tilo_relay_protocol::live::LiveResource;
     use tilo_session_core::presence::{Follow, Place, Step, Target};
     use ui::kurbo::Rect;
 
@@ -411,7 +409,7 @@ mod tests {
             assert_eq!(window.app, NOTES_APP);
             assert_eq!(
                 window.document,
-                LiveRecord {
+                LiveResource {
                     app: NOTES_APP.to_owned(),
                     record: RECORD.to_owned(),
                 }

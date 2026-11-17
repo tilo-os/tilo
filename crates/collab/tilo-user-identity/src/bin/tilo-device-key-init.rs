@@ -242,7 +242,7 @@ mod branch {
     /// derives, and every group in it names the source's device as its
     /// member, so no re-seal makes it this device's. Its member files are
     /// dropped, and the relay joins its workspaces' groups as this device,
-    /// admitted by their participants.
+    /// admitted by their key holders.
     struct RelayGroups {
         root: PathBuf,
     }

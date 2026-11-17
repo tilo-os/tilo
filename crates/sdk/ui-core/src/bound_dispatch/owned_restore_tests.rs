@@ -77,7 +77,7 @@ tilo_test_env::scenario! {
                 .records
                 .with_action_state(&binding.checkout.id, |doc, history, state| {
                     assert_eq!(value(doc), "old");
-                    assert_eq!(crate::record::identity(doc), Some(binding.checkout.clone()));
+                    assert_eq!(crate::resource::identity(doc), Some(binding.checkout.clone()));
                     assert_eq!(doc.get_changes(plan.current_heads()).len(), 1);
                     assert_eq!(history.revision(), before.revision + 1);
                     let entry = history.peek_last_undo(doc).unwrap();
@@ -90,8 +90,8 @@ tilo_test_env::scenario! {
                             .message()
                             .and_then(|s| tilo_actions::ActionContext::from_change_message(s))
                             .map(crate::state::owned_restore_tests::unstamped),
-                        Some(context().with_invoker(tilo_actions::ActionInvoker::person(
-                            binding.author.key()
+                        Some(context().with_invoker(tilo_actions::ActionInvoker::member(
+                            binding.author.clone()
                         )))
                     );
                     assert_eq!(state.pending.as_ref().unwrap().before, receipt.after);
@@ -105,7 +105,7 @@ tilo_test_env::scenario! {
                 .records
                 .with_action_state(&binding.checkout.id, |doc, history, _| {
                     assert_eq!(value(doc), "live");
-                    assert_eq!(crate::record::identity(doc), Some(binding.checkout.clone()));
+                    assert_eq!(crate::resource::identity(doc), Some(binding.checkout.clone()));
                     assert_eq!(history.revision(), before.revision + 2);
                 })
                 .unwrap();
@@ -127,7 +127,7 @@ tilo_test_env::scenario! {
                     history
                         .undo_as(doc, Some(&binding.author), None, None)
                         .unwrap();
-                    state.pending = Some(PendingRecordAction::new(&binding, doc.base_heads()));
+                    state.pending = Some(PendingResourceAction::new(&binding, doc.base_heads()));
                     prepare_content_restore(doc, &SCHEMA, &doc.base_heads(), &doc.base_heads()).unwrap()
                 })
                 .unwrap();
@@ -168,7 +168,7 @@ tilo_test_env::scenario! {
                     history
                         .undo_as(doc, Some(&binding.author), None, None)
                         .unwrap();
-                    state.pending = Some(PendingRecordAction::new(&binding, doc.base_heads()));
+                    state.pending = Some(PendingResourceAction::new(&binding, doc.base_heads()));
                     prepare_content_restore(doc, &SCHEMA, &doc.base_heads(), &target).unwrap()
                 })
                 .unwrap();
@@ -219,7 +219,7 @@ tilo_test_env::scenario! {
                             }
                             1 => {
                                 state.pending =
-                                    Some(PendingRecordAction::new(&binding, doc.base_heads()));
+                                    Some(PendingResourceAction::new(&binding, doc.base_heads()));
                                 doc.put(ROOT, "body", "closed").unwrap();
                                 doc.commit();
                                 // A logical pending span must be refused independently of UndoLog baseline.
@@ -279,7 +279,7 @@ tilo_test_env::scenario! {
                 })
                 .unwrap();
             binding
-                .with_record_frame(&mut AutoCommit::new(), false, |doc, _| {
+                .with_resource_frame(&mut AutoCommit::new(), false, |doc, _| {
                     let operation =
                         BoundOperation::enter(&binding, doc, tilo_actions::OperationKind::View)
                             .unwrap();

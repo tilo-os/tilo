@@ -184,7 +184,7 @@ impl ResourceApp for QuickSettingsApp {
     const DOCUMENT_HISTORY: bool = false;
     const PRIVATE_WINDOWS: bool = true;
     // The panel shows this device's desktop: it is nobody's workspace
-    // participant.
+    // member.
     const ATTACHES_RUNTIME: bool = false;
     // The panel is a card over this device's desktop, not a window with a
     // surface of its own: what its card does not paint shows what lies

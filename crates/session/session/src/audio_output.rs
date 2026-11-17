@@ -41,7 +41,7 @@ impl From<&NativeMediaRequestContext> for Key {
             peer: context.peer_id(),
             app: context.app_id().into(),
             workspace: context.workspace_id().into(),
-            record: context.record_id().into(),
+            record: context.document_id().into(),
         }
     }
 }

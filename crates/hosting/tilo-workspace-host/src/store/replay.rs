@@ -59,8 +59,8 @@ pub(crate) struct CaptureLeases {
     /// What each lineage's current generation held when last listed.
     listed: std::sync::Mutex<ListedLineages>,
     /// How each retained channel's record syncs
-    /// ([`super::record_sync`]).
-    pub(super) records: super::record_sync::RecordClasses,
+    /// ([`super::document_sync`]).
+    pub(super) records: super::document_sync::DocumentClasses,
     /// Which retained channels' records are sealed ([`super::sealed`]).
     pub(super) sealed: super::sealed::SealedChannels,
 }
@@ -112,7 +112,7 @@ impl WorkspaceStore {
         &self,
         outer: &mut Option<fs::ReadDir>,
         phase: u8,
-        every_record: bool,
+        every_document: bool,
         channels: Option<&std::collections::BTreeSet<[u8; 32]>>,
     ) -> Result<Option<fs::DirEntry>, StoreError> {
         loop {
@@ -122,13 +122,13 @@ impl WorkspaceStore {
             let entry = entry?;
             if phase == 2 && entry.file_type()?.is_dir() {
                 let name = entry.file_name();
-                if !every_record && self.leaves_out_on_demand(&name) {
+                if !every_document && self.leaves_out_on_demand(&name) {
                     continue;
                 }
                 // A confined device is replayed the lineages of its own
                 // record's channel; another record's is none of its.
                 if channels.is_some_and(|channels| {
-                    super::record_sync::lineage_channel(&name)
+                    super::document_sync::lineage_channel(&name)
                         .is_some_and(|channel| !channels.contains(&channel))
                 }) {
                     continue;
@@ -443,10 +443,10 @@ pub(crate) fn lineage_rank(lineage: &str) -> &'static str {
 fn desktop_channel() -> &'static str {
     static CHANNEL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     CHANNEL.get_or_init(|| {
-        use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD};
+        use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
         hex::encode(neighbour_wire::retention::app_document_channel(
             DESKTOP_APP,
-            DESKTOP_RECORD,
+            DESKTOP_DOCUMENT,
         ))
     })
 }
@@ -457,7 +457,7 @@ impl WorkspaceStore {
     /// certificates for a lineage that carries no record.
     fn capture_rank(&self, name: &OsStr) -> &'static str {
         match lineage_rank(&name.to_string_lossy()) {
-            "3" if !self.carries_record(name) => "1",
+            "3" if !self.carries_document(name) => "1",
             rank => rank,
         }
     }
@@ -491,7 +491,7 @@ pub struct ReplayBuild {
     skip: Option<ResumeSkip>,
     /// Replay every record, on-demand ones and earlier parts of chains
     /// included: a host attached to the workspace keeps all of it.
-    every_record: bool,
+    every_document: bool,
     /// Replay only these record channels' lineages: a browser environment's
     /// device reaches its own record and nothing else of the workspace.
     channels: Option<std::collections::BTreeSet<[u8; 32]>>,
@@ -574,8 +574,8 @@ impl ReplayBuild {
         self
     }
     /// Replay on-demand records and earlier parts of chains too.
-    pub(crate) fn with_every_record(mut self, every_record: bool) -> Self {
-        self.every_record = every_record;
+    pub(crate) fn with_every_document(mut self, every_document: bool) -> Self {
+        self.every_document = every_document;
         self
     }
     /// Replay only the lineages of these record channels: everything else of
@@ -882,7 +882,7 @@ impl WorkspaceStore {
             sorter: Some(sorter),
             next_pin: 0,
             skip: None,
-            every_record: false,
+            every_document: false,
             channels: None,
             listed: Some((
                 io::BufWriter::new(File::create(root.join("capture.manifest"))?),
@@ -923,7 +923,7 @@ impl WorkspaceStore {
             sorter.spill_step(limit)?;
             return Ok(Step::More);
         }
-        for _ in 0..limit.record_entries() {
+        for _ in 0..limit.entry_bound() {
             sorter.stats.last_step_work = sorter.stats.last_step_work.saturating_add(1);
             if build.phase == 4 {
                 build.phase = 5;
@@ -1050,7 +1050,7 @@ impl WorkspaceStore {
             } else if let Some(entry) = self.next_listed(
                 &mut build.outer,
                 build.phase,
-                build.every_record,
+                build.every_document,
                 build.channels.as_ref(),
             )? {
                 let name = entry.file_name();
@@ -1175,7 +1175,7 @@ impl WorkspaceStore {
             snapshot.stats.last_step_work = sorter.stats.last_step_work;
             return Ok(Step::More);
         }
-        for _ in 0..limit.record_entries() {
+        for _ in 0..limit.entry_bound() {
             sorter.stats.last_step_work = sorter.stats.last_step_work.saturating_add(1);
             let Some(meta) = read_meta(&mut link.listed)? else {
                 snapshot.link = None;
@@ -1235,7 +1235,7 @@ impl WorkspaceStore {
             return Ok(Step::More);
         }
         snapshot.stats.peak_open_files = snapshot.stats.peak_open_files.max(6);
-        for _ in 0..limit.record_entries() {
+        for _ in 0..limit.entry_bound() {
             snapshot.stats.last_step_work = snapshot.stats.last_step_work.saturating_add(1);
             if let Some(candidate) = &mut snapshot.candidate {
                 let mut entry = [0; 17];
@@ -1376,7 +1376,7 @@ impl WorkspaceStore {
         }
         let mut input = File::open(snapshot.root.join("cleanup.manifest"))?;
         input.seek(SeekFrom::Start(snapshot.cleanup_offset))?;
-        for _ in 0..limit.record_entries() {
+        for _ in 0..limit.entry_bound() {
             let Some(meta) = read_meta(&mut input)? else {
                 return Ok(Step::Done(()));
             };
@@ -1454,7 +1454,7 @@ impl WorkDiscard {
         if self.done || self.outer.is_none() {
             return Ok(Step::Done(()));
         }
-        for _ in 0..limit.record_entries() {
+        for _ in 0..limit.entry_bound() {
             if let Some((path, entries)) = &mut self.child {
                 if let Some(entry) = entries.peek()? {
                     if existing_kind(entry)?.is_some_and(|kind| kind.is_file())
@@ -1638,7 +1638,7 @@ impl WorkReclaimer {
         let Some(entries) = &mut self.entries else {
             return Ok(Step::Done(()));
         };
-        for _ in 0..limit.record_entries() {
+        for _ in 0..limit.entry_bound() {
             let Some(entry) = entries.peek()? else {
                 return Ok(Step::Done(()));
             };

@@ -20,7 +20,7 @@ impl QuickFS {
     ) -> Result<
         (
             Scope,
-            crate::namespace::history::RecordHistorySnapshot,
+            crate::namespace::history::DocumentHistorySnapshot,
             Option<fs_protocol::ContentRevisionV1>,
         ),
         Error,
@@ -41,7 +41,7 @@ impl QuickFS {
         }
         let document_id = namespace.document_id_for(ino).ok_or(Error::NotVisible)?;
         let snapshot = namespace
-            .record_history(document_id)
+            .document_history(document_id)
             .ok_or(Error::Unavailable)?;
         let current_revision = namespace.content_revision_for(ino);
         if let Some(revision) = current_revision

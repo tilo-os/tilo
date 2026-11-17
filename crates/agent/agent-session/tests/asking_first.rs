@@ -23,9 +23,7 @@ use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, Confirmation,
     ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest, Pending, pending,
 };
-use tilo_agent_session::{
-    AgentControl, AgentIdentity, AgentParticipant, ModelPlanner, ParticipantConfig,
-};
+use tilo_agent_session::{AgentControl, AgentIdentity, AgentMember, MemberConfig, ModelPlanner};
 use tilo_relay_protocol::agents::{AgentStatus, TaskState};
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
@@ -128,7 +126,7 @@ fn last_task(control: &AgentControl) -> tilo_relay_protocol::agents::AgentTask {
 }
 
 /// Pump `agent` until the last task ends.
-fn until_done(agent: &mut AgentParticipant, control: &AgentControl) {
+fn until_done(agent: &mut AgentMember, control: &AgentControl) {
     let deadline = tilo_test_env::hang_deadline();
     agent.run_until(Some(deadline), |_| {
         !matches!(
@@ -178,8 +176,8 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
         .await
         .unwrap();
     let control = AgentControl::new(delegation.clone());
-    let mut agent = AgentParticipant::start(
-        ParticipantConfig {
+    let mut agent = AgentMember::start(
+        MemberConfig {
             host: host.iroh(),
             host_cert: host_device.cert.clone(),
             workspace: WORKSPACE.into(),

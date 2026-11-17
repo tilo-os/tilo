@@ -341,7 +341,7 @@ pub fn prepare(
     let definition = definition();
     let store = Rc::new(crate::feedback::MemoryStore::new());
     let workspace = "feedback-private-draft";
-    let records = crate::record::RecordOwners::with_store(store.clone())
+    let records = crate::resource::ResourceOwners::with_store(store.clone())
         .open(FeedbackComposer::ID, workspace)
         .map_err(|error| crate::launch::LaunchError::Operation(error.to_string()))?;
     let views = Rc::new(
@@ -1078,7 +1078,7 @@ mod tests {
             ));
             services
                 .about(Some(Subject {
-                    record: Some(crate::feedback::ShownRecord {
+                    record: Some(crate::feedback::ShownResource {
                         workspace: "demo".into(),
                         record: "note-1".into(),
                     }),

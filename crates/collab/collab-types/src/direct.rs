@@ -10,7 +10,7 @@
 //! and sorted), so a stored conversation is imported into its record unchanged
 //! and a record written before it stays readable.
 
-const RECORD_PREFIX: &str = "direct/";
+const RESOURCE_PREFIX: &str = "direct/";
 
 /// Domain of [`direct_pair_id`].
 const PAIR_DOMAIN: &str = "private-person-pair-v1";
@@ -39,8 +39,8 @@ pub fn direct_pair_id(workspace: &str, a: &str, b: &str) -> Option<String> {
 
 /// The record carrying the conversation of `pair` ([`direct_pair_id`]).
 #[must_use]
-pub fn direct_record(pair: &str) -> String {
-    format!("{RECORD_PREFIX}{pair}")
+pub fn direct_resource(pair: &str) -> String {
+    format!("{RESOURCE_PREFIX}{pair}")
 }
 
 /// Whether `pair` is spelt as [`direct_pair_id`] spells one: `direct_` and
@@ -71,7 +71,7 @@ mod tests {
             let (ada, bob) = (person(0x11), person(0x22));
             let pair = direct_pair_id(WORKSPACE, &ada, &bob).unwrap();
             assert_eq!(direct_pair_id(WORKSPACE, &bob, &ada), Some(pair.clone()));
-            assert_eq!(direct_record(&pair), format!("direct/{pair}"));
+            assert_eq!(direct_resource(&pair), format!("direct/{pair}"));
             assert!(canonical_pair(&pair));
             assert!(!canonical_pair("direct/not-a-pair"));
         }

@@ -107,7 +107,7 @@ impl Widget for Owner {
     }
     fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
         let (doc, _) = crate::doc::document_ref(state, path);
-        assert!(crate::record::identity(doc).is_some());
+        assert!(crate::resource::identity(doc).is_some());
         if self.seen.replace.replace(false) {
             let body = doc
                 .get(ROOT, "body")
@@ -150,7 +150,7 @@ fn factory(
     _: RestoreInput,
 ) -> Result<AppComponent, crate::launch::LaunchError> {
     context
-        .initialize_new_record(|doc| {
+        .initialize_new_resource(|doc| {
             doc.put(ROOT, "body", "retained draft")
                 .map_err(|e| e.to_string())?;
             doc.commit();
@@ -173,7 +173,7 @@ fn prepared(
     host: &ProbeHost,
     queue: &OwnerWakeQueue,
     id: u64,
-) -> (BoundAppWidget, Seen, crate::record::DocumentId) {
+) -> (BoundAppWidget, Seen, crate::resource::DocumentId) {
     let seen = Seen::default();
     NEXT.with_borrow_mut(|next| *next = Some(seen.clone()));
     let definition = probe::definition(factory);
@@ -214,11 +214,9 @@ fn close(frame: &mut FrameHarness, count: usize) {
     frame.close_components();
     let reports = frame.take_component_close_reports();
     assert_eq!(reports.len(), count);
-    assert!(
-        reports.iter().all(|r| r.record_error.is_none()
-            && r.view_error.is_none()
-            && r.teardown_error.is_none())
-    );
+    assert!(reports.iter().all(|r| r.resource_error.is_none()
+        && r.view_error.is_none()
+        && r.teardown_error.is_none()));
 }
 #[test]
 fn mapped_child_drop_retires_old_maps_before_failure_publish_or_next_original_idle_tick() {
@@ -330,7 +328,7 @@ fn partial_batch_then_busy_canonical_loan_retires_maps_and_keeps_unvisited_owner
             assert!(matches!(
                 frame.service_pending_owner_models(),
                 Err(crate::bound_dispatch::BoundDispatchError::Record(
-                    crate::record::RecordOpenError::Busy
+                    crate::resource::ResourceOpenError::Busy
                 ))
             ));
         })

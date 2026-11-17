@@ -13,11 +13,11 @@ mod said;
 mod shell;
 mod shown;
 
-pub use crate::member::{Member, Person, assigned_colour, joined_at_from_packed};
+pub use crate::member::{Member, Person, joined_at_from_packed};
 pub use call::CallPresence;
 pub use hue::{
     PEER_PALETTE, PRESENCE_HUES, PRESENCE_LEN, PresenceHue, agent_client, agent_identity,
-    agent_rgb, assign_peer_colors, assign_peer_colors_from, identity_rgb, user_color,
+    identity_rgb, user_color,
 };
 pub use key::{
     AppKind, DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange, ViewRect,
@@ -27,7 +27,7 @@ pub use payload::{Availability, IDLE_AFTER, PresencePayload};
 pub use said::{DESKTOP_APP, Presence, stand_in};
 pub use tilo_action_policy::PersonId;
 
-/// What a participant says in one presence frame: the semantics every
+/// What a member says in one presence frame: the semantics every
 /// publisher and reader of a workspace's presence shares. One enum, so a
 /// frame is read the same wherever it is taken from.
 pub use crate::peer::PeerPresencePayload as Payload;

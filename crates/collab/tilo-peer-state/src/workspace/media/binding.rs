@@ -24,7 +24,7 @@ impl Binding {
     pub(super) fn into_legacy(self) -> ChatCallBindingV1 {
         ChatCallBindingV1 {
             app_id: self.app,
-            record_id: self.record,
+            document_id: self.record,
             channel_id: self.channel,
             channel_object: self.object,
             chat_workspace_id: self.workspace,
@@ -154,7 +154,7 @@ fn validate_selected(
     for call in policy_value.calls.values().filter(|call| {
         call.phase == CallPhaseV1::Active
             && call.binding.app_id == app
-            && call.binding.record_id == record
+            && call.binding.document_id == record
     }) {
         if !resolve(&call.binding.channel_id)?.matches(&call.binding) {
             return Err(policy(MediaPolicyError::Binding));
@@ -222,7 +222,7 @@ pub(super) fn validate_fields(
 ) -> Result<(), MediaPolicyError> {
     // A binding names an existing Chat record.
     if app != "so.tilo.chat"
-        || !super::text_valid(record, super::MAX_RECORD_BYTES, true)
+        || !super::text_valid(record, super::MAX_DOCUMENT_BYTES, true)
         || !super::text_valid(channel, super::MAX_CHANNEL_BYTES, false)
         || !super::text_valid(workspace, super::MAX_CHANNEL_BYTES, true)
         || !super::text_valid(object, super::MAX_OBJECT_BYTES, false)

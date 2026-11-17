@@ -48,7 +48,7 @@ impl Source {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Provenance {
     /// Its author here, when it was written here; none for an item moved here
-    /// from elsewhere, whose author is a name, not a participant.
+    /// from elsewhere, whose author is a name, not a member.
     pub actor: Option<Actor>,
     /// The name its author is shown by: the workspace's name for them here,
     /// their name where it was written.
@@ -226,7 +226,7 @@ mod tests {
         let grant = tilo_resource::MemberId::agent("grant-a8a42b74");
         let moved = people.provenance(Some(&grant), "", 1_900_000_000_000, Some(&origin));
         assert_eq!(moved.name, "xemmerling", "the author is its own field");
-        assert!(moved.actor.is_none(), "a moved author is not a participant");
+        assert!(moved.actor.is_none(), "a moved author is not a member");
         let source = moved.source.as_ref().expect("the tool it came from");
         assert_eq!(source.name, "Forgejo");
         assert_eq!(source.label(), "Forgejo (tilo#5602)");
@@ -251,7 +251,7 @@ mod tests {
 
         let here = people.provenance(Some(&ada), "", 1_763_164_800_000, None);
         assert_eq!(here.name, "Ada");
-        assert!(here.actor.is_some(), "written here, it is by a participant");
+        assert!(here.actor.is_some(), "written here, it is by a member");
         assert!(here.source.is_none(), "written here, it came from nowhere");
     }
 

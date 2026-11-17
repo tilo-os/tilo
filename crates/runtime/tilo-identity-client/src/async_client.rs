@@ -82,13 +82,13 @@ impl AsyncBrokerSigningIdentity {
         &mut self,
         workspace_id: &str,
         app_id: &str,
-        record_id: &str,
+        document_id: &str,
         unsigned_op: &[u8],
     ) -> Result<[u8; 64], NotAvailable> {
         self.signature(&wire::Request::CollaborationOp {
             workspace_id: workspace_id.to_owned(),
             app_id: app_id.to_owned(),
-            record_id: record_id.to_owned(),
+            document_id: document_id.to_owned(),
             unsigned_op: unsigned_op.to_vec(),
         })
         .await
@@ -98,14 +98,14 @@ impl AsyncBrokerSigningIdentity {
         &mut self,
         workspace_id: &str,
         app_id: &str,
-        record_id: &str,
+        document_id: &str,
         known_generation: u64,
     ) -> Result<wire::ChannelKeysReply, NotAvailable> {
         let response = self
             .exchange(&wire::Request::GroupKeys {
                 workspace_id: workspace_id.to_owned(),
                 app_id: app_id.to_owned(),
-                record_id: record_id.to_owned(),
+                document_id: document_id.to_owned(),
                 known_generation,
             })
             .await?;

@@ -19,12 +19,12 @@ fn account_document(root: &str, origin: &str, name: &str) -> Vec<u8> {
             name.into(),
         )))
         .unwrap();
-    let kind = ui::record::ResourceType::new("tilo.accounts");
-    ui::record::init(
+    let kind = ui::resource::ResourceType::new("tilo.accounts");
+    ui::resource::init(
         replica.doc_mut(),
-        &ui::record::person::record_id(&kind),
+        &ui::resource::person::document_id(&kind),
         &kind,
-        ui::record::person::PERSONAL_SCOPE,
+        ui::resource::person::PERSONAL_SCOPE,
     );
     replica.save()
 }
@@ -166,7 +166,7 @@ pub async fn run() {
             .await
             .unwrap();
         Seed::Existing {
-            record: ui::record::DocumentId::package_primary(),
+            record: ui::resource::DocumentId::package_primary(),
             changes: vec![canonical.save()],
         }
     } else {
@@ -180,7 +180,7 @@ pub async fn run() {
     let mut source = crate::common::open_in(
         &workspace.workspace,
         "so.tilo.chat",
-        &source_author,
+        &tilo_actions::MemberId::person(source_author.as_str()),
         ReplicaActor::Owner,
         seed,
     )
@@ -211,7 +211,7 @@ pub async fn run() {
     let route = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: workspace.workspace.clone(),
-        record: source.wire_record().into(),
+        record: source.wire_document().into(),
     };
     let part = chat::parts::part(0);
     let messages_route = part_route(&workspace.workspace, &part);
@@ -254,7 +254,7 @@ pub async fn run() {
             .write(route.clone(), &source.take_mutation().unwrap().unwrap())
             .unwrap();
     }
-    for (changed, mutation) in source.take_record_mutations().unwrap() {
+    for (changed, mutation) in source.take_document_mutations().unwrap() {
         assert_eq!(changed, part, "every message is in the first part");
         native
             .peer
@@ -314,7 +314,7 @@ pub async fn run() {
                 [40; 16],
                 tilo_relay_protocol::voice::CallOperation::Start {
                     app_id: route.app_id.clone(),
-                    record_id: route.record.clone(),
+                    document_id: route.record.clone(),
                     channel_id: voice_channel.id.clone(),
                     allowed: tilo_relay_protocol::voice::Directions {
                         publish: true,
@@ -358,7 +358,7 @@ pub async fn run() {
         barrier.recv().unwrap().unwrap();
         let retained = hosted
             .relay
-            .workspace_records()
+            .workspace_documents()
             .retained(workspace.workspace_id)
             .await
             .unwrap();
@@ -367,8 +367,8 @@ pub async fn run() {
                 .iter()
                 .any(|body| body.author == publisher.cert.device_public_key
                     && matches!(postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body.body),
-                Ok(neighbour_wire::NeighbourMsg::AppDocument {app_id, record_id, envelope, ..})
-                if app_id == route.app_id && record_id == route.record &&
+                Ok(neighbour_wire::NeighbourMsg::AppDocument {app_id, document_id, envelope, ..})
+                if app_id == route.app_id && document_id == route.record &&
                     envelope.encryption.as_ref().is_some())),
             "the compiled cold journey requires the foreign writer's actual retained ciphertext"
         );
@@ -385,7 +385,7 @@ pub async fn run() {
     let bootstrap = serde_json::json!({
         "origin": hosted.web.origin, "workspace": workspace.workspace,
         "hostDevice": hex::encode(host.cert.device_public_key), "provider": provider,
-        "record": route.record, "messages": ui::record::chain_resource_id(&chat::parts::chain()),
+        "record": route.record, "messages": ui::resource::chain_resource_id(&chat::parts::chain()),
         "channelId": channel.id,
         "channel": chat::projection::item_id("channels", &channel.id),
         "disconnectRetry": disconnect_retry, "voiceJourney": voice_journey, "encryptedRestart": encrypted_restart, "sourceAuthor": source_author,
@@ -419,7 +419,7 @@ pub async fn run() {
                 if let Some(mutation) = source.take_mutation().unwrap() {
                     native.peer.write(route.clone(), &mutation).unwrap();
                 }
-                for (changed, mutation) in source.take_record_mutations().unwrap() {
+                for (changed, mutation) in source.take_document_mutations().unwrap() {
                     assert_eq!(changed, part, "the post is in the first part");
                     native
                         .peer
@@ -462,14 +462,14 @@ pub async fn run() {
                             native.documents.get(&messages_route).into_iter().flatten()
                         {
                             source
-                                .apply_record(
+                                .apply_document(
                                     &part,
                                     &collab_types::DocumentMutation::Incremental(bytes.clone()),
                                 )
                                 .unwrap();
                         }
                         let messages: Vec<chat::record::Message> = source
-                            .read_record(&part, chat::messages::read_part)
+                            .read_resource(&part, chat::messages::read_part)
                             .unwrap()
                             .messages
                             .iter()

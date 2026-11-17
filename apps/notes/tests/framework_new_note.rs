@@ -222,7 +222,7 @@ fn the_header_plus_opens_the_new_note_and_typing_names_it() {
     assert_eq!(shown(&mut app), typed, "Escape keeps the typed title");
 }
 
-/// A note another participant makes never opens this person's title. The
+/// A note another member makes never opens this person's title. The
 /// agent's note is not the person's gesture, and the window being presented
 /// again — following it brings the window forward — does not reopen the
 /// title field either: a title edit is only ever the person's own New note

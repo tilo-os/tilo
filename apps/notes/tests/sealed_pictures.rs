@@ -93,9 +93,9 @@ fn a_placed_picture_is_ciphertext_off_its_readers_and_every_member_opens_it() {
     let mut alice = app();
     let page = with_page(&mut alice);
     let mut record =
-        automerge::AutoCommit::load(&alice.record_document(&alice.record().clone()).unwrap())
+        automerge::AutoCommit::load(&alice.resource_document(&alice.record().clone()).unwrap())
             .unwrap();
-    let mut bob = TestApp::<NotesShell>::with_workspace_record(&mut record).unwrap();
+    let mut bob = TestApp::<NotesShell>::with_workspace_resource(&mut record).unwrap();
 
     // Alice places it from her window.
     alice
@@ -140,9 +140,9 @@ fn a_placed_picture_is_ciphertext_off_its_readers_and_every_member_opens_it() {
     // Carol joins later: the notebook's history reaches her, and the host
     // she fetches the picture from still holds it sealed.
     let mut joined =
-        automerge::AutoCommit::load(&alice.record_document(&alice.record().clone()).unwrap())
+        automerge::AutoCommit::load(&alice.resource_document(&alice.record().clone()).unwrap())
             .unwrap();
-    let carol = TestApp::<NotesShell>::with_workspace_record(&mut joined).unwrap();
+    let carol = TestApp::<NotesShell>::with_workspace_resource(&mut joined).unwrap();
     carol
         .content()
         .put_public(

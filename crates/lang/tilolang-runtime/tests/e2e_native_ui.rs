@@ -35,7 +35,7 @@ action rename(n: Note, t: Text) (label: "Rename", on: n.title != "") {
         )]
         fn a_native_view_presents_an_action_and_reads_the_clock_once;
 
-        phase the_presentation_view_of_an_action_shows_its_subjects_state;
+        phase the_presentation_view_of_an_action_shows_its_targets_state;
         {
             let app = App::compile(PIN, &[]);
             let rt = runtime(&app);

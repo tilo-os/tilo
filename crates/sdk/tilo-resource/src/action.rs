@@ -44,7 +44,7 @@ fn invoking_author() -> Option<MemberId> {
     tilo_actions::invoking_context()
         .and_then(|context| context.invoker)
         .and_then(|invoker| invoker_member(&invoker))
-        .or_else(|| RECORD_ACTOR.with_borrow(Clone::clone))
+        .or_else(|| RESOURCE_ACTOR.with_borrow(Clone::clone))
 }
 
 /// The member an invoker acts as: the member itself, or for an automation the
@@ -64,12 +64,12 @@ fn invoker_member(invoker: &tilo_actions::ActionInvoker) -> Option<MemberId> {
 pub(crate) fn writing_author() -> Option<MemberId> {
     match tilo_actions::invoking_context() {
         Some(context) => context.invoker.and_then(|invoker| invoker_member(&invoker)),
-        None => RECORD_ACTOR.with_borrow(Clone::clone),
+        None => RESOURCE_ACTOR.with_borrow(Clone::clone),
     }
 }
 
 thread_local! {
-    static RECORD_ACTOR: std::cell::RefCell<Option<MemberId>> = const { std::cell::RefCell::new(None) };
+    static RESOURCE_ACTOR: std::cell::RefCell<Option<MemberId>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Attribution lent by the SDK's checked record callback. Compensation is
@@ -77,19 +77,19 @@ thread_local! {
 /// actual admitted actor rather than an anonymous ambient host.
 ///
 /// This supplies attribution only, never permission to access host resources.
-pub struct RecordActorScope(Option<MemberId>);
+pub struct ResourceActorScope(Option<MemberId>);
 
-impl RecordActorScope {
+impl ResourceActorScope {
     /// Lend the actor admitted by the record host for this callback.
     #[must_use]
     pub fn enter(actor: MemberId) -> Self {
-        Self(RECORD_ACTOR.replace(Some(actor)))
+        Self(RESOURCE_ACTOR.replace(Some(actor)))
     }
 }
 
-impl Drop for RecordActorScope {
+impl Drop for ResourceActorScope {
     fn drop(&mut self) {
-        RECORD_ACTOR.replace(self.0.take());
+        RESOURCE_ACTOR.replace(self.0.take());
     }
 }
 
@@ -212,7 +212,7 @@ impl ActionCx {
     }
 
     /// Who the action is by: the person or agent that invoked it, the same
-    /// id that participant's own views read as `me`. Pinned with the action
+    /// id that member's own views read as `me`. Pinned with the action
     /// like its time, so every replica reads the same author; the payload
     /// need not carry it. `None` for an action applied with no invoker
     /// (an edit written straight into a document outside the host).
@@ -918,7 +918,7 @@ impl<O: Operation> tilo_actions::Action for Reverting<O> {
         let change = self.change(doc)?;
         let payload = serde_json::to_vec(self).map_err(ActionError::Encode)?;
         revert(
-            &RecordOf::<O::Record>::OPS,
+            &ResourceOf::<O::Record>::OPS,
             &|record, before, cx| {
                 if let (Some(record), Some(before)) = (
                     record.downcast_mut::<O::Record>(),
@@ -940,7 +940,7 @@ impl<O: Operation> tilo_actions::Action for Reverting<O> {
 /// [`Reverting::apply`] of the change `change`, encoded as `payload` at
 /// `now_ms`, to a record of the type `record` whose `queue` is `queue`.
 fn revert(
-    record: &RecordOps,
+    record: &ResourceOps,
     queue: &dyn Fn(&mut dyn Any, &dyn Any, &mut ActionCx),
     (change, payload, now_ms): (automerge::ChangeHash, &[u8], i64),
     doc: &mut Doc,
@@ -980,7 +980,7 @@ type WriteChanged =
 /// What applying an operation needs of its record's type, with the type
 /// erased: a few functions per record type, so the apply itself is
 /// compiled once rather than for every record.
-pub(crate) struct RecordOps {
+pub(crate) struct ResourceOps {
     shape: crate::Shape,
     name: fn() -> &'static str,
     kind: fn() -> std::any::TypeId,
@@ -994,45 +994,45 @@ pub(crate) struct RecordOps {
     edit: fn(&crate::Edit<()>, &mut Doc, &mut ActionCx) -> Result<(), crate::ModelError>,
 }
 
-/// The record of `R` a [`RecordOps`] function was handed.
-fn record_of<R: 'static>(record: &dyn Any) -> Result<&R, crate::ModelError> {
+/// The record of `R` a [`ResourceOps`] function was handed.
+fn resource_of<R: 'static>(record: &dyn Any) -> Result<&R, crate::ModelError> {
     match record.downcast_ref::<R>() {
         Some(record) => Ok(record),
         None => Err(crate::ModelError::invalid("a record of another type")),
     }
 }
 
-fn read_record<R: Fields + 'static>(doc: &Doc) -> Result<Box<dyn Any>, crate::ModelError> {
+fn read_resource<R: Fields + 'static>(doc: &Doc) -> Result<Box<dyn Any>, crate::ModelError> {
     match R::read_fields(doc, &ROOT) {
         Ok(record) => Ok(Box::new(record)),
         Err(error) => Err(error),
     }
 }
 
-fn write_record<R: Fields + 'static>(
+fn write_resource<R: Fields + 'static>(
     record: &dyn Any,
     doc: &mut Doc,
 ) -> Result<(), crate::ModelError> {
-    record_of::<R>(record)?.write_fields(doc, &ROOT)
+    resource_of::<R>(record)?.write_fields(doc, &ROOT)
 }
 
-fn write_changed_record<R: Fields + 'static>(
+fn write_changed_resource<R: Fields + 'static>(
     record: &dyn Any,
     kept: &dyn Any,
     doc: &mut Doc,
     dirty: &crate::Delta,
 ) -> Result<(), crate::ModelError> {
-    record_of::<R>(record)?.write_changed_fields(record_of::<R>(kept)?, doc, &ROOT, dirty)
+    resource_of::<R>(record)?.write_changed_fields(resource_of::<R>(kept)?, doc, &ROOT, dirty)
 }
 
-fn check_record<R: Fields + 'static>(record: &dyn Any) -> Result<(), Refusal> {
+fn check_resource<R: Fields + 'static>(record: &dyn Any) -> Result<(), Refusal> {
     match record.downcast_ref::<R>() {
         Some(record) => crate::Model::check(record),
         None => Err(Refusal::new("a record of another type")),
     }
 }
 
-fn refresh_record<R: Fields + 'static>(
+fn refresh_resource<R: Fields + 'static>(
     record: &mut dyn Any,
     doc: &Doc,
     delta: &crate::Delta,
@@ -1043,7 +1043,7 @@ fn refresh_record<R: Fields + 'static>(
     }
 }
 
-fn diff_records<R: Fields + 'static>(from: &dyn Any, to: &dyn Any) -> Vec<crate::Edit<()>> {
+fn diff_resources<R: Fields + 'static>(from: &dyn Any, to: &dyn Any) -> Vec<crate::Edit<()>> {
     let mut edits = Vec::new();
     if let (Some(from), Some(to)) = (from.downcast_ref::<R>(), to.downcast_ref::<R>()) {
         crate::Model::diff(from, to, &[], &mut edits);
@@ -1051,7 +1051,7 @@ fn diff_records<R: Fields + 'static>(from: &dyn Any, to: &dyn Any) -> Vec<crate:
     edits
 }
 
-fn edit_record<R: Fields + 'static>(
+fn edit_resource<R: Fields + 'static>(
     edit: &crate::Edit<()>,
     doc: &mut Doc,
     cx: &mut ActionCx,
@@ -1059,20 +1059,20 @@ fn edit_record<R: Fields + 'static>(
     R::edit_fields(doc, &ROOT, edit.path(), edit.op(), cx)
 }
 
-pub(crate) struct RecordOf<R>(PhantomData<R>);
+pub(crate) struct ResourceOf<R>(PhantomData<R>);
 
-impl<R: Fields + 'static> RecordOf<R> {
-    pub(crate) const OPS: RecordOps = RecordOps {
+impl<R: Fields + 'static> ResourceOf<R> {
+    pub(crate) const OPS: ResourceOps = ResourceOps {
         shape: <R as crate::Model>::SHAPE,
         name: std::any::type_name::<R>,
         kind: std::any::TypeId::of::<R>,
-        read: read_record::<R>,
-        write: write_record::<R>,
-        write_changed: write_changed_record::<R>,
-        check: check_record::<R>,
-        refresh: refresh_record::<R>,
-        diff: diff_records::<R>,
-        edit: edit_record::<R>,
+        read: read_resource::<R>,
+        write: write_resource::<R>,
+        write_changed: write_changed_resource::<R>,
+        check: check_resource::<R>,
+        refresh: refresh_resource::<R>,
+        diff: diff_resources::<R>,
+        edit: edit_resource::<R>,
     };
 }
 
@@ -1166,7 +1166,7 @@ impl<O: Operation> Performs for O {
 /// and write would, so a replica replaying it, warm or cold, makes the
 /// identical change.
 fn apply_operation(
-    record: &'static RecordOps,
+    record: &'static ResourceOps,
     operation: &dyn Performs,
     (payload, now_ms): (&[u8], i64),
     doc: &mut Doc,
@@ -1285,7 +1285,7 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         let payload = serde_json::to_vec(self).map_err(ActionError::Encode)?;
         apply_operation(
-            &RecordOf::<O::Record>::OPS,
+            &ResourceOf::<O::Record>::OPS,
             &self.operation,
             (&payload, self.now_ms),
             doc,
