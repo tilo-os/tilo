@@ -338,3 +338,44 @@ fn a_banner_composes_its_buttons_inside_it() {
         banner.rect
     );
 }
+
+/// What a card holds is composed in the colours its paint hands it on the card's ground: a
+/// button there stands apart from the card as it does on the canvas.
+#[test]
+fn a_button_on_a_card_wears_the_cards_on_ground_colours() {
+    let fill = |root: &Composed| -> Option<[u8; 4]> {
+        nodes(root)
+            .into_iter()
+            .find(|node| node.widget == "Button")
+            .and_then(|node| match &node.own {
+                Some(Own::Face(face)) => face.fill,
+                _ => None,
+            })
+    };
+    let alone = composed(
+        Box::new(crate::widget::Button::new("message", "Message")),
+        (300, 200),
+    );
+    let card = composed(
+        Box::new(crate::widget::Card::new(Box::new(
+            crate::widget::Button::new("message", "Message"),
+        ))),
+        (300, 200),
+    );
+    let card_ground = nodes(&card.root)
+        .into_iter()
+        .find(|node| node.widget == "Card")
+        .and_then(|node| node.ground.as_ref())
+        .and_then(|ground| ground.fill);
+    let on_card = fill(&card.root);
+    assert!(on_card.is_some(), "the button keeps its face on the card");
+    assert_ne!(
+        on_card, card_ground,
+        "the button stands apart from the card's ground"
+    );
+    assert_ne!(
+        on_card,
+        fill(&alone.root),
+        "on the card it takes the card's colours"
+    );
+}

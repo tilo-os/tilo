@@ -863,7 +863,7 @@ pub fn compose_alone(
         .accessibility()
         .map(|access| crate::a11y::with_synthetic_bounds(access, widget));
     composed.focusable = widget.is_focusable();
-    let mut none = || (Vec::new(), false);
+    let mut none = |_: Option<[u8; 4]>| (Vec::new(), false);
     let mut cx = HtmlCx {
         composed,
         theme,
@@ -890,8 +890,9 @@ pub struct Composition {
 pub struct HtmlCx<'a> {
     pub(crate) composed: Composed,
     pub(crate) theme: &'a crate::Theme,
-    /// Composes the widget's laid-out children; whether they stand where its layout node put them.
-    pub(crate) compose_children: &'a mut dyn FnMut() -> (Vec<Composed>, bool),
+    /// Composes the widget's laid-out children on the ground it fills (straight sRGB), in the
+    /// theme its paint hands them there; whether they stand where its layout node put them.
+    pub(crate) compose_children: &'a mut dyn FnMut(Option<[u8; 4]>) -> (Vec<Composed>, bool),
 }
 
 impl<'a> HtmlCx<'a> {
@@ -907,7 +908,8 @@ impl<'a> HtmlCx<'a> {
 
     /// The widget's laid-out children, in its element, as its layout node lays them out.
     pub fn children(&mut self) {
-        let (children, flows) = (self.compose_children)();
+        let ground = self.composed.ground.as_ref().and_then(|ground| ground.fill);
+        let (children, flows) = (self.compose_children)(ground);
         self.composed.children = children;
         self.composed.flows = flows;
     }

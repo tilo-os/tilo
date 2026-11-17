@@ -59,6 +59,9 @@ struct Walk<'a> {
     placed: std::cell::RefCell<std::collections::HashSet<usize>>,
     /// The addresses of the widgets being composed, outermost first.
     open: std::cell::RefCell<Vec<usize>>,
+    /// The theme each grounded widget being composed hands what it holds, innermost last: a
+    /// button on a card wears the card's on-ground colours, as its paint does.
+    grounds: std::cell::RefCell<Vec<std::rc::Rc<crate::Theme>>>,
 }
 
 impl<'a> Walk<'a> {
@@ -178,12 +181,22 @@ impl<'a> Walk<'a> {
             .accessibility()
             .map(|access| crate::a11y::with_synthetic_bounds(access, widget));
         let base = (rect.x0, rect.y0);
-        let mut compose_children = || {
+        let theme = self.grounds.borrow().last().cloned();
+        let theme: &crate::Theme = theme.as_deref().unwrap_or(self.theme);
+        let mut compose_children = |ground: Option<[u8; 4]>| {
+            let on = ground.map(|[r, g, b, a]| {
+                std::rc::Rc::new(theme.on_ground(vello::peniko::Color::from_rgba8(r, g, b, a)))
+            });
+            let grounded = on.is_some();
+            self.grounds.borrow_mut().extend(on);
             let mut inner = 0;
             let children: Vec<Composed> = children_nodes
                 .iter()
                 .map(|&child| self.compose(child, base, &mut inner, path))
                 .collect();
+            if grounded {
+                self.grounds.borrow_mut().pop();
+            }
             let flows = self.flows(node, base, &children);
             (children, flows)
         };
@@ -215,7 +228,7 @@ impl<'a> Walk<'a> {
                 surfaces: Vec::new(),
                 children: Vec::new(),
             },
-            theme: self.theme,
+            theme,
             compose_children: &mut compose_children,
         };
         self.open.borrow_mut().extend(at);
@@ -249,6 +262,7 @@ impl FrameHarness {
             theme: &self.theme,
             placed: std::cell::RefCell::default(),
             open: std::cell::RefCell::default(),
+            grounds: std::cell::RefCell::default(),
         };
         let mut anonymous = 0;
         let root = if self.layout_built {

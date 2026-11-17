@@ -119,13 +119,7 @@ impl Widget for HeaderTitle {
             return;
         };
         let theme = cx.theme();
-        let look = crate::composition::TextLook::new(
-            title.to_owned(),
-            &crate::chrome::header_row::title_style(theme),
-            Some(theme.tokens.colors.text_primary),
-        )
-        .with_max_lines(Some(1));
-        cx.text(look);
+        header_row::compose_title_in(cx, theme, self.rect, title, self.shown_count());
     }
 
     fn build_layout(

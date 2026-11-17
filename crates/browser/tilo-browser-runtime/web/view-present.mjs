@@ -926,6 +926,8 @@ export const VIEW_CSS = `
 /* A row's or a place's controls show while the pointer is over it or focus is in it, as painted. */
 .tilo-view [data-hover-controls]:not(:hover):not(:focus-within) [data-widget=HoverToolbarFace]{opacity:0;pointer-events:none;}
 .tilo-view [data-widget=HoverToolbarFace]{transition:opacity .12s ease;}
+/* An entry scrolls its words without a bar of its own, as painted. */
+.tilo-view textarea{scrollbar-width:none;}
 /* A scroller's bar is a thin quiet thumb, not the platform's arrows and trough. */
 .tilo-view{scrollbar-width:thin;scrollbar-color:color-mix(in srgb,var(--tilo-text-dim,#6e6e73) 35%,transparent) transparent;}
 .tilo-view{font-family:var(--tilo-faces,"Tilo Sans",system-ui,sans-serif);color:var(--tilo-text,#1d1d1f);--tilo-mono:ui-monospace,"SF Mono",Menlo,monospace;font-synthesis:none;-webkit-font-smoothing:antialiased;}
