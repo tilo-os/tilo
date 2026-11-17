@@ -11,6 +11,9 @@
 //! native workspace builds compile an empty library. The page's host services
 //! are the platform crates' web backends (`tilo-dialogs`,
 //! `tilo-clipboard`, `tilo-notify`).
+// The crate's tests are host tests, with the native fixtures and apps a page
+// cannot link, so its test target builds empty for wasm32.
+#![cfg(not(all(target_arch = "wasm32", test)))]
 #![cfg_attr(
     target_arch = "wasm32",
     allow(
