@@ -778,12 +778,13 @@ impl Session {
                     value: serde_json::json!({ "spent": cost_micros }),
                 }
             }
-            TurnUpdate::Succeeded { message } => tilo_actions::InvocationUpdate::Succeeded {
+            // The answer declares a job (`answer_descriptor`), whose terminal update carries
+            // no value of its own: a value here is what the broker refuses as "an undeclared
+            // terminal value", failing the invocation the conversation waits on. What the
+            // person reads is the reply the turn already showed in the conversation.
+            TurnUpdate::Succeeded { .. } => tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
-                output: tilo_actions::ActionOutput {
-                    value: Some(serde_json::json!({ "reply": message })),
-                    resources: Vec::new(),
-                },
+                output: tilo_actions::ActionOutput::default(),
             },
             TurnUpdate::Failed { message } => tilo_actions::InvocationUpdate::Failed {
                 invocation,
@@ -1044,5 +1045,31 @@ mod tests {
                 "a step that produced nothing cannot feed a content input"
             );
         }
+    }
+
+    /// A turn's answer declares a job ([`answer_descriptor`]): its terminal update may not carry
+    /// a value of its own. A reply returned as the terminal's value is what the broker refuses as
+    /// "an undeclared terminal value", which fails the invocation the conversation waits on — the
+    /// "Request refused" a person saw while the agent worked. What the person reads is the reply
+    /// the turn already showed in the conversation.
+    #[test]
+    fn a_turn_answers_a_job_with_no_terminal_value() {
+        let contract = answer_descriptor().contract;
+        assert_eq!(contract.result, tilo_actions::ResultSpec::Job);
+        let terminal = tilo_actions::ActionOutput::default();
+        assert!(
+            contract.result.validate(&terminal).is_ok(),
+            "the answer's terminal carries no value: the broker admits it"
+        );
+        assert!(
+            contract
+                .result
+                .validate(&tilo_actions::ActionOutput {
+                    value: Some(serde_json::json!({"reply": "Hi! I work across your Notes."})),
+                    resources: Vec::new(),
+                })
+                .is_err(),
+            "a reply in the terminal's value is the undeclared value the broker refuses"
+        );
     }
 }
