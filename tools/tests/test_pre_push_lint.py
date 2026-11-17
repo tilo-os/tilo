@@ -21,7 +21,6 @@ HOOK_SOURCES = [
     "tools/ci/suites.toml",
     "tools/ci/check-changed-rustfmt.sh",
     "tools/ci/comparison_range.py",
-    "tools/land.py",
 ]
 WORKSPACE = """[workspace]
 members = ["native", "web", "fake-binding"]
@@ -211,10 +210,7 @@ class PrePushLintTests(unittest.TestCase):
         return env
 
     def push(self, head=None, remote_oid=None, ref="refs/heads/topic", cwd=None, **environment):
-        """Run the hook as Git would, with the ref lines it writes for a push.
-
-        A branch of one's own by default: main takes pushes only from the land queue.
-        """
+        """Run the hook as Git would, with the ref lines it writes for a push."""
         self.log.unlink(missing_ok=True)
         remote_oid = self.base if remote_oid is None else remote_oid
         cwd = cwd or self.root
@@ -223,13 +219,6 @@ class PrePushLintTests(unittest.TestCase):
             capture_output=True, text=True, env=self.environment(**environment), timeout=HANG_BOUND,
             input=f"{ref} {head or self.head()} {ref} {remote_oid}\n",
         )
-
-    def lander(self):
-        """The land queue's worktree of the fixture, at its head (tools/land.py)."""
-        tree = self.root / ".claude" / "worktrees" / "land-main"
-        self.git("worktree", "add", "-q", "--detach", str(tree), "HEAD")
-        self.checkout = tree
-        return tree
 
     def calls(self, prefix="start"):
         """The commands the stub was asked to compile."""
@@ -280,41 +269,19 @@ class PrePushLintTests(unittest.TestCase):
         self.assertIn("is not the commit checked out here", result.stderr)
         self.assertEqual(self.calls(), [])
 
-    def test_the_land_queue_lints_the_page_in_a_build_directory_of_its_own(self):
-        # Cargo locks a build directory for a whole build: the page's lint would wait for the
-        # native one instead of starting with it.
-        self.write("web/src/lib.rs", LIB.format(answer=63))
-        self.commit("feat: answer 63 in the page")
-        result = self.push(ref="refs/heads/main", cwd=self.lander())
-        self.assertEqual(result.returncode, 0, result.stderr)
-        page = [call for call in self.calls() if "wasm32" in call]
-        self.assertTrue(page and 'build.build-dir="target/lint-page"' in page[0], self.calls())
-        native = [call for call in self.calls() if "wasm32" not in call and "clippy" in call]
-        self.assertTrue(native and "build-dir" not in native[0], self.calls())
-
-    def test_a_direct_push_to_main_is_refused_for_the_land_queue(self):
-        # Main moves faster than a lint takes; a push straight to it races the queue's lint and
-        # makes it lint again. A push without Rust is refused too: it moves main all the same.
-        self.write("docs/notes.md", "words\n")
-        self.commit("docs: describe the fixture")
-        result = self.push(ref="refs/heads/main")
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("python3 tools/land.py", result.stderr)
-        self.assertEqual(self.calls(), [])
-
-    def test_the_land_queue_pushes_to_main(self):
+    def test_a_push_to_main_is_linted_as_any_push_is(self):
         self.write("native/src/lib.rs", LIB.format(answer=62))
         self.commit("feat: answer 62")
-        result = self.push(ref="refs/heads/main", cwd=self.lander())
+        result = self.push(ref="refs/heads/main")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(self.calls(), "the lander's push is linted as any push is")
+        self.assertTrue(self.calls(), "a push to main is linted")
 
     def test_a_push_main_has_moved_past_is_refused_before_anything_is_compiled(self):
         # The remote reports main's head when the push begins; a push that does not contain it
         # is refused after the lint whatever the lint says, so the lint would only load the builder.
         self.write("native/src/lib.rs", LIB.format(answer=61))
         self.commit("feat: answer 61")
-        result = self.push(remote_oid="1" * 40, ref="refs/heads/main", cwd=self.lander())
+        result = self.push(remote_oid="1" * 40, ref="refs/heads/main")
         self.assertEqual(result.returncode, 1)
         self.assertIn("does not contain", result.stderr)
         self.assertEqual(self.calls(), [])

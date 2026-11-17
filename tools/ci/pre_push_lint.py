@@ -59,7 +59,6 @@ if str(TOOLS) not in sys.path:
 from ci import package_features, suites, wasm_clippy_conf
 from ci.package_sets import PAGE_ENTRY, browser_crates, page_closure, wasm_crates
 from ci.lint_inputs import Workspace
-from land import lander_worktree
 from ci.workspace_graph import (
     cargo_metadata, closure, file_at, lockfile_change, package_maps, reverse_dependencies,
 )
@@ -171,8 +170,6 @@ class Push(NamedTuple):
     # Pushes to main that main's own head, as the remote reported it when the push began, is not
     # part of: the remote refuses them whatever the lint says.
     behind: list[str] = []
-    # Pushes to main from anywhere but the land queue's own worktree.
-    direct: list[str] = []
 
 
 def git(root: Path, *args: str) -> subprocess.CompletedProcess:
@@ -240,14 +237,6 @@ def contains(root: Path, head: str, commit: str) -> bool:
     return known(root, commit) and git(root, "merge-base", "--is-ancestor", commit, head).returncode == 0
 
 
-def landers_worktree(root: Path) -> bool:
-    """Whether this is the land queue's worktree, the one place main is pushed from (tools/land.py)."""
-    try:
-        return root.resolve() == lander_worktree(root, "main").resolve()
-    except (RuntimeError, IndexError, OSError):
-        return False
-
-
 def pushed(root: Path, remote: str, lines: Iterable[str]) -> Push:
     """Every file the pushed refs change, and each ref's comparison."""
     files: set[str] = set()
@@ -255,8 +244,6 @@ def pushed(root: Path, remote: str, lines: Iterable[str]) -> Push:
     tips: list[str] = []
     unnamed: list[str] = []
     behind: list[str] = []
-    direct: list[str] = []
-    lander = landers_worktree(root)
     for line in lines:
         parts = line.split()
         if len(parts) != 4:
@@ -264,9 +251,6 @@ def pushed(root: Path, remote: str, lines: Iterable[str]) -> Push:
         ref, head, remote_ref, remote_oid = parts
         if set(head) == ZERO_OID:
             continue  # a deleted ref changes nothing that is built
-        if remote_ref == MAIN_REF and not lander:
-            direct.append(ref)
-            continue
         if remote_ref == MAIN_REF and set(remote_oid) != ZERO_OID and not contains(root, head, remote_oid):
             behind.append(remote_oid)
             continue
@@ -281,7 +265,7 @@ def pushed(root: Path, remote: str, lines: Iterable[str]) -> Push:
             comparisons.append((start, head))
         tips.append(head)
         files |= changed
-    return Push(files, comparisons, tips, unnamed, behind, direct)
+    return Push(files, comparisons, tips, unnamed, behind)
 
 
 def rust_changes(files: set[str]) -> set[str]:
@@ -584,8 +568,7 @@ def lint_runs(root: Path, selection: Selection, web: list[str], formatting: list
     With `own_build_dirs`, the lints as the packages ship and for the page build in build
     directories of their own. Cargo locks a build directory for the whole of a build, so the
     three otherwise waited for one another instead of starting together; a build directory
-    of their own costs a first build each, which the land queue's worktree, linting every
-    round, pays once.
+    of their own costs a first build each.
     """
     cargo = cargo_command()
 
@@ -749,12 +732,12 @@ def main(argv: list[str]) -> int:
                         help="lint what that range changes, for a run outside a push (CI, t)")
     parser.add_argument("--own-build-dirs", action="store_true",
                         help="build the lints as packages ship and for the page in build directories "
-                             "of their own, so all three start together (the land queue does)")
+                             "of their own, so all three start together")
     parser.add_argument("--keep-logs", metavar="DIR", type=Path,
                         help="keep each run's whole output, and how long it took, in DIR")
     parser.add_argument("--only", metavar="PACKAGES",
                         help="lint only these of the packages the range reaches, comma-separated "
-                             "(the land queue relints what main changed under a batch it linted)")
+                             "(to relint only some of what a range reaches)")
     parser.add_argument("--stdin", type=argparse.FileType("r"), default=sys.stdin,
                         help="the ref lines Git writes for a pre-push hook")
     options = parser.parse_args(argv)
@@ -766,17 +749,10 @@ def main(argv: list[str]) -> int:
         push = Push(diff(root, base, head), [(base, head)], [head], [])
     else:
         push = pushed(root, options.remote, options.stdin)
-    if push.direct:
-        say("pre-push: main takes changes only through the land queue, so that nothing races its "
-            "lint: land with `python3 tools/land.py`. It puts your commits on main's newest head "
-            "with whatever else is queued, lints them there once and pushes them, and answers "
-            "landed, a conflict with its files, or the diagnostics your change adds")
-        return 1
     if push.behind:
         say(f"pre-push: main is at {push.behind[0][:12]} now, which this push does not contain, so "
-            "the remote refuses it whatever a lint says; nothing was linted. Land with "
-            "`python3 tools/land.py`: it puts your commits on main's newest head, lints them there "
-            "once and pushes them, with no race to lose")
+            "the remote refuses it whatever a lint says; nothing was linted. Rebase onto it "
+            "and push again")
         return 1
     files = rust_changes(push.files)
     if not files:
@@ -831,10 +807,8 @@ def main(argv: list[str]) -> int:
     dependents = (f" and {packages(len(selection.dependents))} built on them"
                   if selection.dependents else "")
     say(f"pre-push: linting {packages(len(selection.native))}{dependents}{page}")
-    # The land queue's worktree always builds so: its push's lint then makes the same runs as
-    # the lint the queue just made, and finds them passed.
     runs = lint_runs(root, selection, web, formatting,
-                     options.own_build_dirs or landers_worktree(root))
+                     options.own_build_dirs)
     checked = f"{'clippy and rustfmt' if formatting else 'clippy'} for {packages(len(selection.native))}{page}"
     passes = Passes(root)
     pending = []

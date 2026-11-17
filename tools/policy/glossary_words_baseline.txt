@@ -3,14 +3,13 @@
 room 3313
 space 4649
 channel 19717
-subject 3017
+subject 3015
 host 27592
 relay 3541
 run 29506
 seat 1445
 record 56949
 slot 11589
-gate 1
 plane 15
 lane 3
 standing 714
