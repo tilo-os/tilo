@@ -4256,7 +4256,7 @@ fn resolve_dbus_bind_at(
     media_player: Option<&str>,
     sockets: &ProxySockets,
 ) -> (Option<DBusBindPlan>, Vec<DBusProxyGuard>) {
-    if dbus_proxy::portal_filter_args(portals).is_empty() && !graphical && media_player.is_none() {
+    if dbus_proxy::portal_filter_args(portals, graphical).is_empty() && media_player.is_none() {
         return (None, Vec::new());
     }
     let Ok(bus_addr) = std::env::var("DBUS_SESSION_BUS_ADDRESS") else {
@@ -4389,7 +4389,7 @@ mod dbus_resolution_tests {
             )
             .set("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1234/bus");
             let portals = std::collections::BTreeMap::from([(
-                "notifications".to_string(),
+                "file-chooser".to_string(),
                 PortalPolicy::ViaHost,
             )]);
 

@@ -29,10 +29,9 @@ This does not add `content://` providers or grant authority. Cold restoration
 needs a real FUSE run; a metadata API result alone is not proof of it.
 
 Notification APIs check Tilo's existing provider over the already registered
-GApplication filtered bus. Explicit fixture preparation with `--notifications`
-declares only the existing `notifications = "via-host"` portal; the default declares
-none. The entry selects the freedesktop backend, which remains behind the launcher
-filter. Actual delivery and withdrawal, with authenticated workspace attribution, are
+GApplication filtered bus. The launcher lets every app with a window reach
+notifications, so a fixture declares no portal for them. The provider is the
+freedesktop backend, which remains behind the launcher filter. Actual delivery and withdrawal, with authenticated workspace attribution, are
 qualified. Notification tags, actions and background persistence are not.
 
 Android content descriptions propagate through GTK's existing AT-SPI tree.
@@ -115,13 +114,10 @@ Build one signed fixture per acceptance case, each prepared as its own
   before main-looper dispatch (activities
   `org/tilo/android/services/ServiceActivity` and
   `org/tilo/android/services/QueuedServiceActivity`).
-- `ForegroundActivity.java` with `ForegroundManifest.xml`, prepared with
-  `--notifications`: notification visibility, scoped workers, withdrawal of their
-  disposable grants and sticky process-loss recovery (activity
-  `org/tilo/android/foreground/ForegroundActivity`). The same APK without
-  `--notifications` renders while refusing foreground admission and starts no
-  scoped worker.
-- `IntegrationActivity.java` prepared with `--notifications`: document grants,
+- `ForegroundActivity.java` with `ForegroundManifest.xml`: notification
+  visibility, scoped workers, withdrawal of their disposable grants and sticky
+  process-loss recovery (activity `org/tilo/android/foreground/ForegroundActivity`).
+- `IntegrationActivity.java`: document grants,
   notification delivery and withdrawal, and external accessibility in one run.
 - `DocumentActivity.java` with `DocumentManifest.xml`: document metadata and
   editor modes.

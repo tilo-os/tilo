@@ -380,7 +380,7 @@ tilo_test_env::scenario! {
 
             let mut m = hello_manifest(BTreeMap::new());
             m.sandbox.portals.insert(
-                "notifications".to_string(),
+                "file-chooser".to_string(),
                 launcher::manifest::PortalPolicy::ViaHost,
             );
 
