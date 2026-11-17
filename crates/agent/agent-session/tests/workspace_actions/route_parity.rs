@@ -182,8 +182,21 @@ fn listed(
     caller: &Caller,
     provider: &str,
 ) -> Vec<tilo_actions::ActionDescriptor> {
+    listed_under(actions, workspace, caller, provider, None)
+}
+
+/// What `caller` is listed of `provider` under `parent`: its top resources
+/// for `None`.
+fn listed_under(
+    actions: &tilo_agent_session::WorkspaceActions,
+    workspace: WorkspaceId,
+    caller: &Caller,
+    provider: &str,
+    parent: Option<&str>,
+) -> Vec<tilo_actions::ActionDescriptor> {
     let query = CatalogueQuery {
         provider: Some(provider.to_owned()),
+        parent_resource: parent.map(str::to_owned),
         max_results: 500,
         ..CatalogueQuery::default()
     };
@@ -386,16 +399,27 @@ fn claimed_run() -> tilo_actions::ActionContext {
 /// The runs the changes of `route` the page received are grouped under.
 fn runs_of(page: &mut Browser, route: &DocumentRoute) -> Vec<tilo_actions::WorkGroup> {
     page.pump();
-    let mut doc = automerge::AutoCommit::new();
-    for (_, bytes) in page.documents.get(route).into_iter().flatten() {
-        let _ = tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes);
-    }
-    doc.get_changes(&[])
+    // The document and every document its app keeps beside it (the parts
+    // Notes keeps its notes in), each read on its own.
+    let mut groups = Vec::new();
+    for (_, changes) in page
+        .documents
         .iter()
-        .filter_map(|change| change.message())
-        .filter_map(tilo_actions::ActionContext::from_change_message)
-        .filter_map(|context| context.group)
-        .collect()
+        .filter(|(held, _)| held.app_id == route.app_id && held.cluster_id == route.cluster_id)
+    {
+        let mut doc = automerge::AutoCommit::new();
+        for (_, bytes) in changes {
+            let _ = tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes);
+        }
+        groups.extend(
+            doc.get_changes(&[])
+                .iter()
+                .filter_map(|change| change.message())
+                .filter_map(tilo_actions::ActionContext::from_change_message)
+                .filter_map(|context| context.group),
+        );
+    }
+    groups
 }
 
 /// The acting key a live presence row stands for: the board names a member by the publisher that
@@ -568,6 +592,18 @@ async fn both_routes_decide_every_callers_actions_alike() {
                 ));
             }
         }
+        // An action of a resource kept beside the top ones (a new note, on
+        // the parts the notes are in) is listed under them.
+        let beside: Vec<_> = all
+            .iter()
+            .map(|descriptor| descriptor.address.resource.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .flat_map(|resource| {
+                listed_under(&actions, workspace, &owner, &provider, Some(&resource))
+            })
+            .collect();
+        all.extend(beside);
         every.insert(route.app_id.clone(), (route.clone(), all));
     }
 
@@ -669,6 +705,9 @@ async fn both_routes_decide_every_callers_actions_alike() {
             .all(|name| agents.iter().any(|agent| agent == name)),
         "every agent and key made a note: {agents:?}"
     );
+    // The notes are kept in parts beside the notebook, which the page's
+    // window follows.
+    browser.follow_chain(NOTES, notes::part::chain().chain_head().as_str());
     let deadline = tilo_test_env::hang_deadline();
     let runs = loop {
         let runs = runs_of(&mut browser, notes);

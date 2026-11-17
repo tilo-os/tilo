@@ -120,21 +120,20 @@ pub struct NativeSurface {
 }
 
 impl NativeSurface {
-    /// The package this app publishes: its actions named by the catalogue ([`action_id`]), and
-    /// the root a program names its own document by ([`document_root`]).
+    /// The package this app publishes: its actions named by the catalogue ([`action_id`]), the
+    /// root a program names its own document by ([`document_root`]), and a root for each
+    /// resource it keeps beside that document ([`part_roots`]).
     pub fn package(&self) -> Result<PackageMeta, String> {
         let (surfaces, instances) = read_surfaces(&self.surface)?;
         let mut meta = package_with(&self.app, &self.title, &surfaces, &instances, Ids::Record);
         for action in &mut meta.actions {
             action.id = action_id(&meta.app, &action.id);
         }
-        if let Some(root) = document_root(
-            &self.app,
-            &surfaces,
-            &kind_names(&surfaces, &instances),
-            Ids::Record,
-        ) {
+        let kinds = kind_names(&surfaces, &instances);
+        if let Some(root) = document_root(&self.app, &surfaces, &kinds, Ids::Record) {
+            let beside = part_roots(&self.app, &surfaces, &instances, &kinds, &root);
             meta.named_roots.push(root);
+            meta.named_roots.extend(beside);
         }
         Ok(meta)
     }
@@ -259,6 +258,40 @@ fn document_root(
         ty: ids.id(app, ty),
         published: Some(kind.to_owned()),
     })
+}
+
+/// The named roots of the resources a native app keeps beside its document, one of each kind:
+/// the parts its notes or messages live in (`notes.pages`), whose verbs make and change what they
+/// hold (`notes.new_note(notes.pages, title: "Groceries")`). A program reads one as it reads the
+/// document, through the app's own read. Each resource of the surface besides `document` that
+/// keeps a collection of its own and is not one of many (`instances`) is one: what a read of the
+/// app lists beside its document ([`crate::native`]).
+fn part_roots(
+    app: &str,
+    surfaces: &[Surface],
+    instances: &[String],
+    kinds: &BTreeMap<String, String>,
+    document: &NamedRootMeta,
+) -> Vec<NamedRootMeta> {
+    surfaces
+        .iter()
+        .filter(|surface| {
+            surface
+                .fields
+                .iter()
+                .any(|field| field.stored == "collection" && !field.path.contains('.'))
+                && !instances.contains(&surface.kind)
+                && document.published.as_ref() != Some(&surface.kind)
+        })
+        .filter_map(|surface| {
+            let ty = kinds.get(&surface.kind)?;
+            Some(NamedRootMeta {
+                name: snake_case(ty),
+                ty: Ids::Record.id(app, ty),
+                published: Some(surface.kind.clone()),
+            })
+        })
+        .collect()
 }
 
 /// The packages a tilolang package may `use` that are no tilolang package directory: the

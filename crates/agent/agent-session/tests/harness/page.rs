@@ -249,6 +249,22 @@ impl Page {
         }
     }
 
+    /// Follow the parts of `app`'s chain whose head is `head`, as a window
+    /// showing them asks for them: a workspace sends a page a chain's parts
+    /// once it asks for the chain's head.
+    pub fn follow_chain(&self, app: &str, head: &str) {
+        self.peer
+            .send(Cmd::OpenDocumentAt(
+                self.workspace,
+                DocumentRoute {
+                    app_id: app.into(),
+                    cluster_id: self.cluster_id.clone(),
+                    document: head.into(),
+                },
+            ))
+            .unwrap();
+    }
+
     /// The route of the workspace's shared layout.
     fn layout_route(&self) -> DocumentRoute {
         DocumentRoute {

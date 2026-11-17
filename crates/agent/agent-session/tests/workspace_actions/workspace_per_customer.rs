@@ -170,7 +170,7 @@ async fn work(api: &Arc<Server>, mcp_url: &str, token: &str, title: &str) -> (St
         json!({"title": title, "markdown": "- passport\n"}),
     )
     .await;
-    let notes = listed_by(&mut agent, "notes").await;
+    let notes = listed_by(&mut agent, "notes/Notes").await;
     let page = notes
         .as_array()
         .and_then(|rows| rows.iter().find(|row| row.to_string().contains(title)))

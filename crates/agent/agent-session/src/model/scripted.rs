@@ -149,18 +149,19 @@ impl ScriptedModel {
         .into_iter()
         .collect();
         let shared = clause.iter().filter(|word| own.contains(*word)).count();
+        // Each word of the action's own verb the clause says counts: `new-note` fits "a new
+        // note" better than `new-tag` on the notebook the note goes in does.
         let verb = words(&descriptor.address.action)
             .iter()
-            .any(|word| clause.contains(word));
+            .filter(|word| clause.contains(word))
+            .count();
         let names_app = names_app(clause, &offer.app);
         let wants_text = descriptor
             .params
             .iter()
             .any(|param| param.ty == tilo_actions::ParamType::Text);
         let mut score = shared;
-        if verb {
-            score = score.saturating_add(2);
-        }
+        score = score.saturating_add(verb.saturating_mul(2));
         if names_app {
             score = score.saturating_add(5);
         }

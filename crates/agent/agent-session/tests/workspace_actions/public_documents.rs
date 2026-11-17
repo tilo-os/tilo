@@ -20,7 +20,7 @@
 //! of the workspace's records whether or not the service's own session was ever
 //! sent it, and a post goes into the channel it opens with.
 
-use super::own_agent::{listed_resources, page_paragraphs};
+use super::own_agent::{listed_resources, notes_resource, page_paragraphs};
 use super::resource_support::{admit_person, open_admitted_peer};
 use super::*;
 use serde_json::{Value, json};
@@ -146,6 +146,14 @@ async fn the_hosts_action_service_reads_and_acts_on_a_public_workspaces_records(
         &note.take_mutation().unwrap().unwrap(),
     )
     .await;
+    // The note itself is kept in a part beside the notebook.
+    for (part, mutation) in note.take_document_mutations().unwrap() {
+        let part = DocumentRoute {
+            document: part.as_str().to_owned(),
+            ..route.clone()
+        };
+        crate::support::written(&member.peer, &part, &mutation).await;
+    }
     let provider = record_provider(&route);
 
     // The host's own action service never had the note: its session was sent
@@ -170,9 +178,20 @@ async fn the_hosts_action_service_reads_and_acts_on_a_public_workspaces_records(
     else {
         panic!("the host lists the notebook the note is in: {page:?}");
     };
-    let pages = catalogue_under(&mut member, &provider, Some(&notebook))
+    let beside = catalogue_under(&mut member, &provider, Some(&notebook))
         .await
         .expect("the host serves the record the member wrote");
+    let Some(kept) = beside
+        .rows
+        .iter()
+        .find(|row| row.resource.kind == "notes.pages")
+        .map(|row| row.resource.id.clone())
+    else {
+        panic!("the host lists the notes the notebook keeps: {beside:?}");
+    };
+    let pages = catalogue_under(&mut member, &provider, Some(&kept))
+        .await
+        .expect("the host serves the notes the member wrote");
     let named = pages.rows.iter().any(|row| {
         [
             Some(&row.resource.kind),
@@ -209,11 +228,12 @@ async fn the_hosts_action_service_reads_and_acts_on_a_public_workspaces_records(
     let deadline = tilo_test_env::hang_deadline();
     loop {
         member.pump();
+        // In the part of the notes the new note is kept in.
         let authored = member
             .documents
-            .get(&route)
-            .into_iter()
-            .flatten()
+            .iter()
+            .filter(|(held, _)| held.app_id == route.app_id && held.document != route.document)
+            .flat_map(|(_, changes)| changes)
             .any(|checkpoint| checkpoint.0 == host.cert.device_public_key);
         if authored || Instant::now() >= deadline {
             assert!(
@@ -592,10 +612,7 @@ async fn every_paragraph_a_visitors_agent_was_told_it_wrote_reaches_their_open_n
     )
     .await;
     let listing = call("tilo_ls", json!({"path": "notes"})).await;
-    let notebook = listed_resources(&listing)
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| panic!("notes lists a notebook: {listing}"));
+    let notebook = notes_resource(&listing);
     let pages = call("tilo_ls", json!({"path": format!("notes/{notebook}")})).await;
     let page = listed_resources(&pages)
         .into_iter()
@@ -636,6 +653,9 @@ async fn every_paragraph_a_visitors_agent_was_told_it_wrote_reaches_their_open_n
     for line in &sent {
         assert!(read.contains(line), "the host reads {line:?}: {read}");
     }
+    // Their open notes follow the parts the notes are kept in, as a window
+    // asks for them: by the chain's head.
+    browser.follow_chain(NOTES, notes::part::chain().chain_head().as_str());
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let seen = page_paragraphs(&mut browser, "Launch notes");

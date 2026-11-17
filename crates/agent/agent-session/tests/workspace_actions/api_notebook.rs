@@ -116,7 +116,14 @@ async fn a_new_page_reads_a_notebook_an_agent_rearranged_through_the_api() {
     let mut folders = BTreeMap::<String, String>::new();
     let mut expected = BTreeMap::<String, String>::new();
     for (name, _) in &files {
-        let found = act("find-page", json!({"title": name})).await;
+        // Finding a note is the notebook's; the notes are kept beside it.
+        let found = post(
+            &api,
+            &token,
+            &format!("{base}/resources/notes/Notebook/actions/find-page"),
+            &json!({"title": name}),
+        )
+        .await;
         let note = found["result"]["pages"][0]["page"]
             .as_str()
             .unwrap_or_else(|| panic!("{name}: {found}"))

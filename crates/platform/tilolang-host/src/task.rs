@@ -186,6 +186,10 @@ impl TaskApi for Api {
         self.reads.forget();
     }
 
+    fn resource_id(&self, app: &str, resource: &str) -> Result<String, String> {
+        NativeReads::new(&self.native, self).resource_id(app, resource)
+    }
+
     fn invoke(&self, call: &Json) -> Answered {
         // A change of a document the session changes itself goes there with the document it changes,
         // and what the task's read of it would write, which the session compares its run with.
@@ -1367,16 +1371,74 @@ mod tests {
                     })
                     .collect()
             };
-            // The app the program invokes the document of, and how it writes it.
+            let named = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+                pairs
+                    .iter()
+                    .map(|(name, call)| ((*name).to_owned(), (*call).to_owned()))
+                    .collect()
+            };
+            // The app the program invokes the document of, and how it writes it; then each
+            // resource the app keeps a collection in beside it (chat's messages, the tracker's
+            // issues), whose verbs make and change what it holds.
             assert_eq!(
                 roots("chat"),
-                [("workspace".to_owned(), "chat.workspace".to_owned())],
+                named(&[
+                    ("workspace", "chat.workspace"),
+                    ("messages", "chat.messages"),
+                    ("learned", "chat.learned"),
+                ]),
                 "{catalogue:#}"
             );
             assert_eq!(
                 roots("tasks"),
-                [("tracker".to_owned(), "tasks.tracker".to_owned())],
+                named(&[("tracker", "tasks.tracker"), ("issues", "tasks.issues")]),
                 "{catalogue:#}"
+            );
+        }
+
+        phase a_program_reads_what_a_native_app_keeps_beside_its_document;
+        {
+            // The tracker keeps its issues in parts beside it, one resource the app's directory
+            // lists under the tracker: the root `tasks.issues` lists them, and each is read by the
+            // id it is listed by.
+            let (task, _reader, api) = task_with(&[tasks()]);
+            let calls = scripted(&api, |message| {
+                if let Some(listing) = message.get("children") {
+                    let rows = match listing["resource"].as_str() {
+                        Some("") => vec![document_row("tasks.tracker", "Tasks")],
+                        Some("bound:tasks.tracker") => vec![json!({
+                            "id": "chain:issues", "kind": "tasks.issues",
+                            "key": "chain:issues", "name": "Issues",
+                        })],
+                        _ => vec![
+                            row("tasks.issues/issues/one", "Ship it"),
+                            row("tasks.issues/issues/two", "Review it"),
+                        ],
+                    };
+                    return json!({"ok": {"rows": rows}});
+                }
+                if message.get("reads").is_some() {
+                    return json!({"ok": {"reads": false}});
+                }
+                let item = message["invoke"]["arguments"]["item"].as_str();
+                let title = match item {
+                    Some("tasks.issues/issues/one") => "Ship it",
+                    Some("tasks.issues/issues/two") => "Review it",
+                    _ => return json!({"ok": {"value": {}, "resources": []}}),
+                };
+                json!({"ok": {"value": {"title": title}, "resources": []}})
+            });
+            let answer = ran(
+                &task,
+                "for i in tasks.issues.issues {\n    print(i.title)\n}",
+            );
+            closed(&api);
+            calls.join().expect("the API");
+            assert_eq!(answer["state"], "done", "{answer:#}");
+            assert_eq!(
+                answer["output"],
+                json!(["Ship it", "Review it"]),
+                "{answer:#}"
             );
         }
     }
@@ -1420,6 +1482,39 @@ mod tests {
                     {"app": "so.tilo.chat", "resource": "chat.workspace", "published": false},
                     {"app": "so.tilo.tasks", "resource": "tasks.tracker", "published": false},
                 ])
+            );
+        }
+
+        phase a_program_invokes_what_a_native_app_keeps_beside_its_document;
+        {
+            // An issue is made on the issues the tracker keeps beside it, invoked by the id its
+            // directory lists them by; the step is taken back through the tracker.
+            let (task, _reader, api) = task_with(&[tasks()]);
+            let calls = scripted(&api, |message| {
+                if let Some(listing) = message.get("children") {
+                    let rows = match listing["resource"].as_str() {
+                        Some("") => vec![document_row("tasks.tracker", "Tasks")],
+                        _ => vec![json!({
+                            "id": "chain:issues", "kind": "tasks.issues",
+                            "key": "chain:issues", "name": "Issues",
+                        })],
+                    };
+                    return json!({"ok": {"rows": rows}});
+                }
+                json!({"ok": {}})
+            });
+            let answer = ran(&task, "tasks.create(tasks.issues, \"Ship it\")");
+            closed(&api);
+            let calls = calls.join().expect("the API");
+            assert_eq!(answer["state"], "done", "{answer:#}");
+            let invoked: Vec<&Json> = calls.iter().filter_map(|call| call.get("invoke")).collect();
+            assert_eq!(invoked.len(), 1, "{calls:#?}");
+            assert_eq!(invoked[0]["resource"], "chain:issues", "{calls:#?}");
+            assert_eq!(invoked[0]["action"], "create", "{calls:#?}");
+            assert_eq!(
+                answer["history"],
+                json!([{"app": "so.tilo.tasks", "resource": "tasks.tracker", "published": false}]),
+                "{answer:#}"
             );
         }
 

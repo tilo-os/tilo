@@ -81,7 +81,7 @@ async fn a_program_runs_on_a_workspace_the_server_hosts() {
         &on_server,
         &key,
         &workspace,
-        "notes.new_note(notes.notebook, title: \"From the hosted task\")",
+        "notes.new_note(notes.pages, title: \"From the hosted task\")",
     )
     .await;
     assert_eq!(status, 200, "{made}");
@@ -92,7 +92,7 @@ async fn a_program_runs_on_a_workspace_the_server_hosts() {
     // The note is in the workspace's record, read as a person's call reads it.
     let (status, read) = session
         .post(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
-                     "params": {"name": "tilo_read", "arguments": {"path": "notes"}}}))
+                     "params": {"name": "tilo_read", "arguments": {"path": "notes/Notes"}}}))
         .await;
     assert_eq!(status, 200, "{read}");
     assert!(
@@ -104,7 +104,7 @@ async fn a_program_runs_on_a_workspace_the_server_hosts() {
     // takes it back.
     let (status, made) = session
         .post(tilo(
-            "notes.new_note(notes.notebook, title: \"Also from the task\")",
+            "notes.new_note(notes.pages, title: \"Also from the task\")",
         ))
         .await;
     assert_eq!(status, 200, "{made}");
@@ -176,14 +176,14 @@ async fn the_repl_works_in_a_workspace_as_its_person() {
     // A `let` holds for the entries after it.
     said(repl.entry("let title = \"Groceries\"").await);
     let made = said(
-        repl.entry("notes.new_note(notes.notebook, title: title)")
+        repl.entry("notes.new_note(notes.pages, title: title)")
             .await,
     );
     assert!(!made.contains("error"), "{made}");
 
     // A change to many waits for `confirm`, and is then one step.
     let bulk = "for t in [\"Bins\", \"Oat milk\", \"Plants\", \"Library\", \"Haircut\"] { \
-                notes.new_note(notes.notebook, title: t) }";
+                notes.new_note(notes.pages, title: t) }";
     let previewed = said(repl.entry(bulk).await);
     assert!(previewed.contains("preview:"), "{previewed}");
     let applied = said(repl.entry("confirm").await);
@@ -204,7 +204,7 @@ async fn the_repl_works_in_a_workspace_as_its_person() {
 
     // A program reads another app's records: the notebook's pages, each shown with a
     // reference a following entry names it by.
-    let pages = said(repl.entry("notes.notebook.pages").await);
+    let pages = said(repl.entry("notes.pages.pages").await);
     let groceries = pages
         .lines()
         .find(|line| line.contains("Groceries"))
@@ -232,7 +232,7 @@ async fn the_repl_works_in_a_workspace_as_its_person() {
         .unwrap();
     let unknown = said(
         other
-            .entry("notes.new_note(notes.notebook, title: title)")
+            .entry("notes.new_note(notes.pages, title: title)")
             .await,
     );
     assert!(unknown.contains("error"), "{unknown}");

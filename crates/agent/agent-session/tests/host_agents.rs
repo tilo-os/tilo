@@ -116,6 +116,16 @@ impl Browser {
                     changes.iter().all(|(from, _)| *from == author),
                     "only the agent edits {app} here"
                 );
+                // A part of a chain (the parts Notes keeps its notes in) is
+                // no document the app opens on its own: its changes are read
+                // as they merge.
+                if route_document(&route.document).chain_part().is_some() {
+                    let mut doc = automerge::AutoCommit::new();
+                    for (_, bytes) in changes {
+                        let _ = tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes);
+                    }
+                    return serde_json::to_string(&automerge::AutoSerde::from(&doc)).unwrap();
+                }
                 // Until the change that sets the record up arrives, the app
                 // refuses to open what came before it.
                 let page = match crate::common::open(

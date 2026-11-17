@@ -167,6 +167,39 @@ fn held(browser: &tilo_session_client::Link, route: &DocumentRoute) -> Option<Ve
         .map(|bytes| vec![bytes])
 }
 
+/// Whether a part of the notes the browser holds (Notes keeps its notes in
+/// parts beside the notebook) holds `text`, in any case.
+fn notes_parts_hold(browser: &tilo_session_client::Link, text: &str) -> bool {
+    let documents = browser.engine();
+    documents
+        .records(WORKSPACE)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(app, document)| {
+            app == "so.tilo.notes"
+                && ui::resource::DocumentId::parse(document)
+                    .is_some_and(|part| part.chain_part().is_some())
+        })
+        .filter_map(|(app_id, document)| {
+            held(
+                browser,
+                &DocumentRoute {
+                    app_id,
+                    cluster_id: WORKSPACE.to_owned(),
+                    document,
+                },
+            )
+        })
+        .flatten()
+        .filter_map(|bytes| automerge::AutoCommit::load(&bytes).ok())
+        .any(|doc| {
+            serde_json::to_string(&automerge::AutoSerde::from(&doc))
+                .unwrap_or_default()
+                .to_lowercase()
+                .contains(text)
+        })
+}
+
 /// Take the browser's events: every write that landed is one of `writers`'.
 fn only_written_by(events: &tilo_session_client::Events, writers: &[[u8; 32]]) {
     for event in events.drain() {
@@ -364,7 +397,6 @@ async fn every_web_app_over_the_session() {
             .unwrap()
     };
     let scratchpad = resource_of("so.tilo.scratchpad");
-    let notes = resource_of("so.tilo.notes");
     control
         .message(r#"In the notes, add a new note titled "Said in plain words""#)
         .unwrap();
@@ -380,11 +412,7 @@ async fn every_web_app_over_the_session() {
         let done = control.info().tasks.last().is_some_and(|task| {
             task.state != TaskState::Running && task.state != TaskState::Queued
         });
-        if done
-            && held(&browser, &notes).is_some_and(|changes| {
-                page(&catalogue, &notes, &changes).contains("said in plain words")
-            })
-        {
+        if done && notes_parts_hold(&browser, "said in plain words") {
             break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;

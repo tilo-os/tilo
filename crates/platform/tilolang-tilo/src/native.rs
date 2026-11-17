@@ -231,7 +231,12 @@ impl<'a> NativeReads<'a> {
         let Some((doc, rest)) = split_id(item) else {
             return Err(format!("`{item}` is no resource id"));
         };
-        if doc != document {
+        // A resource the app keeps beside its document (`notes.pages`) is a root of its own; what
+        // it holds is held by the document's id, as everything the app lists is ([`held_id`]).
+        let beside = (doc != document)
+            .then(|| self.kind_root(app, doc))
+            .flatten();
+        if doc != document && beside.is_none() {
             return Err(format!(
                 "{app} keeps `{doc}`; the document a program reads is `{document}`"
             ));
@@ -241,7 +246,24 @@ impl<'a> NativeReads<'a> {
             .flat_map(|schema| &schema.fields)
             .filter(|field| field.kind == MergeKind::Collection)
             .collect();
-        let (content, key, listing) = if rest.is_none() {
+        let (content, key, listing) = if let (Some(root), None) = (beside, rest) {
+            if ty != root.id {
+                return Err(format!("{doc} is a {}, not a {ty}", root.id));
+            }
+            let listing = self.listing(app, ty)?;
+            let Some(part) = listing.parts.iter().find(|part| part.kind == doc) else {
+                return Err(format!(
+                    "{app} lists no `{doc}`: a program reads what its directory lists"
+                ));
+            };
+            let row = Row {
+                held: doc.to_owned(),
+                id: part.under.clone(),
+                under: part.under.clone(),
+                key: None,
+            };
+            (self.content(app, &row)?, doc.to_owned(), Some(listing))
+        } else if rest.is_none() {
             let (_, root_ty) = self.root(app)?;
             if ty != root_ty {
                 return Err(format!("{document} is a {root_ty}, not a {ty}"));
@@ -263,7 +285,8 @@ impl<'a> NativeReads<'a> {
             // one type are told apart by asking the app each in turn.
             let listing = self.listing(app, ty)?;
             let rows = self.rows_in(app, &listing, ty)?;
-            let mut candidates = rows.iter().filter(|row| row.held == item);
+            let held = rest.map_or_else(|| item.to_owned(), |rest| format!("{document}/{rest}"));
+            let mut candidates = rows.iter().filter(|row| row.held == held);
             let Some(first) = candidates.next() else {
                 return Ok(json!({"missing": true}));
             };
@@ -297,6 +320,33 @@ impl<'a> NativeReads<'a> {
                 .map(|(id, value)| (id, field_json(&value)))
                 .collect::<serde_json::Map<String, Json>>(),
         }))
+    }
+
+    /// The id the app `app`'s directory lists the resource a program names `resource` by, which
+    /// its actions are invoked on: a resource it keeps beside its document (`notes.pages`) by the
+    /// id it is listed under the document as; the document, and any other resource, as named.
+    ///
+    /// # Errors
+    /// The app lists no such resource, or does not answer.
+    pub fn resource_id(&self, app: &str, resource: &str) -> Result<String, String> {
+        if self
+            .document_name(app)
+            .is_ok_and(|document| document == resource)
+            || self.kind_root(app, resource).is_none()
+        {
+            return Ok(resource.to_owned());
+        }
+        let published = self.published(app)?;
+        self.calls
+            .children(app, &published)?
+            .iter()
+            .find(|row| row.get("kind").and_then(Json::as_str) == Some(resource))
+            .and_then(|row| row.get("id"))
+            .and_then(Json::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                format!("{app} lists no `{resource}`: a program reaches what its directory lists")
+            })
     }
 
     /// What the app `app` answers to a program's `request` to read it.
@@ -557,7 +607,7 @@ impl<'a> NativeReads<'a> {
                 && let Some(kind_root) = self.kind_root(app, kind)
                 && let Some(id) = row.get("id").and_then(Json::as_str)
             {
-                if ty == root.id || holds_type(kind_root, ty, 0) {
+                if ty == root.id || ty == kind_root.id || holds_type(kind_root, ty, 0) {
                     beside.push((id.to_owned(), kind.to_owned(), kind_root));
                 }
                 continue;

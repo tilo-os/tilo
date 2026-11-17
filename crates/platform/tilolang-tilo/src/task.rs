@@ -94,6 +94,15 @@ pub trait TaskApi {
     /// A program starts: what was read for an earlier one is read again
     /// ([`crate::task_documents::DocumentReads::forget`]).
     fn begin_program(&self) {}
+
+    /// The id the native app `app` lists the resource a program names `resource` by, which an
+    /// action of it is invoked on ([`crate::native::NativeReads::resource_id`]).
+    ///
+    /// # Errors
+    /// The app lists no such resource.
+    fn resource_id(&self, _app: &str, resource: &str) -> Result<String, String> {
+        Ok(resource.to_owned())
+    }
 }
 
 /// How an invocation the API made ended.
@@ -612,6 +621,21 @@ impl Invoker for ApiInvoker {
         };
         if provisional {
             return Invoked::Done(Value::Unit);
+        }
+        // A native app's resource beside its document is invoked by the id its directory lists.
+        let mut call = call;
+        if !published
+            && self.native.is(app)
+            && let Some(named) = call.get("resource").and_then(Json::as_str)
+        {
+            match self.api.resource_id(app, named) {
+                Ok(id) => {
+                    if let Some(fields) = call.as_object_mut() {
+                        fields.insert("resource".to_owned(), Json::String(id));
+                    }
+                }
+                Err(why) => return Invoked::Failed(why),
+            }
         }
         match self.api.invoke(&call) {
             // An action that only reads or shows (`overview`, `search`) changes nothing of the

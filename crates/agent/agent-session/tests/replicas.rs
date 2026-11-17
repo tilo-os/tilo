@@ -783,18 +783,19 @@ fn an_agent_acting_for_a_person_hands_back_what_it_wrote_as_the_agent() {
     )
     .unwrap();
     let _ = agent.take_mutation();
-    let new_note = agent
+    // A tag is written to the notebook itself; its notes live in parts beside it.
+    let new_tag = agent
         .survey()
         .into_iter()
-        .find(|descriptor| descriptor.address.action == "new-note")
-        .expect("the notebook offers the agent a new note")
+        .find(|descriptor| descriptor.address.action == "new-tag")
+        .expect("the notebook offers the agent a new tag")
         .address;
-    let arguments = serde_json::json!({"title": "Launch plan"});
+    let arguments = serde_json::json!({"name": "Launch plan"});
     agent
-        .invoke(&new_note, arguments.as_object().unwrap(), false)
+        .invoke(&new_tag, arguments.as_object().unwrap(), false)
         .unwrap();
     let Some(DocumentMutation::Incremental(wrote)) = agent.take_mutation().unwrap() else {
-        panic!("the agent's note is handed back to be saved");
+        panic!("the agent's tag is handed back to be saved");
     };
     let mut doc = automerge::AutoCommit::new();
     tilo_automerge::ApplyIncoming::load_incoming(&mut doc, &genesis).unwrap();
@@ -873,18 +874,18 @@ fn two_replicas_of_one_agent_never_write_one_sequence_twice() {
         )
         .unwrap();
         let _ = agent.take_mutation();
-        let new_note = agent
+        let new_tag = agent
             .survey()
             .into_iter()
-            .find(|descriptor| descriptor.address.action == "new-note")
-            .expect("the notebook offers the agent a new note")
+            .find(|descriptor| descriptor.address.action == "new-tag")
+            .expect("the notebook offers the agent a new tag")
             .address;
-        let arguments = serde_json::json!({ "title": title });
+        let arguments = serde_json::json!({ "name": title });
         agent
-            .invoke(&new_note, arguments.as_object().unwrap(), false)
+            .invoke(&new_tag, arguments.as_object().unwrap(), false)
             .unwrap();
         let Some(DocumentMutation::Incremental(changes)) = agent.take_mutation().unwrap() else {
-            panic!("the agent's note is handed back to be saved");
+            panic!("the agent's tag is handed back to be saved");
         };
         wrote.push(changes);
     }

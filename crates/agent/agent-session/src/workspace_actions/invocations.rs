@@ -578,9 +578,10 @@ fn page(items: Vec<Invocation>, query: &InvocationsQuery, pending: bool) -> Invo
     }
 }
 
-/// Join each call to the step its own changes record, where the record it
-/// addressed holds a change it handed to the session: what the change
-/// records is the truth of which run it is part of. A call whose caller said
+/// Join each call to the step its own changes name, where a document of the
+/// app it addressed holds a change it handed to the session (the document
+/// itself, or a part beside it that a new note is written to): what the
+/// change says is the truth of which step it is part of. A call whose caller said
 /// no step (a person acting as themselves, whose changes the app stamps with
 /// a step of its own) has no other way to its changes, and would be listed
 /// beside them as a run of its own. A call that wrote nothing there keeps
@@ -595,17 +596,15 @@ fn join_written(recorded: &BTreeMap<String, Vec<Share>>, calls: &mut [(Option<St
         }
     }
     for (step, call) in calls {
-        let Some((app, record)) = &call.addressed else {
+        let Some((app, _)) = &call.addressed else {
             continue;
         };
         let found = call
             .written
             .iter()
-            .filter(|(written_app, written_document, _)| {
-                written_app == app && written_document == record
-            })
-            .find_map(|(_, _, change)| {
-                by_change.get(&(app.as_str(), record.as_str(), change.as_str()))
+            .filter(|(written_app, _, _)| written_app == app)
+            .find_map(|(_, written_document, change)| {
+                by_change.get(&(app.as_str(), written_document.as_str(), change.as_str()))
             });
         if let Some(found) = found {
             *step = Some((*found).to_owned());
@@ -888,21 +887,31 @@ mod tests {
 
         phase a_call_with_no_step_of_its_own_joins_the_step_its_change_records;
         {
+            // A new note is written to a part of the notes, beside the notebook
+            // the call addressed: its change is the call's too.
+            const PART: &str = "derived:part.0@derived:pages@derived:default@tab:0000000000000000";
             let recorded: BTreeMap<String, Vec<Share>> =
                 shares("so.tilo.notes", "", &[change("c1", Some("s1"), "Ada", 10)])
                     .into_iter()
+                    .chain(shares("so.tilo.notes", PART, &[change("p1", Some("s2"), "Ada", 11)]))
                     .map(|(step, share)| (step, vec![share]))
                     .collect();
             let mut person = call("theirs", 9, succeeded(), false);
             person.addressed = Some(("so.tilo.notes".into(), String::new()));
             person.written = vec![("so.tilo.notes".into(), String::new(), "c1".into())];
+            let mut beside = call("beside", 11, succeeded(), false);
+            beside.addressed = Some(("so.tilo.notes".into(), String::new()));
+            beside.written = vec![("so.tilo.notes".into(), PART.into(), "p1".into())];
             let mut elsewhere = call("other", 12, succeeded(), false);
             elsewhere.addressed = Some(("so.tilo.notes".into(), String::new()));
             elsewhere.written = vec![("so.tilo.tasks".into(), String::new(), "c1".into())];
-            let mut calls = vec![(None, person), (None, elsewhere)];
+            let mut calls = vec![(None, person), (None, beside), (None, elsewhere)];
             join_written(&recorded, &mut calls);
             let runs = listing(recorded, calls);
-            assert_eq!(runs.len(), 2, "one act is one run: {runs:?}");
+            assert_eq!(runs.len(), 3, "one act is one step: {runs:?}");
+            let parted = runs.iter().find(|one| one.id.as_deref() == Some("beside")).unwrap();
+            assert_eq!(parted.step.as_deref(), Some("s2"), "{parted:?}");
+            assert!(parted.recorded && parted.remembered, "{parted:?}");
             let joined = runs.iter().find(|run| run.id.as_deref() == Some("theirs")).unwrap();
             assert_eq!(joined.step.as_deref(), Some("s1"));
             assert_eq!(joined.changes, 1);

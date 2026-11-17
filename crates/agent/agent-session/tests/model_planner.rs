@@ -74,11 +74,19 @@ fn a_natural_language_task_becomes_a_published_action_with_typed_arguments() {
         panic!("{:?}", steps[0]);
     };
     assert_eq!(address.action, "new-note");
-    // The action API accepts what the planner produced.
+    // The action API accepts what the planner produced. The note is written
+    // to a part of the notes, kept beside the notebook.
     app.invoke(address, arguments, false).unwrap();
-    let body = app
-        .read(|doc| serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap())
-        .unwrap();
+    let body: String = app
+        .take_document_mutations()
+        .unwrap()
+        .iter()
+        .filter_map(|(part, _)| {
+            app.read_resource(part, |doc| {
+                serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap()
+            })
+        })
+        .collect();
     assert!(body.contains("hello from the model"), "{body}");
 }
 

@@ -200,11 +200,12 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
             .collect::<Vec<_>>()
     );
 
-    // Notes: every action it lists on the notebook is one the host runs
-    // for it, and the new note it makes is by the agent, for the person.
-    let (notes_listing, failed) = tool(&server, "tilo_ls", json!({"path": "notes"})).await;
+    // Notes: every action it lists on the notes is one the host carries out for
+    // it, and the new note it makes is by the agent, for the person. The
+    // notes are kept in parts beside the notebook, listed as `Notes`.
+    let (notes_listing, failed) = tool(&server, "tilo_ls", json!({"path": "notes/Notes"})).await;
     assert!(!failed, "{notes_listing}");
-    eprintln!("tilo_ls notes:\n{notes_listing}");
+    eprintln!("tilo_ls notes/Notes:\n{notes_listing}");
     assert!(
         listed_actions(&notes_listing)
             .iter()
@@ -230,7 +231,14 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
     let deadline = tilo_test_env::hang_deadline();
     loop {
         browser.pump();
-        let by = invokers(browser.documents.get(&notes).map_or(&[][..], Vec::as_slice));
+        // The note is written to a part of the notes, a document of Notes
+        // beside the notebook.
+        let by: Vec<_> = browser
+            .documents
+            .iter()
+            .filter(|(route, _)| route.app_id == notes.app_id)
+            .flat_map(|(_, changes)| invokers(changes))
+            .collect();
         if by.iter().any(|invoker| {
             invoker.acting.is_agent()
                 && invoker.acting.agent_id() == Some(claude_code(&person).as_str())
@@ -335,27 +343,24 @@ pub(super) fn listed_resources(listing: &str) -> Vec<String> {
 /// titled `title`, in order, in each Notes record the page received.
 pub(super) fn page_paragraphs(browser: &mut Browser, title: &str) -> Vec<Vec<String>> {
     browser.pump();
-    let routes: Vec<DocumentRoute> = browser
+    // The notes are kept in parts beside the notebook, each read as its
+    // changes merge.
+    browser
         .documents
-        .keys()
-        .filter(|route| route.app_id == NOTES)
-        .cloned()
-        .collect();
-    routes
         .iter()
-        .map(|route| {
-            browser
-                .mount(route)
-                .read(|doc| {
-                    notes::read::list_pages(doc)
-                        .into_iter()
-                        .filter(|page| page.title == title)
-                        .flat_map(|page| notes::read::page_block_snapshots(doc, page.id))
-                        .map(|(_, text)| text)
-                        .filter(|text| !text.is_empty())
-                        .collect()
-                })
-                .unwrap()
+        .filter(|(route, _)| route.app_id == NOTES)
+        .map(|(_, changes)| {
+            let mut doc = automerge::AutoCommit::new();
+            for (_, bytes) in changes {
+                let _ = tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes);
+            }
+            notes::read::list_pages(&doc)
+                .into_iter()
+                .filter(|page| page.title == title)
+                .flat_map(|page| notes::read::page_block_snapshots(&doc, page.id))
+                .map(|(_, text)| text)
+                .filter(|text| !text.is_empty())
+                .collect()
         })
         .collect()
 }
@@ -438,10 +443,7 @@ async fn a_persons_own_agent_starts_a_stopped_app_writes_and_reads_as_one_run() 
     assert!(!failed, "notes#new-note: {made}");
     let (listing, failed) = tool(&server, "tilo_ls", json!({"path": "notes"})).await;
     assert!(!failed, "{listing}");
-    let notebook = listed_resources(&listing)
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| panic!("notes lists a notebook: {listing}"));
+    let notebook = notes_resource(&listing);
     let (pages, failed) = tool(
         &server,
         "tilo_ls",
@@ -605,22 +607,27 @@ async fn open_and_write(runs: &[McpServer<SessionActions>]) -> Vec<String> {
     titles
 }
 
-/// What the notebook lists, as `server`'s agent reads it.
+/// What the notes list, as `server`'s agent reads them.
 async fn notebook_pages(server: &McpServer<SessionActions>) -> String {
     let (listing, failed) = tool(server, "tilo_ls", json!({"path": "notes"})).await;
     assert!(!failed, "{listing}");
-    let notebook = listed_resources(&listing)
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| panic!("notes lists a notebook: {listing}"));
-    let (pages, failed) = tool(
-        server,
-        "tilo_ls",
-        json!({"path": format!("notes/{notebook}")}),
-    )
-    .await;
+    let notes = notes_resource(&listing);
+    let (pages, failed) = tool(server, "tilo_ls", json!({"path": format!("notes/{notes}")})).await;
     assert!(!failed, "{pages}");
     pages
+}
+
+/// The resource a `tilo_ls notes` listing names the notes by: the parts
+/// Notes keeps them in beside its notebook (`Notes  notes.pages`).
+pub(super) fn notes_resource(listing: &str) -> String {
+    listing
+        .lines()
+        .find_map(|line| {
+            let mut columns = line.split("  ").map(str::trim).filter(|c| !c.is_empty());
+            let name = columns.next()?;
+            (columns.next() == Some("notes.pages")).then(|| name.trim_end_matches('/').to_owned())
+        })
+        .unwrap_or_else(|| panic!("notes lists where its notes are: {listing}"))
 }
 
 /// With a tab of the person's open on their workspace, two agent connections
@@ -723,25 +730,30 @@ async fn a_logged_in_computers_agents_act_with_no_tab_open() {
     }
 }
 
-/// Who made each change to Notes the tab holds, and in which run.
+/// Who made each change to Notes the tab holds, and in which run: in the
+/// notebook and in each part its notes are kept in, each document read on its
+/// own.
 fn notes_authors(tab: &mut Browser) -> Vec<(Option<tilo_actions::ActionInvoker>, Option<String>)> {
     tab.pump();
-    let mut doc = automerge::AutoCommit::new();
+    let mut authors = Vec::new();
     for (route, changes) in &tab.documents {
         if route.app_id != NOTES {
             continue;
         }
+        let mut doc = automerge::AutoCommit::new();
         for (_, bytes) in changes {
             let _ = tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes);
         }
+        authors.extend(
+            doc.get_changes(&[])
+                .iter()
+                .filter_map(|change| change.message())
+                .filter_map(tilo_actions::ActionContext::from_change_message)
+                .filter(|context| context.invoker.is_some())
+                .map(|context| (context.invoker, context.group.map(|group| group.id))),
+        );
     }
-    doc.get_changes(&[])
-        .iter()
-        .filter_map(|change| change.message())
-        .filter_map(tilo_actions::ActionContext::from_change_message)
-        .filter(|context| context.invoker.is_some())
-        .map(|context| (context.invoker, context.group.map(|group| group.id)))
-        .collect()
+    authors
 }
 
 /// How many of the changes to Notes the tab holds are the agent's, for
@@ -778,6 +790,9 @@ async fn agents_note_reaches(
     )
     .await;
     assert!(!failed, "notes#new-note: {made}");
+    // The note is kept in a part beside the notebook, which the tab's window
+    // follows.
+    tab.follow_chain(NOTES, notes::part::chain().chain_head().as_str());
     let deadline = tilo_test_env::hang_deadline();
     while agents_changes(tab, person) <= before {
         assert!(

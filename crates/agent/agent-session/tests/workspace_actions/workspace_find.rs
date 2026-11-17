@@ -3,7 +3,7 @@
 //! records' apps tell search about, so a note is found by its title and by
 //! what is written in it, and the answer names the note itself, by a path
 //! `tilo_read` takes, not the notebook it is in.
-use super::own_agent::listed_resources;
+use super::own_agent::{listed_resources, notes_resource};
 use super::*;
 use serde_json::{Value, json};
 use tilo_mcp::{McpServer, Surface};
@@ -104,10 +104,7 @@ async fn an_agent_finds_a_note_by_its_title_and_by_its_words_and_reads_that_note
         .await;
     }
     let listing = call(&server, "tilo_ls", json!({"path": "notes"})).await;
-    let notebook = listed_resources(&listing)
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| panic!("notes lists a notebook: {listing}"));
+    let notebook = notes_resource(&listing);
     let hello = note_path(&server, &notebook, "Hello from Claude Code").await;
     write_body(&server, &hello, "Payment terms: net 30.").await;
     let handbook = note_path(&server, &notebook, "handbook").await;
