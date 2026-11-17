@@ -378,7 +378,10 @@ mod tests {
                 (3, "ada"),
             )
             .unwrap();
-            let plan_record = tree.node(&plan.id).and_then(|node| node.document_id).unwrap();
+            let plan_record = tree
+                .node(&plan.id)
+                .and_then(|node| node.document_id)
+                .unwrap();
             write_version(&mut second, &version(plan_record, 1, 2_000));
             let notes_document = tree
                 .node(&notes.id)

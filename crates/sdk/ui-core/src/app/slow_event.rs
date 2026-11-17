@@ -148,7 +148,7 @@ fn scopes_line(mut scopes: Vec<tilo_resource::profiling::Sample>) -> String {
     if scopes.is_empty() {
         return String::new();
     }
-    scopes.sort_by(|a, b| b.elapsed_ns.cmp(&a.elapsed_ns));
+    scopes.sort_by_key(|scope| std::cmp::Reverse(scope.elapsed_ns));
     let mut line = " scopes:".to_owned();
     for scope in scopes.iter().take(MOST_SCOPES) {
         line.push_str(&format!(

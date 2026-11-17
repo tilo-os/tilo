@@ -2010,6 +2010,20 @@ impl Session {
         self.report_task(run, TurnUpdate::Progress { message: line })
     }
 
+    /// A [`tools::canvas::SHOW`] call as the invoke of the canvas' place it is; `None` for any
+    /// other call. Showing is that place, its own tool so the call names only what it shows.
+    fn shown_as_invoke(&mut self, call: &StreamedCall) -> Option<StreamedCall> {
+        (call.name == tools::canvas::SHOW).then(|| {
+            let place = tools::canvas::place_id(&self.task_catalogue());
+            StreamedCall {
+                index: call.index,
+                id: call.id.clone(),
+                name: tools::INVOKE.to_owned(),
+                input: tools::canvas::show_as_invoke(&call.input, place.as_deref()),
+            }
+        })
+    }
+
     fn handle_call(
         &mut self,
         run: &Asked,
@@ -2017,21 +2031,9 @@ impl Session {
         call: &StreamedCall,
         failed: &mut bool,
     ) -> Result<Handled> {
-        // Showing is the canvas' place, its own tool so the call names only what it shows: it
-        // runs as the invoke of that place, and everything below sees that invoke.
-        let shown;
-        let call = if call.name == tools::canvas::SHOW {
-            let place = tools::canvas::place_id(&self.task_catalogue());
-            shown = StreamedCall {
-                index: call.index,
-                id: call.id.clone(),
-                name: tools::INVOKE.to_owned(),
-                input: tools::canvas::show_as_invoke(&call.input, place.as_deref()),
-            };
-            &shown
-        } else {
-            call
-        };
+        // Showing runs as the invoke of the canvas' place: everything below sees that invoke.
+        let shown = self.shown_as_invoke(call);
+        let call = shown.as_ref().unwrap_or(call);
         // Both are about the step and neither depends on the other: the note
         // is shown once per distinct step, while every resource the step
         // reads is listed, however many steps share a note.

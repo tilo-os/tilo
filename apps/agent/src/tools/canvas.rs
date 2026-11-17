@@ -102,17 +102,21 @@ pub fn show_as_invoke(input: &serde_json::Value, place: Option<&str>) -> serde_j
             parameters.insert(key.to_owned(), value.clone());
         }
     }
-    let mut invoke = serde_json::json!({
-        "operation": place.map_or_else(|| format!("{LAYOUT}#{PLACE}"), str::to_owned),
-        super::INVOKE_PARAMETERS: parameters,
-    });
+    let mut invoke = serde_json::Map::new();
+    invoke.insert(
+        "operation".to_owned(),
+        place
+            .map_or_else(|| format!("{LAYOUT}#{PLACE}"), str::to_owned)
+            .into(),
+    );
+    invoke.insert(super::INVOKE_PARAMETERS.to_owned(), parameters.into());
     if let Some(reply) = input
         .get(super::INVOKE_REPLY)
         .filter(|reply| reply.is_string())
     {
-        invoke[super::INVOKE_REPLY] = reply.clone();
+        invoke.insert(super::INVOKE_REPLY.to_owned(), reply.clone());
     }
-    invoke
+    invoke.into()
 }
 
 /// Whether `offer` is a host (non-Tilo) application's: the open the desktop
