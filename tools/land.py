@@ -342,6 +342,8 @@ class Lander:
         # Kept beside the queue, so a lander that takes up a newer one keeps them.
         self.suspects: set[str] = set((read_json(place.dir / "suspects.json") or {}).get("ids", []))
         self.unexplained = 0
+        # Set after a round of the changes nothing points at: the ones set aside go next.
+        self.suspects_turn = False
 
     def doing(self, line: str) -> None:
         print(time.strftime("%H:%M:%S ") + line, flush=True)
@@ -394,13 +396,20 @@ class Lander:
         upstream = self.place.fetch(self.place.repo)
         self.prepare(upstream)
         self.keep_suspects(self.suspects & {entry["id"] for entry in entries})
-        # The changes nothing points at go first; the ones a failure pointed at go together after
-        # them, and each failure of theirs narrows them again.
+        # The changes nothing points at and the ones a failure pointed at take turns, so that
+        # neither waits for good while the other keeps coming; each failure of the ones set
+        # aside narrows them again.
         innocent = [entry for entry in entries if entry["id"] not in self.suspects]
+        suspects = [entry for entry in entries if entry["id"] in self.suspects]
         # A change without Rust lints in seconds; behind a batch that compiles for minutes it
         # would wait those minutes and share that batch's failures for nothing.
         quick = [entry for entry in innocent if not self.compiles(entry)]
-        entries = quick or innocent or entries
+        if quick:
+            entries = quick
+        elif suspects and (self.suspects_turn or not innocent):
+            entries, self.suspects_turn = suspects, False
+        else:
+            entries, self.suspects_turn = innocent, True
         batch: list[tuple[dict, str]] = []
         for entry in entries:
             if len(batch) >= self.limit:

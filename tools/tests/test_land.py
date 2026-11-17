@@ -248,6 +248,35 @@ class LandTest(unittest.TestCase):
                          "answered in the round it came behind the other, not left for a later one")
         self.assertEqual(found[2][1]["files"], ["shared.txt"])
 
+    def test_changes_set_aside_get_a_turn_while_others_keep_coming(self):
+        place = self.clone / ".git" / "land" / "main"
+        (place / "queue").mkdir(parents=True)
+        first = self.worktree("first", {"first.rs": "fn first() {}\n"})
+        aside = self.worktree("aside", {"aside.rs": "fn aside() {}\n"})
+        fresh = self.worktree("fresh", {"fresh.rs": "fn fresh() {}\n"})
+        # The queue as a failed round leaves it: one change set aside, one nothing pointed at.
+        for order, tree in enumerate((aside, first)):
+            head = git(tree, "rev-parse", "HEAD")
+            (place / "queue" / f"{head[:20]}.json").write_text(json.dumps({
+                "id": head[:20], "head": head, "commits": [head], "worktree": str(tree),
+                "submitted": time.time() - 100 + order}))
+        (place / "suspects.json").write_text(json.dumps({"ids": [git(aside, "rev-parse", "HEAD")[:20]]}))
+        waiting = [self.land(first)]
+        state = place / "state.json"
+        deadline = time.monotonic() + HANG_BOUND
+        while "linting" not in (state.read_text() if state.exists() else ""):
+            self.assertLess(time.monotonic(), deadline, "the lander never started its first lint")
+            time.sleep(0.1)
+        # Another change comes while the first round lints.
+        queued = subprocess.run(["python3", str(fresh / "tools" / "land.py"), "--no-wait"],
+                                cwd=fresh, env=ENV, capture_output=True, timeout=HANG_BOUND)
+        self.assertEqual(queued.returncode, 75, queued.stderr)
+        found = self.answers(waiting + [self.land(aside), self.land(fresh)])
+        self.assertEqual([result["status"] for _code, result in found], ["landed"] * 3, found)
+        git(self.clone, "fetch", "-q", "origin")
+        order = git(self.clone, "log", "--format=%s", "--reverse", "origin/main").splitlines()
+        self.assertLess(order.index("aside"), order.index("fresh"), order)
+
     def test_a_change_without_rust_lands_ahead_of_one_that_compiles(self):
         first = self.worktree("first", {"first.txt": "fine\n"})
         compiles = self.worktree("compiles", {"code.rs": "fn main() {}\n"})
