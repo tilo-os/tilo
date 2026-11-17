@@ -318,6 +318,9 @@ struct Call {
     addressed: Option<DocumentKey>,
     /// The changes it handed to the session: app, record, short hash.
     written: Vec<(String, String, String)>,
+    /// The server showed the window of what the caller's call changed: a call
+    /// of the same step, never the one the caller made.
+    shows_window: bool,
 }
 
 /// The step the changes of `entry`'s call record, and the call as a run
@@ -377,8 +380,16 @@ fn call_of(id: String, entry: &Entry) -> (Option<String>, Call) {
         action,
         addressed,
         written: entry.written.clone(),
+        shows_window: shows_window(entry),
     };
     (step, call)
+}
+
+/// Whether `entry` is the open the server made to show the window of what a
+/// call changed.
+fn shows_window(entry: &Entry) -> bool {
+    entry.request.target.address.action == tilo_actions::remote::APPLICATION_OPEN_ACTION
+        && matches!(entry.request.argument, InvokeArgument::None)
 }
 
 /// Whether `entry` asks for where a record is shown (its share link): what
@@ -403,7 +414,12 @@ fn invocation(step: Option<String>, mut calls: Vec<Call>, shares: &[Share]) -> I
     let first_change = shares.iter().map(|share| share.first_ms).min();
     let last_change = shares.iter().map(|share| share.last_ms).max();
     let ended = calls.iter().all(|call| call.update.is_terminal());
-    let last = calls.last();
+    // The call the caller made last names the invocation, as its answer did.
+    let last = calls
+        .iter()
+        .rev()
+        .find(|call| !call.shows_window)
+        .or_else(|| calls.last());
     let mut status = if calls.iter().any(|call| call.waiting) {
         InvocationStatus::Waiting
     } else if !ended {
@@ -817,6 +833,7 @@ mod tests {
             action: "terminal#run".into(),
             addressed: None,
             written: Vec::new(),
+            shows_window: false,
         }
     }
 
