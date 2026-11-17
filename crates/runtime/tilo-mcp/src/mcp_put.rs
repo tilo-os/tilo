@@ -6,13 +6,13 @@
 //!
 //! The session owns its open uploads: when it ends they are dropped, and a
 //! dropped upload stores nothing.
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
 use tilo_actions::remote::{
-    ActionCallError, CONTENT_PUTS_UNAVAILABLE, ContentPut, MAX_CONTENT_PUT_CHUNK,
-    MAX_OPEN_CONTENT_PUTS,
+    ActionCallError, CONTENT_PUTS_UNAVAILABLE, ContentPut, MAX_CONTENT_PUT_AHEAD,
+    MAX_CONTENT_PUT_CHUNK, MAX_OPEN_CONTENT_PUTS,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -43,7 +43,7 @@ pub(super) fn tool_definitions() -> Vec<Value> {
         ),
         (
             APPEND,
-            "Append the next chunk of an upload: offset is the bytes sent so far; chunk is base64 of at most 524288 bytes.",
+            "Append a chunk of an upload: offset is where its bytes belong (chunks may be sent several ahead of the bytes the upload holds, and arrive in any order); chunk is base64 of at most 524288 bytes.",
             json!({"upload":integer,"offset":integer,"chunk":{"type":"string"}}),
             json!(["upload", "offset", "chunk"]),
         ),
@@ -68,7 +68,78 @@ pub(super) fn tool_definitions() -> Vec<Value> {
 
 /// An open upload; `None` once finished. Each call holds it while it works,
 /// so a finish waits for an append still running.
-type Open = Arc<Mutex<Option<Box<dyn ContentPut>>>>;
+type Open = Arc<Mutex<Option<Upload>>>;
+
+/// One upload in progress: its store-side put, and the chunks that arrived
+/// ahead of the bytes it holds, waiting for the gap before them to fill.
+struct Upload {
+    put: Box<dyn ContentPut>,
+    /// Chunks accepted ahead of `put.written()`, by offset, each landing
+    /// within [`MAX_CONTENT_PUT_AHEAD`] of it and overlapping no other.
+    ahead: BTreeMap<u64, Vec<u8>>,
+}
+
+impl Upload {
+    /// Accept `chunk` at `offset`: append it now when it continues the bytes
+    /// held, hold it when it lands within the window ahead of them, and
+    /// refuse it when it overlaps bytes the upload holds already or lands
+    /// past the window. Answers the bytes held contiguously from the start,
+    /// so pieces sent several at a time over a slow link cost that link one
+    /// round trip per window, not per piece.
+    fn accept(&mut self, offset: u64, chunk: &[u8]) -> Result<u64, ActionCallError> {
+        let (written, size) = (self.put.written(), self.put.size());
+        let end = offset.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
+        if end > size {
+            return Err(ActionCallError::InvalidRequest {
+                reason: format!("the upload began with {size} bytes"),
+            });
+        }
+        if offset < written {
+            return Err(ActionCallError::InvalidRequest {
+                reason: format!("the upload has {written} bytes: append at offset {written}"),
+            });
+        }
+        if offset > written {
+            let window = written.saturating_add(MAX_CONTENT_PUT_AHEAD as u64);
+            if end > window {
+                return Err(ActionCallError::InvalidRequest {
+                    reason: format!(
+                        "that chunk lands {end} bytes in: at most \
+                         {MAX_CONTENT_PUT_AHEAD} bytes ahead of the {written} the upload holds"
+                    ),
+                });
+            }
+        }
+        // The held chunks are disjoint: the last one starting before `end`
+        // is the only one that can reach into this chunk's bytes.
+        if self
+            .ahead
+            .range(..end)
+            .next_back()
+            .is_some_and(|(at, held)| at.saturating_add(held.len() as u64) > offset)
+        {
+            return Err(ActionCallError::InvalidRequest {
+                reason: format!("the upload already holds those bytes: append at offset {written}"),
+            });
+        }
+        if offset > written {
+            self.ahead.insert(offset, chunk.to_vec());
+            return Ok(written);
+        }
+        let after = self.put.append(offset, chunk)?;
+        self.drain(after)
+    }
+
+    /// Append the chunks held from `written` on, as far as they reach
+    /// contiguously; answers the bytes held after them.
+    fn drain(&mut self, written: u64) -> Result<u64, ActionCallError> {
+        let mut at = written;
+        while let Some(piece) = self.ahead.remove(&at) {
+            at = self.put.append(at, &piece)?;
+        }
+        Ok(at)
+    }
+}
 
 /// A session's open uploads, by the id it was given for each.
 #[derive(Default)]
@@ -162,7 +233,13 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         }
         uploads.last = uploads.last.saturating_add(1);
         let id = uploads.last;
-        uploads.open.insert(id, Arc::new(Mutex::new(Some(begun))));
+        uploads.open.insert(
+            id,
+            Arc::new(Mutex::new(Some(Upload {
+                put: begun,
+                ahead: BTreeMap::new(),
+            }))),
+        );
         drop(uploads);
         Ok(id)
     }
@@ -194,8 +271,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             let mut slot = upload.lock_recover();
             let appended = match slot.as_mut() {
                 Some(open) => open
-                    .append(offset, &chunk)
-                    .map(|written| (written, open.size())),
+                    .accept(offset, &chunk)
+                    .map(|written| (written, open.put.size())),
                 None => Err(ActionCallError::InvalidRequest {
                     reason: format!("no upload {id} is open in this session"),
                 }),
@@ -226,19 +303,19 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             };
             let open = upload.as_ref().ok_or_else(gone)?;
             // Short of its size, the upload stays open to be completed.
-            if open.written() != open.size() {
+            if open.put.written() != open.put.size() {
                 return Err(ActionCallError::InvalidRequest {
                     reason: format!(
                         "the upload has {} of {} bytes: append the rest at offset {}",
-                        open.written(),
-                        open.size(),
-                        open.written()
+                        open.put.written(),
+                        open.put.size(),
+                        open.put.written()
                     ),
                 });
             }
             let taken = upload.take().ok_or_else(gone)?;
             drop(upload);
-            taken.finish()
+            taken.put.finish()
         })
         .await;
         let ended = slot.lock_recover().is_none();

@@ -163,14 +163,14 @@ impl Entered {
 /// request a line out, its answer the line back with its id; what the device
 /// says in between (a notification) is not an answer.
 pub struct DeviceLines {
-    lines: tokio::sync::Mutex<crate::devices::Lines>,
+    lines: crate::devices::Lines,
     live: std::sync::atomic::AtomicBool,
 }
 
 impl DeviceLines {
     fn new(dialed: crate::devices::Dialed) -> Self {
         Self {
-            lines: tokio::sync::Mutex::new(dialed.into_lines()),
+            lines: dialed.into_lines(),
             live: std::sync::atomic::AtomicBool::new(true),
         }
     }
@@ -181,22 +181,12 @@ impl DeviceLines {
 
     async fn call(&self, request: Value) -> Option<Value> {
         let id = request.get("id").cloned();
-        let mut lines = self.lines.lock().await;
-        if let Err(error) = lines.send(&request).await {
-            self.live.store(false, std::sync::atomic::Ordering::Relaxed);
-            tracing::debug!(%error, "the workspace's computer closed the agent's connection");
-            return id.map(|id| failed(&id, CLOSED));
-        }
-        let id = id?;
-        loop {
-            match lines.next().await {
-                Ok(answer) if answer.get("id") == Some(&id) => return Some(answer),
-                Ok(_) => {}
-                Err(error) => {
-                    self.live.store(false, std::sync::atomic::Ordering::Relaxed);
-                    tracing::debug!(%error, "the workspace's computer closed the agent's connection");
-                    return Some(failed(&id, CLOSED));
-                }
+        match self.lines.call(request).await {
+            Ok(answer) => answer,
+            Err(error) => {
+                self.live.store(false, std::sync::atomic::Ordering::Relaxed);
+                tracing::debug!(%error, "the workspace's computer closed the agent's connection");
+                id.map(|id| failed(&id, CLOSED))
             }
         }
     }

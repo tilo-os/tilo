@@ -416,3 +416,13 @@ paths = [
 reason = "A photo taken standing is a portrait: plain English, and the gallery's tall photos say it."
 words = ["standing"]
 paths = ["apps/tl/gallery/locales/en-US.ftl", "apps/tl/gallery/media.tl"]
+
+[[allow]]
+reason = "Tokio's oneshot channel: the pipe between the task that sends a call and the task that answers it."
+words = ["channel"]
+paths = ["crates/runtime/tilo-mcp/src/devices.rs"]
+
+[[allow]]
+reason = "The helper that drives a test phase's async body on a current-thread runtime."
+words = ["run"]
+paths = ["crates/runtime/tilo-mcp/src/mcp_put_tests.rs"]

@@ -16,6 +16,14 @@ use super::{ActionCallError, Caller};
 /// the request.
 pub const MAX_CONTENT_PUT_CHUNK: usize = 512 * 1024;
 
+/// How far ahead of the bytes accepted so far one append may land: a client
+/// sends a group of [`MAX_CONTENT_PUT_CHUNK`]-sized chunks at once and a slow
+/// link then costs one round trip per group rather than per chunk. The
+/// receiver holds the early ones and appends them as the gap before them
+/// fills; the `written` an answer carries is the bytes held contiguously from
+/// the start. Eight chunks is as many as a client sends in a group.
+pub const MAX_CONTENT_PUT_AHEAD: usize = 8 * MAX_CONTENT_PUT_CHUNK;
+
 /// Uploads one session keeps open at once: a client putting a folder keeps
 /// one open per file until it finishes, so it may hold as many as a workspace
 /// keeps for all its callers ([`super::MAX_HOSTED_CONTENT_PUTS`]).
