@@ -103,6 +103,12 @@ impl crate::Session {
                             .owner_session
                             .changed_by_person(tilo_clock::unix_now_ms());
                     }
+                    // What of the person's stood over the shell goes down with the lock: a panel
+                    // or a menu up at the moment it locked was theirs to open, not to find again
+                    // over the lock screen. The session's own surfaces close here rather than in
+                    // the chrome, which a locked session draws nothing of.
+                    self.shared.surfaces.clear_panel();
+                    self.shared.surfaces.clear_shell();
                     // The lock screen shows afresh, and is started when the session runs none.
                     self.lock_starts = 0;
                     self.lock_shown = LockShown::App;
