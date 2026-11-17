@@ -276,7 +276,7 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
 
 - **Text and numbers are one method surface, on the value.** They are methods, not
   `text.`/`math.` namespaces, because everything else a value is asked (`items.len()`,
-  `items.map(...)`, `p.name()`) already reads that way and a call reads best where its target
+  `items.map(...)`, `p.name()`) already reads that way and a call reads best where its receiver
   is. `checker/text_math.rs` lowers all of them, and `checker/methods.rs` holds the one list of
   names per type that both the lowering and the E027 message (and a container field's read)
   consult, so a name offered in a message is one the type takes. `Text.len`, `to_int`, `find`,
