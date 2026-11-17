@@ -870,9 +870,11 @@ impl Worker {
         ),
         Outcome,
     > {
+        let opening = super::timing_start();
         let key = self
             .bounded_replica(workspace_id, who, route, state)
             .map_err(Outcome::Rejected)?;
+        super::timing_done("bounded.open", opening);
         // Out of the map while it runs, and back in once what it changed is
         // handed over: a caller's next action reuses what they opened instead
         // of opening the record afresh, which costs more with every change
@@ -911,6 +913,7 @@ impl Worker {
         let binding = ApprovalBinding::of(workspace_id, caller, request);
         let confirmed = approved(&self.shared.approvals, given, &binding);
         let context = super::caller_context(caller, request);
+        let running = super::timing_start();
         let output = match app.invoke_in(
             context.as_ref(),
             None,
@@ -928,16 +931,21 @@ impl Worker {
             }
             Err(error) => return Err(super::api_outcome(&error)),
         };
+        super::timing_done("bounded.call", running);
         let left_at = app.presence().map(placed);
         let holder = key.0.clone();
+        let taking = super::timing_start();
         let taken = super::take_all(app, &holder)
             .map_err(|error| super::commit_failed(error.to_string(), false))?;
+        super::timing_done("bounded.take", taking);
+        let saving = super::timing_start();
         self.save_bounded(
             workspace_id,
             (who, route, state),
             (&holder, taken),
             (declared.as_deref(), confirmed),
         )?;
+        super::timing_done("bounded.save", saving);
         self.bounded.insert(key, held);
         Ok((output, left_at))
     }
@@ -958,10 +966,13 @@ impl Worker {
         (holder, taken): (&DocumentRoute, Vec<(DocumentRoute, DocumentMutation)>),
         (declared, confirmed): (Option<&str>, bool),
     ) -> Result<(), Outcome> {
+        let reading_policy = super::timing_start();
         let policy = self
             .policy_at(workspace_id, who, route)
             .map_err(Outcome::Rejected)?;
+        super::timing_done("bounded.policy", reading_policy);
         let permissions = bounded_permissions(&policy, who).map_err(Outcome::Rejected)?;
+        let checking = super::timing_start();
         for (changed, mutation) in &taken {
             // What it wrote, from the record's own replica: neither the record
             // nor its history is read for what one change touched. Only a
@@ -987,6 +998,8 @@ impl Worker {
                 return Err(Outcome::Rejected(ActionCallError::NotPermitted));
             }
         }
+        super::timing_done("bounded.check", checking);
+        let committing = super::timing_start();
         for (changed, mutation) in taken {
             if let Some(app) = self.app_at(holder) {
                 let merged = if &changed == holder {
@@ -1003,6 +1016,7 @@ impl Worker {
             self.commit(workspace_id, &changed, &mutation)
                 .map_err(|reason| super::commit_failed(reason, true))?;
         }
+        super::timing_done("bounded.commit", committing);
         Ok(())
     }
 

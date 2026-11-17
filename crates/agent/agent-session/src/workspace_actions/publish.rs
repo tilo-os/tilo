@@ -56,7 +56,16 @@ fn document(
 /// served in. A write the host confirms at once (the ordinary case) is still
 /// answered done; anything slower is answered pending, and the caller follows
 /// it to the same outcome.
-const SAVE_GRACE: std::time::Duration = std::time::Duration::from_millis(100);
+pub(super) const SAVE_GRACE: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// How often the thread tries the full [`SAVE_GRACE`] again after a save
+/// outlived it, so a workspace whose saves got fast again answers done in one
+/// round trip.
+const SAVE_PROBE: u32 = 64;
+
+/// The least a save's measured pace is padded by, so a confirmation that takes
+/// as long as the last one still answers the caller done.
+const SAVE_MARGIN: std::time::Duration = std::time::Duration::from_millis(2);
 
 /// How long a write answered pending may wait to be saved before it is
 /// answered failed: whoever follows it hears how it went within this,
@@ -448,6 +457,7 @@ impl Worker {
         if written.is_empty() {
             return Saving::Saved;
         }
+        let waiting = super::timing_start();
         let saved = match self
             .workspaces
             .get(&workspace_id)
@@ -462,13 +472,27 @@ impl Worker {
             Err(reason) => {
                 let reason = format!("the host did not save the change: {reason}");
                 log_saved(&written, &Err(reason.clone()));
+                super::timing_done("action.save_failed", waiting);
                 return Saving::Failed(reason);
             }
         };
+        // Waited for as long as the saves this thread served recently have
+        // been taking, not the whole grace: a save slower than the grace never
+        // held this thread — the thread every workspace of its share is served
+        // on — for time it could not use. Probing the full grace now and then
+        // learns when saves got fast again.
+        let grace = if self.save_probes >= SAVE_PROBE {
+            SAVE_GRACE
+        } else {
+            self.save_grace
+        };
         let waited = std::time::Instant::now();
-        match saved.recv_timeout(SAVE_GRACE) {
+        match saved.recv_timeout(grace) {
             Ok(outcome) => {
+                self.save_grace = waited.elapsed().saturating_add(SAVE_MARGIN).min(SAVE_GRACE);
+                self.save_probes = 0;
                 log_saved(&written, &outcome);
+                super::timing_done("action.save", waiting);
                 tracing::debug!(
                     writes = written.len(),
                     waited_ms = waited.elapsed().as_millis(),
@@ -483,6 +507,9 @@ impl Worker {
                 }
             }
             Err(tilo_session_client::RecvTimeoutError::Timeout) => {
+                self.save_grace = std::time::Duration::ZERO;
+                self.save_probes = 1;
+                super::timing_done("action.save_pending", waiting);
                 tracing::debug!(
                     writes = written.len(),
                     waited_ms = waited.elapsed().as_millis(),
@@ -497,6 +524,7 @@ impl Worker {
             Err(tilo_session_client::RecvTimeoutError::Disconnected) => {
                 let reason = "the host did not save the change: the session ended".to_owned();
                 log_saved(&written, &Err(reason.clone()));
+                super::timing_done("action.save_failed", waiting);
                 Saving::Failed(reason)
             }
         }
@@ -721,6 +749,7 @@ pub(super) fn settle_saved(
             Err(error) => InvocationUpdate::Failed { invocation, error },
         };
     }
+    log.moved();
 }
 
 /// Why an action whose change the host has not confirmed saving within
