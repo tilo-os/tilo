@@ -1737,7 +1737,10 @@ try {
     // only with someone's word shows A a "Let … in" row, and that is the
     // failure. Both pages are waits the tests of which end them.
     const arrival = await Promise.race([
-      c.tab.waitFor(`document.documentElement.dataset.arrival ?? ''`, {timeout: stepLimit(6)}).catch(() => ''),
+      // Only where arriving ends: the steps on the way there (join, open,
+      // draw) are the page still arriving, not an answer.
+      c.tab.waitFor(`(arrival => ['done', 'stopped'].includes(arrival) ? arrival : '')(document.documentElement.dataset.arrival)`,
+        {timeout: stepLimit(6)}).catch(() => ''),
       publishedName(a.tab, `name => /^Let .+ in$/.test(name)`, stepLimit(6)).then(name => name ? `let-in:${name}` : ''),
     ]);
     if (arrival.startsWith('let-in:')) {
