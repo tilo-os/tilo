@@ -188,6 +188,13 @@ chooses how it opens.
 (`open` when the row opens the resource itself). One hit per resource path, best first, as the
 desktop's search ranks them.
 
+A query narrows itself with `in:here` (the conversation an agent's turn is in) or `in:` a
+conversation's path, and with `after:` and `before:` a day (`2026-11-10`) or a moment
+(`2026-11-10T14:00:00Z`). Narrowed, it needs no words and lists the newest first. A hit that
+says when it was written carries `when`, in seconds since the Unix epoch. A workspace's
+server narrows; a search that cannot (a desktop's) refuses a narrowed query, and never
+answers it with everything. A caller is answered only with what it may read.
+
 ### tilo
 
 ```json

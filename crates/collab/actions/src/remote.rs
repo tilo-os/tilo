@@ -126,7 +126,7 @@ pub use resource_read::{
     ResourceAddress, ResourceAsk, ResourceChange, ResourceChanges, ResourceCopy, ResourceReadings,
     ResourceReads, ResourceWake, answer_read, read_resources, readings_of,
 };
-pub use search::{FOUND_FILE, Found, ResourceSearch, stem_word};
+pub use search::{FOUND_FILE, Found, NOT_NARROWED, ResourceSearch, Within, stem_word};
 #[cfg(any(test, feature = "test-support"))]
 pub use test_provider::TestProvider;
 pub use wait::{MAX_REMOTE_WAIT, UpdateMark, settle_with};
@@ -1170,7 +1170,13 @@ pub enum RemoteActionMessage {
     },
     /// Search what the caller's workspace holds by words, as the provider
     /// searches it ([`ActionProvider::resource_search`]).
-    SearchRequest { correlation: u64, needle: String },
+    SearchRequest {
+        correlation: u64,
+        needle: String,
+        /// What the search is narrowed to; left out, everything the caller may read.
+        #[serde(default, skip_serializing_if = "Within::is_everything")]
+        within: Within,
+    },
     /// Answer to [`Self::SearchRequest`], same correlation: what it found,
     /// best first.
     SearchResponse {
@@ -1501,7 +1507,8 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
         RemoteActionMessage::SearchRequest {
             correlation,
             needle,
-        } => search::searched(provider, caller, correlation, &needle),
+            within,
+        } => search::searched(provider, caller, correlation, (&needle, &within)),
         RemoteActionMessage::ChangesRequest { correlation, after } => {
             changed(provider, caller, correlation, after.as_deref())
         }
@@ -2675,131 +2682,8 @@ mod tests {
         RemoteActionMessage::Invoke(archive(id))
     }
 
-    /// A provider's search and its change feed are asked across the API as any
-    /// request is, each answer the provider's own; a provider keeping neither says
-    /// so in the words a caller tells apart.
-    #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one provider answering both asks, and one keeping neither, in order"
-    )]
-    fn search_and_changes_cross_the_api_as_the_host_answers_them() {
-        struct Held;
-        impl ResourceSearch for Held {
-            fn find(
-                &self,
-                _caller: &Caller,
-                needle: &str,
-            ) -> Pending<Result<Vec<Found>, ActionCallError>> {
-                Pending::ready(Ok(vec![Found {
-                    resource: needle.to_owned(),
-                    kind: "notes.Note".into(),
-                    label: "Gooseberry jam".into(),
-                    open: None,
-                    arguments: serde_json::Map::new(),
-                    app: Some("so.tilo.notes".into()),
-                    provider: None,
-                }]))
-            }
-        }
-        impl ChangeFeed for Held {
-            fn since(
-                &self,
-                _caller: &Caller,
-                after: Option<&str>,
-            ) -> Pending<Result<ChangePage, ActionCallError>> {
-                Pending::ready(Ok(ChangePage {
-                    changes: vec![ResourceChanged {
-                        app: "so.tilo.notes".into(),
-                        record: String::new(),
-                        entry: serde_json::json!({"change": "abc", "invocation": "i"}),
-                    }],
-                    cursor: format!("{}+1", after.unwrap_or("start")),
-                }))
-            }
-        }
-        #[derive(Clone)]
-        struct Holding(std::sync::Arc<TestProvider>);
-        impl ActionProvider for Holding {
-            fn query(
-                &self,
-                caller: &Caller,
-                query: CatalogueQuery,
-            ) -> Pending<Result<CataloguePage, ActionCallError>> {
-                self.0.query(caller, query)
-            }
-            fn invoke(
-                &self,
-                caller: &Caller,
-                request: InvokeRequest,
-            ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-                self.0.invoke(caller, request)
-            }
-            fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-                self.0.observe(caller, id)
-            }
-            fn cancel(
-                &self,
-                caller: &Caller,
-                id: &InvocationId,
-            ) -> Pending<Result<(), ActionCallError>> {
-                self.0.cancel(caller, id)
-            }
-            fn resource_search(&self) -> Option<std::sync::Arc<dyn ResourceSearch>> {
-                Some(std::sync::Arc::new(Held))
-            }
-            fn change_feed(&self) -> Option<std::sync::Arc<dyn ChangeFeed>> {
-                Some(std::sync::Arc::new(Held))
-            }
-        }
-        let holding = Holding(std::sync::Arc::new(TestProvider::new()));
-        let search = RemoteActionMessage::SearchRequest {
-            correlation: 7,
-            needle: "note:1".into(),
-        };
-        let encoded = RemoteActionFrame::new(search).encode().unwrap();
-        let search = RemoteActionFrame::decode(&encoded).unwrap().message;
-        assert!(search.is_request());
-        let Some(RemoteActionMessage::SearchResponse {
-            correlation: 7,
-            result: Ok(found),
-        }) = serve(&holding, &alice(), search.clone()).map(now)
-        else {
-            panic!("a search is answered with what the provider found");
-        };
-        assert_eq!(found[0].resource, "note:1");
-        let changes = RemoteActionMessage::ChangesRequest {
-            correlation: 8,
-            after: Some("c".into()),
-        };
-        let Some(RemoteActionMessage::ChangesResponse {
-            correlation: 8,
-            result: Ok(page),
-        }) = serve(&holding, &alice(), changes.clone()).map(now)
-        else {
-            panic!("a watch is answered with the provider's changes");
-        };
-        assert_eq!((page.cursor.as_str(), page.changes.len()), ("c+1", 1));
-
-        // A provider keeping neither refuses each, the feed in the words a
-        // watch tells from a failure.
-        let bare = std::sync::Arc::new(TestProvider::new());
-        assert!(matches!(
-            serve(&bare, &alice(), search).map(now),
-            Some(RemoteActionMessage::SearchResponse {
-                result: Err(ActionCallError::Unavailable { .. }),
-                ..
-            })
-        ));
-        let Some(RemoteActionMessage::ChangesResponse {
-            result: Err(ActionCallError::Unavailable { reason }),
-            ..
-        }) = serve(&bare, &alice(), changes).map(now)
-        else {
-            panic!("a provider with no feed refuses a watch of it");
-        };
-        assert_eq!(reason, CHANGE_FEED_UNAVAILABLE);
-    }
+    /// A search and a change feed, asked across the API.
+    mod search_wire;
 
     tilo_test_env::scenario! {
         fn a_host_serves_each_invocation_once_as_its_caller;

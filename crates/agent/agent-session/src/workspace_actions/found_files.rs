@@ -167,6 +167,7 @@ fn ranked(files: Vec<File>, needle: &str, most: usize) -> Vec<Found> {
             arguments: serde_json::Map::new(),
             app: Some(FILES_APP.to_owned()),
             provider: None,
+            when: None,
         })
         .collect()
 }

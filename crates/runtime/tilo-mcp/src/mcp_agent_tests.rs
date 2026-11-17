@@ -966,6 +966,7 @@ impl tilo_actions::remote::ResourceSearch for Notes {
                     arguments: serde_json::Map::new(),
                     app: Some(APP.to_owned()),
                     provider: None,
+                    when: None,
                 },
             ));
         }
@@ -2871,6 +2872,8 @@ pub(super) async fn answer<H: ActionProvider + Send + Sync + 'static>(
 mod flux;
 #[path = "mcp_agent_level_tests.rs"]
 mod levels;
+#[path = "mcp_agent_narrowed_tests.rs"]
+mod narrowed;
 #[path = "mcp_agent_open_tests.rs"]
 mod opening;
 #[path = "mcp_runs_tests.rs"]

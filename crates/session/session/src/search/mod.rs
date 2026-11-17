@@ -1663,6 +1663,7 @@ fn found_of(hit: &tilo_desktop_search::Hit) -> Option<Found> {
         arguments,
         app,
         provider: None,
+        when: None,
     })
 }
 

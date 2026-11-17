@@ -388,6 +388,9 @@ impl ActionProvider for WorkspaceActionProvider {
     }
 }
 
+/// What a search answers with, when it has.
+type Searched = Pending<Result<Vec<tilo_actions::remote::Found>, ActionCallError>>;
+
 /// What a turn on this server finds in what its workspace holds.
 ///
 /// The workspace's action service searches what the workspace holds for every device that asks
@@ -396,18 +399,26 @@ impl ActionProvider for WorkspaceActionProvider {
 /// same service the same question, as the caller its tools act as: the person's session,
 /// handed to the agent on that turn with the rules the turn is decided by. So a turn finds what
 /// that caller may read and nothing else, decided where every other caller's search is decided,
-/// and nothing is searched a second way here.
+/// and nothing is searched a second way here. Narrowed to a
+/// conversation or to a stretch of time ([`tilo_actions::remote::Within`]) it is the same
+/// question still.
 impl tilo_actions::remote::ResourceSearch for WorkspaceActionProvider {
-    fn find(
+    fn find(&self, caller: &Caller, needle: &str) -> Searched {
+        self.find_within(caller, needle, &tilo_actions::remote::Within::default())
+    }
+
+    fn find_within(
         &self,
         caller: &Caller,
         needle: &str,
-    ) -> Pending<Result<Vec<tilo_actions::remote::Found>, ActionCallError>> {
+        within: &tilo_actions::remote::Within,
+    ) -> Searched {
         self.serve(
             caller,
             RemoteActionMessage::SearchRequest {
                 correlation: 0,
                 needle: needle.to_owned(),
+                within: within.clone(),
             },
         )
         .map(|answer| match answer {
