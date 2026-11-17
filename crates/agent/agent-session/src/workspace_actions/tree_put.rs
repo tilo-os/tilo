@@ -72,9 +72,10 @@ fn refused(reason: impl Into<String>) -> Outcome {
     })
 }
 
-/// The most files one open puts into the tree: one bounded request, and one
-/// change of the tree, however many files a folder holds.
-const MAX_FILES: usize = 50_000;
+/// The most files one open puts into the tree: a bounded request and change,
+/// answered within the bound a workspace's actions answer in. A larger folder
+/// goes in several opens.
+const MAX_FILES: usize = 10_000;
 
 /// A folder path as the tree keeps it: no empty, leading or trailing parts,
 /// and no part a folder may not be called.

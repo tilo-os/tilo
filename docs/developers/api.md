@@ -221,10 +221,10 @@ connection that failed.
 A folder goes into the workspace's own folder in one action: `POST …/resources/files/actions/open`
 with `files`, a list of `content`, `name` and `dir`, each file's bytes uploaded first. A large
 list goes up as content of its own and the action names its `tilo.content:` reference instead,
-so the action stays one bounded request however many files the folder holds (up to 50,000).
+so the action stays one bounded request however many files the folder holds (up to 10,000).
 They are written as one change of the workspace's tree, so the folder costs its chunks rather
 than its files, and History has one entry to take back whole. `tilo files put` does this for a
-folder; a folder past 50,000 goes in as several lists.
+folder; a folder past 10,000 goes in as several lists.
 
 ## People and programs
 
