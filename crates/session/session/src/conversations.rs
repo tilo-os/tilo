@@ -1123,7 +1123,7 @@ fn summons_item(id: &Id) -> tilo_actions::ResourceSpec {
         tilo_resource::vocabulary::<tilo_app::tilo_workspace_agent::learned::Learned>()
             .declarations()
             .iter()
-            .filter(|declaration| LEARNED_VERBS.iter().any(|verb| declaration.id == *verb))
+            .filter(|declaration| LEARNED_VERBS.contains(&declaration.id))
     {
         spec = spec.with_action(tilo_resource::declaration_spec(declaration));
     }
