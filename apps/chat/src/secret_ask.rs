@@ -103,7 +103,7 @@ fn shown_place(place: &str) -> &str {
 }
 
 /// What `asked` asks for and where it belongs, in the system's words.
-fn title(asked: &Asked) -> String {
+pub(crate) fn title(asked: &Asked) -> String {
     let key = match asked.kind {
         person_vault::ItemKind::Login => "chat-secret-title-login",
         person_vault::ItemKind::Key => "chat-secret-title-key",

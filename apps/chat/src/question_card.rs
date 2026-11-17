@@ -88,6 +88,9 @@ pub fn answer_label(question: &Question, id: &str) -> String {
     }
     match id {
         ALLOW => t("chat-question-allow"),
+        // What "always" covers is the question's own: one event, or one
+        // item of the vault where the action would use it.
+        ALWAYS if question.uses_item().is_some() => t("chat-question-always-item"),
         ALWAYS => t("chat-question-always"),
         DENY => t("chat-question-deny"),
         other => other.to_owned(),
@@ -98,6 +101,9 @@ pub fn answer_label(question: &Question, id: &str) -> String {
 fn answered_line(question: &Question, answer: &str, reader: &Reader<'_>) -> String {
     let said = match (question.kind.0.as_str(), answer) {
         (ACTION, ALLOW) => t("chat-question-allowed"),
+        (ACTION, ALWAYS) if question.uses_item().is_some() => {
+            t("chat-question-always-item-allowed")
+        }
         (ACTION, ALWAYS) => t("chat-question-always-allowed"),
         (ACTION, DENY) => t("chat-question-denied"),
         _ => answer_label(question, answer),
@@ -144,6 +150,16 @@ pub fn shown(question: &Question, reader: &Reader<'_>) -> Option<QuestionShown> 
                 t_args(
                     "chat-question-field",
                     &[("label", label.into()), ("value", value.into())],
+                ),
+                Line::Field,
+            ));
+        }
+        // Which item of their vault it would use, in the system's words.
+        if let Some(item) = question.uses_item() {
+            shown.lines.push((
+                t_args(
+                    "chat-question-with-item",
+                    &[("item", crate::secret_ask::title(&item).into())],
                 ),
                 Line::Field,
             ));
