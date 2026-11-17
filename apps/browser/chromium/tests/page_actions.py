@@ -1747,7 +1747,7 @@ class PageActions(unittest.TestCase):
         after = heard(self.ok('outline', actor='ben'))['outline']
         self.assertEqual(after.count(f'value=<{len(mark)} characters hidden>'), 3, after)
         for read in (dict(action='changes', actor='ada'), dict(action='fields'), dict(action='forms'),
-                     dict(action='ledger', since=0), dict(action='console', since=0), dict(action='network', since=0)):
+                     dict(action='log', since=0), dict(action='console', since=0), dict(action='network', since=0)):
             heard(self.ok(**read))
 
         # An address that sends its visitor on: the page is where it arrived,
@@ -1790,7 +1790,7 @@ class PageActions(unittest.TestCase):
         self.reads('heading "Sign in"', 'the page never went on to the other site')
         self.assertEqual(self.main_world('location.origin'), self.server.other)
         self.assertEqual(holds('password'), '')
-        for read in (dict(action='ledger', since=0), dict(action='console', since=0), dict(action='network', since=0)):
+        for read in (dict(action='log', since=0), dict(action='console', since=0), dict(action='network', since=0)):
             heard(self.ok(**read))
 
         told = json.dumps(said)

@@ -14,5 +14,4 @@ gate 1
 plane 15
 lane 3
 standing 714
-ledger 2
 seam 7
