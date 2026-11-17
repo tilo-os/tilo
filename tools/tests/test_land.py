@@ -224,6 +224,30 @@ class LandTest(unittest.TestCase):
         self.assertIn("clean.txt", files)
         self.assertNotIn("worse.txt", files)
 
+    def test_a_change_that_conflicts_with_the_head_is_answered_behind_others_too(self):
+        stale = self.worktree("stale", {"shared.txt": "one\nzwei\nthree\n"})
+        moved = self.worktree("moved", {"shared.txt": "one\nTWO\nthree\n"})
+        git(moved, "push", "-q", "origin", "HEAD:main")
+        first = self.worktree("first", {"first.txt": "fine\n"})
+        ahead = self.worktree("ahead", {"ahead.txt": "fine\n"})
+        waiting = [self.land(first)]
+        state = self.clone / ".git" / "land" / "main" / "state.json"
+        deadline = time.monotonic() + HANG_BOUND
+        while "linting" not in (state.read_text() if state.exists() else ""):
+            self.assertLess(time.monotonic(), deadline, "the lander never started its first lint")
+            time.sleep(0.1)
+        # Queued in this order, so the stale change comes behind one that applies.
+        for tree in (ahead, stale):
+            queued = subprocess.run(["python3", str(tree / "tools" / "land.py"), "--no-wait"],
+                                    cwd=tree, env=ENV, capture_output=True, timeout=HANG_BOUND)
+            self.assertEqual(queued.returncode, 75, queued.stderr)
+        found = self.answers(waiting + [self.land(ahead), self.land(stale)])
+        self.assertEqual([result["status"] for _code, result in found],
+                         ["landed", "landed", "conflict"], found)
+        self.assertEqual(found[2][1]["onto"], found[1][1]["onto"],
+                         "answered in the round it came behind the other, not left for a later one")
+        self.assertEqual(found[2][1]["files"], ["shared.txt"])
+
     def test_a_change_without_rust_lands_ahead_of_one_that_compiles(self):
         first = self.worktree("first", {"first.txt": "fine\n"})
         compiles = self.worktree("compiles", {"code.rs": "fn main() {}\n"})

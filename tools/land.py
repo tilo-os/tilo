@@ -417,9 +417,14 @@ class Lander:
             elif not batch:
                 self.finish(entry, {"status": "conflict", "files": files, "onto": upstream})
             else:
-                # It may only conflict with a change ahead of it in this round, which may not
-                # land: it waits for the next round, on whatever head that gives.
                 out(self.tree, "reset", "--quiet", "--hard", before)
+                # It may only conflict with a change ahead of it in this round, which may not
+                # land: then it waits for the next round, on whatever head that gives. One that
+                # does not apply on the head alone either is answered now: behind other changes
+                # it would never come first, and wait for good.
+                alone = self.conflicts_on(upstream, entry["commits"])
+                if alone:
+                    self.finish(entry, {"status": "conflict", "files": alone, "onto": upstream})
         if not batch:
             return True
         names = " ".join(entry["id"][:8] for entry, _ in batch)
@@ -500,6 +505,20 @@ class Lander:
         finally:
             signal.signal(signal.SIGTERM, previous)
         return subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
+
+    def conflicts_on(self, base: str, commits: list[str]) -> list[str]:
+        """The files that conflict when `commits` are put on `base`, worked out without a checkout."""
+        head = base
+        for commit in commits:
+            merged = git(self.tree, "merge-tree", "--write-tree", "--name-only",
+                         f"--merge-base={commit}^", head, commit)
+            lines = merged.stdout.splitlines()
+            if merged.returncode == 1:
+                return [line for line in lines[1:lines.index("") if "" in lines else len(lines)]]
+            if merged.returncode != 0 or not lines:
+                return []  # unknown: the round it comes first in says
+            head = out(self.tree, "commit-tree", lines[0], "-p", head, "-m", "a change put on the head")
+        return []
 
     def compiles(self, entry: dict) -> bool:
         """Whether a change touches what the push lint compiles (tools/ci/pre_push_lint.py's rust_changes)."""
