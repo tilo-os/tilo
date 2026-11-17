@@ -332,15 +332,105 @@ pub fn invitation(text: &str) -> Result<Invitation, String> {
 /// not the one to write to them ([`client_scheduled`]).
 #[must_use]
 pub fn kept_text(text: &str) -> String {
+    kept_beside(text, None)
+}
+
+/// `text` as a calendar keeps it at an address where its server holds `held`
+/// (`None`: nothing yet): [`kept_text`], except that a line naming somebody
+/// the server already writes to goes up exactly as the server holds it.
+///
+/// A server that schedules by itself compares, for each person an entry
+/// names, what the entry said of who writes to them before a change and
+/// after it (RFC 6638, 3.2.1.2). A line that goes from left to the server to
+/// `SCHEDULE-AGENT=CLIENT` has the server tell that person the event is off,
+/// and one that goes from `CLIENT` to left to the server has it invite them.
+/// So no line changes what it said. Somebody the server holds no line for,
+/// and somebody whose line there does not leave writing to it, is marked
+/// `CLIENT`: the cells of the table that send nothing, and all a new entry
+/// has (3.2.1.1). Somebody the server writes to keeps the line it holds,
+/// where it goes on as it did and starts nothing. `SCHEDULE-FORCE-SEND`,
+/// which asks a server for a message it would not send (7.2), never goes up.
+#[must_use]
+pub fn kept_beside(text: &str, held: Option<&str>) -> String {
+    let written_for = held.map(server_written).unwrap_or_default();
     let mut out = String::new();
     for line in pim_lines::unfold(text) {
         match ContentLine::parse(&line) {
             Some(parsed) if parsed.name == "METHOD" => {}
-            Some(parsed) if names_somebody(&parsed) => client_scheduled(&mut out, &parsed),
+            Some(parsed) if names_somebody(&parsed) => {
+                let address = address_of(&parsed);
+                let as_held = written_for
+                    .iter()
+                    .find(|held| held.property == parsed.name && held.address == address);
+                match as_held {
+                    Some(held) => fold_into(&mut out, &held.line),
+                    None => client_scheduled(&mut out, &parsed),
+                }
+            }
             _ => fold_into(&mut out, &line),
         }
     }
     out
+}
+
+/// A line of an entry a calendar server holds that leaves writing to
+/// whoever it names to that server.
+struct ServerWritten {
+    /// `ORGANIZER` or `ATTENDEE`.
+    property: String,
+    /// Whom it names ([`address_of`]).
+    address: String,
+    /// The line as the server holds it, unfolded.
+    line: String,
+}
+
+/// The lines of `held` that leave writing to whoever they name to the server
+/// holding them, each as it is held.
+fn server_written(held: &str) -> Vec<ServerWritten> {
+    pim_lines::unfold(held)
+        .into_iter()
+        .filter_map(|line| {
+            let parsed = ContentLine::parse(&line)?;
+            if !names_somebody(&parsed) || !left_to_its_server(&parsed) {
+                return None;
+            }
+            let line = if parsed.param("SCHEDULE-FORCE-SEND").is_some() {
+                rewritten(&parsed, None, &["SCHEDULE-FORCE-SEND"])
+            } else {
+                line
+            };
+            Some(ServerWritten {
+                address: address_of(&parsed),
+                property: parsed.name,
+                line,
+            })
+        })
+        .collect()
+}
+
+/// Whether `line`, which names somebody, leaves writing to them to the
+/// server it is stored on: it says `SCHEDULE-AGENT=SERVER`, or nothing of
+/// it, which means the same (RFC 6638, 7.1).
+fn left_to_its_server(line: &ContentLine) -> bool {
+    line.param("SCHEDULE-AGENT").is_none_or(|agent| {
+        agent
+            .values
+            .iter()
+            .any(|value| value.eq_ignore_ascii_case("SERVER"))
+    })
+}
+
+/// Whom `line` names: its value without its `mailto:`, in lower case. A
+/// value that is no mail address is kept as it is written.
+fn address_of(line: &ContentLine) -> String {
+    let value = line.value.trim();
+    value
+        .get(..7)
+        .filter(|scheme| scheme.eq_ignore_ascii_case("mailto:"))
+        .and_then(|_| value.get(7..))
+        .unwrap_or(value)
+        .trim()
+        .to_ascii_lowercase()
 }
 
 /// Whether `line` names somebody a calendar server could write to: who
@@ -374,18 +464,29 @@ pub fn leaves_writing_to_its_server(text: &str) -> bool {
 /// a text says of that itself (`SCHEDULE-AGENT`, `SCHEDULE-FORCE-SEND`) does
 /// not stay; every other parameter stays as it was.
 fn client_scheduled(out: &mut String, line: &ContentLine) {
+    let marked = rewritten(
+        line,
+        Some("CLIENT"),
+        &["SCHEDULE-AGENT", "SCHEDULE-FORCE-SEND"],
+    );
+    fold_into(out, &marked);
+}
+
+/// `line` written out again without its parameters `dropped`, saying first
+/// that `agent` is who writes to whoever it names, where one is given.
+fn rewritten(line: &ContentLine, agent: Option<&str>, dropped: &[&str]) -> String {
     let mut marked = String::new();
     if let Some(group) = &line.group {
         marked.push_str(group);
         marked.push('.');
     }
     marked.push_str(&line.name);
-    marked.push_str(";SCHEDULE-AGENT=CLIENT");
+    if let Some(agent) = agent {
+        marked.push_str(";SCHEDULE-AGENT=");
+        marked.push_str(agent);
+    }
     for param in &line.params {
-        if matches!(
-            param.name.as_str(),
-            "SCHEDULE-AGENT" | "SCHEDULE-FORCE-SEND"
-        ) {
+        if dropped.contains(&param.name.as_str()) {
             continue;
         }
         marked.push(';');
@@ -397,7 +498,7 @@ fn client_scheduled(out: &mut String, line: &ContentLine) {
     }
     marked.push(':');
     marked.push_str(&line.value);
-    fold_into(out, &marked);
+    marked
 }
 
 /// Whom an entry's text names, each by the address the text gives, once and
@@ -426,14 +527,7 @@ pub fn named(text: &str) -> Named {
             "ATTENDEE" => &mut named.attendees,
             _ => continue,
         };
-        let value = line.value.trim();
-        let address = value
-            .get(..7)
-            .filter(|scheme| scheme.eq_ignore_ascii_case("mailto:"))
-            .and_then(|_| value.get(7..))
-            .unwrap_or(value)
-            .trim()
-            .to_ascii_lowercase();
+        let address = address_of(&line);
         if !list.contains(&address) {
             list.push(address);
         }
@@ -2179,6 +2273,62 @@ mod tests {
         assert!(!leaves_writing_to_its_server(
             "BEGIN:VEVENT\r\nATTENDEE;schedule-agent=none:mailto:bo@example.test\r\nEND:VEVENT\r\n"
         ));
+    }
+
+    /// Beside what its server holds, the kept text changes what no line says
+    /// of who writes to the person it names (RFC 6638, 3.2.1.2): a line the
+    /// server writes for goes up as the server holds it, whatever the text
+    /// makes of it, and everybody else is marked for the client, whatever
+    /// the text says of that itself.
+    #[test]
+    fn the_kept_text_beside_what_a_server_holds_changes_what_no_line_says_of_who_writes() {
+        let held = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n\
+             UID:lunch-4@example.org\r\nDTSTART:20261118T120000Z\r\n\
+             ORGANIZER;CN=Ada:mailto:ada@example.test\r\n\
+             ATTENDEE;PARTSTAT=ACCEPTED;SCHEDULE-STATUS=\"2.0\":mailto:bo@example.test\r\n\
+             ATTENDEE;SCHEDULE-AGENT=SERVER;SCHEDULE-FORCE-SEND=REQUEST:MAILTO:Eve@Elsewhere.test\r\n\
+             ATTENDEE;SCHEDULE-AGENT=CLIENT:mailto:cy@example.test\r\n\
+             ATTENDEE;SCHEDULE-AGENT=NONE:mailto:di@example.test\r\n\
+             END:VEVENT\r\nEND:VCALENDAR\r\n";
+        let changed = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\n\
+             UID:lunch-4@example.org\r\nDTSTART:20261118T130000Z\r\n\
+             ORGANIZER;SCHEDULE-AGENT=CLIENT;CN=Ada L:mailto:ada@example.test\r\n\
+             ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:BO@example.test\r\n\
+             ATTENDEE;PARTSTAT=TENTATIVE:mailto:eve@elsewhere.test\r\n\
+             ATTENDEE;SCHEDULE-AGENT=SERVER:mailto:cy@example.test\r\n\
+             ATTENDEE:mailto:di@example.test\r\n\
+             ATTENDEE;SCHEDULE-AGENT=SERVER;SCHEDULE-FORCE-SEND=REQUEST:mailto:fay@example.test\r\n\
+             END:VEVENT\r\nEND:VCALENDAR\r\n";
+        let naming = |text: &str| -> Vec<String> {
+            pim_lines::unfold(text)
+                .into_iter()
+                .filter(|line| line.starts_with("ORGANIZER") || line.starts_with("ATTENDEE"))
+                .collect()
+        };
+        let kept = kept_beside(changed, Some(held));
+        assert_eq!(
+            naming(&kept),
+            [
+                // Three the server writes for: as it holds them, and what
+                // forced it to write once does not go up again.
+                "ORGANIZER;CN=Ada:mailto:ada@example.test",
+                "ATTENDEE;PARTSTAT=ACCEPTED;SCHEDULE-STATUS=\"2.0\":mailto:bo@example.test",
+                "ATTENDEE;SCHEDULE-AGENT=SERVER:MAILTO:Eve@Elsewhere.test",
+                // Two it holds and does not write for, and one it does not
+                // hold: the client's, whatever the text says.
+                "ATTENDEE;SCHEDULE-AGENT=CLIENT:mailto:cy@example.test",
+                "ATTENDEE;SCHEDULE-AGENT=CLIENT:mailto:di@example.test",
+                "ATTENDEE;SCHEDULE-AGENT=CLIENT:mailto:fay@example.test",
+            ]
+        );
+        assert!(!kept.contains("METHOD"), "{kept}");
+        assert!(kept.contains("DTSTART:20261118T130000Z"), "{kept}");
+        // Where the server holds nothing, or nothing that names anybody,
+        // every line is the client's.
+        assert_eq!(kept_beside(changed, None), kept_text(changed));
+        let plain = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:a\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        assert_eq!(kept_beside(changed, Some(plain)), kept_text(changed));
+        assert!(!leaves_writing_to_its_server(&kept_text(changed)));
     }
 
     fn outlook_zone(tzid: &str) -> String {

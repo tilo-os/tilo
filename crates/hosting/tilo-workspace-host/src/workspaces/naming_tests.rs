@@ -9,7 +9,7 @@
 use ed25519_dalek::SigningKey;
 use std::time::SystemTime;
 
-use super::fixtures::{governor, test_host};
+use super::fixtures::{governor, test_host as test_holder};
 use super::tests::admitted_member;
 
 /// A member device other than the governor renames the workspace in its own
@@ -20,7 +20,7 @@ use super::tests::admitted_member;
 async fn a_rename_another_device_writes_is_what_the_hosts_lists_name() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let server = test_host(dir.path(), &key, &cert).await;
+    let server = test_holder(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Lounge").await.unwrap().workspace;
     let (writer, _salt) = admitted_member(&workspaces, &workspace, &key, &cert, 3).await;

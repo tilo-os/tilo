@@ -11,11 +11,17 @@
 //! Basic credentials.
 //!
 //! It schedules by itself, as the servers people rent do (RFC 6638): an
-//! account whose name is an address is the person written to there, and an
-//! entry a client stores in which that person invites others has the server
-//! write to them, unless the entry's own lines or the request tell it not
-//! to. Nothing is sent anywhere: the server keeps whom it would have written
-//! to ([`Server::mailed`]).
+//! account whose name is an address is the person written to there. What an
+//! entry that person organises makes the server send is read from the
+//! standard's tables, line by line: who writes to somebody a line names
+//! (`SCHEDULE-AGENT`, section 7.1), in the entry as it was and as it is now,
+//! decides between an invitation, a cancellation and nothing (3.2.1.1 for a
+//! new entry, 3.2.1.2 for a changed one, 3.2.1.3 for a removed one). Where
+//! somebody else organises, the organiser is answered when the person's own
+//! answer changes, when they leave an occurrence out and when the entry goes
+//! (3.2.2.3, 3.2.2.4), unless the removal says not to (8.1). Nothing is sent
+//! anywhere: the server keeps whom it would have written to
+//! ([`Server::mailed`]).
 //!
 //! A test changes a calendar as another client would ([`Server::put`],
 //! [`Server::remove`]), and reads what a client left on it
@@ -125,17 +131,59 @@ fn gone(href: &str) -> String {
     )
 }
 
-/// One line of an entry that names somebody: their address, and whether the
-/// text leaves writing to them to the server (the line says neither
-/// `SCHEDULE-AGENT=CLIENT` nor `SCHEDULE-AGENT=NONE`).
-type Named = (String, bool);
+/// Who is to write to whoever a line names: what its `SCHEDULE-AGENT` says
+/// (RFC 6638, 7.1). A line that says nothing leaves it to the server, and a
+/// value the server does not know reads as `NONE`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Writes {
+    Server,
+    Client,
+    Nobody,
+}
 
-/// Whom the entry `ics` names: who organises it, and everyone it invites.
-fn named(ics: &str) -> (Option<Named>, Vec<Named>) {
-    let mut organizer = None;
-    let mut invited = Vec::new();
+/// One line of an entry that names somebody.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Named {
+    address: String,
+    writes: Writes,
+    /// Whether they come, as the line says it (`PARTSTAT`).
+    coming: String,
+}
+
+/// What of an entry a server that schedules reads.
+#[derive(Default)]
+struct Read {
+    organizer: Option<Named>,
+    /// Everyone it invites, once each.
+    invited: Vec<Named>,
+    /// How many occurrences it leaves out (`EXDATE`).
+    left_out: usize,
+}
+
+/// What the parameter `name` says in the upper-cased line `upper`.
+fn param<'a>(upper: &'a str, name: &str) -> Option<&'a str> {
+    let key = format!(";{name}=");
+    let at = upper.find(&key)?;
+    let rest = upper.get(at.saturating_add(key.len())..)?;
+    Some(
+        rest.split([';', ':'])
+            .next()
+            .unwrap_or(rest)
+            .trim_matches('"'),
+    )
+}
+
+/// What the entry `ics` says to a server that schedules.
+fn read(ics: &str) -> Read {
+    let mut read = Read::default();
     for line in ics.replace("\r\n ", "").lines() {
         let upper = line.to_ascii_uppercase();
+        let property = upper.split([';', ':']).next().unwrap_or_default();
+        if property == "EXDATE" {
+            let dates = upper.rsplit(':').next().unwrap_or_default();
+            read.left_out = read.left_out.saturating_add(dates.split(',').count());
+            continue;
+        }
         let Some(at) = upper.rfind("MAILTO:") else {
             continue;
         };
@@ -144,57 +192,143 @@ fn named(ics: &str) -> (Option<Named>, Vec<Named>) {
             .unwrap_or_default()
             .trim()
             .to_ascii_lowercase();
-        let left_to_server =
-            !upper.contains("SCHEDULE-AGENT=CLIENT") && !upper.contains("SCHEDULE-AGENT=NONE");
-        match upper.split([';', ':']).next() {
-            Some("ORGANIZER") => organizer = Some((address, left_to_server)),
-            Some("ATTENDEE") => invited.push((address, left_to_server)),
+        let writes = match param(&upper, "SCHEDULE-AGENT") {
+            None | Some("SERVER") => Writes::Server,
+            Some("CLIENT") => Writes::Client,
+            Some(_) => Writes::Nobody,
+        };
+        let named = Named {
+            address,
+            writes,
+            coming: param(&upper, "PARTSTAT")
+                .unwrap_or("NEEDS-ACTION")
+                .to_owned(),
+        };
+        match property {
+            "ORGANIZER" => read.organizer = Some(named),
+            "ATTENDEE"
+                if !read
+                    .invited
+                    .iter()
+                    .any(|other| other.address == named.address) =>
+            {
+                read.invited.push(named);
+            }
             _ => {}
         }
     }
-    (organizer, invited)
+    read
+}
+
+/// What RFC 6638's tables have a server send somebody an entry's organiser
+/// invites, by who wrote to them in the entry as it was (`None`: it did not
+/// name them, or there was no entry) and in the entry as it is now (`None`:
+/// it no longer names them, or the entry is gone). Section 3.2.1.2 is the
+/// whole table, for a changed entry; 3.2.1.1 is its row `<Absent>`, for a
+/// new one; 3.2.1.3 is its column `<Removed>`, for a removed one. A line
+/// left to the server invites, whatever stood before it; a line the server
+/// wrote for calls off, whatever else comes after it; nothing else sends.
+fn by_the_table(original: Option<Writes>, modified: Option<Writes>) -> Option<&'static str> {
+    match (original, modified) {
+        (_, Some(Writes::Server)) => Some("REQUEST"),
+        (Some(Writes::Server), _) => Some("CANCEL"),
+        _ => None,
+    }
 }
 
 /// What a calendar server that schedules by itself sends, and to whom, when
 /// the entry `old` becomes `new` in the calendar of the person it writes to
-/// at `account`. Where that person organises, everyone the text leaves to
-/// the server is invited, and whoever was invited and is named no longer is
-/// told it is off. Where somebody else organises and the entry goes, the
-/// organiser is told that the person declines, unless the request said not
-/// to answer (`reply`).
+/// at `account`.
+///
+/// Where that person organises the entry, before or after, each person it
+/// invites is sent what [`by_the_table`] gives for their line. An entry they
+/// did not organise counts as no entry (3.2.3.1: an entry that scheduled
+/// nothing and now does is created, and one that did and no longer does is
+/// removed), and the organiser is sent nothing where they are invited too
+/// (3.2.1).
+///
+/// Where somebody else organises and leaves answering to the server, the
+/// organiser is told when the person's own answer changes or they leave an
+/// occurrence out (3.2.2.3), and when the entry goes (3.2.2.4), unless the
+/// request said not to answer (`reply`, section 8.1).
 fn sent(account: Option<&str>, old: Option<&str>, new: Option<&str>, reply: bool) -> Vec<String> {
     let Some(account) = account else {
         return Vec::new();
     };
-    let (was_by, was) = old.map(named).unwrap_or_default();
-    let (now_by, now) = new.map(named).unwrap_or_default();
-    let theirs = |by: Option<&Named>| by.is_some_and(|(address, _)| address == account);
+    let was = old.map(read).unwrap_or_default();
+    let now = new.map(read).unwrap_or_default();
+    let theirs = |read: &Read| {
+        read.organizer
+            .as_ref()
+            .is_some_and(|by| by.address == account)
+    };
     let mut sent = Vec::new();
-    if theirs(now_by.as_ref()) {
-        for (address, left) in &now {
-            if *left && address != account {
-                sent.push(format!("REQUEST to {address}"));
+    if theirs(&was) || theirs(&now) {
+        let before: &[Named] = if theirs(&was) { &was.invited } else { &[] };
+        let after: &[Named] = if theirs(&now) { &now.invited } else { &[] };
+        let writes = |lines: &[Named], address: &str| {
+            lines
+                .iter()
+                .find(|named| named.address == address)
+                .map(|named| named.writes)
+        };
+        let gone = before
+            .iter()
+            .filter(|named| writes(after, &named.address).is_none());
+        for named in after.iter().chain(gone) {
+            if named.address == account {
+                continue;
+            }
+            let original = writes(before, &named.address);
+            let modified = writes(after, &named.address);
+            if let Some(method) = by_the_table(original, modified) {
+                sent.push(format!("{method} to {}", named.address));
             }
         }
+        return sent;
     }
-    if theirs(was_by.as_ref()) {
-        for (address, left) in &was {
-            let still = now.iter().any(|(other, _)| other == address);
-            if *left && address != account && !still {
-                sent.push(format!("CANCEL to {address}"));
-            }
+    let answered = |read: &Read| {
+        read.organizer
+            .as_ref()
+            .filter(|by| by.writes == Writes::Server)
+            .map(|by| by.address.clone())
+    };
+    let own = |read: &Read| {
+        read.invited
+            .iter()
+            .find(|named| named.address == account)
+            .map(|named| named.coming.clone())
+    };
+    let (Some(organizer), Some(came)) = (answered(&was), own(&was)) else {
+        return sent;
+    };
+    let answers = match new {
+        None => reply,
+        Some(_) => {
+            answered(&now).is_some()
+                && (own(&now).is_some_and(|comes| comes != came) || now.left_out > was.left_out)
         }
-    } else if let Some((organizer, true)) = &was_by
-        && new.is_none()
-        && reply
-        && was.iter().any(|(address, _)| address == account)
-    {
+    };
+    if answers {
         sent.push(format!("REPLY to {organizer}"));
     }
     sent
 }
 
 impl State {
+    /// What a server knows that has one account, `user` with `password`,
+    /// and holds no calendar yet.
+    fn new(user: &str, password: &str) -> Self {
+        Self {
+            user: user.to_owned(),
+            password: password.to_owned(),
+            calendars: BTreeMap::new(),
+            token: 1,
+            syncs: true,
+            mailed: Vec::new(),
+        }
+    }
+
     /// The account's name in an address of this server: what stands before
     /// the `@` where the account signs in with an address.
     fn slug(&self) -> &str {
@@ -480,14 +614,7 @@ impl Server {
     /// If the loopback listener cannot be created.
     #[must_use]
     pub fn start(user: &str, password: &str) -> Self {
-        let state = Arc::new(Mutex::new(State {
-            user: user.to_owned(),
-            password: password.to_owned(),
-            calendars: BTreeMap::new(),
-            token: 1,
-            syncs: true,
-            mailed: Vec::new(),
-        }));
+        let state = Arc::new(Mutex::new(State::new(user, password)));
         let served = Arc::clone(&state);
         Self {
             responder: Mutex::new(Responder::handle(move |request| {
@@ -600,7 +727,23 @@ impl Server {
 
 #[cfg(test)]
 mod tests {
-    use super::base64;
+    use test_http::Request;
+
+    use super::{Calendar, State, base64};
+
+    const ADA: &str = "ada@example.test";
+    const BO: &str = "bo@example.test";
+    /// A sign-in made up for these tests.
+    const PASSWORD: &str = "made-up-for-these-tests";
+    const ENTRY: &str = "/dav/calendars/ada/work/a.ics";
+
+    /// How a line reads between `ATTENDEE` and the address it names: left to
+    /// the server by saying nothing, or marked.
+    const SERVER: &str = "";
+    const CLIENT: &str = ";SCHEDULE-AGENT=CLIENT";
+    const NONE: &str = ";SCHEDULE-AGENT=NONE";
+    /// Whom the server wrote to, where that is nobody.
+    const NOBODY: [&str; 0] = [];
 
     #[test]
     fn credentials_are_written_as_basic_ones() {
@@ -608,5 +751,270 @@ mod tests {
         assert_eq!(base64(b"ab"), "YWI=");
         assert_eq!(base64(b"abc"), "YWJj");
         assert_eq!(base64(b""), "");
+    }
+
+    /// Ada's server: she signs in with her address and keeps one calendar.
+    fn server() -> State {
+        let mut state = State::new(ADA, PASSWORD);
+        state.calendars.insert(
+            "work".to_owned(),
+            Calendar {
+                name: "Work".to_owned(),
+                ..Calendar::default()
+            },
+        );
+        state
+    }
+
+    /// Ada's client, signed in, asks `method` of her one entry.
+    fn asked(state: &mut State, method: &str, headers: &[(&str, &str)], body: &str) {
+        let sign_in = format!("Basic {}", base64(format!("{ADA}:{PASSWORD}").as_bytes()));
+        let mut all = vec![("Authorization".to_owned(), sign_in)];
+        all.extend(
+            headers
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned())),
+        );
+        state.answer(&Request {
+            method: method.to_owned(),
+            target: ENTRY.to_owned(),
+            headers: all,
+            body: body.as_bytes().to_vec(),
+        });
+    }
+
+    fn holds(state: &State) -> bool {
+        state
+            .calendars
+            .get("work")
+            .is_some_and(|calendar| calendar.entries.contains_key("a.ics"))
+    }
+
+    /// An entry with the lines `people`.
+    fn entry(people: &str) -> String {
+        format!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:a\r\n\
+             DTSTART:20261119T190000Z\r\n{people}END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+    }
+
+    /// The entry Ada organises and comes to herself, with Bo's line reading
+    /// `line` (`None`: it does not name him).
+    fn inviting(line: Option<&str>) -> String {
+        let bo = line
+            .map(|mark| format!("ATTENDEE{mark}:mailto:{BO}\r\n"))
+            .unwrap_or_default();
+        entry(&format!(
+            "ORGANIZER:mailto:{ADA}\r\nATTENDEE;PARTSTAT=ACCEPTED:mailto:{ADA}\r\n{bo}"
+        ))
+    }
+
+    /// What the server sent when Ada's client stored her entry where nothing
+    /// was, with Bo's line reading `line`.
+    fn created(line: &str) -> Vec<String> {
+        let mut state = server();
+        asked(
+            &mut state,
+            "PUT",
+            &[("If-None-Match", "*")],
+            &inviting(Some(line)),
+        );
+        assert!(holds(&state), "the server took the entry");
+        state.mailed
+    }
+
+    /// What the server sent when her client stored her entry again with Bo's
+    /// line going from `original` to `modified`.
+    fn changed(original: Option<&str>, modified: Option<&str>) -> Vec<String> {
+        let mut state = server();
+        asked(&mut state, "PUT", &[], &inviting(original));
+        state.mailed.clear();
+        asked(&mut state, "PUT", &[], &inviting(modified));
+        assert!(holds(&state), "the server took the entry");
+        state.mailed
+    }
+
+    /// What the server sent when her client removed her entry, in which Bo's
+    /// line read `line`.
+    fn removed(line: &str) -> Vec<String> {
+        let mut state = server();
+        asked(&mut state, "PUT", &[], &inviting(Some(line)));
+        state.mailed.clear();
+        asked(&mut state, "DELETE", &[], "");
+        assert!(!holds(&state), "the server let the entry go");
+        state.mailed
+    }
+
+    fn request() -> Vec<String> {
+        vec![format!("REQUEST to {BO}")]
+    }
+
+    fn cancel() -> Vec<String> {
+        vec![format!("CANCEL to {BO}")]
+    }
+
+    /// RFC 6638, 3.2.1.1 (a new entry), row SERVER, which a line that says
+    /// nothing is too: REQUEST. Ada, who organises and is invited herself,
+    /// is sent nothing in any row (3.2.1).
+    #[test]
+    fn create_row_server_is_sent_a_request() {
+        assert_eq!(created(SERVER), request());
+        assert_eq!(created(";SCHEDULE-AGENT=SERVER"), request());
+    }
+
+    /// RFC 6638, 3.2.1.1, row CLIENT: nothing.
+    #[test]
+    fn create_row_client_is_sent_nothing() {
+        assert_eq!(created(CLIENT), NOBODY);
+    }
+
+    /// RFC 6638, 3.2.1.1, row NONE: nothing.
+    #[test]
+    fn create_row_none_is_sent_nothing() {
+        assert_eq!(created(NONE), NOBODY);
+    }
+
+    /// RFC 6638, 3.2.1.2 (a changed entry), row `<Absent>`, by its columns
+    /// `<Removed>`, SERVER, CLIENT and NONE: nothing, REQUEST, nothing,
+    /// nothing.
+    #[test]
+    fn modify_row_absent_is_sent_a_request_only_by_a_line_left_to_the_server() {
+        assert_eq!(changed(None, None), NOBODY);
+        assert_eq!(changed(None, Some(SERVER)), request());
+        assert_eq!(changed(None, Some(CLIENT)), NOBODY);
+        assert_eq!(changed(None, Some(NONE)), NOBODY);
+    }
+
+    /// RFC 6638, 3.2.1.2, row SERVER, by its columns: CANCEL, REQUEST,
+    /// CANCEL, CANCEL. No column of this row sends nothing.
+    #[test]
+    fn modify_row_server_is_sent_a_cancel_in_every_column_but_its_own() {
+        assert_eq!(changed(Some(SERVER), None), cancel());
+        assert_eq!(changed(Some(SERVER), Some(SERVER)), request());
+        assert_eq!(changed(Some(SERVER), Some(CLIENT)), cancel());
+        assert_eq!(changed(Some(SERVER), Some(NONE)), cancel());
+    }
+
+    /// RFC 6638, 3.2.1.2, row CLIENT, by its columns: nothing, REQUEST,
+    /// nothing, nothing.
+    #[test]
+    fn modify_row_client_is_sent_a_request_only_by_a_line_left_to_the_server() {
+        assert_eq!(changed(Some(CLIENT), None), NOBODY);
+        assert_eq!(changed(Some(CLIENT), Some(SERVER)), request());
+        assert_eq!(changed(Some(CLIENT), Some(CLIENT)), NOBODY);
+        assert_eq!(changed(Some(CLIENT), Some(NONE)), NOBODY);
+    }
+
+    /// RFC 6638, 3.2.1.2, row NONE, by its columns: nothing, REQUEST,
+    /// nothing, nothing.
+    #[test]
+    fn modify_row_none_is_sent_a_request_only_by_a_line_left_to_the_server() {
+        assert_eq!(changed(Some(NONE), None), NOBODY);
+        assert_eq!(changed(Some(NONE), Some(SERVER)), request());
+        assert_eq!(changed(Some(NONE), Some(CLIENT)), NOBODY);
+        assert_eq!(changed(Some(NONE), Some(NONE)), NOBODY);
+    }
+
+    /// RFC 6638, 3.2.1.3 (a removed entry), row SERVER: CANCEL.
+    #[test]
+    fn remove_row_server_is_sent_a_cancel() {
+        assert_eq!(removed(SERVER), cancel());
+        assert_eq!(removed(";SCHEDULE-AGENT=SERVER"), cancel());
+    }
+
+    /// RFC 6638, 3.2.1.3, row CLIENT: nothing.
+    #[test]
+    fn remove_row_client_is_sent_nothing() {
+        assert_eq!(removed(CLIENT), NOBODY);
+    }
+
+    /// RFC 6638, 3.2.1.3, row NONE: nothing.
+    #[test]
+    fn remove_row_none_is_sent_nothing() {
+        assert_eq!(removed(NONE), NOBODY);
+    }
+
+    /// RFC 6638, 3.2.3.1, the rows of a PUT over an entry of another kind:
+    /// one that scheduled nothing and now does is created (3.2.1.1), and one
+    /// that did and no longer does is removed (3.2.1.3).
+    #[test]
+    fn a_put_that_starts_or_ends_what_an_entry_schedules_is_a_create_or_a_remove() {
+        let plain = entry("");
+        let mut state = server();
+        asked(&mut state, "PUT", &[], &plain);
+        assert_eq!(state.mailed, NOBODY, "an entry that names nobody");
+        asked(&mut state, "PUT", &[], &inviting(Some(SERVER)));
+        assert_eq!(state.mailed, request(), "it starts to schedule");
+        state.mailed.clear();
+        asked(&mut state, "PUT", &[], &plain);
+        assert_eq!(state.mailed, cancel(), "it no longer schedules");
+
+        let mut state = server();
+        asked(&mut state, "PUT", &[], &plain);
+        asked(&mut state, "PUT", &[], &inviting(Some(CLIENT)));
+        asked(&mut state, "PUT", &[], &plain);
+        assert_eq!(state.mailed, NOBODY, "the same with the line marked");
+    }
+
+    /// RFC 6638, 7.1: a value of `SCHEDULE-AGENT` the server does not know
+    /// reads as NONE.
+    #[test]
+    fn a_mark_the_server_does_not_know_reads_as_none() {
+        let other = ";SCHEDULE-AGENT=X-OTHER";
+        assert_eq!(created(other), NOBODY);
+        assert_eq!(changed(Some(SERVER), Some(other)), cancel());
+        assert_eq!(changed(Some(other), Some(SERVER)), request());
+        assert_eq!(removed(other), NOBODY);
+    }
+
+    /// RFC 6638, 3.2.2.2 to 3.2.2.4 and 8.1, where Bo organises and Ada is
+    /// invited: storing the invitation answers nobody; her changed answer,
+    /// an occurrence she leaves out and her removal of the entry are
+    /// answered to Bo; a removal that says `Schedule-Reply: F` is not, and
+    /// nothing is where the organiser's line is marked.
+    #[test]
+    fn the_organiser_is_answered_for_somebody_invited_unless_the_entry_or_the_removal_says_no() {
+        let invited = |organizer: &str, coming: &str, more: &str| {
+            entry(&format!(
+                "ORGANIZER{organizer}:mailto:{BO}\r\n\
+                 ATTENDEE;PARTSTAT={coming}:mailto:{ADA}\r\n{more}"
+            ))
+        };
+        let reply = vec![format!("REPLY to {BO}")];
+
+        let mut state = server();
+        asked(&mut state, "PUT", &[], &invited(SERVER, "NEEDS-ACTION", ""));
+        asked(&mut state, "PUT", &[], &invited(SERVER, "NEEDS-ACTION", ""));
+        assert_eq!(
+            state.mailed, NOBODY,
+            "an invitation stored, and stored again"
+        );
+        asked(&mut state, "PUT", &[], &invited(SERVER, "ACCEPTED", ""));
+        assert_eq!(state.mailed, reply, "her answer");
+        state.mailed.clear();
+        let without = "EXDATE:20261126T190000Z\r\n";
+        asked(
+            &mut state,
+            "PUT",
+            &[],
+            &invited(SERVER, "ACCEPTED", without),
+        );
+        assert_eq!(state.mailed, reply, "an occurrence she leaves out");
+        state.mailed.clear();
+        asked(&mut state, "DELETE", &[], "");
+        assert_eq!(state.mailed, reply, "her removal");
+
+        let mut state = server();
+        asked(&mut state, "PUT", &[], &invited(SERVER, "NEEDS-ACTION", ""));
+        asked(&mut state, "DELETE", &[("Schedule-Reply", "F")], "");
+        assert!(!holds(&state), "the server let the entry go");
+        assert_eq!(state.mailed, NOBODY, "a removal told not to answer");
+
+        let mut state = server();
+        asked(&mut state, "PUT", &[], &invited(CLIENT, "NEEDS-ACTION", ""));
+        asked(&mut state, "PUT", &[], &invited(CLIENT, "ACCEPTED", ""));
+        asked(&mut state, "DELETE", &[], "");
+        assert!(!holds(&state), "the server let the entry go");
+        assert_eq!(state.mailed, NOBODY, "an organiser the client answers");
     }
 }
