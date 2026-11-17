@@ -535,6 +535,17 @@ print(found.group(1) if found else "")' "$hosted_workspace" <<<"$(vm_host status
 
   if runs_any 11 12; then
     step '11. the VM the Browser ran in: its sandbox, its user, its memory'
+    # A VM whose memory the host is saving takes no new run until it is done,
+    # and saving it takes as long as the machine holding it takes to write:
+    # wait for it to run again, then the proof's own run wakes it if it slept.
+    vm_phase() {
+      vm_host status 2>/dev/null \
+        | awk -v ws="$hosted_workspace/default" '$1 == ws {print $3; exit}'
+    }
+    waited=$SECONDS
+    while [[ $(vm_phase) != Running ]] && ((SECONDS - waited < 600)); do sleep 2; done
+    [[ $(vm_phase) == Running ]] \
+      || fail "$hosted_workspace's VM is not running again in 600 s (vm_host status says $(vm_phase))"
     VM_HOST_RUN="sudo -n podman exec tilo-sh-vm-host-0 setpriv --reuid=10001 --regid=10001 --init-groups --inh-caps=-all tilo-legacy" \
       VM_HOST_CONTAINER=tilo-sh-vm-host-0 \
       python3 "$here/integration/vm-proofs.py" "$hosted_workspace" "$vm_account" "$work/vm" \
