@@ -457,6 +457,22 @@ impl Bridge {
             .prepare_application(&workspace.id, &cert, &workspace.catalogue, CHAT, "")
             .await
             .unwrap();
+        // Ada is a member of the workspace, as anyone who writes in its Chat
+        // is: its members are what every name it shows comes from.
+        workspace
+            .workspaces
+            .add_member(
+                &workspace.id,
+                &cert,
+                tilo_server::workspaces::AddMemberRequest {
+                    request_id: [2; 32],
+                    user_public_key: ADA,
+                    place: tilo_server::workspaces::MemberPlace::parse("editor").unwrap(),
+                    name: Some("Ada".into()),
+                },
+            )
+            .await
+            .unwrap();
         workspace
             .chat_as({
                 let owner = owner.clone();
