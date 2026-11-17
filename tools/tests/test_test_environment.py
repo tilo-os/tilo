@@ -223,7 +223,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
             self.assertEqual(
                 [(rule["filter"], rule["platform"]) for rule in rules],
                 [("package(tilo-session) and binary(it) and (test(chat_2x2::) or test(device_branch::)"
-                  " or test(shared_input::a_window_lifted))",
+                  " or test(shared_input::a_window_lifted) or test(workspace_agents::))",
                   {"host": 'cfg(target_os = "linux")'})],
                 f"the {profile} profile builds Chat and its launcher for the acceptance",
             )
@@ -323,7 +323,8 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         # `ci` inherits `default`'s rules, so it names only what it adds.
         self.assertEqual(rules, {"all()": "test-runtime",
                                  "package(tilo-session) and binary(it) and (test(chat_2x2::) or "
-                                 "test(device_branch::) or test(shared_input::a_window_lifted))":
+                                 "test(device_branch::) or test(shared_input::a_window_lifted) or "
+                                 "test(workspace_agents::))":
                                      "chat-siblings",
                                  "package(tilo-session) and binary(it) and test(closed_tasks::)": "tasks-siblings",
                                  "package(tilo-session) and binary(it) and test(device_branch::)":
