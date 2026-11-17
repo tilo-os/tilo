@@ -307,24 +307,27 @@ impl FoundRecord {
     }
 }
 
+/// The name a release's own directory has under its state: the one the server's directory had
+/// when the release was made. A release keeps that name for as long as its state is read.
+const RELEASE_ROOT: &str = "relay";
+
 /// Every workspace record the release kept under `state`, and the workspace it was told to
 /// serve, from the `room-id` file beside its state. The release kept its records in its own
-/// `server/` directory (`--state <state>/relay`), and only those are read: a copy kept beside it
-/// (an older `server.<when>-unreadable/`, say) holds records of the same workspace that are not
-/// the release's, and reading one of those would export what no longer reads, or what the
-/// release no longer held. A `state` with no `server/` is read whole, as the release's server
-/// directory itself.
+/// directory ([`RELEASE_ROOT`], or `server/` for a release made since), and only those are
+/// read: a copy kept beside it (an older one set aside as `<name>.<when>-unreadable/`, say)
+/// holds records of the same workspace that are not the release's, and reading one of those
+/// would export what no longer reads, or what the release no longer held. A `state` with
+/// neither directory is read whole, as the release's server directory itself.
 fn walk(state: &Path) -> (Vec<FoundRecord>, Option<String>) {
     let served = std::fs::read_to_string(state.join("room-id"))
         .ok()
         .map(|id| id.trim().to_lowercase())
         .filter(|id| !id.is_empty());
-    let own = state.join("server");
-    let root = if own.is_dir() {
-        own
-    } else {
-        state.to_path_buf()
-    };
+    let root = [RELEASE_ROOT, "server"]
+        .into_iter()
+        .map(|name| state.join(name))
+        .find(|own| own.is_dir())
+        .unwrap_or_else(|| state.to_path_buf());
     let mut pending = vec![(root, 0_u32)];
     let mut records = Vec::new();
     while let Some((directory, depth)) = pending.pop() {
@@ -933,29 +936,34 @@ mod tests {
         assert!(refused.contains("no workspace record"), "{refused}");
     }
 
-    /// A copy of the same workspace kept beside the release's own `server/` (an older state set
-    /// aside as unreadable) is not what the release held, so the export never reads it.
+    /// A copy of the same workspace kept beside the release's own directory (an older state set
+    /// aside as unreadable) is not what the release held, so the export never reads it: under
+    /// the name a release gave its directory before the server's had its present name, and
+    /// under the present one.
     #[test]
     fn a_copy_kept_beside_the_release_state_is_not_read() {
-        let dir = tempfile::tempdir().unwrap();
-        let workspace = "74a479e4-757a-4efb-aa82-a9acf0c72d45";
-        let mut record = postcard::to_stdvec(&3u32).unwrap();
-        record.extend(postcard::to_stdvec(&workspace.to_owned()).unwrap());
-        let own = dir.path().join("server").join("server").join("rooms");
-        let aside = dir
-            .path()
-            .join("server.oct27-unreadable")
-            .join("server")
-            .join("rooms");
-        for rooms in [&own, &aside] {
-            std::fs::create_dir_all(rooms).unwrap();
-            std::fs::write(rooms.join(format!("{workspace}.room")), &record).unwrap();
+        for name in [RELEASE_ROOT, "server"] {
+            let dir = tempfile::tempdir().unwrap();
+            let workspace = "74a479e4-757a-4efb-aa82-a9acf0c72d45";
+            let mut record = postcard::to_stdvec(&3u32).unwrap();
+            record.extend(postcard::to_stdvec(&workspace.to_owned()).unwrap());
+            let own = dir.path().join(name).join(name).join("rooms");
+            let aside = dir
+                .path()
+                .join(format!("{name}.oct27-unreadable"))
+                .join(name)
+                .join("rooms");
+            for rooms in [&own, &aside] {
+                std::fs::create_dir_all(rooms).unwrap();
+                std::fs::write(rooms.join(format!("{workspace}.room")), &record).unwrap();
+            }
+            std::fs::write(dir.path().join("room-id"), format!("{workspace}\n")).unwrap();
+            assert_eq!(
+                one_record(dir.path()).unwrap(),
+                own.join(format!("{workspace}.room")),
+                "{name}"
+            );
         }
-        std::fs::write(dir.path().join("room-id"), format!("{workspace}\n")).unwrap();
-        assert_eq!(
-            one_record(dir.path()).unwrap(),
-            own.join(format!("{workspace}.room"))
-        );
     }
 
     #[test]
