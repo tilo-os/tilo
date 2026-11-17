@@ -426,14 +426,13 @@ fn mount_people(
 }
 
 /// This page's person as everyone here sees them, and as everything on the
-/// page names them: their name, a guest's while they gave none, and colour.
+/// page names them: their name, a guest's while they gave none, and colour, neutral until the
+/// workspace knows whose page it is.
 pub(crate) fn own_identity(here: &tilo_desktop::here::HereState) -> (String, (u8, u8, u8)) {
     let name = here
         .own_shown()
         .unwrap_or_else(tilo_desktop::here::guest_label);
-    let rgb = here
-        .own_rgb()
-        .unwrap_or_else(|| ui::presence::user_color(&name));
+    let rgb = here.own_rgb().unwrap_or(ui::presence::UNSETTLED_RGB);
     (name, rgb)
 }
 

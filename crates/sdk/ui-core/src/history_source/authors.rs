@@ -186,7 +186,7 @@ impl AuthorDirectory {
             }
             let rgb = match member.person_id() {
                 Some(person) => self.colour_for(person),
-                None => crate::presence::member_color(member, None),
+                None => crate::presence::member_color(member),
             };
             let author = author_coloured(name, short_id(member.id()), rgb);
             if let Some(person) = member.person_id() {
@@ -521,11 +521,10 @@ impl AuthorDirectory {
         } else {
             let written_as = hex::encode(actor.actor_bytes());
             let author = self.resolve(&written_as);
-            // Software is painted as presence paints it: by the one rule, from its identity, and
-            // clear of the colour of the person it acted for.
+            // Software is painted as presence paints it: by the one rule, from its identity.
             let author = if software {
                 author.with_rgb(match invoker.acting.member_id() {
-                    Some(member) => crate::presence::member_color(member, on_behalf_of.as_deref()),
+                    Some(member) => crate::presence::member_color(member),
                     None => crate::presence::user_color(actor.id()),
                 })
             } else {

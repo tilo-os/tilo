@@ -175,13 +175,11 @@ impl Agent {
     }
 
     /// Its presence colour's slot: the one its keeper chose, or the one the rule every
-    /// surface draws software by gives it, clear of the colour of the person who keeps
-    /// it ([`PresenceHue::of_member`]).
+    /// surface draws a member by gives it ([`PresenceHue::of_member`]).
     #[must_use]
     pub fn slot(&self) -> u8 {
         self.colour.unwrap_or_else(|| {
-            let keeper = Some(self.keeper.as_str()).filter(|keeper| !keeper.is_empty());
-            let hue = PresenceHue::of_member(&collab_types::MemberId::agent(&self.id.0), keeper);
+            let hue = PresenceHue::of_member(&collab_types::MemberId::agent(&self.id.0));
             u8::try_from(hue.slot()).unwrap_or(0)
         })
     }

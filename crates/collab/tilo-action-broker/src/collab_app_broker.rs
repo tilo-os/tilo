@@ -6973,18 +6973,15 @@ impl AppBrokerState {
     }
 
     /// The agents in a workspace, named as its record of its agents names them: those its grants
-    /// admit, and those only the record names, each with its keeper.
+    /// admit, and those only the record names.
     fn named_agent_members(
-        mut agents: Vec<(String, String, Option<String>)>,
+        mut agents: Vec<(String, String)>,
         listed: Vec<crate::services::ListedAgent>,
-    ) -> Vec<(String, String, Option<String>)> {
+    ) -> Vec<(String, String)> {
         for named in listed {
-            match agents.iter_mut().find(|(agent, _, _)| *agent == named.id) {
-                Some((_, name, keeper)) => {
-                    name.clone_from(&named.name);
-                    keeper.get_or_insert(named.keeper);
-                }
-                None => agents.push((named.id, named.name, Some(named.keeper))),
+            match agents.iter_mut().find(|(agent, _)| *agent == named.id) {
+                Some((_, name)) => name.clone_from(&named.name),
+                None => agents.push((named.id, named.name)),
             }
         }
         agents.sort_by(|left, right| left.0.cmp(&right.0));
@@ -7041,13 +7038,10 @@ impl AppBrokerState {
             .ok_or("native context has no membership authority")?
             .decide_in_workspace(&route.cluster_id, |workspace| {
                 let workspace = workspace.ok_or("native context workspace is unavailable")?;
-                let agents: Vec<(String, String, Option<String>)> = workspace
+                let agents: Vec<(String, String)> = workspace
                     .agent_members_at(now)
                     .into_iter()
-                    .map(|(agent, _)| {
-                        let keeper = workspace.agent_keeper(&agent).map(str::to_owned);
-                        (agent.clone(), agent, keeper)
-                    })
+                    .map(|(agent, _)| (agent.clone(), agent))
                     .collect();
                 let people = Self::people_members(workspace);
                 Ok::<_, &str>((agents, people))
@@ -7070,18 +7064,10 @@ impl AppBrokerState {
                 members.push(row);
             }
         }
-        for (agent, name, keeper) in agents {
+        for (agent, name) in agents {
             tilo_peer_state::workspace_membership::valid_agent_id(&agent)
                 .map_err(|_| "native context contains a noncanonical agent identity")?;
-            let keeper = keeper
-                .map(|keeper| collab_types::PersonId::parse(&keeper))
-                .transpose()
-                .map_err(|_| "the context's agent keeper is not a person's root key")?;
-            let row = collab_types::Member::of_software(
-                collab_types::MemberId::agent(agent),
-                name,
-                keeper.as_ref(),
-            );
+            let row = collab_types::Member::of_software(collab_types::MemberId::agent(agent), name);
             if row.id == self_id {
                 mine = Some(row);
             } else {
@@ -13071,13 +13057,12 @@ pub mod tests {
                 )
                 .is_err()
         );
-        // An agent wears the colour its face wears everywhere, clear of the
-        // person who admitted it, so the card it shows in a window is drawn as
-        // the bar draws it.
+        // An agent wears the colour its face wears everywhere, so the card it
+        // shows in a window is drawn as the bar draws it.
         for agent in roster.iter().filter(|row| !row.id.is_person()) {
             assert_eq!(
                 agent.colour,
-                ui::presence::member_hue(&agent.id, Some(&person)),
+                ui::tokens::PresenceHue::of_member(&agent.id),
                 "{}",
                 agent.id
             );
@@ -13100,11 +13085,8 @@ pub mod tests {
             stream.try_recv(),
             Ok(ContextUpdate::Snapshot { .. })
         ));
-        let forged = collab_types::Member::of_software(
-            collab_types::MemberId::agent("forged"),
-            "forged",
-            None,
-        );
+        let forged =
+            collab_types::Member::of_software(collab_types::MemberId::agent("forged"), "forged");
         {
             let mut channels = state.channels.lock().unwrap();
             AppBrokerState::fanout_context(

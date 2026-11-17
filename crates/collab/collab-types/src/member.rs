@@ -105,7 +105,7 @@ impl Member {
         let name = name.into();
         match id {
             MemberId::Person(person) => Self::of_person(&Person::new(person, name), None),
-            id => Self::of_software(id, name, None),
+            id => Self::of_software(id, name),
         }
     }
 
@@ -126,16 +126,11 @@ impl Member {
         }
     }
 
-    /// An agent's or bot's row: its colour is assigned here, once, stepped clear
-    /// of the person it acts for ([`PresenceHue::of_member`]).
+    /// An agent's or bot's row, in the colour what it is wears ([`PresenceHue::of_member`]).
     #[must_use]
-    pub fn of_software(
-        id: MemberId,
-        name: impl Into<String>,
-        for_person: Option<&PersonId>,
-    ) -> Self {
+    pub fn of_software(id: MemberId, name: impl Into<String>) -> Self {
         Self {
-            colour: assigned_colour(&id, for_person),
+            colour: PresenceHue::of_member(&id),
             id,
             role: None,
             name: name.into(),
@@ -191,13 +186,6 @@ pub const fn joined_at_from_packed(packed: u64) -> Option<u64> {
     }
 }
 
-/// The colour a member is given: a person's own, software's stepped clear of the
-/// person it acts for. The one assignment; every surface reads what it stored.
-#[must_use]
-pub fn assigned_colour(id: &MemberId, for_person: Option<&PersonId>) -> PresenceHue {
-    PresenceHue::of_member(id, for_person.map(PersonId::as_str))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,7 +194,7 @@ mod tests {
         /// A member as a stored row: its colour, its encoding and the spelling of its id.
         fn a_member_row_keeps_its_colour_and_its_stored_spelling;
 
-        phase a_person_wears_their_own_colour_and_software_one_clear_of_it;
+        phase a_person_and_software_wear_the_colour_of_who_they_are;
         {
             let ada = Person::new("ada", "Ada");
             assert_eq!(ada.colour, PresenceHue::of_identity("ada"));
@@ -216,12 +204,11 @@ mod tests {
                     .colour,
                 PresenceHue::Violet
             );
-            let helper = Member::of_software(MemberId::agent("helper"), "Helper", Some(&ada.id));
-            assert_eq!(helper.colour, assigned_colour(&helper.id, Some(&ada.id)));
-            assert_ne!(helper.colour, ada.colour);
+            let helper = Member::of_software(MemberId::agent("helper"), "Helper");
+            assert_eq!(helper.colour, PresenceHue::of_member(&helper.id));
             assert_eq!(
                 helper.colour,
-                Member::of_software(MemberId::agent("helper"), "Helper", Some(&ada.id)).colour,
+                Member::of_software(MemberId::agent("helper"), "Helper").colour,
                 "the same agent is one colour however often it is worked out"
             );
         }

@@ -48,15 +48,6 @@ const MAX_TASKS: usize = 100;
 const MAX_GRANTS: usize = 32;
 /// Shortest and longest grant a person may ask for.
 const GRANT_SECS: std::ops::RangeInclusive<u64> = 60..=30 * 24 * 60 * 60;
-/// Cursor colours for grants that name none.
-const PALETTE: [[u8; 3]; 6] = [
-    [0x7c, 0x3a, 0xed],
-    [0xdb, 0x27, 0x77],
-    [0x05, 0x96, 0x69],
-    [0xd9, 0x77, 0x06],
-    [0x25, 0x63, 0xeb],
-    [0x0e, 0x74, 0x90],
-];
 
 /// An agent's certified device: key, capability-less certificate and
 /// root-signed delegation.
@@ -936,19 +927,20 @@ impl AgentSupervisor {
         getrandom::fill(&mut secret).map_err(|error| error.to_string())?;
         let key = SigningKey::from_bytes(&secret);
         let seed = key.verifying_key().to_bytes();
-        let color = match &request.color {
-            Some(text) => parse_color_hex(text).ok_or("a grant's colour is #rrggbb")?,
-            None => seed
-                .first()
-                .and_then(|byte| usize::from(*byte).checked_rem(PALETTE.len()))
-                .and_then(|index| PALETTE.get(index))
-                .copied()
-                .unwrap_or([0x7c, 0x3a, 0xed]),
+        let agent_id = grant_id(label, &seed);
+        // A grant that names no colour wears the one the agent member it is wears everywhere.
+        let color = if let Some(text) = &request.color {
+            parse_color_hex(text).ok_or("a grant's colour is #rrggbb")?
+        } else {
+            let (r, g, b) = collab_types::presence::identity_rgb(
+                collab_types::presence::PresenceHue::of_member(&collab_types::MemberId::agent(
+                    &agent_id,
+                )),
+            );
+            [r, g, b]
         };
         let proposal = DelegateProposal {
-            delegate: Delegate::Agent {
-                agent_id: grant_id(label, &seed),
-            },
+            delegate: Delegate::Agent { agent_id },
             label: label.to_owned(),
             color,
             scope: DelegateScope {

@@ -768,13 +768,24 @@ async fn history_names_a_minted_keys_agent_by_the_name_it_was_minted_with() {
         .flatten()
         .filter(|version| version["actor"]["by"]["member"]["agent"].is_string())
         .collect();
-    let (red, green, blue) = collab_types::presence::agent_rgb("Jane Doe's agent");
-    let colour = format!("#{red:02x}{green:02x}{blue:02x}");
+    // Each change wears the colour of the agent member that made it, as every surface paints it.
+    let colour = |agent: &str| {
+        let (red, green, blue) = collab_types::presence::identity_rgb(
+            collab_types::presence::PresenceHue::of_member(&collab_types::MemberId::agent(agent)),
+        );
+        format!("#{red:02x}{green:02x}{blue:02x}")
+    };
     assert!(
         !by_agent.is_empty()
             && by_agent.iter().all(|version| {
                 version["actor"]["name"] == "Jane Doe's agent"
-                    && version["actor"]["colour"] == colour.as_str()
+                    && version["actor"]["colour"]
+                        == colour(
+                            version["actor"]["by"]["member"]["agent"]
+                                .as_str()
+                                .unwrap_or(""),
+                        )
+                        .as_str()
             }),
         "{history}"
     );

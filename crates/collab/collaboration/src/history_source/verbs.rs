@@ -616,7 +616,11 @@ fn recorded(context: &tilo_actions::ActionContext, out: &mut serde_json::Map<Str
             fields.insert("run_id".into(), run.clone().into());
         }
         if let (Some(name), Some(fields)) = (&invoker.name, actor.as_object_mut()) {
-            let (red, green, blue) = collab_types::presence::agent_rgb(name);
+            let hue = invoker.acting.member_id().map_or_else(
+                || collab_types::presence::PresenceHue::of_agent(name),
+                collab_types::presence::PresenceHue::of_member,
+            );
+            let (red, green, blue) = collab_types::presence::identity_rgb(hue);
             fields.insert("name".into(), name.clone().into());
             fields.insert(
                 "colour".into(),

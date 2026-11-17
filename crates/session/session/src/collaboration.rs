@@ -142,12 +142,10 @@ impl Session {
                         None => (lines::waiting(), None),
                     };
                     // The colour the agent wears wherever it shows: its member's, the same for each
-                    // of its sessions, and clear of the colour of the person it works for — the one
-                    // rule and the one key every surface asks.
-                    let (r, g, b) = ui::presence::member_color(
-                        &ui::permissions::MemberId::agent(&present.agent),
-                        Some(&self.shared.person),
-                    );
+                    // of its sessions — the one rule and the one key every surface asks.
+                    let (r, g, b) = ui::presence::member_color(&ui::permissions::MemberId::agent(
+                        &present.agent,
+                    ));
                     let face = tilo_session_client::presence::view(
                         0,
                         ui::time::unix_now_ms(),

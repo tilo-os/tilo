@@ -633,16 +633,15 @@ pub fn author_face(
     author: &wire::Author,
 ) -> crate::widget::ListRow {
     row = row.avatar(author.name.clone(), author.identity.clone());
-    // An agent is its own face in its client's hue, as who is here draws it: never a glyph on
-    // the colour its run happened to carry.
     if author.relation == wire::Relation::Software {
-        return row
-            .agent_face()
-            .avatar_hue(crate::tokens::colors::PresenceHue::of_agent(&author.name));
+        row = row.agent_face();
     }
+    // The colour its entry recorded is the member's own, as presence paints them.
     let [red, green, blue] = author.rgb;
     if [red, green, blue] != [0; 3] {
         row = row.avatar_colour(crate::peniko::Color::from_rgb8(red, green, blue));
+    } else if author.relation == wire::Relation::Software {
+        row = row.avatar_hue(crate::tokens::colors::PresenceHue::of_agent(&author.name));
     }
     row
 }

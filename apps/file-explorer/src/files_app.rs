@@ -3874,10 +3874,12 @@ impl FilesState {
                             attribution.as_ref(),
                         )
                         .unwrap_or_else(|| {
-                            ui::widget::HistoryAuthor::new(
+                            ui::history_source::author_coloured(
                                 self.trusted_humans.display_name_or_fingerprint(&person),
-                                ui::history_source::stable_hue(&identity),
                                 identity.clone(),
+                                ui::presence::member_color(&ui::permissions::MemberId::person(
+                                    hex::encode(person.0),
+                                )),
                             )
                         });
                     let action = t(crate::model::provenance_key(&version.provenance));

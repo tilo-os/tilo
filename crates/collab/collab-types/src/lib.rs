@@ -118,7 +118,7 @@ pub use document_transfer::{
     MAX_DOCUMENT_TRANSFER_BYTES, ReassembledDocument, ReassemblyError,
 };
 pub use identity::{AttestationId, AvatarBytes};
-pub use member::{Member, Person, assigned_colour};
+pub use member::{Member, Person};
 pub use mls_governance::{
     JoinMaterial, Joining, MAX_COMMIT_DEVICES, MLS_ACCESS_VERSION, MLS_GOVERNANCE_VERSION,
     MlsAccessRequestV1, MlsGovernanceAction, MlsGovernanceError, MlsGovernanceFrame,

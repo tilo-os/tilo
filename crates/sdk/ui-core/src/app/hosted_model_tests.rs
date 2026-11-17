@@ -812,7 +812,6 @@ tilo_test_env::scenario! {
                 collab_types::Member::of_software(
                     collab_types::MemberId::agent("build-helper"),
                     "Build helper",
-                    None,
                 ),
             ],
             permissions: vec![],

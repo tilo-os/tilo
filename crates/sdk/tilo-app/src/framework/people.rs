@@ -130,7 +130,7 @@ impl People {
             .hues
             .get(member)
             .copied()
-            .unwrap_or_else(|| ui_core::presence::member_hue(member, None))
+            .unwrap_or_else(|| ui_core::tokens::PresenceHue::of_member(member))
     }
 
     /// The workspace's people and agents, this window's own member among
@@ -272,7 +272,7 @@ impl People {
             .map(|(id, name)| MentionCandidate {
                 id: id.clone(),
                 name: (*name).to_owned(),
-                hue: ui_core::presence::member_hue(id, None),
+                hue: ui_core::tokens::PresenceHue::of_member(id),
                 is_self: me == Some(id),
             })
             .collect();
