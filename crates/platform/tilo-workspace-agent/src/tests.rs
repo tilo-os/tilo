@@ -211,7 +211,7 @@ fn only_the_keeper_chooses_the_model_it_plans_with() {
 
 #[test]
 fn a_keeper_named_the_way_grants_name_them_keeps_their_agent() {
-    let mut record = as_person(GRACE);
+    let mut record = as_person(ADA);
     record.apply(restore("claude-code", ADA)).unwrap();
     let agent = record.state().unwrap().agents[0].id.0.clone();
     let mut ada = record.fork().as_author(ADA);
@@ -223,6 +223,29 @@ fn a_keeper_named_the_way_grants_name_them_keeps_their_agent() {
             .apply(set_model(&agent, Some("openai/gpt")))
             .is_err()
     );
+}
+
+/// The keeper pays for an agent's work and answers for it, so the record takes no keeper a
+/// caller names: whoever makes an agent keeps it.
+#[test]
+fn nobody_is_made_an_agents_keeper_by_a_name_somebody_else_wrote() {
+    let mut record = as_person(GRACE);
+    let refused = record.apply(restore("claude-code", ADA)).unwrap_err();
+    assert!(
+        refused.to_string().contains("kept by whoever makes it"),
+        "{refused}"
+    );
+    assert_eq!(record.state().unwrap().agents.len(), 0, "nothing is made");
+    // An agent acting for Grace names Ada no more than Grace does.
+    let mut helper = record.fork().as_agent_for("helper", GRACE);
+    let refused = helper.apply(restore("claude-code", ADA)).unwrap_err();
+    assert!(
+        refused.to_string().contains("kept by whoever makes it"),
+        "{refused}"
+    );
+    // Grace makes it herself and keeps it; Ada, whom nobody asked, keeps nothing.
+    record.apply(restore("claude-code", GRACE)).unwrap();
+    assert_eq!(only(&record.state().unwrap()).keeper, GRACE);
 }
 
 #[test]
@@ -357,8 +380,9 @@ fn a_workspace_keeps_at_most_its_limit() {
 
 #[test]
 fn stored_agents_read_back_as_they_were() {
-    let mut record = as_person(ADA);
+    let mut record = as_person(GRACE);
     record.apply(restore("claude-code", GRACE)).unwrap();
+    let mut record = record.as_author(ADA);
     record.apply(make("Reviewer")).unwrap();
     let state = record.state().unwrap();
     let kept_by_grace = state
