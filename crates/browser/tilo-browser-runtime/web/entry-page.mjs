@@ -19,7 +19,7 @@
 import {AdmissionError} from './admission.mjs';
 import {answerAgentQuestions} from './agent-questions.mjs';
 import {notifyThisBrowser} from './web-push.mjs';
-import {refusalCopy, entryLinkTarget, localeMessages, localeMessagesSoon, localized, refusedByHost, startArrival, stoppedInside} from './arrival.mjs';
+import {refusalCopy, entryLinkTarget, localeMessages, localeMessagesSoon, localized, refusedByHost, startArrival, stoppedInside, visitorLocale} from './arrival.mjs';
 import {servedVersion, watchForUpdate} from './bundle-update.mjs';
 import {mountWaitList} from './wait-list.mjs';
 import {handToNativeHost} from './native-host.mjs';
@@ -1639,11 +1639,14 @@ export async function startEntryPage({mode}) {
     arrive('stopped');
     document.documentElement.dataset.entry = error instanceof AdmissionError || refusedByHost(error) ? 'refused' : 'failed';
     // Turned away for coming without an invitation: the entry is a page of
-    // its own, with its own ways in, and nothing else is shown over it.
+    // its own, with its own ways in, and nothing else is shown over it. No
+    // desktop speaks behind it, so it speaks the visitor's own language.
     if (error?.code === 'invitation-only') {
+      const language = visitorLocale();
+      const messages = await localeMessagesSoon(1500, globalThis, language);
       const screen = failureScreen('invitation-only', {workspace: named, messages});
       status.textContent = `${screen.heading}. ${screen.body}`;
-      offerRefusal({messages, named, error, workspace: visitedAt ?? admitting?.entry?.home, runtime, link: admitting?.link});
+      offerRefusal({messages, language, named, error, workspace: visitedAt ?? admitting?.entry?.home, runtime, link: admitting?.link});
       if (admitting && !embed) void offerOwnDesktop({...admitting, runtime});
       // Its answer, not a failure of this page to report as an uncaught
       // error (every stranger at such an entry would send one).
@@ -1811,7 +1814,7 @@ const ENTRY_SIGNED_IN = 'tilo-entry-signed-in';
  * at the foot of the page (`offerOwnDesktop`); while the home takes people
  * by invitation only, nothing does.
  */
-function offerRefusal({messages, named, error, workspace, runtime, link}) {
+function offerRefusal({messages, language, named, error, workspace, runtime, link}) {
   const entry = document.getElementById('arrival-refusal');
   // The first screen of a first visit is not for someone the entry turns
   // away: it asks them to set an agent up in a workspace they are not in. It
@@ -1840,7 +1843,7 @@ function offerRefusal({messages, named, error, workspace, runtime, link}) {
       entry.querySelector('.refusal-foot')?.append(own);
     });
   }
-  if (waitList) offerWaitList({workspace, contact: error.entry.contact, mail: error.entry.mail === true, messages});
+  if (waitList) offerWaitList({workspace, contact: error.entry.contact, mail: error.entry.mail === true, messages, language});
   offerSignIn({workspace, named, messages, runtime, link});
   // The link that lets someone in, an invitation or a pairing from a device
   // of theirs: behind a small toggle beside the wait list; shown where it is
@@ -1876,7 +1879,7 @@ function offerRefusal({messages, named, error, workspace, runtime, link}) {
  * An entry that mails (`mail`) sends links back to this page: one that
  * confirms the address (`?wait-list-confirm=`) or takes it off
  * (`?wait-list-remove=`), done here and taken out of the address bar. */
-function offerWaitList({workspace, contact, mail, messages}) {
+function offerWaitList({workspace, contact, mail, messages, language}) {
   const form = document.getElementById('arrival-wait');
   const elements = {form, submit: form?.querySelector('button')};
   for (const [name, id] of [['email', 'arrival-wait-email'], ['done', 'arrival-wait-done'], ['againLine', 'arrival-wait-again-line'],
@@ -1893,7 +1896,7 @@ function offerWaitList({workspace, contact, mail, messages}) {
     history.replaceState(history.state, '', url);
   }
   mountWaitList({elements, root: document.documentElement, workspace, contact, mail,
-    arrival: arrival.confirm || arrival.remove ? arrival : null, messages});
+    arrival: arrival.confirm || arrival.remove ? arrival : null, messages, language});
 }
 
 /**

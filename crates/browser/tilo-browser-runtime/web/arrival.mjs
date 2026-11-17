@@ -382,25 +382,41 @@ export function arrivalLocale(language = DESKTOP_LANGUAGE) {
   return /^de\b/i.test(String(language ?? '')) ? 'de-DE' : 'en-US';
 }
 
-let pageMessages = null;
-/** The messages of the desktop's locale file (`arrivalLocale`), fetched
- * once per page: the arrival screen's lines and what a failure says. An
- * empty map when the file cannot be read: everything has its English. */
+/** The locale file for the visitor's own language: the first of the
+ * browser's languages this page has a catalogue for, German or English. The
+ * entry's refusal shows no desktop, so it speaks for the person in front of
+ * it rather than for a desktop that is not there. */
+export function visitorLocale(window = globalThis) {
+  const languages = window.navigator?.languages ?? [window.navigator?.language];
+  const asked = languages.find(language => /^(de|en)\b/i.test(String(language ?? ''))) ?? '';
+  return /^de\b/i.test(asked) ? 'de-DE' : 'en-US';
+}
+
+const pageMessages = new Map();
+/** The messages of the locale file for `language` (`arrivalLocale`), fetched
+ * once per page and locale: the arrival screen's lines and what a failure
+ * says. An empty map when the file cannot be read: everything has its
+ * English. */
 export function localeMessages(window = globalThis, language = DESKTOP_LANGUAGE) {
-  pageMessages ??= Promise.resolve()
-    .then(() => window.fetch(new URL(`locales/${arrivalLocale(language)}.ftl`, import.meta.url)))
-    .then(response => (response.ok ? response.text() : ''))
-    .then(parseMessages)
-    .catch(() => new Map());
-  return pageMessages;
+  const locale = arrivalLocale(language);
+  let messages = pageMessages.get(locale);
+  if (!messages) {
+    messages = Promise.resolve()
+      .then(() => window.fetch(new URL(`locales/${locale}.ftl`, import.meta.url)))
+      .then(response => (response.ok ? response.text() : ''))
+      .then(parseMessages)
+      .catch(() => new Map());
+    pageMessages.set(locale, messages);
+  }
+  return messages;
 }
 
 /** `localeMessages()`, or an empty map if it has not arrived within
  * `waitMs`: a failure is said at once, in English if need be. */
-export function localeMessagesSoon(waitMs = 1500, window = globalThis) {
+export function localeMessagesSoon(waitMs = 1500, window = globalThis, language = DESKTOP_LANGUAGE) {
   let timer;
   const late = new Promise(resolve => { timer = setTimeout(() => resolve(new Map()), waitMs); });
-  return Promise.race([localeMessages(window), late]).finally(() => clearTimeout(timer));
+  return Promise.race([localeMessages(window, language), late]).finally(() => clearTimeout(timer));
 }
 
 /**

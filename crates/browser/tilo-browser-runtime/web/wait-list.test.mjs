@@ -39,14 +39,14 @@ const NAMES = ['form', 'email', 'submit', 'done', 'againLine', 'againPrompt', 'a
 /** The entry's wait list, mounted with `kept` left on an earlier visit (or
  * not), at an entry that mails or not, after a mailed link (`arrival`) or
  * not, the host answering as given. */
-function entry({kept = null, contact = null, mail = false, arrival = null, messages = null, join, leave = async () => {},
-  confirm = async () => true, status = async () => null} = {}) {
+function entry({kept = null, contact = null, mail = false, arrival = null, messages = null, language = 'en-US', join,
+  leave = async () => {}, confirm = async () => true, status = async () => null} = {}) {
   const elements = Object.fromEntries(NAMES.map(name => [name, new Element()]));
   const root = {dataset: {}};
   const calls = [];
   let listing = kept;
   const document = {createElement: tag => new Element(tag)};
-  const mounted = mountWaitList({elements, root, workspace, contact, mail, arrival, messages, document,
+  const mounted = mountWaitList({elements, root, workspace, contact, mail, arrival, messages, language, document,
     listing: asked => { assert.equal(asked, workspace); return listing; },
     join: async request => {
       calls.push(['join', request.email]);
@@ -97,6 +97,17 @@ test('joining at an entry that mails says to check the inbox, with a resend and 
   assert.deepEqual(calls.at(-1), ['join', 'Ada@Example.org']);
   assert.equal(shown().state, 'inbox');
   assert.equal(shown().note, 'Sent again. We send at most one link an hour, so check your spam folder too.');
+});
+
+test("the address is left in the page's language, so its mail comes back in it", async () => {
+  const asked = [];
+  const {elements} = entry({mail: true, language: 'de-DE', join: async request => {
+    asked.push(request.language);
+    return {email: request.email, mail: true};
+  }});
+  elements.email.value = 'ada@example.org';
+  await elements.form.fire('submit');
+  assert.deepEqual(asked, ['de-DE'], 'the confirmation mail is German on a page in German');
 });
 
 test('joining at an entry that sends no mail lists the address and says plainly no mail comes', async () => {

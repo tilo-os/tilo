@@ -176,8 +176,11 @@ console.log(`ok: a reload stays on the wait list (${report.reloadListed})`);
 // shares its storage, and so the address already listed, and never offers the
 // field again.
 const phone = await browser.tab({context: await browser.context(), firstRun: true});
+// The phone speaks German as a browser does: the locale override, and the
+// list of languages beside it, which the override leaves as it was.
+await phone.send('Emulation.setLocaleOverride', {locale: 'de-DE'});
 await phone.send('Page.addScriptToEvaluateOnNewDocument', {
-  source: `Object.defineProperty(navigator, 'language', {get: () => 'de-DE'});`,
+  source: `Object.defineProperty(navigator, 'languages', {get: () => ['de-DE', 'de']});`,
 });
 await phone.send('Emulation.setDeviceMetricsOverride', {width: 390, height: 844, deviceScaleFactor: 2, mobile: true});
 await phone.navigate(site);
@@ -195,6 +198,14 @@ report.phone = await phone.evaluate(`({
 const phoneShot = await phone.screenshot().catch(() => null);
 if (phoneShot) writeFileSync(join(out, '4-phone-german.png'), phoneShot);
 if (!phoneForm) await finish(1, `the phone in German never offered the wait list's field: ${JSON.stringify(report.phone)}`);
+// The entry's refusal and its wait list speak the visitor's language: a
+// German phone reads German, with the same form under it.
+if (!/nur mit Einladung offen/.test(report.phone?.heading ?? '')) {
+  await finish(1, `the phone in German read the heading “${report.phone?.heading}”, not the German refusal`);
+}
+if (!/Auf die Warteliste/.test(report.phone?.button ?? '')) {
+  await finish(1, `the phone in German read the button “${report.phone?.button}”, not the German wait list`);
+}
 console.log(`ok: a phone in German (${report.phone?.heading})`);
 await phone.close().catch(() => {});
 
