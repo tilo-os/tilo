@@ -170,9 +170,10 @@ final class TiloSourceTests: XCTestCase {
               if (one && window.rowsOnly) noAgents();
               // A server that says each agent whole in its list and offers no read of one agent
               // (`window.wholeRows`): what main's server answered on 17 November 2026.
-              if (window.wholeRows) { if (one) noAgents(); return done({agents: window.agents}); }
+              const listed = !one && window.hides > 0 ? (window.hides -= 1, window.agents.filter(agent => !agent.fresh)) : window.agents;
+              if (window.wholeRows) { if (one) noAgents(); return done({agents: listed}); }
               if (one) return done(window.agents.find(agent => agent.id === one) ?? null);
-              return done({kind: 'chat.agent', agents: window.agents.map(agent => ({item: 'chat.agent/agents/' + agent.id, name: agent.name}))});
+              return done({kind: 'chat.agent', agents: listed.map(agent => ({item: 'chat.agent/agents/' + agent.id, name: agent.name}))});
             }
             case CHAT + ' create-agent':
               if (!window.agents) noAgents();
@@ -182,6 +183,8 @@ final class TiloSourceTests: XCTestCase {
               if (window.twin) window.agents.push(window.kept('twin', {name: argument.name, ...window.twin}));
               window.agents.push(window.kept(argument.name.toLowerCase(), {name: argument.name, created_at: 1794900009000 + window.agents.length,
                 ...(window.wholeRows ? {keeper: ADA, state: 'active'} : {})}));
+              // A server that lists it only some reads later (`window.late`: how many reads).
+              if (window.late) { window.agents.at(-1).fresh = true; window.hides = window.late; }
               return done(null);
             case CHAT + ' retire-agent':
               window.agents.find(agent => agent.id === argument.agent).state = {$variant: 'retired'};
@@ -189,6 +192,8 @@ final class TiloSourceTests: XCTestCase {
             case CHAT + ' set-agent-on-host':
               // What was asked is kept on the agent as it was said: which agent, and the flag.
               Object.assign(window.agents.find(agent => agent.id === argument.agent), argument);
+              // A busy server: it took the ask and says so, and is not done (`window.unanswered`: how often).
+              if (window.unanswered > 0) { window.unanswered -= 1; return {invocation: 'i', state: 'accepted'}; }
               return done(null);
             case 'tilo.models set-assignments':
               for (const kind of argument.kinds) {
@@ -938,6 +943,28 @@ final class TiloSourceTests: XCTestCase {
         try await until("nothing more stands in the way") { self.setups.last == .ready }
         let active = try await agentsActive()
         XCTAssertEqual(active, #"["twin","assistant"]"#)
+    }
+
+    func testAServerThatListsTheNewAssistantLateAndLeavesAnAskUnansweredIsAskedAgainAndNothingIsSaid() async throws {
+        try await start(.assistant)
+        try await enter(device: true, "window.byKind = true; window.agents = []; window.late = 2; window.unanswered = 1")
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        XCTAssertFalse(setups.contains { if case .noAssistant = $0 { true } else { false } }, "a sentence was said on the way")
+        let kept = try await agentsKept()
+        XCTAssertEqual(kept, #"[["assistant",true]]"#)
+        let made = try await page("return String(window.asks.filter(what => what === 'chat create-agent').length)")
+        XCTAssertEqual(made, "1", "it is made once, however often the rest is asked")
+    }
+
+    func testAnAssistantTheAppMadeThatHerServerDoesNotAnswerForYetIsFinishedWhenADeviceFindsIt() async throws {
+        try await start(.assistant)
+        // An earlier first start made it and lost the ask after: it is found, and finished.
+        try await enter(device: true, "window.byKind = true; window.agents = [kept('assistant', {name: 'Assistant'}), kept('reed', {name: 'Reed', created_at: 1794900005000})]")
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        let kept = try await agentsKept()
+        XCTAssertEqual(kept, #"[["assistant",true],["reed",false]]"#)
+        let made = try await page("return String(window.asks.filter(what => what === 'chat create-agent').length)")
+        XCTAssertEqual(made, "0")
     }
 
     func testAnAssistantThePersonKeepsIsFoundAndNoneIsMade() async throws {
