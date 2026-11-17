@@ -1195,6 +1195,7 @@ attention-defer = Für später beiseitelegen
 attention-deferred = { $count } beiseitegelegt
 attention-pill = { $count } warten
 action-document-replaced = Diese Aktion wurde nicht ausgeführt, weil ihr Dokument erneut geöffnet oder ersetzt wurde. Versuche es im aktuellen Dokument erneut.
+action-own-route-not-open = Diese Aktion wurde nicht ausgeführt, weil dieses Fenster noch nicht fertig mit seinem Arbeitsbereich verbunden ist. Versuche es gleich noch einmal.
 
 # One-shot action proposals: one model call's answer, before it is written.
 proposal-model-on-device = { $model }, läuft auf diesem Gerät

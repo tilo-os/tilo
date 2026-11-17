@@ -14,6 +14,10 @@
 
 use super::KeyModifiers;
 
+mod released;
+
+pub use released::{FillInto, MAX_STRUCK, ReleasedText, STRUCK, StruckTexts};
+
 /// Upper bound on an outline as it crosses the engine boundary.
 pub const MAX_OUTLINE_BYTES: usize = 256 * 1024;
 /// Upper bound on structured reply data (`PageReply::data`), serialised.
@@ -34,6 +38,8 @@ pub const MAX_PATH_POINTS: usize = 1024;
 pub const MAX_DRAG_STEPS: usize = 64;
 /// Upper bound on the text one fill may insert.
 pub const MAX_FILL_BYTES: usize = 64 * 1024;
+/// Upper bound on the origin a released text names.
+pub const MAX_ORIGIN_BYTES: usize = 512;
 /// Upper bound on the options one select may choose.
 pub const MAX_SELECT_VALUES: usize = 64;
 /// Upper bound on one option value or label.
@@ -201,6 +207,18 @@ pub enum PageRequest {
         text: String,
         secret: bool,
         frame: Option<FrameId>,
+    },
+    /// Write a text its keeper released for the site `at` into `element` of that site's own
+    /// page. The engine compares the page's own origin with `at` in the step that writes, in
+    /// the page's own document only, and holds the text to the kind of field `into` names.
+    /// The text is held once ([`ReleasedText`]): whoever sends the request to the engine
+    /// takes it, and no copy of the request holds it afterwards.
+    FillReleased {
+        element: String,
+        text: ReleasedText,
+        /// The origin the text was released for, as a page's `location.origin` spells it.
+        at: String,
+        into: FillInto,
     },
     Select {
         element: String,
@@ -443,7 +461,7 @@ impl PageRequest {
             Self::Hover { .. } => "hover",
             Self::Drag { .. } => "drag",
             Self::Path { .. } => "path",
-            Self::Fill { .. } => "fill",
+            Self::Fill { .. } | Self::FillReleased { .. } => "fill",
             Self::Select { .. } => "select",
             Self::FillFiles { .. } => "fill_files",
             Self::Press { .. } => "press",
@@ -469,7 +487,10 @@ impl PageRequest {
     /// Whether the request writes text into the page's focused field: a fill, or keys
     /// pressed.
     pub const fn enters_text(&self) -> bool {
-        matches!(self, Self::Fill { .. } | Self::Press { .. })
+        matches!(
+            self,
+            Self::Fill { .. } | Self::FillReleased { .. } | Self::Press { .. }
+        )
     }
 
     /// Whether the request only looks at the page, as any visitor can: it reads the
@@ -494,6 +515,7 @@ impl PageRequest {
             | Self::Drag { .. }
             | Self::Path { .. }
             | Self::Fill { .. }
+            | Self::FillReleased { .. }
             | Self::Select { .. }
             | Self::FillFiles { .. }
             | Self::Press { .. }
@@ -518,7 +540,9 @@ impl PageRequest {
             Self::Hover { element: None, .. } => "Moved the pointer".to_string(),
             Self::Drag { .. } => "Dragged on the page".to_string(),
             Self::Path { .. } => "Drew on the page".to_string(),
-            Self::Fill { element, .. } => format!("Filled element {element}"),
+            Self::Fill { element, .. } | Self::FillReleased { element, .. } => {
+                format!("Filled element {element}")
+            }
             Self::Select {
                 element, values, ..
             } => {
@@ -628,6 +652,7 @@ impl PageRequest {
             | Self::Path { element: None, .. } => None,
             Self::Click { element, .. }
             | Self::Fill { element, .. }
+            | Self::FillReleased { element, .. }
             | Self::Select { element, .. }
             | Self::FillFiles { element, .. }
             | Self::Press {
@@ -694,6 +719,7 @@ impl PageRequest {
             | Self::Hover { .. }
             | Self::Drag { .. }
             | Self::Path { .. }
+            | Self::FillReleased { .. }
             | Self::Pointer { .. } => None,
         }
     }
@@ -873,6 +899,12 @@ impl PageRequest {
                     })
             }
             Self::Fill { text, .. } => text.len() <= MAX_FILL_BYTES,
+            Self::FillReleased { text, at, .. } => {
+                text.held_bytes()
+                    .is_some_and(|bytes| bytes <= MAX_FILL_BYTES)
+                    && !at.is_empty()
+                    && at.len() <= MAX_ORIGIN_BYTES
+            }
             Self::Select { values, .. } => {
                 !values.is_empty()
                     && values.len() <= MAX_SELECT_VALUES
@@ -1235,12 +1267,12 @@ pub struct PageReply {
     pub image: Option<Vec<u8>>,
     pub navigation: PageNavigation,
     pub loading: bool,
-    /// Where the action stands in the tab's record, and what the tab's other
+    /// Where the action stands in the tab's resource, and what the tab's other
     /// actors did meanwhile.
     pub record: PageResourceNote,
 }
 
-/// What an answer says of the tab's record beside its own request.
+/// What an answer says of the tab's resource beside its own request.
 ///
 /// Several actors may work in one tab, so the page an actor acts on next may
 /// not be the page it read. Its answer says so rather than leaving it to find
@@ -1248,7 +1280,7 @@ pub struct PageReply {
 /// actors did since this one last heard from the tab, told once.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PageResourceNote {
-    /// The place of the action this answers in the tab's record. Reads take
+    /// The place of the action this answers in the tab's resource. Reads take
     /// no place in it.
     pub seq: Option<u64>,
     /// The newest record entries of other actors since the asking actor last
@@ -1292,7 +1324,7 @@ impl PageNavigation {
 pub struct PageFailure {
     pub code: String,
     pub message: String,
-    /// Where the refused action stands in the tab's record, and what the
+    /// Where the refused action stands in the tab's resource, and what the
     /// tab's other actors did meanwhile: often why it was refused.
     pub record: PageResourceNote,
 }
@@ -1344,6 +1376,15 @@ pub(crate) fn encode_request(
         PageRequest::Fill { text, secret, .. } => {
             command["text"] = text.as_str().into();
             command["secret"] = (*secret).into();
+        }
+        PageRequest::FillReleased { text, at, into, .. } => {
+            // The one place the text leaves the request: into the command the engine is
+            // written. Whoever writes that command wipes it once it is written.
+            let taken = text.take();
+            command["text"] = taken.as_ref().map_or("", |text| text.as_str()).into();
+            command["secret"] = true.into();
+            command["at"] = at.as_str().into();
+            command["into"] = into.as_str().into();
         }
         PageRequest::Select { values, .. } => command["values"] = values.clone().into(),
         PageRequest::FillFiles { paths, .. } => command["paths"] = paths.clone().into(),

@@ -825,6 +825,45 @@ tilo_test_env::scenario! {
         }
     }
 
+    phase a_second_press_in_the_same_page_asks_the_shell_again;
+    // A person who closed the sheet, or added one device and wants to add
+    // another, presses the same button again without loading the page anew:
+    // on a page, whose lists are kept current, and where they are asked for
+    // again and again.
+    {
+        for (button, _, sheet, _) in sheets() {
+            for kept_current in [true, false] {
+                let shell = if kept_current {
+                    a_list_kept_current(now())
+                } else {
+                    a_full_list(now())
+                };
+                let mut app = window_on_a_full_list(&shell);
+                for press in 1..=3 {
+                    app.harness()
+                        .click_named(button)
+                        .expect("the button is on the page");
+                    app.settle();
+                    assert_eq!(
+                        app.harness().refusal_said(),
+                        None,
+                        "{button}, press {press}"
+                    );
+                    assert!(
+                        app.harness().control_failures().is_empty(),
+                        "{button}, press {press}: {:?}",
+                        app.harness().control_failures()
+                    );
+                    assert_eq!(
+                        shell.asked_at(&session_actions::target(sheet)).len(),
+                        press,
+                        "{button}: press {press} asks for its sheet (lists kept current: {kept_current})"
+                    );
+                }
+            }
+        }
+    }
+
     phase the_caller_hears_once_the_shell_has_answered;
     {
         for (_, _, sheet, effect) in sheets() {

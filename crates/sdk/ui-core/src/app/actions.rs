@@ -577,31 +577,64 @@ impl App {
         };
     }
 
+    /// How long an invocation of this app's own action waits for the route
+    /// that offers it while the connection stands, before the person is told
+    /// it was not carried out. The hold stands in every build of the toolkit,
+    /// with its feature native and without, so the type is named by its full
+    /// path: this file's parent brings the short name in for native and test
+    /// builds alone.
+    const HELD_OWN_INVOCATION_WAIT: crate::time::Duration = crate::time::Duration::from_secs(20);
+
     /// Send an invocation of this app's own action to the session action
     /// host, on the route, after the surface that offers it. It waits here,
     /// behind any invocation made before it, while the route cannot carry
     /// that surface yet.
     fn send_own_invocation(&mut self, request: tilo_actions::remote::InvokeRequest) {
-        self.actions.held_own_invocations.push_back(request);
+        self.actions
+            .held_own_invocations
+            .push_back(HeldOwnInvocation {
+                request,
+                since: crate::time::now(),
+            });
         self.publish_action_surface();
+        // Still waiting, and the first to wait: a route that never opens brings
+        // no event of its own, so the pass that ends the wait is asked for now.
+        if self.actions.held_own_invocations.len() == 1
+            && let Some(scope) = &self.wake_scope
+        {
+            crate::background::Background::current()
+                .wake_after(Self::HELD_OWN_INVOCATION_WAIT, scope.handle());
+        }
     }
 
     /// Release the held own invocations, in order, once the route carries
     /// the current surface; refuse them with the connection's own reason
     /// once it has gone. Otherwise they keep waiting: the publication the
     /// route's readiness brings settles them.
+    ///
+    /// The wait has an end while the connection stands too: once the route's
+    /// join has failed, or the oldest of them has waited
+    /// [`Self::HELD_OWN_INVOCATION_WAIT`], they are refused with why, and the
+    /// person is told ([`Self::settle_own_refusal`]).
     fn settle_held_own_invocations(&mut self, carried: bool) {
         use tilo_actions::remote::{ActionCallError, RemoteActionMessage};
         if self.actions.held_own_invocations.is_empty() {
             return;
         }
         let connected = self.collaboration.manager.is_connected();
-        if connected && !carried {
-            return;
-        }
-        while let Some(request) = self.actions.held_own_invocations.pop_front() {
+        let ended = if connected && !carried {
+            let Some(why) = self.held_own_invocations_ended() else {
+                return;
+            };
+            Some(why)
+        } else {
+            None
+        };
+        while let Some(held) = self.actions.held_own_invocations.pop_front() {
+            let request = held.request;
             let refusal = RemoteActionMessage::Invoke(request.clone());
-            if connected
+            if ended.is_none()
+                && connected
                 && self
                     .collaboration
                     .manager
@@ -611,13 +644,47 @@ impl App {
             {
                 continue;
             }
-            let reason = self.collaboration.manager.state().reason().to_owned();
+            let reason = ended
+                .clone()
+                .unwrap_or_else(|| self.collaboration.manager.state().reason().to_owned());
             if let Some(answer) =
                 tilo_actions::remote::refuse(&refusal, ActionCallError::Unavailable { reason })
             {
                 self.apply_remote_action_answer(answer);
             }
         }
+    }
+
+    /// Why the held own invocations wait no longer though the connection
+    /// stands, once they do not: the join of the route that offers them
+    /// failed, or the oldest of them waited
+    /// [`Self::HELD_OWN_INVOCATION_WAIT`]. Logged as it is found.
+    fn held_own_invocations_ended(&self) -> Option<String> {
+        let failed = self.bound_broker_route().and_then(|accepted| {
+            self.collaboration
+                .manager
+                .route_join_failure(accepted.route())
+        });
+        let waited = self
+            .actions
+            .held_own_invocations
+            .front()
+            .map(|held| crate::time::now().saturating_duration_since(held.since));
+        let why = match (failed, waited) {
+            (Some(failure), _) => failure,
+            (None, Some(waited)) if waited >= Self::HELD_OWN_INVOCATION_WAIT => {
+                crate::i18n::I18nManager::lookup_plain("action-own-route-not-open")
+            }
+            _ => return None,
+        };
+        tracing::warn!(
+            held = self.actions.held_own_invocations.len(),
+            waited_ms = waited.map_or(0, |waited| u64::try_from(waited.as_millis())
+                .unwrap_or(u64::MAX)),
+            %why,
+            "invocations of this window's own actions waited for a route that does not open"
+        );
+        Some(why)
     }
 
     /// Withdraw everything this app published: a reset delta with nothing in it.
@@ -2044,6 +2111,26 @@ impl App {
             self.refuse_in_window(&tilo_actions::ApiError::Failed(reason));
         }
         true
+    }
+
+    /// The broker refused an invocation of this window's own action outright
+    /// (`request_id` is none of the kinds settled before this): nothing was
+    /// carried out and no handler of the app answers for it, so the person
+    /// is told here, in the window's bar, and a line is logged.
+    pub(super) fn settle_own_refusal(
+        &mut self,
+        request_id: u64,
+        result: &Result<(tilo_actions::InvocationId, tilo_actions::InvocationUpdate), String>,
+    ) {
+        let Err(reason) = result else {
+            return;
+        };
+        tracing::warn!(
+            request_id,
+            %reason,
+            "an invocation of this window's own action was refused"
+        );
+        self.refuse_in_window(&tilo_actions::ApiError::Failed(reason.clone()));
     }
 
     fn request_invocation_cancellation(&mut self, wire_id: u64) {

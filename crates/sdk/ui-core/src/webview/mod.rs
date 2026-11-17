@@ -26,9 +26,10 @@ pub use hold::{
 };
 pub use http_auth::{HttpAuthChallenge, HttpAuthCredentials};
 pub use page::{
-    FormSubmit, FrameId, MAX_POINTER_STEPS, PageActor, PageChange, PageFailure, PageFieldChange,
-    PageFormChange, PageKey, PageNavigation, PageReply, PageRequest, PageResourceNote,
-    PointerButton, PointerPoint, PointerStep, PointerStepKind, ScrollTarget,
+    FillInto, FormSubmit, FrameId, MAX_POINTER_STEPS, PageActor, PageChange, PageFailure,
+    PageFieldChange, PageFormChange, PageKey, PageNavigation, PageReply, PageRequest,
+    PageResourceNote, PointerButton, PointerPoint, PointerStep, PointerStepKind, ReleasedText,
+    ScrollTarget, StruckTexts,
 };
 pub mod profile;
 pub mod test_engine;

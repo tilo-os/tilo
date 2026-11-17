@@ -63,8 +63,8 @@ mod runtime;
 mod window_bar;
 use runtime::{
     AccessibilityRuntime, ActionRuntime, BrokerReply, CollaborationRuntime, ContinuationRuntime,
-    HistoryRuntime, InputRuntime, LayoutRuntime, PersistenceRuntime, PresenceRuntime,
-    WindowRuntime,
+    HeldOwnInvocation, HistoryRuntime, InputRuntime, LayoutRuntime, PersistenceRuntime,
+    PresenceRuntime, WindowRuntime,
 };
 include!("app/continuation.rs");
 include!("app/dev_session.rs");

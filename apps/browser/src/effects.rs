@@ -892,6 +892,21 @@ pub enum BrowserEffect {
         )]
         frame: Option<String>,
     },
+    /// Fill page field from vault
+    ///
+    /// Fills a field of the site an item of your person's vault belongs to: a login's
+    /// password, a code generator's code of this moment, or a kept value. Takes the item's
+    /// reference and never its text, and answers no secret. The first use of an item at a
+    /// site asks your person.
+    #[effect(row, job, cancellable, returns, audience = "agents", untrusted)]
+    FillPageItem {
+        #[param("Element ref from the page outline, such as d1e5")]
+        element: String,
+        #[param("The vault item's reference, vault.item:<id>; never a password or a code itself")]
+        item: String,
+        #[param("Why you need it, in words your person reads when they are asked")]
+        reason: Option<String>,
+    },
     /// Choose page options
     #[effect(row, job, cancellable, returns, audience = "agents", untrusted)]
     SelectPage {
@@ -1484,6 +1499,15 @@ impl BrowserEffect {
                 secret: true,
                 frame: page_frame(frame),
             }),
+            Self::FillPageItem {
+                element,
+                item,
+                reason,
+            } => BrowserOperation::FillPageItem {
+                element,
+                item,
+                reason,
+            },
             Self::SelectPage {
                 element,
                 values,
@@ -1638,6 +1662,12 @@ pub enum BrowserOperation {
     ToggleReaderView,
     /// Show the review of the page: what its forms hold and who set it.
     ReviewPage,
+    /// Fill the field `element` from the vault item `item` names by reference.
+    FillPageItem {
+        element: String,
+        item: String,
+        reason: Option<String>,
+    },
     /// Show the page again with the field `element` in view.
     ShowPageField {
         element: String,

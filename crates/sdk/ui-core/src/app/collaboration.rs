@@ -1194,6 +1194,7 @@ impl App {
             .pending_application_launches
             .remove(&request_id)
         else {
+            self.settle_own_refusal(request_id, &result);
             return;
         };
         let Some(pending) = self.actions.directed_invocations.remove(&invocation) else {

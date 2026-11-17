@@ -280,7 +280,10 @@ impl BrowserWidget {
         }
         // A secret filled into the page is the person's credential from the
         // moment it is sent.
-        if matches!(request, PageRequest::Fill { secret: true, .. }) {
+        if matches!(
+            request,
+            PageRequest::Fill { secret: true, .. } | PageRequest::FillReleased { .. }
+        ) {
             self.hold_sign_in();
         }
         self.page_request_seq = self.page_request_seq % i32::MAX.unsigned_abs() + 1;
@@ -342,6 +345,7 @@ impl BrowserWidget {
             .iter()
             .map(|waiting| waiting.until)
             .chain(self.page_resource_reads.iter().map(|read| read.deadline))
+            .chain(self.item_fills.iter().map(|fill| fill.until))
             .min()
     }
 
@@ -473,6 +477,13 @@ impl BrowserWidget {
         request_id: u32,
         result: Result<PageReply, PageFailure>,
     ) {
+        // What the page says of a text this window sent released is struck out
+        // before anything keeps it or answers with it.
+        let mut result = result;
+        match &mut result {
+            Ok(reply) => self.struck.strike_reply(reply),
+            Err(failure) => self.struck.strike_failure(failure),
+        }
         // What the engine set down is written into the tab's resource, which
         // is Browser's resource, and every place is named as it counts them.
         let Some(result) = self.record_page_result(request_id, result) else {

@@ -63,6 +63,7 @@ pub mod omnibox;
 pub mod page_dialogs;
 pub mod page_files;
 pub mod page_forms;
+pub mod page_items;
 pub mod page_menu;
 pub mod page_popups;
 pub mod page_resource;

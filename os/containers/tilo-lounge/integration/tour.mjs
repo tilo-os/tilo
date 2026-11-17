@@ -391,8 +391,13 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
     }`).catch(() => {});
     await quiet(300);
   };
-  await step('add-a-device', () => sheet('Add a device',
-    `!!document.querySelector('[data-card="pair-link"] input[name="pairing-link"]')?.value`, 'add-a-device'));
+  const pairLink = `!!document.querySelector('[data-card="pair-link"] input[name="pairing-link"]')?.value`;
+  let paired = false;
+  await step('add-a-device', async () => { await sheet('Add a device', pairLink, 'add-a-device'); paired = true; });
+  // And once more in the same page: a person who brings two devices in presses the button
+  // twice without loading the page again, and each press shows a sheet with a link of its own.
+  // Where the first press showed none, a second has nothing more to say.
+  if (paired) await step('add-a-device-again', () => sheet('Add a device', pairLink, 'add-a-device-again'));
   await step('connect-an-agent', () => sheet('Connect an agent or computer',
     `[...document.querySelectorAll('.tilo-entry-card')].some(card => card.dataset.card !== 'pair-link')`, 'connect-an-agent'));
     await step('chat', async () => { await search('chat', 1); await quiet(); await shoot('chat'); });

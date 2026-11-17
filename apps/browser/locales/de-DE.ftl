@@ -622,6 +622,7 @@ browser-effect-drag-page = Element ziehen
 browser-effect-pointer-path = Zeigerweg zeichnen
 browser-effect-fill-page = Feld ausfüllen
 browser-effect-fill-page-secret = Passwortfeld ausfüllen
+browser-effect-fill-page-item = Feld aus dem Tresor ausfüllen
 browser-effect-select-page = Optionen wählen
 browser-effect-fill-page-files = Dateien zum Hochladen wählen
 browser-effect-press-page = Taste drücken
