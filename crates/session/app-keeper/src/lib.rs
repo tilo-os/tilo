@@ -46,6 +46,7 @@
 mod activation;
 mod child;
 mod control;
+mod cursor_shape;
 mod data_device;
 mod decorations;
 mod dmabuf;

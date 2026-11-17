@@ -42,6 +42,10 @@ use wayland_protocols::wp::content_type::v1::client::{
     wp_content_type_manager_v1::WpContentTypeManagerV1,
     wp_content_type_v1::{self, WpContentTypeV1},
 };
+use wayland_protocols::wp::cursor_shape::v1::client::{
+    wp_cursor_shape_device_v1::{Shape, WpCursorShapeDeviceV1},
+    wp_cursor_shape_manager_v1::WpCursorShapeManagerV1,
+};
 use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
     wp_fractional_scale_v1::{self, WpFractionalScaleV1},
@@ -351,6 +355,8 @@ pub struct Heard {
     pub presented: Vec<Presented>,
     pub presentation_discarded: usize,
     pub sync_outputs: usize,
+    pub cursor_shape: Option<WpCursorShapeManagerV1>,
+    pub pointer_enter_serial: Option<u32>,
     pub dmabuf_done: usize,
     pub surface_feedback_done: usize,
     pub configures: Vec<(i32, i32, Vec<u32>)>,
@@ -677,6 +683,23 @@ impl App {
             .feedback(self.surface.as_ref().unwrap(), &qh, FeedbackSeen)
     }
 
+    /// Name the cursor shape the desktop should draw for this app's pointer.
+    pub fn set_cursor_shape(&self, shape: Shape) {
+        let qh = self.qh();
+        let device = self
+            .heard
+            .cursor_shape
+            .as_ref()
+            .expect("a cursor shape manager")
+            .get_pointer(self.heard.pointer.as_ref().expect("a pointer"), &qh, ());
+        device.set_shape(
+            self.heard
+                .pointer_enter_serial
+                .expect("the pointer entered"),
+            shape,
+        );
+    }
+
     /// Ask for the next frame callback on the window.
     pub fn request_frame(&self) -> WlCallback {
         let qh = self.qh();
@@ -825,6 +848,9 @@ impl Dispatch<WlRegistry, ()> for Heard {
                 "wp_presentation" => {
                     heard.presentation = Some(registry.bind(name, version.min(2), qh, ()));
                 }
+                "wp_cursor_shape_manager_v1" => {
+                    heard.cursor_shape = Some(registry.bind(name, version.min(2), qh, ()));
+                }
                 "zwp_linux_dmabuf_v1" if version >= 4 => {
                     let dmabuf: ZwpLinuxDmabufV1 = registry.bind(name, version.min(5), qh, ());
                     dmabuf.get_default_feedback(qh, ());
@@ -915,7 +941,10 @@ impl Dispatch<WlPointer, ()> for Heard {
         _: &QueueHandle<Self>,
     ) {
         match event {
-            wl_pointer::Event::Enter { .. } => heard.pointer_entered = true,
+            wl_pointer::Event::Enter { serial, .. } => {
+                heard.pointer_entered = true;
+                heard.pointer_enter_serial = Some(serial);
+            }
             wl_pointer::Event::Leave { .. } => heard.pointer_entered = false,
             wl_pointer::Event::Button {
                 serial,
@@ -1245,6 +1274,8 @@ impl Dispatch<WpPresentationFeedback, FeedbackSeen> for Heard {
     }
 }
 
+delegate_noop!(Heard: ignore WpCursorShapeManagerV1);
+delegate_noop!(Heard: ignore WpCursorShapeDeviceV1);
 delegate_noop!(Heard: ignore XdgActivationV1);
 delegate_noop!(Heard: ignore ZxdgDecorationManagerV1);
 delegate_noop!(Heard: ignore OrgKdeKwinServerDecorationManager);

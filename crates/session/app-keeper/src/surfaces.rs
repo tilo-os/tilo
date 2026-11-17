@@ -1484,6 +1484,7 @@ impl State {
         self.buffers.detached();
         self.hold_activation();
         self.hold_presentation();
+        self.hold_cursor_shape();
         for kept in self.surfaces.values_mut() {
             kept.up = None;
             match &mut kept.role {

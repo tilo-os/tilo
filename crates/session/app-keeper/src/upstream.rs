@@ -71,6 +71,9 @@ pub(crate) struct Upstream {
     pub presentation: Option<
         wayland_protocols::wp::presentation_time::client::wp_presentation::WpPresentation,
     >,
+    pub cursor_shape: Option<
+        wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_manager_v1::WpCursorShapeManagerV1,
+    >,
     /// The version the desktop's presentation global was bound at.
     pub presentation_version: u32,
     pub feedback: FeedbackParts,
@@ -142,6 +145,7 @@ impl Upstream {
                 kde_decoration: None,
                 activation: None,
                 presentation: None,
+                cursor_shape: None,
                 presentation_version: 0,
                 feedback: FeedbackParts::default(),
                 xdg_outputs: None,
@@ -249,6 +253,7 @@ impl Dispatch<c::wl_registry::WlRegistry, ()> for State {
         let Some(up) = state.up.as_mut() else {
             return;
         };
+        let mut cursor_shape_version = None;
         match interface.as_str() {
             "wl_compositor" => {
                 up.compositor = Some(registry.bind(name, version.min(6), qh, ()));
@@ -311,6 +316,11 @@ impl Dispatch<c::wl_registry::WlRegistry, ()> for State {
                 up.presentation = Some(registry.bind(name, version, qh, ()));
                 up.presentation_version = version;
             }
+            "wp_cursor_shape_manager_v1" => {
+                let version = version.min(2);
+                up.cursor_shape = Some(registry.bind(name, version, qh, ()));
+                cursor_shape_version = Some(version);
+            }
             "wl_output" => {
                 let wl: c::wl_output::WlOutput = registry.bind(name, version.min(4), qh, name);
                 let xdg = up
@@ -320,6 +330,9 @@ impl Dispatch<c::wl_registry::WlRegistry, ()> for State {
                 up.outputs.push(UpOutput::new(name, wl, xdg));
             }
             _ => {}
+        }
+        if let Some(version) = cursor_shape_version {
+            state.offer_cursor_shape(version);
         }
     }
 }

@@ -626,6 +626,45 @@ fn a_fault_is_attributed_to_the_window_that_caused_it_not_the_last_one_sent() {
 }
 
 #[test]
+fn a_cursor_shape_the_app_names_is_drawn_by_the_desktop_and_kept_across_a_restart() {
+    use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape;
+
+    let mut rig = Rig::new(None);
+    let mut app = App::connect(&mut rig);
+    app.open_window(&mut rig, "Pointed", Some("pointed"));
+    app.show(&mut rig, (100, 80), GREEN);
+    let (x, y) = centre(&rig);
+    rig.desktop()
+        .input(InputEvent::PointerMotion {
+            x: f64::from(x),
+            y: f64::from(y),
+        })
+        .unwrap();
+    rig.pump(&mut [&mut app], |_, apps| apps[0].heard.pointer_entered);
+    app.set_cursor_shape(Shape::Crosshair);
+    rig.pump(&mut [&mut app], |rig, _| {
+        rig.desktop().cursor_shape_name() == Some("crosshair")
+    });
+
+    // The app has no reason to name it again: the next desktop gets it when its pointer enters.
+    rig.drop_desktop();
+    rig.settle(&mut [&mut app]);
+    rig.attach_new(640, 480);
+    rig.pump(&mut [&mut app], |rig, _| !rig.windows().is_empty());
+    let (x, y) = centre(&rig);
+    rig.desktop()
+        .input(InputEvent::PointerMotion {
+            x: f64::from(x),
+            y: f64::from(y),
+        })
+        .unwrap();
+    rig.pump(&mut [&mut app], |rig, apps| {
+        apps[0].heard.pointer_entered && rig.desktop().cursor_shape_name() == Some("crosshair")
+    });
+    assert_eq!(rig.keeper.describe().fault, None);
+}
+
+#[test]
 fn a_frames_presentation_feedback_is_the_desktops_and_survives_a_restart() {
     let mut rig = Rig::new(None);
     let mut app = App::connect(&mut rig);

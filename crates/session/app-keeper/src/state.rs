@@ -84,6 +84,11 @@ pub struct State {
     pub(crate) presentation_clock: Option<u32>,
     pub(crate) presentation_pending: crate::presentation::Pending,
     pub(crate) presentation_flight: crate::presentation::Flights,
+    /// The app-facing cursor-shape manager, the shape each app pointer named, and the desktop's
+    /// device for each while attached.
+    pub(crate) cursor_shape_global: Option<crate::cursor_shape::Global>,
+    pub(crate) cursor_shapes: crate::cursor_shape::Shapes,
+    pub(crate) cursor_shape_devices: crate::cursor_shape::Devices,
     /// What the desktop answered each surface's own feedback request, kept while it is away.
     pub(crate) surface_feedback: crate::dmabuf::SurfaceFeedbacks,
     /// Every live surface of the app, by its id.
@@ -144,6 +149,9 @@ impl State {
             presentation_clock: None,
             presentation_pending: HashMap::new(),
             presentation_flight: crate::presentation::Flights::default(),
+            cursor_shape_global: None,
+            cursor_shapes: HashMap::new(),
+            cursor_shape_devices: HashMap::new(),
             surface_feedback: crate::dmabuf::SurfaceFeedbacks::default(),
             surfaces: HashMap::new(),
             next_seq: 0,
