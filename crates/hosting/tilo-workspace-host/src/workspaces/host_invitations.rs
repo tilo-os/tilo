@@ -334,9 +334,10 @@ mod tests {
 
     /// `device`'s person as a page's workspace lists them.
     fn row<'a>(page: &'a Workspace, device: &DeviceCert) -> &'a collab_types::Member {
+        let person = hex::encode(device.user_public_key);
         page.members
             .iter()
-            .find(|row| row.id.key() == hex::encode(device.user_public_key))
+            .find(|row| row.id.person_id() == Some(person.as_str()))
             .unwrap_or_else(|| panic!("{device:?} has a row in {page:?}"))
     }
 
