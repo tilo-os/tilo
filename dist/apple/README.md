@@ -112,11 +112,11 @@ a strip stuck to a web page. So the script puts the two buttons into the door's 
 with the door's measures and colours (`Bridge.swift` says where in each of the page's doors,
 and why). A press comes back to the shell, which only then asks for the camera, or reads the
 clipboard. A link is taken out of whatever is written around it; a link into another site is
-refused in the door, under the buttons, with the name of the site the app opens, and the
-same computer under another name (`localhost` for `tilo.localhost`) is another site. The
-page says where it stands at the door on its root element (`data-entry`): the buttons go
-once it is in and while a device of the person's is being asked to approve this one, and a
-person who came in by a link is taken back to where the app starts.
+refused in the door, under the buttons, with the name of the site the app opens. A link the
+site's own computer made under a name only it can use is read as the site's (see "One
+site"). The page says where it stands at the door on its root element (`data-entry`): the
+buttons go once it is in and while a device of the person's is being asked to approve this
+one, and a person who came in by a link is taken back to where the app starts.
 
 A link is also opened from the File menu on the Mac, by a long press on the phone's icon,
 which offers the scan too, or by sharing it to the app. A door that draws these options
@@ -127,6 +127,19 @@ shell then adds nothing.
 (`SitePolicy.swift`). Any other address goes to the system's browser. The script below runs in
 the page's main frame and does nothing on another origin, so no other site's content reaches
 the system through it.
+
+A link that is pasted, scanned or shared is followed only into that origin. One other spelling
+is read as the site's own: a link whose site means "this computer" (`localhost`, a name under
+it, a `127.x` address, `[::1]`) on the site's own port. That is how the computer that serves a
+site writes its pairing links and invitations when its page is opened as
+`http://tilo.localhost:24120`, and no other device reaches such a name: on a phone it means
+the phone. So the link can only be meant for the site the app opens, under the name other
+devices use for it. It is opened in the app's own origin with its path and its secret as they
+were; and where the app's site goes by a name on the network, a host in the link's route that
+also means "this computer" (`#/@127.0.0.1:24100/w/…`) is written with the site's name and the
+host's own port, which is where a site served beyond its computer serves its host. Nothing
+opens outside the app's origin by this, so no secret reaches another site's page. Another
+port, and every other site, stays refused.
 
 **Notifications.** A system web view has no working Notifications API, so the script
 (`Bridge.swift`) is one for the page: `Notification` with `permission`, `requestPermission()`,

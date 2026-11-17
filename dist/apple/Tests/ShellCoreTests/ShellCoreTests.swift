@@ -172,13 +172,108 @@ final class SitePolicyTests: XCTestCase {
         // An invitation's key may end in a dash, which is part of it.
         let sealed = "http://tilo.localhost:24120/i/abcdefghijklmnop#\(String(repeating: "k", count: 42))-"
         XCTAssertEqual(policy.link(in: "Join here: \(sealed).")?.absoluteString, sealed)
-        // The same computer under another name is another site: the page's keys are not there.
-        XCTAssertNil(policy.link(in: "http://localhost:24120/app/#/me/so.tilo.chat?pair=\(String(repeating: "a", count: 64))"))
-        XCTAssertNil(policy.link(in: "http://127.0.0.1:24120/"))
+        // Another site's link is none of this one's, and neither is what is no link at all.
         XCTAssertNil(policy.link(in: "https://tilo.sh/app/#/me/so.tilo.chat"))
         XCTAssertNil(policy.link(in: "tilo.localhost:24120/app/"))
         XCTAssertNil(policy.link(in: "remind me at nine"))
         XCTAssertNil(policy.link(in: ""))
+    }
+
+    /// The computer that runs a site makes its links in a page opened as `tilo.localhost`, and
+    /// a phone reaches the same site under a name on the network. The link the phone scans or
+    /// is handed names that computer twice by names only it can use: as the site, and in the
+    /// route as the workspace's host.
+    func testALinkTheSitesOwnComputerMadeIsReadUnderTheNameThisAppReachesItBy() throws {
+        let phone = SitePolicy(settings: try ShellSettings(site: "https://tilo.wifi.example:24120"))
+        let workspace = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90"
+        let secret = String(repeating: "a", count: 64) + String(repeating: "b", count: 32)
+        let made = "http://tilo.localhost:24120/#/@127.0.0.1:24100/w/\(workspace)?pair=\(secret)"
+        let read = "https://tilo.wifi.example:24120/#/@tilo.wifi.example:24100/w/\(workspace)?pair=\(secret)"
+        XCTAssertEqual(phone.link(in: made)?.absoluteString, read)
+        // As a scanner or the clipboard hands it over, with whatever is written around it.
+        XCTAssertEqual(phone.link(in: "Open this on your phone: <\(made)>.\nIt works once.")?.absoluteString, read)
+        // Every name a computer has for itself, over whichever scheme it serves itself by.
+        for name in ["localhost", "tilo.localhost", "TILO.Localhost", "127.0.0.1", "127.8.9.10", "[::1]"] {
+            for scheme in ["http", "https"] {
+                let written = "\(scheme)://\(name):24120/#/@127.0.0.1:24100/w/\(workspace)?pair=\(secret)"
+                XCTAssertEqual(phone.link(in: written)?.absoluteString, read, written)
+            }
+        }
+        // Every way the link grammar writes a host on that computer.
+        for host in ["localhost:24100", "tilo.localhost:24100", "127.0.0.1%3A24100", "https:127.0.0.1:24100",
+                     "[::1]:24100"] {
+            let written = "http://tilo.localhost:24120/#/@\(host)/w/\(workspace)?pair=\(secret)"
+            XCTAssertEqual(phone.link(in: written)?.absoluteString, read, written)
+        }
+        let key = String(repeating: "k", count: 42)
+        let onlyTheSite: [(String, String)] = [
+            // A host that names no port has none under the site's name either.
+            ("http://localhost:24120/#/@127.0.0.1/w/\(workspace)", "/#/@tilo.wifi.example/w/\(workspace)"),
+            // A host that is another computer already stays the host.
+            ("http://tilo.localhost:24120/#/@ada.tilo.cloud/w/\(workspace)?pair=\(secret)",
+             "/#/@ada.tilo.cloud/w/\(workspace)?pair=\(secret)"),
+            ("http://tilo.localhost:24120/#/@10.0.0.26:24100/w/\(workspace)", "/#/@10.0.0.26:24100/w/\(workspace)"),
+            // The person's own workspace, one app's page, an invitation, the bare site.
+            ("http://tilo.localhost:24120/app/#/me/so.tilo.chat?pair=\(secret)", "/app/#/me/so.tilo.chat?pair=\(secret)"),
+            ("http://tilo.localhost:24120/i/abcdefghijklmnop#\(key)-", "/i/abcdefghijklmnop#\(key)-"),
+            ("http://tilo.localhost:24120/?from=mail#/me", "/?from=mail#/me"),
+            ("http://tilo.localhost:24120", "/"),
+        ]
+        for (written, rest) in onlyTheSite {
+            XCTAssertEqual(phone.link(in: written)?.absoluteString, "https://tilo.wifi.example:24120\(rest)", written)
+        }
+        // Whatever the link said, what is opened is inside the site this app opens.
+        for (written, _) in onlyTheSite + [(made, "")] {
+            let link = try XCTUnwrap(phone.link(in: written), written)
+            XCTAssertEqual(SitePolicy.origin(of: link), phone.origin, written)
+            XCTAssertEqual(phone.destination(of: link), .inside, written)
+        }
+    }
+
+    func testOnlyALinkOfTheSitesOwnComputerIsReadThatWay() throws {
+        let phone = SitePolicy(settings: try ShellSettings(site: "https://tilo.wifi.example:24120"))
+        let route = "#/@127.0.0.1:24100/w/6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90?pair=\(String(repeating: "a", count: 96))"
+        for refused in [
+            // Another port is another program on that computer, not this site.
+            "http://tilo.localhost:24121/\(route)", "http://localhost/\(route)", "http://localhost:3000/\(route)",
+            "https://127.0.0.1/\(route)",
+            // Another site, however much its name looks like a computer's own.
+            "https://example.com:24120/\(route)", "http://localhost.example.com:24120/\(route)",
+            "http://127.0.0.1.example.com:24120/\(route)", "http://128.0.0.1:24120/\(route)",
+            "http://10.0.0.26:24120/\(route)", "https://tilo.wifi.example.evil.example:24120/\(route)",
+            "https://evil.example/?next=http://tilo.localhost:24120/\(route)",
+            // What stands before an @ is a sign-in, and the site is what follows it.
+            "http://tilo.localhost:24120@evil.example/\(route)", "http://someone:word@tilo.localhost:24120/\(route)",
+            "http://someone@localhost:24120/\(route)",
+            // Not an address of the web.
+            "tilo://localhost:24120/\(route)", "ftp://localhost:24120/\(route)", "localhost:24120/\(route)",
+        ] {
+            XCTAssertNil(phone.link(in: refused), refused)
+        }
+        // An app that opens the production site takes no link of somebody's own computer for its own.
+        let production = SitePolicy(settings: try ShellSettings(site: "https://tilo.sh"))
+        XCTAssertNil(production.link(in: "http://tilo.localhost:24120/\(route)"))
+        XCTAssertNil(production.link(in: "http://localhost/\(route)"))
+        // A link under the site's own name is followed as it is written, also where its route
+        // names this computer: on a Mac that is a host on that Mac.
+        let own = "https://tilo.wifi.example:24120/\(route)"
+        XCTAssertEqual(phone.link(in: own)?.absoluteString, own)
+    }
+
+    /// The app on the computer that serves the site: every name of that computer on the
+    /// site's port is the site, and is opened under the one name the page keeps its keys by.
+    func testOnTheSitesOwnComputerItsOtherNamesAreReadAsTheSite() throws {
+        let mac = try policy()
+        let secret = String(repeating: "a", count: 96)
+        XCTAssertEqual(mac.link(in: "http://localhost:24120/app/#/me/so.tilo.chat?pair=\(secret)")?.absoluteString,
+                       "http://tilo.localhost:24120/app/#/me/so.tilo.chat?pair=\(secret)")
+        XCTAssertEqual(mac.link(in: "http://127.0.0.1:24120/")?.absoluteString, "http://tilo.localhost:24120/")
+        // The host in the route is on this same computer, and stays as the page wrote it.
+        let route = "#/@127.0.0.1:24100/w/6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90?pair=\(secret)"
+        XCTAssertEqual(mac.link(in: "http://localhost:24120/\(route)")?.absoluteString,
+                       "http://tilo.localhost:24120/\(route)")
+        XCTAssertNil(mac.link(in: "http://localhost:24121/\(route)"))
+        XCTAssertNil(mac.link(in: "https://tilo.sh/\(route)"))
     }
 
     func testABuildOfOneAppIsForThatAppsOwnPageAndNothingElseOfTilo() throws {
