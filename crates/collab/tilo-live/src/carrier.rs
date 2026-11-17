@@ -170,6 +170,9 @@ impl<S: Carrier> Admission<S> {
 pub(crate) struct Accepted<S: Carrier> {
     pub session: moq_net::Session,
     pub driver: moq_net::Driver<S>,
+    /// The pace `driver` is polled at: its clock was made with this pace's
+    /// first time.
+    pub pace: crate::pace::Pace,
     pub admission: Admission<S>,
     pub transport: S,
 }
@@ -214,11 +217,12 @@ where
         close(&transport, CLOSE_PREFACE, "admission stream closed");
         return Err(PrefaceError::Closed);
     }
+    let mut pace = crate::pace::Pace::new();
     let accepted = tokio::time::timeout(
         SETUP_BUDGET,
         server
             .with_versions(version.into())
-            .accept_lite(moq_net::time::Instant::now(), transport.clone()),
+            .accept_lite(pace.now(), transport.clone()),
     )
     .await;
     let Ok(Ok((session, driver))) = accepted else {
@@ -229,6 +233,7 @@ where
         Accepted {
             session,
             driver,
+            pace,
             admission,
             transport,
         },

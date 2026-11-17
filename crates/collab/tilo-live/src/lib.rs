@@ -43,6 +43,11 @@ pub mod native;
 #[cfg(feature = "live_session")]
 pub mod admit;
 
+/// The times a `moq-lite` driver is handed: read from one clock, and none
+/// earlier than the one before.
+#[cfg(feature = "live_session")]
+mod pace;
+
 #[cfg(feature = "live_session")]
 pub mod live;
 
