@@ -1049,7 +1049,7 @@ export interface Workspace extends tilo.Resource {
     through_ts: number;
     text: string;
   }): Promise<void>;
-  /** Runs `keep-summary` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `keep-summary` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   keepSummaryMany(items: KeepSummaryArgs[]): Promise<tilo.ActionAnswer[]>;
   submitFeedback(args: {
     channel: string;
@@ -1270,19 +1270,19 @@ export interface Learned extends tilo.Resource {
     text: string;
     source: string;
   }): Promise<void>;
-  /** Runs `learn` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `learn` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   learnMany(items: LearnArgs[]): Promise<tilo.ActionAnswer[]>;
   correct(args: {
     fact: string;
     text: string;
     source?: string;
   }): Promise<void>;
-  /** Runs `correct` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `correct` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   correctMany(items: CorrectArgs[]): Promise<tilo.ActionAnswer[]>;
   forget(args: {
     fact: string;
   }): Promise<void>;
-  /** Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   forgetMany(items: ForgetArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
@@ -1379,7 +1379,7 @@ export interface ChatAgent extends tilo.Resource {
     agent: string;
     instruction?: string;
   }): Promise<void>;
-  /** Runs `set-agent-instruction` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `set-agent-instruction` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setAgentInstructionMany(items: SetAgentInstructionArgs[]): Promise<tilo.ActionAnswer[]>;
   setAgentBound(args: {
     agent: string;
