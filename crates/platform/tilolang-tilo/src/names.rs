@@ -4,7 +4,7 @@
 //! what it calls each member, the instance's own person among them. A tilolang host names
 //! people by the list its instance's connection heard last ([`Told`]).
 //!
-//! Naming is by what a member is ([`actor_name`]): a person by their name, an app by its own
+//! Naming is by what a member is ([`named`]): a person by their name, an app by its own
 //! name, an agent by the name it goes by. A history row, a presence mark and a catch-up line say
 //! who acted, never an internal id and never part of one.
 
@@ -16,6 +16,7 @@ use collaboration::history_source::authors::{MemberNames, UNKNOWN_AUTHOR_NAME, n
 
 use crate::runtime::ids::MemberId;
 use crate::runtime::{Actor, NameHost};
+use tilo_action_policy::PersonId;
 
 /// The name of `who` when nobody named them, by what they are: a sample person a scenario named
 /// (`person("Mia")`, whose id is that name rather than a root key) by that name, an app by its own name, an agent by its name. A person the
@@ -92,7 +93,7 @@ struct Said {
 /// The names an instance shows people by: what its host heard the member list call them
 /// ([`Told::tell`]) first, and what its embedder knows otherwise.
 pub struct Told {
-    me: String,
+    me: PersonId,
     said: RefCell<Said>,
     otherwise: Rc<dyn NameHost>,
 }
@@ -100,9 +101,9 @@ pub struct Told {
 impl Told {
     /// The names for the person `me`, falling back to `otherwise`.
     #[must_use]
-    pub fn new(me: &str, otherwise: Rc<dyn NameHost>) -> Self {
+    pub fn new(me: PersonId, otherwise: Rc<dyn NameHost>) -> Self {
         Self {
-            me: me.to_owned(),
+            me,
             said: RefCell::default(),
             otherwise,
         }
@@ -139,7 +140,7 @@ impl NameHost for Told {
             drop(said);
             return self.otherwise.name(who);
         };
-        if member.person_id() == Some(self.me.as_str())
+        if member.as_person() == Some(&self.me)
             && let Some(me) = &said.me
         {
             return me.clone();
@@ -185,7 +186,7 @@ mod tests {
     /// of a key.
     #[test]
     fn a_member_nobody_named_is_named_by_what_they_are_never_by_part_of_their_id() {
-        let told = Told::new("me-id", Rc::new(Unnamed));
+        let told = Told::new("me-id".into(), Rc::new(Unnamed));
         let rows: &[(Actor, &str, &str)] = &[
             (agent("planner"), "Planner (agent)", "an agent by its name"),
             (
@@ -245,7 +246,7 @@ mod tests {
     #[test]
     fn a_member_is_named_as_the_window_said_and_by_what_they_are_when_nobody_did() {
         let id = "95522b97c3d1e0f4a7b8c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4";
-        let told = Told::new(id, Rc::new(Unnamed));
+        let told = Told::new(id.into(), Rc::new(Unnamed));
         assert_eq!(
             told.name(&person(id)),
             "Unknown member",
@@ -275,7 +276,7 @@ mod tests {
     /// them to the window; one the list said nothing of is left to the window's rule.
     #[test]
     fn a_member_wears_the_colour_the_member_list_paints_them_in() {
-        let told = Told::new("ada-id", Rc::new(Unnamed));
+        let told = Told::new("ada-id".into(), Rc::new(Unnamed));
         assert_eq!(told.hue(&person("ben-id")), None, "nothing said yet");
         assert!(told.tell(
             "Ada".to_owned(),

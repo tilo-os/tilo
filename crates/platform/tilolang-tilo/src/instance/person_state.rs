@@ -23,7 +23,7 @@ impl Instance {
             return false;
         };
         let runtime = host.runtime();
-        let kept = held.of(&self.me);
+        let kept = held.of(self.me.as_str());
         for slot in &kept.slots {
             if let Some(view) = personal::of_window(tab, &slot.window) {
                 let key = StateKey::view(view, personal::actor(&slot.person), slot.state.clone());
@@ -51,7 +51,7 @@ impl Instance {
             return Vec::new();
         };
         let runtime = host.runtime();
-        let me = self.me.clone();
+        let me = self.me.as_str().to_owned();
         let mine = |who: &crate::runtime::Actor| personal::person_of(who) == Some(me.as_str());
         let mut keeps = Vec::new();
         for (key, value) in runtime.take_view_writes() {

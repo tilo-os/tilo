@@ -126,7 +126,7 @@ fn open(app: &str, platform: &Rc<Packages>, scenario: Option<&str>) -> Open {
     let mut instance = Instance::new(
         Config {
             app: app.to_owned(),
-            me: "ada".to_owned(),
+            me: "ada".into(),
             mode: Mode::Live,
             device: None,
             index_dir: None,

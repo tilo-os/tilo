@@ -402,7 +402,7 @@ impl PartView {
         let mut instance = Instance::new(
             Config {
                 app: bundle.meta.app.clone(),
-                me: person.to_owned(),
+                me: person.into(),
                 mode: Mode::Live,
                 device: None,
                 index_dir: None,

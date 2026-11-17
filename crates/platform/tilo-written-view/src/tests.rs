@@ -138,7 +138,7 @@ fn shown(source: &str, author: MemberId, desk: &Desk) -> (Surface, Rc<State>) {
     let view = WrittenView {
         source: source.to_owned(),
         author: Actor::Member(author),
-        viewer: bo(),
+        viewer: "bo".into(),
     };
     let surface = Surface::open(&view, Box::new(desk.clone()), Rc::clone(&state))
         .unwrap_or_else(|why| panic!("the view opens: {why}"));

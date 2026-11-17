@@ -58,6 +58,7 @@ use crate::runtime::{
 };
 use crate::upgrade::Upgrade;
 use rows::ListRows;
+use tilo_action_policy::PersonId;
 use wire::Convert;
 
 /// What an instance runs as.
@@ -185,8 +186,8 @@ pub use platform::{Platform, PlatformBlobs, PlatformWeb, PlatformWords};
 pub struct Config {
     /// The package the window runs.
     pub app: String,
-    /// The member at the window.
-    pub me: String,
+    /// The person at the window.
+    pub me: PersonId,
     pub mode: Mode,
     /// The device that carries out the outside effects the workspace queues.
     pub device: Option<String>,
@@ -348,7 +349,7 @@ pub struct Instance {
     app: String,
     /// The root and the view the window opens over, by name.
     root_view: RootView,
-    me: String,
+    me: PersonId,
     mode: Mode,
     device: Option<String>,
     index_dir: Option<std::path::PathBuf>,
@@ -473,7 +474,7 @@ impl Instance {
         names: Rc<dyn NameHost>,
         transport: Box<dyn Transport>,
     ) -> Self {
-        let told = Rc::new(crate::names::Told::new(&config.me, names));
+        let told = Rc::new(crate::names::Told::new(config.me.clone(), names));
         Self {
             app: config.app,
             root_view: config.root,
@@ -2476,7 +2477,7 @@ impl Instance {
 
     /// The person at the window, as the runtime names them.
     fn me_actor(&self) -> Actor {
-        Actor::Member(MemberId::person(self.me.clone()))
+        Actor::Member(MemberId::Person(self.me.clone()))
     }
 
     /// Send the window the tree of `lane` again as patches, read anew.

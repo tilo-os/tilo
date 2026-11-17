@@ -967,7 +967,7 @@ impl ShellPart {
         let mut instance = Instance::new(
             Config {
                 app: app.to_owned(),
-                me: person.to_owned(),
+                me: person.into(),
                 mode: Mode::Live,
                 device: None,
                 index_dir: None,

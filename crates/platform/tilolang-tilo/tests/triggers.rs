@@ -550,7 +550,7 @@ fn window(now: &str, origin: bool) -> (Instance, AutoCommit) {
     let mut instance = Instance::new(
         Config {
             app: APP.to_owned(),
-            me: "ada".to_owned(),
+            me: "ada".into(),
             mode: Mode::Live,
             device: None,
             index_dir: None,
