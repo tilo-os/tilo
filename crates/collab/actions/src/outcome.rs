@@ -63,6 +63,31 @@ pub struct ActionOutput {
 
 read_through_json_value!(ActionOutput);
 
+impl ActionOutput {
+    /// The characters this action wrote, as its answer names them (`wrote`): the view showing that
+    /// text draws them in the writer's colour, with the writer's caret at their end.
+    #[must_use]
+    pub fn wrote(&self) -> Option<crate::InteractionAnchor> {
+        serde_json::from_value(self.value.as_ref()?.get("wrote")?.clone()).ok()
+    }
+
+    /// `value`, an answer, naming the characters `wrote` the action wrote too. An answer that is
+    /// no object (a summary in words) is kept as it is.
+    #[must_use]
+    pub fn noting_wrote(
+        value: Option<serde_json::Value>,
+        wrote: &crate::InteractionAnchor,
+    ) -> Option<serde_json::Value> {
+        let mut fields = match value {
+            None | Some(serde_json::Value::Null) => serde_json::Map::new(),
+            Some(serde_json::Value::Object(fields)) => fields,
+            other => return other,
+        };
+        fields.insert("wrote".into(), serde_json::to_value(wrote).ok()?);
+        Some(serde_json::Value::Object(fields))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(remote = "Self")]
 pub struct ActionFailure {

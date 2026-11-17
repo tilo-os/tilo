@@ -87,6 +87,16 @@ impl BlockEditor {
             // invocation out rather than naming it a second time.
             ctx.presence.note_shown(interaction.invocation);
             ctx.presence.note_drawn(interaction.invocation, now);
+            // One caret, where the write ends: a write over several paragraphs puts it on the
+            // last of them.
+            if self.blocks.get(i + 1..).is_some_and(|later| {
+                later.iter().any(|later| {
+                    crate::presence::written_in(&interaction, None, &later.id, later.line.value())
+                        .is_some()
+                })
+            }) {
+                continue;
+            }
             let name = ctx.presence.interaction_status_label_written(&interaction);
             ctx.presence.draw_action_caret_labeled_in(
                 ctx.scene,
