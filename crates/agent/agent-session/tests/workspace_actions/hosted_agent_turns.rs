@@ -13,7 +13,7 @@ use ui::tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
 const CHAT: &str = "so.tilo.chat";
 const TASKS: &str = "so.tilo.tasks";
 /// The agent's id in the workspace's record of its agents.
-const SCOUT: &str = "scout";
+pub(super) const SCOUT: &str = "scout";
 
 /// A model whose turns are written out: each answer in order, then the last again. What each
 /// request asked is kept.
@@ -87,7 +87,7 @@ fn looks_then_answers(cost: u64, asked: Arc<Mutex<Vec<ModelRequest>>>) -> Model 
 /// The person makes an agent that runs on the host, as the Agents tab in a browser does: their
 /// device writes the workspace's record of its agents, with the agent's daily limit when one is
 /// set. Answers once the host holds it.
-async fn make_agent(
+pub(super) async fn make_agent(
     page: &Browser,
     workspaces: &tilo_relay::workspaces::Workspaces,
     workspace: &str,
@@ -598,7 +598,7 @@ async fn an_agent_on_the_host_stops_at_its_keepers_daily_limit() {
 }
 
 /// The first part of the chat's messages, as the workspace keeps it.
-async fn conversation_part(
+pub(super) async fn conversation_part(
     workspaces: &tilo_relay::workspaces::Workspaces,
     workspace: &str,
 ) -> chat::parts::ChatPart {
@@ -614,7 +614,7 @@ async fn conversation_part(
 
 /// The person writes `text` to the agent in their conversation with it, through the host's action
 /// service, as their page does. The message's id.
-async fn write_to_agent(
+pub(super) async fn write_to_agent(
     actions: &tilo_agent_session::workspace_actions::WorkspaceActions,
     workspaces: &tilo_relay::workspaces::Workspaces,
     workspace: &str,
