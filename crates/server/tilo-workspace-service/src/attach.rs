@@ -218,11 +218,9 @@ impl HostDialer {
                 Some(Ok(client)) => {
                     tracing::info!(%label, "attached to the upstream host");
                     backoff_ms = 1_000;
-                    self.stands(device, Link::CatchingUp);
                     if let Err(error) = self.run_session(&client).await {
                         tracing::debug!(%label, "attach session ended: {error}");
                     }
-                    self.unreachable(device);
                     // What arrived while the session lasted says nothing
                     // of the device now.
                     arrivals = arrivals.resubscribe();
@@ -434,7 +432,6 @@ impl Session<'_> {
                 // withheld a change another attached host sent it.
                 Envelope::SyncRequest { workspace_id, .. } => {
                     if intersection.contains(&workspace_id) {
-                        (self.stands)(Link::CatchingUp);
                         self.ask(workspace_id).await?;
                     }
                 }

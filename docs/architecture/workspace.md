@@ -115,6 +115,22 @@ holder's address only with that host's own signature on it, whoever wrote it
 into the governance.
 Detached, the other host lets the workspace go and keeps its files.
 
+**How many copies a workspace keeps.** A workspace says how many key holders
+and how many stores it wants, in its governance beside the servers that hold
+it, chosen by the same owners (`copies.set`). One that never chose wants one
+of each once a server holds it; a group of desktops with no server wants
+nothing beyond the devices it has, so it needs no setup and is never short.
+Each holder says in the workspace's state where its own copy stands: which
+holders it is still taking what it lacks from, and which it cannot reach and
+since when. Every device reads the same rows, so every device names the same
+shortfall: which holder lacks what (history from another holder, or what was
+written since it was last reached) and how many current copies of each kind
+are missing (`tilo_peer_state::CopyStatus`, answered with the holder list). A
+holder that comes back dials the others, takes in what they hold and it
+lacks, and says it is current; the others, reaching it again, say so too.
+A store compacting its history keeps every frame a device that asked it for
+history still lacks, and the newest checkpoint of each document.
+
 ### A machine copied from another
 
 A person sets up one machine and branches others off it by copying its disk

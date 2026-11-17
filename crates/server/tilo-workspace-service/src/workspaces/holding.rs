@@ -1,10 +1,10 @@
-//! Holding a workspace that was made on another host.
+//! Holding a workspace that was made on another device.
 //!
 //! A holder of the workspace hands it over with
 //! [`HOST_WORKSPACE`](tilo_server_session::workspaces::HOST_WORKSPACE): the
 //! workspace as a joining member gets it (its signed governance, roster and
-//! revocations) and the handing holder's own signed address. This host then
-//! keeps a writable copy of its own ([`GovernedWorkspace::adopt`]), as the host
+//! revocations) and the handing holder's own signed address. This device then
+//! keeps a writable copy of its own ([`GovernedWorkspace::adopt`]), as the device
 //! the workspace was made on does: it writes what it changes under its own
 //! device's key, takes in what every other holder and member writes, admits
 //! whom the workspace's governance admits, and keeps a session to every
@@ -13,9 +13,9 @@
 //! each of them.
 //!
 //! Which device owns the workspace is its own fact, kept with it as it was
-//! handed over; this host's device is only the one writing its changes, and
+//! handed over; this device is only the one writing its changes, and
 //! the workspace's compacted base stays the owning device's to publish.
-//! A host of another person holds the workspace without being a member: of
+//! A server of another person holds the workspace without being a member: of
 //! who is in it, it writes only the redemptions of invitations it answers
 //! ([`tilo_peer_state::workspace::SenderAccess::Holder`]).
 //!
@@ -28,7 +28,7 @@
 //! rows, against how many copies the workspace wants, which holder is short
 //! of what ([`Workspaces::copies`]).
 //!
-//! The host lets the workspace go ([`Workspaces::release`]) when its owners
+//! The device lets the workspace go ([`Workspaces::release`]) when its owners
 //! ask ([`UNHOST_WORKSPACE`](tilo_server_session::workspaces::UNHOST_WORKSPACE))
 //! or when the workspace's governance no longer names it. The files stay; a
 //! later hand-over serves the workspace from them again.
@@ -49,7 +49,7 @@ use super::{GovernedWorkspace, Workspaces, appended, peer_parts};
 use crate::attach::{HostDialer, Link, Links, Upstream};
 use crate::handshake::LiveIdentity;
 
-/// What a holder hands the host it asks to hold one of its workspaces.
+/// What a holder hands the device it asks to hold one of its workspaces.
 #[derive(Clone, Debug)]
 pub struct HostWorkspaceRequest {
     /// The workspace's UUID: its id spelled out, and nothing else
@@ -59,7 +59,7 @@ pub struct HostWorkspaceRequest {
     pub workspace_id: WorkspaceId,
     /// The handing holder's own signed address for the workspace.
     pub holder_hint: TransportHint,
-    /// The workspace as a joining member gets it, this host's device
+    /// The workspace as a joining member gets it, this device
     /// admitted.
     pub bootstrap: JoinBootstrap,
 }
@@ -98,7 +98,7 @@ impl Drop for AbortOnDrop {
 }
 
 /// The replica `bootstrap` hands over: its governance taken in from the
-/// bootstrap's signed messages, its changes written under this host's own
+/// bootstrap's signed messages, its changes written under this device's own
 /// actor.
 fn replica(bootstrap: &JoinBootstrap, now: SystemTime) -> Result<StatePeer, String> {
     let mut peer = StatePeer::from_join(
@@ -156,7 +156,7 @@ pub(crate) fn owners(request: &HostWorkspaceRequest) -> Result<Vec<[u8; 32]>, St
 }
 
 /// Whether `work` takes the workspace `request` hands over from `caller`,
-/// for this host `own`, whoever its owners are.
+/// for this device `own`, whoever its owners are.
 pub(crate) fn work_takes(
     work: &WorkSetting,
     caller: &DeviceCert,
@@ -290,7 +290,7 @@ impl Workspaces {
             .map_err(|error| error.to_string())
     }
 
-    /// Let `workspace` go, `caller`'s request: a device of this host's own
+    /// Let `workspace` go, `caller`'s request: another device of this one's own
     /// person or of the workspace's owner. Whether it was held here.
     ///
     /// # Errors
@@ -304,7 +304,7 @@ impl Workspaces {
         // Named by its id, as it was handed over: no other text is looked up
         // among the files here.
         WorkspaceId::parse(workspace).ok_or_else(|| "a workspace is named by its id".to_owned())?;
-        // A workspace being let go as its governance stopped naming this host
+        // A workspace being let go as its governance stopped naming this device
         // is gone here once this answers.
         drop(self.inner.releasing.lock().await);
         let Ok(state) = self.workspace(workspace).await else {
@@ -320,7 +320,7 @@ impl Workspaces {
         }
         match self.release(workspace).await {
             Ok(()) => Ok(true),
-            // Let go meanwhile, as its governance stopped naming this host.
+            // Let go meanwhile, as its governance stopped naming this device.
             Err(_) if self.workspace(workspace).await.is_err() => Ok(true),
             Err(error) => Err(error),
         }
@@ -328,7 +328,7 @@ impl Workspaces {
 
     /// Keep a session to every other holder `governed`'s governance names,
     /// and to the holder that handed it over, and to none other; let the
-    /// workspace go once its governance named this host and names it no
+    /// workspace go once its governance named this device and names it no
     /// more.
     pub(super) fn dial_holders(&self, governed: &mut GovernedWorkspace) {
         let host = &self.inner.host;
@@ -495,7 +495,7 @@ impl Workspaces {
     }
 }
 
-/// This host's sessions to a workspace's other holders.
+/// This device's sessions to a workspace's other holders.
 #[derive(Default)]
 pub(super) struct Holders {
     /// A session to each other holder, by device.
@@ -504,7 +504,7 @@ pub(super) struct Holders {
     links: Links,
     /// What says in the workspace where this device's copy stands.
     reporting: Option<AbortOnDrop>,
-    /// Whether the workspace's governance has named this host among its
+    /// Whether the workspace's governance has named this device among its
     /// holders: once it has, naming it no more lets the workspace go here.
     named: bool,
 }
