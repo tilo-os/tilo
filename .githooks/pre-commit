@@ -397,7 +397,22 @@ tl_packages=$(GIT_INDEX_FILE="$full_index" git diff --cached --name-only \
         (apps/tl/*/*.tl) printf '%s\n' "${f%/*}" ;;
       esac
     done | sort -u)
-if [ -n "$tl_packages" ]; then
+# A package's ids lock (`app.ids`) and source catalogue (`locales/en-US.ftl`) are
+# written from its sources, and nothing reads them back until the package is
+# compiled: a rename done by replacing text leaves them stale or in another
+# order, and every later build then rewrites them, which breaks the build's
+# provenance. Writing them is not a judgement call, so do it below with the same
+# binary that formats, and stage what it wrote.
+tl_locked_packages=$(GIT_INDEX_FILE="$full_index" git diff --cached --name-only \
+    --diff-filter=ACMR -- '*.tl' '*/app.ids' '*/locales/*.ftl' \
+  | while IFS= read -r f; do
+      case "$f" in
+        (crates/lang/tilolang/std/*) printf '%s\n' crates/lang/tilolang/std ;;
+        (apps/tl/*/locales/*.ftl) printf '%s\n' "${f%/locales/*}" ;;
+        (apps/tl/*/*) printf '%s\n' "${f%/*}" ;;
+      esac
+    done | sort -u)
+if [ -n "$tl_packages$tl_locked_packages" ]; then
   # The compiler's own sources and manifests. A formatter older than any of them
   # prints an earlier revision's canonical form, so it is not this tree's: that
   # is what makes a binary in target/ one this hook may use.
@@ -411,8 +426,11 @@ if [ -n "$tl_packages" ]; then
   # platform cannot run here and one that is not the formatter does not know
   # `fmt`; both are skipped rather than failing the commit.
   tl_fmt=""
+  tl_candidates=()
   tl_find_fmt() {
     local built=() c newer_count
+    tl_fmt=""
+    tl_candidates=()
     while IFS= read -r -d '' c; do built+=("$c"); done < <(
       find "$root/target" -maxdepth 4 -type f \
         \( -name tlc -o -name tilolangc -o -name tilolang \) -print0 2>/dev/null)
@@ -422,13 +440,24 @@ if [ -n "$tl_packages" ]; then
         newer_count=$(find "${tl_sources[@]}" -newer "$c" -print 2>/dev/null | wc -l)
         [ "$newer_count" -gt 0 ] && continue
         case "$("$c" --help 2>&1)" in
-          *fmt*) tl_fmt=$c; return 0 ;;
+          *fmt*) [ -n "$tl_fmt" ] || tl_fmt=$c; tl_candidates+=("$c") ;;
         esac
       fi
     done < <(ls -td -- "${built[@]}" 2>/dev/null || true)
+    # The language's own tool resolves the packages an app imports from the
+    # tree (`so.tilo.session` and the like); the compiler alone knows tilolang
+    # packages only, so it goes last when the locks below are refreshed.
+    local cli=() rest=()
+    for c in "${tl_candidates[@]}"; do
+      case "${c##*/}" in
+        (tilolang) cli+=("$c") ;;
+        (*) rest+=("$c") ;;
+      esac
+    done
+    tl_candidates=("${cli[@]}" "${rest[@]}")
   }
   tl_find_fmt
-  if [ -z "$tl_fmt" ]; then
+  if [ -z "$tl_fmt" ] && [ -n "$tl_packages" ]; then
     # The formatter is this tree's compiler, so build its one binary. A build
     # that fails is not retried by every commit: this worktree remembers it, and
     # why, for an hour. It is this worktree's, never the clone's, so one tree
@@ -509,6 +538,56 @@ if [ -n "$tl_packages" ]; then
     if [ -n "$tl_unformatted" ]; then
       note "tilolang fmt: cannot format packages with unstaged changes, stage the whole package first:"
       printf '%s' "$tl_unformatted" | sed 's/^/  /' >&2
+      fail=1
+    fi
+  fi
+
+  # The locks and catalogues of the packages above: refreshed with a binary
+  # from this tree, as the formatter was. A package whose sources have unstaged
+  # edits is left alone, since they would be written into this commit; one whose
+  # generator cannot run now keeps what it has, and the compiler's own test,
+  # which compares every package under apps/tl with its sources, still holds it
+  # on CI. The generated files themselves do not count as edits to guard: they
+  # are whatever the sources give.
+  if [ -n "$tl_locked_packages" ] && [ "${#tl_candidates[@]}" -eq 0 ]; then
+    note "tilolang ids: no generator for the staged packages; run \
+'tilolang check --write-ids <dir>' on each and stage its app.ids and locales/en-US.ftl"
+  elif [ -n "$tl_locked_packages" ]; then
+    tl_lock_wrote=0
+    tl_lock_left=""
+    while IFS= read -r d; do
+      [ -n "$d" ] || continue
+      if ! GIT_INDEX_FILE="$full_index" git diff --quiet -- "$d" \
+           ":(exclude)$d/app.ids" ":(exclude)$d/locales"; then
+        tl_lock_left="$tl_lock_left$d"$'\n'
+        continue
+      fi
+      tl_lock_why=""
+      for c in "${tl_candidates[@]}"; do
+        if tl_lock_out=$(cd "$root" && "$c" check --write-ids "$d" 2>&1); then
+          tl_lock_why=""
+          break
+        fi
+        tl_lock_why=$(printf '%s\n' "$tl_lock_out" | tail -n 1)
+      done
+      if [ -n "$tl_lock_why" ]; then
+        note "tilolang ids: $d: $tl_lock_why"
+        continue
+      fi
+      for f in "$d/app.ids" "$d/locales/en-US.ftl"; do
+        [ -f "$root/$f" ] || continue
+        if ! GIT_INDEX_FILE="$full_index" git diff --quiet -- "$f"; then
+          GIT_INDEX_FILE="$full_index" git add -- "$f"
+          tl_lock_wrote=$((tl_lock_wrote + 1))
+        fi
+      done
+    done <<< "$tl_locked_packages"
+    if [ "$tl_lock_wrote" -gt 0 ]; then
+      note "tilolang ids: wrote $tl_lock_wrote generated file(s) from the staged sources and staged them"
+    fi
+    if [ -n "$tl_lock_left" ]; then
+      note "tilolang ids: cannot write the generated files of packages with unstaged changes, stage the whole package first:"
+      printf '%s' "$tl_lock_left" | sed 's/^/  /' >&2
       fail=1
     fi
   fi
