@@ -202,7 +202,7 @@ enum Cmd {
     },
     /// Launch an application Tilo did **not** package: a `.desktop` entry already installed on the
     /// host, Flatpak or otherwise.
-    SessionHost(RunHostArgs),
+    MachineApp(MachineAppArgs),
     /// Build or retire the pre-built read-only system view every sandbox mounts
     /// (`launcher::sandbox_view`).
     #[command(subcommand)]
@@ -277,7 +277,7 @@ enum SandboxViewCmd {
 }
 
 #[derive(Debug, clap::Args)]
-struct RunHostArgs {
+struct MachineAppArgs {
     /// Desktop-file id: the entry's file name without `.desktop` (`com.spotify.Client`,
     /// `org.gnome.TextEditor`).
     #[arg(long)]
@@ -379,7 +379,7 @@ fn dispatch_command(
     // killer, which it may have inherited from the compositor: an app is always a candidate.
     if matches!(
         command,
-        Cmd::Run { .. } | Cmd::RunInstalled { .. } | Cmd::Exec { .. } | Cmd::SessionHost(_)
+        Cmd::Run { .. } | Cmd::RunInstalled { .. } | Cmd::Exec { .. } | Cmd::MachineApp(_)
     ) {
         launcher::priority::leave_session_protection();
     }
@@ -416,7 +416,7 @@ fn dispatch_command(
                 capabilities_path: None,
             },
         ),
-        Cmd::SessionHost(args) => run_host(args),
+        Cmd::MachineApp(args) => machine_app(args),
         Cmd::SandboxView(command) => sandbox_view(command),
         Cmd::Apps { json } => list_apps(json),
         Cmd::RuntimeResident { user: true, .. } => runtime_resident_user(),
@@ -1097,8 +1097,8 @@ fn exec_installed(package: &str, args: ExecArgs) -> ExitCode {
 }
 
 /// Launch a host application.
-fn run_host(args: RunHostArgs) -> ExitCode {
-    let RunHostArgs {
+fn machine_app(args: MachineAppArgs) -> ExitCode {
+    let MachineAppArgs {
         desktop_id,
         desktop_file,
         program,
@@ -1314,6 +1314,36 @@ mod host_launch_tests {
         assert!(host_launch_env_is_secret("DESKTOP_STARTUP_ID"));
         assert!(!host_launch_env_is_secret("TILO_HOST_ACTIVATION_TOKEN"));
         assert!(!host_launch_env_is_secret("WAYLAND_DISPLAY"));
+    }
+
+    /// The session starts every machine app as `tilo-launcher machine-app …`
+    /// (`tilo_app_launch::plan`), behind its keeper when it has one: a launcher that answers to
+    /// another name opens none of them.
+    #[test]
+    fn the_sessions_machine_app_launch_parses() {
+        let parsed = Cli::try_parse_from([
+            "tilo-launcher",
+            "machine-app",
+            "--desktop-id",
+            "foot",
+            "--wayland-socket",
+            "/run/user/1000/wayland-1",
+            "--keeper",
+            "/usr/libexec/tilo-app-keeper",
+            "--keep-in",
+            "/run/user/1000/tilo-session/kept/1",
+            "--keep-as",
+            "foot",
+        ])
+        .expect("the session's launch of a machine app parses");
+        let Cmd::MachineApp(args) = parsed.cmd else {
+            panic!("a machine app's launch is not machine-app");
+        };
+        assert_eq!(args.desktop_id, "foot");
+        assert_eq!(
+            args.keeper.as_deref(),
+            Some(Path::new("/usr/libexec/tilo-app-keeper"))
+        );
     }
 }
 

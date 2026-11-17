@@ -827,7 +827,7 @@ mod tests {
     }
 
     /// A registry, the keeper program (this binary) and a launcher that starts the app behind it
-    /// as `tilo-launcher run-host --keeper` does.
+    /// as `tilo-launcher machine-app --keeper` does.
     struct Rig {
         dir: tempfile::TempDir,
     }

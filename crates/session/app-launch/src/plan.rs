@@ -5,7 +5,7 @@
 //! - a Tilo package, through `tilo-launcher run`, which builds the package's
 //!   sandbox from its signed manifest, the workspace it is launched into and the
 //!   grants written for it ([`Workspace::write_grants`]);
-//! - one of the machine's own applications, through `tilo-launcher run-host`
+//! - one of the machine's own applications, through `tilo-launcher machine-app`
 //!   and its `.desktop` entry: Flatpak, `AppImage`, a program the person
 //!   added, or one of the system's. It runs unconfined, as the person, exactly
 //!   as [`desktop_entry::launch`] decides — see that module for why it cannot
@@ -497,7 +497,7 @@ fn run_host(
     kind: Kind,
 ) -> Planned {
     let mut args = vec![
-        "run-host".to_owned(),
+        "machine-app".to_owned(),
         "--desktop-id".to_owned(),
         planned.desktop_id.clone(),
     ];
@@ -918,7 +918,7 @@ mod tests {
             assert_eq!(
                 planned.args,
                 [
-                    "run-host",
+                    "machine-app",
                     "--desktop-id",
                     "com.spotify.Client",
                     "--wayland-socket",

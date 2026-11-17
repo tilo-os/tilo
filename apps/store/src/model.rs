@@ -145,7 +145,7 @@ pub enum ActionKind {
     ///
     /// It opens **unconfined**: a Flatpak brings its own sandbox and
     /// cannot run inside Tilo's, so the launch goes through
-    /// `tilo-launcher run-host`, which says so. See `launcher::host`.
+    /// `tilo-launcher machine-app`, which says so. See `launcher::host`.
     FlatpakOpen,
     FlatpakRemove,
     NeedsFlatpakHost,

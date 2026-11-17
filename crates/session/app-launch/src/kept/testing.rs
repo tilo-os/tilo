@@ -1,5 +1,5 @@
 //! A kept app in a test: the test binary itself is the keeper, started by a stand-in launcher as
-//! `tilo-launcher run-host --keeper` starts `tilo-app-keeper`. The keeper's program is another
+//! `tilo-launcher machine-app --keeper` starts `tilo-app-keeper`. The keeper's program is another
 //! crate's, which a test of this crate or of the session does not build.
 
 use std::io;

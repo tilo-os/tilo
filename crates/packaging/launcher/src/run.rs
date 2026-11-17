@@ -123,7 +123,7 @@ pub enum RunError {
     RuntimeBundleSignature { path: PathBuf, reason: String },
     #[error(
         "`{desktop_id}` is a host application, not a Tilo package: it has no manifest, so \
-         there is no sandbox to build for it. Launch it with `tilo-launcher run-host \
+         there is no sandbox to build for it. Launch it with `tilo-launcher machine-app \
          --desktop-id {desktop_id}`, which runs it unconfined and says so."
     )]
     HostAppNotAPackage { desktop_id: String },

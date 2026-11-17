@@ -979,7 +979,10 @@ impl AppHostServer {
             Action::LaunchDesktop { desktop_id } => {
                 let status = blocking(move || {
                     let mut command = std::process::Command::new(launcher_bin());
-                    command.arg("run-host").arg("--desktop-id").arg(desktop_id);
+                    command
+                        .arg("machine-app")
+                        .arg("--desktop-id")
+                        .arg(desktop_id);
                     if let Some(socket) = wayland_socket() {
                         command.arg("--wayland-socket").arg(socket);
                     }
