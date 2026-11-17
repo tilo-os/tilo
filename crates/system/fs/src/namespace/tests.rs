@@ -659,7 +659,7 @@ tilo_test_env::scenario! {
             use ed25519_dalek::SigningKey;
             use fs_protocol::{
                 ContentHash, FILE_MUTATION_TRANSACTION_VERSION, FileMutationOperation,
-                FileMutationParticipant, FileMutationTransactionManifest, FileProvenance,
+                TransactionFile, FileMutationTransactionManifest, FileProvenance,
                 FileVersionId, FileVersionV1,
             };
             use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -698,7 +698,7 @@ tilo_test_env::scenario! {
                 person: collab_types::Ed25519PublicKey([9; 32]),
                 device: collab_types::Ed25519PublicKey(key.verifying_key().to_bytes()),
             };
-            let participant = |document_id, expected_version, role, content_byte| {
+            let transaction_file = |document_id, expected_version, role, content_byte| {
                 let version = FileVersionV1 {
                     id: FileVersionId::new(),
                     document_id,
@@ -708,12 +708,12 @@ tilo_test_env::scenario! {
                     content_hash: Some(ContentHash([content_byte; 32])),
                     metadata_hash: ContentHash([content_byte + 2; 32]),
                     provenance: match role {
-                        FileMutationParticipantRole::Source => FileProvenance::Rename,
-                        FileMutationParticipantRole::Replaced => FileProvenance::Delete,
+                        TransactionFileRole::Source => FileProvenance::Rename,
+                        TransactionFileRole::Replaced => FileProvenance::Delete,
                         _ => unreachable!("replacement fixture role"),
                     },
                 };
-                let mut participant = FileMutationParticipant {
+                let mut transaction_file = TransactionFile {
                     document_id,
                     role,
                     expected_version,
@@ -723,7 +723,7 @@ tilo_test_env::scenario! {
                         parent: Some(root_record),
                         name: "destination.txt".into(),
                         kind: FileNodeKind::File,
-                        tombstoned: role == FileMutationParticipantRole::Replaced,
+                        tombstoned: role == TransactionFileRole::Replaced,
                         actor,
                         observed_at_ms: 2,
                     },
@@ -738,24 +738,24 @@ tilo_test_env::scenario! {
                     proposed_version: version,
                     projection_hash: ContentHash([0; 32]),
                 };
-                participant.projection_hash = participant.computed_projection_hash().unwrap();
-                participant
+                transaction_file.projection_hash = transaction_file.computed_projection_hash().unwrap();
+                transaction_file
             };
-            let mut participants = vec![
-                participant(
+            let mut files = vec![
+                transaction_file(
                     source_record,
                     source_expected,
-                    FileMutationParticipantRole::Source,
+                    TransactionFileRole::Source,
                     1,
                 ),
-                participant(
+                transaction_file(
                     victim_record,
                     victim_expected,
-                    FileMutationParticipantRole::Replaced,
+                    TransactionFileRole::Replaced,
                     2,
                 ),
             ];
-            participants.sort_by_key(|participant| participant.document_id);
+            files.sort_by_key(|transaction_file| transaction_file.document_id);
             let transaction = fs_protocol::FileMutationTransaction::signed(
                 FileMutationTransactionManifest {
                     schema_version: FILE_MUTATION_TRANSACTION_VERSION,
@@ -771,7 +771,7 @@ tilo_test_env::scenario! {
                         source_record,
                         replaced_record: victim_record,
                     },
-                    participants,
+                    files,
                 },
                 &key,
             )

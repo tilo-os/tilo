@@ -36,7 +36,7 @@ pub const FILE_MUTATION_TRANSACTION_VERSION: u16 = 1;
 pub const FILE_MUTATION_TRANSACTION_VERSION_V2: u16 = 2;
 pub const FILE_MUTATION_TRANSACTION_VERSION_V3: u16 = 3;
 pub const FILE_MUTATION_TRANSACTION_VERSION_V4: u16 = 4;
-pub const MAX_TRANSACTION_PARTICIPANTS: usize = 8;
+pub const MAX_TRANSACTION_FILES: usize = 8;
 pub const FILE_MUTATION_TRANSACTION_SIGNATURE_DOMAIN: &str =
     "tilo.collaborative-fs.file-mutation-transaction.v1";
 pub const FILE_MUTATION_TRANSACTION_SIGNATURE_DOMAIN_V2: &str =
@@ -484,7 +484,7 @@ pub enum FileProvenance {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub enum FileMutationParticipantRole {
+pub enum TransactionFileRole {
     Source,
     Replaced,
     KeepBothSource,
@@ -504,9 +504,9 @@ pub enum ConflictMergeCodecV1 {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct FileMutationParticipant {
+pub struct TransactionFile {
     pub document_id: FileDocumentId,
-    pub role: FileMutationParticipantRole,
+    pub role: TransactionFileRole,
     pub expected_version: FileVersionId,
     pub proposed_binding: FileBindingV1,
     pub proposed_version: FileVersionV1,
@@ -516,18 +516,18 @@ pub struct FileMutationParticipant {
 
 #[derive(Serialize)]
 #[serde(deny_unknown_fields)]
-struct ParticipantProjectionView<'a> {
+struct TransactionFileProjectionView<'a> {
     document_id: FileDocumentId,
-    role: FileMutationParticipantRole,
+    role: TransactionFileRole,
     expected_version: FileVersionId,
     proposed_binding: &'a FileBindingV1,
     proposed_version: &'a FileVersionV1,
     proposed_content_revision: &'a Option<ContentRevisionV1>,
 }
 
-impl FileMutationParticipant {
-    fn projection_view(&self) -> ParticipantProjectionView<'_> {
-        ParticipantProjectionView {
+impl TransactionFile {
+    fn projection_view(&self) -> TransactionFileProjectionView<'_> {
+        TransactionFileProjectionView {
             document_id: self.document_id,
             role: self.role,
             expected_version: self.expected_version,
@@ -542,14 +542,14 @@ impl FileMutationParticipant {
         Ok(ContentHash(Sha256::digest(bytes).into()))
     }
 
-    /// Validate participant identity, role, revision, and projection digest.
+    /// Validate file identity, role, revision, and projection digest.
     ///
     /// # Errors
     ///
-    /// Returns a [`FileDocumentError`] when any signed participant invariant fails.
+    /// Returns a [`FileDocumentError`] when any signed file invariant fails.
     pub fn validate(&self, actor: FileActor) -> Result<(), FileDocumentError> {
         if self.document_id.0.is_nil() || self.expected_version.0.is_nil() {
-            return Err(FileDocumentError::InvalidTransactionParticipant);
+            return Err(FileDocumentError::InvalidTransactionFile);
         }
         self.proposed_binding.validate()?;
         self.proposed_version.validate()?;
@@ -561,27 +561,25 @@ impl FileMutationParticipant {
             || self.proposed_version.actor != actor
             || self.proposed_binding.actor != actor
         {
-            return Err(FileDocumentError::InvalidTransactionParticipant);
+            return Err(FileDocumentError::InvalidTransactionFile);
         }
         let valid_parents = match self.role {
-            FileMutationParticipantRole::Source
-            | FileMutationParticipantRole::Replaced
-            | FileMutationParticipantRole::AtomicSaveDocument
-            | FileMutationParticipantRole::AtomicSaveTemporary => {
+            TransactionFileRole::Source
+            | TransactionFileRole::Replaced
+            | TransactionFileRole::AtomicSaveDocument
+            | TransactionFileRole::AtomicSaveTemporary => {
                 self.proposed_version.parents == [self.expected_version]
             }
-            FileMutationParticipantRole::KeepBothSource
-            | FileMutationParticipantRole::MergeSource
-            | FileMutationParticipantRole::RestoreContent => self
+            TransactionFileRole::KeepBothSource
+            | TransactionFileRole::MergeSource
+            | TransactionFileRole::RestoreContent => self
                 .proposed_version
                 .parents
                 .contains(&self.expected_version),
-            FileMutationParticipantRole::KeepBothSibling => {
-                self.proposed_version.parents.is_empty()
-            }
+            TransactionFileRole::KeepBothSibling => self.proposed_version.parents.is_empty(),
         };
         if !valid_parents {
-            return Err(FileDocumentError::InvalidTransactionParticipant);
+            return Err(FileDocumentError::InvalidTransactionFile);
         }
         match &self.proposed_content_revision {
             Some(revision)
@@ -591,37 +589,36 @@ impl FileMutationParticipant {
                     && revision.metadata_hash == self.proposed_version.metadata_hash => {}
             None if self.proposed_binding.kind == FileNodeKind::Directory
                 && self.proposed_version.content_hash.is_none() => {}
-            _ => return Err(FileDocumentError::InvalidTransactionParticipant),
+            _ => return Err(FileDocumentError::InvalidTransactionFile),
         }
         let valid_role = match self.role {
-            FileMutationParticipantRole::Source => {
+            TransactionFileRole::Source => {
                 !self.proposed_binding.tombstoned
                     && matches!(
                         self.proposed_version.provenance,
                         FileProvenance::Rename | FileProvenance::Move
                     )
             }
-            FileMutationParticipantRole::AtomicSaveDocument => {
+            TransactionFileRole::AtomicSaveDocument => {
                 !self.proposed_binding.tombstoned
                     && self.proposed_binding.kind == FileNodeKind::File
                     && self.proposed_version.provenance == FileProvenance::Edit
             }
-            FileMutationParticipantRole::AtomicSaveTemporary => {
+            TransactionFileRole::AtomicSaveTemporary => {
                 self.proposed_binding.tombstoned
                     && self.proposed_binding.kind == FileNodeKind::File
                     && self.proposed_version.provenance == FileProvenance::Delete
             }
-            FileMutationParticipantRole::Replaced => {
+            TransactionFileRole::Replaced => {
                 self.proposed_binding.tombstoned
                     && self.proposed_version.provenance == FileProvenance::Delete
             }
-            FileMutationParticipantRole::KeepBothSource
-            | FileMutationParticipantRole::MergeSource => {
+            TransactionFileRole::KeepBothSource | TransactionFileRole::MergeSource => {
                 !self.proposed_binding.tombstoned
                     && self.proposed_binding.kind == FileNodeKind::File
                     && self.proposed_version.provenance == FileProvenance::ConflictResolution
             }
-            FileMutationParticipantRole::RestoreContent => {
+            TransactionFileRole::RestoreContent => {
                 !self.proposed_binding.tombstoned
                     && self.proposed_binding.kind == FileNodeKind::File
                     && matches!(
@@ -629,14 +626,14 @@ impl FileMutationParticipant {
                         FileProvenance::Restore { .. }
                     )
             }
-            FileMutationParticipantRole::KeepBothSibling => {
+            TransactionFileRole::KeepBothSibling => {
                 !self.proposed_binding.tombstoned
                     && self.proposed_binding.kind == FileNodeKind::File
                     && self.proposed_version.provenance == FileProvenance::Create
             }
         };
         if !valid_role || self.computed_projection_hash().ok() != Some(self.projection_hash) {
-            return Err(FileDocumentError::InvalidTransactionParticipant);
+            return Err(FileDocumentError::InvalidTransactionFile);
         }
         Ok(())
     }
@@ -699,7 +696,7 @@ pub struct FileMutationTransactionManifest {
     pub timestamp_ms: u64,
     pub operation: FileMutationOperation,
     /// Strictly sorted by stable record ID, with no duplicates.
-    pub participants: Vec<FileMutationParticipant>,
+    pub files: Vec<TransactionFile>,
 }
 
 #[derive(Serialize)]
@@ -730,17 +727,17 @@ impl FileMutationTransactionManifest {
         if self.transaction_id.is_nil() || self.workspace_id.is_nil() {
             return Err(FileDocumentError::InvalidMutationTransactionScope);
         }
-        if self.participants.is_empty()
-            || self.participants.len() > MAX_TRANSACTION_PARTICIPANTS
+        if self.files.is_empty()
+            || self.files.len() > MAX_TRANSACTION_FILES
             || self
-                .participants
+                .files
                 .windows(2)
                 .any(|pair| matches!(pair, [left, right] if left.document_id >= right.document_id))
         {
-            return Err(FileDocumentError::InvalidTransactionParticipants);
+            return Err(FileDocumentError::InvalidTransactionFiles);
         }
-        for participant in &self.participants {
-            participant.validate(self.actor)?;
+        for file in &self.files {
+            file.validate(self.actor)?;
         }
         match &self.operation {
             FileMutationOperation::RestoreContent {
@@ -751,12 +748,12 @@ impl FileMutationTransactionManifest {
             } => {
                 request
                     .validate()
-                    .map_err(|_| FileDocumentError::InvalidTransactionParticipant)?;
+                    .map_err(|_| FileDocumentError::InvalidTransactionFile)?;
                 prior_revision.validate()?;
-                let participant = self
-                    .participants
+                let file = self
+                    .files
                     .first()
-                    .ok_or(FileDocumentError::InvalidTransactionParticipants)?;
+                    .ok_or(FileDocumentError::InvalidTransactionFiles)?;
                 let action_valid = match request.operation {
                     CheckedHistoryOperationV1::Restore { version_id } => {
                         version_id == *selected_version && compensates.is_none()
@@ -769,22 +766,22 @@ impl FileMutationTransactionManifest {
                     }
                 };
                 if self.schema_version != FILE_MUTATION_TRANSACTION_VERSION_V3
-                    || self.participants.len() != 1
+                    || self.files.len() != 1
                     || request.intent_id != self.transaction_id
                     || request.review.workspace_id != self.workspace_id
-                    || request.review.document_id != participant.document_id
-                    || prior_revision.document_id != participant.document_id
-                    || prior_revision.version_id != participant.expected_version
+                    || request.review.document_id != file.document_id
+                    || prior_revision.document_id != file.document_id
+                    || prior_revision.version_id != file.expected_version
                     || selected_version.0.is_nil()
-                    || participant.role != FileMutationParticipantRole::RestoreContent
-                    || participant.proposed_version.provenance
+                    || file.role != TransactionFileRole::RestoreContent
+                    || file.proposed_version.provenance
                         != (FileProvenance::Restore {
                             from: *selected_version,
                         })
-                    || participant.proposed_version.timestamp_ms != self.timestamp_ms
+                    || file.proposed_version.timestamp_ms != self.timestamp_ms
                     || !action_valid
                 {
-                    return Err(FileDocumentError::InvalidTransactionParticipant);
+                    return Err(FileDocumentError::InvalidTransactionFile);
                 }
                 Ok(())
             }
@@ -797,7 +794,7 @@ impl FileMutationTransactionManifest {
                 prior_document_version,
             } => {
                 if self.schema_version != FILE_MUTATION_TRANSACTION_VERSION_V4
-                    || self.participants.len() != 2
+                    || self.files.len() != 2
                     || parent_record.0.is_nil()
                     || document_record.0.is_nil()
                     || temporary_record.0.is_nil()
@@ -812,15 +809,15 @@ impl FileMutationTransactionManifest {
                     return Err(FileDocumentError::InvalidReplacementRename);
                 }
                 let document = self
-                    .participants
+                    .files
                     .iter()
-                    .find(|p| p.role == FileMutationParticipantRole::AtomicSaveDocument)
-                    .ok_or(FileDocumentError::InvalidTransactionParticipants)?;
+                    .find(|p| p.role == TransactionFileRole::AtomicSaveDocument)
+                    .ok_or(FileDocumentError::InvalidTransactionFiles)?;
                 let temporary = self
-                    .participants
+                    .files
                     .iter()
-                    .find(|p| p.role == FileMutationParticipantRole::AtomicSaveTemporary)
-                    .ok_or(FileDocumentError::InvalidTransactionParticipants)?;
+                    .find(|p| p.role == TransactionFileRole::AtomicSaveTemporary)
+                    .ok_or(FileDocumentError::InvalidTransactionFiles)?;
                 if document.document_id != *document_record
                     || temporary.document_id != *temporary_record
                     || document.expected_version != *prior_document_version
@@ -831,7 +828,7 @@ impl FileMutationTransactionManifest {
                     || document.proposed_version.timestamp_ms != self.timestamp_ms
                     || temporary.proposed_version.timestamp_ms != self.timestamp_ms
                 {
-                    return Err(FileDocumentError::InvalidTransactionParticipant);
+                    return Err(FileDocumentError::InvalidTransactionFile);
                 }
                 Ok(())
             }
@@ -853,15 +850,15 @@ impl FileMutationTransactionManifest {
                     return Err(FileDocumentError::InvalidReplacementRename);
                 }
                 let source = self
-                    .participants
+                    .files
                     .iter()
-                    .find(|participant| participant.role == FileMutationParticipantRole::Source);
+                    .find(|file| file.role == TransactionFileRole::Source);
                 let replaced = self
-                    .participants
+                    .files
                     .iter()
-                    .find(|participant| participant.role == FileMutationParticipantRole::Replaced);
+                    .find(|file| file.role == TransactionFileRole::Replaced);
                 let (Some(source), Some(replaced)) = (source, replaced) else {
-                    return Err(FileDocumentError::InvalidTransactionParticipants);
+                    return Err(FileDocumentError::InvalidTransactionFiles);
                 };
                 if source.document_id != *source_record
                     || replaced.document_id != *replaced_record
@@ -902,14 +899,16 @@ impl FileMutationTransactionManifest {
                 {
                     return Err(FileDocumentError::InvalidKeepBothTransaction);
                 }
-                let source = self.participants.iter().find(|participant| {
-                    participant.role == FileMutationParticipantRole::KeepBothSource
-                });
-                let sibling = self.participants.iter().find(|participant| {
-                    participant.role == FileMutationParticipantRole::KeepBothSibling
-                });
+                let source = self
+                    .files
+                    .iter()
+                    .find(|file| file.role == TransactionFileRole::KeepBothSource);
+                let sibling = self
+                    .files
+                    .iter()
+                    .find(|file| file.role == TransactionFileRole::KeepBothSibling);
                 let (Some(source), Some(sibling)) = (source, sibling) else {
-                    return Err(FileDocumentError::InvalidTransactionParticipants);
+                    return Err(FileDocumentError::InvalidTransactionFiles);
                 };
                 if source.document_id != *source_record
                     || sibling.document_id != *sibling_record
@@ -945,7 +944,7 @@ impl FileMutationTransactionManifest {
                     .copied()
                     .collect::<std::collections::BTreeSet<_>>();
                 if self.schema_version != FILE_MUTATION_TRANSACTION_VERSION_V2
-                    || self.participants.len() != 1
+                    || self.files.len() != 1
                     || parent_record.0.is_nil()
                     || conflict_id.is_nil()
                     || conflict_versions.len() != 2
@@ -958,10 +957,10 @@ impl FileMutationTransactionManifest {
                 {
                     return Err(FileDocumentError::InvalidMergeTransaction);
                 }
-                let Some(source) = self.participants.first() else {
+                let Some(source) = self.files.first() else {
                     return Err(FileDocumentError::InvalidMergeTransaction);
                 };
-                if source.role != FileMutationParticipantRole::MergeSource
+                if source.role != TransactionFileRole::MergeSource
                     || source.document_id != *source_record
                     || source.expected_version != *current_version
                     || source.proposed_binding.parent != Some(*parent_record)
@@ -1395,10 +1394,10 @@ pub enum FileDocumentError {
     UnsupportedMutationTransactionVersion(u16),
     #[error("file mutation transaction has an invalid id or workspace")]
     InvalidMutationTransactionScope,
-    #[error("file mutation transaction participants must be exact, unique, and sorted")]
-    InvalidTransactionParticipants,
-    #[error("file mutation transaction participant projection is inconsistent")]
-    InvalidTransactionParticipant,
+    #[error("a file mutation transaction's files must be exact, unique, and sorted")]
+    InvalidTransactionFiles,
+    #[error("a transaction file's projection is inconsistent")]
+    InvalidTransactionFile,
     #[error("replacement rename transaction structure is inconsistent")]
     InvalidReplacementRename,
     #[error("keep-both transaction structure is inconsistent")]
@@ -1719,13 +1718,13 @@ mod tests {
         }
     }
 
-    fn transaction_participant(
+    fn transaction_file(
         document_id: FileDocumentId,
-        role: FileMutationParticipantRole,
+        role: TransactionFileRole,
         parent: FileDocumentId,
         name: &str,
         actor: FileActor,
-    ) -> FileMutationParticipant {
+    ) -> TransactionFile {
         let expected_version = FileVersionId::new();
         let proposed_version = FileVersionV1 {
             id: FileVersionId::new(),
@@ -1736,14 +1735,15 @@ mod tests {
             content_hash: None,
             metadata_hash: ContentHash([document_id.0.as_bytes()[0]; 32]),
             provenance: match role {
-                FileMutationParticipantRole::Source => FileProvenance::Rename,
-                FileMutationParticipantRole::AtomicSaveDocument => FileProvenance::Edit,
-                FileMutationParticipantRole::Replaced
-                | FileMutationParticipantRole::AtomicSaveTemporary => FileProvenance::Delete,
+                TransactionFileRole::Source => FileProvenance::Rename,
+                TransactionFileRole::AtomicSaveDocument => FileProvenance::Edit,
+                TransactionFileRole::Replaced | TransactionFileRole::AtomicSaveTemporary => {
+                    FileProvenance::Delete
+                }
                 _ => unreachable!("replacement fixture role"),
             },
         };
-        let mut participant = FileMutationParticipant {
+        let mut file = TransactionFile {
             document_id,
             role,
             expected_version,
@@ -1755,8 +1755,7 @@ mod tests {
                 kind: FileNodeKind::File,
                 tombstoned: matches!(
                     role,
-                    FileMutationParticipantRole::Replaced
-                        | FileMutationParticipantRole::AtomicSaveTemporary
+                    TransactionFileRole::Replaced | TransactionFileRole::AtomicSaveTemporary
                 ),
                 actor,
                 observed_at_ms: 44,
@@ -1772,8 +1771,8 @@ mod tests {
             proposed_version,
             projection_hash: ContentHash([0; 32]),
         };
-        participant.projection_hash = participant.computed_projection_hash().unwrap();
-        participant
+        file.projection_hash = file.computed_projection_hash().unwrap();
+        file
     }
 
     #[test]
@@ -1786,25 +1785,25 @@ mod tests {
         let parent = FileDocumentId::new();
         let document = FileDocumentId::new();
         let temporary = FileDocumentId::new();
-        let doc = transaction_participant(
+        let doc = transaction_file(
             document,
-            FileMutationParticipantRole::AtomicSaveDocument,
+            TransactionFileRole::AtomicSaveDocument,
             parent,
             "report.txt",
             actor,
         );
         let prior = doc.expected_version;
-        let mut participants = vec![
+        let mut files = vec![
             doc,
-            transaction_participant(
+            transaction_file(
                 temporary,
-                FileMutationParticipantRole::AtomicSaveTemporary,
+                TransactionFileRole::AtomicSaveTemporary,
                 parent,
                 "save-temp",
                 actor,
             ),
         ];
-        participants.sort_by_key(|p| p.document_id);
+        files.sort_by_key(|p| p.document_id);
         let manifest = FileMutationTransactionManifest {
             schema_version: FILE_MUTATION_TRANSACTION_VERSION_V4,
             transaction_id: Uuid::new_v4(),
@@ -1819,13 +1818,13 @@ mod tests {
                 temporary_record: temporary,
                 prior_document_version: prior,
             },
-            participants,
+            files,
         };
         let signed = FileMutationTransaction::signed(manifest.clone(), &key).unwrap();
         signed.verify().unwrap();
         let doc = signed
             .manifest
-            .participants
+            .files
             .iter()
             .find(|p| p.document_id == document)
             .unwrap();
@@ -1851,9 +1850,9 @@ mod tests {
         assert!(changed.validate().is_err());
         let mut changed = manifest.clone();
         let temporary = changed
-            .participants
+            .files
             .iter_mut()
-            .find(|p| p.role == FileMutationParticipantRole::AtomicSaveTemporary)
+            .find(|p| p.role == TransactionFileRole::AtomicSaveTemporary)
             .unwrap();
         temporary.proposed_binding.kind = FileNodeKind::Directory;
         temporary.proposed_content_revision = None;
@@ -1864,11 +1863,11 @@ mod tests {
         );
         let mut changed = manifest;
         let doc = changed
-            .participants
+            .files
             .iter_mut()
             .find(|p| p.document_id == document)
             .unwrap();
-        doc.role = FileMutationParticipantRole::Source;
+        doc.role = TransactionFileRole::Source;
         doc.proposed_version.provenance = FileProvenance::Rename;
         doc.projection_hash = doc.computed_projection_hash().unwrap();
         assert!(changed.validate().is_err());
@@ -1894,23 +1893,23 @@ mod tests {
             let destination_parent = FileDocumentId::new();
             let source_record = FileDocumentId::new();
             let replaced_record = FileDocumentId::new();
-            let mut participants = vec![
-                transaction_participant(
+            let mut files = vec![
+                transaction_file(
                     source_record,
-                    FileMutationParticipantRole::Source,
+                    TransactionFileRole::Source,
                     destination_parent,
                     "destination.txt",
                     actor,
                 ),
-                transaction_participant(
+                transaction_file(
                     replaced_record,
-                    FileMutationParticipantRole::Replaced,
+                    TransactionFileRole::Replaced,
                     destination_parent,
                     "destination.txt",
                     actor,
                 ),
             ];
-            participants.sort_by_key(|participant| participant.document_id);
+            files.sort_by_key(|file| file.document_id);
             let manifest = FileMutationTransactionManifest {
                 schema_version: FILE_MUTATION_TRANSACTION_VERSION,
                 transaction_id: Uuid::new_v4(),
@@ -1925,22 +1924,22 @@ mod tests {
                     source_record,
                     replaced_record,
                 },
-                participants,
+                files,
             };
             let signed = FileMutationTransaction::signed(manifest, &key).unwrap();
             signed.verify().unwrap();
 
             let mut reordered = signed.clone();
-            reordered.manifest.participants.reverse();
+            reordered.manifest.files.reverse();
             assert!(matches!(
                 reordered.verify(),
                 Err(FileMutationTransactionError::InvalidManifest(
-                    FileDocumentError::InvalidTransactionParticipants
+                    FileDocumentError::InvalidTransactionFiles
                 ))
             ));
 
             let mut forged = signed;
-            forged.manifest.participants[0].proposed_binding.name = "other.txt".into();
+            forged.manifest.files[0].proposed_binding.name = "other.txt".into();
             assert!(forged.verify().is_err());
         }
 
@@ -1949,13 +1948,13 @@ mod tests {
             let mut manifest = merge_manifest();
             manifest.schema_version = 3;
             let selected = FileVersionId::new();
-            let participant = &mut manifest.participants[0];
-            participant.role = FileMutationParticipantRole::RestoreContent;
-            participant.proposed_version.provenance = FileProvenance::Restore { from: selected };
-            participant.projection_hash = participant.computed_projection_hash().unwrap();
+            let file = &mut manifest.files[0];
+            file.role = TransactionFileRole::RestoreContent;
+            file.proposed_version.provenance = FileProvenance::Restore { from: selected };
+            file.projection_hash = file.computed_projection_hash().unwrap();
             let prior = ContentRevisionV1 {
-                version_id: participant.expected_version,
-                ..participant.proposed_content_revision.unwrap()
+                version_id: file.expected_version,
+                ..file.proposed_content_revision.unwrap()
             };
             manifest.operation = FileMutationOperation::RestoreContent {
                 request: CheckedHistoryRequestV1 {
@@ -1964,7 +1963,7 @@ mod tests {
                     review: FileRestoreReviewV1 {
                         schema_version: 1,
                         workspace_id: manifest.workspace_id,
-                        document_id: participant.document_id,
+                        document_id: file.document_id,
                         mount_lifetime: Uuid::new_v4(),
                         frontier: [9; 32],
                     },
@@ -1980,7 +1979,7 @@ mod tests {
             mislabeled_v1.schema_version = FILE_MUTATION_TRANSACTION_VERSION;
             assert_eq!(
                 mislabeled_v1.validate(),
-                Err(FileDocumentError::InvalidTransactionParticipant)
+                Err(FileDocumentError::InvalidTransactionFile)
             );
             manifest.validate().unwrap();
             let mut forged = manifest.clone();
@@ -2070,9 +2069,9 @@ mod tests {
             metadata_hash: ContentHash([9; 32]),
             provenance: FileProvenance::ConflictResolution,
         };
-        let mut participant = FileMutationParticipant {
+        let mut file = TransactionFile {
             document_id,
-            role: FileMutationParticipantRole::MergeSource,
+            role: TransactionFileRole::MergeSource,
             expected_version: current,
             proposed_binding: FileBindingV1 {
                 schema_version: FILE_BINDING_VERSION,
@@ -2095,7 +2094,7 @@ mod tests {
             proposed_version: result,
             projection_hash: ContentHash([0; 32]),
         };
-        participant.projection_hash = participant.computed_projection_hash().unwrap();
+        file.projection_hash = file.computed_projection_hash().unwrap();
         FileMutationTransactionManifest {
             schema_version: FILE_MUTATION_TRANSACTION_VERSION_V2,
             transaction_id: Uuid::new_v4(),
@@ -2112,7 +2111,7 @@ mod tests {
                 base_version: Some(base),
                 codec: ConflictMergeCodecV1::PlainUtf8ThreeWayV1,
             },
-            participants: vec![participant],
+            files: vec![file],
         }
     }
 

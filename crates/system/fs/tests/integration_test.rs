@@ -1681,7 +1681,7 @@ async fn denied_paths_are_invisible_and_read_grants_are_read_only() {
         let fixture = document_fixture(Some((acl, ALICE)), "quickfs_doc_ro").await;
         let doc = fixture.dir.path().join("shared/notes.md");
 
-        let before = std::fs::read(&doc).expect("a read participant reads the shared document");
+        let before = std::fs::read(&doc).expect("a read-only member reads the shared document");
         assert!(
             String::from_utf8_lossy(&before).contains("Shared paragraph"),
             "the read must return the real document, not an empty stand-in: {:?}",
@@ -1734,7 +1734,7 @@ async fn denied_paths_are_invisible_and_read_grants_are_read_only() {
             assert_eq!(
                 outcome.err().map(|e| e.raw_os_error().unwrap_or(0)),
                 Some(libc::EROFS),
-                "{what}: a read participant must not be able to originate a change"
+                "{what}: a read-only member must not be able to originate a change"
             );
         }
 
@@ -1771,7 +1771,7 @@ async fn denied_paths_are_invisible_and_read_grants_are_read_only() {
             fixture2.dir.path().join("shared/notes.md"),
             b"# Authored\n\nBy Bob\n",
         )
-        .expect("an authoring participant may write the shared document");
+        .expect("a writing member may write the shared document");
         assert_ne!(
             fixture2.namespace.lock().unwrap().heads(),
             heads2,

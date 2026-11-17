@@ -3505,9 +3505,9 @@ impl QuickFS {
             metadata_hash: snapshot.metadata_hash,
             provenance: fs_protocol::FileProvenance::ConflictResolution,
         };
-        let mut participant = fs_protocol::FileMutationParticipant {
+        let mut transaction_file = fs_protocol::TransactionFile {
             document_id,
-            role: fs_protocol::FileMutationParticipantRole::MergeSource,
+            role: fs_protocol::TransactionFileRole::MergeSource,
             expected_version: current_revision.version_id,
             proposed_binding: fs_protocol::FileBindingV1 {
                 schema_version: fs_protocol::FILE_BINDING_VERSION,
@@ -3530,7 +3530,9 @@ impl QuickFS {
             proposed_version,
             projection_hash: fs_protocol::ContentHash([0; 32]),
         };
-        participant.projection_hash = participant.computed_projection_hash().map_err(|_| EIO)?;
+        transaction_file.projection_hash = transaction_file
+            .computed_projection_hash()
+            .map_err(|_| EIO)?;
         let codec = match merged.codec {
             crate::conflict_merge::DeterministicMergeCodec::TiloDocAutomergeV1 => {
                 fs_protocol::ConflictMergeCodecV1::TiloDocAutomergeV1
@@ -3562,12 +3564,12 @@ impl QuickFS {
                 base_version: merged.base_version,
                 codec,
             },
-            participants: vec![participant],
+            files: vec![transaction_file],
         };
         let attributed: Vec<_> = manifest
-            .participants
+            .files
             .iter()
-            .map(|participant| participant.proposed_version.clone())
+            .map(|transaction_file| transaction_file.proposed_version.clone())
             .collect();
         self.commit_manifest(&manifest)?;
         self.attribute_versions(&attributed, None);
@@ -3723,9 +3725,9 @@ impl QuickFS {
             metadata_hash: target_metadata_hash,
             provenance: fs_protocol::FileProvenance::Create,
         };
-        let mut source_participant = fs_protocol::FileMutationParticipant {
+        let mut source_file = fs_protocol::TransactionFile {
             document_id: source_record,
-            role: fs_protocol::FileMutationParticipantRole::KeepBothSource,
+            role: fs_protocol::TransactionFileRole::KeepBothSource,
             expected_version: current_revision.version_id,
             proposed_binding: fs_protocol::FileBindingV1 {
                 schema_version: fs_protocol::FILE_BINDING_VERSION,
@@ -3748,12 +3750,10 @@ impl QuickFS {
             proposed_version: source_version,
             projection_hash: fs_protocol::ContentHash([0; 32]),
         };
-        source_participant.projection_hash = source_participant
-            .computed_projection_hash()
-            .map_err(|_| EIO)?;
-        let mut sibling_participant = fs_protocol::FileMutationParticipant {
+        source_file.projection_hash = source_file.computed_projection_hash().map_err(|_| EIO)?;
+        let mut sibling_file = fs_protocol::TransactionFile {
             document_id: target_record,
-            role: fs_protocol::FileMutationParticipantRole::KeepBothSibling,
+            role: fs_protocol::TransactionFileRole::KeepBothSibling,
             expected_version: selected_version,
             proposed_binding: fs_protocol::FileBindingV1 {
                 schema_version: fs_protocol::FILE_BINDING_VERSION,
@@ -3776,11 +3776,9 @@ impl QuickFS {
             proposed_version: target_version,
             projection_hash: fs_protocol::ContentHash([0; 32]),
         };
-        sibling_participant.projection_hash = sibling_participant
-            .computed_projection_hash()
-            .map_err(|_| EIO)?;
-        let mut participants = vec![source_participant, sibling_participant];
-        participants.sort_by_key(|participant| participant.document_id);
+        sibling_file.projection_hash = sibling_file.computed_projection_hash().map_err(|_| EIO)?;
+        let mut files = vec![source_file, sibling_file];
+        files.sort_by_key(|transaction_file| transaction_file.document_id);
         let manifest = fs_protocol::FileMutationTransactionManifest {
             schema_version: fs_protocol::files::FILE_MUTATION_TRANSACTION_VERSION_V2,
             transaction_id,
@@ -3797,14 +3795,14 @@ impl QuickFS {
                 conflict_versions: conflict.versions.clone(),
                 selected_version,
             },
-            participants,
+            files,
         };
         // Who caused these versions, when an agent did, is recorded once the transaction
         // committed them.
         let attributed: Vec<_> = manifest
-            .participants
+            .files
             .iter()
-            .map(|participant| participant.proposed_version.clone())
+            .map(|transaction_file| transaction_file.proposed_version.clone())
             .collect();
         self.commit_manifest(&manifest)?;
         self.attribute_versions(&attributed, None);

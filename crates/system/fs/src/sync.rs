@@ -162,7 +162,7 @@ impl Ticket {
     /// Stable public identifier used by record-scoped grants and repositories.
     ///
     /// Older tickets carry only the random 256-bit topic; deriving the UUID keeps them compatible
-    /// while every participant computes the same record namespace.
+    /// while every peer computes the same record namespace.
     pub fn workspace_id(&self) -> uuid::Uuid {
         Self::workspace_id_for_topic(self.workspace)
     }

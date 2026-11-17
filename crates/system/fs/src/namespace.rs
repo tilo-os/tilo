@@ -14,8 +14,8 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use fs_protocol::{
     ContentRevisionV1, FILE_BINDING_VERSION, FileActor, FileBindingV1, FileDocumentId,
-    FileMutationParticipantRole, FileMutationTransactionManifest, FileNameV1, FileNodeKind,
-    MAX_FILE_NAME_BYTES,
+    FileMutationTransactionManifest, FileNameV1, FileNodeKind, MAX_FILE_NAME_BYTES,
+    TransactionFileRole,
 };
 use fuser::{FileAttr, FileType, INodeNo};
 use iroh_blobs::Hash;
@@ -1535,7 +1535,7 @@ impl Namespace {
     }
 
     /// Admit a binding only to create a missing node, never to move, resurrect or tombstone an
-    /// existing one: transaction participants make their pre-transaction nodes available to the
+    /// existing one: transaction files make their pre-transaction nodes available to the
     /// projector without letting a stale ordinary binding undo the transaction on replay.
     pub fn apply_signed_binding_create_only(
         &mut self,
@@ -1757,15 +1757,15 @@ impl Namespace {
     ) -> Result<Option<Vec<u8>>, TransactionProjectionError> {
         match manifest.operation {
             fs_protocol::FileMutationOperation::RestoreContent { prior_revision, .. } => {
-                let participant = manifest
-                    .participants
+                let transaction_file = manifest
+                    .files
                     .first()
                     .ok_or(TransactionProjectionError::InvalidTransaction)?;
-                let revision = participant
+                let revision = transaction_file
                     .proposed_content_revision
                     .ok_or(TransactionProjectionError::InvalidTransaction)?;
                 let ino = self
-                    .ensure_ino_for_document_id(participant.document_id)
+                    .ensure_ino_for_document_id(transaction_file.document_id)
                     .ok_or(TransactionProjectionError::UnknownOrDuplicateRecord)?;
                 let current = self.content_revision_for(ino);
                 if current == Some(revision) {
@@ -1818,9 +1818,9 @@ impl Namespace {
             return Err(TransactionProjectionError::InvalidTransaction);
         };
         let source = manifest
-            .participants
+            .files
             .first()
-            .filter(|participant| participant.role == FileMutationParticipantRole::MergeSource)
+            .filter(|transaction_file| transaction_file.role == TransactionFileRole::MergeSource)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
         let source_id = self
             .unique_node_id_for_record(*source_record)
@@ -1869,14 +1869,14 @@ impl Namespace {
             return Err(TransactionProjectionError::InvalidTransaction);
         };
         let source = manifest
-            .participants
+            .files
             .iter()
-            .find(|participant| participant.role == FileMutationParticipantRole::KeepBothSource)
+            .find(|transaction_file| transaction_file.role == TransactionFileRole::KeepBothSource)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
         let sibling = manifest
-            .participants
+            .files
             .iter()
-            .find(|participant| participant.role == FileMutationParticipantRole::KeepBothSibling)
+            .find(|transaction_file| transaction_file.role == TransactionFileRole::KeepBothSibling)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
         let mut candidate = self.clone();
         let source_id = candidate
@@ -1944,14 +1944,14 @@ impl Namespace {
             return Err(TransactionProjectionError::InvalidTransaction);
         };
         let source = manifest
-            .participants
+            .files
             .iter()
-            .find(|participant| participant.role == FileMutationParticipantRole::KeepBothSource)
+            .find(|transaction_file| transaction_file.role == TransactionFileRole::KeepBothSource)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
         let sibling = manifest
-            .participants
+            .files
             .iter()
-            .find(|participant| participant.role == FileMutationParticipantRole::KeepBothSibling)
+            .find(|transaction_file| transaction_file.role == TransactionFileRole::KeepBothSibling)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
         let source_id = self
             .unique_node_id_for_record(*source_record)
@@ -2021,7 +2021,7 @@ impl Namespace {
 
     #[allow(
         clippy::too_many_lines,
-        reason = "Replacement projection keeps signature/participant checks, replay detection, namespace preconditions, rename, and revision installation in order."
+        reason = "Replacement projection keeps signature and file checks, replay detection, namespace preconditions, rename, and revision installation in order."
     )]
     fn apply_replacement_transaction_in_place(
         &mut self,
@@ -2038,15 +2038,15 @@ impl Namespace {
         else {
             return Err(TransactionProjectionError::InvalidTransaction);
         };
-        let source_participant = manifest
-            .participants
+        let source_file = manifest
+            .files
             .iter()
-            .find(|value| value.role == FileMutationParticipantRole::Source)
+            .find(|value| value.role == TransactionFileRole::Source)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
-        let replaced_participant = manifest
-            .participants
+        let replaced_file = manifest
+            .files
             .iter()
-            .find(|value| value.role == FileMutationParticipantRole::Replaced)
+            .find(|value| value.role == TransactionFileRole::Replaced)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
         let source_id = self
             .unique_node_id_for_record(*source_record)
@@ -2124,7 +2124,7 @@ impl Namespace {
         ) {
             return Err(TransactionProjectionError::PreconditionFailed);
         }
-        if let Some(revision) = &source_participant.proposed_content_revision
+        if let Some(revision) = &source_file.proposed_content_revision
             && !self.set_content_revision_preserving_preview(
                 source_ino,
                 revision,
@@ -2133,7 +2133,7 @@ impl Namespace {
         {
             return Err(TransactionProjectionError::ContentProjectionFailed);
         }
-        debug_assert_eq!(replaced_participant.document_id, *replaced_record);
+        debug_assert_eq!(replaced_file.document_id, *replaced_record);
         Ok(Some(self.save_incremental()))
     }
 
