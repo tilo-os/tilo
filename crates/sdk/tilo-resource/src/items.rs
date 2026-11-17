@@ -337,7 +337,8 @@ pub fn item_of_resource<R: Resource>(resource_id: &str) -> Option<(&str, Id)> {
 }
 
 /// [`item_of_resource`] of a resource of the kind `kind`.
-fn item_of_resource_in<'a>(kind: &str, resource_id: &'a str) -> Option<(&'a str, Id)> {
+#[must_use]
+pub fn item_of_resource_in<'a>(kind: &str, resource_id: &'a str) -> Option<(&'a str, Id)> {
     let rest = resource_id.strip_prefix(kind)?.strip_prefix('/')?;
     let (field, item) = rest.split_once('/')?;
     Some((field, Id::from_raw(item)))
