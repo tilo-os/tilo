@@ -28,9 +28,9 @@ impl ChatApp {
     /// from `reload` and after any focus change.
     pub(crate) fn set_composer_focus(&mut self) {
         let editing = self.editing.is_some() || self.channel_sheet.is_some() || !self.host_focused;
-        // Without an open channel the main composer has nowhere to send, so
+        // Without an open conversation the main composer has nowhere to send, so
         // it takes no keys.
-        let has_target = self.channel(&self.active_channel).is_some();
+        let has_target = self.takes_messages();
         let main = matches!(self.focus, Focus::Main) && !editing && has_target;
         let thread = matches!(self.focus, Focus::Thread) && self.thread_open.is_some() && !editing;
         self.composer_main.set_focus(main);
