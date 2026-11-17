@@ -259,7 +259,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_workspaces
     // Alice stays globally handshake-admitted through workspace 702, but the
     // periodic audit then closes her workspace-701 stream and that global
     // admission cannot reopen workspace 701.
-    closes(alice_client).await;
+    closes(&alice_client).await;
     assert!(!server.is_subscribed(shared, &alice_a_key).await);
     assert!(server.is_subscribed(shared, &bob_key).await);
     assert!(server.is_subscribed(shared, &charlie_key).await);
@@ -294,7 +294,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_workspaces
         quiet(&bob_client, QUIET).await,
         "the live member hears nothing of the refused change"
     );
-    closes(alice_reconnect).await;
+    closes(&alice_reconnect).await;
 
     // Another device of Alice's joins the workspace her person is still in,
     // and the one her person left no longer admits her.
@@ -322,7 +322,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_workspaces
             signature: [0; 64],
         })
         .unwrap();
-    closes(alice_reconnect).await;
+    closes(&alice_reconnect).await;
 
     drop(alice_client);
     drop(alice_workspace_b);
