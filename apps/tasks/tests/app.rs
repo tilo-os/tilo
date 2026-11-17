@@ -1534,3 +1534,51 @@ fn an_agents_comment_is_drawn_on_its_words_in_the_thread() {
         "its caret on the comment's words: {tags:?}"
     );
 }
+
+/// An issue's page shows the description the issue holds: the body is kept in
+/// the part that keeps the issue, and the page reads it there, never the
+/// tracker's own document the page is a view of.
+#[test]
+fn an_issue_page_shows_its_description() {
+    let mut app = open();
+    app.call_on(
+        &chain(),
+        "create",
+        json!({ "title": "Write the launch notes", "body": "Look at her GitHub." }),
+    )
+    .expect("create");
+    let issue = only(&app);
+    app.call_on(&issue_resource(&issue), "open", json!({}))
+        .expect("open the issue");
+    let labels = |app: &mut TestApp<App>| -> Vec<String> {
+        app.harness()
+            .a11y_nodes()
+            .into_iter()
+            .filter_map(|(_, node)| node.label().map(str::to_owned))
+            .collect()
+    };
+    let shown = labels(&mut app);
+    assert!(
+        shown
+            .iter()
+            .any(|label| label.contains("Look at her GitHub.")),
+        "the description shows: {shown:?}"
+    );
+    assert!(
+        !shown.iter().any(|label| label.contains("Write something")),
+        "an empty editor is not shown: {shown:?}"
+    );
+
+    // And what is written into it reaches the page as it changes.
+    app.call_on(
+        &format!("{}/body", issue_resource(&issue)),
+        "append-paragraph",
+        json!({ "text": "Say why" }),
+    )
+    .expect("write the description");
+    let shown = labels(&mut app);
+    assert!(
+        shown.iter().any(|label| label.contains("Say why")),
+        "the page follows the description: {shown:?}"
+    );
+}
