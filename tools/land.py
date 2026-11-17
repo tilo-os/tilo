@@ -240,6 +240,9 @@ def submit(options) -> int:
             return STILL_QUEUED
         time.sleep(2)
         result = read_json(place.results / f"{identity}.json")
+    # An answer is given once: landing the same commit again after a conflict or a failed lint
+    # (main may have moved past what caused it) queues it again.
+    (place.results / f"{identity}.json").unlink(missing_ok=True)
     if result["status"] == "landed" and result.get("commit"):
         follow(repo, head, result["commit"], options)
     return answer(result, options.json)
