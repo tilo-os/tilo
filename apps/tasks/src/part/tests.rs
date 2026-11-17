@@ -554,3 +554,41 @@ fn an_issue_and_a_project_are_named_by_their_names() {
         "what there is follows: {why}"
     );
 }
+
+#[test]
+fn an_issue_is_named_by_its_title_its_number_or_its_id() {
+    let mut board = Board::new("ada");
+    board.create("Write the post", None);
+    let id = board.id_of("Write the post");
+    // By the title it is read under, wherever its part is.
+    board
+        .apply(IssuePart::RENAME.with(issue_part::Rename {
+            issue: Id::from_raw("Write the post"),
+            title: nb("Write it"),
+        }))
+        .unwrap();
+    // By the number it reads as.
+    board
+        .apply(IssuePart::RENAME.with(issue_part::Rename {
+            issue: Id::from_raw("#1"),
+            title: nb("Write the post"),
+        }))
+        .unwrap();
+    // And by its id, which no rename changes.
+    board
+        .apply(IssuePart::RENAME.with(issue_part::Rename {
+            issue: id.clone(),
+            title: nb("Ship it"),
+        }))
+        .unwrap();
+    assert_eq!(board.titles(), ["Ship it"]);
+    // A reference to no issue says which there are.
+    let why = board
+        .apply(IssuePart::RENAME.with(issue_part::Rename {
+            issue: Id::from_raw("Nothing"),
+            title: nb("Never"),
+        }))
+        .expect_err("no issue is named Nothing");
+    assert!(why.contains("no issue named Nothing"), "{why}");
+    assert!(why.contains("Ship it"), "what there is follows: {why}");
+}

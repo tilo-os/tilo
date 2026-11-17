@@ -1279,6 +1279,41 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             }
 
             #[inline]
+            fn item_named(
+                &self,
+                field: &str,
+                reference: &str,
+            ) -> ::core::result::Result<#krate::Id, #krate::Refusal> {
+                #table::item_named(&Self::__RECORD, self, field, reference)
+            }
+
+            #[inline]
+            fn item_named_as(
+                &self,
+                field: &str,
+                what: (&str, &str),
+                reference: &str,
+            ) -> ::core::result::Result<#krate::Id, #krate::Refusal> {
+                #table::item_named_as(
+                    &Self::__RECORD,
+                    self,
+                    field,
+                    ::core::option::Option::Some(what),
+                    reference,
+                )
+            }
+
+            #[inline]
+            fn item_holds(&self, field: &str, id: &str) -> bool {
+                #table::item_holds(&Self::__RECORD, self, field, id)
+            }
+
+            #[inline]
+            fn item_id_any(&self, reference: &str) -> bool {
+                #table::item_id_any(&Self::__RECORD, self, reference)
+            }
+
+            #[inline]
             fn item_search(&self) -> ::std::vec::Vec<#krate::items::ItemText> {
                 #table::item_search(&Self::__RECORD, self)
             }

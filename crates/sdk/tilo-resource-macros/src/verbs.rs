@@ -1217,10 +1217,39 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             arms.push(quote! {
                 Self::#variant(params) => {
                     let _ = &params;
-                    let __item = record
-                        .#field_ident
-                        .get_mut(&params.#ident)
-                        .ok_or_else(|| #krate::Refusal::new("no such item"))?;
+                    // The item the action names: its id, or the name its
+                    // collection publishes it under — refused, with the items
+                    // there are, when it names neither.
+                    let __named = match record.#field_ident.get(&params.#ident) {
+                        ::core::option::Option::Some(_) => ::core::option::Option::None,
+                        // A reference nobody wrote is the action's to refuse,
+                        // in its own words.
+                        ::core::option::Option::None if params.#ident.as_str().trim().is_empty() => {
+                            ::core::option::Option::None
+                        }
+                        ::core::option::Option::None => #krate::Fields::item_named(
+                            &*record,
+                            #field,
+                            params.#ident.as_str(),
+                        )
+                        .ok(),
+                    };
+                    let __key =
+                        __named.unwrap_or_else(|| ::core::clone::Clone::clone(&params.#ident));
+                    let __item = match record.#field_ident.get_mut(&__key) {
+                        ::core::option::Option::Some(item) => item,
+                        ::core::option::Option::None => {
+                            return ::core::result::Result::Err(
+                                #krate::Fields::item_named(
+                                    &*record,
+                                    #field,
+                                    params.#ident.as_str(),
+                                )
+                                .err()
+                                .unwrap_or_else(|| #krate::Refusal::new("no such item")),
+                            );
+                        }
+                    };
                     #krate::Outcome::into_result(<#self_ty>::#method(#(#call_args),*))
                 }
             });
@@ -1241,9 +1270,59 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 ),
             });
         } else {
+            // A verb whose first parameter is an item's id acts on the item the
+            // caller names: its id, an address it is published under, or the
+            // name its collection publishes it under.
+            let names_an_item = verb
+                .params
+                .first()
+                .filter(|first| last_ident(&first.ty).is_some_and(|(name, _)| name == "Id"));
+            let resolve = names_an_item.map(|first| {
+                let ident = &first.ident;
+                let param = &first.public;
+                let named = verb
+                    .options
+                    .item
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_default();
+                quote! {
+                    // An item the caller names by its id costs nothing more;
+                    // one written as its collection publishes its name is
+                    // resolved before the action runs.
+                    let mut __resolved = ::core::option::Option::None;
+                    if !#krate::items::entry_target(<#self_ty>::__OUTBOXES, #named)
+                        && let ::core::option::Option::Some(__field) =
+                            #krate::items::target_field(
+                                <#self_ty as #krate::Fields>::ITEM_FIELDS,
+                                #param,
+                                #named,
+                            )
+                        && !params.#ident.as_str().trim().is_empty()
+                        && !#krate::Fields::item_holds(&*record, __field, params.#ident.as_str())
+                    {
+                        let mut __named = ::core::clone::Clone::clone(params);
+                        match #krate::Fields::item_named(&*record, __field, params.#ident.as_str())
+                        {
+                            ::core::result::Result::Ok(__id) => __named.#ident = __id,
+                            // A reference this collection does not hold but
+                            // the record does is the action's to judge: it may
+                            // keep the item in another of its collections.
+                            ::core::result::Result::Err(__why) => {
+                                if !#krate::Fields::item_id_any(&*record, params.#ident.as_str()) {
+                                    return ::core::result::Result::Err(__why);
+                                }
+                            }
+                        }
+                        __resolved = ::core::option::Option::Some(__named);
+                    }
+                    let params = __resolved.as_ref().unwrap_or(params);
+                }
+            });
             arms.push(quote! {
                 Self::#variant(params) => {
                     let _ = &params;
+                    #resolve
                     #(let mut #taken = ::core::mem::take(&mut record.#outboxes);)*
                     let outcome = #krate::Outcome::into_result(record.#method(#(#call_args),*));
                     #(record.#outboxes = #taken;)*

@@ -201,9 +201,13 @@ tilo_test_env::scenario! {
 
         let heads = board.heads();
         let refused = board.apply(Board::ADVANCE.with(Id::from_raw("missing")));
-        assert!(
-            matches!(refused, Err(tilo_actions::ApiError::Failed(reason)) if reason == "no such card")
-        );
+        // A reference to no card names the cards there are, rather than an
+        // item that went away.
+        let said = match &refused {
+            Err(tilo_actions::ApiError::Failed(reason)) => reason.clone(),
+            other => panic!("a missing card is refused in words: {other:?}"),
+        };
+        assert!(said.starts_with("no card named missing; cards:"), "{said}");
         assert_eq!(board.heads(), heads);
     }
 

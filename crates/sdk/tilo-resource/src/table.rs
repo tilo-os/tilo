@@ -1970,6 +1970,178 @@ pub fn item_label(
     (items.label_of_item)((record.field)(value, index)?, id)
 }
 
+/// Resolve `reference` to an item of the collection field `name`.
+///
+/// A reference is the item's id, an address its app publishes it under
+/// (`<kind>/<field>/<id>`, `<kind>.<field>:<id>`, or either form of a
+/// nested item's), or the label its collection publishes it under — which
+/// is what a person or an agent knows it by. A reference naming none of the
+/// collection's items is refused with the items there are, so a name that
+/// was mistyped or renamed is never reported as an item that went away.
+pub fn item_named(
+    record: &ResourceDesc,
+    value: &dyn Any,
+    name: &str,
+    reference: &str,
+) -> Result<crate::Id, crate::Refusal> {
+    item_named_as(record, value, name, None, reference)
+}
+
+/// [`item_named`] in the words `what` names the items by — `("project or
+/// area", "projects and areas")` where the field's own name is not what the
+/// app calls them — the field's words when it is `None`.
+pub fn item_named_as(
+    record: &ResourceDesc,
+    value: &dyn Any,
+    name: &str,
+    what: Option<(&str, &str)>,
+    reference: &str,
+) -> Result<crate::Id, crate::Refusal> {
+    let many = tilo_actions::in_words(name);
+    let one = tilo_actions::singular(&many);
+    let (one, many) = what.unwrap_or((&one, &many));
+    let Some((index, field)) = record
+        .fields
+        .iter()
+        .enumerate()
+        .find(|(_, field)| field.items.is_some() && field.name == name)
+    else {
+        return Err(crate::Refusal::new(format!("this record keeps no {name}")));
+    };
+    let asked = reference.trim();
+    if asked.is_empty() {
+        return Err(crate::Refusal::new(format!(
+            "name the {one}, by its id or its name"
+        )));
+    }
+    let Some(items) = field.items else {
+        return Err(crate::Refusal::new(format!("this record keeps no {many}")));
+    };
+    let Some(inner) = (record.field)(value, index) else {
+        return Err(crate::Refusal::new(format!("this record keeps no {many}")));
+    };
+    let Some(list) = (items.list)(inner) else {
+        return Err(crate::Refusal::new(format!("this record keeps no {many}")));
+    };
+    // Its id first, then the item part of any address it is published under:
+    // neither reads a label, so the common case — a caller that kept the id
+    // — costs a scan of the ids alone.
+    let by_id = |candidate: &str| {
+        (0..list.count()).find_map(|at| {
+            let (id, _) = list.item(at)?;
+            (id.as_str() == candidate).then_some(id)
+        })
+    };
+    if let Some(id) = by_id(asked) {
+        return Ok(id);
+    }
+    for candidate in item_parts(asked) {
+        if let Some(id) = by_id(&candidate) {
+            return Ok(id);
+        }
+    }
+    // Then the name the collection publishes it under, which is what a
+    // person types.
+    let named: Vec<(crate::Id, String)> = (0..list.count())
+        .filter_map(|at| {
+            let (id, item) = list.item(at)?;
+            let label = crate::collection::label_of(items.item_table, &id, item);
+            label.eq_ignore_ascii_case(asked).then_some((id, label))
+        })
+        .collect();
+    match named.as_slice() {
+        [(id, _)] => return Ok(id.clone()),
+        [_, ..] => {
+            let ids: Vec<&str> = named.iter().map(|(id, _)| id.as_str()).collect();
+            return Err(crate::Refusal::new(format!(
+                "more than one {one} is named {asked}; name it by its id: {}",
+                ids.join(", ")
+            )));
+        }
+        [] => {}
+    }
+    let listed: Vec<String> = (0..list.count())
+        .filter_map(|at| {
+            let (id, item) = list.item(at)?;
+            Some(crate::collection::label_of(items.item_table, &id, item))
+        })
+        .collect();
+    let shown: Vec<&str> = listed.iter().map(String::as_str).take(12).collect();
+    let more = listed.len().saturating_sub(shown.len());
+    let holds = if shown.is_empty() {
+        "none yet".to_owned()
+    } else if more > 0 {
+        format!("{} and {more} more", shown.join(", "))
+    } else {
+        shown.join(", ")
+    };
+    Err(crate::Refusal::new(format!(
+        "no {one} named {asked}; {many}: {holds}"
+    )))
+}
+
+/// Whether the collection field `name` holds the item `id`: the check an
+/// action makes before it resolves a reference, so one that already names
+/// the id costs a scan of the ids alone.
+#[must_use]
+pub fn item_holds(record: &ResourceDesc, value: &dyn Any, name: &str, id: &str) -> bool {
+    let Some((index, field)) = record
+        .fields
+        .iter()
+        .enumerate()
+        .find(|(_, field)| field.items.is_some() && field.name == name)
+    else {
+        return false;
+    };
+    let Some(items) = field.items else {
+        return false;
+    };
+    let Some(inner) = (record.field)(value, index) else {
+        return false;
+    };
+    (items.list)(inner).is_some_and(|list| {
+        (0..list.count()).any(|at| list.item(at).is_some_and(|(held, _)| held.as_str() == id))
+    })
+}
+
+/// Whether `reference` is the id of an item of any of the record's
+/// collections: an action that names one may hold it in a collection other
+/// than the one its parameter is named after ([`item_named`]).
+#[must_use]
+pub fn item_id_any(record: &ResourceDesc, value: &dyn Any, reference: &str) -> bool {
+    record
+        .fields
+        .iter()
+        .enumerate()
+        .filter_map(|(index, field)| Some((field.items?, (record.field)(value, index)?)))
+        .any(|(items, inner)| {
+            (items.list)(inner).is_some_and(|list| {
+                (0..list.count()).any(|at| {
+                    list.item(at)
+                        .is_some_and(|(id, _)| id.as_str() == reference)
+                })
+            })
+        })
+}
+
+/// The item an address names, as written: the last segment of an item
+/// resource id (`<kind>/<field>/<id>`, and the nested forms), or of an
+/// item's stable address (`<kind>.<field>:<id>`).
+fn item_parts(reference: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    if let Some(last) = reference.rsplit('/').next()
+        && last != reference
+    {
+        parts.push(last.to_owned());
+    }
+    if let Some(form) = tilo_actions::item_form_of(reference)
+        && let Some(last) = form.rsplit('/').next()
+    {
+        parts.push(last.to_owned());
+    }
+    parts
+}
+
 /// [`Fields::item_search`](crate::Fields::item_search) of a record.
 #[must_use]
 pub fn item_search(record: &ResourceDesc, value: &dyn Any) -> Vec<ItemText> {

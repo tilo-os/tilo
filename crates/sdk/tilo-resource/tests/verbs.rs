@@ -300,6 +300,47 @@ tilo_test_env::scenario! {
         assert!(archived.actions.iter().any(|spec| spec.id == "restore"));
     }
 
+    phase an_item_is_named_by_its_id_its_address_or_its_title;
+    {
+        let mut shelf = Replica::<Shelf>::new();
+        shelf.apply(Shelf::ADD.with(("Tea".to_owned(), None))).unwrap();
+        let id = shelf
+            .state()
+            .unwrap()
+            .cards
+            .iter()
+            .map(|(id, _)| id.clone())
+            .next()
+            .unwrap();
+        // By its name, what a person or an agent reads in a listing.
+        shelf
+            .apply(Shelf::ARCHIVE_CARD.with(Id::from_raw("Tea")))
+            .unwrap();
+        assert!(shelf.state().unwrap().cards.is_empty());
+        shelf.apply(Shelf::RESTORE.with(id.clone())).unwrap();
+        // By the address it is published under, in either form.
+        shelf
+            .apply(Shelf::ARCHIVE_CARD.with(Id::from_raw(format!(
+                "test.shelf/cards/{id}"
+            ))))
+            .unwrap();
+        shelf.apply(Shelf::RESTORE.with(id.clone())).unwrap();
+        shelf
+            .apply(Shelf::ARCHIVE_CARD.with(Id::from_raw(format!(
+                "test.shelf.cards:{id}"
+            ))))
+            .unwrap();
+        shelf.apply(Shelf::RESTORE.with(id)).unwrap();
+        // A reference to no card of the collection says so, and says which
+        // there are, rather than reporting a card that went away.
+        let why = shelf
+            .apply(Shelf::ARCHIVE_CARD.with(Id::from_raw("Milk")))
+            .expect_err("no card is named Milk")
+            .to_string();
+        assert!(why.contains("no card named Milk"), "{why}");
+        assert!(why.contains("Tea"), "what there is follows: {why}");
+    }
+
     phase a_verb_with_an_outbox_reaches_outside;
     {
         let mut shelf = Replica::<Shelf>::new();
