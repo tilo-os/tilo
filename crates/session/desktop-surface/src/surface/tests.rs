@@ -2875,7 +2875,9 @@ fn the_desktop_composes_as_its_strips() {
     frame.poll_frame().expect("a frame draws the desk");
     let composition = frame.composition();
     let desks = collect(&composition.root, "DesktopSurface");
-    let desk = desks.first().unwrap_or_else(|| panic!("the desk: {composition:#?}"));
+    let desk = desks
+        .first()
+        .unwrap_or_else(|| panic!("the desk: {composition:#?}"));
     assert_eq!(desk.tag, Some("main"));
     assert!(desk.own.is_none(), "the desk is not a picture of itself");
     assert!(!desk.children.is_empty(), "the strips stand in it");

@@ -1,8 +1,8 @@
 use super::*;
-use ui::tilo_resource::MemberId;
 use crate::testing::MountedChat;
 use std::{cell::Cell, task::Poll};
 use ui::models::{ModelBackend, ModelResponse, StopReason, StreamSink, Usage};
+use ui::tilo_resource::MemberId;
 
 struct Backend {
     text: String,

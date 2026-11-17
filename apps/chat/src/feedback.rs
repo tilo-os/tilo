@@ -254,7 +254,6 @@ pub fn receipt_from_record(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::tilo_resource::MemberId;
     use crate::record::chat;
     use crate::resource::Chat;
     use crate::testing::apply_as;
@@ -262,6 +261,7 @@ mod tests {
     use tilo_automerge::ApplyIncoming as _;
     use ui::feedback::{ReviewedFeedback, Submission};
     use ui::tilo_resource::Invoke;
+    use ui::tilo_resource::MemberId;
 
     /// What `channel` of the chat in `doc` shows: the reports filed in it
     /// among its messages.

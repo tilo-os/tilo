@@ -1,10 +1,10 @@
 use automerge::AutoCommit as Doc;
-use ui::tilo_resource::MemberId;
 use ui::feedback::{
     Destination, FrameTimings, Hidden, Interaction, Outcome, Part, ReviewedFeedback,
     ReviewedSelection, ReviewedText, ScreenshotRef, Submission, TextKind,
 };
 use ui::tilo_resource::Id;
+use ui::tilo_resource::MemberId;
 
 use crate::resource::Chat;
 use crate::testing::{apply_as, submit_feedback};

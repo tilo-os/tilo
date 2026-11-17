@@ -1,8 +1,8 @@
 use super::*;
-use ui::tilo_resource::MemberId;
 use automerge::{ObjType, ROOT, transaction::Transactable};
 use tilo_actions::EncodedAction;
 use ui::feedback::{Destination, Receipt, ReviewedFeedback, Submission};
+use ui::tilo_resource::MemberId;
 
 fn submitted() -> (automerge::AutoCommit, Submission, ResourceSpec) {
     submitted_as("visitor")
