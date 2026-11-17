@@ -46,6 +46,7 @@ import os
 import re
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -402,15 +403,12 @@ class Lander:
         names = " ".join(entry["id"][:8] for entry, _ in batch)
         self.doing(f"linting {len(batch)} change(s) on {upstream[:12]}: {names}")
         started = now()
-        lint = subprocess.run(
-            [sys.executable, "-I", "tools/ci/pre_push_lint.py", "--range", f"{upstream}..HEAD"],
-            cwd=self.tree, capture_output=True, text=True,
-        )
+        lint = self.lint(upstream)
         seconds = now() - started
         output = (lint.stdout + lint.stderr).strip()
         print(output, flush=True)
         self.place.event(kind="lint", ok=lint.returncode == 0, seconds=seconds, batch=len(batch),
-                         onto=upstream)
+                         onto=upstream, status=lint.returncode)
         explained = bool(NOT_BUILT.search(output) or POINTED_AT.search(output)
                          or any(DIAGNOSTIC.match(line.strip()) and not any(
                              words in line for words in NOT_A_DIAGNOSTIC)
@@ -453,6 +451,32 @@ class Lander:
             self.finish(entry, {"status": "landed", "commit": commit, "onto": upstream,
                                 "batch": len(batch), "lint_seconds": seconds})
         return True
+
+    def lint(self, upstream: str) -> subprocess.CompletedProcess:
+        """The push lint of what the worktree adds to `upstream`, in a process group of its own.
+
+        A lander stopped mid-lint (by a newer one taking its place) stops the lint's compiles
+        too, rather than leave them loading the builder for minutes, for nobody.
+        """
+        process = subprocess.Popen(
+            [sys.executable, "-I", "tools/ci/pre_push_lint.py", "--range", f"{upstream}..HEAD"],
+            cwd=self.tree, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            start_new_session=True,
+        )
+
+        def stop(signum, _frame):
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            sys.exit(128 + signum)
+
+        previous = signal.signal(signal.SIGTERM, stop)
+        try:
+            stdout, stderr = process.communicate()
+        finally:
+            signal.signal(signal.SIGTERM, previous)
+        return subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
 
     def inherited(self, size: int, upstream: str, output: str) -> bool:
         """Whether every diagnostic of the failed lint is one the branch's head has without the batch.
