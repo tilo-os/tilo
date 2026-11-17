@@ -400,3 +400,20 @@ fn an_agents_answer_reads_by_the_name_the_member_list_gives_it() {
         crate::identity::unnamed_label(&MemberId::agent("stranger"))
     );
 }
+
+/// An app's code answers where no window heard a member list: the members the device lends it
+/// name the people it reads, as a window names them.
+#[test]
+fn an_apps_code_names_a_member_by_the_members_the_device_lends_it() {
+    let mut doc = crate::testing::Workspace::default();
+    crate::testing::starter(&mut doc, crate::model::ME, "You");
+    let mut app = ChatApp::new_ephemeral();
+    app.attach_workspace(&doc);
+    app.users.clear();
+    app.workspace_names.clear();
+    let rae = MemberId::person("r".repeat(32));
+    ui::tilo_resource::members::know([(rae.clone(), " Rae ".to_owned())]);
+    assert_eq!(app.display_name(&rae), "Rae");
+    assert_eq!(app.user_name(&rae), "Rae");
+    ui::tilo_resource::members::know([]);
+}

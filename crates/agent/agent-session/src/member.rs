@@ -2026,6 +2026,7 @@ impl AgentMember {
             &tilo_actions::MemberId::agent(crate::control::agent_id(&self.identity.delegation)),
             &crate::ReplicaActor::Agent {
                 person: crate::control::person(&self.identity.delegation),
+                name: self.identity.delegation.label.clone(),
             },
             seed,
         )

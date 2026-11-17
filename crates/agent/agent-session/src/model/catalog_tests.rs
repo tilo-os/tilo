@@ -413,6 +413,7 @@ fn survey(app: &str) -> Vec<ActionDescriptor> {
         &tilo_actions::MemberId::agent("measure"),
         &crate::ReplicaActor::Agent {
             person: tilo_actions::MemberId::person("maker"),
+            name: String::new(),
         },
         crate::Seed::New,
     )

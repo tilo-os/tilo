@@ -56,6 +56,7 @@ fn every_web_app_takes_an_edit_through_its_published_operations() {
             &MemberId::agent("coverage-agent"),
             ReplicaActor::Agent {
                 person: MemberId::person("maker"),
+                name: String::new(),
             },
             Seed::New,
         )
@@ -110,6 +111,7 @@ fn every_web_apps_record_reads_with_no_window_open() {
             &MemberId::agent("reading-agent"),
             &ReplicaActor::Agent {
                 person: MemberId::person("maker"),
+                name: String::new(),
             },
             Seed::New,
         )

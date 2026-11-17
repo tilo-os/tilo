@@ -1527,6 +1527,7 @@ mod tests {
             &tilo_actions::MemberId::agent("maker"),
             &ReplicaActor::Agent {
                 person: tilo_actions::MemberId::person("maker"),
+                name: String::new(),
             },
             Seed::New,
         )

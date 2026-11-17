@@ -82,6 +82,7 @@ fn agents_document(project: &Project, workspace: &ContentStore) -> ConfinedRepli
         &MemberId::agent("editor"),
         &ReplicaActor::Agent {
             person: MemberId::person("editor"),
+            name: String::new(),
         },
         Seed::New,
     )
@@ -296,6 +297,7 @@ fn a_second_presence_views_a_frame_of_footage_the_first_imported() {
         &MemberId::agent("editor"),
         &ReplicaActor::Agent {
             person: MemberId::person("editor"),
+            name: String::new(),
         },
         Seed::New,
     )
@@ -328,6 +330,7 @@ fn a_second_presence_views_a_frame_of_footage_the_first_imported() {
         &MemberId::agent("reviewer"),
         &ReplicaActor::Agent {
             person: MemberId::person("reviewer"),
+            name: String::new(),
         },
         Seed::Existing {
             record: editor.document_id().clone(),

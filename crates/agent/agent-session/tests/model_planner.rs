@@ -36,6 +36,7 @@ fn context_with(app_id: &str) -> (PlanContext, DocumentRoute, Replica) {
         &tilo_actions::MemberId::agent("agent"),
         ReplicaActor::Agent {
             person: tilo_actions::MemberId::person("agent"),
+            name: String::new(),
         },
         Seed::New,
     )

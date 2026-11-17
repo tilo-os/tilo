@@ -156,6 +156,7 @@ fn an_agent_reads_searches_drafts_and_exports_mail_delivered_without_a_server() 
         &MemberId::agent("assistant"),
         &ReplicaActor::Agent {
             person: MemberId::person("maker"),
+            name: String::new(),
         },
         Seed::New,
     )
@@ -344,6 +345,7 @@ fn an_agent_is_offered_adding_an_account_its_person_is_asked_for() {
         &MemberId::agent("assistant"),
         &ReplicaActor::Agent {
             person: MemberId::person("maker"),
+            name: String::new(),
         },
         Seed::New,
     )

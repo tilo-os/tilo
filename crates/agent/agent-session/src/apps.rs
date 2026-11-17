@@ -223,11 +223,13 @@ pub enum ReplicaActor {
     /// record's owner, as a browser tab of the owner is.
     Owner,
     /// A delegated agent, at the cap its delegation bounds it to, for
-    /// `person`. The replica's member is the agent, so what it writes is the
-    /// agent's; the person is whose access bounds it.
+    /// `person` under `name`. The replica's member is the agent, so what it
+    /// writes is the agent's; the person is whose access bounds it.
     Agent {
         /// The person the agent acts for.
         person: MemberId,
+        /// What its person calls it, as its delegation says.
+        name: String,
     },
     /// An installed bot: its installer's access bounded by the bot's
     /// grants, built by the host from the workspace's policy before each run.
@@ -488,7 +490,7 @@ impl Replica {
         // What an agent's replica seeds belongs to the person it acts for: the
         // change is the agent's, the document the person's.
         let acted_for = match &actor {
-            ReplicaActor::Agent { person } => Some(person.clone()),
+            ReplicaActor::Agent { person, .. } => Some(person.clone()),
             _ => None,
         };
         let (invoker, permissions) = replica_access(actor, workspace, member);
@@ -1586,10 +1588,13 @@ fn replica_access(
 ) -> (tilo_actions::ActionInvoker, PermissionContext) {
     let mut invoker = tilo_actions::ActionInvoker::member(member.clone());
     let permissions = match actor {
-        ReplicaActor::Agent { person } => {
+        ReplicaActor::Agent { person, name } => {
             let id = member.id();
-            // The agent is who the changes are by, for the person it acts for.
-            invoker = tilo_actions::ActionInvoker::agent(id).acting_for(person.id().to_owned());
+            // The agent is who the changes are by, for the person it acts for, under the name its
+            // delegation gives it.
+            invoker = tilo_actions::ActionInvoker::agent(id)
+                .acting_for(person.id().to_owned())
+                .named(Some(name).filter(|name| !name.trim().is_empty()));
             let permissions = PermissionContext::member_of(workspace, &person, Role::Editor);
             let acting =
                 policy::Acting::agent(id).acting_for(policy::Acting::member(person.clone()));

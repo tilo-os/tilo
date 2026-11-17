@@ -41,6 +41,16 @@ impl ChatApp {
                 crate::identity::shared_name_label(id, &n)
             };
         }
+        // An app's code answers where no window heard the member list: the members the device
+        // lends it answer in the same place.
+        if let Some(n) = ui::tilo_resource::members::name_of(id) {
+            let n = self.workspace_labels.label(id.id(), &n);
+            return if self.is_me(id) {
+                n
+            } else {
+                crate::identity::shared_name_label(id, &n)
+            };
+        }
         if let Some(u) = self.users.iter().find(|u| u.id == *id)
             && !u.name.trim().is_empty()
         {

@@ -16,6 +16,7 @@ fn agents_video_survey() -> Vec<ActionDescriptor> {
         &MemberId::agent("editor"),
         ReplicaActor::Agent {
             person: MemberId::person("maker"),
+            name: String::new(),
         },
         Seed::New,
     )

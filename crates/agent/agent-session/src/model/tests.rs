@@ -1783,6 +1783,7 @@ fn a_first_turn_for_real_apps_is_bounded_and_its_prefix_shared() {
             &tilo_actions::MemberId::agent("measure"),
             &crate::ReplicaActor::Agent {
                 person: tilo_actions::MemberId::person("maker"),
+                name: String::new(),
             },
             crate::Seed::New,
         )

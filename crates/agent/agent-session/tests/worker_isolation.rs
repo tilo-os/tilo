@@ -174,6 +174,7 @@ fn a_confined_record_is_edited_in_its_worker_and_converges_with_a_page() {
         &MemberId::agent("writer"),
         &ReplicaActor::Agent {
             person: MemberId::person("writer"),
+            name: String::new(),
         },
         Seed::Existing {
             record: page.document_id().clone(),
@@ -232,6 +233,7 @@ fn bytes_that_are_not_automerge_never_reach_the_worker() {
         &MemberId::agent("writer"),
         &ReplicaActor::Agent {
             person: MemberId::person("writer"),
+            name: String::new(),
         },
         Seed::New,
     )
@@ -258,6 +260,7 @@ fn a_dead_worker_is_replaced_from_what_the_host_holds() {
         &MemberId::agent("writer"),
         &ReplicaActor::Agent {
             person: MemberId::person("writer"),
+            name: String::new(),
         },
         Seed::New,
     )
@@ -300,6 +303,7 @@ fn records_of_many_workspaces_share_the_pools_workers_and_outlive_one_that_stops
                 &MemberId::agent("writer"),
                 &ReplicaActor::Agent {
                     person: MemberId::person("writer"),
+                    name: String::new(),
                 },
                 Seed::New,
             )
@@ -394,6 +398,7 @@ fn an_appearance_given_to_the_worker_is_recorded_on_the_change() {
         &MemberId::agent("writer"),
         &ReplicaActor::Agent {
             person: MemberId::person("writer"),
+            name: String::new(),
         },
         Seed::Existing {
             record: page.document_id().clone(),
@@ -432,6 +437,7 @@ fn agents_document(app: &str, workspace: Option<&ContentStore>) -> ConfinedRepli
         &MemberId::agent("painter"),
         &ReplicaActor::Agent {
             person: MemberId::person("painter"),
+            name: String::new(),
         },
         Seed::New,
     )
@@ -682,6 +688,7 @@ fn an_agent_exports_its_artwork_as_content_the_workspace_keeps() {
         &MemberId::agent("exporter"),
         &ReplicaActor::Agent {
             person: MemberId::person("exporter"),
+            name: String::new(),
         },
         Seed::Existing {
             record: agent.document_id().clone(),
@@ -973,6 +980,7 @@ fn an_agent_reads_a_pdf_the_workspace_holds_in_its_worker() {
             &MemberId::agent("reader"),
             &ReplicaActor::Agent {
                 person: MemberId::person("reader"),
+                name: String::new(),
             },
             Seed::Existing {
                 record: agent.document_id().clone(),

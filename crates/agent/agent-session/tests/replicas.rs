@@ -167,6 +167,7 @@ fn an_agent_mount_and_a_person_mount_converge() {
         &MemberId::agent("writer"),
         ReplicaActor::Agent {
             person: MemberId::person("writer"),
+            name: String::new(),
         },
         Seed::Existing {
             record: page.document_id().clone(),
@@ -253,6 +254,7 @@ fn joined(
         &MemberId::agent("writer"),
         ReplicaActor::Agent {
             person: MemberId::person("writer"),
+            name: String::new(),
         },
         Seed::Existing {
             record: page.document_id().clone(),
@@ -343,6 +345,7 @@ fn an_agents_presence_is_where_its_last_operation_left_it() {
         &MemberId::agent("writer"),
         ReplicaActor::Agent {
             person: MemberId::person("writer"),
+            name: String::new(),
         },
         Seed::New,
     )
@@ -397,6 +400,7 @@ fn an_agent_removes_a_clip_it_placed_without_being_asked() {
         &MemberId::agent("editor"),
         ReplicaActor::Agent {
             person: MemberId::person("editor"),
+            name: String::new(),
         },
         Seed::New,
     )
