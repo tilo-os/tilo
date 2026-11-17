@@ -464,7 +464,7 @@ pub struct FrameHarness {
     /// ([`Self::present_in_window_bar`]): the app declares its bar's parts on this window, so windows a
     /// process lays out beside each other keep their bars apart.
     window: Option<crate::hosted_window::HostedWindow>,
-    /// `window` standing as the thread for as long as the harness lives: what the app's bar hands
+    /// `window` as the thread for as long as the harness lives: what the app's bar hands
     /// it between frames ([`Self::press_window_part`]) is this window's.
     window_scope: Option<crate::window_toolbar::WindowScope>,
     /// The app a concrete root is ([`Self::for_app`]): its kind and title, which its window's bar wears
@@ -2247,7 +2247,7 @@ impl FrameHarness {
     /// and that the skipped History walks still rest.
     #[cfg(debug_assertions)]
     fn verify_quiet_frame(&mut self, history_settled: bool) {
-        /// Run `verify` with the clocks standing still: a frame that redraws the time it shows
+        /// Run `verify` with the clocks held still: a frame that redraws the time it shows
         /// because a minute turned changed what the wall clock says, not what it publishes.
         fn fixed_clock<T>(verify: impl FnOnce() -> T) -> T {
             #[cfg(feature = "test-support")]

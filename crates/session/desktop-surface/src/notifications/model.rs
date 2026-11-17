@@ -382,7 +382,7 @@ impl Notification {
         ui::widget::toast::SenderMark::new(self.app_image.as_ref(), Some(glyph))
     }
 
-    /// The glyph standing for this notification's sender. An app the launcher attributed draws its
+    /// The glyph for this notification's sender. An app the launcher attributed draws its
     /// own glyph; a sender the launcher only knows by the executable that posted (a script, a tool)
     /// draws the glyph of the name its row shows, so a row never reads "Notes" beside a window.
     fn sender_glyph(&self) -> Option<ui::icons::Icon> {

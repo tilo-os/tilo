@@ -200,7 +200,7 @@ fn queue_catalogue(
         ActionCallError, InvocationReceipt, ReceiptStatus, RemoteActionMessage,
     };
     // An action the workspace's host runs travels this media queue to it, and the host
-    // admits it by the person's own standing in the workspace: a page cannot
+    // admits it by the person's own member access in the workspace: a page cannot
     // grant itself anything. The workspace's membership actions become the
     // host's governed workspace requests, decided by the workspace's policy there.
     if let RemoteActionMessage::Invoke(request) = &message {

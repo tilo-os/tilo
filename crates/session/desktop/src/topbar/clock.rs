@@ -23,7 +23,7 @@ impl TopBarChrome {
     /// position dots at the large-text setting.
     pub(super) fn center_band_width(&self, theme: &Theme, text: &mut TextRenderer) -> f64 {
         // While this person follows someone the area is the banner's, at the width the banner asks
-        // for it: the clock yields its place rather than standing under a card about someone else.
+        // for it: the clock yields its place rather than sitting under a card about someone else.
         if self.following {
             return crate::follow_banner::area_width(self.rect.width());
         }

@@ -1560,7 +1560,7 @@ impl NavList {
         }
     }
 
-    /// Run item action `index` on the row of `key`, standing at `rect`: an
+    /// Run item action `index` on the row of `key`, at `rect`: an
     /// action that opens the menu asks for the row's menu at its corner.
     fn press_item_action(&self, key: &str, index: usize, rect: Rect) {
         if self

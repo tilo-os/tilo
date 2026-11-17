@@ -45,7 +45,7 @@ pub struct BarChipLayout {
 }
 
 impl<'a> BarChipFace<'a> {
-    /// A chip named `name` for assistive technology, standing for `faces`.
+    /// A chip named `name` for assistive technology, for `faces`.
     #[must_use]
     pub fn new(name: &'a str, faces: &'a [Face<'a>]) -> Self {
         Self {
@@ -274,7 +274,7 @@ impl<'a> BarChipFace<'a> {
     }
 
     /// Paint the chip in `rect` (its width from [`Self::width`], its height
-    /// [`Self::height`]) standing on `ground`.
+    /// [`Self::height`]) on `ground`.
     #[must_use]
     pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect, ground: Color) -> BarChipLayout {
         let theme = ctx.theme;

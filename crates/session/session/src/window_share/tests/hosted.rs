@@ -1,5 +1,5 @@
 //! What a shell says of a window that runs on another device while nothing of it is shown there:
-//! the session reads how the window stands, its tab says it instead of standing empty, and the
+//! the session reads how the window stands, its tab says it instead of saying nothing, and the
 //! shares' reading says the same in a word (`hosted`).
 
 use super::*;
@@ -13,7 +13,7 @@ fn stands(member: &Member, tab: u64) -> Option<(String, String)> {
         .find(|hosted| hosted["tab"].as_str() == Some(wanted.as_str()))
         .map(|hosted| {
             let said = |field: &str| hosted[field].as_str().unwrap_or_default().to_owned();
-            (said("standing"), said("waiting_for"))
+            (said("state"), said("waiting_for"))
         })
 }
 

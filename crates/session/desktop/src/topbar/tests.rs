@@ -2470,7 +2470,7 @@ tilo_test_env::scenario! {
             bar_rect.contains(clock.center()) && clock.y0 >= bar_rect.y0 && clock.y1 <= bar_rect.y1,
             "the clock reads inside the bar: {clock:?} in {bar_rect:?}"
         );
-        // The workspace's name and the people beside the clock yield to it instead of standing on it.
+        // The workspace's name and the people beside the clock yield to it instead of over it.
         assert!(
             bar.ws_pill_rect.x1 <= clock.x0 + 0.5,
             "the workspace's name ends before the clock: {:?} {clock:?}",

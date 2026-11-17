@@ -408,7 +408,7 @@ tilo_test_env::scenario! {
                 ("Today".to_owned(), Some("2".to_owned())),
                 ("Tomorrow".to_owned(), Some("1".to_owned()))
             ],
-            "each heading counts the rows standing under it"
+            "each heading counts the rows under it"
         );
     }
 
@@ -562,7 +562,7 @@ tilo_test_env::scenario! {
         assert_eq!(done.value.as_deref(), Some("2"));
         assert_eq!(done.state.expanded, Some(false));
         assert!(!done.state.focused);
-        // The list builds each mounted row's node itself, headings standing before
+        // The list builds each mounted row's node itself, headings before
         // them: the walk never visits the row widgets.
         assert!(
             (0..list.mounted.len()).all(|child| Widget::accessibility_represents_child(&list, child)),
@@ -797,7 +797,7 @@ tilo_test_env::scenario! {
 
     phase a_list_of_rows_that_name_no_group_leads_with_them;
     // A list of rows that name no groups keeps its rows against its own edge: its block is the
-    // list's, with nothing standing over it.
+    // list's, with nothing over it.
     {
         let mut list = grouped(vec![None, None]);
         let _ = settle(&mut list);

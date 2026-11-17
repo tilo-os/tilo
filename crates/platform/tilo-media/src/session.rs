@@ -211,7 +211,7 @@ impl SessionPool {
     }
 
     /// The same source always yields the same session, so a thumbnail request reuses
-    /// the preview's pipeline instead of standing up its own.
+    /// the preview's pipeline instead of up its own.
     pub fn session(&mut self, source: &Source) -> Arc<Mutex<EngineSession>> {
         let key: SourceKey = Arc::from(session_key(source).as_str());
         if let Some(s) = self.sessions.get(&key) {

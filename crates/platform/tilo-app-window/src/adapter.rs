@@ -130,7 +130,7 @@ impl Published {
         self.at(self.stands.get(resource)?)
     }
 
-    /// The resource standing at `path` ([`stand`]).
+    /// The resource at `path` ([`stand`]).
     fn at(&self, path: &[usize]) -> Option<&tilo_actions::ResourceSpec> {
         let (first, below) = path.split_first()?;
         below
@@ -564,7 +564,7 @@ impl<'a> NodeSource<'a> {
         }
     }
 
-    /// `node`, to build its widget, standing under `under`: the words of the heading over the rows
+    /// `node`, to build its widget, under `under`: the words of the heading over the rows
     /// it holds.
     pub fn under_heading(
         node: &'a UiNode,

@@ -61,7 +61,7 @@ pub struct TextInputProps {
     /// (a caret on the canvas).
     #[component(event)]
     pub cancel: Event,
-    /// A caret standing on a surface rather than a field in a form: no well and no fill, only
+    /// A caret on a surface rather than a field in a form: no well and no fill, only
     /// as wide as what it holds, growing as the words are typed. The canvas's caret.
     pub caret: bool,
 }

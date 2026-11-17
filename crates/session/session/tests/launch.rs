@@ -1155,7 +1155,7 @@ fn the_person_who_made_a_workspace_may_add_a_note_in_it() {
 
 /// A workspace this session joined, as a join leaves it: the id it is shared under, the slot derived
 /// from that id, and no strip of this session's own — its strips are the workspace's, which come from
-/// the workspace's record. A person standing in it who opens an app gets that app's window there,
+/// the workspace's record. A person in it who opens an app gets that app's window there,
 /// never in the workspace of their own they came from: once for the first workspace they join, and
 /// again for a second one.
 #[test]

@@ -152,7 +152,7 @@ impl Widget for SearchOverlay {
     /// [`Widget::adjust_layout_style`]), and the frame repaints only the card
     /// ([`Self::draw`]'s own damage part).
     fn take_structure_change(&mut self) -> ui::widget::StructureChange {
-        // Open or closed, or standing over another area: the composition. The
+        // Open or closed, or over another area: the composition. The
         // revision alone (the rows, the query, the scope) is the card's paint
         // and its size, never the tree's shape. A card that is up with no node
         // yet — its code arrived after it was opened, and the palette had
@@ -350,7 +350,7 @@ impl Widget for SearchOverlay {
             return;
         }
         // The card's node, or the overlay's own before the first layout of it: the palette answers
-        // the event either way, as it did standing in the shell.
+        // the event either way, as it did in the shell.
         let palette = ctx
             .taffy
             .children(ctx.node_id)

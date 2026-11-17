@@ -1397,7 +1397,7 @@ fn a_tree_row_open_in_its_place_hands_a_reader_what_it_holds() {
     assert!(done.with(|checked| *checked), "the tick reaches the box");
 }
 
-/// A list of rows that are list rows, standing as a tree: 0 holds 1, which holds 2.
+/// A list of rows that are list rows, shown as a tree: 0 holds 1, which holds 2.
 fn listed_tree() -> VirtualList<Nested> {
     use crate::widget::ListRow;
 

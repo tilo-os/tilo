@@ -276,7 +276,7 @@ impl WindowMenuSurface {
         true
     }
 
-    /// Draw the reading: the rows as the menu's items, standing where the
+    /// Draw the reading: the rows as the menu's items, where the
     /// session says, or nothing at all when no menu is up.
     fn draw(&mut self) {
         if !self.reading.is_open() {

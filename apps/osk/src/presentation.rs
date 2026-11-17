@@ -386,7 +386,7 @@ pub(crate) fn key_pad_for_height(height: f64) -> f64 {
     (height * KEY_GAP_RATIO).clamp(2.0, 6.0)
 }
 
-/// The face of a key at rest, hovered or pressed, standing on the window
+/// The face of a key at rest, hovered or pressed, on the window
 /// ground. A character key is the toolkit's key face (a faint lift off the
 /// ground); a modifier stays on the ground itself until touched, so the
 /// letters lead.

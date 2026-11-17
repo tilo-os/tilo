@@ -67,7 +67,7 @@ struct Left {
 }
 
 impl PageSlide {
-    /// `page`, standing `level` deep in its stack.
+    /// `page`, `level` deep in its stack.
     pub fn new(level: usize, page: Element) -> Self {
         Self {
             kept_as: KEY.to_owned(),

@@ -617,7 +617,7 @@ fn a_place_asked_to_float_stands_above_the_windows_at_its_corner() {
 
 // (7) The system's `open` places a resource with its default view beside where it was asked
 // (`docs/designs/app-language/one-app-model.md` §3, "`open(r)` places r with its default view,
-// beside where it was asked, for every app"). A resource standing already comes forward instead of
+// beside where it was asked, for every app"). A resource already open comes forward instead of
 // a second place being made.
 #[test]
 fn the_system_open_brings_what_is_placed_forward() {
@@ -848,7 +848,7 @@ fn places_opened_beside_one_place_stand_clear_of_it_and_each_other() {
 
 // (8) The live run's failure: an agent asked to show the person their mails stood one Mail place of
 // the mailbox (the `Inbox` tab) and a second of a thread in it (the `sam@rivera.example` tab), so
-// the person had two windows of one mailbox. Opening a resource of a root already standing — the
+// the person had two windows of one mailbox. Opening a resource of a root already open — the
 // root itself, or a view inside it — brings what stands forward, as activating what is shown does
 // (`shell.md` §3): one mailbox is open, whether opened by its root or by a message in it.
 #[test]

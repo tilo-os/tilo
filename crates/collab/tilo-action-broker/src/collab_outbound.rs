@@ -19,7 +19,7 @@ use crate::route::CrdtRoute;
 
 /// The network operations the broker's outbound half needs. A trait
 /// rather than a bare `ShellNetwork` so the routing decision can be
-/// tested against a recording sink instead of standing up Iroh.
+/// tested against a recording sink instead of bringing up Iroh.
 pub trait PeerPublishSink: Send + Sync {
     fn app_document(
         &self,
@@ -285,7 +285,7 @@ impl PeerPublisher {
 }
 
 /// A sink that keeps what it was asked to publish, so a test can ask
-/// "what route reached the wire" without standing up Iroh. Lives here
+/// "what route reached the wire" without bringing up Iroh. Lives here
 /// for assertions against the broker's single typed ingress.
 #[cfg(any(test, feature = "test-support"))]
 pub mod recording {

@@ -1180,7 +1180,7 @@ pub(super) fn print_setup_view(
 }
 
 /// One of the driver's own options, as the choices it reported: the values it listed, with
-/// the one the person chose standing on the selection lift.
+/// the one the person chose on the selection lift.
 fn driver_choice(
     key: &str,
     choices: &[os_actions::printing::OptionChoice],

@@ -68,7 +68,7 @@ std::thread_local! {
 }
 
 /// Run `run` with `admitted`, the admission a verification of `caller` just
-/// returned, standing for any further verification of exactly `caller`
+/// returned, in place of any further verification of exactly `caller`
 /// that `run` reaches on this thread before it returns.
 pub(super) fn with_admitted_now<T>(
     caller: &VerifiedActionCaller,

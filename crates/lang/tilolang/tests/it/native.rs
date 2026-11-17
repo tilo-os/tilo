@@ -1189,7 +1189,7 @@ action archive(t: Thread) (key: "Ctrl+N") {{}}"#
     }
 }
 
-/// `place view v for T`: what a place of a `T` shows standing on its own, a view of the resource
+/// `place view v for T`: what a place of a `T` shows on its own, a view of the resource
 /// alone, one per type, and in the metadata the session reads.
 #[test]
 fn a_place_view_is_declared_once_and_takes_the_resource_alone() {

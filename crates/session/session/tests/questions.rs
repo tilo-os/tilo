@@ -845,7 +845,7 @@ impl Service for Allowances {
 }
 
 /// An app allowed for good is shown its allowance at once, and the sheet's two answers either take
-/// it back through the portal's own action or leave it standing.
+/// it back through the portal's own action or leave it open.
 #[test]
 fn the_allowance_given_for_good_is_revoked_or_left_access() {
     for revoke in [true, false] {

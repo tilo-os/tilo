@@ -628,7 +628,7 @@ impl PresenceCtx {
         // beside it, or floating where the pointer is, says the same agent twice.
         // Its caret is where it acts then, so no pointer is drawn either: a pointer of its own
         // stood on the very words the caret had just written, or apart from them where it last
-        // pointed. A caret standing anywhere else (an agent writing in one field while it presses
+        // pointed. A caret anywhere else (an agent writing in one field while it presses
         // a control in another) is no mark on *this* place: the place it would press keeps its own
         // tag, or a bare outline is all a person sees of the step.
         let worn = self.presence_marks().iter().any(|mark| {

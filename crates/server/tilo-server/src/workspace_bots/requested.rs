@@ -37,7 +37,7 @@ pub struct Plan {
     /// Requests for another release than runs: the bot stays installed and
     /// runs the new program from now on.
     pub replace: Vec<RequestedBot>,
-    /// Entries whose bot runs without a request standing for it.
+    /// Entries whose bot runs without a request behind it.
     pub stop: Vec<String>,
 }
 

@@ -1274,7 +1274,7 @@ impl FaceContent<'_> {
     }
 
     /// The group of who is here from `left` on, centred on the face: the faces shown and a
-    /// face counting the rest, standing on the bar's own ground so each face's ring separates
+    /// face counting the rest, on the bar's own ground so each face's ring separates
     /// it from the next.
     fn draw_faces(&self, ctx: &mut PaintCtx<'_>, left: f64, center_y: f64, side: f64) {
         let stack = crate::presence::FaceStack::in_face(side);

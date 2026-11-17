@@ -1,5 +1,5 @@
 //! What a person sees wrong on a laid-out screen that its geometry alone calls fine: a list whose
-//! rows stand on different columns, one choice filled twice, the same add affordance standing
+//! rows stand on different columns, one choice filled twice, the same add affordance shown
 //! several times over, a name a screen reader reads as code, a destructive verb of its own, a card
 //! inside a card.
 //!
@@ -687,7 +687,7 @@ fn headings(node: &InspectionNode, out: &mut Vec<Titled>) {
     }
 }
 
-/// A list standing beside the page it opens highlights the row that page shows.
+/// A list beside the page it opens highlights the row that page shows.
 fn listed_detail(
     titled: &[Titled],
     node: &InspectionNode,
@@ -879,7 +879,7 @@ fn opens(
     out: &mut Vec<Problem>,
 ) {
     let list = if is_list(node) { Some(node) } else { list };
-    // A list gives each row a node of its own in the tree a reader is handed, standing under the
+    // A list gives each row a node of its own in the tree a reader is handed, under the
     // list rather than as a widget of its own: that node is where the row's box is read.
     if let Some(semantics) = &node.semantics {
         for item in &semantics.children {
@@ -1012,7 +1012,7 @@ fn repeated_row_titles(node: &InspectionNode, keys: &mut Vec<String>, out: &mut 
     }
 }
 
-/// How many widgets standing within `at` write `title` where a person reads it: a label, a heading,
+/// How many widgets within `at` write `title` where a person reads it: a label, a heading,
 /// the value of the field that edits it.
 fn titled_within(node: &InspectionNode, title: &str, at: Rect) -> usize {
     let own = rect(node);

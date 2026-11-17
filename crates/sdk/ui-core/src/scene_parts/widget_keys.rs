@@ -454,7 +454,7 @@ fn end_keys(scene: &mut Scene) {
     scene.encoding_mut().encode_mark(MarkKind::End);
 }
 
-/// Draw one item of a widget under `key` ([`item_key`]), standing at `origin`.
+/// Draw one item of a widget under `key` ([`item_key`]), at `origin`.
 pub fn keyed<R>(
     scene: &mut Scene,
     key: u64,
@@ -467,7 +467,7 @@ pub fn keyed<R>(
     result
 }
 
-/// Begin one item of a widget under `key` ([`item_key`]), standing at `origin`, for draws
+/// Begin one item of a widget under `key` ([`item_key`]), at `origin`, for draws
 /// that cannot be one closure; [`end_widget`] ends it.
 pub fn begin_item(scene: &mut Scene, key: u64, origin: Affine) -> Begun {
     let Some(keyer) = installed() else {

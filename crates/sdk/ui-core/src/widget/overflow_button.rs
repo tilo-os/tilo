@@ -144,7 +144,7 @@ impl OverflowButton {
         self.open_picked(rows, viewport);
     }
 
-    /// Open the menu with `rows`, each standing for the action numbered with it, as
+    /// Open the menu with `rows`, each for the action numbered with it, as
     /// [`MenuItem::fold_numbered`] folds them: a row of a group opens its run's actions.
     pub fn open_numbered(&mut self, rows: Vec<(usize, MenuItem)>, viewport: Rect) {
         self.open_picked(rows, viewport);

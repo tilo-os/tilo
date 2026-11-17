@@ -1182,7 +1182,7 @@ impl PeerSurfaces {
         self.streams.get(&(peer, surface)).copied()
     }
 
-    /// The tile standing in `tab` .
+    /// The tile in `tab` .
     #[must_use]
     pub fn tile(&self, tab: TabId) -> Option<&Rc<RefCell<PeerSurface>>> {
         self.tiles.get(&tab)

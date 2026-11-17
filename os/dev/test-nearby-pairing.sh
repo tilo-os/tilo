@@ -37,7 +37,7 @@
 #      "Remote use from" lease.
 #   7. B suspends to RAM. A invokes `device.wake` for B; a magic packet for
 #      B's MAC appears on the segment (captured on A's side of it). The harness
-#      resumes B with `system_wakeup`, standing in for the NIC, and A reports
+#      resumes B with `system_wakeup`, in place of the NIC, and A reports
 #      that B rejoined. A's next remote action reaches B unchanged.
 #   8. B's links are cut and restored, and A's remote action reaches B again.
 #

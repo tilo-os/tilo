@@ -28,7 +28,7 @@ const TURN_HEIGHT: i64 = 240;
 /// view hugs its words up to a window's own height, and a long answer reads whole rather than
 /// cut at its last line.
 const TURN_MOST: i64 = 480;
-/// The gap between a turn standing at a rectangle's top and the room left under it: the canvas's
+/// The gap between a turn at a rectangle's top and the room left under it: the canvas's
 /// own gap between a place and the one under it, so a place filling the room stands where the
 /// canvas would keep it and its caption stands clear of the turn.
 const TURN_GAP: i64 = tilo_desktop_model::CANVAS_ROW_GAP as i64;

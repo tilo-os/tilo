@@ -60,7 +60,7 @@ impl DesktopHandle {
         std::mem::take(&mut self.shared.borrow_mut().new_strip_moves)
     }
 
-    /// Ask for the menu of the window covering the display the person works on, standing `at` a
+    /// Ask for the menu of the window covering the display the person works on, at a
     /// place on the shell, as a secondary click on its bar would. False when no window covers it.
     pub fn ask_covering_window_menu(&self, at: ui::kurbo::Point) -> bool {
         let mut shared = self.shared.borrow_mut();
@@ -959,7 +959,7 @@ fn move_to_strip(
     moved
 }
 
-/// Put the tab at `ids` into the window `into` of its own strip, its tab standing last there.
+/// Put the tab at `ids` into the window `into` of its own strip, its tab last there.
 fn join_group(shared: &mut Shared, ids: RouteIds, into: GroupId) -> bool {
     let Shared { tree, minter, .. } = shared;
     let moved = tree

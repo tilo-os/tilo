@@ -262,7 +262,7 @@ mod name_tests {
     use super::*;
 
     /// Peers learn what to call this person from the name the app announces
-    /// on joining: the profile name, never an id standing in for one.
+    /// on joining: the profile name, never an id in place of one.
     #[test]
     fn an_app_names_its_person_by_their_profile_name() {
         let _guard = tilo_test_env::lock();

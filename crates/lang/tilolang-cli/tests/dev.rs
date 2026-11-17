@@ -89,7 +89,7 @@ fn a_saved_build_is_the_generation_the_app_reads() {
     assert_eq!(read.meta.app, app.app);
 }
 
-/// A `tilolang dev` on this desktop whose runtime is a script standing in for the window's program:
+/// A `tilolang dev` on this desktop whose runtime is a script in place of the window's program:
 /// the loop starts it, stops it and starts it again as it does the runtime, and the script records
 /// each start.
 #[cfg(unix)]

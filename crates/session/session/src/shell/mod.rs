@@ -301,7 +301,7 @@ impl Shell {
     }
 
     /// Tell the displays what the screen says of its edges: the pointer at the top or bottom edge,
-    /// and a window standing where a bar or a dock there rides. What a bar or dock that shows
+    /// and a window where a bar or a dock there rides. What a bar or dock that shows
     /// only sometimes follows. Whether that moved.
     fn publish_edges(&self, compositor: &Compositor, displays: &displays::Displays) -> bool {
         let Some(outputs) = Self::outputs(compositor) else {

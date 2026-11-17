@@ -740,7 +740,7 @@ impl std::fmt::Debug for Partition {
 impl PagedItems for Partition {
     fn len(&self) -> usize {
         // Every part checked: the entries kept. Until then the run they are drawn from is the
-        // most they can hold, each entry standing in one part.
+        // most they can hold, each entry in one part.
         if self.parts.iter().all(Filtered::exact) {
             return self.parts.iter().map(Filtered::kept_all).sum();
         }

@@ -1,6 +1,6 @@
 //! Frames from a video for the filmstrip, on the shared `media` `GStreamer` engine
 //! rather than a second codec stack: a [`FrameSession`] keeps one pipeline open across a
-//! whole filmstrip instead of standing one up per cell.
+//! whole filmstrip instead of one up per cell.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

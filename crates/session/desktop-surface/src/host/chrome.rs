@@ -346,12 +346,12 @@ pub enum ChromeIntent {
     DeleteWorkspaceConfirmed,
     /// Open or close the menu behind the workspace name, under
     /// [`crate::topbar::TopBarChrome::workspace_menu_rect`] — or, `at` a place on the shell a
-    /// secondary press named, standing there instead: the same menu, offering the shell's own
+    /// secondary press named, there instead: the same menu, offering the shell's own
     /// commands and kept inside the screen at an edge.
     ToggleWorkspaceMenu {
         at: Option<(i32, i32)>,
     },
-    /// Open the menu of the window covering the display, standing `at` the place a secondary press
+    /// Open the menu of the window covering the display, at the place a secondary press
     /// on the bar over it named: a window that owns its display shows no bar of its own, so the
     /// desktop's bar, reached for over it, is where its menu is.
     CoveringWindowMenu {

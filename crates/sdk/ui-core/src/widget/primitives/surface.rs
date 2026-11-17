@@ -197,7 +197,7 @@ pub fn paint_window_card(
 
 /// A window card a person lifted off the shell, drawn in the shell's floating material: the
 /// panel ground and hairline a menu stands on and the two-layer lift under it, so the window
-/// reads as standing over the shell rather than as another window on it.
+/// reads as over the shell rather than as another window on it.
 pub fn paint_floating_window_card(
     scene: &mut Scene,
     transform: Affine,

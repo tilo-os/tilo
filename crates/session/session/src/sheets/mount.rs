@@ -190,7 +190,7 @@ pub(crate) fn mount_sheets(
     }
 }
 
-/// The sheets about displays: the question a display change asks, standing on every display because
+/// The sheets about displays: the question a display change asks, on every display because
 /// it may be about the display it would otherwise be put on, and where the desktop appears, with
 /// the layouts and the wireless displays it streams to.
 fn mount_displays(

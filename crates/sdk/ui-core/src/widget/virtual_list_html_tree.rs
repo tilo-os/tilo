@@ -17,7 +17,7 @@ use crate::theme::Theme;
 impl<M: ListModel + 'static> VirtualList<M> {
     /// The list's rows as elements: a flat list where the list is not a tree, and otherwise
     /// each row's notes nested in a `<ul>` inside the row's own element, with a branch row's
-    /// disclosure standing where its chevron does.
+    /// disclosure where its chevron does.
     pub(crate) fn tree_html_rows(&self, rows: Vec<Composed>, theme: &Theme) -> Vec<Composed> {
         let Some(marks) = self.tree.as_ref() else {
             return rows;
@@ -59,7 +59,7 @@ impl<M: ListModel + 'static> VirtualList<M> {
         nested
     }
 
-    /// A branch row's disclosure as an element: a button named for what it does, standing where
+    /// A branch row's disclosure as an element: a button named for what it does, where
     /// the chevron is painted, pressing the list's own fold on the row it belongs to.
     fn disclosure_html(
         &self,
@@ -126,7 +126,7 @@ fn nest_rows(
     out
 }
 
-/// `children` in a group of their own under `parent`, standing over the region they take.
+/// `children` in a group of their own under `parent`, over the region they take.
 fn group(parent: &str, row: [f64; 4], children: Vec<Composed>) -> Composed {
     let mut rect = Rect::new(
         children.first().map_or(row[0], |child| child.rect[0]),

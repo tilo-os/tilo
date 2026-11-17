@@ -231,7 +231,7 @@ fn an_answer_grows_out_of_where_it_was_asked() {
 }
 
 /// A view that says no height of its own (a list that scrolls measures as nothing) cannot hug:
-/// its place fills its most rather than standing as a sliver.
+/// its place fills its most rather than as a sliver.
 #[test]
 fn a_view_with_no_height_of_its_own_fills_its_most() {
     let mut map = Map::new().pin(

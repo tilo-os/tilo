@@ -956,7 +956,7 @@ impl HostInner {
 }
 
 impl Host {
-    /// A host over the workspace document `document`, for `viewer`, whose standing in the workspace `access`
+    /// A host over the workspace document `document`, for `viewer`, whose member access in the workspace `access`
     /// reads: what the runtime invokes is decided by the workspace's policy ([`TiloAuthority`]).
     ///
     /// # Errors

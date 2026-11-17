@@ -1,4 +1,4 @@
-//! One keyboard and pointer for the person's devices standing side by side: the pointer pushed
+//! One keyboard and pointer for the person's devices side by side: the pointer pushed
 //! past the edge of this device's screen toward the screen of another of their devices, as the
 //! shared placement places them (Settings → Displays), goes on there, and the keyboard follows
 //! it. Pushing back across the edge, or pressing Ctrl+Alt+Escape here, brings both back.

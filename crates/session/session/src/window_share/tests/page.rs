@@ -1598,7 +1598,7 @@ fn a_page_shared_again_after_its_share_stopped_is_drawn_again() {
         rows(&shares(&two.viewer.session), "hosted")
             .iter()
             .find(|hosted| hosted["tab"].as_str() == Some(wanted.as_str()))
-            .and_then(|hosted| hosted["standing"].as_str().map(str::to_owned))
+            .and_then(|hosted| hosted["state"].as_str().map(str::to_owned))
     };
 
     // Shared, shown and drawn.

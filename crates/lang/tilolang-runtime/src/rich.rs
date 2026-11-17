@@ -86,7 +86,7 @@ pub struct RichValue {
     pub blocks: Vec<BlockView>,
 }
 
-/// `path` as a page standing in `from` reaches it: the folders it shares with `from` left out,
+/// `path` as a page in `from` reaches it: the folders it shares with `from` left out,
 /// and one `..` for each folder of `from` above them — `../Plan.md` for a page in `Home` naming
 /// one in `Work`, `Monday.md` for a page in `Home/Standups` naming the one beside it.
 #[must_use]
@@ -102,7 +102,7 @@ pub fn relative_path(from: &str, path: &str) -> String {
     format!("{up}{}", parts.get(shared..).unwrap_or_default().join("/"))
 }
 
-/// The page `href` names, as the page standing in `from` reaches it: its own path a page of the
+/// The page `href` names, as the page in `from` reaches it: its own path a page of the
 /// same bundle holds, or none for a link to anywhere else (one with a scheme, or one that
 /// climbs above the bundle's own folder).
 #[must_use]
@@ -415,7 +415,7 @@ impl RichValue {
 
     /// Append `text`, unformatted, to the last paragraph; a line break starts a new one. Text a
     /// paragraph ends with (`"…\n"`) leaves the next line open: the paragraph after it holds
-    /// only what comes next, and a block of its own takes its place rather than standing after
+    /// only what comes next, and a block of its own takes its place rather than after
     /// an empty one.
     pub fn push_text(&mut self, text: &str) {
         let mut lines = text.split('\n');

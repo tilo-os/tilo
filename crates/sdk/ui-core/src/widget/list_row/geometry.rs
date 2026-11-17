@@ -18,8 +18,8 @@ pub fn mark_text_inset(theme: &Theme) -> f64 {
 }
 
 impl ListRowFace<'_> {
-    /// Whether the row says anything under its title: a secondary line, or facts standing
-    /// where one would.
+    /// Whether the row says anything under its title: a secondary line, or facts
+    /// where a secondary line would.
     pub(super) fn has_secondary_line(&self) -> bool {
         self.secondary.is_some() || !self.facts.is_empty()
     }

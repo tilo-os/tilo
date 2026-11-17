@@ -2137,7 +2137,7 @@ impl VideoEditorApp {
     }
 
     /// Whether the meter still has something to say — a bar in flight, or a
-    /// clipping report standing. Keeps frames coming so a meter finishes
+    /// clipping report still to finish. Keeps frames coming so a meter finishes
     /// falling instead of freezing part-way down when the transport stops.
     fn mix_meter_is_live(&self) -> bool {
         self.mix.master[0] > 0.001 || self.mix.master[1] > 0.001
@@ -2339,7 +2339,7 @@ impl VideoEditorApp {
     }
 
     /// The words the transport puts above the scrubber for what the playhead is
-    /// doing, or `None` when it is standing still.
+    /// doing, or `None` when it is still.
     fn motion_words(&self) -> Option<String> {
         if self.playback.playing {
             return Some("Playing".to_string());

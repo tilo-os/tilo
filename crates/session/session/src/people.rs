@@ -247,7 +247,7 @@ struct Shown {
 }
 
 impl Shown {
-    /// Close the roster and any card standing in its place, for the next opening to find empty.
+    /// Close the roster and any card in its place, for the next opening to find empty.
     fn close(&mut self) {
         self.expanded = None;
         self.card_of = None;
@@ -337,7 +337,7 @@ fn keep_pinned(pinned: bool, edge: DockEdge) {
 impl People {
     /// Open the roster, or close it again: what the bar's faces do.
     pub fn toggle(&self) {
-        // Kept on screen and standing, the roster is already where the faces would open it: they
+        // Kept on screen and open, the roster is already where the faces would open it: they
         // have nothing to do, and the panel's own button puts it back in the bar.
         if self.shown.borrow().is_kept() {
             return;
@@ -746,7 +746,7 @@ impl Panel {
             let _ = self.profile.take_choice();
             shown.card_open = None;
         }
-        // The card standing is someone else's: what the roster says of them now is what it says,
+        // The card shown is someone else's: what the roster says of them now is what it says,
         // beside the row under it (an agent narrates every action). Built before the card is laid
         // out, as it is opened here, never while the frame draws.
         let card = shown
@@ -786,7 +786,7 @@ impl Panel {
         shown.close_card || shown.own_card || shown.card_opening.is_some()
     }
 
-    /// Draw the card standing in the roster's place. Answers whether one stands there.
+    /// Draw the card in the roster's place. Answers whether one stands there.
     fn draw_card(
         &mut self,
         scene: &mut ui::vello::Scene,
@@ -1133,7 +1133,7 @@ impl Panel {
         shown.rows = rows;
         shown.screens = screens;
         shown.workspace = workspace;
-        // The card standing is someone else's: when what the rows say of them moved (an agent
+        // The card shown is someone else's: when what the rows say of them moved (an agent
         // narrates each action), this frame asks for the layout that builds the card with it.
         // Widgets are never built while the frame draws ([`Self::settle_card`]).
         if let Some(who) = shown.card_open.clone().filter(|who| who != SELF_CARD)
@@ -2004,7 +2004,7 @@ impl Widget for Panel {
             if !self.profile.is_open() {
                 // The card closed itself. Its place is the roster's, so the roster stands there
                 // again when the card's choice asks for everyone here; a choice that takes the
-                // person elsewhere (a conversation, an agent's card) leaves nothing standing here.
+                // person elsewhere (a conversation, an agent's card) leaves nothing here.
                 if self.shown.borrow().card_open.is_some() {
                     self.dismiss();
                     *ctx.handled = true;

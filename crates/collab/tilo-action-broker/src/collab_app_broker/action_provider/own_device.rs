@@ -170,7 +170,7 @@ mod tests {
 
     const SETTINGS: &str = ui::apps::SETTINGS;
 
-    /// The host's network, standing in: it records what it was asked to
+    /// The host's network, in its place: it records what it was asked to
     /// send and answers when the test completes it.
     #[derive(Default)]
     struct Network {

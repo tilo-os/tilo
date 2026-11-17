@@ -108,7 +108,7 @@ final class EngineTests: XCTestCase {
           };
         };
       };
-      // A page that knows a native app may hold it: once it is in, it hands the host standing in
+      // A page that knows a native app may hold it: once it is in, it hands the host in
       // its document the entry of its device (web/native-host.mjs). What its host answers
       // here is deliberately careless: it says a key where none belongs and repeats a secret.
       window.asked = [];
@@ -307,7 +307,7 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(listed.first?["resource_kind"]?.string, "word-processor.document")
         let chats = try await engine.actions()
         XCTAssertEqual(chats.first?["resource_kind"]?.string, "notes.book")
-        // A refusal is Tilo's own, and leaves nothing standing.
+        // A refusal is Tilo's own, and leaves nothing there.
         do {
             try await engine.show(live: "secret", .record(app: "so.tilo.refuses", record: "uuid:2"))
             XCTFail("a refused mount was taken for shown")

@@ -974,7 +974,7 @@ fn resources_shown_as_content_stand_on_the_frameless_canvas() {
     scenario(&r, "so.tilo.lang.notes", "a week of notes");
     r.commit();
     let meta = r.host.package(APP).unwrap().meta;
-    let layout = scenario(&r, APP, "resources standing as content");
+    let layout = scenario(&r, APP, "resources shown as content");
     let shell = meta
         .views
         .iter()

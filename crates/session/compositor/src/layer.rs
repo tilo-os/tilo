@@ -1128,7 +1128,7 @@ mod tests {
                 ),
             ];
             for (name, anchor, size, margin, (x, y, width, height)) in rows {
-                // An output standing elsewhere in the desktop places the surface the same way, from
+                // An output elsewhere in the desktop places the surface the same way, from
                 // its own corner.
                 for (left, top) in [(0, 0), (1000, -200)] {
                     let mut on = output();

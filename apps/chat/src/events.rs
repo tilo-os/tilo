@@ -1000,7 +1000,7 @@ impl ChatApp {
             Hit::CallOpenWindow => {
                 // The card asks for the window that draws the call: the shell
                 // brings Chat's window forward and the call is drawn there
-                // again, rather than in a card standing over it.
+                // again, rather than in a card over it.
                 self.call.placement.request_app_return();
                 self.request_relayout();
             }

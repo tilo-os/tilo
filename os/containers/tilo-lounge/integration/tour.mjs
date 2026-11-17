@@ -205,7 +205,7 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
     }
     await sleep(600);
   };
-  // The shell standing still before a picture: three frames, or the silence of
+  // The shell at rest before a picture: three frames, or the silence of
   // a shell with nothing left to draw (`idleMs`), then a moment as a person
   // would look at it. Waiting only for frames costs the whole timeout on every
   // screen a still shell drew nothing for.
@@ -247,7 +247,7 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
     console.log(`TIMING tour=${name} step=${what} seconds=${((Date.now() - began) / 1000).toFixed(1)}`);
   };
   const mac = false;
-  // Search's own Escape clears the query and the next closes it, so a search left standing with
+  // Search's own Escape clears the query and the next closes it, so a search left in place with
   // a query takes two: press until it is gone. Whether it went.
   const closeSearch = async () => {
     for (let pressed = 0; pressed < 3; pressed++) {
@@ -289,7 +289,7 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
     // A card kept for the log alone says what it offered and presses nothing.
     if (!press) return;
     // A card that found nothing has no row for Enter to open, and pressing it would only leave the
-    // search standing: the step says what it could not find instead.
+    // search open: the step says what it could not find instead.
     const shown = typeof before === 'string' ? JSON.parse(before) : null;
     if (shown?.card && shown.card.rows.length === 0) {
       report.problems.push(`${name}: nothing matched “${shown.card.query}”`);

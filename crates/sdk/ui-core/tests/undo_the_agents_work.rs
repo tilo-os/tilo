@@ -188,7 +188,7 @@ tilo_test_env::scenario! {
             );
             assert!(
                 alice.undo(None, None).is_none(),
-                "and there is no anonymous entry standing in for it either"
+                "and there is no anonymous entry in place of it either"
             );
         }
 

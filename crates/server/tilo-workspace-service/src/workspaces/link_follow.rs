@@ -243,7 +243,7 @@ impl Workspaces {
         let name = workspace.workspace().to_owned();
         let workspaces = WeakWorkspaces(Arc::downgrade(&self.inner));
         let link = link.clone();
-        // Subscribed, standing where the replica stands, before the task runs:
+        // Subscribed, where the replica stands, before the task runs:
         // every frame the link admits from here on is this reader's, and what
         // the replica held before is not read again.
         let mut reader = link.reader();

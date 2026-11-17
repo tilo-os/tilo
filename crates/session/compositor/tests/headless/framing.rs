@@ -47,7 +47,7 @@ fn a_window_framed_square_is_drawn_as_its_buffer_is() {
 #[test]
 fn a_window_that_fills_the_display_is_drawn_as_its_buffer_is() {
     let mut compositor = headless(Box::new(StackPolicy));
-    // The shell's card: a window standing on the desktop has round corners.
+    // The shell's card: a window on the desktop has round corners.
     compositor.set_window_frame(WindowFrame::default());
     let mut client = mapped_client(&mut compositor, "video", (200, 100), [255, 0, 0, 255]);
     compositor.draw_frame().expect("a frame");

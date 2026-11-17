@@ -324,7 +324,7 @@ impl Surface {
 
     /// The units the verb `action` may write, on the item `item` when it
     /// acts on one: the record (the empty path), its item's unit, and the
-    /// units of the fields it declares, `*` standing for any item.
+    /// units of the fields it declares, `*` for any item.
     #[must_use]
     pub fn footprint(&self, action: &str, item: Option<&str>) -> Vec<Vec<PathStep>> {
         let Some(verb) = self.verbs.iter().find(|verb| verb.id == action) else {

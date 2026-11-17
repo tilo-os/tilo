@@ -835,7 +835,7 @@ impl Decoder<'_> {
         at
     }
 
-    /// `json` as `ty`, standing where [`Decoder::steps`] says.
+    /// `json` as `ty`, where [`Decoder::steps`] says.
     fn read(&mut self, json: &Json, ty: &Ty) -> Result<Value, String> {
         match ty {
             Ty::Unit

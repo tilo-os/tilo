@@ -620,7 +620,7 @@ where
         .collect()
 }
 
-/// `content`, standing at `location` (its geometry's top left, output-local
+/// `content`, at `location` (its geometry's top left, output-local
 /// logical) drawn with `effect` on an output of `output` (physical size,
 /// scale).
 pub(crate) fn with_effect<R>(

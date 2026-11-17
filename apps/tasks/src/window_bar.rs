@@ -28,7 +28,7 @@ pub(crate) struct TasksWindow {
     /// The window's page, with the tracker's own dialogs over it.
     page: Stack,
     /// The shell inside that page: the bar's slots come from it, so a
-    /// dialog standing over the page leaves them alone.
+    /// dialog over the page leaves them alone.
     link: ui::widget::WindowBarLink,
     nav: Nav,
     /// The tracker as the window reads it, for the location.

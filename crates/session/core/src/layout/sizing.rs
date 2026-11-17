@@ -4,7 +4,7 @@
 use super::turns::CanvasRect;
 use super::{DEFAULT_HEIGHT, DEFAULT_WIDTH, Layout, clamp_coord, clamp_side};
 
-/// How wide a thing standing at canvas x `x` with no rectangle of its own stands as far as the
+/// How wide a thing at canvas x `x` with no rectangle of its own stands as far as the
 /// view goes: `want`, or the room from `x` to the trailing edge of what the person sees (`seen`)
 /// when that is narrower and still at least a window's least width. Narrower room than that
 /// leaves it `want` wide, and the canvas pans to show it.

@@ -666,7 +666,7 @@ fn composing(invite: &Invite, choosing: &LocalState<Choosing>, picked: &Choosing
     Box::new(Section::new(items))
 }
 
-/// The button that makes a link at the choices standing when it is pressed,
+/// The button that makes a link at the choices there when it is pressed,
 /// or another one beside the link shown.
 fn create_button(
     invite: &Invite,

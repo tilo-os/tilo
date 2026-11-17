@@ -139,7 +139,7 @@ impl PortalSide {
         self.shared.sandboxed.lock_recover().contains(app_id)
     }
 
-    /// What the shell's workspaces grant standing in for the person's answer: a workspace already
+    /// What the shell's workspaces grant in place of the person's answer: a workspace already
     /// granting an app what a portal asks of it needs no sheet.
     #[must_use]
     pub fn grants(&self) -> WorkspaceGrants {

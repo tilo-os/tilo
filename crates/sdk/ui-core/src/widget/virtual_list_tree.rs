@@ -157,7 +157,7 @@ impl<K: Clone + Eq + Hash> TreeMarks<K> {
 
     /// Whether the row stands under the row it follows, rather than away from the parent it
     /// names: a list keeps the order its filter gave it, and a subtask the sort put elsewhere —
-    /// in another group, under another heading — says whose it is instead of standing indented
+    /// in another group, under another heading — says whose it is instead of being indented
     /// under nothing.
     pub fn is_nested(&self, key: &K) -> bool {
         self.nested.borrow().contains(key)

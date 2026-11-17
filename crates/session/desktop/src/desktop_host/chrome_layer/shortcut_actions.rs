@@ -256,7 +256,7 @@ impl DesktopChrome {
         );
     }
 
-    /// Put the tab in front into the window `direction` places away in its strip, its tab standing
+    /// Put the tab in front into the window `direction` places away in its strip, its tab
     /// last there.
     fn attach_focused_tab(&self, direction: isize) {
         let Some(route) = self.focused_route() else {

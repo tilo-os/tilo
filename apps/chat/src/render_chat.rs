@@ -808,7 +808,7 @@ pub(crate) struct RowM {
 }
 
 impl RowM {
-    /// A row the frame did not measure, standing `height` tall where nothing of it
+    /// A row the frame did not measure, drawn `height` tall where nothing of it
     /// shows: the timeline's own total is summed from what its rows were measured at,
     /// and a row out of view is measured when it comes into it.
     pub(crate) fn unmeasured(id: &str, height: f64) -> Self {

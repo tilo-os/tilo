@@ -439,7 +439,7 @@ fn live_session(
 }
 
 /// "youtube videos of <creator>" that the origin answers with two channels of the same name leaves
-/// the query standing with its rows, not a guessed place: a press on a row shows that channel in
+/// the query with its rows, not a guessed place: a press on a row shows that channel in
 /// the same place (search.md §4, §7; shell.md §8 "Finding what to place").
 #[test]
 fn a_live_canvas_query_that_matches_several_shows_the_rows_it_found() {

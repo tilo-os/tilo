@@ -1583,7 +1583,7 @@ view deck(d: Deck) {
         };
         assert_eq!(preview(&mut view), ["skip", "item 2", "item 4"]);
 
-        // Checked: out of the count, and its row standing where it was until the view is left.
+        // Checked: out of the count, and its row where it was until the view is left.
         rows.call("check", vec![Value::resource(&rows.items[2])]);
         view.poll_patches().unwrap();
         assert_eq!(texts(view.tree()), ["296 open"]);

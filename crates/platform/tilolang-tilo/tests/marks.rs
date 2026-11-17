@@ -920,7 +920,7 @@ fn the_headers_mark_reads_the_changes_not_the_items() {
 }
 
 /// A note the run removed stands struck in the notebook's tree until the person has seen it go:
-/// a node of the tree, standing after its rows, with who removed it.
+/// a node of the tree, after its rows, with who removed it.
 #[test]
 fn a_note_the_run_removed_stands_struck_in_the_tree() {
     let Tidied { ada, old, .. } = a_run_in_notes_and_tasks();

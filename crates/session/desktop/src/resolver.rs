@@ -138,7 +138,7 @@ impl<H: ComponentContextSource> TileResolver for ApplicationCatalogTileResolver<
     }
 }
 impl TileResolution {
-    /// The tile that shows this resolution, standing for what it holds: a
+    /// The tile that shows this resolution, for what it holds: a
     /// component mounted as its own App, a notice where an app cannot open,
     /// or the arrival placeholder while a window's content is on its way.
     pub fn mount(

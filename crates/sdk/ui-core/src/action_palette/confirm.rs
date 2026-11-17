@@ -17,7 +17,7 @@ use crate::widget::DrawChild;
 use crate::widget::modal_dialog::{ModalAction, ModalSpec, body_width};
 use crate::widget::{Button, ButtonRole, PromptBody, Row, TextInput, Widget};
 
-/// Widest a confirmation standing beside its control is drawn, in design
+/// Widest a confirmation beside its control is drawn, in design
 /// pixels: a question and two answers, not a page.
 const POPOVER_WIDTH: f64 = 360.0;
 

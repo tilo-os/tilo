@@ -138,7 +138,7 @@ pub(crate) struct ControllerKeys {
     /// The controller the person last drove the desktop with, which a press of their own replaces:
     /// the guide then leads with the keyboard.
     pub(crate) last: Rc<Cell<Option<ui::ControllerFamily>>>,
-    /// Whether the keys being routed are a controller's own, standing for its presses rather than
+    /// Whether the keys being routed are a controller's own, for its presses rather than
     /// the person's fingers on a keyboard.
     pub(crate) own: Rc<Cell<bool>>,
 }
@@ -404,7 +404,7 @@ pub(crate) struct SessionKeys {
     /// The controller the person last drove the desktop with, which a press of their own replaces:
     /// the guide then leads with the keyboard.
     controller: Rc<Cell<Option<ui::ControllerFamily>>>,
-    /// Whether the keys being routed are a controller's own, standing for its presses rather than
+    /// Whether the keys being routed are a controller's own, for its presses rather than
     /// the person's fingers on a keyboard.
     controller_keys: Rc<Cell<bool>>,
     /// When each display's bar shows over the window covering it: Super asks for it, and the app
@@ -715,7 +715,7 @@ impl SessionKeys {
             return;
         }
         // A press of the person's own: the guide leads with the keyboard again. The controller's
-        // own presses reach here too, standing for its buttons, and say nothing about a keyboard.
+        // own presses reach here too, for its buttons, and say nothing about a keyboard.
         if !self.controller_keys.get() {
             self.controller.set(None);
         }

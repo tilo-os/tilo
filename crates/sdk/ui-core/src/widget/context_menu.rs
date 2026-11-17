@@ -1666,7 +1666,7 @@ impl Widget for ContextMenu {
 
     /// A menu paints its panel in the window's top layer and nothing in
     /// place: it asks for a frame only when what it paints — its own panel
-    /// while it is on screen, or a box standing without it — has changed.
+    /// while it is on screen, or a box without it — has changed.
     /// A closed menu is no child of its area's tree, so no frame's
     /// [`Self::mark_drawn`] reaches its flag: what it would paint next is
     /// not a frame the window owes while it paints nothing.

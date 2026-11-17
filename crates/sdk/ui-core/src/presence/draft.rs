@@ -118,7 +118,7 @@ mod tests {
         assert!(
             kept.iter()
                 .all(|(at, typing)| !*typing || *at < last_key + COMPOSING_LINGER),
-            "a draft left standing stops reading as typing within the linger"
+            "a draft left in place stops reading as typing within the linger"
         );
         let (sent, _) = read_by_bo(typing(typed, true));
         assert!(

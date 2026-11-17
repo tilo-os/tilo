@@ -283,7 +283,7 @@ mod open_with_tests {
             );
             // Each row wears the app's own glyph, and a row two apps share a name with says where the
             // machine got it.
-            // An app the session handed artwork for wears it, its glyph standing by.
+            // An app the session handed artwork for wears it, its glyph beside it.
             let rows: Vec<(Option<ui::icons::Icon>, Option<String>, Option<String>)> = apps
                 .iter()
                 .map(|item| match item {

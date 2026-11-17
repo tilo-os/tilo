@@ -48,7 +48,7 @@ fn transport_and_go_to_field_share_centre_lines_and_steps() {
         }
 
         // The readout, in the roles the strip draws it in: the playhead time
-        // centred on the same line, every smaller part standing on its foot.
+        // centred on the same line, every smaller part on its foot.
         let mut tr = TextRenderer::new();
         let theme = Theme::dark();
         let mut height = |s: &str, role: TextRole| {

@@ -27,7 +27,7 @@ pub use undo_log::{InstanceId, UndoEntry, UndoLog};
 /// concurrently-merged remote op.
 /// A container the delta would remove that somebody has written inside since
 /// `from_heads` — the paragraph a member typed into after the action
-/// that created it — is left standing, so undo takes back only the action.
+/// that created it — is left in place, so undo takes back only the action.
 ///
 /// The caller commits. That is deliberate: the owner's action records the
 /// restore, so it lands on the undo stack with the right author and timestamp
@@ -40,7 +40,7 @@ pub fn write_revert_patches(
 ) {
     // Patches describing how to get from `from_heads` back to `to_heads`.
     let patches = doc.diff(from_heads, to_heads);
-    // A container somebody wrote inside since `from_heads` stays standing.
+    // A container somebody wrote inside since `from_heads` stays in place.
     let patches = built_on::hold_back_built_on(doc, patches, from_heads);
     write_selected_patches(doc, patches, to_heads, from_heads);
 }
@@ -89,7 +89,7 @@ fn already_holds(doc: &AutoCommit, patch: &automerge::Patch) -> bool {
 }
 
 /// The object a patch writes into: the one it names while the document still
-/// holds it, and otherwise the one now standing where that patch's path led.
+/// holds it, and otherwise the one now where that patch's path led.
 ///
 /// A write that restores an object creates a fresh one — the document cannot
 /// have two places point at the same object — so an inverse patch derived

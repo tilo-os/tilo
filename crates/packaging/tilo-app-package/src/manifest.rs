@@ -653,7 +653,7 @@ impl TrustAttestation {
     }
 }
 
-/// `[actions]` — an application's own standing on the session's action API.
+/// `[actions]` — an application's own on the session's action API.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActionAccess {
     /// Read the catalogue of actions the person using the app is offered:

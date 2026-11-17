@@ -1115,7 +1115,7 @@ impl FrameId {
         .then(|| Self(written.to_string()))
     }
 
-    /// A frame id no outline printed, standing in for one the caller wrote wrongly: it
+    /// A frame id no outline printed, in place of one the caller wrote wrongly: it
     /// fails the request rather than being read as the main document.
     pub fn malformed() -> Self {
         Self(String::new())

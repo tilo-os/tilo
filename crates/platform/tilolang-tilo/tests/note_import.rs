@@ -671,7 +671,7 @@ tilo_test_env::scenario! {
         let monday = note(&mut ada, Some(&plan), "Monday");
         let _tuesday = note(&mut ada, Some(&plan), "Tuesday");
         let again = note(&mut ada, Some(&plan), "Monday");
-        // Two titles that a file name cannot tell apart, `/` standing for `-`.
+        // Two titles that a file name cannot tell apart, `/` for `-`.
         let _slash = note(&mut ada, Some(&plan), "a/b");
         let _dash = note(&mut ada, Some(&plan), "a-b");
         picture_in(&mut ada, &device, &monday, "fox.png", PIXELS);
@@ -783,7 +783,7 @@ tilo_test_env::scenario! {
 
     phase a_title_that_spells_a_name_the_export_gives_is_a_file_of_its_own;
     // A title that spells a name the export would give a duplicate keeps a file of its own: the
-    // second `Ideas` steps past `Ideas (2)` rather than standing over the note titled that, and
+    // second `Ideas` steps past `Ideas (2)` rather than over the note titled that, and
     // two notes without a title are two files as well.
     {
         let device = Device::default();

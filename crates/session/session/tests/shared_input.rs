@@ -1,4 +1,4 @@
-//! One keyboard and pointer for two of a person's devices standing side by side: the pointer
+//! One keyboard and pointer for two of a person's devices side by side: the pointer
 //! pushed past the laptop's edge toward the phone's screen goes on there while the laptop's own
 //! waits out of sight, the keys typed on the laptop reach the phone, what was copied last pastes
 //! on whichever device they are on, and Ctrl+Alt+Escape on the laptop brings both back. Both devices run

@@ -247,8 +247,8 @@ mod tests {
     )]
     async fn another_roots_revocation_of_a_device_is_not_taken() {
         // The authority epoch is the whole process's, which every test that
-        // narrows anything bumps: only in a process of its own is the epoch
-        // standing still this server's own doing.
+        // narrows anything bumps: only in a process of its own does the epoch
+        // stay still of this server's own doing.
         if !tilo_test_env::in_own_process_here(
             module_path!(),
             "another_roots_revocation_of_a_device_is_not_taken",
@@ -324,8 +324,8 @@ mod tests {
     )]
     async fn a_strangers_flood_leaves_room_for_a_members_revocation() {
         // The authority epoch is the whole process's, which every test that
-        // narrows anything bumps: only in a process of its own is the epoch
-        // standing still this server's own doing.
+        // narrows anything bumps: only in a process of its own does the epoch
+        // stay still of this server's own doing.
         if !tilo_test_env::in_own_process_here(
             module_path!(),
             "a_strangers_flood_leaves_room_for_a_members_revocation",

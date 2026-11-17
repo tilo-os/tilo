@@ -2070,7 +2070,7 @@ mod tests {
         fn results_group_fit_activate_and_draw;
 
         phase a_group_heading_counts_only_where_the_number_says_something;
-        // A count on a heading is news: a group of one row saying "1" restates the row standing
+        // A count on a heading is news: a group of one row saying "1" restates the row
         // under it, so the heading names the group alone; a group of several says how many, and a
         // group the card cut short says how many it has in all.
         {

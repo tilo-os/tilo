@@ -5527,7 +5527,7 @@ proof = ["tilolang", "two-people", "agent-sessions", "session-lock"]
 
 # `cargo headless --check` and `cargo desktop --check` (crates/dev/tilo-local) on the session the
 # nested-session check built: each starts the development session the way a developer does, asks
-# it something (its actions; its window, opened on a throwaway headless Tilo standing in for the
+# it something (its actions; its window, opened on a throwaway headless Tilo in place of the
 # developer's desktop) and stops it, with listening traps where the host's session bus, system bus,
 # login bus and systemd would be. A connection to any of them fails the check: the commands must
 # never reach the session of whoever runs them.

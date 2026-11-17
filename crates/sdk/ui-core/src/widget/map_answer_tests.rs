@@ -72,7 +72,7 @@ fn in_view(map: &Map, area: Rect) -> bool {
     area.x0 >= seen.x0 && area.y0 >= seen.y0 && area.x1 <= seen.x1 && area.y1 <= seen.y1
 }
 
-/// The person asked near the bottom right corner: the turn standing at the caret runs past the
+/// The person asked near the bottom right corner: the turn at the caret runs past the
 /// viewport's edge as its answer grows. The camera pans the least that shows all of it, caption
 /// and words, and never zooms; and the card never grows past what the viewport shows.
 #[test]
@@ -257,7 +257,7 @@ fn list(rows: u64) -> Element {
 }
 
 /// A list that scrolls says what its rows come to where it is asked what it holds: a place found
-/// at a click hugs its six rows rather than standing at a window's height with an empty foot,
+/// at a click hugs its six rows rather than at a window's height with an empty foot,
 /// and a list longer than the room stands at the room and scrolls. Given a height, the list
 /// takes it, however many rows it holds.
 #[test]

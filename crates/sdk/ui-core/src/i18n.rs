@@ -1843,7 +1843,7 @@ mod tests {
 
         phase a_word_from_another_languages_catalogue_is_recorded;
         // A word a window shows from a catalogue in another language is recorded, so a check can hold a
-        // window to one language: a translation the app lacks (its source language standing in), or a
+        // window to one language: a translation the app lacks (its source language in its place), or a
         // catalogue of used package read in the wrong language.
         {
             let _restore = RestoreLookupState::capture();

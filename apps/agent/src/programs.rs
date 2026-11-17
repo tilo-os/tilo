@@ -123,7 +123,7 @@ pub struct Program {
 /// program that prints the answer, read by the person as the reply, in one response.
 pub const ANSWER_SLOT: &str = "{answer}";
 
-/// `reply` with [`ANSWER_SLOT`] standing for `answer`, the program's answer as the model reads it
+/// `reply` with [`ANSWER_SLOT`] in place of `answer`, the program's answer as the model reads it
 /// without its bookkeeping (the "step 1: 1 change in tasks; `undo` takes it back" lines, which are
 /// the model's, not the person's).
 #[must_use]

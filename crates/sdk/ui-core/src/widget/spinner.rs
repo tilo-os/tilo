@@ -100,7 +100,7 @@ impl Spinner {
     }
 
     /// Sized to one line of `role` text, for a spinner that sits inline with
-    /// a status line rather than standing alone.
+    /// a status line rather than on its own.
     #[must_use]
     pub fn for_text(role: crate::tokens::TextRole) -> Self {
         Self {

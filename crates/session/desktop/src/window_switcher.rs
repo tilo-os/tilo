@@ -212,7 +212,7 @@ pub use tilo_desktop_surface::host::contract::SwitcherAsk;
 /// Sizes of the panel, all read off the theme's tokens.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Metrics {
-    /// The app mark standing in for a window without a preview.
+    /// The app mark in place of a window without a preview.
     icon: f64,
     /// The app mark beside a previewed window's title.
     mark: f64,
@@ -264,7 +264,7 @@ impl Metrics {
     }
 
     /// The tallest a well goes on this display: a share of the display, and never under the
-    /// standing card.
+    /// card.
     fn box_h(self, host: Rect) -> f64 {
         (host.height() * CARD_HEIGHT_SHARE).max(self.well_h)
     }
@@ -360,7 +360,7 @@ impl Layout {
 }
 
 /// The cards at `well_h` : each the shape of its own window, all sharing one height, wrapped onto
-/// as many rows as `room_w` takes, with `room_h` standing as many of those rows as fit.
+/// as many rows as `room_w` takes, with `room_h` as many of those rows as fit.
 fn rows_at(aspects: &[f64], well_h: f64, m: Metrics, room_w: f64, room_h: f64) -> Layout {
     let widths: Vec<f64> = aspects
         .iter()
@@ -449,7 +449,7 @@ fn geometry_with(host: Rect, view: &SwitcherView, m: Metrics) -> Geometry {
     // the page instead.
     let least = m.well_h.min(tallest).max(LEAST_WELL.min(tallest));
     // A handful of windows stands on one line, as tall as that line allows, so the walk reads at a
-    // glance. More windows than a line of standing cards holds give way to rows: as tall as stand
+    // glance. More windows than a line of cards holds give way to rows: as tall as stand
     // every one of them on the page.
     let line_h = one_line(&aspects, m, room_w).min(tallest);
     let well_h = if line_h >= least {
@@ -1203,7 +1203,7 @@ mod tests {
 
         phase every_card_takes_its_windows_shape_at_the_rows_one_height;
         // Every card takes the shape of the window it shows, at the one height the row shares: the
-        // compositor's picture of the window then fills the card instead of standing in it with bare
+        // compositor's picture of the window then fills the card instead of leaving it with bare
         // bars at its sides.
         {
             let theme = Theme::dark();

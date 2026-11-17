@@ -371,7 +371,7 @@ impl PushSubscription {
 pub const AWAIT_PENDING_NS: u64 = 20 * 1_000_000_000;
 
 /// A page departure the person is asked to allow: what a page they are not
-/// standing at is about to send, where it goes, and the filled page it leaves
+/// on is about to send, where it goes, and the filled page it leaves
 /// from. A submission in a hosted Browser is exactly this, and the person's
 /// allow is what lets that one request leave.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

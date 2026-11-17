@@ -1,4 +1,4 @@
-//! A workspace document kept in memory beside its instance, standing where the action API stands:
+//! A workspace document kept in memory beside its instance, where the action API stands:
 //! it takes each step the instance hands over, writes it down as the person's step and answers it,
 //! as a session's API does. What runs an instance with no session around it keeps one: a browser
 //! page that runs the app and its window side by side, and a capture.

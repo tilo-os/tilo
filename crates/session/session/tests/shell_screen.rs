@@ -391,7 +391,7 @@ fn a_placed_notes_body_stands_at_the_shells_height_under_one_bar() {
     );
 
     // The notes app's own body: its title field and the running text under it, each a whole line
-    // tall and standing inside its window.
+    // tall and inside its window.
     let title = until_bounds(&mut session, "Untitled");
     let body = until_bounds(&mut session, "Block text");
     for (what, rect) in [("title", title), ("body", body)] {
@@ -519,7 +519,7 @@ fn window_within(
 
 /// Where the menu of the window the shell shows as `name` stands on the standard display: the
 /// window's own menu in the pill of its one bar ("This window", `window_controls`). Every strip's
-/// window carries one by that name, so it is the one standing in the window's frame at an icon's
+/// window carries one by that name, so it is the one in the window's frame at an icon's
 /// size.
 fn window_menu(session: &Session, name: &str) -> Option<(f64, f64, f64, f64)> {
     let frame = window_frame(session, name)?;

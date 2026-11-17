@@ -3168,7 +3168,7 @@ mod tests {
             }
         }
 
-        // A card standing on the display — a shell search — takes
+        // A card on the display — a shell search — takes
         // three fifths of it, between 360 and 640 wide, a little below its
         // top, and its list grows with the display's height: the same rule a
         // card in a window follows, so the display's card needs no size of

@@ -940,7 +940,7 @@ impl SharedFlatpakSession {
         true
     }
 
-    /// A new reader can start only at a keyframe. Returns the standing one
+    /// A new reader can start only at a keyframe. Returns the one
     /// for the caller to send that reader; otherwise the next unit is a
     /// keyframe, which the caller encodes from the window as it stands.
     pub fn start_reader(&self) -> Option<EncodedFrame> {

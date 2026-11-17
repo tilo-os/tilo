@@ -124,7 +124,7 @@ pub(crate) struct StoredWorkspace {
 }
 
 impl StoredWorkspace {
-    /// Whether `other` gives this device the same standing in the workspace:
+    /// Whether `other` gives this device the same member access in the workspace:
     /// everything this record holds besides the replica, its generation and
     /// what it published. Compared as stored, so a field the comparison
     /// cannot read counts as changed.

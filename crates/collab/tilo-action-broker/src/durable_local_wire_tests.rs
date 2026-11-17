@@ -307,7 +307,7 @@ async fn an_agents_durable_invocation_is_its_own_and_follows_current_policy() {
                 &env.route.app_id,
                 KindSet::ALL,
             );
-            // The person's own standing in the workspace, which the agent
+            // The person's own member access in the workspace, which the agent
             // session stands on.
             let person_grant = tilo_action_policy::GrantId("changes-for-a-while".into());
             let person = rig.caller(&env, 904, None).await;

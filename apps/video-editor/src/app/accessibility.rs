@@ -421,7 +421,7 @@ impl VideoEditorApp {
         // Undo / redo, exported only when the strip actually drew them, and
         // reporting `disabled` exactly when the verb is unavailable. A
         // control that cannot act must not be focusable — undoing the last
-        // action empties the stack under the control you are standing on,
+        // action empties the stack under the control you are on,
         // and a focus ring left on a dead button is how that reads wrong.
         for (which, _) in self.history_buttons(&self.regions()) {
             let can = self.undo.status().can(which);
@@ -524,7 +524,7 @@ impl VideoEditorApp {
             // clipping ride on the group's value. A meter is a picture, and a
             // picture is the one thing a reader cannot have — so everything
             // the bar says has to be said here too, in the place a reader is
-            // already standing when they ask about a track.
+            // already there when they ask about a track.
             tracks.push(
                 AccessNode::new(Role::Group)
                     .with_name(track.name.clone())

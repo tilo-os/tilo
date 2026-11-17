@@ -2105,7 +2105,7 @@ impl AgentMember {
         self.invoke_as(route, address, arguments, confirmed)
     }
 
-    /// [`Self::invoke`], with `confirmed` standing for whoever confirmed:
+    /// [`Self::invoke`], with `confirmed` naming whoever confirmed:
     /// the person, on their own device, for the agent's own steps; a person
     /// invoking it directly for a remote invocation.
     fn invoke_as(

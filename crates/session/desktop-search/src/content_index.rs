@@ -31,7 +31,7 @@ use tilo_lock::MutexRecover as _;
 use ui::search::index_publication::{IndexDelta, IndexEntry, MAX_ENTRIES};
 
 /// Where one app's entries were published from: its app id, the workspace
-/// workspace and the record, a window's record standing for every window of the
+/// workspace and the record, a window's record for every window of the
 /// app playing the same roles ([`record_slot`]).
 #[derive(
     Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,

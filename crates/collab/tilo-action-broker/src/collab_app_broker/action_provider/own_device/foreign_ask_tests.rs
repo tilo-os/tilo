@@ -17,7 +17,7 @@ use tilo_actions::remote::{
     InvokeRequest, Pending, pending,
 };
 
-/// The host's network, standing in: it records who was asked what, and
+/// The host's network, in its place: it records who was asked what, and
 /// answers on the person's own device's behalf.
 #[derive(Default)]
 struct OwnDevices {
@@ -88,7 +88,7 @@ impl OwnDeviceActions for OwnDevices {
     }
 }
 
-/// The host's identity store, standing in: it publishes the steps, which is
+/// The host's identity store, in its place: it publishes the steps, which is
 /// what makes a question about one of them askable at all.
 #[derive(Default)]
 struct Steps;

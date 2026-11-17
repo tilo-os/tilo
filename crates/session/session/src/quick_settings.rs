@@ -1,5 +1,5 @@
 //! Quick settings, as the session keeps it: the app that draws the panel runs for the session's
-//! life, started with the session so the first opening only shows it, standing where the stack
+//! life, started with the session so the first opening only shows it, where the stack
 //! places it, shown while the stack has its part up and hidden between openings, and shows what
 //! the session's services publish. It is as tall as the page it shows, inside the room the stack
 //! gives a popover.
@@ -178,7 +178,7 @@ impl PanelMotion {
 }
 
 impl crate::Session {
-    /// Follow quick settings: its app runs for the session's life, standing where the stack places
+    /// Follow quick settings: its app runs for the session's life, where the stack places
     /// it, shown while the stack has the part up and hidden between openings, and is asked for the
     /// page the keys asked for.
     /// The popover's place is the stack's, and the compositor stands the panel there: the caret that

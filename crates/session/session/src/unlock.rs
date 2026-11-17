@@ -264,7 +264,7 @@ mod tests {
 
     use super::*;
 
-    /// A `/bin/sh` script with `body` standing in for the helper, run as `sh <script>` so the fresh
+    /// A `/bin/sh` script with `body` in place of the helper, run as `sh <script>` so the fresh
     /// file is read, not executed (no race with a concurrent fork holding it open for writing).
     fn fake_helper(dir: &Path, body: &str) -> HelperVerifier {
         let path = dir.join("helper.sh");

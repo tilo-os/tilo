@@ -203,7 +203,7 @@ publish_python() {
 
 if [[ $mode == check ]]; then
   # A tag run checks the version it is about to publish; anywhere else the version is one no
-  # release carries, so the same rewrite is exercised without standing for a real version.
+  # release carries, so the same rewrite is exercised without naming a real version.
   if [[ ${T_REF:-} == tag:* ]]; then v=$(version); else v=0.0.0; fi
   stage "$v"
   build_typescript

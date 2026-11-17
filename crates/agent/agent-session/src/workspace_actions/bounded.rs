@@ -40,7 +40,7 @@ use ui::permissions::policy::{self, ActionKind, Answer, TreePath};
 /// How long the person's answer to one invocation stays good for running it.
 const APPROVAL_LIFETIME: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
-/// How long a caller's replica is kept on the standing it was opened with
+/// How long a caller's replica is kept on the member access it was opened with
 /// before the host reads their access again for it.
 const ACCESS_FRESHNESS_SECS: u64 = 30;
 

@@ -84,7 +84,7 @@ impl Item {
         }
     }
 
-    /// The entry of `element`, standing as `shape` says.
+    /// The entry of `element`, as `shape` says.
     #[must_use]
     pub fn from_parts(shape: ItemShape, element: El) -> Self {
         match shape {
@@ -274,7 +274,7 @@ pub fn section_action(title: &str, action: Button, body: Body) -> SettingsSectio
     }
 }
 
-/// A group holding one free-standing block (a pane's identity header, a
+/// A group holding one block of its own (a pane's identity header, a
 /// preview), with no heading.
 pub fn block_section(content: El) -> SettingsSection {
     untitled(rows(vec![block(content)]))

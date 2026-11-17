@@ -630,8 +630,7 @@ impl AppWindow {
                 } => self.take_bound(level, &key, value, acked),
                 rows @ (ToUi::Rows { .. } | ToUi::RowsChanged { .. }) => {
                     self.take_rows(rows);
-                    // A row that arrived can hold a list of its own (the document of a row standing
-                    // open), whose rows the app sends next.
+                    // A row that arrived can hold a list of its own (the document of a row open), whose rows the app sends next.
                     self.track_rows();
                     arrived = true;
                 }

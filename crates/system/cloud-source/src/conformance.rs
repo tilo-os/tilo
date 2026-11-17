@@ -56,7 +56,7 @@ pub trait Fixture {
     /// The source under test. Its root is an empty folder owned by this
     /// fixture, and it authenticates through [`Fixture::credentials`].
     fn source(&self) -> &dyn CloudSource;
-    /// An independent client to the same account and root, standing in for
+    /// An independent client to the same account and root, in place of
     /// another device or the provider's web UI.
     fn remote(&self) -> &dyn CloudSource;
     fn credentials(&self) -> &SwitchableCredential;

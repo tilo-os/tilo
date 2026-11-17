@@ -329,7 +329,7 @@ impl PermissionContext {
         )
     }
 
-    /// The permissions of a whole standing a host built (an installer
+    /// The permissions of a whole member access a host built (an installer
     /// bounded by a bot's grants), decided exactly as that access says.
     #[must_use]
     pub fn from_access(access: MemberAccess) -> Self {
@@ -908,7 +908,7 @@ impl PermissionContext {
         app_id: &str,
         resource: tilo_actions::ResourceSpec,
     ) -> Option<tilo_actions::ResourceSpec> {
-        // A host action authority decides some nodes from a standing it
+        // A host action authority decides some nodes from a member access it
         // samples per action: ask action by action.
         if self.action_authority.is_some() {
             return keep_permitted(resource, &|kind, id, action| {
@@ -933,7 +933,7 @@ impl PermissionContext {
                     cx: policy::Context::at_secs(now.unwrap_or(0)),
                 })
             }
-            // A host action authority, a standing to filter, or no clock:
+            // A host action authority, a member access to filter, or no clock:
             // asked action by action.
             _ => None,
         };
@@ -972,7 +972,7 @@ impl PermissionContext {
         collab_types::OwnResource::recognise(app_id, record, root).map(|_| person)
     }
 
-    /// `decide` with one authority for the standing as it is, for answers
+    /// `decide` with one authority for the member access as it is, for answers
     /// about published actions (no host action authority, no `Once` grant
     /// spent). An unavailable clock is an error.
     fn published_answers<R>(

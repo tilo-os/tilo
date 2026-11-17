@@ -22,7 +22,7 @@ pub fn arrival_failure(title: impl Into<String>, reason: impl Into<String>) -> B
 }
 
 /// The failure face filling a window: the banner centred in the area at the
-/// readable width, standing at rest from its first frame (the window's
+/// readable width, at rest from its first frame (the window's
 /// arrival brings it in).
 #[crate::component::not_a_component(framework, "a window whose content failed to arrive")]
 pub struct WindowFailure {

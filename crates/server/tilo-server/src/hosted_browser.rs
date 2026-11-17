@@ -329,7 +329,7 @@ impl std::fmt::Display for AppRefusal {
 }
 
 /// What a host counts page actions against: its plans and the account's
-/// standing.
+/// member access.
 pub trait BrowserMeter: Send + Sync {
     /// Whether `account` may run one more page action on a Browser this host
     /// placed.

@@ -1004,7 +1004,7 @@ fn value_area(widest: f64, theme: &Theme) -> f64 {
 }
 
 /// How far above its knob a held slider's readout reaches: the tooltip
-/// chip standing above it in `theme`.
+/// chip above it in `theme`.
 fn readout_height(theme: &Theme) -> f64 {
     crate::widget::tooltip::chip_reach_above(theme)
 }

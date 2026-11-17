@@ -10,7 +10,7 @@ pub struct Shadow {
     pub outline: Option<Outline>,
 }
 
-/// An outline standing in for a shadow.
+/// An outline in place of a shadow.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Outline {
     /// Its width, logical pixels, drawn wholly outside the surface.

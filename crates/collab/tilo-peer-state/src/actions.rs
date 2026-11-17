@@ -240,7 +240,7 @@ impl ActionProvider for NoActions {
 /// The action service answers with what it knows without asking: that this device
 /// answered at all, that it holds the workspace the route names. An
 /// implementation says the rest — whether the app is installed here, its
-/// power standing, the work already in hand, its operator's preference, and
+/// power level, the work already in hand, its operator's preference, and
 /// the choices its person made for it. An action service with no `Offering` says its
 /// app is not installed, so it never claims work it cannot run.
 pub trait Offering: Send + Sync {

@@ -248,7 +248,7 @@ pub enum ReplicaActor {
     /// the editor preset at most). An agent is offered only what reaches
     /// agents, and is who the changes it makes are by, for the person.
     Member {
-        /// The person's current standing in the workspace, bounded by
+        /// The person's current member access in the workspace, bounded by
         /// whoever acts for them.
         access: policy::MemberAccess,
         /// The workspace's sandbox capabilities.
@@ -704,17 +704,17 @@ impl Replica {
         // lookup names is there already unless only that frame would add
         // it. A listing reads the view laid out.
         if (query.target.is_some() || query.resource_name.is_some()) && !self.view.laid_out() {
-            let standing =
+            let without_layout =
                 self.survey_page_of(&self.view.published_without_layout(), true, query, window);
-            if standing.0 > 0 {
-                return standing;
+            if without_layout.0 > 0 {
+                return without_layout;
             }
         }
         self.survey_page_of(&self.view.published(), false, query, window)
     }
 
     /// [`Self::survey_page`] of `resources`, the tree the view publishes:
-    /// `standing` when the view has not laid out what changed, which then
+    /// `without_layout` when the view has not laid out what changed, which then
     /// reads past the published pages only the items a name finds.
     #[expect(
         clippy::too_many_lines,
@@ -724,7 +724,7 @@ impl Replica {
     fn survey_page_of(
         &self,
         resources: &[tilo_actions::ResourceSpec],
-        standing: bool,
+        without_layout: bool,
         query: &tilo_actions::remote::CatalogueQuery,
         (can_render, (offset, take)): (bool, (usize, usize)),
     ) -> (usize, Vec<tilo_actions::remote::CatalogueRow>) {
@@ -811,7 +811,7 @@ impl Replica {
                     }
                 }
             }
-            let past_len = if query.resource_name.is_some() || standing {
+            let past_len = if query.resource_name.is_some() || without_layout {
                 0
             } else {
                 self.view.past_page_len()
@@ -1642,7 +1642,7 @@ fn replica_access(
     (invoker, permissions)
 }
 
-/// A member's permissions on `access`: the host bounded the standing as it
+/// A member's permissions on `access`: the host bounded the member access as it
 /// reads the caller (`Caller::invoker`), and puts an ask to the person on
 /// their own devices when their agent acts.
 fn member_permissions(

@@ -327,7 +327,7 @@ fn draws_external_pixels(scene: &Scene) -> bool {
 }
 
 impl ApartDrawing {
-    /// Keep this self-standing drawing as the window's live picture; one that showed a secret is
+    /// Keep this drawing of its own as the window's live picture; one that showed a secret is
     /// never shown small, and one that culled part of the window leaves the last whole one.
     fn offer_picture(&self) {
         if !crate::window_pictures::wanted(self.id) {

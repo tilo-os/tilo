@@ -19,7 +19,7 @@ use ui::resource::{ResourceStore, WorkspaceAnswer};
 /// What a page did with a record its host sent.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Landed {
-    /// Kept for whoever opens it, standing at these heads.
+    /// Kept for whoever opens it, at these heads.
     Kept(Vec<ChangeHash>),
     /// The record holds no change: nothing was kept, and the host has
     /// answered all it holds of it ([`answered`]).

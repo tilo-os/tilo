@@ -98,7 +98,7 @@ enum Carry {
 pub enum Found {
     /// By its identity: the same widget, built again from fresh data.
     Same,
-    /// By its place: the widget standing where another was, which may show something else.
+    /// By its place: the widget where another was, which may show something else.
     Where,
 }
 

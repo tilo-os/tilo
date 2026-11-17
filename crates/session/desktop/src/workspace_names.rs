@@ -11,7 +11,7 @@ pub(crate) fn made(name: Option<&str>, held: &[Workspace]) -> String {
         .filter(|name| !name.is_empty())
         .map_or_else(|| numbered(held), str::to_owned);
     // A workspace nobody named is held under the word the shell gives it, so a workspace asking for
-    // that word is numbered beside it rather than standing as its twin.
+    // that word is numbered beside it rather than as its twin.
     let taken = |candidate: &str| {
         held.iter()
             .any(|workspace| tilo_desktop_surface::names::workspace(&workspace.name) == candidate)

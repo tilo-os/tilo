@@ -119,7 +119,7 @@ def joined(
     remote: str | None = None,
     names: tuple[str, str] | None = None,
 ) -> Iterator[tuple[Session, Session, dict, str]]:
-    """The host's session and the peer's, in one workspace, both standing in it.
+    """The host's session and the peer's, in one workspace, both in it.
 
     `out` is the run directory: each session's state, its log and the invitation go under it.
     `tapps` builds what both sessions install besides `apps`, from the host's prepared state, so an

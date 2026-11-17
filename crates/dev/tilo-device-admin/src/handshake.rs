@@ -131,7 +131,7 @@ impl Refusal {
 }
 
 /// Which side signs a proof. Distinct roles keep a device's proof from
-/// standing in for a dialer's and the other way round.
+/// in place of a dialer's and the other way round.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Role {

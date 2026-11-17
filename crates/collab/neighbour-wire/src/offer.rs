@@ -75,7 +75,7 @@ impl Decline {
 /// What a willing device is ranked by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rank {
-    /// Power standing; better wins.
+    /// Power level; better wins.
     pub power: Power,
     /// Work already in hand per thousand slots; lower wins.
     pub load_permille: u32,

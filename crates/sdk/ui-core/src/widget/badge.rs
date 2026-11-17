@@ -461,7 +461,7 @@ impl Badge {
     }
 }
 
-/// A count or dot standing on a control's icon ([`crate::widget::Button::with_count`]): the
+/// A count or dot on a control's icon ([`crate::widget::Button::with_count`]): the
 /// badge's own face, placed by the control rather than laid out beside it.
 #[derive(Clone, Debug)]
 pub(crate) struct CountBadge {

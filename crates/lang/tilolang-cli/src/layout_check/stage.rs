@@ -1061,7 +1061,7 @@ mod tests {
         };
         assert!(
             !back("YouTube cannot be reached"),
-            "a window standing where the app opens has nothing to go back to"
+            "a window where the app opens has nothing to go back to"
         );
         assert!(
             back("a channel"),

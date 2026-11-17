@@ -2,7 +2,7 @@
 //! publishes.
 //!
 //! A Shortcut resolves a step against catalogue rows a host returned; a
-//! scenario standing next to the running app has the app's own resource tree
+//! scenario next to the running app has the app's own resource tree
 //! instead. Both end at one address, so a step and a click reach the same
 //! action API. Here that is the only thing the tree is asked: which address
 //! `invocation` names, the first publication of that kind when the step does

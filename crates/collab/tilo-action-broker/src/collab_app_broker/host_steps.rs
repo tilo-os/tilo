@@ -727,7 +727,7 @@ mod identity_admin_tests {
         RemoteActionMessage, identity_admin, pending,
     };
 
-    /// The host's identity store, standing in: it records each step it was
+    /// The host's identity store, in its place: it records each step it was
     /// asked to start and answers when the test completes it.
     #[derive(Default)]
     struct Host {
@@ -1475,7 +1475,7 @@ mod settings_documents_tests {
     const APP: &str = ui::apps::SETTINGS;
     const RESOURCE: &str = "settings:power";
 
-    /// The session's settings, standing in: one section whose lock delay
+    /// The session's settings, in its place: one section whose lock delay
     /// weakens the lock when longer or never.
     struct Host {
         minutes: Mutex<u32>,

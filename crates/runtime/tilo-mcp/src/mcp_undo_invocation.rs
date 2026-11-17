@@ -330,7 +330,7 @@ fn whose(entry: &Value) -> serde_json::Map<String, Value> {
 }
 
 /// Why the invocation is not taken back in the document at `path`: `over`, the change
-/// standing on it.
+/// over it.
 fn refusal(path: &str, over: &Value) -> String {
     let who = over
         .get("title")

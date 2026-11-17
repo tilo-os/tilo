@@ -762,7 +762,7 @@ pub struct Stretch {
     pub back_at_ms: Option<u64>,
     /// What came in and was told.
     pub came_in: Vec<Told>,
-    /// What the assistant did alone, by an event's standing instruction.
+    /// What the assistant did alone, by an event's lasting instruction.
     pub did_alone: Vec<Told>,
     /// What waits for them, with its buttons.
     pub waits: Vec<Told>,

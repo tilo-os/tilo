@@ -78,8 +78,8 @@ pub(super) async fn handle_remote_action(
         ));
     }
     // A browser environment's device answers the page actions the server hands
-    // it and originates none: what it holds is a window, not a member's
-    // standing to call the workspace's action APIs. What it asks of this host about
+    // it and originates none: what it holds is a window, not the right of a
+    // member to call the workspace's action APIs. What it asks of this host about
     // itself — its own streams' media keys, its own windows' shares — is the
     // one exception, and this host answers it only for that device.
     if session.environment(&peer.device_public_key).is_some()

@@ -262,7 +262,7 @@ const presentedFrames = tab => tab.evaluate('globalThis.tiloMount?.state?.()?.fr
  * laying out what it opened, and one more for what that brought in. */
 const DRAWN_FRAMES = 3;
 /** The frames a window a press opened takes to show what it holds: the press's frame, the window
- * standing as it opens, the app loading and drawing, and its first read of what it shows. A wait of
+ * as it opens, the app loading and drawing, and its first read of what it shows. A wait of
  * {@link DRAWN_FRAMES} on a page drawing a frame every few seconds gave up while the window still
  * loaded, and the card came a few frames later. */
 const WINDOW_FRAMES = 8;
@@ -1181,7 +1181,7 @@ async function unpinned(tab) {
   if (!back) return undefined;
   await press(tab, /^put back in the bar$/i, {what: 'putting who is here back in the bar'});
   // Back in the bar, the panel it was pinned as is gone, and so is the control only the pinned
-  // panel offers. A list still standing over the shell is the press having done nothing.
+  // panel offers. A list still there over the shell is the press having done nothing.
   const left = await untilDrawn(tab, async () => {
     const seen = await semantics(tab);
     const pinned = seen.some(node => speaks(node, /^put back in the bar$/i));
@@ -1955,7 +1955,7 @@ try {
         const cardNow = cardSays(await semantics(tab));
         check(`${combo}: the agent's card lists its run`, Boolean(card),
           card ? card.name : cardNow ? `the card says "${cardNow.name}"`
-            // The windows standing, by their tabs: what the shell holds at once, which the first
+            // The windows there, by their tabs: what the shell holds at once, which the first
             // names of the tree (one window's controls) do not say.
             : `no card; the windows are ${(await semantics(tab)).filter(node => node.role === 'Tab').map(node => `"${node.name}"`).join(', ')}`);
         await shot(tab, combo, 'agent-card');

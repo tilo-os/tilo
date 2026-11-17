@@ -143,7 +143,7 @@ fn day_of(word: DayWord, today: Date) -> Date {
         DayWord::Weekday(want) => today + jiff::Span::new().days(ahead_of(want, today.weekday())),
         DayWord::NextWeekday(want) => {
             // "Next friday" is the one in the week after this one, so it is
-            // never the day the person is standing on.
+            // never the day the person is on.
             today + jiff::Span::new().days(ahead_of(want, today.weekday()) + 7)
         }
         DayWord::Date(date) => date,

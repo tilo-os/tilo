@@ -2086,7 +2086,7 @@ fn a_transcript_offers_the_way_to_what_is_unread_or_to_what_is_now() {
 }
 
 /// A transcript's way back is a control, not a picture of one: a reader, an agent and a keyboard
-/// find it by the words it says, standing where the pill is drawn, and taking it goes to the
+/// find it by the words it says, where the pill is drawn, and taking it goes to the
 /// first row the person has not seen.
 #[test]
 fn the_way_back_is_a_control_a_reader_or_an_agent_can_find_and_take() {

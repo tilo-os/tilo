@@ -298,7 +298,7 @@ impl EgressPolicy {
     ///
     /// This is the launcher check's question. For an app, `*` is
     /// `--share-net`, which reaches the device's loopback like any other
-    /// process, and a check standing in for it must not be stricter. The DNS
+    /// process, and a check in place of it must not be stricter. The DNS
     /// stub of `tilo-egress` answers its own question
     /// (`tilo_egress::policy::admissible`): an environment's `*` keeps a
     /// namespace of its own, whose loopback is not the device's.

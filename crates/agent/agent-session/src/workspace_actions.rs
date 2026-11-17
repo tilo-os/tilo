@@ -2532,7 +2532,7 @@ impl Worker {
     /// Open an app on a new record of the workspace `named`, as its
     /// workspace's own action asks (`app.<app>#open`), in the workspace the
     /// session is in: for the host's own person as its owner, and for anyone
-    /// else, a member or an agent of anyone's, within their standing there
+    /// else, a member or an agent of anyone's, within their member access there
     /// now.
     #[allow(
         clippy::result_large_err,
@@ -2677,7 +2677,7 @@ impl Worker {
     }
 
     /// A new record of `app` in `workspace`, created by the host's own person
-    /// as its owner, or by `who` on their standing there now: a genesis they
+    /// as its owner, or by `who` on their member access there now: a genesis they
     /// may not write is never saved, as no change of theirs is.
     #[allow(
         clippy::result_large_err,

@@ -66,7 +66,7 @@ view shell_parts(x: ShellParts) {
                 }
             }
         }
-        part("Drag run", "Items a person reorders by dragging one, across or standing.") {
+        part("Drag run", "Items a person reorders by dragging one, across or stacked.") {
             ui.DragRun(axis: .horizontal, distribute: .center, name: "Pinned") {
                 on drop(moved: Pinned, at: Int): mark_moved(last, moved, at)
                 for pinned in x.apps {
@@ -78,7 +78,7 @@ view shell_parts(x: ShellParts) {
                     }
                 }
             }
-            ui.DragRun(axis: .vertical, align: .stretch, name: "Pinned, standing") {
+            ui.DragRun(axis: .vertical, align: .stretch, name: "Pinned, stacked") {
                 on drop(moved: Pinned, at: Int): mark_moved(last, moved, at)
                 for pinned in x.apps {
                     ui.DragItem(pinned, title: pinned.title) {

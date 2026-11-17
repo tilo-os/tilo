@@ -301,7 +301,7 @@ fn rows(session: &Session) -> Vec<(String, String)> {
 }
 
 /// Open the window menu for `tab` , as the shell's menu does, and wait for the menu the session
-/// publishes: the one standing for this window, with the rows it offers.
+/// publishes: the one for this window, with the rows it offers.
 fn open_menu(session: &mut Session, tab: u64) {
     let arguments = json!({ "tab": tab.to_string() });
     session

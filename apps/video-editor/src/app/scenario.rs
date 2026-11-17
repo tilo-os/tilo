@@ -77,7 +77,7 @@ pub enum ShotScenario {
     /// screen, and one pair resting.
     LinkedAudio,
     /// A mix that has been played and went over: faders off unity, meters showing it, the
-    /// standing CLIP warning, the marks saying where, and the MIX section open with the
+    /// CLIP warning still up, the marks saying where, and the MIX section open with the
     /// keyboard cursor on the button that puts the track back.
     Mix,
 }

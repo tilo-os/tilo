@@ -1,6 +1,6 @@
 //! The overlay scroll bar for a host that scrolls and paints its own content (a terminal's
 //! scrollback, a canvas): the thumb a [`Scrollable`] shows, laid over the content's trailing
-//! edge instead of standing in a gutter beside it, shown while the content scrolls or the
+//! edge instead of in a gutter beside it, shown while the content scrolls or the
 //! pointer is at it and faded out at rest ([`BarFade`]); always shown under reduced motion.
 
 use std::cell::Cell;

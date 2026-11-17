@@ -133,7 +133,7 @@ fn the_text_places_the_row_that_opens_the_resource_not_one_that_acts_on_it() {
 }
 
 /// Mail's root as the session publishes it: its whole window primary, and the inbox's list as what
-/// a place of it shows standing on its own.
+/// a place of it shows on its own.
 fn mail_root() -> Placed {
     Placed {
         app: "so.tilo.lang.mail".into(),
@@ -146,7 +146,7 @@ fn mail_root() -> Placed {
     }
 }
 
-/// A place standing through its resource's place view is called by that view, never by the record
+/// A place shown through its resource's place view is called by that view, never by the record
 /// the resource's own label names (an app's root goes by its first account or note): "my mails"
 /// stands captioned "All inboxes", not the account's address (canvas.md §7, "Captions name the
 /// thing").

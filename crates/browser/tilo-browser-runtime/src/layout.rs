@@ -1,5 +1,5 @@
 //! The layout in the page: the role is [`tilo_session_core::layout`]'s, the one a native
-//! session runs, standing on the layout document this page keeps.
+//! session runs, on the layout document this page keeps.
 //!
 //! A page has no compositor to say whether the person is mid-gesture, and the palette's index is
 //! the frame's own, which the role cannot reach from here: an action that would wait for the

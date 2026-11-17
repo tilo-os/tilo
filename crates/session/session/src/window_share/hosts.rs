@@ -58,7 +58,7 @@ impl Host {
     }
 }
 
-/// The word the reading says a standing by: what a tool branches on, the same in every language.
+/// The word the reading gives a window's state: what a tool branches on, the same in every language.
 const fn word(state: &Elsewhere) -> &'static str {
     match state {
         Elsewhere::Unread => "unread",

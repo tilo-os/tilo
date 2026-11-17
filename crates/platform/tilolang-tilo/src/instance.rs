@@ -1669,7 +1669,7 @@ impl Instance {
     }
 
     /// Render the rows `range` of the list `list` of the view of `level` for the window, and the
-    /// document of the row `open` — the row standing open into its item where it stands, which
+    /// document of the row `open` — the row open into its item where it stands, which
     /// the window shows and no other row does.
     fn request_rows(
         &mut self,
@@ -1800,7 +1800,7 @@ impl Instance {
     }
 
     /// Show the form of `aref`, an action of `meta` waiting for arguments a form asks for,
-    /// standing where `from` names the control that ran it, or on its own.
+    /// where `from` names the control that ran it, or on its own.
     fn open_form_with(
         &mut self,
         from: Option<(Level, String)>,
@@ -2724,7 +2724,7 @@ fn sort(patches: Vec<Patch>, lists: &[(String, Vec<String>)]) -> Sorted {
             | Patch::SetAnchor { path, .. } => (path.as_slice(), false),
         };
         // The innermost list the patch is of: a list inside a row — the document of a row
-        // standing open can hold one — takes the changes of its own rows, and the list of that
+        // open can hold one — takes the changes of its own rows, and the list of that
         // row the rest of the row.
         let of_list = lists
             .iter()

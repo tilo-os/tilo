@@ -130,7 +130,7 @@ fn every_command_of_a_tasks_menu_acts_by_its_name() {
         let after = controls_of(session.window.app());
         assert!(
             after.iter().all(|name| name != command),
-            "{command} left the menu standing: {after:?}"
+            "{command} left the menu open: {after:?}"
         );
         let followed = task_in_document(&session, "Water the plants", true)
             || !task_in_document(&session, "Water the plants", false)

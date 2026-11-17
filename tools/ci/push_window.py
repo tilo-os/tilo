@@ -99,7 +99,7 @@ GAVE_UP_RUN = ("cancelled", "skipped", "blocked")
 DRY_RUN = "--dry-run" in sys.argv[1:]
 # The longest a window can legitimately hold: its jobs' own timeouts (120
 # minutes each) and the queue in front of them. A run still unfinished after
-# that is not making progress, so it stops standing in the way of the next one.
+# that is not making progress, so it stops in the way of the next one.
 WINDOW_LIMIT_SECONDS = 3 * 60 * 60
 # How the runs are read: the API lists them newest first, a page at a time. The
 # read goes back until it has looked a whole WINDOW_LIMIT_SECONDS back, which is

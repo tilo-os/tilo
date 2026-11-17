@@ -68,7 +68,7 @@ pub enum ModalEmphasis {
     /// A primary action that destroys something. Enter never fires it: in
     /// a sheet with a way out, Enter is that way out (Cancel).
     Danger,
-    /// A third answer that is neither the default nor the way out ("Don't save"), standing at the
+    /// A third answer that is neither the default nor the way out ("Don't save"), at the
     /// footer's leading edge; Enter never fires it.
     Alternate,
     /// An [`Self::Alternate`] answer that discards something: danger ink on
@@ -1081,7 +1081,7 @@ impl<C: Widget + 'static> ModalDialog<C> {
         self.as_dyn_mut().footer_changed();
     }
 
-    /// A third answer for a three-way question (Save / Don't save / Cancel), standing apart from
+    /// A third answer for a three-way question (Save / Don't save / Cancel), apart from
     /// the other two; Enter never fires it.
     #[must_use]
     pub fn tertiary_action(

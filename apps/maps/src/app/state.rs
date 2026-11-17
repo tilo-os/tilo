@@ -24,7 +24,7 @@ impl MapsApp {
         )
     }
 
-    /// A capture of `sample`: no worker, no network, the sample basemap standing in for imagery.
+    /// A capture of `sample`: no worker, no network, the sample basemap in place of imagery.
     #[cfg(feature = "samples")]
     pub(crate) fn sample(sample: crate::scenario::Sample) -> Self {
         match sample {

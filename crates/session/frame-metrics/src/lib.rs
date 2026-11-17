@@ -825,7 +825,7 @@ impl FrameRecorder {
     pub fn mark_wake(&mut self, reason: &'static str) {
         self.cur.wake = reason;
     }
-    /// Record the submit phase and close any outstanding input-latency measurement. `async_present` records whether the submit merely queued the frame for another thread.
+    /// Record the submit phase and close any outstanding-latency measurement. `async_present` records whether the submit merely queued the frame for another thread.
     pub fn mark_submit(
         &mut self,
         d: Duration,

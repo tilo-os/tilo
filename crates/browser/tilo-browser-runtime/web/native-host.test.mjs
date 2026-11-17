@@ -17,7 +17,7 @@ const peerWithHost = () => {
   return {asked, peer: {userPublicKey: ADA, workspace: 'ws-1', actions}};
 };
 
-test('a native host standing in the document is handed the device\'s entry, once, and no global gains anything', async () => {
+test('a native host in the document is handed the device\'s entry, once, and no global gains anything', async () => {
   const {peer, asked} = peerWithHost();
   const taken = [];
   const before = Object.getOwnPropertyNames(globalThis).sort();

@@ -297,7 +297,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     }
 
     // And it leaves with the connection, which `tilo mcp` closes as it ends,
-    // rather than standing there.
+    // rather than staying there.
     drop(server);
     agent.peer.close();
     loop {

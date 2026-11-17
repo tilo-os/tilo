@@ -115,7 +115,7 @@ fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
     });
 }
 
-/// The question standing on the person's displays now, if one does.
+/// The question on the person's displays now, if one does.
 fn asking(session: &Session) -> Option<Question> {
     session
         .display_confirm()

@@ -1,5 +1,5 @@
 //! The on-screen keyboard as the session keeps it: an app of its own, started
-//! while the person may want it, standing on the display they work on, and up
+//! while the person may want it, on the display they work on, and up
 //! while a text field waits for typing on the glass.
 //!
 //! These start the keyboard the way the session does — through its own surface

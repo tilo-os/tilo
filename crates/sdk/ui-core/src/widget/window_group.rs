@@ -4330,7 +4330,7 @@ mod tests {
             );
             assert!(
                 !g.any_tile_arriving(),
-                "and must not still be standing for its own place",
+                "and must not still be there for its own place",
             );
         }
 

@@ -341,7 +341,7 @@ impl ListRowFace<'_> {
     }
 }
 
-/// A part showing `text` set in `style` and `ink`, standing at `rect`.
+/// A part showing `text` set in `style` and `ink`, at `rect`.
 fn words(cx: &mut HtmlCx<'_>, key: &str, rect: Rect, text: String, style: &TextStyle, ink: Color) {
     if text.is_empty() || rect.width() <= 0.0 {
         return;

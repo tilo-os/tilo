@@ -1,4 +1,4 @@
-//! A probe that reports the control results a test drives, standing in for an app.
+//! A probe that reports the control results a test drives, in place of an app.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test support")]
 

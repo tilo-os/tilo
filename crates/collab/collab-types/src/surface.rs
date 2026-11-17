@@ -21,7 +21,7 @@ use tilo_lock::MutexRecover;
 use crate::claim::{ClaimedAction, UnitPath};
 use crate::receipt::{ReceiptSurface, SurfaceSource, WrittenDocument};
 
-/// The item step standing for any item in a footprint.
+/// The item step for any item in a footprint.
 pub const ANY_ITEM: &str = "*";
 
 /// An app's surface file: every resource kind it publishes.
@@ -201,7 +201,7 @@ impl SurfaceSource for ContentSurfaces {
 }
 
 /// Whether the footprint unit `allowed` covers the written unit `unit`:
-/// the same steps, an [`ANY_ITEM`] item standing for any item.
+/// the same steps, an [`ANY_ITEM`] item for any item.
 #[must_use]
 pub fn covers(allowed: &[PathStep], unit: &[PathStep]) -> bool {
     allowed.len() == unit.len()

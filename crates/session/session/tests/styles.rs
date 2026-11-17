@@ -140,7 +140,7 @@ fn the_four_shipped_styles_are_listed_and_drawn() {
     );
     choose(&mut session, "so.tilo.shell:frames");
     // The canvas is the whole screen: its bar keeps no switch (`canvas.md` §7), so the canvas
-    // standing under a bar that names no style is what says it is shown.
+    // under a bar that names no style is what says it is shown.
     until(&mut session, |session| crate::common::canvas_shown(session));
 }
 

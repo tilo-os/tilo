@@ -267,7 +267,7 @@ pub(crate) fn empty_state(unreadable: Option<&str>, intents: &Intents) -> Elemen
 }
 
 /// The page while this machine's storage is being read, since `since`: the detail page's
-/// own layout with the drive's state and the sections' contents standing in, so nothing
+/// own layout with the drive's state and the sections' contents in, so nothing
 /// moves when the drives arrive.
 pub(crate) fn loading(offset: &Rc<Cell<(f32, f32)>>, since: ui::time::Instant) -> Element {
     let local = || ui::arriving::Source::Local;

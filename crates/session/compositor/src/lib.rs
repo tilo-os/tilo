@@ -338,7 +338,7 @@ impl BoundDisplay {
 
 /// A surface app's own display, listening for its clients: while it stands,
 /// connections from the app the session started — and from what that app
-/// runs — are trusted clients of this compositor, standing on the surface
+/// runs — are trusted clients of this compositor, on the surface
 /// app's output. Dropped, it stops listening and its socket goes.
 pub struct SurfaceDisplay {
     handle: LoopHandle<'static, LoopData>,
@@ -889,7 +889,7 @@ impl Compositor {
     }
 
     /// Accept the clients of the surface app `owner` on `bound`, trusted as
-    /// the app the session started and standing on `output` when it is
+    /// the app the session started and on `output` when it is
     /// named. Every connection must come from that process or one it starts:
     /// a socket another program of this login finds is of no use to it.
     ///
@@ -1180,7 +1180,7 @@ impl Compositor {
     }
 
     /// Whether the focused field has committed the caret the keys it received left: a surface a
-    /// key opens at the caret waits for it rather than standing where the caret was before the
+    /// key opens at the caret waits for it rather than where the caret was before the
     /// field's last redraw.
     pub fn caret_settled(&mut self) -> bool {
         self.data.state.caret_settled()

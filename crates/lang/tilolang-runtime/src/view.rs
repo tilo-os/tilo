@@ -190,7 +190,7 @@ pub type EventEq<'a> = &'a dyn Fn(Retained, Retained) -> bool;
 /// absent from the tree until then), against the rows the host holds: every row, shown or not.
 #[derive(Clone, Debug)]
 pub(crate) enum RowStep {
-    /// The row `key` leaves, standing at `at` among the rows as the steps before it left them.
+    /// The row `key` leaves, at `at` among the rows as the steps before it left them.
     Remove {
         key: String,
         at: usize,

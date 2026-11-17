@@ -155,7 +155,7 @@ pub fn answer_text(response: &ui::models::ModelResponse) -> String {
         .collect()
 }
 
-/// Descriptions the document carries, with what a model wrote standing in place of the change's own
+/// Descriptions the document carries, with what a model wrote in place of the change's own
 /// summary. One history row per change, read exactly as the pane would read it otherwise.
 pub fn shown(entries: &mut [HistoryEntry], doc: &AutoCommit) {
     let described = descriptions::read_descriptions(doc);

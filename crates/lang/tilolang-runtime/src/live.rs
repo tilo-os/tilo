@@ -1319,7 +1319,7 @@ impl Live {
     /// two branches, a row called twice), and a boundary freed and handed to another call can
     /// keep a key the tree now holds elsewhere. Asking [`Self::by_key`] whose the fragment is,
     /// and refusing when it is not this boundary's, keeps a stale boundary from writing over
-    /// the content the boundary standing there now owns.
+    /// the content the boundary there now owns.
     fn placed(&self, id: BoundId, path: &[usize]) -> bool {
         let Some(b) = self.bound(id) else {
             return false;

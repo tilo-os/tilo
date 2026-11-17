@@ -78,7 +78,7 @@ pub struct Popover<C: Widget = NoContent> {
 struct PopoverPanel {
     options: Option<Options>,
     /// The rows of an option menu: the one list every menu of rows is
-    /// ([`SuggestionList`]), standing beside the anchor with its own panel,
+    /// ([`SuggestionList`]), beside the anchor with its own panel,
     /// scroll and motion.
     menu: SuggestionList,
     label: Option<String>,

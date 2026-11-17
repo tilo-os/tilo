@@ -37,7 +37,7 @@ pub struct HostDevice {
 pub struct ViewReadPolicy {
     /// Governed workspace whose current policy authorized the exact source record.
     pub workspace: String,
-    /// The certified caller's current standing in the workspace, including the
+    /// The certified caller's current member access in the workspace, including the
     /// bound of a device that is not theirs.
     pub access: ui::permissions::MemberAccess,
     /// The workspace's current sandbox capabilities.

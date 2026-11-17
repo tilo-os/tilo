@@ -482,7 +482,7 @@ fn is_name_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '$' || c == '_' || c == '.'
 }
 
-/// A quoted sheet name and the `!` after it, a doubled quote standing for one.
+/// A quoted sheet name and the `!` after it, a doubled quote for one.
 fn quoted_sheet(scan: &mut Scan<'_>) -> Option<String> {
     scan.bump();
     let mut name = String::new();

@@ -364,7 +364,7 @@ impl ApiTesterApp {
     }
 
     /// The header control that gives the request and the response their first sizes again,
-    /// offered only while the person moved the divider. Its glyph is the request standing on
+    /// offered only while the person moved the divider. Its glyph is the request on
     /// the divider, not a rotating arrow, which reads as reloading.
     fn reset_area(sink: &Sink) -> ui::widget::Button {
         let reset = sink.reset_area.clone();

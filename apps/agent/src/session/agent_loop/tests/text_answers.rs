@@ -1,6 +1,6 @@
 //! A model that ends a turn by answering in words, calling nothing: how a
 //! chat-style model finishes. Its words are the turn's reply — never an
-//! unusable response, never a canned line standing in for what it said — and
+//! unusable response, never a canned line in place of what it said — and
 //! the turn completes once every step it started has settled.
 
 use super::*;

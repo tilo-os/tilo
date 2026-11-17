@@ -577,7 +577,7 @@ mod tests {
                 .unwrap_or_default()
         }
 
-        /// The offers standing now.
+        /// The offers there now.
         fn offers(&self) -> Vec<wire::DownloadedOffer> {
             self.reading()
                 .map(|reading| reading.offers)

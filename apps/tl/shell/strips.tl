@@ -38,7 +38,7 @@ fn strip_in_front(a: Layout, v: Viewing) -> Text {
     if v.focused != "" { v.focused } else { a.strips.last()?.key ?? "" }
 }
 
-/// The strips standing maximized: each shows alone, filling the shell, the others behind
+/// The strips maximized: each shows alone, filling the shell, the others behind
 /// it. Empty while none is.
 fn maximized_strips(a: Layout) -> List<LayoutStrip> {
     a.strips.filter(s -> s.maximized)
@@ -280,7 +280,7 @@ fn window_resource(shown: Option<LayoutPlace>) -> Text {
 /// tab" runs the same arranging action. The place lands after the strip's other tabs and
 /// comes to the front of them, so the window shows what was dropped on it. A place already in
 /// this strip is only brought to the front, so dropping a window on itself raises it rather than
-/// standing a second place. The strip comes forward with it.
+/// opening a second place. The strip comes forward with it.
 action tab_place_here(a: Layout, v: Viewing, s: LayoutStrip, target: host.Resource) (
     icon: .columns_2,
     label: "Tab it here",

@@ -1651,7 +1651,7 @@ impl ShellPart {
 }
 
 impl crate::Published for ShellPart {
-    /// A part whose display went offers nothing: the parts still standing answer the API.
+    /// A part whose display went offers nothing: the parts still there answer the API.
     fn offered(&self) -> bool {
         !self.retired()
     }

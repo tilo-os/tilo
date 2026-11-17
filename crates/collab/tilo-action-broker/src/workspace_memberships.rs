@@ -1079,7 +1079,7 @@ mod tests {
         }
     }
 
-    /// A service standing in for a workspace this device has just made: held,
+    /// A service in place of a workspace this device has just made: held,
     /// and published once its replica is projected, which `projected` says.
     struct ProjectedLaterMemberships {
         workspace: String,

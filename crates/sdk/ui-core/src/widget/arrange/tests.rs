@@ -173,7 +173,7 @@ tilo_test_env::scenario! {
     phase a_hugging_grid_at_its_smallest_holds_its_cards_whole;
     // A hugging grid at its smallest still holds its cards whole: a card's body is as tall as
     // what it holds whether the card is measured or laid out, so a column that shrinks the grid
-    // to its minimum never leaves a card standing past the grid's edge or over the next row. (A
+    // to its minimum never leaves a card past the grid's edge or over the next row. (A
     // layers' cell takes the width it is given; under a min-content constraint it is given none,
     // so a card whose body holds layers measured them away: a preset picker's card stood past
     // its grid.)
@@ -440,7 +440,7 @@ tilo_test_env::scenario! {
 
     phase a_container_that_keeps_a_padding_insets_what_it_holds;
     // A container that keeps a padding holds what it holds that far in on every side, so a surface
-    // standing against a window's edge keeps the window's gutter whatever it covers; one that keeps
+    // against a window's edge keeps the window's gutter whatever it covers; one that keeps
     // none holds it at its own edge, and a lead stands on top of the padding it keeps.
     {
         let theme = Theme::dark();

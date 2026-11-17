@@ -1,4 +1,4 @@
-//! The protected field a provider's key is typed into, standing in a page.
+//! The protected field a provider's key is typed into, in a page.
 //!
 //! It is the one secret prompt ([`SecretPrompt`]) in its inline form: what
 //! is typed never reaches the accessibility tree, a review, presence, a

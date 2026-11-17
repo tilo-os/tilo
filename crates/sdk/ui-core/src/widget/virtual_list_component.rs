@@ -287,7 +287,7 @@ pub struct VirtualListProps {
 #[derive(Default)]
 pub struct DescribedRows {
     held: Held,
-    /// Rows standing in for removed items, after the items ([`VirtualListProps::removed`]).
+    /// Rows in place of removed items, after the items ([`VirtualListProps::removed`]).
     removed: Rc<Vec<ListItemProps>>,
     /// The heading over the rows whose item names no group
     /// ([`VirtualListProps::ungrouped_title`]).
@@ -401,7 +401,7 @@ impl DescribedRows {
         }
     }
 
-    /// Whether `key` is a row standing in for a removed item.
+    /// Whether `key` is a row in place of a removed item.
     fn is_removed(&self, key: &str) -> bool {
         self.removed.iter().any(|item| item.key == key)
     }
@@ -564,7 +564,7 @@ impl ListModel for DescribedRows {
     /// height the rows around it take, and shows a placeholder there until it arrives, rather
     /// than a row of nothing.
     ///
-    /// A row standing in for an item someone removed is the list's own, given whole beside the
+    /// A row in place of an item someone removed is the list's own, given whole beside the
     /// rows the host renders: the host never renders it, and asking it for one would leave the
     /// row on its way forever.
     fn row_state(&self, index: usize) -> crate::arriving::Arrival<(), &str> {
@@ -2248,7 +2248,7 @@ mod tests {
         );
         lay_out(inner, 400.0);
         // // The item's document stands in the row's place: the rows over it keep their parts, // and the
-        // rows under it follow where the document ends, never standing one row above // it. What the row
+        // rows under it follow where the document ends, never one row above // it. What the row
         // writes there is the layout check's to read (`repeated_row_title`), // which watches a title
         // written in a row and again in the item it opened into.
         let row_top = inner.viewport.item_top(2).unwrap_or_default();
@@ -2376,7 +2376,7 @@ mod tests {
         );
     }
 
-    /// The rows standing in for items someone else removed are the list's own: the host that
+    /// The rows in place of items someone else removed are the list's own: the host that
     /// renders the rows it shows, one at a time, has never rendered them and never will. A list
     /// showing one row builds such a row beside the one it holds, struck, rather than leaving
     /// its part on its way.

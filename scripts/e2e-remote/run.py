@@ -679,8 +679,8 @@ class Run:
             raise Failed(f"A and B are not one person: {ia} and {ib}")
 
     def register(self, a: Box, b: Box, res: Result, facts: dict) -> None:
-        """`tilo agent connect claude --device B`, with Claude Code's `claude` standing in as a
-        program that keeps what it was asked to register."""
+        """`tilo agent connect claude --device B`, with Claude Code's `claude` a script that
+        keeps what it was asked to register."""
         label = (b.identity.get("this_device") or {}).get("label") or ""
         if not label:
             raise Failed(f"B's device has no label to name it by: {b.identity}")
@@ -1544,7 +1544,7 @@ class Run:
                 waits = f", waiting for {seen['waiting_for']!r}" if seen["waiting_for"] else ""
                 self.tab_stands[when] = (f"{when} the share, A's session does not read B's Browser window as "
                                          "one that is not shared with the workspace: it reads "
-                                         f"{seen['standing']!r}{waits}; its tab says {seen['notice']}")
+                                         f"{seen['state']!r}{waits}; its tab says {seen['notice']}")
                 return
             if not seen["notice"]:
                 self.tab_stands[when] = (f"{when} the share, A's tab for B's Browser window does not say where "

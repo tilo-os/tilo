@@ -9,7 +9,7 @@
 //! * Block: one flat colour across the body, square corners, no light.
 //! * Glass: the blurred backdrop showing through, and a rim lit brighter
 //!   than the body under it.
-//! * Liquid Glass: the backdrop standing in the panel's middle (it is
+//! * Liquid Glass: the backdrop in the panel's middle (it is
 //!   nearly clear), and at the rim the same backdrop displaced — the
 //!   stripes bend — and a specular rim.
 //! * Pixelated: the panel's body is coarse square cells (each cell one

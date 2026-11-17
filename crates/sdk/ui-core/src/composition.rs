@@ -51,7 +51,7 @@ pub fn glyph(
     (HTML_CODE.get()?.glyph)(icon, size, color, filled)
 }
 
-/// A bar control's face as a page shows it, standing on `ground`; `None` while the code that composes
+/// A bar control's face as a page shows it, on `ground`; `None` while the code that composes
 /// faces is still to come.
 #[must_use]
 pub fn bar_control_face(
@@ -62,7 +62,7 @@ pub fn bar_control_face(
     (HTML_CODE.get()?.bar_control)(face, theme, ground)
 }
 
-/// A bar chip's face as a page shows it, standing on `ground`; `None` for a chip that shows as its
+/// A bar chip's face as a page shows it, on `ground`; `None` for a chip that shows as its
 /// paint, or while the code that composes faces is still to come.
 #[must_use]
 pub fn bar_chip_face(
@@ -777,7 +777,7 @@ pub struct Composed {
 }
 
 impl Composed {
-    /// A widget at `path` standing at `rect` in the window, showing nothing yet: what a host that
+    /// A widget at `path` at `rect` in the window, showing nothing yet: what a host that
     /// composes its parts fills in.
     #[must_use]
     pub fn new(path: String, widget: &str, rect: [f64; 4]) -> Self {
@@ -804,7 +804,7 @@ impl Composed {
 }
 
 impl Composed {
-    /// A part of it keyed `key` under its path, standing at `rect` in the window: a widget that
+    /// A part of it keyed `key` under its path, at `rect` in the window: a widget that
     /// lays out and paints its own content composes it from parts of its own.
     pub fn part(&mut self, key: &str, widget: &str, rect: vello::kurbo::Rect) -> &mut Composed {
         let path = format!("{}#{key}", self.path);
@@ -939,7 +939,7 @@ impl<'a> HtmlCx<'a> {
     }
 
     /// One of the widget parts, which it lays out and paints itself rather than holding as a widget of
-    /// it (a bar's controls): keyed `key` under the widget's path, standing at `rect` in the window.
+    /// it (a bar's controls): keyed `key` under the widget's path, at `rect` in the window.
     pub fn part(&mut self, key: &str, widget: &str, rect: vello::kurbo::Rect) -> &mut Composed {
         self.composed.part(key, widget, rect)
     }
@@ -955,7 +955,7 @@ impl<'a> HtmlCx<'a> {
         self.composed.icon(key, rect, icon, ink)
     }
 
-    /// A part of it showing `look`'s words as a `tag` element (`h3`, `dt`, `td`) standing at `rect`.
+    /// A part of it showing `look`'s words as a `tag` element (`h3`, `dt`, `td`) at `rect`.
     pub fn words(
         &mut self,
         key: &str,
@@ -1068,14 +1068,14 @@ impl<'a> HtmlCx<'a> {
         }
     }
 
-    /// The widget is a document of `blocks`, its text standing at `edges`.
+    /// The widget is a document of `blocks`, its text at `edges`.
     pub fn blocks(&mut self, blocks: Vec<DocBlock>, edges: DocEdges) {
         self.element("article");
         self.composed.own = Some(Own::Blocks { blocks, edges });
     }
 
     /// Each control the widget's accessibility tree names — a target with bounds — as a part
-    /// standing where it stands: a real button a page, a reader and the keyboard reach, over what
+    /// where it stands: a real button a page, a reader and the keyboard reach, over what
     /// the widget draws itself. One the widget already composed ([`Self::part`]) is not composed
     /// twice.
     pub fn targets(&mut self) {
@@ -1167,7 +1167,7 @@ impl<'a> HtmlCx<'a> {
         }
     }
 
-    /// Of the children it composed ([`Self::children`]), the ones standing at `chosen` are the chosen
+    /// Of the children it composed ([`Self::children`]), the ones at `chosen` are the chosen
     /// ones of its list: a list that shows its choice under its rows rather than in them says which
     /// rows hold it.
     pub fn choose_children(&mut self, chosen: &[vello::kurbo::Rect]) {

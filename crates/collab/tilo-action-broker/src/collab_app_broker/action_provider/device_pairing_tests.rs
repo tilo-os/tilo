@@ -9,7 +9,7 @@ use tilo_actions::remote::{
     device_pairing, pending,
 };
 
-/// The host's pairing, standing in: it records each step it was asked
+/// The host's pairing, in its place: it records each step it was asked
 /// to start and answers when the test completes it.
 #[derive(Default)]
 struct Host {

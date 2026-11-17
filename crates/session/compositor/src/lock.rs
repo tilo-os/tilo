@@ -35,7 +35,7 @@ pub(crate) struct Lock {
     pending: Option<SessionLocker>,
     locked: bool,
     /// Whether the session itself asked for the lock this client holds: that lock is the session's,
-    /// and a client that goes away leaves it standing for the session to show again.
+    /// and a client that goes away leaves it in place for the session to show again.
     by_session: bool,
     surfaces: Vec<(Output, LockSurface)>,
 }

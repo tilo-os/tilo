@@ -34,7 +34,7 @@ impl Enrollment {
     /// # Errors
     ///
     /// [`Error::ReceiptMismatch`] for any other identity, and the decoding
-    /// error of a malformed standing or sandbox.
+    /// error of a malformed member access or sandbox.
     pub fn admitted(
         answer: &FeedbackAnswer,
         destination: &FeedbackDestination,

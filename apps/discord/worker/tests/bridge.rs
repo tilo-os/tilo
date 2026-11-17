@@ -1216,7 +1216,7 @@ async fn what_bo_does_to_his_messages_in_discord_follows_in_chat() {
 }
 
 /// Reactions cross both ways, each Discord member their own reaction in
-/// Tilo, the server's custom emoji standing for the workspace's emoji of
+/// Tilo, the server's custom emoji for the workspace's emoji of
 /// the same name, and nothing mirrored in going back out.
 #[tokio::test(flavor = "multi_thread")]
 async fn reactions_cross_both_ways_and_custom_emoji_by_name() {

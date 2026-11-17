@@ -394,7 +394,7 @@ fn press_key(session: &mut Session, code: u32) {
 /// The evdev code of the right arrow.
 const KEY_ARROW_RIGHT: u32 = 106;
 
-/// How far the shell's own bar reaches down the screen: a control standing below it is the shell's
+/// How far the shell's own bar reaches down the screen: a control below it is the shell's
 /// own content (a place's frame), never the bar naming the window in front.
 const BAR_FOOT: f64 = 40.0;
 

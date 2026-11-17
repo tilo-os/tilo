@@ -1,7 +1,7 @@
 //! Inviting people into the workspace a page is in: the session's own role
 //! ([`tilo_session::invite`]) and sheet, over the page. Who is in the workspace
 //! is the membership the page follows, the parts this person may hand out are
-//! their standing here, and the workspace's host makes, lists and cancels the
+//! their member access here, and the workspace's host makes, lists and cancels the
 //! links, which open this page.
 
 use std::cell::RefCell;

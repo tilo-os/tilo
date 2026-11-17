@@ -380,7 +380,7 @@ tilo_test_env::scenario! {
             "the bell stands inside the bar's band: {bell:?} of {band:?}"
         );
         // The count sits on the bell's corner, inside the bell's own bounds: a badge is clamped inside
-        // the control it counts, so a bell standing inside the bar's band carries no pixel of its count
+        // the control it counts, so a bell inside the bar's band carries no pixel of its count
         // over the screen's top edge. (What the notice itself draws on the shell is not the bar's; the
         // pixels below the bar change with it.)
         let (inside, _) = changed_in(&before, &after, bell);
@@ -1067,15 +1067,11 @@ fn alt_tab_walks_the_windows_and_commits_to_the_one_it_reached() {
     // The panel comes up on the frame after the reading moves: its keys are drawn with it.
     until(&mut session, |session| says(session, "Go there"));
     // Its keys are named with it, and stand where the frame that draws them lays them out.
-    let keys = crate::common::wait_for(
-        &mut session,
-        "the keys standing in the switcher",
-        |session| {
-            let labels = session.accessible_labels();
-            let keys = labels.iter().find(|label| label.contains("Alt + Tab"))?;
-            session.shell_control(keys)
-        },
-    );
+    let keys = crate::common::wait_for(&mut session, "the keys in the switcher", |session| {
+        let labels = session.accessible_labels();
+        let keys = labels.iter().find(|label| label.contains("Alt + Tab"))?;
+        session.shell_control(keys)
+    });
     let held = keep(&mut session, "shell-switcher");
     // The switcher names every window it walks, each with the app it shows, and the keys stand
     // under them rather than over their titles.
@@ -1573,7 +1569,7 @@ fn session_with_devices(width: i32, height: i32) -> Session {
 }
 
 /// The devices session of the shell's own chrome, with quick settings' app installed: the panel the
-/// chrome shows, started as a process of the session and standing where the stack places the slot,
+/// chrome shows, started as a process of the session and where the stack places the slot,
 /// over the bar's status. The screen shell draws its own quick settings (`quick.tl`), so the
 /// panel's app is the shell's.
 fn session_with_the_panel(width: i32, height: i32) -> Session {
@@ -2380,7 +2376,7 @@ fn bar_band(session: &Session) -> (f64, f64, f64, f64) {
 /// The height of the bar's band: its ground's padding around the controls it holds.
 const BAR_BAND_HEIGHT: f64 = 40.0;
 
-/// The controls standing in the bar's band, by where their middle is: what a person sees on
+/// The controls in the bar's band, by where their middle is: what a person sees on
 /// the bar, not on the shell. A control that reaches out of the band is still one of the bar's,
 /// which is what lets a test see it overflow.
 fn bar_band_controls(session: &Session) -> Vec<(String, (f64, f64, f64, f64))> {
