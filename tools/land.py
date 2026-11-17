@@ -377,8 +377,10 @@ class Lander:
         upstream = self.place.fetch(self.place.repo)
         self.prepare(upstream)
         self.keep_suspects(self.suspects & {entry["id"] for entry in entries})
+        # The changes nothing points at go first; the ones a failure pointed at go together after
+        # them, and each failure of theirs narrows them again.
         innocent = [entry for entry in entries if entry["id"] not in self.suspects]
-        entries = innocent or entries[:1]
+        entries = innocent or entries
         batch: list[tuple[dict, str]] = []
         for entry in entries:
             if len(batch) >= self.limit:
@@ -553,8 +555,8 @@ class Lander:
         blamed = self.blamed(batch, upstream, output)
         if not blamed or len(blamed) == len(batch):
             return False
-        # The others are linted without them next; each of them alone after that.
-        self.keep_suspects(self.suspects | blamed)
+        # The others are linted without them next, then they are, together.
+        self.keep_suspects((self.suspects - {entry["id"] for entry, _commit in batch}) | blamed)
         self.place.event(kind="set-aside", ids=sorted(blamed), batch=len(batch))
         return True
 
@@ -579,15 +581,18 @@ class Lander:
                 continue
         failing = set(NOT_BUILT.findall(output))
         directories = self.directories(failing) if failing else []
-        found = set()
+        changed = {}
         previous = upstream
         for entry, commit in batch:
-            files = out(self.tree, "diff", "--name-only", previous, commit).splitlines()
+            changed[entry["id"]] = set(out(self.tree, "diff", "--name-only", previous, commit).splitlines())
             previous = commit
-            if pointed & set(files) or any(path.startswith(directory) for path in files
-                                           for directory in directories):
-                found.add(entry["id"])
-        return found
+        # A change to the very file a diagnostic is about is the likeliest cause; a package that
+        # did not build is touched by many changes, so it only decides when no file does.
+        exact = {identity for identity, files in changed.items() if pointed & files}
+        if exact:
+            return exact
+        return {identity for identity, files in changed.items()
+                if any(path.startswith(directory) for path in files for directory in directories)}
 
     def directories(self, packages: set[str]) -> list[str]:
         """The repository directories of these packages."""
