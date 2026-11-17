@@ -469,26 +469,35 @@ impl App {
             RemotePresenceEffect::None | RemotePresenceEffect::PeerArrived => {}
             RemotePresenceEffect::PeerViewChanged => self.apply_follow(),
             RemotePresenceEffect::InteractionAdvanced => {
-                if let Some(interaction) = interaction
-                    && let Some(text) = self.presence_ctx.interaction_announcement(&interaction)
-                    && let Some(reader) = self.accessibility.screen_reader.as_mut()
-                {
-                    let assertive = matches!(
-                        interaction.phase,
-                        tilo_actions::InteractionPhase::Failed { .. }
-                    );
-                    reader.announce(
-                        text,
-                        if assertive {
-                            tts::Priority::Important
-                        } else {
-                            tts::Priority::Notification
-                        },
-                        assertive,
-                    );
+                if let Some(interaction) = interaction {
+                    self.announce_interaction(&interaction);
                 }
             }
         }
+    }
+
+    /// Say a step of someone's action that advanced to the person's screen reader: a failure
+    /// at once, the rest when it is quiet.
+    pub(super) fn announce_interaction(&mut self, interaction: &tilo_actions::SemanticInteraction) {
+        let Some(text) = self.presence_ctx.interaction_announcement(interaction) else {
+            return;
+        };
+        let Some(reader) = self.accessibility.screen_reader.as_mut() else {
+            return;
+        };
+        let assertive = matches!(
+            interaction.phase,
+            tilo_actions::InteractionPhase::Failed { .. }
+        );
+        reader.announce(
+            text,
+            if assertive {
+                tts::Priority::Important
+            } else {
+                tts::Priority::Notification
+            },
+            assertive,
+        );
     }
 
     pub(super) fn apply_undo_entry(&mut self, entry: crate::state::UndoEntry) {

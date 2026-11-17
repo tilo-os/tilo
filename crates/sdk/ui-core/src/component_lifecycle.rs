@@ -210,12 +210,8 @@ pub fn take_host_intent(
 pub enum Heard {
     /// The workspace's member list: what each member is called and the colour they wear.
     Members(Vec<crate::collaboration::Member>),
-    /// A step of an action `member` takes on the app's resource `key`.
-    Interaction {
-        member: crate::permissions::MemberId,
-        key: crate::presence::PresenceKey,
-        interaction: tilo_actions::SemanticInteraction,
-    },
+    /// A step of an action someone takes on one of the app's resources.
+    Interaction(tilo_actions::SemanticInteraction),
 }
 
 /// A presentation whose app runs elsewhere hands over what its app's connection heard of the

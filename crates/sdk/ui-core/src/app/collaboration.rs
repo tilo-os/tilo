@@ -1260,15 +1260,16 @@ impl App {
         for heard in heard {
             match heard {
                 Heard::Members(members) => self.apply_collab_context(members),
-                Heard::Interaction {
-                    member,
-                    key,
-                    interaction,
-                } => self.apply_remote_presence(
-                    member,
-                    key,
-                    crate::collaboration::PresencePayload::Interaction(Box::new(interaction)),
-                ),
+                // The app's connection heard it on the app's own resources: it is this window's.
+                Heard::Interaction(interaction) => {
+                    match self.presence_ctx.apply_interaction(interaction.clone()) {
+                        Ok(true) => self.announce_interaction(&interaction),
+                        Ok(false) => tracing::debug!("a relayed step of an action changed nothing"),
+                        Err(error) => {
+                            tracing::debug!(?error, "a relayed step of an action was refused");
+                        }
+                    }
+                }
             }
         }
         any

@@ -68,14 +68,13 @@ impl Presence {
                 key,
                 payload,
             } => {
-                if let PresencePayload::Interaction(interaction) = payload
-                    && matches!(key, PresenceKey::Resource { app, .. } if *app == self.app)
-                {
-                    self.for_window.push(Heard::Interaction {
-                        member: member.clone(),
-                        key: key.clone(),
-                        interaction: (**interaction).clone(),
-                    });
+                if let PresencePayload::Interaction(interaction) = payload {
+                    let here = matches!(key, PresenceKey::Resource { app, .. } if *app == self.app);
+                    tracing::debug!(?key, here, action = %interaction.action.id, "heard a step of an action");
+                    if here {
+                        self.for_window
+                            .push(Heard::Interaction((**interaction).clone()));
+                    }
                 }
                 self.heard
                     .apply_remote_presence(member.clone(), key.clone(), payload.clone());
@@ -301,13 +300,7 @@ mod tests {
             }));
         }
         let heard = sent(&mut presence);
-        let [
-            Heard::Members(members),
-            Heard::Interaction {
-                key, interaction, ..
-            },
-        ] = heard.as_slice()
-        else {
+        let [Heard::Members(members), Heard::Interaction(interaction)] = heard.as_slice() else {
             panic!("the members, then the step on this app's resource alone: {heard:?}");
         };
         assert_eq!(members.len(), 1);
@@ -315,7 +308,6 @@ mod tests {
             members[0].avatar.is_none(),
             "pictures stay with the instance"
         );
-        assert_eq!(key, &channel());
         assert_eq!(interaction.resource.id, "channel-1");
         assert!(sent(&mut presence).is_empty(), "each is sent once");
     }
