@@ -933,7 +933,7 @@ fields = [
 id = "bind"
 kind = "undoable"
 params = [
-  { name = "slot", type = "text", required = true, schema = { type = "string" } },
+  { name = "part", type = "text", required = true, schema = { type = "string" } },
   { name = "app", type = "text", required = true, schema = { type = "string" } },
   { name = "view", type = "text", required = true, schema = { type = "string" } },
   { name = "on", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
@@ -943,7 +943,7 @@ params = [
 id = "reset"
 kind = "undoable"
 params = [
-  { name = "slot", type = "text", required = true, schema = { type = "string" } },
+  { name = "part", type = "text", required = true, schema = { type = "string" } },
   { name = "on", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
