@@ -1,19 +1,14 @@
-//! Invitations the host makes for itself: the ones whoever runs it asks for
-//! (a link to hand someone, an invitation for a wait-list address), signed by
-//! the host's own device and naming no person as who sent them, so the
-//! person who opens one reads the workspace's name, not a stand-in member.
-//!
-//! An owner invitation also makes whoever accepts it an owner of the
-//! workspace, as [`Workspaces::declare_owner`] does: the way a host that has
-//! no owner yet gets one, without anyone knowing the person's key first. The
-//! invitations still waiting to be accepted are kept in `owner-invitations.json`
-//! beside the workspaces, so one handed out survives a restart.
+//! Owner invitations: a link that makes whoever accepts it an owner of the
+//! workspace, as [`Workspaces::declare_owner`] does: the way a workspace that
+//! has no owner yet gets one, without anyone knowing the person's key first.
+//! The invitations still waiting to be accepted are kept in
+//! `owner-invitations.json` beside the workspaces, so one handed out survives
+//! a restart.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use tilo_lock::MutexRecover as _;
-use tilo_peer_state::join::Role;
 use tilo_server_session::workspaces::{IssueInvitationRequest, IssuedInvitation};
 use tilo_user_identity::DeviceCert;
 
@@ -22,28 +17,6 @@ use super::{CollaborationError, Workspaces};
 /// Where the owner invitations not accepted yet are kept, under the host's
 /// workspace directory.
 const FILE: &str = "owner-invitations.json";
-
-/// What the host is asked to invite someone as.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HostInvitation {
-    /// The asker's name for this request: asked again with the same id, the
-    /// host answers the invitation it made the first time.
-    pub request_id: [u8; 32],
-    pub role: Role,
-    /// Whoever accepts it is an administrator as well (an Editor's role).
-    pub administrator: bool,
-    /// Whoever accepts it is an owner as well: an administrator whom the
-    /// workspace is kept for.
-    pub owner: bool,
-    /// Who it is for, as the inviter names them (an address, a name).
-    pub invitee_name: Option<String>,
-    pub expires_at_ns: u64,
-    /// The wait-list entry the invitation is issued for, where the person is
-    /// an address the entry kept: the entry records the invitation, so the
-    /// entry mails this link to it, and it leaves the list once someone joins
-    /// with it.
-    pub wait_list_entry: Option<[u8; 32]>,
-}
 
 /// The owner invitations handed out and not accepted yet: the workspace
 /// each is into, by invitation id (hex).
@@ -113,52 +86,10 @@ impl OwnerInvitations {
 }
 
 impl Workspaces {
-    /// Invite someone into `workspace` as the host itself: signed by its own
-    /// device, from nobody in particular, so the invitation reads as the
-    /// workspace's. An owner invitation makes whoever accepts it an owner too.
-    ///
-    /// # Errors
-    ///
-    /// The workspace is not governed here, the role is not one an
-    /// administrator joins as, or the invitation could not be written.
-    pub async fn invite_as_host(
-        &self,
-        workspace: &str,
-        invitation: HostInvitation,
-    ) -> Result<IssuedInvitation, CollaborationError> {
-        let administrator = invitation.administrator || invitation.owner;
-        let issued = self
-            .issue_at(
-                workspace,
-                &self.inner.host.cert.clone(),
-                IssueInvitationRequest {
-                    request_id: invitation.request_id,
-                    role: if administrator {
-                        Role::Editor
-                    } else {
-                        invitation.role
-                    },
-                    recipient_user_public_key: None,
-                    invitee_name: invitation.invitee_name,
-                    expires_at_ns: invitation.expires_at_ns,
-                    inviter_name: None,
-                },
-                administrator,
-                invitation.wait_list_entry,
-            )
-            .await?;
-        if invitation.owner {
-            self.inner
-                .owner_invitations
-                .add(issued.invite_id, workspace)?;
-        }
-        Ok(issued)
-    }
-
     /// Issue an owner invitation into `workspace` as `device`'s person, who
     /// must be able to make owners themselves: whoever accepts it is an owner
-    /// from then on, as the host's own owner invitation makes them. For the
-    /// wait-list entry `wait_list_entry` when it names one.
+    /// from then on, as [`Self::declare_owner`] makes them. For the wait-list
+    /// entry `wait_list_entry` when it names one.
     ///
     /// # Errors
     ///
@@ -280,6 +211,7 @@ mod tests {
     use super::*;
     use crate::workspaces::listing::entry_tests::walk_in_as;
     use crate::workspaces::tests::{governor, guest_device, test_host};
+    use tilo_peer_state::join::Role;
     use tilo_server_protocol::directory::{EntryJoin, Listing};
     use tilo_server_protocol::workspaces::{
         JoinReply, Workspace, WorkspacesReply, WorkspacesRequest,
@@ -303,15 +235,15 @@ mod tests {
         server
     }
 
-    fn asked(role: Role, administrator: bool, owner: bool) -> HostInvitation {
-        HostInvitation {
+    /// An invitation asked of the workspace, as the invite action asks one.
+    fn invitation(role: Role) -> IssueInvitationRequest {
+        IssueInvitationRequest {
             request_id: rand::random(),
             role,
-            administrator,
-            owner,
+            recipient_user_public_key: None,
             invitee_name: None,
             expires_at_ns: tilo_clock::unix_now_ns().saturating_add(DAY_NS),
-            wait_list_entry: None,
+            inviter_name: None,
         }
     }
 
@@ -341,60 +273,6 @@ mod tests {
             .unwrap_or_else(|| panic!("{device:?} has a row in {page:?}"))
     }
 
-    /// The host invites as itself: the invitation names no person who sent
-    /// it, so the card reads as the workspace's, and the host is no member
-    /// the card counts. Whoever accepts it is in with its role.
-    #[tokio::test]
-    async fn a_host_made_invitation_is_from_the_workspace_and_lets_a_newcomer_in() {
-        let dir = tempfile::tempdir().unwrap();
-        let host = governor();
-        let server = site(dir.path(), &host).await;
-        let workspaces = server.workspaces();
-        let workspace = workspaces.create("Lounge").await.unwrap().workspace;
-
-        for (admitted, (role, administrator)) in [
-            (Role::Editor, false),
-            (Role::Viewer, false),
-            (Role::Editor, true),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let issued = workspaces
-                .invite_as_host(&workspace, asked(role, administrator, false))
-                .await
-                .unwrap();
-            let JoinReply::Invitation {
-                inviter,
-                members,
-                role: offered,
-                ..
-            } = workspaces
-                .inspect_invitation(&issued.signed_invitation)
-                .await
-            else {
-                panic!("the host honours its own invitation");
-            };
-            assert_eq!(inviter, None, "a host-made invitation is from no person");
-            assert_eq!(
-                members, admitted,
-                "the host is none of the people it counts"
-            );
-            assert_eq!(offered, role);
-            let (person, reply) = accept(workspaces, issued.signed_invitation).await;
-            assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
-            assert_eq!(
-                is_administrator(workspaces, &workspace, person).await,
-                administrator
-            );
-        }
-        assert!(
-            !workspaces.has_owner(&workspace).await,
-            "no invitation made an owner"
-        );
-        server.shutdown().await;
-    }
-
     /// The owner link: an owner invitation, opened by someone whose key the
     /// host never knew, makes them an administrator the workspace is kept for
     /// as they come in, also after a restart; once someone did, the workspace
@@ -409,14 +287,21 @@ mod tests {
         assert!(!workspaces.has_owner(&workspace).await);
 
         let issued = workspaces
-            .invite_as_host(&workspace, asked(Role::Viewer, false, true))
+            .issue_owner_invitation(&workspace, &host.1, invitation(Role::Editor), None)
             .await
             .unwrap();
         server.shutdown().await;
 
         let server = site(dir.path(), &host).await;
         let workspaces = server.workspaces();
-        let JoinReply::Invitation { inviter, role, .. } = workspaces
+        let JoinReply::Invitation {
+            inviter,
+            members,
+            role,
+            administrator,
+            owner,
+            ..
+        } = workspaces
             .inspect_invitation(&issued.signed_invitation)
             .await
         else {
@@ -425,7 +310,12 @@ mod tests {
         assert_eq!(
             (inviter, role),
             (None, Role::Editor),
-            "an owner joins as an editor"
+            "the link is from nobody in particular, and an owner joins as an editor"
+        );
+        assert_eq!(members, 0, "the host is none of the people it counts");
+        assert!(
+            administrator && owner,
+            "the invitation says what it makes whoever opens it"
         );
 
         let (owner, reply) = accept(workspaces, issued.signed_invitation.clone()).await;
@@ -469,7 +359,7 @@ mod tests {
         let lounge = workspaces.create("Lounge").await.unwrap().workspace;
 
         let owner_link = workspaces
-            .invite_as_host(&lounge, asked(Role::Editor, false, true))
+            .issue_owner_invitation(&lounge, &host.1, invitation(Role::Editor), None)
             .await
             .unwrap();
         let (_, owner) = guest_device();
@@ -487,7 +377,7 @@ mod tests {
             "{admitted:?}"
         );
         let invite = workspaces
-            .invite_as_host(&lounge, asked(Role::Editor, false, false))
+            .issue(&lounge, &owner, invitation(Role::Editor))
             .await
             .unwrap();
         let (_, member) = guest_device();
@@ -589,7 +479,7 @@ mod tests {
             .unwrap();
         let elsewhere = workspaces.create("Acme").await.unwrap().workspace;
         let issued = workspaces
-            .invite_as_host(&elsewhere, asked(Role::Editor, false, false))
+            .issue(&elsewhere, &cert, invitation(Role::Editor))
             .await
             .unwrap();
         let (_, newcomer) = guest_device();

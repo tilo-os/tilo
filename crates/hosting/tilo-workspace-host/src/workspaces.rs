@@ -168,7 +168,6 @@ use web_time::SystemTime;
 pub(crate) use actions::{GovernedServer, HostWorkspaceActions};
 pub(crate) use admissions::DEFAULT_MAX_PRE_ADMISSIONS;
 pub use collaboration::{AddMemberRequest, CollaborationError, GovernanceCompletion, MemberPlace};
-pub use host_invitations::HostInvitation;
 pub use listing::EntryRefusal;
 pub use pages::PreAdmitRequest;
 use tilo_server_protocol::WorkspaceId;

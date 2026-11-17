@@ -585,6 +585,50 @@ async fn an_administrator_is_an_editor_the_invitation_also_governs() {
     server.shutdown().await;
 }
 
+/// The invite action at the owner's place: the link it answers makes its
+/// opener the workspace's owner as they come in, and the workspace has its
+/// owner from then on.
+#[tokio::test]
+async fn an_invitation_at_the_owners_place_makes_its_opener_the_owner() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, host) = governed(workspaces).await;
+    assert!(!workspaces.has_owner(&workspace).await);
+
+    let issued = invoke(
+        &host,
+        workspace_id,
+        &caller(&owner),
+        request(&workspace, governance::INVITE, json!({ "role": "owner" })),
+    )
+    .await
+    .unwrap();
+    assert_eq!(issued["owner"], json!(true));
+    assert_eq!(issued["administrator"], json!(true));
+    let signed = hex::decode(issued["invitation"].as_str().unwrap()).unwrap();
+
+    let (_, newcomer) = guest_device();
+    let admitted = workspaces
+        .admit_proven(signed, newcomer.clone(), rand::random(), "Ada", None)
+        .await;
+    assert!(
+        matches!(admitted, JoinReply::Admitted { .. }),
+        "{admitted:?}"
+    );
+    assert!(
+        workspaces.has_owner(&workspace).await,
+        "the link's opener owns the workspace"
+    );
+    assert!(
+        workspaces
+            .is_owner(&workspace, newcomer.user_public_key)
+            .await
+    );
+    server.shutdown().await;
+}
+
 #[tokio::test]
 async fn destructive_governance_waits_for_the_person() {
     let dir = tempfile::tempdir().unwrap();
