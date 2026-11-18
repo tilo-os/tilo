@@ -177,9 +177,9 @@ fn millis(time: Duration) -> u64 {
 /// When the note of a step goes to the reply: what the reply says the turn is doing.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Note {
-    /// Before its tool begins: the tool may change something, so its person reads what is
-    /// being done while it is done, and whoever finds the turn unfinished reads that it may
-    /// have changed something.
+    /// Before its tool begins, and waited for: the tool may change something, so its person
+    /// reads what is being done while it is done, and whoever finds the turn unfinished reads
+    /// that it may have changed something.
     Before,
     /// When the calls of its answer are done, and only if no later call's note took its
     /// place: the tool only reads, and the service takes every tool's requests before a
@@ -250,14 +250,9 @@ impl Step {
         }
     }
 
-    /// Hand the step's note over with `hand`, which says whether the turn has a reply that
-    /// takes notes.
-    pub(super) fn notes(&mut self, hand: impl FnOnce() -> bool) {
-        let began = Instant::now();
-        if !hand() {
-            self.noting = Note::Nowhere;
-        }
-        self.note = self.note.saturating_add(began.elapsed());
+    /// The note that goes before the step's tool is written: the step waited for it.
+    pub(super) fn noted(&mut self) {
+        self.note = self.began.elapsed();
     }
 
     /// `call`, the tool itself: what it asks of the workspace's action service is counted for
