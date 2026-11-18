@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use socket2::{Domain, Protocol, Socket, Type};
 use tilo_device_identity::IdentityPaths;
 use tilo_identity::certification_ceremony::pairing_code;
-use tilo_identity::device_fleet::DeviceFleet;
+use tilo_identity::device_fleet::{DeviceFleet, DeviceFleetStore};
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, decode_enrollment_token, verify_device_cert_at,
@@ -1140,6 +1140,32 @@ fn install_answer(
             &tilo_server::home_peer_registry_path(identity_root),
             &earlier,
         )?;
+        // The person's own store, kept here under the identity this machine
+        // was enrolled into: it lists every device they certified, which is
+        // how a machine with no session of theirs finds the devices it may
+        // ask.
+        let identity_id = hex::encode(token.user_public_key);
+        let store = DeviceFleetStore::of_device(paths.clone(), &identity_id);
+        let fleet = store
+            .accept_transferred(
+                &identity_id,
+                payload
+                    .fleet_json
+                    .as_deref()
+                    .context("approving device omitted the person's devices")?,
+                payload.cert.device_public_key,
+            )
+            .context("approval returned an invalid device fleet")?;
+        share_directory_like_parent(&{
+            let fleets = store.fleet_file(&identity_id);
+            fleets
+                .parent()
+                .context("the device fleet has no directory")?
+                .to_path_buf()
+        })?;
+        store
+            .adopt_transferred(&fleet)
+            .context("install the person's devices")?;
     }
     // Preparing a personal enrollment only touches the private staging area.
     // In particular, an existing device's global user key and default
@@ -1198,12 +1224,17 @@ fn install_answer(
     // and group; only what this enrollment created below them takes its
     // directory's.
     let per_user_cert = paths.device_cert_for_user(&payload.cert.user_public_key);
+    let home_peer_fleet = (kind == EnrollmentKind::HomePeer).then(|| {
+        DeviceFleetStore::of_device(paths.clone(), &hex::encode(token.user_public_key))
+            .fleet_file(&hex::encode(token.user_public_key))
+    });
     for output in [
         per_user_cert.parent(),
         Some(per_user_cert.as_path()),
         Some(paths.user_pubkey.as_path()),
         Some(paths.device_privkey.as_path()),
         Some(paths.device_cert.as_path()),
+        home_peer_fleet.as_deref(),
     ]
     .into_iter()
     .flatten()
