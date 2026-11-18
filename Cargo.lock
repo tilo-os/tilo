@@ -21340,6 +21340,7 @@ dependencies = [
  "tilo-accessibility-settings",
  "tilo-action-policy",
  "tilo-actions",
+ "tilo-app-package",
  "tilo-clock",
  "tilo-content-types",
  "tilo-desktop-entry",

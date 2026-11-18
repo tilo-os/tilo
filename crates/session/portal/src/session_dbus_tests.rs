@@ -100,6 +100,11 @@ struct Bed {
 }
 
 async fn bed() -> Bed {
+    bed_for(|app| PortalCaller::new(app)).await
+}
+
+/// A bed whose frontend's apps are the callers `caller` makes of their ids.
+async fn bed_for(caller: impl Fn(&str) -> PortalCaller + Send + Sync + 'static) -> Bed {
     let bus = SessionBus::start();
     let backend = bus.connect().await;
     let questions = Questions::new();
@@ -107,7 +112,7 @@ async fn bed() -> Bed {
     let seat = Arc::new(Seat::default());
     let authenticator = PortalAuthenticator::session_bus(
         backend.clone(),
-        Arc::new(|app: &str, _: Option<&str>| Some(PortalCaller::new(app))),
+        Arc::new(move |app: &str, _: Option<&str>| Some(caller(app))),
     );
     let portal = Portal::new(
         questions.clone(),
@@ -402,6 +407,92 @@ async fn a_remembered_share_starts_again_without_asking_only_in_this_session() {
     )
     .await;
     assert_eq!(code, 0, "asked again after a restart");
+}
+
+/// A package whose manifest allows the file chooser but denies the screen cast is refused a
+/// screen cast session however its call reached the backend, and nobody is asked; one whose
+/// manifest allows it gets one.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_portal_the_apps_manifest_denies_is_refused() {
+    let confined = |allowed: &'static [&'static str]| {
+        move |app: &str| PortalCaller {
+            portals: Some(allowed.iter().map(|name| (*name).to_owned()).collect()),
+            ..PortalCaller::new(app)
+        }
+    };
+    let denied = bed_for(confined(&["file-chooser"])).await;
+    let (code, _) = call(
+        &denied.frontend,
+        SCREENCAST,
+        "CreateSession",
+        &(
+            path(&request("denied-create")),
+            path(&session("denied")),
+            APP,
+            Options::new(),
+        ),
+    )
+    .await
+    .expect("replied");
+    assert_ne!(code, 0, "the screen cast is refused");
+    assert!(
+        denied
+            .portal
+            .sessions()
+            .of_kind(crate::session::SessionKind::ScreenCast)
+            .is_empty()
+    );
+    assert!(denied.questions.pending().is_empty(), "nobody is asked");
+
+    let allowed = bed_for(confined(&["screencast"])).await;
+    create(&allowed, SCREENCAST, "allowed").await;
+}
+
+/// A remembered share stands only while the app may still use the screen: once the person takes
+/// that back, the app's restore key no longer skips the question.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_remembered_share_asks_again_once_the_screen_is_taken_back() {
+    let bed = bed().await;
+    create(&bed, SCREENCAST, "first").await;
+    let mut options = Options::new();
+    options.insert("types".into(), OwnedValue::from(3_u32));
+    options.insert("persist_mode".into(), OwnedValue::from(2_u32));
+    assert_eq!(select_sources(&bed, "first", options).await, 0);
+    let (code, results) = start(
+        &bed,
+        SCREENCAST,
+        "first",
+        Some(picking(&["window:w1"], true)),
+    )
+    .await;
+    assert_eq!(code, 0);
+    let restore = results["restore_data"].try_clone().expect("clone");
+
+    bed.portal.end_captures(|app, _, device| {
+        app == APP && device == collab_types::caps::DeviceCap::Screen
+    });
+    assert!(
+        bed.portal.grants().resources().is_empty(),
+        "the share is forgotten"
+    );
+
+    create(&bed, SCREENCAST, "again").await;
+    let mut options = restoring(&restore);
+    options.insert("types".into(), OwnedValue::from(3_u32));
+    assert_eq!(select_sources(&bed, "again", options).await, 0);
+    let (code, results) = start(
+        &bed,
+        SCREENCAST,
+        "again",
+        Some(picking(&["window:w1"], false)),
+    )
+    .await;
+    assert_eq!(code, 0, "the person is asked again");
+    assert_ne!(
+        restore_key(&results),
+        restore_key(&restoring(&restore)),
+        "the old key is not handed back"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
