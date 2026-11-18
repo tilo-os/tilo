@@ -112,6 +112,8 @@ public final class TiloSource: AssistantSource {
     /// The join that was approved and has not made this device its person's yet.
     private var approved: (route: String, at: Date)?
     private let approvals = Told<Date?>(nil)
+    /// Which look the page draws in, as the page itself says it (`pageLook()`).
+    private let pageLooks = Told<Look?>(nil)
     /// Whether the person's Tilo answers and does not let this device in (`joinStops()`).
     private let joins = Told<Bool>(false)
 
@@ -254,6 +256,14 @@ public final class TiloSource: AssistantSource {
                 for await state in engine.states() { await self?.stood(state) }
             },
             Task { [weak self] in
+                // Light or dark as the page draws: the frame around it draws in the same.
+                for await look in engine.looks() {
+                    var said: Look?
+                    if let look { said = look == .dark ? .dark : .light }
+                    self?.pageLooks.set(said)
+                }
+            },
+            Task { [weak self] in
                 // A try that ends in the sentence of the one before changes no state.
                 for await _ in engine.triesEnded() { self?.sayReach(); self?.sayEndingDetails() }
             },
@@ -290,6 +300,7 @@ public final class TiloSource: AssistantSource {
     public nonisolated func pairingEnded() -> AsyncStream<String?> { endings.stream() }
     public nonisolated func pairingEndedDetails() -> AsyncStream<String?> { endingDetails.stream() }
     public nonisolated func joinApproved() -> AsyncStream<Date?> { approvals.stream() }
+    public nonisolated func pageLook() -> AsyncStream<Look?> { pageLooks.stream() }
 
     /// Go on as the device that was approved: its workspace's page is asked for again, as the
     /// device the store holds. Nothing is paired a second time, and what the try before ended

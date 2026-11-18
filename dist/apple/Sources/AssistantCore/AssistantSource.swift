@@ -25,6 +25,12 @@ public protocol AssistantSource: Sendable {
     /// it is `.unknown`, and nothing is said to have failed: a page on its way in is not away.
     func reach() -> AsyncStream<Reach>
 
+    /// Which look the person's Tilo draws in right now, light or dark: the theme they have
+    /// there, whether they chose it there or told their assistant to. The frame draws in the
+    /// same, so that frame and Tilo never differ. Nil while nothing is known of it: the
+    /// system's look stands in until then.
+    func pageLook() -> AsyncStream<Look?>
+
     /// Why the last pairing ended without letting this device in, in Tilo's own sentence: its
     /// site refused the link, or its page could not go on. Nil where none did, and again once
     /// another link is taken or the device is in. The way in says it.
@@ -241,6 +247,14 @@ extension AssistantSource {
     public func providers() async throws -> [ProviderChoice] { [] }
     /// A source that never tries to get in is never stopped at it.
     public func joinStops() -> AsyncStream<Bool> { AsyncStream { $0.yield(false) } }
+    /// A source that draws nothing of Tilo's has no look of its own to follow.
+    public func pageLook() -> AsyncStream<Look?> { AsyncStream { $0.yield(nil) } }
+}
+
+/// Light or dark: which of the two a theme draws in.
+public enum Look: Equatable, Sendable {
+    case light
+    case dark
 }
 
 /// How a conversation changed.

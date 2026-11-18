@@ -12,6 +12,8 @@ public struct AssistantRoot<Content: View>: View {
     private let content: Content
     @Environment(\.locale) private var locale
     @Environment(\.calendar) private var calendar
+    @Environment(\.colorScheme) private var system
+    @Environment(\.accessibilityReduceMotion) private var reduced
 
     /// `engine` is a view the source needs to stand in the window to do its work, though it
     /// shows nothing: on an iPhone a web view runs its page only while it is in a window. It is
@@ -22,10 +24,25 @@ public struct AssistantRoot<Content: View>: View {
         self.content = content()
     }
 
+    /// Light or dark, as every part of the frame is drawn: the look the person's Tilo has, so
+    /// that frame and Tilo never differ, and the system's until their Tilo has said one.
+    private var look: ColorScheme {
+        switch model.look {
+        case .dark?: .dark
+        case .light?: .light
+        case nil: system
+        }
+    }
+
     public var body: some View {
         TimelineView(.everyMinute) { moment in
             content.environment(\.wording, Wording(locale: locale, calendar: calendar, now: moment.date))
         }
+        // The frame's own parts take the look of the person's Tilo, and follow it as it changes.
+        // The engine's view below does not: Tilo's page reads the system's look from the view
+        // it stands in, and a theme that follows the system must never read the frame's back.
+        .environment(\.colorScheme, look)
+        .animation(reduced ? nil : .easeOut(duration: Motion.fast), value: look)
         .background {
             if let engine {
                 engine.frame(width: 0, height: 0).opacity(0).allowsHitTesting(false).accessibilityHidden(true)
