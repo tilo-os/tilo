@@ -1413,15 +1413,30 @@ fn validate_object_schema(
             }
         }
     }
-    if schema.get("additionalProperties") == Some(&serde_json::Value::Bool(false)) {
-        let properties = schema
+    // What the object declares of the keys it does not list: `false` takes
+    // none, and a schema holds the value under each of them (a map's values).
+    let listed = |key: &str| {
+        schema
             .get("properties")
-            .and_then(serde_json::Value::as_object);
-        for key in object.keys() {
-            if !properties.is_some_and(|properties| properties.contains_key(key)) {
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|properties| properties.contains_key(key))
+    };
+    match schema.get("additionalProperties") {
+        Some(serde_json::Value::Bool(false)) => {
+            if let Some(key) = object.keys().find(|key| !listed(key.as_str())) {
                 return Err(refused::takes_no(key, schema));
             }
         }
+        Some(of_its_own @ serde_json::Value::Object(_)) => {
+            // Such a key is the caller's own, so a refusal never says it.
+            for (key, value) in object {
+                if !listed(key.as_str()) {
+                    validate_schema_value(value, of_its_own)
+                        .map_err(|reason| format!("property <key> {reason}"))?;
+                }
+            }
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -1967,11 +1982,17 @@ fn validate_schema_definition_collections(
     if object.get("enum").is_some_and(|values| !values.is_array()) {
         return Err("schema `enum` must be an array".into());
     }
-    if object
-        .get("additionalProperties")
-        .is_some_and(|value| !value.is_boolean())
-    {
-        return Err("schema `additionalProperties` must be a boolean".into());
+    // `false` closes an object; a schema says what stands under the keys of
+    // the caller's own (a map's values).
+    match object.get("additionalProperties") {
+        None | Some(serde_json::Value::Bool(_)) => {}
+        Some(of_its_own @ serde_json::Value::Object(_)) => {
+            validate_schema_definition(of_its_own)
+                .map_err(|reason| format!("additionalProperties {reason}"))?;
+        }
+        Some(_) => {
+            return Err("schema `additionalProperties` must be a boolean or a schema".into());
+        }
     }
     if object
         .get("uniqueItems")
@@ -2548,7 +2569,15 @@ mod rich_schema_tests {
             .is_err()
         );
         assert!(validate_schema_definition(&json!({"minProperties": 1})).is_err());
-        assert!(validate_schema_definition(&json!({"additionalProperties": {}})).is_err());
+        assert!(validate_schema_definition(&json!({"additionalProperties": 1})).is_err());
+        assert!(
+            validate_schema_definition(&json!({"additionalProperties": {"type": "mystery"}}))
+                .is_err()
+        );
+        assert!(
+            validate_schema_definition(&json!({"additionalProperties": {"type": "integer"}}))
+                .is_ok()
+        );
         assert!(validate_schema_definition(&json!({"title": "accepted annotation"})).is_ok());
     }
 

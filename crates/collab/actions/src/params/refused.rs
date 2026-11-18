@@ -203,7 +203,9 @@ fn list(schema: &Map<String, Value>) -> String {
 }
 
 /// How an object under `schema` is written: the keys it requires, then the
-/// ones that may be left out, each with the shape of its value.
+/// ones that may be left out, each with the shape of its value, then `<key>`
+/// for the keys of the caller's own, with the shape the object declares for
+/// what stands under them.
 fn object(schema: &Map<String, Value>) -> String {
     let properties = schema.get("properties").and_then(Value::as_object);
     let required: Vec<&str> = schema
@@ -227,8 +229,13 @@ fn object(schema: &Map<String, Value>) -> String {
             fields.push(format!("{}?: {}", quoted(key), shape(property)));
         }
     }
-    if fields.is_empty() && schema.get("additionalProperties") != Some(&Value::Bool(false)) {
-        return format!("{{<key>: {ANY}}}");
+    match schema.get("additionalProperties") {
+        Some(of_its_own @ Value::Object(_)) => {
+            fields.push(format!("<key>: {}", shape(of_its_own)));
+        }
+        Some(Value::Bool(false)) => {}
+        _ if fields.is_empty() => fields.push(format!("<key>: {ANY}")),
+        _ => {}
     }
     format!("{{{}}}", fields.join(", "))
 }

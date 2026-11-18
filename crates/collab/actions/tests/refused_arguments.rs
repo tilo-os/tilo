@@ -297,7 +297,66 @@ fn refused() -> Vec<Refused> {
     let mut all = inside_an_argument();
     all.extend(of_an_argument());
     all.extend(shaped_by_another_argument());
+    all.extend(of_a_map());
     all
+}
+
+/// How many of each thing: a map, whose keys are the caller's own and whose
+/// values are all of one kind.
+fn counts() -> ActionParam {
+    ActionParam::required("counts", ParamType::Object, "How many of each").with_schema(json!({
+        "type": "object",
+        "additionalProperties": {"type": "integer", "minimum": 0},
+    }))
+}
+
+/// What was carried since a day, by place and by thing: a map of maps beside
+/// a field the object names itself.
+fn carried() -> ActionParam {
+    ActionParam::optional("carried", ParamType::Object, "What was carried").with_schema(json!({
+        "type": "object",
+        "required": ["since"],
+        "properties": {"since": {"type": "string"}},
+        "additionalProperties": {
+            "type": "object",
+            "additionalProperties": {"type": "integer"},
+        },
+    }))
+}
+
+/// The refusals of a map. Its keys are the caller's own, so no refusal says
+/// one: it says `<key>`, as the shape does.
+fn of_a_map() -> Vec<Refused> {
+    vec![
+        Refused {
+            about: "a map, given as a list",
+            params: vec![counts()],
+            arguments: json!({"counts": [GIVEN]}),
+            told: "argument `counts` was given a list and must be an object: \
+                   {<key>: <integer, at least 0>}",
+        },
+        Refused {
+            about: "a value of a map, of another kind than the map holds",
+            params: vec![counts()],
+            arguments: json!({"counts": {GIVEN: GIVEN}}),
+            told: "argument `counts` property <key> was given text and must be an integer: \
+                   <integer, at least 0>",
+        },
+        Refused {
+            about: "a map with a field of its own, given as text",
+            params: vec![carried()],
+            arguments: json!({"carried": GIVEN}),
+            told: "argument `carried` was given text and must be an object: \
+                   {\"since\": \"<text>\", <key>: {<key>: <integer>}}",
+        },
+        Refused {
+            about: "a value two maps deep, of another kind than the inner map holds",
+            params: vec![carried()],
+            arguments: json!({"carried": {"since": "a day", GIVEN: {GIVEN: [1]}}}),
+            told: "argument `carried` property <key> property <key> was given a list and must \
+                   be an integer: <integer>",
+        },
+    ]
 }
 
 #[test]
@@ -409,5 +468,60 @@ fn a_shape_another_argument_decides_is_checked_where_it_is_declared() {
             "shaped_by": {"argument": "kind", "shapes": {"secret": {"type": "nonsense"}}},
         })),
         ["invalid schema: `shaped_by` shape `secret` schema has an unsupported `type`"]
+    );
+}
+
+/// A map takes every key and holds the value under each to what it declares;
+/// a field the object names itself is held to its own schema, not the map's.
+#[test]
+fn a_map_takes_any_key_and_holds_every_value_to_what_it_declares() {
+    const TAKEN: &str = "(the arguments were taken)";
+    assert_eq!(told(&[counts()], &json!({"counts": {}})), TAKEN);
+    assert_eq!(
+        told(&[counts()], &json!({"counts": {"apples": 2, "pears": 0}})),
+        TAKEN
+    );
+    assert_eq!(
+        told(
+            &[carried()],
+            &json!({"carried": {"since": "a day", "cellar": {"apples": 2}, "attic": {}}})
+        ),
+        TAKEN
+    );
+}
+
+/// What a listing shows before a call says what a map's values are.
+#[test]
+fn a_listing_writes_out_what_the_values_of_a_map_are() {
+    assert_eq!(
+        counts().declared_shape().as_deref(),
+        Some("{<key>: <integer, at least 0>}")
+    );
+    assert_eq!(
+        carried().declared_shape().as_deref(),
+        Some("{\"since\": \"<text>\", <key>: {<key>: <integer>}}")
+    );
+}
+
+/// What a map declares of its values is checked where it is published: it is
+/// a schema that can be held, or `false` for an object that takes no key of
+/// the caller's own.
+#[test]
+fn what_a_map_declares_of_its_values_is_checked_where_it_is_declared() {
+    assert_eq!(counts().validate_declaration(), Vec::<String>::new());
+    assert_eq!(carried().validate_declaration(), Vec::<String>::new());
+    let declared = |of_its_own: Value| {
+        ActionParam::required("counts", ParamType::Object, "How many of each")
+            .with_schema(json!({"type": "object", "additionalProperties": of_its_own}))
+            .validate_declaration()
+    };
+    assert_eq!(declared(json!(false)), Vec::<String>::new());
+    assert_eq!(
+        declared(json!(1)),
+        ["invalid schema: schema `additionalProperties` must be a boolean or a schema"]
+    );
+    assert_eq!(
+        declared(json!({"type": "nonsense"})),
+        ["invalid schema: additionalProperties schema has an unsupported `type`"]
     );
 }
