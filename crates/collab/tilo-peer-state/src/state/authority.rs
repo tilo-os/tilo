@@ -835,9 +835,8 @@ impl StatePeer {
                 app: app_id,
                 document: record,
             },
-            kind.as_deref(),
-            held,
-            pinned,
+            (kind.as_deref(), held, pinned),
+            document.map(|document| document.doc.committed_document()),
             &self.surfaces,
             &allows,
         );

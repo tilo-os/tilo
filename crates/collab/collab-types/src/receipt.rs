@@ -151,6 +151,10 @@ pub enum ReceiptRefusal {
     /// A change names no action.
     #[error("a change names no action: {0}")]
     Unnamed(String),
+    /// A continuation whose gesture's first entry is nowhere the receiver
+    /// holds: who made it cannot be told.
+    #[error("a continued change whose first entry is not here")]
+    NoFirstEntry,
     /// An opened sealed change does not say what its claim says: another
     /// action, or another invoker.
     #[error("a sealed change says other than its claim: {0}")]
@@ -516,7 +520,7 @@ pub fn decide_op(
     surfaces: &Surfaces,
     allows: &Allows<'_>,
 ) -> Result<Receipt, ReceiptRefusal> {
-    decide_op_pinned(op, document, kind, held, None, surfaces, allows)
+    decide_op_pinned(op, document, (kind, held, None), None, surfaces, allows)
 }
 
 /// Refuse changes whose invoker shows an appearance unless they come from
@@ -561,20 +565,54 @@ pub fn check_appearances(
 
 /// Check a sealed op as the device that opened it (`plaintext`, its signed
 /// payload) reads it: every change it carries is claimed once, as the action
-/// and the invoker it names itself. The workspace decided the op by those
-/// claims without reading it, so a change that says otherwise is refused.
-/// Snapshots and segments carry no claims of their own to check here.
+/// and the invoker it names itself ([`check_opened_mutation`]). A segment is
+/// checked once its transfer is whole ([`check_reassembled`]); a snapshot
+/// carries no claims.
+///
+/// # Errors
+/// As [`check_opened_mutation`].
+pub fn check_opened(op: &crate::op::SignedOp, plaintext: &[u8]) -> Result<(), ReceiptRefusal> {
+    match crate::DocumentFrame::decode(plaintext) {
+        Ok(crate::DocumentFrame::Whole(mutation)) => check_opened_mutation(op, &mutation),
+        Ok(crate::DocumentFrame::Segment(_)) | Err(_) => Ok(()),
+    }
+}
+
+/// [`check_opened`] for the whole payload a segmented sealed op's transfer
+/// reassembled (`payload`), against the claims of `op`, its last segment: every
+/// segment carries the claims of the whole mutation.
+///
+/// # Errors
+/// As [`check_opened_mutation`]; a payload that does not read is
+/// [`ReceiptRefusal::Unclaimed`].
+pub fn check_reassembled(op: &crate::op::SignedOp, payload: &[u8]) -> Result<(), ReceiptRefusal> {
+    if op.encryption.is_none() {
+        return Ok(());
+    }
+    let (frame, _) =
+        crate::WorkspaceCommit::split(payload).map_err(|_| ReceiptRefusal::Unclaimed)?;
+    let mutation =
+        crate::op::DocumentMutation::decode(frame).map_err(|_| ReceiptRefusal::Unclaimed)?;
+    check_opened_mutation(op, &mutation)
+}
+
+/// The workspace decided the sealed op `op` by its claims without reading
+/// it: refuse `mutation`, what it opened to, when a change says other than
+/// its claim (another action, or another invoker), when the claims do not
+/// name exactly its changes, or when a continuation names another invoker
+/// than the entry it continues in the same op.
 ///
 /// # Errors
 /// [`ReceiptRefusal::Unclaimed`] for changes the claims do not name exactly,
 /// [`ReceiptRefusal::Misclaimed`] for a claim its change contradicts.
-pub fn check_opened(op: &crate::op::SignedOp, plaintext: &[u8]) -> Result<(), ReceiptRefusal> {
-    let Ok(crate::DocumentFrame::Whole(crate::op::DocumentMutation::Incremental(bytes))) =
-        crate::DocumentFrame::decode(plaintext)
-    else {
+pub fn check_opened_mutation(
+    op: &crate::op::SignedOp,
+    mutation: &crate::op::DocumentMutation,
+) -> Result<(), ReceiptRefusal> {
+    let crate::op::DocumentMutation::Incremental(bytes) = mutation else {
         return Ok(());
     };
-    let changes = crate::claim::parse_changes(&bytes).map_err(|_| ReceiptRefusal::Unclaimed)?;
+    let changes = crate::claim::parse_changes(bytes).map_err(|_| ReceiptRefusal::Unclaimed)?;
     let hashes: Vec<[u8; 32]> = changes.iter().map(|change| change.hash().0).collect();
     check_claimed_changes(&op.claims, Some(&hashes))?;
     for change in &changes {
@@ -587,22 +625,99 @@ pub fn check_opened(op: &crate::op::SignedOp, plaintext: &[u8]) -> Result<(), Re
             return Err(ReceiptRefusal::Misclaimed(label(&read.action)));
         }
     }
+    check_continuations(&changes, None, false)
+}
+
+/// The invoker a continuation names must be its gesture's first entry's:
+/// the writer's last whole entry before it, among `changes` or in `held`, the
+/// document as the receiver holds it ([`first_entry`]). With `holds` (the
+/// receiver holds the document) a continuation whose first entry is found
+/// nowhere is refused; without, it is left to the receivers that hold it.
+///
+/// # Errors
+/// [`ReceiptRefusal::NoFirstEntry`] or [`ReceiptRefusal::Misclaimed`].
+pub fn check_continuations(
+    changes: &[automerge::Change],
+    held: Option<&automerge::Automerge>,
+    holds: bool,
+) -> Result<(), ReceiptRefusal> {
+    for change in changes {
+        let Some(message) = change
+            .message()
+            .filter(|message| message.starts_with(tilo_actions::context::CONTINUATION_PREFIX))
+        else {
+            continue;
+        };
+        let Some(first) = first_entry(change, changes, held) else {
+            if holds {
+                return Err(ReceiptRefusal::NoFirstEntry);
+            }
+            continue;
+        };
+        let named = tilo_actions::context::ContinuedAction::invoker_of_message(message);
+        if named != first.invoker.map(|invoker| invoker.acting) {
+            return Err(ReceiptRefusal::Misclaimed("a continued gesture".into()));
+        }
+    }
     Ok(())
+}
+
+/// How many of its writer's changes back a continuation's first entry may be,
+/// as the executor reads it.
+const MAX_CONTINUATIONS: u64 = 256;
+
+/// The whole entry the continuation `change` continues: its writer's last
+/// whole entry before it, among `changes` or in `held`; `None` when it is in
+/// neither, or more than [`MAX_CONTINUATIONS`] back.
+fn first_entry(
+    change: &automerge::Change,
+    changes: &[automerge::Change],
+    held: Option<&automerge::Automerge>,
+) -> Option<tilo_actions::ActionContext> {
+    let actor = change.actor_id();
+    for back in 1..=MAX_CONTINUATIONS {
+        let seq = change.seq().checked_sub(back)?;
+        let message = if let Some(earlier) = changes
+            .iter()
+            .find(|earlier| earlier.actor_id() == actor && earlier.seq() == seq)
+        {
+            earlier.message().map(str::to_owned)
+        } else {
+            let held = held?;
+            let hash = held.hash_of_actor_seq(actor, seq)?;
+            held.get_change_meta_by_hash(&hash)?
+                .message
+                .map(|message| message.to_string())
+        }?;
+        if let Some(entry) = tilo_actions::ActionContext::from_change_message(&message) {
+            return Some(entry);
+        }
+        if !message.starts_with(tilo_actions::context::CONTINUATION_PREFIX) {
+            return None;
+        }
+    }
+    None
 }
 
 /// [`decide_op`] for a record whose identity names `pinned`, the surface
 /// its changes are decided against: an op naming another surface is
 /// refused unless it is the change that names a new one for the record
-/// ([`FrameworkChange::Upgrade`]).
+/// ([`FrameworkChange::Upgrade`]). `holding` is the document as this
+/// receiver holds it, when it does: a continuation whose gesture's first
+/// entry it does not find there or in the op is refused
+/// ([`check_continuations`]).
 ///
 /// # Errors
 /// The first [`ReceiptRefusal`].
 pub fn decide_op_pinned(
     op: &crate::op::SignedOp,
     document: &WrittenDocument<'_>,
-    kind: Option<&str>,
-    held: Option<automerge::AutoCommit>,
-    pinned: Option<[u8; 32]>,
+    (kind, held, pinned): (
+        Option<&str>,
+        Option<automerge::AutoCommit>,
+        Option<[u8; 32]>,
+    ),
+    holding: Option<&automerge::Automerge>,
     surfaces: &Surfaces,
     allows: &Allows<'_>,
 ) -> Result<Receipt, ReceiptRefusal> {
@@ -647,6 +762,10 @@ pub fn decide_op_pinned(
             // The units each change writes, read from the record as this
             // receiver holds it.
             let reads = held.is_some();
+            // A continuation is decided as the invoker its claim names; a
+            // receiver holding the document checks that its gesture's first
+            // entry names the same.
+            check_continuations(&changes, holding, holding.is_some())?;
             let written = held.and_then(|held| crate::units::units_by_change(held, &changes));
             let claims = changes
                 .iter()

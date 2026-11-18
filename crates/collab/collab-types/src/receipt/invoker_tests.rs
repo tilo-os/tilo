@@ -11,12 +11,12 @@ use tilo_actions::{ActionContext, ActionInvoker, ActionKey, Did, VerbCall};
 
 use super::super::*;
 
-const WORKSPACE: &str = "workspace-1";
-const FILES: &str = "so.tilo.files";
-const TREE: &str = "files.tree";
+pub(super) const WORKSPACE: &str = "workspace-1";
+pub(super) const FILES: &str = "so.tilo.files";
+pub(super) const TREE: &str = "files.tree";
 const AGENT: &str = "claude";
 
-fn tree() -> WrittenDocument<'static> {
+pub(super) fn tree() -> WrittenDocument<'static> {
     WrittenDocument {
         workspace: WORKSPACE,
         app: FILES,
@@ -26,7 +26,7 @@ fn tree() -> WrittenDocument<'static> {
 
 /// The file tree's package surface: a write and a trash, each changing the
 /// whole tree.
-struct Tree;
+pub(super) struct Tree;
 
 impl ReceiptSurface for Tree {
     fn kind(&self) -> &str {
@@ -57,7 +57,7 @@ impl SurfaceSource for Tree {
 /// Ada and Bob edit the workspace; Vic only reads it. `writes` is what the
 /// workspace answers for the agent changing Files, where it answers anything:
 /// it then reads there too.
-fn policy(writes: Option<Answer>) -> WorkspacePolicy {
+pub(super) fn policy(writes: Option<Answer>) -> WorkspacePolicy {
     let mut policy = WorkspacePolicy::new(WORKSPACE, "owner");
     policy.members.insert("ada".into(), Role::Editor);
     policy.members.insert("bob".into(), Role::Editor);
@@ -136,7 +136,10 @@ fn sealed(op: &crate::op::SignedOp) -> (crate::op::SignedOp, Vec<u8>) {
 }
 
 /// How a receiver decides `op` signed by the device `signer` is.
-fn received(op: &crate::op::SignedOp, signer: &MemberAccess) -> Result<Receipt, ReceiptRefusal> {
+pub(super) fn received(
+    op: &crate::op::SignedOp,
+    signer: &MemberAccess,
+) -> Result<Receipt, ReceiptRefusal> {
     let cx = Context::at_secs(1);
     let allows = |invoker: Option<&Acting>, node: &TreePath, kind: ActionKind| {
         ChangeAuthor::answer(signer, invoker, node, kind, &cx) == Answer::Allow
@@ -146,16 +149,16 @@ fn received(op: &crate::op::SignedOp, signer: &MemberAccess) -> Result<Receipt, 
 }
 
 /// The agent a person's computer handed its session to, as the mount names it.
-fn mount_agent() -> Acting {
+pub(super) fn mount_agent() -> Acting {
     Acting::agent(AGENT).handed().in_session("session-1")
 }
 
-fn person(policy: &WorkspacePolicy, person: &str) -> MemberAccess {
+pub(super) fn person(policy: &WorkspacePolicy, person: &str) -> MemberAccess {
     MemberAccess::person(policy.clone(), person)
 }
 
 /// The write node a change claiming `write` is decided at.
-fn write_node() -> TreePath {
+pub(super) fn write_node() -> TreePath {
     let action = ClaimedAction::Verb {
         action: ActionKey::new(FILES, TREE, "write"),
         item: None,

@@ -1796,6 +1796,14 @@ impl DocumentReassembly {
         }
         drop(reassembler);
         match result {
+            // Every segment carries the claims of the whole mutation: what it
+            // opened to must say what they say, as a whole frame's must.
+            Ok(Some(done))
+                if let Err(refusal) = collab_types::check_reassembled(envelope, &done.payload) =>
+            {
+                tracing::warn!(%refusal, "collab: refused a segmented document op");
+                None
+            }
             Ok(Some(done)) => {
                 tracing::debug!(
                     target: "tilo.state",

@@ -296,6 +296,11 @@ impl ChangeClaim {
 /// Who made the change whose commit message is `message`, as its history
 /// entry names them, when not the person whose device signed it.
 fn invoker_of_message(message: &str) -> Option<tilo_action_policy::Acting> {
+    // A continuation names its gesture's invoker in its claim token, as its
+    // first entry names it ([`crate::receipt::check_continuations`]).
+    if message.starts_with(tilo_actions::context::CONTINUATION_PREFIX) {
+        return ContinuedAction::invoker_of_message(message);
+    }
     ActionContext::from_change_message(message)
         .and_then(|context| context.invoker)
         .map(|invoker| invoker.acting)
