@@ -1709,3 +1709,123 @@ fn work_given_again_follows_its_withdrawal() {
     );
     assert!(matches!(case.work(&holder), DelegatedWork::Live(_)));
 }
+
+/// What `peer` holds of the workspace's document past what `other` holds.
+fn workspace_past(peer: &StatePeer, other: &StatePeer) -> Vec<Vec<u8>> {
+    let heads = other.admitted_workspace().unwrap().clone().get_heads();
+    peer.admitted_workspace()
+        .unwrap()
+        .clone()
+        .get_changes(&heads)
+        .into_iter()
+        .map(|change| change.raw_bytes().to_vec())
+        .collect()
+}
+
+/// The race of a withdrawal with the document starting over, end to end. A
+/// member takes their work back on a device that has not synced; someone is
+/// admitted meanwhile, so the governor starts the document over from a base
+/// that still holds the delegation live. The member's device adopts that
+/// base and writes its withdrawal back in the same step: it follows the
+/// workspace, never reads the work as given, and every copy that takes its
+/// change in reads the work withdrawn and refuses the server's.
+#[test]
+fn a_withdrawal_the_governors_base_lacks_is_kept_and_written_back() {
+    use crate::DelegatedWork;
+    let case = Withdrawn::made();
+    let mut governor = case.before.clone();
+    assert_eq!(governor.rebase_workspace(), Ok(true));
+    assert!(matches!(case.work(&governor), DelegatedWork::Live(_)));
+    assert!(
+        case.server_works(&governor),
+        "the governor has not seen the withdrawal"
+    );
+
+    // The member's device holds the withdrawal and knows which device it is.
+    let mut device = case.holder.clone();
+    device.write_as_device(case.guest.device_public_key);
+    assert_eq!(
+        take_workspace_changes(&mut device, case.owner_device(), whole_workspace(&governor)),
+        Ok(()),
+        "the base is adopted"
+    );
+    let generation =
+        |peer: &StatePeer| crate::workspace::base::generation(peer.admitted_workspace().unwrap());
+    assert_eq!(
+        generation(&device),
+        generation(&governor),
+        "the device follows its workspace"
+    );
+    assert!(
+        matches!(case.work(&device), DelegatedWork::Withdrawn { .. }),
+        "it keeps what it saw"
+    );
+    assert!(!case.server_works(&device));
+
+    // What it wrote back reaches the governor, and a copy that follows the
+    // governor and never saw the withdrawal.
+    let back = workspace_past(&device, &governor);
+    assert!(!back.is_empty(), "the form is written back as a change");
+    let mut other = governor.clone();
+    for copy in [&mut governor, &mut other] {
+        assert_eq!(
+            take_workspace_changes(copy, case.guest.device_public_key, back.clone()),
+            Ok(())
+        );
+        assert!(
+            matches!(case.work(copy), DelegatedWork::Withdrawn { .. }),
+            "every copy reads the work withdrawn"
+        );
+        assert!(
+            !case.server_works(copy),
+            "and refuses the server's work for the member"
+        );
+    }
+}
+
+/// A base cannot make a copy that saw a withdrawal take the work. A copy that
+/// was told no device, or a device that is no member's, refuses a base that
+/// lacks the withdrawal and stays on what it holds; a copy that knows its
+/// member's device adopts it with the withdrawal written back. On none of
+/// them does the server's work for the member pass.
+#[test]
+fn a_base_cannot_make_a_copy_that_saw_a_withdrawal_take_the_work() {
+    use crate::DelegatedWork;
+    let case = Withdrawn::made();
+    let mut stale = case.before.clone();
+    assert_eq!(stale.rebase_workspace(), Ok(true));
+    let base = whole_workspace(&stale);
+
+    let told_none = case.holder.clone();
+    let mut told_the_server = case.holder.clone();
+    told_the_server.write_as_device(case.server.device_public_key);
+    for (which, mut copy) in [
+        ("told no device", told_none),
+        ("told a device that is no member's", told_the_server),
+    ] {
+        let taken = take_workspace_changes(&mut copy, case.owner_device(), base.clone());
+        assert!(
+            taken
+                .as_ref()
+                .is_err_and(|refusal| refusal.contains("moved back")),
+            "{which}: {taken:?}"
+        );
+        assert!(
+            matches!(case.work(&copy), DelegatedWork::Withdrawn { .. }),
+            "{which}"
+        );
+        assert!(!case.server_works(&copy), "{which}");
+    }
+
+    let mut told_the_member = case.holder.clone();
+    told_the_member.write_as_device(case.guest.device_public_key);
+    assert_eq!(
+        take_workspace_changes(&mut told_the_member, case.owner_device(), base),
+        Ok(())
+    );
+    assert!(matches!(
+        case.work(&told_the_member),
+        DelegatedWork::Withdrawn { .. }
+    ));
+    assert!(!case.server_works(&told_the_member));
+}

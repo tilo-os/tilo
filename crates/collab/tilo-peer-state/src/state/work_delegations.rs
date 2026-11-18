@@ -25,6 +25,13 @@
 //! end, seven days at most, which the member's devices move on by signing the
 //! delegation again ([`PeerWorkspaceMut::renew_work_delegations`]).
 //!
+//! The workspace's document starts over from a base whenever someone is
+//! admitted, and a base may be made before a withdrawal reached its maker. A
+//! copy that knows its device ([`crate::StatePeer::write_as_device`]) adopts
+//! such a base and writes the form it holds back in the same step
+//! ([`carried`]); a copy that knows none refuses it until a base holds the
+//! form.
+//!
 //! A key holder that takes a member's work under a live delegation signs what
 //! it writes with its own device key; every receiver admits the change as the
 //! member's, bounded by the delegation's paths
@@ -244,6 +251,55 @@ pub(super) fn settle(
     }
     doc.commit();
     Ok(())
+}
+
+/// Write, as `actor`, into `after` every form `before` holds that `after`
+/// lacks or holds further back, each into its row: how a copy that adopts a
+/// base made before a withdrawal reached its maker keeps what it saw. A form
+/// is its member's own signed statement, so the device that hands it on
+/// gives it no authority it had not. Returns how many rows it wrote.
+///
+/// # Errors
+///
+/// `after` was founded without the rows, or a row cannot be written.
+pub(super) fn carried(
+    before: &AutoCommit,
+    after: &mut AutoCommit,
+    actor: &automerge::ActorId,
+) -> Result<usize, String> {
+    let held = texts_of(before);
+    // Most workspaces hold no delegation: nothing to keep.
+    if held.values().all(Vec::is_empty) {
+        return Ok(0);
+    }
+    let Some(workspace) = workspace_of(before) else {
+        return Ok(0);
+    };
+    let (was, is) = (
+        crate::workspace::policy::read(before),
+        crate::workspace::policy::read(after),
+    );
+    let person_of = |device: &[u8; 32]| {
+        certified_person(&was, device).or_else(|| certified_person(&is, device))
+    };
+    let next = forms_held(&texts_of(after), &workspace, &person_of);
+    let lacking: Vec<(String, WorkDelegation)> = forms_held(&held, &workspace, &person_of)
+        .into_iter()
+        .filter(|(row, held)| next.get(row).is_none_or(|form| held.replaces(form)))
+        .collect();
+    if lacking.is_empty() {
+        return Ok(0);
+    }
+    let rows = rows_of(after).ok_or("the base was founded without the workspace's delegations")?;
+    after.set_actor(actor.clone());
+    for (row, form) in &lacking {
+        let text = serde_json::to_string(form).map_err(|error| error.to_string())?;
+        after
+            .put(&rows, row.as_str(), text)
+            .map_err(|error| error.to_string())?;
+    }
+    after.commit();
+    Ok(lacking.len())
 }
 
 /// What a member's work on a server is at one instant: what a turn that

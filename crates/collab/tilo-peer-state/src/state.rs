@@ -345,6 +345,11 @@ pub struct StatePeer {
     /// Whether this is a workspace host's copy of the workspace
     /// ([`Self::write_as_workspace_host`]). Set by the host, never persisted.
     workspace_host: bool,
+    /// The device whose copy this is, once the device's own program said so
+    /// ([`Self::write_as_device`]): what lets the copy keep, as that device's
+    /// own change, a work delegation's form that a base it adopts lacks.
+    /// Never persisted.
+    own_device: Option<[u8; 32]>,
 }
 
 /// The Automerge actor a workspace host's own changes to a workspace are made under,

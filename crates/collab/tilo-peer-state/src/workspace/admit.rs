@@ -76,6 +76,12 @@ pub struct WorkspaceAdmission<'a> {
     /// carries. Not whole seconds: a certificate issued earlier in this
     /// second is already valid.
     pub now_ns: u64,
+    /// Whether the receiver itself writes back, as a change of its own, the
+    /// work delegations it holds that a newer base lacks
+    /// ([`crate::StatePeer::write_as_device`]). Such a base is adopted by
+    /// that receiver alone; any other refuses it, as every receiver refuses
+    /// a batch that erases a delegation or moves it back.
+    pub keeps_delegations: bool,
 }
 
 /// A batch every check admitted. The caller binds a returned media policy to
@@ -262,7 +268,9 @@ pub fn admit_workspace_changes(
             let candidate = super::candidate_on(*base, &changes)?;
             // The receiver projects what it owns onto the base it adopts, so a
             // base leaving out or changing its entries holds only until then.
-            let media = checked(&input, &candidate, false)?;
+            // A base that lacks a work delegation's form the receiver holds
+            // is taken only by a receiver that writes the form back itself.
+            let media = checked_as(&input, &candidate, false, input.keeps_delegations)?;
             Ok(AdmittedWorkspace {
                 candidate,
                 media,
@@ -413,10 +421,11 @@ fn membership(refusal: super::membership::MembershipRefusal) -> AdmissionFailure
 /// # Errors
 ///
 /// The first [`WorkspaceRefusal`] that applies.
-fn checked(
+fn checked_as(
     input: &WorkspaceAdmission<'_>,
     candidate: &AutoCommit,
     governed: bool,
+    carried: bool,
 ) -> Result<Option<media::WorkspaceMediaV1>, WorkspaceRefusal> {
     let WorkspaceAdmission {
         before,
@@ -424,6 +433,7 @@ fn checked(
         source,
         owner,
         now_ns,
+        keeps_delegations: _,
     } = *input;
     let governs = source.governs(owner);
     let declared = uuid::Uuid::parse_str(workspace)
@@ -468,12 +478,25 @@ fn checked(
     crate::removals::monotonic(before, candidate).map_err(WorkspaceRefusal::Removals)?;
     // Every writer, the owner's devices included, and a base as a batch: what
     // a member's own devices signed about their work is never taken back by
-    // whoever writes the workspace.
-    crate::state::work_delegation_rows_kept(before, candidate)
-        .map_err(WorkspaceRefusal::Delegations)?;
+    // whoever writes the workspace. Only a newer base whose receiver writes
+    // the forms it lacks back itself (`carried`) is taken without them.
+    if !carried {
+        crate::state::work_delegation_rows_kept(before, candidate)
+            .map_err(WorkspaceRefusal::Delegations)?;
+    }
     crate::durability::monotonic(before, candidate).map_err(WorkspaceRefusal::Durability)?;
     media::validate_transition(before, candidate, media::TransitionMode::Admission)
         .map_err(WorkspaceRefusal::Media)
+}
+
+/// [`checked_as`] where the receiver carries nothing over: every batch but a
+/// newer base taken in by a receiver that keeps its delegations.
+fn checked(
+    input: &WorkspaceAdmission<'_>,
+    candidate: &AutoCommit,
+    governed: bool,
+) -> Result<Option<media::WorkspaceMediaV1>, WorkspaceRefusal> {
+    checked_as(input, candidate, governed, false)
 }
 
 /// A shortcut a batch adds or changes names, as who saved it, no one or the
@@ -553,6 +576,19 @@ fn may_write(
     } else {
         Err(WorkspaceRefusal::WriteForbidden)
     }
+}
+
+/// Whether a batch of `source`'s own may change the workspace `before`
+/// governs: it governs it, or may make undoable changes on it, as
+/// [`admit_workspace_changes`] decides for a batch it sends.
+pub(crate) fn writes(
+    before: Option<&AutoCommit>,
+    workspace: &str,
+    source: &Writer<'_>,
+    owner: &[u8; 32],
+    now_ns: u64,
+) -> bool {
+    source.governs(owner) || matches!(may_write(before, workspace, source, now_ns), Ok(true))
 }
 
 #[cfg(test)]
