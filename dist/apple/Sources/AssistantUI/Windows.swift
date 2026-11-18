@@ -143,6 +143,7 @@ public struct MacWindow: View {
         .background(Token.content)
         .ignoresSafeArea()
         .sheet(isPresented: $model.asksForJob) { JobSheet() }
+        .sheet(item: $model.selecting) { SelectTextSheet(words: $0) }
     }
 
     private var frame: some View {
@@ -268,6 +269,9 @@ public struct PhoneRoot: View {
         }
         .sheet(isPresented: $model.asksForJob) {
             JobSheet().presentationDetents([.medium])
+        }
+        .sheet(item: $model.selecting) {
+            SelectTextSheet(words: $0).presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
         }
         .environment(\.coversSecrets, !inFront)
         // Every word the system has for leaving the front covers, whichever comes first; only being

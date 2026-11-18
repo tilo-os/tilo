@@ -53,6 +53,7 @@
 "nothing-yet-body" = "Write to your assistant below.";
 "live-thing" = "Live view";
 "attachment" = "Attachment";
+"select-text" = "Select text";
 "view-not-offered" = "This Tilo cannot show views in messages yet";
 "live-not-shown" = "Tilo could not show this";
 "stop-sharing" = "Stop sharing";

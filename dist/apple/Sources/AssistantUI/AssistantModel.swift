@@ -98,6 +98,14 @@ public final class AssistantModel {
     public var problem: String?
     /// Whether the window asks for a new sub-agent's job.
     public var asksForJob = false
+    /// The piece whose words are laid out for the person to mark a part of them: Select text in
+    /// a piece's menu. Nil: none are.
+    public var selecting: PieceWords?
+    #if os(macOS)
+    /// Where Copy in a piece's menu puts the words: the system's pasteboard. A test hands it one
+    /// of its own.
+    @ObservationIgnored public var pasteboard = NSPasteboard.general
+    #endif
     /// A piece the conversation should bring into view.
     public var shownItem: Item.ID?
     /// Counts up each time the message field should take the caret.

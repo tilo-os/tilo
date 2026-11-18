@@ -101,6 +101,11 @@ enum BubbleTone {
 /// A bubble: `.b`, `.b.me`, `.b.lead`.
 struct Bubble<Content: View>: View {
     var tone = BubbleTone.plain
+    /// The piece's words, where a person may copy them or mark a part of them: the bubble then
+    /// has the piece's menu.
+    var words: PieceWords?
+    /// Whether, on a Mac, a drag marks the words where they stand: a message's do.
+    var marks = false
     @ViewBuilder var content: Content
 
     var body: some View {
@@ -112,6 +117,7 @@ struct Bubble<Content: View>: View {
                 .padding(.vertical, 9)
         }
         .background(fill, in: RoundedRectangle(cornerRadius: Measure.bubbleRadius))
+        .modifier(PieceMenu(words: words, marks: marks))
         .frame(maxWidth: .infinity, alignment: tone == .me ? .trailing : .leading)
     }
 
