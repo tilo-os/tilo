@@ -31,6 +31,9 @@ pub(crate) enum Completed {
     Open(PageId),
     /// Bind the open note's editor again: its blocks changed under it.
     Rebind,
+    /// Write this into the notes once the window reads nothing: what the
+    /// app does for itself, which the API takes from nobody.
+    Write(Box<actions::Action>),
 }
 
 impl Completions {
@@ -164,6 +167,7 @@ impl NotesApp {
                     self.bound_page = None;
                     self.self_dirty = true;
                 }
+                Completed::Write(action) => self.writes.borrow_mut().push(*action),
             }
         }
     }
@@ -520,7 +524,8 @@ impl NotesApp {
     }
 
     fn choose_image(&self, page: PageId, cx: &mut Cx) -> EffectAnswer {
-        let chain = self.pages_chain()?;
+        // A notebook open to view only takes no picture.
+        self.pages_chain()?;
         let request = PickRequest::open(
             &CATALOG.t("notes-insert-image-title"),
             &CATALOG.t("notes-insert-image-accept"),
@@ -541,10 +546,7 @@ impl NotesApp {
                 return Ok(Effected::done());
             };
             if let Err(error) = super::check_image(&file.bytes) {
-                completions.push(Completed::Notify(
-                    format!("Image import failed: {error}"),
-                    ToastKind::Error,
-                ));
+                completions.push(image_not_added(&error));
                 return Err(error);
             }
             let alt = std::path::Path::new(&file.name)
@@ -552,12 +554,17 @@ impl NotesApp {
                 .and_then(|stem| stem.to_str())
                 .map_or_else(|| CATALOG.t("notes-image-default-alt"), str::to_owned)
                 .replace([']', '[', '(', ')'], " ");
-            // Submitted, not written at once: the host's answer arrives
-            // while the window's records are in use.
-            chain
-                .dispatcher()
-                .apply(&image_insertion(page, after, alt.trim(), file.bytes));
+            // A file the host hands over arrives while the window reads its
+            // documents: written once it reads nothing.
+            let insertion = match image_insertion(page, after, alt.trim(), &file.bytes) {
+                Ok(insertion) => insertion,
+                Err(error) => {
+                    completions.push(image_not_added(&error));
+                    return Err(error);
+                }
+            };
             completions.extend([
+                Completed::Write(Box::new(insertion)),
                 Completed::Rebind,
                 Completed::Notify(CATALOG.t("notes-image-inserted"), ToastKind::Success),
             ]);
@@ -584,19 +591,35 @@ impl NotesApp {
 
 /// The change adding image `bytes` to `page`, after block `after`, else at
 /// its end ([`NotesApp::image_anchor`]).
+///
+/// # Errors
+/// Why the picture could not be kept for the note.
 pub(super) fn image_insertion(
     page: PageId,
     after: Option<String>,
     alt: &str,
-    bytes: Vec<u8>,
-) -> actions::Action {
-    let digest = blake3::hash(&bytes).to_hex().to_string();
+    bytes: &[u8],
+) -> Result<actions::Action, String> {
+    let digest = blake3::hash(bytes).to_hex().to_string();
     let text = format!("![{alt}](asset:{digest})");
     let edit = match after {
         Some(after) => tilo_document::RichTextAction::InsertParagraph { after, text },
         None => tilo_document::RichTextAction::AppendParagraph { text },
     };
     actions::show_image(page, bytes, edit)
+}
+
+/// The window's word that a chosen picture was not added, with `error`.
+pub(super) fn image_not_added(error: &str) -> Completed {
+    Completed::Notify(image_not_added_text(error), ToastKind::Error)
+}
+
+/// What the window says about a chosen picture that was not added.
+pub(super) fn image_not_added_text(error: &str) -> String {
+    CATALOG.t_args(
+        "notes-image-import-failed",
+        &[("error", ui::i18n::ArgValue::from(error.to_owned()))],
+    )
 }
 
 /// Add `markdown` to the notebook as a note titled `title`, leaving in
@@ -619,9 +642,9 @@ fn import_note(
         &markdown,
         assets.into_iter().map(|(_, bytes)| bytes).collect(),
     );
-    // A file the host hands over arrives while the window's records are in
-    // use: submitted, and written after. The note's id is chosen here, so it
-    // opens once it is written.
+    // A file the host hands over arrives while the window reads its
+    // documents: submitted, and written after. The note's id is chosen here,
+    // so it opens once it is written.
     chain.dispatcher().apply(&action);
     done.push(Completed::Open(page));
     done.push(Completed::Notify(
