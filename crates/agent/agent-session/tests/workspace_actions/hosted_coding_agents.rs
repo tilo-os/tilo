@@ -1023,7 +1023,7 @@ on_both_kinds! {
     let read = answers(&said_by(&workspaces, &workspace, (&own, "fix-hello")).await);
     assert_eq!(read.len(), 1, "{read:?}");
     assert!(
-        read[0].contains("not_permitted: not allowed"),
+        read[0].contains("not_permitted: "),
         "its read of the chat is refused as not allowed: {}",
         read[0]
     );

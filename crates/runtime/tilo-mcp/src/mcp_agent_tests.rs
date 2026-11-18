@@ -464,7 +464,9 @@ impl Notes {
                     kind: operation,
                     contract: tilo_actions::ActionContract {
                         availability: if *self.refuses.lock().unwrap() == Some(name) {
-                            tilo_actions::Availability::not_allowed()
+                            tilo_actions::Availability::not_allowed(Some(
+                                tilo_action_policy::Refuser::Settings,
+                            ))
                         } else {
                             tilo_actions::Availability::Available
                         },
@@ -2422,14 +2424,16 @@ tilo_test_env::scenario! {
             .await;
             assert!(failed, "{text}");
             assert!(
-                text.contains("not_permitted") && text.contains("under Agents"),
+                text.starts_with("not_permitted: the person you work for set this to Deny")
+                    && text.contains("Workspace settings → Agents")
+                    && !text.contains("not allowed: "),
                 "{text}"
             );
             assert!(!text.contains("has no action"), "{text}");
             assert!(notes.invoked.lock().unwrap().is_empty(), "nothing was invoked");
             let (text, _) = tool(&agent(&notes), "tilo_ls", json!({"path": "notes/Todo"})).await;
             assert!(
-                text.contains("rename") && text.contains("not allowed"),
+                text.contains("rename") && text.contains("set this to Deny"),
                 "the listing shows it, refused: {text}"
             );
         });

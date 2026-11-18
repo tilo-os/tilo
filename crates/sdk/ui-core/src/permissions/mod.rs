@@ -1088,6 +1088,34 @@ impl PublishedAnswers<'_> {
         answer
     }
 
+    /// [`Self::action`] as [`Permitted`]: a refusal says what refused it.
+    fn permitted(
+        &self,
+        node: &mut TreePath,
+        field: Option<&str>,
+        action: &str,
+        need: &tilo_actions::ActionNeed,
+    ) -> Permitted {
+        if self.action(node, field, action, need) != Answer::Deny {
+            return Ok(());
+        }
+        let resource = node.len();
+        for part in field
+            .unwrap_or_default()
+            .split('.')
+            .filter(|part| !part.is_empty())
+        {
+            node.push_name(policy::Level::Field, part);
+        }
+        node.push_name(policy::Level::Action, action);
+        let mut verdict = self.authority.decide(node, need.kind, &self.cx);
+        if need.privileged {
+            verdict = verdict.privileged();
+        }
+        node.truncate(resource);
+        Err(verdict.refused_by())
+    }
+
     /// [`PermissionContext::permitted_resource`] with these answers.
     fn keep_permitted(
         &self,
@@ -1098,7 +1126,7 @@ impl PublishedAnswers<'_> {
         let mut node = self.resource(app_id, &resource.kind, resource.id.as_str());
         sift_actions(&mut resource, refused, |action| {
             let need = action.contract.need();
-            self.action(&mut node, need.field.as_deref(), &action.id, &need) != Answer::Deny
+            self.permitted(&mut node, need.field.as_deref(), &action.id, &need)
         });
         resource.children = resource
             .children
@@ -1119,7 +1147,9 @@ fn keep_permitted(
 ) -> Option<tilo_actions::ResourceSpec> {
     let id = resource.id.as_str().to_owned();
     let kind = resource.kind.clone();
-    sift_actions(&mut resource, refused, |action| permits(&kind, &id, action));
+    sift_actions(&mut resource, refused, |action| {
+        permitted(permits(&kind, &id, action))
+    });
     resource.children = resource
         .children
         .into_iter()
@@ -1128,27 +1158,36 @@ fn keep_permitted(
     (!resource.actions.is_empty() || !resource.children.is_empty()).then_some(resource)
 }
 
-/// `resource`'s actions as `permits` decides them: the denied ones taken out, or, where
-/// `refused` lists them ([`PermissionContext::lists_refused`]) and the resource keeps any action
-/// the actor may take, kept and marked not allowed
-/// ([`tilo_actions::Availability::not_allowed`]). A resource the actor may take nothing on
-/// discloses none of its actions.
+/// `resource`'s actions as `permits` decides them (`Err` with what refused one, where the check
+/// knows): the denied ones taken out, or, where `refused` lists them
+/// ([`PermissionContext::lists_refused`]) and the resource keeps any action the actor may take,
+/// kept and marked not allowed ([`tilo_actions::Availability::not_allowed`]). A resource the
+/// actor may take nothing on discloses none of its actions.
 fn sift_actions(
     resource: &mut tilo_actions::ResourceSpec,
     refused: bool,
-    mut permits: impl FnMut(&tilo_actions::ActionSpec) -> bool,
+    mut permits: impl FnMut(&tilo_actions::ActionSpec) -> Permitted,
 ) {
-    let allowed: Vec<bool> = resource.actions.iter().map(&mut permits).collect();
-    if refused && allowed.iter().any(|allowed| *allowed) {
+    let allowed: Vec<Permitted> = resource.actions.iter().map(&mut permits).collect();
+    if refused && allowed.iter().any(Result::is_ok) {
         for (action, allowed) in resource.actions.iter_mut().zip(allowed) {
-            if !allowed {
-                action.type_mut().contract.availability = tilo_actions::Availability::not_allowed();
+            if let Err(by) = allowed {
+                action.type_mut().contract.availability =
+                    tilo_actions::Availability::not_allowed(by);
             }
         }
     } else {
         let mut allowed = allowed.into_iter();
-        resource.retain_actions(|_| allowed.next().unwrap_or(false));
+        resource.retain_actions(|_| allowed.next().is_some_and(|allowed| allowed.is_ok()));
     }
+}
+
+/// Whether an action is permitted, or what refuses it where the check knows.
+type Permitted = Result<(), Option<policy::Refuser>>;
+
+/// `allowed` as [`Permitted`], from a check that does not say what refused it.
+const fn permitted(allowed: bool) -> Permitted {
+    if allowed { Ok(()) } else { Err(None) }
 }
 
 /// The permissions a host shares with what it hosts (an app, its components,
@@ -1514,13 +1553,58 @@ mod own_resource_tests {
             .iter()
             .find(|action| action.id == "edit")
             .expect("listed to the agent");
-        assert!(edit_listed.contract.availability.refusal().is_some());
+        assert_eq!(
+            edit_listed.contract.availability,
+            tilo_actions::Availability::not_allowed(Some(policy::Refuser::Workspace)),
+            "the workspace's own rule refuses it"
+        );
         let only_edit =
             tilo_actions::ResourceSpec::new("notes.page", "page:2", "Secret").with_action(edit);
         assert!(
             agent
-                .permitted_resource("so.tilo.notes", only_edit)
+                .permitted_resource("so.tilo.notes", only_edit.clone())
                 .is_none()
+        );
+        // An editor's agent their person set to Deny for changes in Notes is told it is its
+        // person's setting, and where they change it.
+        let editor = PermissionContext::member(&person, Role::Editor);
+        let denied = editor.acting_as(
+            policy::Actor::Member(crate::permissions::MemberId::agent("scribe")),
+            [policy::Grant::new(
+                "scribe-all",
+                policy::Grantee::agent("scribe"),
+                TreePath::workspace(LOCAL_WORKSPACE),
+                policy::KindSet::READ_UNDOABLE,
+                Answer::Allow,
+                policy::Grantee::person(person.id()),
+            )]
+            .into_iter()
+            // Its bound, as the workspace's settings under Agents keep it: Deny for changes in
+            // Notes.
+            .chain(policy::roles::agent_bound(
+                "scribe",
+                person.id(),
+                &[policy::Rule::new(
+                    TreePath::workspace(LOCAL_WORKSPACE).app("so.tilo.notes"),
+                    policy::KindSet::of(ActionKind::Undoable),
+                    Answer::Deny,
+                )],
+            ))
+            .collect(),
+        );
+        let note = tilo_actions::ResourceSpec::new("notes.page", "page:3", "Plan")
+            .with_action(shown.actions[0].clone())
+            .with_action(only_edit.actions[0].clone());
+        let listed = denied
+            .permitted_resource("so.tilo.notes", note)
+            .expect("the agent reads it");
+        let edit_listed = listed.actions.iter().find(|action| action.id == "edit");
+        assert_eq!(
+            edit_listed.map(|action| &action.contract.availability),
+            Some(&tilo_actions::Availability::not_allowed(Some(
+                policy::Refuser::Settings
+            ))),
+            "its person's setting refuses it"
         );
     }
 }

@@ -1022,7 +1022,7 @@ impl AppBrokerState {
         if actor.action_answer_in(workspace, app, target, &need, now)
             == tilo_action_policy::Answer::Deny
         {
-            action.contract.availability = tilo_actions::Availability::not_allowed();
+            action.contract.availability = tilo_actions::Availability::not_allowed(None);
             return actor.is_agent().then_some(action);
         }
         Some(action)

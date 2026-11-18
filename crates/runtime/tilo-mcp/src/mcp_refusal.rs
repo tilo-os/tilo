@@ -31,7 +31,9 @@ pub(crate) fn said(error: BridgeError) -> String {
             match host {
                 // Refused by the workspace's permissions: said as that, with where it is
                 // changed, never as an action the caller cannot name.
-                tilo_actions::remote::ActionCallError::NotPermitted => NOT_PERMITTED.to_owned(),
+                tilo_actions::remote::ActionCallError::NotPermitted => {
+                    format!("{code}: {}", tilo_actions::Availability::NOT_ALLOWED_HERE)
+                }
                 tilo_actions::remote::ActionCallError::InvalidRequest { reason }
                 | tilo_actions::remote::ActionCallError::Refused { reason }
                 | tilo_actions::remote::ActionCallError::Unavailable { reason } => {
@@ -43,12 +45,6 @@ pub(crate) fn said(error: BridgeError) -> String {
         BridgeError::Bridge(message) => message,
     }
 }
-
-/// What a caller the workspace's permissions refuse reads: whichever check refused it, an agent
-/// or a key is told the same, and where its person changes it.
-pub(crate) const NOT_PERMITTED: &str = "not_permitted: not allowed: this workspace's permissions \
-     do not let you do this here (the person you work for sets what you may do in the \
-     workspace's settings, under Agents)";
 
 /// `action`, unless the caller's permissions deny it: the catalogue lists such an action to an
 /// agent as not allowed ([`tilo_actions::Availability::not_allowed`]), and a call of it is

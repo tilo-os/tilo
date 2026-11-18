@@ -537,7 +537,7 @@ async fn a_lead_reads_the_team_under_it_and_nothing_above_or_beside_it() {
         lead[1].0
     );
     assert!(
-        lead[2].0.contains("not_permitted: not allowed") && !lead[2].0.contains("heron"),
+        lead[2].0.contains("not_permitted: ") && !lead[2].0.contains("heron"),
         "the one-way rule is whole: {}",
         lead[2].0
     );

@@ -392,6 +392,25 @@ impl Authority<'_> {
     }
 }
 
+/// Whether `grant` is one an agent's person set for it: its bound, as the workspace's settings
+/// under Agents keep it ([`crate::roles::agent_bound`]), or an answer given to it
+/// ([`crate::agent_answers`]).
+fn set_by_its_person(grant: &Grant) -> bool {
+    crate::agent_answers::is_answer(grant)
+        || matches!(&grant.grantee, crate::Grantee::Member(crate::MemberId::Agent(agent))
+            if crate::roles::is_agent_bound(grant, agent))
+}
+
+/// What keeps the acting from an action it is refused ([`Verdict::refused_by`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refuser {
+    /// The answers the agent's person gave it in the workspace's settings, under Agents.
+    Settings,
+    /// The workspace's own rules: its roles and grants for the person, a ban, or what software
+    /// may do there at most.
+    Workspace,
+}
+
 /// The combined answer for one node and kind, with each party's part.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Verdict<'g> {
@@ -441,6 +460,38 @@ impl<'g> Verdict<'g> {
             return Vec::new();
         }
         self.once_grants().map(|grant| grant.id.clone()).collect()
+    }
+
+    /// What keeps the acting from an action this verdict refuses: the answers its person gave
+    /// the agent ([`Refuser::Settings`]) when those alone deny it, else the workspace's own rules
+    /// ([`Refuser::Workspace`]). `None` when it does not refuse.
+    #[must_use]
+    pub fn refused_by(&self) -> Option<Refuser> {
+        if self.answer != Answer::Deny {
+            return None;
+        }
+        let denies = |part: &&Decision<'_>| part.answer == Answer::Deny;
+        if self
+            .parts
+            .iter()
+            .take(self.people)
+            .any(|part| denies(&part))
+        {
+            return Some(Refuser::Workspace);
+        }
+        let mut delegations = self
+            .parts
+            .iter()
+            .skip(self.people)
+            .filter(denies)
+            .peekable();
+        let settings = delegations.peek().is_some()
+            && delegations.all(|part| part.grant().is_some_and(set_by_its_person));
+        Some(if settings {
+            Refuser::Settings
+        } else {
+            Refuser::Workspace
+        })
     }
 
     /// The decision that set the answer: the first part giving the minimum.

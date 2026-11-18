@@ -8332,7 +8332,8 @@ fn filter_directory_page(
         .filter_map(|(mut row, answer)| match answer? {
             Answer::Deny if actor.is_agent() => {
                 if let Some(descriptor) = row.descriptor.as_mut() {
-                    descriptor.contract.availability = tilo_actions::Availability::not_allowed();
+                    descriptor.contract.availability =
+                        tilo_actions::Availability::not_allowed(None);
                 }
                 Some(row)
             }
