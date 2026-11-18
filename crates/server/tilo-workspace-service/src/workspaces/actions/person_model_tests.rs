@@ -562,7 +562,6 @@ async fn an_agent_a_grant_admitted_does_not_ask_the_persons_model() {
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let (workspace, workspace_id, _) = governed(workspaces).await;
-    let ada = admit(workspaces, &workspace, &owner, 1).await;
     let granted_device = admit(workspaces, &workspace, &owner, 2).await;
     let granted = Caller::delegated_agent(
         "careful",
