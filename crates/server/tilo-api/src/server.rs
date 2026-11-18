@@ -602,8 +602,12 @@ impl Connection {
             "api: a key entered its workspace"
         );
         entered.map_err(|refusal| match ServerError::from(refusal) {
-            // Not theirs, or not one at all: the same answer, so a guess learns nothing.
-            ServerError::Refused(_) | ServerError::RefusedWorkspace(_) => ServerError::NotFound,
+            // Not theirs, or not one at all: the same answer, so a guess
+            // learns nothing; why is for the API server's operator.
+            refused @ (ServerError::Refused(_) | ServerError::RefusedWorkspace(_)) => {
+                tracing::info!(workspace, %refused, "api: a workspace refused a key's entry");
+                ServerError::NotFound
+            }
             other => other,
         })
     }

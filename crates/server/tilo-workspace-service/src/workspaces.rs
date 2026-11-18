@@ -2050,7 +2050,7 @@ impl Workspaces {
                         let Some((author, body)) = notice else { break };
                         let Some(inner) = workspaces.upgrade() else { break };
                         if let Err(error) = (Self { inner }).absorb_kept(&workspace, author, &body).await {
-                            tracing::warn!(%workspace, %error, "governed workspace did not follow a record write");
+                            tracing::warn!(%workspace, author = %hex::encode(author), %error, "governed workspace did not follow a record write");
                         }
                     }
                     Ok(()) = arrivals.changed() => {
