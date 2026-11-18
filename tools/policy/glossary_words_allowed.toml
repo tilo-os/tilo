@@ -5,6 +5,17 @@
 # of. A use of Tilo's own concept never goes here: rename it.
 
 [[allow]]
+reason = "The dialer's name for the network host it reaches, which the glossary keeps as a network host name."
+words = ["host"]
+identifiers = ["Host", "host"]
+paths = ["crates/system/tilo-cli/src/server.rs"]
+
+[[allow]]
+reason = "systemd's runtime directory, its own name."
+words = ["run"]
+paths = ["crates/server/tilo-server/src/operations.rs"]
+
+[[allow]]
 reason = "The hosted-VM service's load of the machine running its VMs, which the glossary keeps as host."
 words = ["host"]
 identifiers = ["HostLoad"]

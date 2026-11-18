@@ -18356,6 +18356,7 @@ dependencies = [
  "hex",
  "http-body-util",
  "iroh",
+ "iroh-base",
  "iroh-blobs",
  "jiff",
  "mail-parser",

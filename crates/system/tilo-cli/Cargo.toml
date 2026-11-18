@@ -48,6 +48,7 @@ tilo-session-client = { path = "../../session/client" }
 # it, which `main` hands over to first thing.
 tilo-automerge-isolate.workspace = true
 tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
+iroh-base.workspace = true
 # HTTPS to a site and a host, as every client of the server makes its requests.
 tilo-server-client = { path = "../../server/tilo-server-client" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }

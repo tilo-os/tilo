@@ -265,6 +265,20 @@ impl ServerMachine {
         }
     }
 
+    /// Suspend the workspaces' Linux machines and hand their work off now,
+    /// as a restart for an update does, without taking the update lease: what
+    /// an owner asks for before taking a server out of service. Answers how
+    /// many workspaces this server holds.
+    ///
+    /// # Errors
+    /// The machines did not all suspend, or a lease could not be let go of.
+    pub async fn drain_now(&self) -> Result<usize, String> {
+        let held = self.workspaces.list().await.len();
+        self.suspend_machines().await?;
+        self.hand_off_leases().await?;
+        Ok(held)
+    }
+
     fn device(&self) -> &DeviceCert {
         self.workspaces.serving_certificate()
     }

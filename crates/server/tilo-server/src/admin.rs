@@ -502,6 +502,7 @@ fn cmd_home_peer_remove(
         files_ready: false,
         services: tilo_server_protocol::ServiceCapabilities::default(),
         decommissioned: false,
+        operation: tilo_server::transport::ServerOperationResult::nothing(),
     });
     println!("{}", serde_json::to_string(&response)?);
     Ok(())

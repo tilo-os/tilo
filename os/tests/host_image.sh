@@ -44,7 +44,7 @@ for bin in usr/libexec/tilo/tilo-server usr/libexec/tilo/tilo-server-admin \
   usr/libexec/tilo-server-update-window usr/libexec/tilo-server-update-apply \
   usr/libexec/tilo-hosted-prepare usr/libexec/tilo-hosted-serve \
   usr/libexec/tilo-update-channel usr/libexec/tilo-update-policy-set \
-  usr/libexec/tilo-server-update-policy \
+  usr/libexec/tilo-server-update-policy usr/libexec/tilo-server-control \
   usr/libexec/tilo-image-trust-staged \
   usr/libexec/tilo-esp-mount; do
   [[ -x $root/$bin ]] || die "no executable /$bin"
@@ -162,6 +162,15 @@ grep -q '^ExecStart=/usr/libexec/tilo-server-update-policy$' \
 [[ $(stat -c '%u' "$root/usr/libexec/tilo-server-update-policy") == 0 ]] \
   || die 'the update-policy helper is not root-owned'
 [[ ! -e $root/usr/libexec/tilo-update-policy.request ]] || die 'the image ships an update-policy request'
+# What a server's owner asks it to do from another of their devices is carried
+# out by another root-run helper, started by its request file alone.
+[[ -L $wants/multi-user.target.wants/tilo-server-control.path ]] \
+  || die "nothing carries out what a server's owner asks it to do"
+grep -q '^ExecStart=/usr/libexec/tilo-server-control$' \
+  "$root/usr/lib/systemd/system/tilo-server-control.service" \
+  || die 'the control service runs something else'
+[[ $(stat -c '%u' "$root/usr/libexec/tilo-server-control") == 0 ]] \
+  || die 'the control helper is not root-owned'
 
 # An update stages (verified, counted) and is never applied blindly: the boot
 # into it is this image's own step, inside the operator's window.
