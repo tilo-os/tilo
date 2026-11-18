@@ -1,8 +1,10 @@
+use super::network::event_of;
 use super::*;
 use collab_types::PeerPresencePayload;
 use collab_types::presence::{DESKTOP_APP, Payload, Presence, PresenceKey};
 use ed25519_dalek::SigningKey;
 use tilo_desktop_model::{Tab, Workspace, WorkspaceId as ModelWorkspaceId};
+use tilo_network_actor::NetEvent;
 use tilo_session_client::{InCall, presence::now_ms, topic_of};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
@@ -1713,4 +1715,55 @@ tilo_test_env::scenario! {
             "the agent's cursor stands where it acted"
         );
     }
+}
+
+/// What a device of the person's proves on its session, what it sends there and the session's end
+/// reach the session on the one path, in the order the peer network said them: the device is known
+/// before anything it said is taken, and what it said is bound to the certificate it proved.
+#[test]
+fn a_devices_session_and_what_it_sends_reach_the_session_in_the_order_they_were_said() {
+    let (cert, _key) = certified(0x01, 0x02, "Laptop");
+    let peer = device(0x02);
+    let epoch = tilo_network_actor::MembershipEpoch::for_test(1);
+    let said = [
+        NetEvent::Sibling {
+            peer,
+            membership_epoch: epoch,
+            certs: vec![cert.clone()],
+            revocations: Vec::new(),
+        },
+        NetEvent::PersonalFabric {
+            peer,
+            membership_epoch: epoch,
+            user_public_key: cert.user_public_key,
+            payload: tilo_network_actor::PersonalFabricPayload::Presence(Box::default()),
+            received: std::time::Instant::now(),
+        },
+        NetEvent::SiblingLeft {
+            peer,
+            membership_epoch: epoch,
+        },
+    ];
+    let kept: Vec<&str> = said
+        .into_iter()
+        .map(|event| match event_of(event) {
+            Some(Err(DesktopEvent::Sibling { peer: from, .. })) => {
+                assert_eq!(from, peer, "the device that proved itself");
+                "its session"
+            }
+            Some(Err(DesktopEvent::PersonalFabric { peer: from, .. })) => {
+                assert_eq!(from, peer, "a frame, from that device");
+                "a frame"
+            }
+            Some(Err(DesktopEvent::SiblingLeft { peer: from })) => {
+                assert_eq!(from, peer, "the device whose session ended");
+                "its session ended"
+            }
+            other => panic!(
+                "a device's session and the frames on it are the session's own to keep, in \
+                 order: {other:?}"
+            ),
+        })
+        .collect();
+    assert_eq!(kept, ["its session", "a frame", "its session ended"]);
 }
