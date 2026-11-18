@@ -1387,11 +1387,16 @@ fn name_of(doc: &AutoCommit) -> Option<String> {
     }
 }
 
-/// A workspace document as the seed every device starts from founds it.
-fn founded_by_seed() -> AutoCommit {
+/// Two devices holding the workspace document its founder seeded: the founder
+/// seeds it once, and every other device starts from the changes it sent.
+fn two_devices_founded_by_seed() -> (AutoCommit, AutoCommit) {
     let (_, cert) = owner_device();
     let seed = crate::seed_workspace(WORKSPACE, &cert, std::slice::from_ref(&cert)).unwrap();
-    crate::workspace::candidate(None, &seed).unwrap()
+    let mut a = crate::workspace::candidate(None, &seed).unwrap();
+    a.set_actor(automerge::ActorId::from(vec![0x51; 32]));
+    let mut b = crate::workspace::candidate(None, &seed).unwrap();
+    b.set_actor(automerge::ActorId::from(vec![0x52; 32]));
+    (a, b)
 }
 
 /// Two devices writing their first checkpoint coverage without seeing each
@@ -1403,10 +1408,7 @@ fn two_devices_first_checkpoint_coverage_both_survive_a_merge() {
     first.app = "first.app".into();
     let mut second = coverage(1);
     second.app = "second.app".into();
-    let mut a = founded_by_seed();
-    a.set_actor(automerge::ActorId::from(vec![0x51; 32]));
-    let mut b = founded_by_seed();
-    b.set_actor(automerge::ActorId::from(vec![0x52; 32]));
+    let (mut a, mut b) = two_devices_founded_by_seed();
     crate::coverage::put(&mut a, first).unwrap();
     crate::coverage::put(&mut b, second).unwrap();
     a.commit();
@@ -1426,10 +1428,7 @@ fn two_devices_first_durability_receipts_both_survive_a_merge() {
     second.app = "second.app".into();
     let first = crate::durability::DurableReceipt::new(first, 2).unwrap();
     let second = crate::durability::DurableReceipt::new(second, 2).unwrap();
-    let mut a = founded_by_seed();
-    a.set_actor(automerge::ActorId::from(vec![0x51; 32]));
-    let mut b = founded_by_seed();
-    b.set_actor(automerge::ActorId::from(vec![0x52; 32]));
+    let (mut a, mut b) = two_devices_founded_by_seed();
     crate::durability::put(
         &mut a,
         BTreeMap::from([(crate::coverage::route_key("first.app", "note"), first)]),
