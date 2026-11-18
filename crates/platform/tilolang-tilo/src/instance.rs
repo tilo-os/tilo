@@ -24,6 +24,7 @@
 mod convert;
 #[cfg(feature = "document")]
 pub mod document;
+mod facts;
 pub mod form;
 pub mod memory;
 mod person_state;
@@ -57,6 +58,7 @@ use crate::runtime::{
     Patch, RefValue, Resolution, ResourceRef, Suggestion, UiNode, Value, ViewInstance,
 };
 use crate::upgrade::Upgrade;
+use facts::Facts;
 use rows::ListRows;
 use tilo_action_policy::PersonId;
 use wire::Convert;
@@ -370,6 +372,10 @@ pub struct Instance {
     publication: Option<Box<dyn Publication>>,
     root: Option<Shown>,
     detail: Option<Shown>,
+    /// The facts page of a resource whose type declares no view, in the detail level ([`facts`]).
+    facts: Option<Facts>,
+    /// What the facts page says changed since it was drawn.
+    facts_stale: bool,
     /// The space the window last said each level's view has (`ToApp::Space`): a view opened in
     /// the level later starts from it.
     root_space: Option<crate::runtime::space::Space>,
@@ -493,6 +499,8 @@ impl Instance {
             publication: None,
             root: None,
             detail: None,
+            facts: None,
+            facts_stale: false,
             root_space: None,
             detail_space: None,
             transport,
@@ -744,12 +752,6 @@ impl Instance {
     /// frame then runs and the host carries it out. `None` when none is held back.
     fn held_in(&self) -> Option<std::time::Duration> {
         self.host()?.runtime().held_for()
-    }
-
-    /// The resource the detail view shows.
-    #[must_use]
-    pub fn detail_target(&self) -> Option<&ResourceRef> {
-        self.detail.as_ref().map(|view| &view.target)
     }
 
     /// The root view's tree, as the runtime holds it.
@@ -1059,6 +1061,8 @@ impl Instance {
         });
         if self.detail.is_some() {
             self.send_open(Level::Detail, None);
+        } else {
+            self.reopen_facts();
         }
         self.lenses_changed = true;
         // What is published and offered follows the new build's declarations.
@@ -1076,7 +1080,7 @@ impl Instance {
         let held = doc.is_none().then(|| old.store().release());
         self.publication = None;
         self.root = None;
-        if self.detail.take().is_some() {
+        if self.detail.take().is_some() | self.facts.take().is_some() {
             self.out.push(ToUi::Close);
         }
         *self.host.borrow_mut() = None;
@@ -1114,8 +1118,8 @@ impl Instance {
                 .or_default()
                 .push((Actor::Member(who), false, typing));
         }
-        if let Some(detail) = &self.detail {
-            now.entry(detail.target.id_string())
+        if let Some(detail) = self.detail_resource() {
+            now.entry(detail.id_string())
                 .or_default()
                 .push((self.me_actor(), true, false));
         }
@@ -2316,6 +2320,7 @@ impl Instance {
         }
         if std::mem::take(&mut self.moved) {
             self.settle_due = true;
+            self.facts_stale |= self.facts.is_some();
             if let Some(publication) = &self.publication {
                 publication.update();
             }
@@ -2325,6 +2330,7 @@ impl Instance {
             publication.update();
         }
         self.poll_views();
+        self.poll_facts();
         self.flush();
     }
 
@@ -2391,6 +2397,7 @@ impl Instance {
             {
                 view.view.borrow_mut().person_moved();
             }
+            self.facts_stale |= self.facts.is_some();
         }
         // Who is at a resource shows wherever a view reads its lenses.
         let lenses = std::mem::take(&mut self.lenses_changed);
@@ -2409,6 +2416,7 @@ impl Instance {
         // A view runs where something reached it: what a change told its store, a state it
         // read, the time it waits for ([`crate::runtime::ViewInstance::woken`]).
         let changed = self.poll_views() || changed;
+        let changed = self.poll_facts() || changed;
         if person {
             // A name, a word and how a day or a time of day reads go into a node's value when it
             // is sent: every tree is sent again.

@@ -38,6 +38,11 @@ impl Instance {
             }
             referents(view.tree(), &self.app, &mut out);
         }
+        // The facts page says of its resource what its fields hold: the resource is what the
+        // window shows.
+        if let Some(facts) = &self.facts {
+            out.insert(resource_id(&self.app, &facts.target.id_string()));
+        }
         out
     }
 }

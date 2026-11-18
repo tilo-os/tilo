@@ -867,6 +867,40 @@ impl Runtime {
         self.core.registry.borrow().default_view(ty)
     }
 
+    /// The name of the type `ty` (an id), as its package declares it (`Label`), for a surface
+    /// that says what a resource is. `None` for a type this runtime holds no package of.
+    pub fn type_name(&self, ty: &str) -> Option<String> {
+        self.core
+            .registry
+            .borrow()
+            .type_info(ty)
+            .map(|(_, info)| info.name.clone())
+    }
+
+    /// The fields of the type `ty` (an id), as a page of one of its resources lists them: each
+    /// field's name and its type in the language's words (`Date`, `Collection<Note>`). Empty for
+    /// a type this runtime holds no package of.
+    pub fn fields_of(&self, ty: &str) -> Vec<(String, String)> {
+        self.core
+            .registry
+            .borrow()
+            .type_info(ty)
+            .map(|(_, info)| {
+                info.fields
+                    .iter()
+                    .map(|field| (field.name.clone(), field.ty.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// How `value`, a value of the field type `ty` (as the metadata writes it), reads to a
+    /// person: a day or a moment in their formats, a resource by its title, an option holding
+    /// nothing as nothing.
+    pub fn shown_value(&self, value: &Value, ty: &str) -> String {
+        self.core.show_typed_for_a_person(value, ty)
+    }
+
     /// Open the window of `resource` for `actor` (what `open(r)` asks for): through
     /// `view`, or the default view of its type.
     ///
