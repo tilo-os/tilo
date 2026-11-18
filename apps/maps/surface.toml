@@ -265,7 +265,7 @@ fields = [
 ]
 
 [[resources.verbs]]
-id = "record"
+id = "remember"
 kind = "undoable"
 params = [
   { name = "device", type = "text", required = true, schema = { type = "string" } },

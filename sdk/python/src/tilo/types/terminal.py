@@ -81,7 +81,7 @@ class FinishedCommand(TypedDict):
     undoable: bool
     items: list[CommandItem]
     request: str | None
-    run: str
+    id: str
 
 ItemKind = Literal["error", "warning", "location", "url", "test-passed", "test-failed", "test-ignored", "change"]
 
@@ -121,7 +121,7 @@ RecordCommandArgs = TypedDict("RecordCommandArgs", {
     "undoable": "bool",
     "items": "list[CommandItem]",
     "request": NotRequired["str | None"],
-    "run": "str",
+    "id": "str",
 })
 """The arguments of `record-command`."""
 
@@ -162,7 +162,7 @@ UsedArgs = TypedDict("UsedArgs", {
 
 class Session(Resource):
     """Terminal — `terminal.session`."""
-    __surface__ = "so.tilo.terminal@8f161992a310d594"
+    __surface__ = "so.tilo.terminal@6ed34a137bebf2bb"
     @property
     def target(self) -> str | None:
         """Read only."""
@@ -223,7 +223,7 @@ class Session(Resource):
         tool: str,
         undoable: bool,
         items: list[CommandItem],
-        run: str,
+        id: str,
         output: Any | None = None,
         request: str | None = None,
     ) -> None:
@@ -242,7 +242,7 @@ class Session(Resource):
         args["items"] = items
         if request is not None:
             args["request"] = request
-        args["run"] = run
+        args["id"] = id
         return self.action("record-command", **args)
 
     def record_command_many(self, items: list[RecordCommandArgs]) -> list[dict[str, Any]]:
@@ -338,7 +338,7 @@ class Session(Resource):
 
 class History(Resource):
     """Command history — `terminal.history`."""
-    __surface__ = "so.tilo.terminal@8f161992a310d594"
+    __surface__ = "so.tilo.terminal@6ed34a137bebf2bb"
     @property
     def remembered(self) -> list[Entry[Remembered]]:
         """Read only."""
@@ -380,7 +380,7 @@ class History(Resource):
 
 class RecentEnvironments(Resource):
     """Recent environments — `terminal.recent-environments`."""
-    __surface__ = "so.tilo.terminal@8f161992a310d594"
+    __surface__ = "so.tilo.terminal@6ed34a137bebf2bb"
     devices: dict[str, str]
 
     def used(self,

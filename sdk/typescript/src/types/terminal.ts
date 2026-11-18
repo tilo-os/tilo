@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.terminal@8f161992a310d594";
+export const SURFACE = "so.tilo.terminal@6ed34a137bebf2bb";
 
 export interface Command {
   command: string;
@@ -69,7 +69,7 @@ export interface FinishedCommand {
   undoable: boolean;
   items: CommandItem[];
   request: string | null;
-  run: string;
+  id: string;
 }
 
 /** One of "error", "warning", "location", "url", "test-passed", "test-failed", "test-ignored", "change". */
@@ -112,7 +112,7 @@ export interface RecordCommandArgs {
   tool: string;
   undoable: boolean;
   items: CommandItem[];
-  run: string;
+  id: string;
   output?: unknown;
   request?: string;
 }
@@ -183,7 +183,7 @@ export interface Session extends tilo.Resource {
     tool: string;
     undoable: boolean;
     items: CommandItem[];
-    run: string;
+    id: string;
     output?: unknown;
     request?: string;
   }): Promise<void>;

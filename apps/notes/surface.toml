@@ -245,6 +245,7 @@ params = [
 [[resources.verbs]]
 id = "write-note"
 kind = "undoable"
+returns = { schema = { type = "object" } }
 writes = ["record", "pages.*"]
 params = [
   { name = "page", type = "text", required = true, schema = { type = "string" } },

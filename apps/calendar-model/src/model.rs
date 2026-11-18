@@ -921,7 +921,7 @@ fn seed_demo_events_early(
             title: "Team standup".into(),
             start: seed_demo_at(today, 9, 30),
             end: seed_demo_at(today, 9, 45),
-            location: "Huddle room / Meet".into(),
+            location: "Huddle room (Meet)".into(),
             recurrence: Recurrence::Weekdays,
             reminder_min: Some(10),
             project: Some(pid_work),

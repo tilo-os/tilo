@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.notes@e91fd2294d98e9f5";
+export const SURFACE = "so.tilo.notes@b785fc3b0dccb7de";
 
 export interface Tag {
   name: string;
@@ -196,13 +196,6 @@ export interface ImportMarkdownFilesArgs {
   links?: Links;
 }
 
-/** The arguments of `write-note`. */
-export interface WriteNoteArgs {
-  page: string;
-  markdown: string;
-  links?: Links;
-}
-
 /** Notebook — `notes.notebook`. */
 export interface Notebook extends tilo.Resource {
   tags: Array<tilo.Entry<Tag>>;
@@ -347,14 +340,12 @@ export interface Pages extends tilo.Resource {
     page: string;
     markdown: string;
     links?: Links;
-  }): Promise<void>;
-  /** Runs `write-note` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  writeNoteMany(items: WriteNoteArgs[]): Promise<tilo.ActionAnswer[]>;
+  }): Promise<unknown>;
 }
 
 /** The actions `Pages` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PAGES_ACTIONS = ["newNote", "newChild", "rename", "renameMany", "delete", "deleteMany", "moveNote", "moveNoteMany", "moveUp", "moveUpMany", "moveDown", "moveDownMany", "indent", "indentMany", "outdent", "outdentMany", "duplicate", "tag", "tagMany", "keepImage", "keepImageMany", "placeImage", "placeImageMany", "createPage", "importMarkdown", "importMarkdownMany", "importMarkdownFiles", "importMarkdownFilesMany", "appendToNote", "writeNote", "writeNoteMany"] as const;
+export const PAGES_ACTIONS = ["newNote", "newChild", "rename", "renameMany", "delete", "deleteMany", "moveNote", "moveNoteMany", "moveUp", "moveUpMany", "moveDown", "moveDownMany", "indent", "indentMany", "outdent", "outdentMany", "duplicate", "tag", "tagMany", "keepImage", "keepImageMany", "placeImage", "placeImageMany", "createPage", "importMarkdown", "importMarkdownMany", "importMarkdownFiles", "importMarkdownFilesMany", "appendToNote", "writeNote"] as const;
 
 /** The `notes.pages` kind at `path`. */
 export function pages(ws: tilo.Workspace, path: string): Pages {
