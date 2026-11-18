@@ -97,6 +97,8 @@ echo dev >"$work/flavour"
 reset() {  # STAGED-DIGEST-OR-EMPTY  PLAN-DIGEST-OR-EMPTY  (the running entry is always there)
   rm -rf "$work/esp" "$work/plans" "$work/order" "$work/plan"
   install -d "$work/esp/loader/entries" "$work/esp/EFI/tilo" "$work/esp/EFI/Linux"
+  # The boot menu's editor is off already, so the pass stages nothing for it.
+  echo 'editor no' >"$work/esp/loader/loader.conf"
   entry "$work/esp/loader/entries/bootc_bootc-44-0.conf" "$running" bootc-fedora-1
   [ -z "$1" ] || entry "$work/esp/loader/entries/bootc_bootc-44-1+3.conf" "$1" bootc-fedora-0
   if [ -n "$2" ]; then
