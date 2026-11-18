@@ -647,8 +647,8 @@ pub fn service_session_capability() -> Result<serde_json::Value, String> {
 
 fn probe_consumer_session(selection: &Selection) -> Result<(), String> {
     let failure = || "Selected account consumer contract failed".to_owned();
-    let resource = selection.resource().into_resource();
-    let action = resource.actions.first().ok_or_else(failure)?;
+    let row = selection.resource();
+    let action = row.operations().first().ok_or_else(failure)?;
     let encoded = action
         .build_json(&serde_json::Map::new())
         .map_err(|_| failure())?;

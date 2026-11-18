@@ -120,9 +120,9 @@ impl BrowserWidget {
     pub(super) fn personal_bookmark_body(&self, theme: &Theme) -> Element {
         let state = Rc::clone(&self.personal_bookmarks);
         let bindings: view::Bindings = Rc::new(move |request| {
-            let resource = request_resource(&state, request)?.into_resource();
-            let action = resource.actions.first()?;
-            ActionBinding::unit_for(&resource, &action.id).ok()
+            let row = request_resource(&state, request)?;
+            let action = row.operations().first()?;
+            ActionBinding::unit_for(&row, &action.id).ok()
         });
         let labels = view::LocalizedLabels {
             back: CATALOG.t("browser-personal-bookmarks-back"),
