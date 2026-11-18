@@ -95,7 +95,7 @@ pub(super) fn nest(
         }
     }
     (0..items.len())
-        .filter(|item| parent_of.get(*item).is_some_and(|parent| parent.is_none()))
+        .filter(|item| parent_of.get(*item).is_some_and(Option::is_none))
         .filter_map(|item| built.get_mut(item).and_then(Option::take))
         .collect()
 }
