@@ -171,6 +171,7 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "DeviceCapabilities.foreign" = "#2 bool"
 "DeviceCapabilities.server_key" = "#6 bool"
 "DeviceCapabilities.stand_in" = "#5 bool"
+"DeviceCapabilities.workspace_service" = "#8 bool"
 "DeviceCert" = "struct"
 "DeviceCert.capabilities" = "#3 DeviceCapabilities"
 "DeviceCert.device_label" = "#2 String"

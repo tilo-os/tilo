@@ -270,6 +270,9 @@ impl CertificationPolicy {
             // Operating web pages in Browser is a key's, given by its person
             // where they make it, never a device enrolled through a request.
             browser_pages: false,
+            // A device's workspace service is issued by that device, never
+            // asked for by a device being enrolled.
+            workspace_service: false,
         }
     }
 

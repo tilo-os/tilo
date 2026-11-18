@@ -73,7 +73,8 @@ const FOREIGN_BINARY_MARKER: u8 = 2;
 /// First byte of capabilities that grant administration or an agent's grant
 /// in binary encodings, followed by one byte of [`EXTENDED_FOREIGN`] |
 /// [`EXTENDED_ADMINISTER`] | [`EXTENDED_AGENT`] | [`EXTENDED_STAND_IN`] |
-/// [`EXTENDED_ISSUED`] | [`EXTENDED_SERVER_KEY`], the agent's scope when
+/// [`EXTENDED_ISSUED`] | [`EXTENDED_SERVER_KEY`] | [`EXTENDED_BROWSER_PAGES`] |
+/// [`EXTENDED_WORKSPACE_SERVICE`], the agent's scope when
 /// [`EXTENDED_AGENT`] is set (a
 /// tag byte, then a workspace's 16 bytes for one workspace), and then the
 /// four flags. A bit this build does not know is refused.
@@ -91,6 +92,9 @@ const EXTENDED_SERVER_KEY: u8 = 32;
 /// The agent's grant may operate web pages in Browser (see
 /// [`DeviceCapabilities::browser_pages`]).
 const EXTENDED_BROWSER_PAGES: u8 = 64;
+/// The key is a device's own workspace service (see
+/// [`DeviceCapabilities::workspace_service`]).
+const EXTENDED_WORKSPACE_SERVICE: u8 = 128;
 const SCOPE_ALL: u8 = 0;
 const SCOPE_WORKSPACE: u8 = 1;
 
@@ -310,6 +314,16 @@ pub struct DeviceCapabilities {
     /// them. Only an agent's grant carries it, and it is part of the signed
     /// encoding.
     pub browser_pages: bool,
+
+    /// The key is a device's own workspace service: the workspaces that
+    /// device makes are held there, and the service writes them under this
+    /// key, never the device's, so the two never number their changes from
+    /// one count. The person's device it serves beside issues it
+    /// ([`prepare_service_cert`]) and is named as its [`DeviceCert::issuer`];
+    /// its capabilities are that device's own, never more, and it lasts no
+    /// longer than that device's certificate. Revoking the device ends its
+    /// service. It is part of the signed encoding.
+    pub workspace_service: bool,
 }
 
 /// The v1 JSON shape plus the optional foreign marker, omitted when false so
@@ -335,6 +349,8 @@ struct CapabilitiesJson {
     server_key: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     browser_pages: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    workspace_service: bool,
 }
 
 impl Serialize for DeviceCapabilities {
@@ -349,6 +365,7 @@ impl Serialize for DeviceCapabilities {
                 stand_in: self.stand_in,
                 server_key: self.server_key,
                 browser_pages: self.browser_pages,
+                workspace_service: self.workspace_service,
             }
             .serialize(serializer);
         }
@@ -386,7 +403,8 @@ fn serialize_binary_capabilities<S: serde::Serializer>(
         | bit(capabilities.stand_in, EXTENDED_STAND_IN)
         | bit(issued, EXTENDED_ISSUED)
         | bit(capabilities.server_key, EXTENDED_SERVER_KEY)
-        | bit(capabilities.browser_pages, EXTENDED_BROWSER_PAGES);
+        | bit(capabilities.browser_pages, EXTENDED_BROWSER_PAGES)
+        | bit(capabilities.workspace_service, EXTENDED_WORKSPACE_SERVICE);
     let extended_form = extended & !EXTENDED_FOREIGN != 0;
     let len = if extended_form {
         scope.len().saturating_add(6)
@@ -424,6 +442,7 @@ impl<'de> Deserialize<'de> for DeviceCapabilities {
                 stand_in: json.stand_in,
                 server_key: json.server_key,
                 browser_pages: json.browser_pages,
+                workspace_service: json.workspace_service,
             });
         }
         let BinaryCapabilitiesOf(capabilities, issued) =
@@ -487,7 +506,8 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
                     | EXTENDED_STAND_IN
                     | EXTENDED_ISSUED
                     | EXTENDED_SERVER_KEY
-                    | EXTENDED_BROWSER_PAGES;
+                    | EXTENDED_BROWSER_PAGES
+                    | EXTENDED_WORKSPACE_SERVICE;
                 if extended & !known != 0 || extended & !EXTENDED_FOREIGN == 0 {
                     return Err(A::Error::invalid_value(
                         serde::de::Unexpected::Unsigned(extended.into()),
@@ -549,6 +569,7 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
                 stand_in: extended & EXTENDED_STAND_IN != 0,
                 server_key: extended & EXTENDED_SERVER_KEY != 0,
                 browser_pages: extended & EXTENDED_BROWSER_PAGES != 0,
+                workspace_service: extended & EXTENDED_WORKSPACE_SERVICE != 0,
             },
             extended & EXTENDED_ISSUED != 0,
         ))
@@ -569,6 +590,7 @@ impl DeviceCapabilities {
             stand_in: false,
             server_key: false,
             browser_pages: false,
+            workspace_service: false,
         }
     }
 
@@ -586,6 +608,7 @@ impl DeviceCapabilities {
             && self.stand_in == held.stand_in
             && self.server_key == held.server_key
             && within(self.browser_pages, held.browser_pages)
+            && self.workspace_service == held.workspace_service
     }
 
     /// The capabilities of an agent's grant reaching `scope`: nothing but
@@ -647,7 +670,21 @@ impl DeviceCapabilities {
                 || self.can_admit_devices
                 || self.foreign
                 || self.can_administer_devices
-                || self.stand_in)
+                || self.stand_in
+                || self.workspace_service)
+    }
+
+    /// The capabilities of the workspace service of a device with `device`'s
+    /// capabilities: it owns workspaces when the device does, is foreign when
+    /// it is, and may do nothing else (see [`Self::workspace_service`]).
+    #[must_use]
+    pub const fn service_of(device: &Self) -> Self {
+        Self {
+            can_own_workspaces: device.can_own_workspaces,
+            foreign: device.foreign,
+            workspace_service: true,
+            ..Self::nothing()
+        }
     }
 
     /// The capabilities of a person's stand-in approver: nothing but being
@@ -1157,6 +1194,9 @@ fn check_issued(cert: &DeviceCert, issuer: &DeviceCert) -> Result<(), DeviceCert
     if issuer.capabilities.agent.is_some() {
         return check_minted(cert, issuer);
     }
+    if cert.capabilities.workspace_service {
+        return check_service(cert, issuer);
+    }
     let browser = crate::CertificationPolicy::browser();
     let issuer_valid_then = issuer.issued_at_ns <= cert.issued_at_ns
         && issuer
@@ -1245,7 +1285,67 @@ fn check_shape(cert: &DeviceCert) -> Result<(), DeviceCertError> {
     check_stand_in(cert)?;
     match &cert.issuer {
         Some(issuer) => check_issued(cert, issuer),
+        // A workspace service is always its device's: the device issues it.
+        None if cert.capabilities.workspace_service => Err(DeviceCertError::InvalidIssuer),
         None => Ok(()),
+    }
+}
+
+/// Whether `cert`, a device's workspace service, stays within the device
+/// `issuer` that issued it. The issuer is one of the person's own devices,
+/// root-signed, valid when it issued. The service has that device's
+/// capabilities and nothing else, ends no later than the device's
+/// certificate, and its key is neither the device's nor the root's. The chain
+/// is never longer than one step.
+fn check_service(cert: &DeviceCert, issuer: &DeviceCert) -> Result<(), DeviceCertError> {
+    let issuer_is_a_device = issuer.issuer.is_none()
+        && issuer.capabilities.agent.is_none()
+        && !issuer.capabilities.stand_in
+        && !issuer.capabilities.workspace_service;
+    let issuer_valid_then = issuer.issued_at_ns <= cert.issued_at_ns
+        && issuer
+            .expires_at_ns
+            .is_none_or(|expiry| cert.issued_at_ns < expiry);
+    let ends_within = match (cert.expires_at_ns, issuer.expires_at_ns) {
+        (_, None) => true,
+        (Some(service), Some(device)) => service <= device,
+        (None, Some(_)) => false,
+    };
+    if issuer_is_a_device
+        && issuer.user_public_key == cert.user_public_key
+        && issuer_valid_then
+        && ends_within
+        && cert.capabilities == DeviceCapabilities::service_of(&issuer.capabilities)
+        && cert.device_public_key != issuer.device_public_key
+        && cert.device_public_key != cert.user_public_key
+    {
+        Ok(())
+    } else {
+        Err(DeviceCertError::InvalidIssuer)
+    }
+}
+
+/// The unsigned certificate the person's device `issuer` signs to make `key`
+/// its own workspace service, from `issued_at_ns` until the device's own
+/// certificate ends (see [`DeviceCapabilities::workspace_service`]). Sign it
+/// with [`sign_device_cert`] or [`sign_device_cert_async`] and the device's
+/// key.
+#[must_use]
+pub fn prepare_service_cert(
+    issuer: &DeviceCert,
+    key: [u8; 32],
+    label: &str,
+    issued_at_ns: u64,
+) -> DeviceCert {
+    DeviceCert {
+        user_public_key: issuer.user_public_key,
+        device_public_key: key,
+        device_label: label.to_owned(),
+        capabilities: DeviceCapabilities::service_of(&issuer.capabilities),
+        issued_at_ns,
+        expires_at_ns: issuer.expires_at_ns,
+        signature: [0; 64],
+        issuer: Some(Box::new(issuer.clone())),
     }
 }
 
