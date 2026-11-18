@@ -1091,6 +1091,10 @@ async fn the_first_write_into_an_empty_chain_is_taken() {
 #[path = "workspace_documents.rs"]
 mod workspace_documents;
 
+// What a carrier of edits names to its caller is read from the same listings, for every app.
+#[path = "carried_names.rs"]
+mod carried_names;
+
 const CHAT: &str = "so.tilo.chat";
 
 /// What a test of the workspace's agents asks through: the action service of the server's
