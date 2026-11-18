@@ -237,8 +237,9 @@ pub enum MailEffect {
     /// A read receipt cannot authorize a document edit.
     #[effect(job, kind = "read")]
     ReadReceipt,
-    /// Note what was read, as an edit.
-    #[effect(kind = "read")]
+    /// Note what was read, as an edit, and answer what it noted: a read effect
+    /// with no answer only changes the person's screen, and no one else invokes it.
+    #[effect(kind = "read", returns)]
     Note { text: String },
     /// Show the sent folder.
     #[effect(view)]
@@ -299,8 +300,8 @@ impl ResourceApp for MailApp {
             MailEffect::Stall => Ok(Effected::Pending),
             MailEffect::Receipt | MailEffect::ReadReceipt => Ok(deferred_receipt(cx)),
             MailEffect::Note { text } => {
-                cx.submit(Mailbox::FETCHED.with(text));
-                Ok(Effected::done())
+                cx.submit(Mailbox::FETCHED.with(text.clone()));
+                Ok(Effected::value(text))
             }
             MailEffect::ShowSent => {
                 shown.set(true);
