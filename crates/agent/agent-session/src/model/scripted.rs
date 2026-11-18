@@ -48,9 +48,8 @@ impl PlanTurns for ScriptedTurns {
                     text: request
                         .messages
                         .iter()
-                        .filter(|message| matches!(message.role, Role::Tool))
-                        .next_back()
-                        .map_or_else(|| "Nothing to do.".to_owned(), |answered| words(answered)),
+                        .rfind(|message| matches!(message.role, Role::Tool))
+                        .map_or_else(|| "Nothing to do.".to_owned(), words),
                 }],
                 StopReason::EndTurn,
             ),
@@ -111,4 +110,78 @@ fn words(message: &Message) -> String {
             _ => None,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
+
+    use super::*;
+
+    fn asking(task: &str) -> ModelRequest {
+        ModelRequest {
+            messages: vec![
+                Message::text(Role::System, "you are an agent"),
+                Message::text(Role::User, task),
+            ],
+            tools: Vec::new(),
+            tool_choice: Default::default(),
+            max_output_tokens: 1_024,
+        }
+    }
+
+    /// The message a tool's answer comes in.
+    fn answered(call_id: &str, content: &str) -> Message {
+        Message {
+            role: Role::Tool,
+            content: vec![
+                serde_json::from_value(serde_json::json!({
+                    "type": "tool_result",
+                    "call_id": call_id,
+                    "content": content,
+                    "is_error": false,
+                }))
+                .unwrap(),
+            ],
+        }
+    }
+
+    #[test]
+    fn a_task_written_out_as_calls_is_called_one_a_round_then_answered_with_the_tools_words() {
+        let mut model = ScriptedTurns;
+        let mut request = asking(
+            r#"[{"name": "tilo_do", "input": {"path": "notes#new-note", "args": {"title": "a"}}}]"#,
+        );
+        let first = model
+            .turn(&request, "key:0", Instant::now(), false)
+            .unwrap();
+        assert_eq!(first.stop_reason, StopReason::ToolCalls);
+        assert_eq!(
+            first.message.content,
+            vec![Content::ToolCall(ToolCall {
+                id: "call-0".into(),
+                name: "tilo_do".into(),
+                input: serde_json::json!({"path": "notes#new-note", "args": {"title": "a"}}),
+                extra_content: None,
+            })]
+        );
+
+        request.messages.push(first.message);
+        request.messages.push(answered("call-0", "made the note"));
+        let answered = model
+            .turn(&request, "key:1", Instant::now(), false)
+            .unwrap();
+        assert_eq!(answered.stop_reason, StopReason::EndTurn);
+        assert_eq!(words(&answered.message), "made the note");
+    }
+
+    #[test]
+    fn a_task_that_writes_out_no_calls_answers_that_there_is_nothing_to_do() {
+        let mut model = ScriptedTurns;
+        let answered = model
+            .turn(&asking("say hello"), "key:0", Instant::now(), false)
+            .unwrap();
+        assert_eq!(answered.stop_reason, StopReason::EndTurn);
+        assert_eq!(words(&answered.message), "Nothing to do.");
+    }
 }
