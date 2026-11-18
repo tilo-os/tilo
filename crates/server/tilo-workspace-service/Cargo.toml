@@ -16,7 +16,7 @@ path = "src/lib.rs"
 test-support = ["tilo-server-store/test-support", "dep:tilo-test-env"]
 # Agents on the host: workspaces keep apps' confined replicas and hand their
 # records' channel keys to pages.
-agents = ["web", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:ui", "dep:chat", "dep:calendar", "dep:tilo-model-gateway"]
+agents = ["web", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:ui", "dep:calendar", "dep:tilo-model-gateway"]
 # Pages reach the host: it follows the records its members write sealed and
 # opens them with the channels' keys it holds as a key holder.
 web = []
@@ -77,7 +77,6 @@ tilo-agent-session = { path = "../../agent/agent-session", optional = true }
 # their vault keeps: the wires, the stream reading and the price table are its.
 tilo-model-gateway = { path = "../../agent/model-gateway", default-features = false, features = ["host-backend"], optional = true }
 tilo-secrets = { path = "../../platform/tilo-secrets", optional = true }
-chat = { path = "../../../apps/chat", optional = true, default-features = false }
 # A person's calendars on their host are read, expanded and filed by the
 # Calendar app's own code, so a device and its host agree about time.
 calendar = { path = "../../../apps/calendar", optional = true, default-features = false }

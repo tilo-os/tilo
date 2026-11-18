@@ -19,6 +19,7 @@
 //! agent names that no part held here has is looked for in earlier parts,
 //! opened in turn.
 
+use crate::projection::ChatProjection as _;
 use ui::framework::{ChainPager, Paged};
 use ui::tilo_resource::Id;
 

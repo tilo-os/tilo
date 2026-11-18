@@ -29,6 +29,7 @@ sources = [
     "crates/sdk/ui-core/src/tokens/response.rs",
     "crates/collab/actions/src/context.rs",
     "crates/collab/actions/src/selection.rs",
+    "crates/collab/actions/src/send_to.rs",
     "crates/collab/reference/src/attached.rs",
     "crates/collab/reference/src/reference.rs",
     "crates/collab/actions/src/interaction.rs",

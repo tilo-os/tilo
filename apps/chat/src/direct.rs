@@ -9,6 +9,7 @@
 //! are the chat's messages in the chat's parts, beside every channel's; its
 //! read mark is this person's, in the resource.
 
+use crate::projection::ChatProjection as _;
 use tilo_actions::policy::MemberId;
 use ui::framework::{Effected, LiveRow};
 use ui::tilo_resource::Effect as _;

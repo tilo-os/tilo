@@ -5,6 +5,7 @@ use tilo_actions::policy::MemberId;
 use ui::framework::testing::TestApp;
 use ui::search::SearchProvider as _;
 use ui::tilo_resource::Resource as _;
+use ui::tilo_resource::items::item_resource_id;
 
 /// The row of sidebar place `id` where the shell's list paints it.
 fn sidebar_row(app: &mut TestApp<ChatShell>, id: &str) -> vello::kurbo::Rect {

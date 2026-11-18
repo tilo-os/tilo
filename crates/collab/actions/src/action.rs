@@ -151,6 +151,11 @@ pub enum ActionError {
 /// is always a text the window can show.
 pub const MAX_TEXT_BYTES: usize = 8 * 1024 * 1024;
 
+/// The most a conversation's running summary holds, in bytes: what an agent
+/// keeps of the conversation it answers in, told to later turns in place of
+/// the messages before it, and the bound a resource keeping one applies.
+pub const RECALL_SUMMARY_BYTES: usize = 4 * 1024;
+
 /// Codes an app answers a condition with, for a caller that decides on the
 /// condition rather than reads the words beside it.
 pub mod codes {

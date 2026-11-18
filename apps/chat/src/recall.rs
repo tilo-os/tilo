@@ -20,7 +20,7 @@ use ui::collaboration::recall::{
 use ui::tilo_resource::Id;
 use ui::tilo_workspace_agent::learned::Learned;
 
-use crate::chat::{Chat, Message, Summary, member_slot};
+use crate::chat::{Chat, Message, Summary, member_marks};
 use crate::parts::ChatPart;
 
 /// The most of the last stretch a turn is told as written, in bytes, all messages together.
@@ -92,7 +92,7 @@ pub fn told(
     let summary = chat
         .summaries
         .get(conversation.as_str())
-        .and_then(|kept| kept.get(member_slot(agent).as_str()))
+        .and_then(|kept| kept.get(member_marks(agent).as_str()))
         .filter(|summary| !summary.text.trim().is_empty());
     let outside = held.split_off(summary.map_or(0, |summary| within(&held, summary)));
     let lines: Vec<String> = outside
@@ -362,7 +362,7 @@ mod tests {
                 .unwrap()
                 .summaries
                 .get(conversation().as_str())
-                .and_then(|kept| kept.get(member_slot(&agent()).as_str()))
+                .and_then(|kept| kept.get(member_marks(&agent()).as_str()))
                 .cloned()
         }
     }

@@ -3,6 +3,7 @@ use crate::agent_stream::{AgentFinish, AgentOutput, AgentStreamEvent};
 use crate::messages::chat_part;
 use crate::model::AgentWorkState;
 use crate::parts::ChatPart;
+use crate::projection::ChatProjection as _;
 
 #[test]
 fn provider_terminal_state_and_accessibility_report_output_not_applied_actions() {

@@ -225,6 +225,8 @@ reason = "Chat's channels, and the mentions read from a chat's messages."
 words = ["channel"]
 paths = [
     "apps/chat/*",
+    "apps/chat-model/*",
+    "apps/chat-model-wasm/*",
     "apps/tl/chat/*",
     "crates/sdk/ui-core/src/mentions.rs",
     "crates/session/session/src/mentions.rs",

@@ -1,20 +1,23 @@
-//! Feedback reports are attributed reports with an immutable submission
-//! identity, kept with their triage in the chat resource
-//! ([`crate::chat::Chat::feedback`]) and shown among their channel's
-//! messages. A receipt is only offered after the
-//! host confirms the resource is durable.
+//! Feedback reports as the workspace's server answers with them: the receipt a
+//! report's submission earns once the resource is durable, the reads a host
+//! answers from its committed copy, and the action that replays a report's
+//! recording. The reports themselves and their triage are
+//! [`chat_model::feedback`]'s, kept with the chat's resource.
 
-use serde::{Deserialize, Serialize};
 use tilo_actions::{ActionError, Doc};
 use ui::feedback::{Destination, Receipt};
-use ui::tilo_resource::{self, Id};
+use ui::tilo_resource::Id;
+
+pub use chat_model::feedback::{
+    Report, TriageEntry, TriageUpdate, message_id, report, report_of_message, reports,
+};
 
 pub(crate) mod destination_read;
 pub mod message;
 pub(crate) mod receipt_read;
 pub(crate) mod status_read;
 
-/// The reads Chat answers from its committed record: a feedback report's
+/// The reads Chat answers from its committed resource: a feedback report's
 /// receipt, status and destination.
 pub static READERS: [ui::semantic_document_read::RegisteredSemanticReader; 3] = [
     receipt_read::READER,
@@ -22,36 +25,8 @@ pub static READERS: [ui::semantic_document_read::RegisteredSemanticReader; 3] = 
     destination_read::READER,
 ];
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model)]
-#[serde(tag = "status", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum TriageUpdate {
-    Investigating,
-    Resolved,
-    Reopen,
-    Duplicate {
-        report: String,
-    },
-    Task {
-        reference: tilo_reference::ResourceRef,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TriageEntry {
-    pub author: ui::tilo_resource::MemberId,
-    pub ts: i64,
-    pub update: TriageUpdate,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Report {
-    pub submission: ui::feedback::Submission,
-    pub author: ui::tilo_resource::MemberId,
-    pub ts: i64,
-    #[serde(default)]
-    pub triage: Vec<TriageEntry>,
-}
+/// The report item's action that replays its recording.
+pub const REPLAY_ACTION: &str = "replay-recording";
 
 fn refused(reason: impl Into<String>) -> ActionError {
     ActionError::Refused(reason.into())
@@ -85,78 +60,6 @@ pub fn replay_spec(recording: &ui::feedback::RecordingRef) -> tilo_actions::Acti
 }
 
 /// The report item's action that replays its recording.
-pub const REPLAY_ACTION: &str = "replay-recording";
-
-/// The id of the message a report is posted as.
-#[must_use]
-pub fn message_id(report: &str) -> String {
-    format!("m_feedback_{report}")
-}
-
-/// The report whose message `message` is ([`message_id`]).
-#[must_use]
-pub fn report_of_message(message: &str) -> Option<&str> {
-    message
-        .strip_prefix("m_feedback_")
-        .filter(|report| !report.is_empty())
-}
-
-/// The report `id` as the resource keeps it, its triage oldest first.
-fn report_of(id: &Id, report: &crate::chat::FeedbackReport) -> Result<Report, ActionError> {
-    let submission = report
-        .submission
-        .clone()
-        .ok_or_else(|| refused("invalid feedback report"))?;
-    submission
-        .validate()
-        .map_err(|error| refused(error.to_string()))?;
-    if submission.id != id.as_str() {
-        return Err(refused("feedback id conflict"));
-    }
-    let mut triage: Vec<TriageEntry> = report
-        .triage
-        .values()
-        .filter_map(|entry| {
-            Some(TriageEntry {
-                author: entry.author.clone(),
-                ts: entry.ts,
-                update: entry.update.clone()?,
-            })
-        })
-        .collect();
-    triage.sort_by_key(|entry| {
-        (
-            entry.ts,
-            entry.author.clone(),
-            serde_json::to_string(&entry.update).unwrap_or_default(),
-        )
-    });
-    Ok(Report {
-        submission,
-        author: report.author.clone(),
-        ts: report.ts,
-        triage,
-    })
-}
-
-/// The report `id` filed in the chat `doc` holds.
-pub fn report(doc: &Doc, id: &str) -> Result<Option<Report>, ActionError> {
-    let chat = crate::projection::read(doc);
-    let id = Id::from_raw(id);
-    chat.feedback
-        .get(&id)
-        .map(|report| report_of(&id, report))
-        .transpose()
-}
-
-/// Every report filed in the chat `doc` holds.
-pub fn reports(doc: &Doc) -> Result<Vec<Report>, ActionError> {
-    let chat = crate::projection::read(doc);
-    chat.feedback
-        .iter()
-        .map(|(id, report)| report_of(id, report))
-        .collect()
-}
 
 /// Called by the authenticated host's receipt reader after its canonical
 /// resource reports `Saved`; the source is retained transport identity, not input.
@@ -223,12 +126,12 @@ pub fn canonical_feedback_projection(
 /// external URL selects this store or resource.
 pub fn receipt_from_resource(
     store: &ui::resource::ResourceStore,
-    record: &ui::resource::DocumentId,
+    document: &ui::resource::DocumentId,
     id: &str,
     actual_destination: &Destination,
 ) -> Result<Receipt, ActionError> {
     let status = store
-        .save_status(record)
+        .save_status(document)
         .map_err(|error| refused(error.to_string()))?;
     let (package, workspace) = store.app_and_home();
     if package != <crate::resource::ChatShell as ui::framework::ResourceApp>::ID
@@ -237,12 +140,12 @@ pub fn receipt_from_resource(
         return Err(refused("feedback canonical store mismatch"));
     }
     store
-        .read(record, |doc| {
+        .read(document, |doc| {
             let scope = ui::resource::workspace_scope(doc);
             if scope
                 .as_deref()
                 .is_some_and(|workspace| workspace != actual_destination.workspace)
-                || (!record.is_package_primary() && scope.is_none())
+                || (!document.is_package_primary() && scope.is_none())
             {
                 return Err(refused("feedback canonical workspace mismatch"));
             }
@@ -255,6 +158,8 @@ pub fn receipt_from_resource(
 mod tests {
     use super::*;
     use crate::chat::chat;
+
+    use crate::projection::ChatProjection as _;
     use crate::resource::Chat;
     use crate::testing::apply_as;
     use automerge::ROOT;

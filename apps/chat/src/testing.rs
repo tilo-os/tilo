@@ -2,6 +2,7 @@
 //! starter resources, verbs applied as a named person, and the resource and its
 //! messages read back as the window reads them.
 
+use crate::projection::ChatProjection as _;
 use automerge::AutoCommit;
 use ui::tilo_resource::{Id, Invoke};
 

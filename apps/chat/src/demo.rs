@@ -5,11 +5,14 @@
 //! is the first part of the chat's messages ([`demo_part`]). A tool or a
 //! test without a window holds both as documents ([`Workspace`]).
 
+use crate::projection::ChatProjection as _;
 use automerge::AutoCommit;
 use ui::tilo_actions::ApiError;
 use ui::tilo_resource::{Atom, Id, Invoke, ModelError, Replica};
 
-use crate::chat::{Category, Chat, Conversation, Message, Revision, chat};
+use chat_model::chat::chat;
+
+use crate::chat::{Category, Chat, Conversation, Message, Revision};
 use crate::messages::{Messages, chat_part};
 use crate::model::{ChannelKind, EditEntry};
 use crate::parts::ChatPart;

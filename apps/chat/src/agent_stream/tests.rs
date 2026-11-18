@@ -1,6 +1,7 @@
 use super::*;
 use crate::messages::chat_part;
 use crate::parts::ChatPart;
+use crate::projection::ChatProjection as _;
 use crate::testing::MountedChat;
 use crate::testing::Workspace;
 use ui::tilo_resource::Id;

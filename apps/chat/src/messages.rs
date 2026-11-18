@@ -118,7 +118,7 @@ impl ChatPart {
                         name: String::new(),
                         anchor: item_resource_id::<Chat>(
                             "people",
-                            &crate::chat::member_slot(&message.author),
+                            &crate::chat::member_marks(&message.author),
                         ),
                         agent: !message.author.is_person(),
                         identity: message.author.id().to_owned(),
@@ -1421,11 +1421,11 @@ impl Chained for ChatPart {
                 let message = &mut post.message;
                 takes_posts(chat, &message.channel)?;
                 let body = message.body.clone().unwrap_or_default();
-                message.mentions = Some(Chat::mentions(&message.text, &body));
+                message.mentions = Some(crate::chat::mentions(&message.text, &body));
             }
             ChatPartAction::PostFile(post) => {
                 takes_posts(chat, &post.channel)?;
-                post.mentions = Some(Chat::mentions(
+                post.mentions = Some(crate::chat::mentions(
                     post.text.as_deref().unwrap_or_default(),
                     &[],
                 ));
@@ -1437,11 +1437,11 @@ impl Chained for ChatPart {
                     .clone()
                     .filter(|text| !text.trim().is_empty())
                     .unwrap_or_else(|| share.attached.reference.label.clone());
-                share.mentions = Some(Chat::mentions(&text, &[]));
+                share.mentions = Some(crate::chat::mentions(&text, &[]));
             }
             ChatPartAction::ShareWindow(share) => {
                 takes_posts(chat, &share.channel)?;
-                share.mentions = Some(Chat::mentions(
+                share.mentions = Some(crate::chat::mentions(
                     share.text.as_deref().unwrap_or_default(),
                     &[],
                 ));
@@ -1456,7 +1456,7 @@ impl Chained for ChatPart {
             }
             ChatPartAction::EditMessage(edit) => {
                 let body = edit.body.clone().unwrap_or_default();
-                edit.mentions = Some(Chat::mentions(&edit.text, &body));
+                edit.mentions = Some(crate::chat::mentions(&edit.text, &body));
             }
             ChatPartAction::StreamOutput(stream) => takes_posts(chat, &stream.channel)?,
             ChatPartAction::DeliverMessage(delivery) => takes_posts(chat, &delivery.channel)?,

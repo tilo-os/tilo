@@ -1,3 +1,4 @@
+use crate::projection::ChatProjection as _;
 use automerge::AutoCommit as Doc;
 use ui::feedback::{
     Destination, FrameTimings, Hidden, Interaction, Outcome, Part, ReviewedFeedback,

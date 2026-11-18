@@ -199,10 +199,11 @@ All of that moves to the document host:
    and nothing else, and Chat's own `ChatPermissions` goes.
 6. The outbox drain is decided per entry by the session's policy, like an action.
 7. A server applies the actions of any installed app from its package. Today
-   `tilo-workspace-service` knows only the app models compiled into it (Chat
-   and Calendar, behind its `agents` feature), and `tilo-agent-session` links
-   the models of most apps natively; both go once packages carry the model as
-   WebAssembly. Most apps' models already build for WebAssembly, for the page.
+   `tilo-workspace-service` knows only the app models compiled into it
+   (Calendar, behind its `agents` feature), and `tilo-agent-session` links the
+   models of most apps natively; both go once packages carry the model as
+   WebAssembly. Most apps' models already build for WebAssembly, for the page,
+   and the ones that do are applied from their package: Chat's resources are.
 8. A member lets a server use one secret, and a consent sheet raised on a
    server reaches that member's devices.
 
