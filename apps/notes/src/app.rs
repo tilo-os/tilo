@@ -4104,9 +4104,8 @@ impl NotesApp {
 }
 
 /// The window's Undo: what has a history of its own inside it (a title being
-/// typed) first, then the person's last change to a note, which lives in a part
-/// of the notes beside the notebook; the notebook's own changes (its tags) after
-/// that.
+/// typed) first, then the person's last step in the chain, whether it wrote
+/// the notebook or one of its notes.
 impl ui::undo::LocalUndo for NotesApp {
     fn handle_local_undo_request(&mut self, request: ui::undo::UndoRequest) -> bool {
         if self
