@@ -361,6 +361,7 @@ impl Activity {
     }
 
     /// Name `workspace` 's people as `people` do: who a change in its history was made by.
+    #[cfg(target_os = "linux")]
     pub(crate) fn set_people(&self, workspace: &str, people: &[collab_types::Member]) {
         let Some(workspace) = WorkspaceId::parse(workspace) else {
             return;
