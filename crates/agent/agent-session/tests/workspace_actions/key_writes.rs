@@ -300,6 +300,21 @@ async fn a_computers_agent_moves_things_in() {
     )
     .await;
 
+    // Comments on the issues, in one group, as a tracker's history moves in.
+    let issues = issues_kept(&on_server, &workspace).await;
+    assert_eq!(issues.len(), NOTES, "every issue the agent made is kept");
+    let comments: Vec<Value> = issues
+        .iter()
+        .take(COMMENTS)
+        .map(|issue| json!({"action": "comment", "args": {"issue": issue, "text": "Moved in."}}))
+        .collect();
+    did(
+        &server,
+        "tilo_do",
+        json!({"path": "tasks#group", "args": {"actions": comments}}),
+    )
+    .await;
+
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let kept = parents_kept(&on_server, &workspace).await;
@@ -307,13 +322,69 @@ async fn a_computers_agent_moves_things_in() {
             .iter()
             .filter(|note| kept.get(*note).cloned().flatten().as_deref() != Some(&folder))
             .count();
-        if unmoved == 0 {
+        let commented = comments_kept(&on_server, &workspace).await;
+        if unmoved == 0 && commented == COMMENTS {
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "the workspace never kept every note the agent moved: {unmoved} not moved"
+            "the workspace never kept everything the agent moved in: {unmoved} notes not moved, \
+             {commented} of {COMMENTS} comments"
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+}
+
+/// How many comments the agent moves in, in one group.
+const COMMENTS: usize = 24;
+
+/// Each part of the issues of `workspace` its server keeps, read.
+async fn issue_parts(on_server: &OnServer, workspace: &str) -> Vec<tasks::issue_list::IssueList> {
+    let workspaces = on_server.hosted.server.workspaces().unwrap();
+    let mut parts = Vec::new();
+    for index in 0.. {
+        let part_id = tasks::issue_list::chain().part(index);
+        let Some(list) = workspaces
+            .resource_document(workspace, "so.tilo.tasks", part_id.as_str())
+            .await
+            .ok()
+            .flatten()
+            .and_then(|bytes| automerge::AutoCommit::load(&bytes).ok())
+            .and_then(|doc| {
+                <tasks::issue_list::IssueList as ui::tilo_resource::Resource>::read(&doc).ok()
+            })
+        else {
+            break;
+        };
+        parts.push(list);
+    }
+    parts
+}
+
+/// The ids of the issues of `workspace` its server keeps.
+async fn issues_kept(on_server: &OnServer, workspace: &str) -> Vec<String> {
+    issue_parts(on_server, workspace)
+        .await
+        .iter()
+        .flat_map(|part| {
+            part.issues
+                .iter()
+                .map(|(id, _)| id.to_string())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// How many comments the issues of `workspace` its server keeps hold.
+async fn comments_kept(on_server: &OnServer, workspace: &str) -> usize {
+    issue_parts(on_server, workspace)
+        .await
+        .iter()
+        .flat_map(|part| {
+            part.issues
+                .iter()
+                .map(|(_, issue)| issue.comments.len())
+                .collect::<Vec<_>>()
+        })
+        .sum()
 }

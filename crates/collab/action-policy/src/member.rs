@@ -483,22 +483,17 @@ impl Acting {
     /// claim the person themselves, so the agent's preset, bounded by that
     /// person and by the signer, gives it no more. An agent's own device
     /// cannot claim a person, and keeps nothing it claims to have been
-    /// handed. A key's agent ([`key_agent_id`]) is decided
-    /// by the grant its person signed, the key's certificate, which the
-    /// workspace reads, so what it claims to have been handed counts only
-    /// from its person's own device.
+    /// handed. A key's agent ([`key_agent_id`]) keeps nothing it claims
+    /// either: it is decided by the grant its person signed, the key's
+    /// certificate, which the workspace reads and its person revokes.
     #[must_use]
     pub fn signed_by(mut self, signer: &Self) -> Self {
         let person = signer
             .direct_person()
             .filter(|_| !signer.foreign_device)
             .map(str::to_owned);
-        let hands = |node: &Self| {
-            person.as_deref().is_some_and(|person| {
-                node.agent_id().and_then(key_of_agent).is_none()
-                    || node.acted_for_person() == Some(person)
-            })
-        };
+        let hands =
+            |node: &Self| person.is_some() && node.agent_id().and_then(key_of_agent).is_none();
         self.unhand(&hands);
         match &person {
             // The tree names the signing person already: it is theirs as it is.

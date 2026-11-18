@@ -244,8 +244,8 @@ tilo_test_env::scenario! {
         let key = tilo_action_policy::key_agent_id(&[9; 32]);
         let claimed = Acting::handed_agent(key.clone(), "ada");
         let op = write_by(Some(&claimed));
-        // Its claim alone counts only from Ada's own device.
-        assert_eq!(received(&op, &person(&policy(None), "ada")), Ok(Receipt::Admit));
+        // Its claim alone counts for nothing, whoever signs.
+        assert!(received(&op, &person(&policy(None), "ada")).is_err());
         assert!(received(&op, &person(&policy(None), "bob")).is_err());
         // The grant its certificate is, which the workspace reads, decides it
         // whoever signs.
