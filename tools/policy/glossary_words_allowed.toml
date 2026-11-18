@@ -715,6 +715,7 @@ paths = [
     "crates/windows/compat-service/src/plan.rs",
     "crates/windows/compat-service/src/resources.rs",
     "crates/session/session/src/apps/windows.rs",
+    "crates/packaging/launcher/tests/system_view.rs",
 ]
 
 [[allow]]
