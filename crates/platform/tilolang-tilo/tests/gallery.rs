@@ -43,30 +43,20 @@ fn words(node: &UiNode, out: &mut Vec<String>) {
 
 /// How many nodes of `kind` stand under `node`.
 fn counted(node: &UiNode, kind: &str) -> usize {
-    usize::from(node.kind == kind)
-        + node
-            .children
-            .iter()
-            .map(|child| counted(child, kind))
-            .sum::<usize>()
+    let mut found = usize::from(node.kind == kind);
+    for child in &node.children {
+        found = found.saturating_add(counted(child, kind));
+    }
+    found
 }
 
 fn shows(shown: &[String], word: &str) -> bool {
     shown.iter().any(|seen| seen.contains(word))
 }
 
-/// The node of kind `kind` whose `key` prop is `key`, under `node`.
-fn keyed<'a>(node: &'a UiNode, kind: &str, key: &str) -> Option<&'a UiNode> {
-    if node.kind == kind && node.props.get("key") == Some(&Value::text(key)) {
-        return Some(node);
-    }
-    node.children
-        .iter()
-        .find_map(|child| keyed(child, kind, key))
-}
-
 /// Open the gallery as its window does on a store that holds nothing: the root is made, its
-/// package's migrations run on it, and what they wrote is committed before the view is drawn.
+/// package's migrations do what they do on it, and what they wrote is committed before the view
+/// is drawn.
 fn window(ids: &str) -> Replica {
     let (mut replica, _packages) = Replica::new("ada", AutoCommit::new(), &[(GALLERY, ids)]);
     replica.host.root_of(APP).expect("the gallery's root");
