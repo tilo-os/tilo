@@ -143,6 +143,7 @@ members = [
     "apps/imager",
     "apps/launcher",
     "apps/logs",
+    "apps/logs-model",
     "apps/mail",
     "apps/maps",
     "apps/model-providers",

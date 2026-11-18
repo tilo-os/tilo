@@ -716,7 +716,7 @@ impl LogsWindow {
         let Some(shown) = self.live.changed_since(&mut self.presented) else {
             return;
         };
-        let filter = Logs::filter(&shown);
+        let filter = crate::model::filter_of(&shown);
         self.journal.borrow_mut().adopt_filter(filter);
     }
 
@@ -1306,7 +1306,7 @@ mod tests {
             assert_eq!(viewer.shared.borrow().rows.len(), errs);
             assert_eq!(viewer.shared.borrow().total, total);
         });
-        assert_eq!(app.state().filter().min_priority, 3);
+        assert_eq!(crate::model::filter_of(&app.state()).min_priority, 3);
         app.invoke(Logs::CLEAR_FILTERS.with(())).unwrap();
         request(&mut app, Request::Search("iroh".to_string()));
         surface(&mut app, |viewer| {
@@ -1318,7 +1318,7 @@ mod tests {
             }));
             assert_eq!(viewer.shared.borrow().filter.search, "iroh");
         });
-        assert_eq!(app.state().filter().search, "iroh");
+        assert_eq!(crate::model::filter_of(&app.state()).search, "iroh");
         app.invoke(Logs::CLEAR_FILTERS.with(())).unwrap();
         edit(&mut app, &Logs::paths().unit.set(Atom("kernel".to_owned())));
         let boot = surface(&mut app, |viewer| viewer.boots[0].0.clone());
@@ -1332,7 +1332,7 @@ mod tests {
                         && viewer.entries[i].boot_id == boot)
             );
         });
-        let stored = app.state().filter();
+        let stored = crate::model::filter_of(&app.state());
         assert_eq!(stored.unit, "kernel");
         assert_eq!(stored.boot, boot);
         assert_ne!(

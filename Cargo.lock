@@ -9641,6 +9641,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "bounded-command",
+ "logs-model",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -9651,6 +9652,16 @@ dependencies = [
  "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
+ "workspace-hack",
+]
+
+[[package]]
+name = "logs-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-resource",
  "workspace-hack",
 ]
 
