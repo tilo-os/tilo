@@ -1,4 +1,5 @@
 //! Inspect an existing text-channel destination without creating or joining it.
+use crate::projection::ChatProjection as _;
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};

@@ -1,11 +1,5 @@
 // Included into `app::tests`.
 
-/// Serves the window's document to its History, as the session does before History opens.
-fn serve_history(app: &TestApp<CalculatorShell>) {
-    let doc = app.read_document(Clone::clone);
-    ui::history_mode::served_history::serve(&doc);
-}
-
 /// Every row History lists, as assistive technology reads it, groups open.
 fn history_rows(app: &mut TestApp<CalculatorShell>) -> Vec<(String, String)> {
     fn timeline(node: &ui::headless::InspectionNode) -> Option<&ui::headless::InspectionNode> {
@@ -90,7 +84,7 @@ fn history_lists_calculations_and_choosing_one_recalls_it() {
         "the calculator keeps no list beside History: {targets:?}"
     );
 
-    serve_history(&app);
+    app.serve_history();
     app.harness()
         .open_history()
         .expect("the window's History opens");
@@ -154,7 +148,7 @@ fn a_second_window_lists_the_first_windows_calculations() {
         Some("5"),
         "the expression being typed is the first window's own"
     );
-    serve_history(&beside);
+    beside.serve_history();
     beside
         .harness()
         .open_history()
@@ -180,7 +174,7 @@ fn the_history_button_opens_history() {
         Some(ui::widget::HistoryControl::of(false)),
         "the window bar offers History"
     );
-    serve_history(&app);
+    app.serve_history();
     app.harness()
         .press_window_history()
         .expect("the window bar's History button opens History");
@@ -207,7 +201,7 @@ fn a_long_formula_reaches_history_whole() {
     app.harness().type_text(&formula);
     app.settle();
     app.flush().unwrap();
-    serve_history(&app);
+    app.serve_history();
     app.harness()
         .open_history()
         .expect("the window's History opens");
@@ -232,7 +226,7 @@ fn a_long_formula_passed_to_an_action_reaches_history_whole() {
         .unwrap();
     app.settle();
     app.flush().unwrap();
-    serve_history(&app);
+    app.serve_history();
     app.harness()
         .open_history()
         .expect("the window's History opens");
@@ -290,7 +284,7 @@ fn a_past_version_previews_the_graph_the_window_shows() {
     app.harness().type_text("x+1");
     app.settle();
     app.flush().unwrap();
-    serve_history(&app);
+    app.serve_history();
     app.harness()
         .open_history()
         .expect("the window's History opens");
@@ -334,7 +328,7 @@ fn typing_a_formula_is_one_change() {
     app.harness().type_text("3*x+sin(x)");
     app.settle();
     app.flush().unwrap();
-    serve_history(&app);
+    app.serve_history();
     app.harness()
         .open_history()
         .expect("the window's History opens");

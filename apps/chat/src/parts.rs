@@ -103,15 +103,7 @@ impl ChatMessages {
     }
 }
 
-/// How far a person read a channel: every top-level message of the channel
-/// in the parts before `part`, and the first `seen` of them in `part`.
-#[derive(Model, Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ReadMark {
-    /// The part the person read into.
-    pub part: i64,
-    /// Top-level messages of the channel they saw in that part.
-    pub seen: i64,
-}
+pub use chat_model::ReadMark;
 
 #[cfg(test)]
 mod tests {

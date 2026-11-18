@@ -347,12 +347,13 @@ impl LiveAccountTester {
 
 /// What proves accounts on a server: [`LiveAccountTester`], with every
 /// connection it makes for an account, for mail, a calendar or files, going
-/// only where its reach lets it ([`imap::Reach::public_unless`]). A device
-/// that keeps its person's own accounts reaches any address and uses
-/// [`LiveAccountTester`] itself.
-pub struct LiveWithin(pub imap::Reach);
+/// only where its reach lets it ([`imap::Reach::public_unless`]), and which
+/// also works out an address's mail servers over the network
+/// ([`mail_servers::find`]). Only a person's server asks that, so an app that
+/// proves sign-ins takes [`LiveAccountTester`] and carries no DNS resolver.
+pub struct FindingAccountTester(pub imap::Reach);
 
-impl AccountTester for LiveWithin {
+impl AccountTester for FindingAccountTester {
     fn discover_calendars(
         &self,
         account: &accounts::Account,

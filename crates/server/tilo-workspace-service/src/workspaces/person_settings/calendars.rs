@@ -58,7 +58,7 @@ use calendar_model::spans::{FreeAsked, SpanAsked};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tilo_account_probe::imap::Reach;
-use tilo_account_probe::{AccountTester as _, LiveWithin, local_http_allowed};
+use tilo_account_probe::{AccountTester as _, FindingAccountTester, local_http_allowed};
 use tilo_actions::remote::person_accounts;
 use tilo_actions::remote::person_asking::{ActionName, Asked, Thing};
 use tilo_actions::remote::person_vault::ItemRef;
@@ -623,7 +623,7 @@ fn add(root: &Path, reach: &Reach, adding: Add) -> Result<AccountView, String> {
             .any(|kept| kept.id == id && kept.read_only);
     let mut asked = accounts::Account::new(accounts::AccountId::from(id.clone()), TYPE_ID);
     asked.config = serde_json::json!({ "server_url": server.as_str(), "username": username });
-    let found = LiveWithin(reach.clone())
+    let found = FindingAccountTester(reach.clone())
         .discover_calendars(&asked, &accounts::Secret::password(adding.password.clone()))?;
     let calendars = found
         .into_iter()

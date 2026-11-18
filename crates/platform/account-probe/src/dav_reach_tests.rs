@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::imap::Reach;
 use crate::mail_servers::{Live, Sources as _};
-use crate::{AccountTester as _, LiveAccountTester, LiveWithin};
+use crate::{AccountTester as _, FindingAccountTester, LiveAccountTester};
 
 /// A listener of this machine that waits for nobody, and its port.
 fn listening() -> (TcpListener, u16) {
@@ -107,7 +107,7 @@ fn a_calendar_whose_name_answers_with_this_machine_is_connected_to_by_nobody() {
         reach.takes("localhost"),
         "the look-up made before answers publicly"
     );
-    let server = LiveWithin(reach);
+    let server = FindingAccountTester(reach);
     assert!(
         server
             .discover_calendars(&calendar_account(&named), &secret)
@@ -123,7 +123,7 @@ fn a_calendar_whose_name_answers_with_this_machine_is_connected_to_by_nobody() {
     // An address written into the URL is looked up by nobody, and is judged
     // all the same.
     let written = format!("https://127.0.0.1:{port}/dav/");
-    let public = LiveWithin(Reach::public());
+    let public = FindingAccountTester(Reach::public());
     assert!(
         public
             .discover_calendars(&calendar_account(&written), &secret)

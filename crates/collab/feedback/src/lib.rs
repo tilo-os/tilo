@@ -120,6 +120,30 @@ pub struct ReviewedFeedback {
     pub recording: Option<RecordingRef>,
 }
 
+impl ReviewedFeedback {
+    /// The reporter's own words: their summary, and each picked part's texts
+    /// and the note they wrote on it. What search finds a report by; the labels
+    /// a read-out adds around them are not theirs. A masked span reads as an
+    /// ellipsis: it is deliberately not searchable.
+    #[must_use]
+    pub fn words(&self) -> String {
+        let mut lines = vec![self.text.trim().to_owned()];
+        for selection in &self.selections {
+            if let Some(label) = &selection.label {
+                lines.push(label.render(|_| "…"));
+            }
+            for text in &selection.texts {
+                lines.push(text.render(|_| "…"));
+            }
+            if let Some(note) = &selection.note {
+                lines.push(note.render(|_| "…"));
+            }
+        }
+        lines.retain(|line| !line.trim().is_empty());
+        lines.join("\n")
+    }
+}
+
 /// Content-addressed masked PNG; raw surface bytes never enter the outbox.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
 #[serde(deny_unknown_fields)]

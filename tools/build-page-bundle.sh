@@ -30,8 +30,13 @@ if [[ -n "${TILO_PAGE_BUNDLE:-}" && -f "$TILO_PAGE_BUNDLE/pkg/tilo_browser_runti
 fi
 
 cd "$repo"
-target=$("${CARGO:-cargo}" metadata --format-version 1 --no-deps --offline |
-    python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
+# The directory a build told it by an absolute `CARGO_TARGET_DIR` (t and rcargo always do) needs
+# no question: asking cargo loads the whole workspace's manifests on every job that builds a page.
+target=${CARGO_TARGET_DIR:-}
+if [[ $target != /* ]]; then
+    target=$("${CARGO:-cargo}" metadata --format-version 1 --no-deps --offline |
+        python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
+fi
 # In the target directory, not /tmp: Cargo's own output is there already,
 # and the module is kept for the next run to replace.
 bundle="$target/page-bundle"

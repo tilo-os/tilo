@@ -261,6 +261,8 @@ reason = "Chat's channels, and the mentions read from a chat's messages."
 words = ["channel"]
 paths = [
     "apps/chat/*",
+    "apps/chat-model/*",
+    "apps/chat-model-wasm/*",
     "apps/tl/chat/*",
     "crates/agent/agent-session/tests/workspace_actions/carried_names.rs",
     "crates/agent/agent-session/tests/workspace_actions/held_roles.rs",
@@ -1184,3 +1186,14 @@ paths = [
 reason = "The model gateway's module of its wire types, named by the program it backs, not a Tilo concept."
 words = ["host"]
 identifiers = ["host_backend"]
+
+[[allow]]
+reason = "A person's read mark in a channel, which the chat model keeps under `member_slot`: the slot is where their mark sits, as the model names it."
+words = ["slot"]
+identifiers = ["member_slot"]
+paths = [
+    "apps/chat-model/src/chat.rs",
+    "apps/chat-model/src/lib.rs",
+    "apps/chat/src/projection.rs",
+    "apps/chat/src/render_chat/members.rs",
+]

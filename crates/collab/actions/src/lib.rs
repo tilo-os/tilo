@@ -182,6 +182,7 @@ pub mod run;
 pub mod schema;
 pub mod selection;
 pub mod selectors;
+pub mod send_to;
 pub mod step;
 pub mod surface;
 pub mod task_step;
@@ -189,7 +190,7 @@ pub mod terminal_text;
 
 pub use action::{
     Action, ActionError, ActionId, Declined, Doc, EncodedAction, ExecutionLocus, MAX_TEXT_BYTES,
-    OperationKind, asks_first, codes, undo_takes_back,
+    OperationKind, RECALL_SUMMARY_BYTES, asks_first, codes, undo_takes_back,
 };
 pub use agent_disclosure::hidden_from_agents;
 pub use api::{ActionAddress, ActionDescriptor, ApiError, InputSpec, ResourceViewDescriptor};
@@ -268,6 +269,7 @@ pub use selection::{
     BOUND_RESOURCE_PREFIX, MAX_EXCERPT_BYTES, MAX_EXCERPT_CHARS, MAX_SELECTED_ITEMS,
     SelectionAnchor, SelectionPlace, SelectionSubject, excerpt_of, logical_resource_id,
 };
+pub use send_to::{Recipient, RecipientKind, recipients_matching};
 pub use step::{Step, StepKind};
 /// Grants and the decisions over them, as apps read and show them.
 pub use tilo_action_policy as policy;

@@ -1,3 +1,5 @@
+use crate::model::ChannelKind;
+use crate::projection::ChatProjection as _;
 use tilo_actions::policy::MemberId;
 use ui::tilo_actions::ApiError;
 use ui::tilo_resource::{Id, Invoke, Replica, Resource};
