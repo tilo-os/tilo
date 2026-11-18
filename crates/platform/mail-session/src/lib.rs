@@ -382,7 +382,15 @@ impl MailSession for LiveMailSession {
     ) -> Result<SentMail, String> {
         self.block(async {
             let mime = write_leaving(sending, files, invitation)?;
-            send_message(account, secret, sending, &mime, &self.smtp_trust).await?;
+            send_message(
+                self.reach.as_ref(),
+                account,
+                secret,
+                sending,
+                &mime,
+                &self.smtp_trust,
+            )
+            .await?;
             // The message left. Its copy is told apart from that: a server
             // that will not take one does not unsend the message.
             let unfiled = self
@@ -417,6 +425,7 @@ impl MailSession for LiveMailSession {
     ) -> Result<Watching, String> {
         let inbox = Inbox {
             tls: self.tls.clone(),
+            reach: self.reach.clone(),
             account: account.clone(),
             secret: secret.clone(),
             pace: self.pace,
@@ -522,13 +531,14 @@ impl LiveMailSession {
         account: &accounts::Account,
         secret: &accounts::Secret,
     ) -> Result<ImapSession, String> {
-        sign_in(self.tls.clone(), account, secret).await
+        sign_in(self.tls.clone(), self.reach.as_ref(), account, secret).await
     }
 }
 
 /// Open the account's connection, secured as its settings say, and sign in.
 async fn sign_in(
     tls: Option<Arc<rustls::ClientConfig>>,
+    reach: Option<&tilo_account_probe::imap::Reach>,
     account: &accounts::Account,
     secret: &accounts::Secret,
 ) -> Result<ImapSession, String> {
@@ -555,7 +565,9 @@ async fn sign_in(
     // account was added: TLS from the first byte, or upgraded with
     // STARTTLS before the sign-in is sent.
     let security = accounts::email::imap_security_of(&account.config);
-    let reach = tilo_account_probe::imap::Reach::any();
+    let reach = reach
+        .cloned()
+        .unwrap_or_else(tilo_account_probe::imap::Reach::any);
     let client =
         tilo_account_probe::imap::open(&reach, &named, port, security, config, NETWORK_TIMEOUT)
             .await?;
@@ -1282,6 +1294,7 @@ fn message_id_search(mime: &[u8]) -> Option<String> {
 /// Hand the message `mime` holds, written from `sending`, to the account's
 /// server.
 async fn send_message(
+    reach: Option<&tilo_account_probe::imap::Reach>,
     account: &accounts::Account,
     secret: &accounts::Secret,
     sending: &Leaving,
@@ -1293,7 +1306,7 @@ async fn send_message(
     use lettre::transport::smtp::client::TlsParameters;
     use lettre::{AsyncSmtpTransport, Tokio1Executor};
 
-    let host = field(account, "smtp_host")
+    let named = field(account, "smtp_host")
         .filter(|host| !host.trim().is_empty())
         .ok_or_else(|| "account has no SMTP server".to_string())?;
     let port = port_of(account, "smtp_port", 465);
@@ -1304,7 +1317,17 @@ async fn send_message(
         return Err("account has no saved password".into());
     }
     let envelope = sending.envelope()?;
-    let mut builder = TlsParameters::builder(host.clone());
+    // The server's name is looked up once, within what this session reaches,
+    // and the transport is handed the address that answered: it looks nothing
+    // up itself, and the certificate is still checked against the name.
+    let reach = reach
+        .cloned()
+        .unwrap_or_else(tilo_account_probe::imap::Reach::any);
+    let answered = tilo_account_probe::imap::reach(&reach, &named, port, NETWORK_TIMEOUT)
+        .await?
+        .peer_addr()
+        .map_err(|_| "the SMTP server's address could not be read".to_string())?;
+    let mut builder = TlsParameters::builder(named.clone());
     for certificate in trust {
         let certificate =
             lettre::transport::smtp::client::Certificate::from_der(certificate.to_vec())
@@ -1318,13 +1341,14 @@ async fn send_message(
         465 => lettre::transport::smtp::client::Tls::Wrapper(params),
         _ => lettre::transport::smtp::client::Tls::Required(params),
     };
-    let transport = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(host)
-        .port(port)
-        .tls(tls)
-        .credentials(Credentials::new(user, secret.password.clone()))
-        .authentication(vec![Mechanism::Login, Mechanism::Plain])
-        .timeout(Some(NETWORK_TIMEOUT))
-        .build();
+    let transport =
+        AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(answered.ip().to_string())
+            .port(port)
+            .tls(tls)
+            .credentials(Credentials::new(user, secret.password.clone()))
+            .authentication(vec![Mechanism::Login, Mechanism::Plain])
+            .timeout(Some(NETWORK_TIMEOUT))
+            .build();
     timeout(NETWORK_TIMEOUT, transport.send_raw(&envelope, mime))
         .await
         .map_err(|_| "SMTP server did not answer before the timeout".to_string())?
@@ -1472,6 +1496,7 @@ fn draft_addresses(list: &str) -> Vec<(String, String)> {
 /// One account's inbox, as a watch reaches it.
 struct Inbox {
     tls: Option<Arc<rustls::ClientConfig>>,
+    reach: Option<tilo_account_probe::imap::Reach>,
     account: accounts::Account,
     secret: accounts::Secret,
     pace: WatchPace,
@@ -1503,7 +1528,13 @@ impl Inbox {
         wait: &mut Duration,
     ) -> Result<std::convert::Infallible, String> {
         let unanswered = || "IMAP server did not answer before the timeout".to_string();
-        let mut session = sign_in(self.tls.clone(), &self.account, &self.secret).await?;
+        let mut session = sign_in(
+            self.tls.clone(),
+            self.reach.as_ref(),
+            &self.account,
+            &self.secret,
+        )
+        .await?;
         let tells = timeout(NETWORK_TIMEOUT, session.capabilities())
             .await
             .map_err(|_| unanswered())?

@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::{Map, Value};
-use tilo_account_probe::{AccountTester, LiveAccountTester};
+use tilo_account_probe::AccountTester;
 use tilo_actions::remote::person_accounts::{
     AccountAssistants, ArrivedAfter, AssistantAccess, FetchMail, FetchedMail, FetchedMessage,
     FoundMail, MarkMail, ReadMail, SearchMail,
@@ -172,8 +172,9 @@ impl Workspaces {
         )
     }
 
-    /// What proves an account's sign-in at its server before a use by
-    /// reference keeps the account.
+    /// What proves an account's sign-in at its server before the account is
+    /// kept, for a person's own add and for a use by reference alike: one
+    /// tester, whose connections go only where this server's mail may.
     pub(super) fn account_tester(&self) -> Arc<dyn AccountTester> {
         Arc::clone(
             &self
@@ -557,7 +558,7 @@ impl Workspaces {
             person_accounts::LIST => answer(&mail_accounts(&root)),
             person_accounts::ADD_MAIL => {
                 let adding: AddMailAccount = argument(request, "an account to add")?;
-                let kept = add_mail(&root, adding).await;
+                let kept = add_mail_with(self.account_tester(), &root, adding).await;
                 if kept.is_ok() {
                     self.person_settings_changed();
                 }
@@ -769,15 +770,10 @@ fn port(account: &accounts::Account, name: &str, default: u16) -> u16 {
         .unwrap_or(default)
 }
 
-/// Add `adding` once its server accepted its sign-in: the secret into the
-/// person's vault first, then the account into the shared store, so an
-/// account never shows without the sign-in it needs.
-async fn add_mail(root: &Path, adding: AddMailAccount) -> Result<MailAccount, String> {
-    add_mail_with(Arc::new(LiveAccountTester), root, adding).await
-}
-
-/// [`add_mail`] through `tester`, so a test proves the store's side without
-/// a server.
+/// Add `adding` once `tester` saw its server accept its sign-in: the secret
+/// into the person's vault first, then the account into the shared store, so
+/// an account never shows without the sign-in it needs. A test's tester
+/// proves the store's side without a server.
 pub(super) async fn add_mail_with(
     tester: Arc<dyn AccountTester>,
     root: &Path,

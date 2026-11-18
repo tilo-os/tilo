@@ -367,6 +367,19 @@ impl Default for Uses {
     }
 }
 
+impl Uses {
+    /// The uses of a server: an account's sign-in is proved over connections
+    /// that go only where `reach` lets them.
+    pub(super) fn proving_within(reach: tilo_account_probe::imap::Reach) -> Self {
+        Self {
+            prover: std::sync::RwLock::new(std::sync::Arc::new(tilo_account_probe::LiveWithin(
+                reach,
+            ))),
+            ..Self::default()
+        }
+    }
+}
+
 /// Whose turn a turn on this server is, where it is its keeper's own: what
 /// [`Workspaces::keepers_turn`] answers.
 #[derive(Clone, Debug, PartialEq, Eq)]

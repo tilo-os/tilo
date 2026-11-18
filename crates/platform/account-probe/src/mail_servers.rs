@@ -540,7 +540,7 @@ impl<'a> Live<'a> {
             .enable_all()
             .build()
             .ok()?;
-        let reach = crate::imap::Reach::any();
+        let reach = self.reach.clone();
         asking.block_on(async {
             let looks: Vec<_> = candidates
                 .iter()

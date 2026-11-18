@@ -38,7 +38,6 @@
 //! same account told twice adds nothing: signed in already, it is refused in
 //! words; asked for and not yet answered, the one question stays.
 
-use std::net::ToSocketAddrs as _;
 use std::path::{Path, PathBuf};
 use std::sync::MutexGuard;
 
@@ -54,7 +53,6 @@ use tilo_actions::remote::{
 use tilo_lock::MutexRecover as _;
 
 use super::{argument, remove_mail, say_assistant};
-use crate::connections::wire::is_public;
 use crate::workspaces::Workspaces;
 use crate::workspaces::hosted_use::{CARRIED_OUT, HostedTurn, KeepersTurn, NOTHING_WAITS};
 
@@ -310,17 +308,7 @@ fn is_server_name(name: &str) -> bool {
 /// name nobody answers for is asked nothing either. Looks the name up, so it
 /// is called off the threads that carry out turns.
 fn answers_in_public(name: &str) -> bool {
-    let Ok(answers) = (name, 0_u16).to_socket_addrs() else {
-        return false;
-    };
-    let mut any = false;
-    for answer in answers {
-        if !is_public(answer.ip()) {
-            return false;
-        }
-        any = true;
-    }
-    any
+    tilo_account_probe::imap::Reach::public().takes(name)
 }
 
 /// The server that refused the password, where `why` is a mail server's
