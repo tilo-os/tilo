@@ -94,3 +94,48 @@ pub(super) fn fields_made(
         _ => Fresh::Store,
     }
 }
+
+/// [`Model::fresh`] of a list: made with its parent, holding its items, when
+/// every item can be made so.
+pub(super) fn list_made(
+    table: &ModelTable,
+    value: &dyn Any,
+    encoding: automerge::TextEncoding,
+) -> Fresh {
+    let Some(list) = table.list() else {
+        return Fresh::Store;
+    };
+    let Some(items) = (list.items)(value) else {
+        return Fresh::Store;
+    };
+    let mut made = Vec::with_capacity(items.count());
+    for at in 0..items.count() {
+        let Some(item) = items.item_at(at) else {
+            return Fresh::Store;
+        };
+        match (list.item.ops.fresh)(list.item, item, encoding) {
+            Fresh::Value(value) => made.push(value),
+            Fresh::Nothing | Fresh::Store => return Fresh::Store,
+        }
+    }
+    Fresh::Value(automerge::hydrate::Value::List(made.into()))
+}
+
+/// [`Model::fresh`] of a value stored as JSON: made with its parent as
+/// `store` writes it, a structural value's maps, lists and scalars or its
+/// JSON text.
+pub(super) fn json_made(
+    table: &ModelTable,
+    value: &dyn Any,
+    encoding: automerge::TextEncoding,
+) -> Fresh {
+    let Some(json) = table.json() else {
+        return Fresh::Store;
+    };
+    if json.structural {
+        return (json.try_value)(value).map_or(Fresh::Store, |value| value.fresh(encoding));
+    }
+    super::json_text(json, value).map_or(Fresh::Store, |text| {
+        Fresh::scalar(automerge::ScalarValue::Str(text.into()))
+    })
+}

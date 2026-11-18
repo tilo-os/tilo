@@ -93,6 +93,12 @@ impl Model for serde_json::Value {
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         store_json(doc, slot, self)
     }
+    /// Made with the map as the maps, lists and scalars [`Self::store`]
+    /// writes.
+    fn fresh(&self, _: automerge::TextEncoding) -> crate::model::Fresh {
+        tilo_automerge::json::hydrate(self)
+            .map_or(crate::model::Fresh::Store, crate::model::Fresh::Value)
+    }
     #[inline(never)]
     fn stores_as(&self, before: &Self) -> bool {
         self == before

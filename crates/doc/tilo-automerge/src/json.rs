@@ -522,6 +522,32 @@ fn write_at<D: Transactable + ?Sized>(
     }
 }
 
+/// The maps, lists and scalars [`write`] makes of `value` under a key that
+/// holds nothing, for a map made at once to hold them.
+///
+/// # Errors
+///
+/// A number JSON holds that no scalar does.
+pub fn hydrate(value: &serde_json::Value) -> Result<automerge::hydrate::Value, JsonError> {
+    Ok(match value {
+        serde_json::Value::Object(fields) => {
+            let mut made = std::collections::HashMap::with_capacity(fields.len());
+            for (key, inner) in fields {
+                made.insert(key.clone(), hydrate(inner).map_err(|error| error.at(key))?);
+            }
+            automerge::hydrate::Value::Map(made.into())
+        }
+        serde_json::Value::Array(items) => {
+            let mut made = Vec::with_capacity(items.len());
+            for (index, item) in items.iter().enumerate() {
+                made.push(hydrate(item).map_err(|error| error.at(&index.to_string()))?);
+            }
+            automerge::hydrate::Value::List(made.into())
+        }
+        scalar => automerge::hydrate::Value::Scalar(scalar_of(scalar)?),
+    })
+}
+
 /// Write `value` at `prop` of `obj`, changing only what differs: a key of an
 /// object or an element of an array that holds the same value is left as it
 /// is. An index one past the end of a list adds an element.
@@ -719,9 +745,35 @@ mod tests {
         );
     }
 
+    fn a_value_made_at_once_is_what_a_write_makes() {
+        let value = serde_json::json!({
+            "port": 993,
+            "big": u64::MAX,
+            "ratio": 0.5,
+            "folders": ["INBOX", {"name": "Sent", "sync": false}, []],
+            "proxy": null,
+        });
+        let mut doc = AutoCommit::new();
+        let config = doc
+            .batch_create_object(&ROOT, "config", &hydrate(&value).unwrap(), false)
+            .unwrap();
+        assert_eq!(
+            read_value(&doc, &Value::Object(ObjType::Map), &config).unwrap(),
+            value
+        );
+        // What it holds is what a write writes: writing it again changes nothing.
+        doc.commit();
+        write(&mut doc, &ROOT, "config", &value).unwrap();
+        assert_eq!(doc.pending_ops(), 0);
+    }
+
     #[test]
     fn a_write_stores_json_as_maps_lists_and_scalars_and_changes_only_what_differs() {
-        let cases: [(&str, fn()); 5] = [
+        let cases: [(&str, fn()); 6] = [
+            (
+                "a value made at once is what a write makes",
+                a_value_made_at_once_is_what_a_write_makes,
+            ),
             (
                 "a json value is stored as maps lists and scalars",
                 a_json_value_is_stored_as_maps_lists_and_scalars,
