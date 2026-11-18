@@ -70,6 +70,9 @@ impl Apps {
                     launches.started_windowless(pid, &planned.app, workspace);
                 } else {
                     launches.started(pid, &planned.app, workspace, !planned.kind.is_host());
+                    if let Some(tab) = instance {
+                        launches.held_for(pid, tab);
+                    }
                 }
             }
         });
