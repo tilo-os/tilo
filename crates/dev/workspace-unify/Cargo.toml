@@ -2413,11 +2413,13 @@ doc = false
 "tilo-app-cli" = { path = "../../../crates/dev/tilo-app-cli", default-features = false, features = [] }
 "tilo-app-id" = { path = "../../../crates/platform/tilo-app-id", default-features = false, features = [] }
 "tilo-app-package" = { path = "../../../crates/packaging/tilo-app-package", default-features = false, features = [] }
+"tilo-app-state" = { path = "../../../crates/system/app-state", default-features = false, features = [] }
 "tilo-automation" = { path = "../../../crates/collab/automation", default-features = false, features = ["model"] }
 "tilo-automerge" = { path = "../../../crates/doc/tilo-automerge", default-features = false, features = ["heap-probe"] }
 "tilo-automerge-fork-0_12_0" = { package = "tilo-automerge-fork", path = "../../../vendor/automerge", default-features = false, features = [] }
 "tilo-automerge-isolate" = { path = "../../../crates/doc/tilo-automerge-isolate", default-features = false, features = [] }
 "tilo-caps" = { path = "../../../crates/sdk/tilo-caps", default-features = false, features = [] }
+"tilo-cli-kit" = { path = "../../../crates/runtime/cli", default-features = false, features = [] }
 "tilo-clock" = { path = "../../../crates/platform/tilo-clock", default-features = false, features = ["test-support"] }
 "tilo-content" = { path = "../../../crates/system/content", default-features = false, features = ["default", "dir"] }
 "tilo-content-types" = { path = "../../../crates/system/content-types", default-features = false, features = [] }
@@ -2429,7 +2431,6 @@ doc = false
 "tilo-doc" = { path = "../../../crates/doc/tilo-doc", default-features = false, features = ["bulk-instrumentation"] }
 "tilo-doc-codecs" = { path = "../../../crates/doc/tilo-doc-codecs", default-features = false, features = ["all", "default", "docx", "epub", "html", "markdown", "ods", "odt", "office", "rtf", "xlsx"] }
 "tilo-documents" = { path = "../../../crates/system/documents", default-features = false, features = [] }
-"tilo-durable-writer" = { path = "../../../crates/platform/tilo-durable-writer", default-features = false, features = [] }
 "tilo-endpoint-reachability" = { path = "../../../crates/system/endpoint-reachability", default-features = false, features = [] }
 "tilo-face" = { path = "../../../crates/platform/tilo-face", default-features = false, features = [] }
 "tilo-failure" = { path = "../../../crates/platform/tilo-failure", default-features = false, features = [] }
