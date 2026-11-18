@@ -1,14 +1,12 @@
-//! The shell's captures: every state of the new session's shell and overview rendered headless,
-//! beside the old shell's captures of the same states, and the frames that show the transitions
-//! moving.
-//! Each state is a test of its own with its own session, so what one leaves open never shows in
-//! another's picture. Frames are written to `$VISUAL_SHELL_OUT` (default
-//! `~/.cache/visual-shell/shots/new` ), and the pixel-parity set to `$PIXEL_PARITY_OUT` .
+//! The shell's pictures: what the frame loop draws of the shell, its bar, its panels and the
+//! transitions between them. Each state is a test of its own with its own session, so what one
+//! leaves open never shows in another's picture. A test that keeps a frame for a person to look at
+//! writes it to `$PIXEL_PARITY_OUT` (default `~/.cache/pixel-parity/new`).
 
 use super::*;
 
-/// Where the parity frames are written.
-fn parity_dir() -> std::path::PathBuf {
+/// Where a frame a test keeps is written.
+fn captures_dir() -> std::path::PathBuf {
     std::env::var_os("PIXEL_PARITY_OUT").map_or_else(
         || {
             let home = std::env::var("HOME").expect("HOME");
@@ -18,10 +16,10 @@ fn parity_dir() -> std::path::PathBuf {
     )
 }
 
-/// Write the screen as `name.png` into [`parity_dir`].
+/// Write the screen as `name.png` into [`captures_dir`].
 pub(super) fn capture(session: &mut Session, name: &str) {
-    let dir = parity_dir();
-    std::fs::create_dir_all(&dir).expect("create the parity directory");
+    let dir = captures_dir();
+    std::fs::create_dir_all(&dir).expect("create the captures' directory");
     let shot = session
         .compositor()
         .screenshot("HEADLESS-1")
@@ -49,36 +47,6 @@ fn step_from(session: &mut Session, clock: &mut std::time::Instant, millis: u64)
             session.step(Duration::from_millis(1)).expect("step");
         });
     }
-}
-
-/// Whether the workspace directory sheet is open over the shell.
-fn directory_open(session: &Session) -> bool {
-    session
-        .workspace_directory()
-        .is_some_and(|directory| directory.presentation().is_open())
-}
-
-/// A written frame's bytes.
-fn frame(dir: &std::path::Path, name: &str) -> Vec<u8> {
-    std::fs::read(dir.join(format!("{name}.png"))).expect("a written frame")
-}
-
-/// Write the screen `millis` after `clock` stood, with the frame loop run until then.
-fn capture_at(
-    session: &mut Session,
-    dir: &std::path::Path,
-    clock: &mut std::time::Instant,
-    millis: u64,
-    name: &str,
-) {
-    step_from(session, clock, millis);
-    let at = *clock;
-    ui::time::testing::with_monotonic_time(at, || capture_to(session, dir, name));
-}
-
-/// Perform the chrome action at `clock` 's instant, so what it starts moves from there.
-fn invoke_at(session: &mut Session, clock: std::time::Instant, action: &str) {
-    ui::time::testing::with_monotonic_time(clock, || invoke(session, CHROME_RESOURCE, action));
 }
 
 /// Perform the chrome action with `arguments` at `clock` 's instant, so what it starts moves from
@@ -114,297 +82,12 @@ pub(super) fn light_presentation() -> ui::application::ComponentRunnerInputs {
     inputs
 }
 
-/// Run frames until `done` holds, with no client to pump.
-#[track_caller]
-fn until_session(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
-    crate::common::wait_for(session, "what the capture asked of the shell", |session| {
-        done(session).then_some(())
-    });
-}
-
 /// Hold this test's wall clock at the capture instant, as the launcher holds a capture's: the bar's
 /// date and time are then the same on every run, and a frame in which nothing but the real minute
 /// turned over is not a change. Only this thread follows it, so the other tests of the process read
 /// their own clock.
 pub(super) fn held_clock() -> ui::time::testing::SharedWall {
     tilo_test_env::held_wall_clock()
-}
-
-#[test]
-fn pixel_parity_frames_match_the_old_shells_scenes() {
-    // The set builds six sessions one after another in one thread, and a session is built under a
-    // stack the size of a whole shell: the room a test thread gets by default is not enough for the
-    // last of them, and a harness that overflows takes the rest of the suite with it.
-    std::thread::Builder::new()
-        .name("pixel-parity".into())
-        .stack_size(64 << 20)
-        .spawn(capture_parity_frames)
-        .expect("the parity harness thread")
-        .join()
-        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
-}
-
-#[allow(
-    clippy::too_many_lines,
-    reason = "one harness captures the whole parity set in a fixed order"
-)]
-fn capture_parity_frames() {
-    let _settled = ui::motion::testing::settled();
-    let _clock = held_clock();
-    std::fs::create_dir_all(parity_dir()).expect("create the parity directory");
-
-    // The empty shell, both themes: the old shell's `empty-shell` and `empty-shell` at `--theme light`
-    // .
-    {
-        let mut session = session();
-        settle(&mut session, 4);
-        capture(&mut session, "empty-shell");
-        let mut session = light_session();
-        settle(&mut session, 4);
-        capture(&mut session, "empty-shell-light");
-    }
-
-    // One window: the old shell's `desktop` (one tabbed group).
-    {
-        let mut session = session();
-        let client = mapped(&mut session, "org.example.Terminal");
-        settle(&mut session, 4);
-        capture(&mut session, "one-window");
-        drop(client);
-    }
-
-    // Two windows side by side in the strip, and the overview over them.
-    {
-        let mut session = session();
-        let a = mapped(&mut session, "org.example.Terminal");
-        let b = mapped(&mut session, "so.tilo.file-explorer");
-        settle(&mut session, 6);
-        capture(&mut session, "two-windows");
-        invoke(&mut session, CHROME_RESOURCE, "overview");
-        settle(&mut session, 8);
-        capture(&mut session, "overview");
-        drop((a, b));
-    }
-
-    // Quick settings, by the bar's own action.
-    {
-        let (mut session, _host) = session_with_quick_settings();
-        settle(&mut session, 2);
-        invoke(&mut session, CHROME_RESOURCE, "quick-settings");
-        settle(&mut session, 8);
-        capture(&mut session, "quick-settings");
-    }
-
-    // Search, opened from the shell.
-    {
-        use tilo_desktop::verbs::{SEARCH_RESOURCE, SHELL_RESOURCE};
-        let mut session = session();
-        settle(&mut session, 2);
-        invoke(&mut session, SHELL_RESOURCE, "search");
-        until_session(&mut session, |session| {
-            find_resource(&session.resources(), SEARCH_RESOURCE).is_some()
-        });
-        settle(&mut session, 8);
-        capture(&mut session, "search");
-    }
-
-    // One notification banner over the shell, saying what the old shell's `notifications-one` says.
-    {
-        use tilo_desktop::notifications::{Banner, BannerFeed, Notification, NotificationSeverity};
-        let mut session = session();
-        settle(&mut session, 2);
-        let arrived = ui::time::now()
-            .checked_sub(Duration::from_secs(2))
-            .unwrap_or_else(ui::time::now);
-        session.banners().publish(BannerFeed {
-            banners: vec![Banner {
-                notification: Notification::new("Build finished", "All 524 tests passed")
-                    .with_severity(NotificationSeverity::Info)
-                    .with_shown_at(arrived),
-                actions: Vec::new(),
-            }],
-            locked: false,
-            held: false,
-        });
-        settle(&mut session, 12);
-        capture(&mut session, "notification");
-    }
-
-    // A dialog over a window: the portal asking to share a screen.
-    {
-        use tilo_sheets::SheetState as _;
-        let mut session = session();
-        let client = mapped(&mut session, "org.example.Terminal");
-        settle(&mut session, 4);
-        let state = session.portal().expect("portal sheet").clone();
-        state.presentation().open(false);
-        state.show(Some(Dialog {
-            handle: "request-1".to_owned(),
-            title: "Share your screen?".to_owned(),
-            heading: "Meet".to_owned(),
-            detail: "Meet asks to record your screen".to_owned(),
-            body: Body::Choices(vec!["Whole screen".to_owned(), "One window".to_owned()]),
-            confirm_label: "Allow".to_owned(),
-            cancel_label: "Cancel".to_owned(),
-            ..Dialog::default()
-        }));
-        settle(&mut session, 8);
-        capture(&mut session, "dialog");
-        drop(client);
-    }
-
-    // The lock screen over the shell.
-    {
-        let app_wire = super::lock::private_home();
-        let mut session = crate::common::headless(Options {
-            user: "ada".to_owned(),
-            verifier: std::sync::Arc::new(Sesame),
-            collab: false,
-            app_socket: tilo_session::AppSocket::At(app_wire.path().join("actions.sock")),
-            surfaces: vec![super::lock::lock_screen()],
-            ..Options::default()
-        });
-        let client = mapped(&mut session, "org.example.Terminal");
-        settle(&mut session, 2);
-        invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
-        // The screen is a process of its own, and the frame compared here is the one it drew: until
-        // then a locked output shows the blank the shell left behind.
-        let deadline = tilo_test_env::hang_deadline();
-        while !session.compositor().lock_drawn() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the lock screen never drew"
-            );
-            settle(&mut session, 1);
-        }
-        settle(&mut session, 8);
-        assert!(session.compositor().locked(), "the session locked");
-        capture(&mut session, "lock");
-        drop(client);
-    }
-}
-
-/// One readout scene in both styles: the state the old shell's `media_key_osd` frames show, drawn
-/// by the readout that answers it now.
-fn capture_readout(name: &str, readout: &serde_json::Value) {
-    for style in ["", "-light"] {
-        let mut session = shell_in(style);
-        settle(&mut session, 2);
-        invoke_with(
-            &mut session,
-            tilo_desktop::osd::OSD_RESOURCE,
-            "show",
-            readout,
-        );
-        settle(&mut session, 2);
-        capture(&mut session, &format!("{name}{style}"));
-    }
-}
-
-/// The shell a capture draws on, by its style suffix: the default, or the calm light one.
-fn shell_in(style: &str) -> Session {
-    if style == "-light" {
-        light_session()
-    } else {
-        session()
-    }
-}
-
-/// The shell alone in both styles: what a readout capture is drawn over, so the pill it adds can be
-/// measured against it.
-fn capture_readout_shell() {
-    for style in ["", "-light"] {
-        let mut session = shell_in(style);
-        settle(&mut session, 2);
-        capture(&mut session, &format!("osd-shell{style}"));
-    }
-}
-
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one harness lists the readout states in a fixed order"
-)]
-fn pixel_parity_readout_frames_match_the_old_shells_scenes() {
-    let _settled = ui::motion::testing::settled();
-    let _clock = held_clock();
-    std::fs::create_dir_all(parity_dir()).expect("create the parity directory");
-    // The shell the readouts float over, in both styles: the frame a readout's capture differs from,
-    // so its pill can be measured against it.
-    capture_readout_shell();
-    // A content-sized pill that names the device the key changed, its level drawn as the bar under
-    // the name, and a mode change said in words. The old shell's `media_key_osd` scenes are the
-    // same states, so the two sit side by side.
-    for (name, readout) in [
-        (
-            "osd-volume",
-            serde_json::json!({
-                "kind": "volume",
-                "level": 0.65,
-                "device": "Studio headphones",
-                "device-glyph": "headphones",
-            }),
-        ),
-        (
-            "osd-volume-low",
-            serde_json::json!({
-                "kind": "volume",
-                "level": 0.10,
-                "device": "Studio headphones",
-                "device-glyph": "headphones",
-            }),
-        ),
-        (
-            "osd-muted",
-            serde_json::json!({
-                "kind": "volume",
-                "level": 0.65,
-                "on": false,
-                "device": "Studio headphones",
-                "device-glyph": "headphones",
-            }),
-        ),
-        (
-            "osd-brightness",
-            serde_json::json!({
-                "kind": "brightness",
-                "level": 0.40,
-                "device": "Built-in display",
-                "device-glyph": "display",
-            }),
-        ),
-        (
-            "osd-keyboard-backlight",
-            serde_json::json!({
-                "kind": "keyboard-backlight",
-                "level": 0.5,
-                "device": "Keyboard",
-                "device-glyph": "keyboard",
-            }),
-        ),
-        (
-            "osd-mic-muted",
-            serde_json::json!({"kind": "microphone", "on": false}),
-        ),
-        (
-            "osd-next-track",
-            serde_json::json!({"kind": "next-track", "on": true}),
-        ),
-        (
-            "osd-night-light",
-            serde_json::json!({"kind": "night-light", "on": true}),
-        ),
-        (
-            "osd-do-not-disturb",
-            serde_json::json!({"kind": "do-not-disturb", "on": true}),
-        ),
-        (
-            "osd-no-backlight",
-            serde_json::json!({"kind": "no-backlight", "on": true}),
-        ),
-    ] {
-        capture_readout(name, &readout);
-    }
 }
 
 /// The readout names the device it changed, and the level is the bar: a pill as wide as what it
@@ -554,17 +237,6 @@ fn luma(pixel: &[u8]) -> u16 {
     u16::from(pixel[0]) + u16::from(pixel[1]) + u16::from(pixel[2])
 }
 
-/// Where the shell scenes are written, beside the old shell's captures of the same states.
-fn shots_dir() -> std::path::PathBuf {
-    std::env::var_os("VISUAL_SHELL_OUT").map_or_else(
-        || {
-            let home = std::env::var("HOME").expect("HOME");
-            std::path::PathBuf::from(home).join(".cache/visual-shell/shots/new")
-        },
-        std::path::PathBuf::from,
-    )
-}
-
 /// Write the screen as `<dir>/<name>.png` .
 pub(super) fn capture_to(session: &mut Session, dir: &std::path::Path, name: &str) {
     std::fs::create_dir_all(dir).expect("create the shots directory");
@@ -585,9 +257,65 @@ pub(super) fn capture_to(session: &mut Session, dir: &std::path::Path, name: &st
     std::fs::write(dir.join(format!("{name}.labels")), labels).expect("write the labels");
 }
 
-/// Three workspaces on the shell: the first holds a window, the second two,
-/// the third none, and the second is in front.
-fn shell_of_three(session: &mut Session) -> Vec<TestClient> {
+/// A session whose presentation is the fixture's, in the light theme.
+fn light_runner_inputs() -> ui::application::ComponentRunnerInputs {
+    let mut inputs = ui::headless::fixture_runner_inputs();
+    inputs.theme = ui::Theme::light();
+    inputs
+}
+
+/// The screen `millis` after `clock` stood, with the frame loop run until then.
+fn screen_at(session: &mut Session, clock: &mut std::time::Instant, millis: u64) -> Vec<u8> {
+    step_from(session, clock, millis);
+    session
+        .compositor()
+        .screenshot("HEADLESS-1")
+        .expect("screenshot")
+        .rgba
+}
+
+/// The overview is carried by its motion: it is on its way in the frames a person sees while it
+/// opens, and on its way out in the ones while it closes, rather than appearing and vanishing at
+/// once.
+#[test]
+fn the_overview_moves_while_it_opens_and_closes() {
+    let _clock = held_clock();
+    let mut session = session();
+    let _clients = shell_of_three_workspaces(&mut session);
+    settle(&mut session, 6);
+
+    let mut clock = ui::time::now();
+    invoke_with_at(
+        &mut session,
+        clock,
+        "overview",
+        &serde_json::json!({"open": true}),
+    );
+    let early = screen_at(&mut session, &mut clock, 60);
+    let later = screen_at(&mut session, &mut clock, 140);
+    assert_ne!(
+        early, later,
+        "the overview moves while it opens, rather than appearing at once"
+    );
+    step_from(&mut session, &mut clock, 500);
+
+    invoke_with_at(
+        &mut session,
+        clock,
+        "overview",
+        &serde_json::json!({"open": false}),
+    );
+    let closing = screen_at(&mut session, &mut clock, 60);
+    let closed_later = screen_at(&mut session, &mut clock, 60);
+    assert_ne!(
+        closing, closed_later,
+        "the overview moves while it closes, rather than vanishing at once"
+    );
+}
+
+/// Three workspaces on the shell: the first holds a window, the second two, and the second is in
+/// front.
+fn shell_of_three_workspaces(session: &mut Session) -> Vec<TestClient> {
     let a = mapped(session, "org.example.Terminal");
     invoke(session, CHROME_RESOURCE, "new-workspace");
     let b = mapped(session, "so.tilo.file-explorer");
@@ -600,235 +328,6 @@ fn shell_of_three(session: &mut Session) -> Vec<TestClient> {
         &serde_json::json!({"delta": -1}),
     );
     vec![a, b, c]
-}
-
-/// The shell before any window opens, for comparison with the old shell's `empty-shell` scene.
-#[test]
-fn shell_scene_the_empty_shell() {
-    let _settled = ui::motion::testing::settled();
-    let _clock = held_clock();
-    let dir = shots_dir();
-    let mut session = session();
-    settle(&mut session, 4);
-    capture_to(&mut session, &dir, "shell-empty");
-}
-
-/// Three workspaces, two windows in the one in front, for comparison with the old shell's `desktop`
-/// and `multi-group` scenes.
-#[test]
-fn shell_scene_three_workspaces() {
-    let _settled = ui::motion::testing::settled();
-    let _clock = held_clock();
-    let dir = shots_dir();
-    let mut session = session();
-    let _clients = shell_of_three(&mut session);
-    settle(&mut session, 8);
-    capture_to(&mut session, &dir, "shell-three");
-}
-
-/// The workspace menu over that shell, for comparison with the old shell's `workspace-menu` scene.
-#[test]
-fn shell_scene_the_workspace_menu() {
-    let _settled = ui::motion::testing::settled();
-    let _clock = held_clock();
-    let dir = shots_dir();
-    let mut session = session();
-    let _clients = shell_of_three(&mut session);
-    settle(&mut session, 8);
-    invoke(&mut session, CHROME_RESOURCE, "workspace-menu");
-    settle(&mut session, 8);
-    capture_to(&mut session, &dir, "workspace-menu");
-}
-
-/// Workspace settings over the shell, for comparison with the old shell's `ws-settings-*` scenes.
-#[test]
-fn shell_scene_workspace_settings() {
-    let _settled = ui::motion::testing::settled();
-    let _clock = held_clock();
-    let dir = shots_dir();
-    let mut session = session();
-    let _clients = shell_of_three(&mut session);
-    settle(&mut session, 8);
-    invoke(&mut session, CHROME_RESOURCE, "workspace-settings");
-    settle(&mut session, 8);
-    assert!(
-        session
-            .workspace_settings()
-            .expect("the session hosts workspace settings")
-            .presentation()
-            .is_open(),
-        "the settings sheet is open"
-    );
-    capture_to(&mut session, &dir, "workspace-settings");
-}
-
-/// The directory of workspaces over the shell, for comparison with the old shell's `join-empty` and
-/// `join-field` scenes.
-#[test]
-fn shell_scene_the_directory() {
-    let _settled = ui::motion::testing::settled();
-    let _clock = held_clock();
-    let dir = shots_dir();
-    let mut session = session();
-    let _clients = shell_of_three(&mut session);
-    settle(&mut session, 8);
-    invoke(&mut session, CHROME_RESOURCE, "join-workspace");
-    settle(&mut session, 8);
-    assert!(
-        session
-            .workspace_directory()
-            .expect("the session hosts the directory")
-            .presentation()
-            .is_open(),
-        "the directory is open"
-    );
-    capture_to(&mut session, &dir, "directory");
-}
-
-/// The overview open over the three workspaces, for comparison with the old shell's `overview`
-/// scene.
-#[test]
-fn shell_scene_the_overview() {
-    let _settled = ui::motion::testing::settled();
-    let _clock = held_clock();
-    let dir = shots_dir();
-    let mut session = session();
-    let _clients = shell_of_three(&mut session);
-    settle(&mut session, 8);
-    let before = session.accessible_labels();
-    assert!(
-        !directory_open(&session),
-        "nothing is open over the shell before the overview is"
-    );
-    invoke(&mut session, CHROME_RESOURCE, "overview");
-    settle(&mut session, 10);
-    assert_ne!(
-        session.accessible_labels(),
-        before,
-        "the overview shows over the shell"
-    );
-    assert!(
-        !directory_open(&session),
-        "the overview opens no sheet of its own"
-    );
-    // The panel takes the display's right-hand 480 px column, inset by the
-    // 48 px margin; the shell's windows stand pictured beside it, not under
-    // it.
-    let panel_column = f64::from(WIDTH) - 480.0 - 48.0;
-    let pictures = session.overview_pictures();
-    assert!(
-        !pictures.is_empty(),
-        "the overview pictures the shell's windows"
-    );
-    for (window, rect) in &pictures {
-        assert!(
-            rect.0 >= 0.0 && rect.0 + rect.2 <= panel_column,
-            "window {window} is pictured clear of the panel's column: {rect:?}"
-        );
-    }
-    capture_to(&mut session, &dir, "overview-three");
-}
-
-/// The shell, its bar and the overview on the person's light theme, for comparison with the old
-/// shell's `*-light` scenes.
-#[test]
-fn shell_scene_the_light_theme() {
-    let _settled = ui::motion::testing::settled();
-    let _clock = held_clock();
-    let dir = shots_dir();
-    let mut session = light_session();
-    settle(&mut session, 6);
-    capture_to(&mut session, &dir, "shell-empty-light");
-    invoke(&mut session, CHROME_RESOURCE, "overview");
-    settle(&mut session, 10);
-    capture_to(&mut session, &dir, "overview-light");
-}
-
-/// A session whose presentation is the fixture's, in the light theme.
-fn light_runner_inputs() -> ui::application::ComponentRunnerInputs {
-    let mut inputs = ui::headless::fixture_runner_inputs();
-    inputs.theme = ui::Theme::light();
-    inputs
-}
-
-/// Frames partway through the overview opening and a workspace switch, at the instants a person
-/// sees them as they move.
-#[test]
-fn shell_motion_frames_match_the_old_shells_films() {
-    let _clock = held_clock();
-    let dir = shots_dir();
-    let mut session = session();
-    let _clients = shell_of_three(&mut session);
-    settle(&mut session, 6);
-
-    // The overview on its way open, and on its way closed.
-    let mut clock = ui::time::now();
-    invoke_with_at(
-        &mut session,
-        clock,
-        "overview",
-        &serde_json::json!({"open": true}),
-    );
-    for (millis, name) in [
-        (60_u64, "overview-open-60"),
-        (60, "overview-open-120"),
-        (80, "overview-open-200"),
-    ] {
-        capture_at(&mut session, &dir, &mut clock, millis, name);
-    }
-    capture_at(&mut session, &dir, &mut clock, 500, "overview-open-end");
-    assert!(
-        frame(&dir, "overview-open-60") != frame(&dir, "overview-open-200"),
-        "the overview moves while it opens, rather than appearing at once"
-    );
-    invoke_with_at(
-        &mut session,
-        clock,
-        "overview",
-        &serde_json::json!({"open": false}),
-    );
-    for (millis, name) in [
-        (60_u64, "overview-close-60"),
-        (60, "overview-close-120"),
-        (80, "overview-close-200"),
-    ] {
-        capture_at(&mut session, &dir, &mut clock, millis, name);
-    }
-    step_from(&mut session, &mut clock, 500);
-    assert!(
-        frame(&dir, "overview-close-60") != frame(&dir, "overview-close-120"),
-        "the overview moves while it closes"
-    );
-
-    // The workspace menu on its way in.
-    invoke_at(&mut session, clock, "workspace-menu");
-    for (millis, name) in [
-        (60_u64, "workspace-menu-60"),
-        (60, "workspace-menu-120"),
-        (80, "workspace-menu-200"),
-    ] {
-        capture_at(&mut session, &dir, &mut clock, millis, name);
-    }
-    step_from(&mut session, &mut clock, 400);
-    invoke_at(&mut session, clock, "workspace-menu");
-
-    // A workspace switch on its way.
-    ui::time::testing::with_monotonic_time(clock, || {
-        invoke_with(
-            &mut session,
-            CHROME_RESOURCE,
-            "switch-workspace",
-            &serde_json::json!({"delta": -1}),
-        );
-    });
-    for (millis, name) in [
-        (60_u64, "workspace-switch-60"),
-        (60, "workspace-switch-120"),
-        (80, "workspace-switch-200"),
-    ] {
-        capture_at(&mut session, &dir, &mut clock, millis, name);
-    }
-    capture_at(&mut session, &dir, &mut clock, 500, "workspace-switch-end");
 }
 
 /// The overview shows the windows' own pixels where its cards rest, drawn by the compositor, rather
@@ -847,6 +346,12 @@ fn the_overview_pictures_the_shells_windows() {
 
     invoke(&mut session, CHROME_RESOURCE, "overview");
     settle(&mut session, 4);
+    assert!(
+        !session
+            .workspace_directory()
+            .is_some_and(|directory| directory.presentation().is_open()),
+        "the overview opens no sheet of its own"
+    );
     let pictures = session.overview_pictures();
     let (window, rect) = pictures
         .first()
@@ -861,6 +366,15 @@ fn the_overview_pictures_the_shells_windows() {
         rect.0 >= 0.0 && rect.1 >= 0.0 && rect.0 + rect.2 <= f64::from(WIDTH),
         "the picture rests on the display: {rect:?}"
     );
+    // The overview takes the display's right-hand 480 px column, inset by the 48 px margin: the
+    // shell's windows stand pictured beside it, not under it.
+    let panel_column = f64::from(WIDTH) - 480.0 - 48.0;
+    for (window, rect) in &pictures {
+        assert!(
+            rect.0 >= 0.0 && rect.0 + rect.2 <= panel_column,
+            "window {window} is pictured clear of the panel's column: {rect:?}"
+        );
+    }
 
     // The compositor draws the window's buffer in the picture: the test client paints itself red.
     let shot = session
