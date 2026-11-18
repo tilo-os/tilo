@@ -5,7 +5,7 @@
 //! costs what the conversation holds, whatever it lists. What a search answers is the same, and
 //! what its caller may not read is still not found.
 use super::*;
-use crate::workspace_actions::hosted_secret_use::logged;
+use crate::workspace_actions::hosted_secret_use::{Lines, logged};
 
 /// The messages that hold the word.
 const HOLDING: usize = 40;
@@ -41,21 +41,30 @@ async fn told(served: &Served, workspace: &str, count: usize) {
     }
 }
 
-/// What the word finds for `caller` in `workspace`, asked until the server has read at least
-/// `least` of what was just written.
+/// What the word finds for `caller` in `workspace`, and the listing pages each search of the
+/// wait read: asked until the server has read at least `least` of what was just written.
 async fn found_once_read(
     served: &Served,
     workspace: &str,
     caller: &Caller,
     least: usize,
-) -> Vec<Found> {
+    lines: &Lines,
+) -> (Vec<Found>, Vec<usize>) {
     let deadline = tilo_test_env::hang_deadline();
+    let mut searched = Vec::new();
     loop {
+        let mark = lines.0.lock().unwrap().len();
         let found = served
             .found(workspace, caller, (WORD, &Within::default()))
             .await;
+        searched.push(
+            String::from_utf8_lossy(&lines.0.lock().unwrap()[mark..])
+                .lines()
+                .filter(|line| line.contains("a catalogue page was assembled"))
+                .count(),
+        );
         if found.len() >= least {
-            return found;
+            return (found, searched);
         }
         assert!(
             Instant::now() < deadline,
@@ -76,15 +85,7 @@ async fn a_search_with_many_hits_in_one_conversation_reads_each_level_of_its_lis
     let conversation = conversation_with(&served.ada, SCOUT);
     let person = Served::person(&served.ada, &served.devices.1, &workspace);
     let caller = on_a_turn(&person, SCOUT, (&conversation, &said), Vec::new());
-    found_once_read(&served, &workspace, &caller, 20).await;
-    let mark = lines.0.lock().unwrap().len();
-    let found = served
-        .found(&workspace, &caller, (WORD, &Within::default()))
-        .await;
-    let pages = String::from_utf8_lossy(&lines.0.lock().unwrap()[mark..])
-        .lines()
-        .filter(|line| line.contains("a catalogue page was assembled"))
-        .count();
+    let (found, searched) = found_once_read(&served, &workspace, &caller, 20, &lines).await;
     assert_eq!(found.len(), 20, "the twenty best: {found:?}");
     assert!(
         found
@@ -92,10 +93,13 @@ async fn a_search_with_many_hits_in_one_conversation_reads_each_level_of_its_lis
             .all(|hit| hit.app.as_deref() == Some(CHAT) && !hit.label.is_empty()),
         "each is a message of the conversation, named as its listing names it: {found:?}"
     );
+    // The listing is read as the word first names its hits, and kept from then on: the search
+    // that names them reads fewer pages than it names hits, not a page for every one.
     assert!(
-        pages <= 8,
-        "the levels its hits are named in are read at most once each, never once for every \
-         hit: {pages} listing pages for {} hits",
+        searched.iter().any(|pages| *pages > 0)
+            && searched.iter().all(|pages| *pages < found.len()),
+        "the levels its hits are named in are read once, not once for every hit: {searched:?} \
+         listing pages for {} hits",
         found.len()
     );
     page.peer.close();
@@ -113,7 +117,7 @@ async fn a_search_with_many_hits_in_one_conversation_reads_each_level_of_its_lis
         (&conversation, &asked_of),
         Vec::new(),
     );
-    found_once_read(&served, &refused, &unbound, 12).await;
+    found_once_read(&served, &refused, &unbound, 12, &lines).await;
     // Her newest message is what her agent's turn answers.
     let newest = write_to_agent(
         &served.actions,

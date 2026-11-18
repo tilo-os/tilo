@@ -467,6 +467,11 @@ fn a_window_lifted_by_its_bar_crosses_with_the_pointer_and_lands_on_the_phone() 
     laptop.wait_for_window(CHAT);
     let _other = laptop.window("so.tilo.notes", "Stays behind");
     wait_shown(&site, &[&laptop, &phone], "Stays behind");
+    // A window's bar carries the resource the window shows, and its app says what that is a
+    // moment after the window stands: a bar that carries nothing is no drag at all.
+    waited("Chat's window saying what it shows", &[&laptop], || {
+        window_of(&laptop, CHAT).is_some_and(|window| window["resource"].is_string())
+    });
     picture(&laptop, "drag-1-laptop-before");
     picture(&phone, "drag-1-phone-before");
 

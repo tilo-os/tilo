@@ -1009,11 +1009,18 @@ paths = ["crates/system/tilo-auth/tests/peer_enrol.rs"]
 reason = "The LUKS2 keyslot an enrolment adds, which cryptsetup and the header's own format name."
 words = ["slot"]
 paths = [
+    "crates/platform/imager-backend/src/destination/install.rs",
+    "crates/server/tilo-server/src/operations.rs",
+    "crates/server/tilo-server/src/operations/tests.rs",
     "crates/session/session/src/network.rs",
     "crates/session/session/src/network/unlock.rs",
     "crates/session/session/tests/network_unlock_enrolment.rs",
     "crates/system/tilo-auth/src/sibling/enrol.rs",
     "crates/system/tilo-auth/tests/peer_enrol.rs",
+    "docs/security/boot-chain.md",
+    "os/dev/nearby-unlock-phase.sh",
+    "os/tests/disk_encrypt_finish_sibling.sh",
+    "os/tests/server_firstboot_sibling.sh",
 ]
 
 [[allow]]
@@ -1159,3 +1166,8 @@ paths = [
     "apps/remote-model/locales/en-US.ftl",
     "apps/remote-model/locales/de-DE.ftl",
 ]
+
+[[allow]]
+reason = "The model gateway's module of its wire types, named by the program it backs, not a Tilo concept."
+words = ["host"]
+identifiers = ["host_backend"]

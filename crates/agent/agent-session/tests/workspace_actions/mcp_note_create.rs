@@ -9,26 +9,41 @@ use super::api::{ISSUER, Mcp};
 use super::api_on_server::{api_on_server, approved_key};
 use super::*;
 use serde_json::json;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::{Layer as _, filter::Targets};
 
-/// The catalogue requests the workspace's host answered: each is one job of
-/// kind `catalogue` its workspace actions log as they run it.
-pub(super) static CATALOGUES: AtomicUsize = AtomicUsize::new(0);
+/// What the workspace actions of one workspace asked the workspace's action
+/// service for: the catalogue requests, each one job of kind `catalogue`, and
+/// the pages among them that listed a resource's items (a job under a parent,
+/// naming nothing) rather than answering a name.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct Catalogue {
+    pub(super) requests: usize,
+    pub(super) listings: usize,
+}
 
-/// The catalogue pages that listed a resource's items (a job under a parent,
-/// naming nothing) rather than answering a name: what a lookup pays when it
-/// pages a level to find one item.
-pub(super) static LISTINGS: AtomicUsize = AtomicUsize::new(0);
+/// [`Catalogue`] by the workspace that asked, as the jobs logged them: a
+/// request in another workspace is never counted for this one.
+static COUNTED: LazyLock<Mutex<HashMap<String, Catalogue>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// What `workspace`'s workspace actions asked the workspace's action service for.
+pub(super) fn counted(workspace: &str) -> Catalogue {
+    COUNTED
+        .lock()
+        .unwrap()
+        .get(workspace)
+        .copied()
+        .unwrap_or_default()
+}
 
 /// Counts the server's `catalogue` jobs as it logs them.
 pub(super) struct CatalogueJobs;
 
-/// Count [`CATALOGUES`] and [`LISTINGS`] from here on: every test of this
-/// binary installs the same counting, so one already installed serves them
-/// all.
+/// Count [`Catalogue`] from here on: every test of this binary installs the
+/// same counting, so one already installed serves them all.
 pub(super) fn count_jobs() {
     let counting = CatalogueJobs.with_filter(Targets::new().with_target(
         "tilo_agent_session::workspace_actions",
@@ -42,6 +57,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CatalogueJobs {
         #[derive(Default)]
         struct Kind {
             catalogue: bool,
+            workspace: String,
             parent: String,
             named: String,
         }
@@ -49,6 +65,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CatalogueJobs {
             fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
                 match field.name() {
                     "kind" if value == "catalogue" => self.catalogue = true,
+                    "workspace" => value.clone_into(&mut self.workspace),
                     "parent" => value.clone_into(&mut self.parent),
                     "named" => value.clone_into(&mut self.named),
                     _ => {}
@@ -58,10 +75,12 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CatalogueJobs {
         }
         let mut kind = Kind::default();
         event.record(&mut kind);
-        if kind.catalogue {
-            CATALOGUES.fetch_add(1, Ordering::Relaxed);
+        if kind.catalogue && !kind.workspace.is_empty() {
+            let counts = &mut *COUNTED.lock().unwrap();
+            let counted = counts.entry(kind.workspace).or_default();
+            counted.requests = counted.requests.saturating_add(1);
             if !kind.parent.is_empty() && kind.named.is_empty() {
-                LISTINGS.fetch_add(1, Ordering::Relaxed);
+                counted.listings = counted.listings.saturating_add(1);
             }
         }
     }
@@ -84,13 +103,18 @@ async fn create(agent: &mut Mcp<'_>, made: &mut usize) {
 }
 
 /// The most catalogue requests the host answered for any one of `creates`
-/// more notes.
-async fn per_create(agent: &mut Mcp<'_>, made: &mut usize, creates: usize) -> usize {
+/// more notes in `workspace`.
+async fn per_create(
+    agent: &mut Mcp<'_>,
+    made: &mut usize,
+    creates: usize,
+    workspace: &str,
+) -> usize {
     let mut most = 0;
     for _ in 0..creates {
-        let before = CATALOGUES.load(Ordering::Relaxed);
+        let before = counted(workspace).requests;
         create(agent, made).await;
-        most = most.max(CATALOGUES.load(Ordering::Relaxed).saturating_sub(before));
+        most = most.max(counted(workspace).requests.saturating_sub(before));
     }
     most
 }
@@ -132,11 +156,11 @@ async fn a_note_create_asks_the_host_the_same_however_full_the_notebook() {
     while made < 10 {
         create(&mut agent, &mut made).await;
     }
-    let few = per_create(&mut agent, &mut made, 3).await;
+    let few = per_create(&mut agent, &mut made, 3, &workspace).await;
     while made < 100 {
         create(&mut agent, &mut made).await;
     }
-    let many = per_create(&mut agent, &mut made, 3).await;
+    let many = per_create(&mut agent, &mut made, 3, &workspace).await;
     assert!(
         many <= few,
         "a create in a notebook of 100 notes asked the host for {many} catalogue pages, \

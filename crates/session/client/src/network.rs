@@ -351,14 +351,6 @@ pub enum Event {
     },
     /// Whether this device's writes are with its host changed.
     Sync(crate::states::SyncState),
-    /// One of the person's devices proved itself, or proved itself anew.
-    Sibling {
-        peer: EndpointId,
-        certs: Vec<tilo_user_identity::DeviceCert>,
-        revocations: Vec<tilo_user_identity::RevocationEntry>,
-    },
-    /// The session with one of the person's devices ended.
-    SiblingLeft { peer: EndpointId },
     /// One of the person's devices sent `msg` on its session.
     SiblingMsg {
         peer: EndpointId,
