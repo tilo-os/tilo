@@ -959,6 +959,7 @@ impl Engine {
         {
             *held = Some((used, kept));
         }
+        drop(held);
         match read {
             Err(_) if unopened => Ok(None),
             read => read.map(Some),
