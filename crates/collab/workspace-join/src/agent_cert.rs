@@ -11,9 +11,10 @@
 //! certificate inside the device certificate's window.
 
 use collab_types::WorkspaceId;
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
-use tilo_user_identity::DeviceCert;
+use tilo_user_identity::canonical::signing_digest;
+use tilo_user_identity::{DeviceCert, StatementSigner};
 
 use crate::delegation::{DelegationError, MAX_DELEGATE_TEXT_BYTES};
 
@@ -21,7 +22,9 @@ use crate::delegation::{DelegationError, MAX_DELEGATE_TEXT_BYTES};
 pub const MAX_AGENT_CERT_NS: u64 = 24 * 3600 * 1_000_000_000;
 pub const MAX_SESSION_BYTES: usize = 256;
 
-const AGENT_CERT_DOMAIN: &[u8] = b"tilo-agent-cert-v1\0";
+/// The device signs the BLAKE3 digest of this tag followed by the canonical
+/// encoding of the unsigned fields.
+const AGENT_CERT_DOMAIN: &[u8] = b"tilo-agent-cert-v2\0";
 
 /// A device-signed statement that `agent_public_key` is the agent `agent_id`
 /// of `user_public_key` in `workspace_id`.
@@ -65,9 +68,11 @@ impl AgentCert {
     /// `user_public_key`.
     ///
     /// # Errors
-    /// [`DelegationError::Invalid`] for out-of-bounds fields.
+    /// [`DelegationError::Invalid`] for out-of-bounds fields and
+    /// [`DelegationError::Unsigned`] when the statement cannot be encoded or
+    /// the device key refuses.
     pub fn sign(
-        device: &SigningKey,
+        device: &dyn StatementSigner,
         user_public_key: [u8; 32],
         agent_public_key: [u8; 32],
         (agent_id, session): (impl Into<String>, impl Into<String>),
@@ -77,7 +82,7 @@ impl AgentCert {
     ) -> Result<Self, DelegationError> {
         let mut cert = Self {
             user_public_key,
-            device_public_key: device.verifying_key().to_bytes(),
+            device_public_key: device.public_key(),
             agent_public_key,
             agent_id: agent_id.into(),
             session: session.into(),
@@ -87,11 +92,13 @@ impl AgentCert {
             signature: [0; 64],
         };
         cert.validate()?;
-        cert.signature = device.sign(&cert.signing_bytes()).to_bytes();
+        cert.signature = device
+            .sign_digest(&cert.digest()?)
+            .map_err(|error| DelegationError::Unsigned(error.to_string()))?;
         Ok(cert)
     }
 
-    fn signing_bytes(&self) -> Vec<u8> {
+    fn digest(&self) -> Result<[u8; 32], DelegationError> {
         let unsigned = Unsigned {
             user_public_key: &self.user_public_key,
             device_public_key: &self.device_public_key,
@@ -102,9 +109,8 @@ impl AgentCert {
             issued_at_ns: self.issued_at_ns,
             expires_at_ns: self.expires_at_ns,
         };
-        let mut bytes = AGENT_CERT_DOMAIN.to_vec();
-        bytes.extend(postcard::to_allocvec(&unsigned).unwrap_or_default());
-        bytes
+        signing_digest(AGENT_CERT_DOMAIN, &unsigned)
+            .map_err(|error| DelegationError::Unsigned(error.to_string()))
     }
 
     fn validate(&self) -> Result<(), DelegationError> {
@@ -170,11 +176,8 @@ impl AgentCert {
         }
         let key = VerifyingKey::from_bytes(&self.device_public_key)
             .map_err(|_| DelegationError::Signature)?;
-        key.verify(
-            &self.signing_bytes(),
-            &Signature::from_bytes(&self.signature),
-        )
-        .map_err(|_| DelegationError::Signature)?;
+        key.verify(&self.digest()?, &Signature::from_bytes(&self.signature))
+            .map_err(|_| DelegationError::Signature)?;
         if now_ns < self.issued_at_ns || now_ns >= self.expires_at_ns {
             return Err(DelegationError::Expired);
         }
@@ -216,6 +219,8 @@ mod tests {
     #![allow(clippy::unwrap_used, reason = "in a test these are the assertion")]
 
     use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
+    use tilo_user_identity::SignError;
 
     const HOUR_NS: u64 = 3600 * 1_000_000_000;
     const NOW: u64 = 1_800_000_000_000_000_000;
@@ -239,7 +244,7 @@ mod tests {
     fn certificate(root: &SigningKey, device: &SigningKey) -> DeviceCert {
         let mut cert = DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: device.verifying_key().to_bytes(),
+            device_public_key: device.public_key(),
             device_label: "Laptop".into(),
             capabilities: tilo_user_identity::DeviceCapabilities::member(),
             issued_at_ns: NOW - HOUR_NS,
@@ -348,6 +353,54 @@ mod tests {
         let other = device().sign(message).to_bytes();
         assert_eq!(
             cert.verify_agent_signature(message, &other),
+            Err(DelegationError::Signature)
+        );
+    }
+
+    /// A device key that refuses: the certificate is not issued at all,
+    /// rather than carrying a signature over anything less than itself.
+    struct Refusing;
+
+    impl StatementSigner for Refusing {
+        fn public_key(&self) -> [u8; 32] {
+            device().verifying_key().to_bytes()
+        }
+
+        fn sign_digest(&self, _digest: &[u8; 32]) -> Result<[u8; 64], SignError> {
+            Err(SignError("locked".into()))
+        }
+    }
+
+    #[test]
+    fn a_refused_signature_issues_no_certificate() {
+        let refused = AgentCert::sign(
+            &Refusing,
+            root().verifying_key().to_bytes(),
+            agent(),
+            ("claude-code", "session-1"),
+            workspace(),
+            NOW,
+            NOW + HOUR_NS,
+        );
+        assert!(matches!(refused, Err(DelegationError::Unsigned(_))));
+    }
+
+    #[test]
+    fn the_device_signs_the_domain_separated_digest_of_the_whole_certificate() {
+        let cert = agent_cert(NOW + HOUR_NS);
+        let digest = cert.digest().unwrap();
+        assert_eq!(digest.len(), 32);
+        VerifyingKey::from_bytes(&cert.device_public_key)
+            .unwrap()
+            .verify(&digest, &Signature::from_bytes(&cert.signature))
+            .unwrap();
+        // The bare domain tag, what a failed encoding used to be signed as,
+        // is not what the certificate's signature covers.
+        let bare = device().sign(AGENT_CERT_DOMAIN).to_bytes();
+        let mut forged = cert.clone();
+        forged.signature = bare;
+        assert_eq!(
+            forged.verify(&certificate(&root(), &device()), workspace(), NOW + 1),
             Err(DelegationError::Signature)
         );
     }

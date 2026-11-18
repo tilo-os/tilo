@@ -10,8 +10,10 @@
 //! touch and a bot nobody renews should stop on its own.
 
 use collab_types::WorkspaceId;
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
+use tilo_user_identity::StatementSigner;
+use tilo_user_identity::canonical::signing_digest;
 
 /// Largest agent id and label.
 pub const MAX_DELEGATE_TEXT_BYTES: usize = 64;
@@ -20,9 +22,10 @@ pub const MAX_DELEGATED_APPS: usize = 64;
 /// Longest window of a bot delegation.
 pub const MAX_BOT_DELEGATION_NS: u64 = 30 * 24 * 3600 * 1_000_000_000;
 
-/// The signing domain. It changed with the delegate type, so a delegation
-/// signed in the earlier agent-only shape never verifies.
-const DELEGATION_DOMAIN: &[u8] = b"tilo-delegation-v2\0";
+/// The signing domain: the root signs the BLAKE3 digest of this tag followed
+/// by the canonical encoding of the unsigned fields, so a delegation's
+/// signature can never be read as any other statement's.
+const DELEGATION_DOMAIN: &[u8] = b"tilo-delegation-v3\0";
 
 /// Who a delegation names.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -116,6 +119,11 @@ pub enum DelegationError {
     /// A field is out of bounds.
     #[error("invalid delegation: {0}")]
     Invalid(&'static str),
+    /// The statement could not be encoded or the key refused to sign it.
+    /// Nothing is signed then: a signature over anything but the full
+    /// statement would vouch for something else.
+    #[error("the delegation could not be signed: {0}")]
+    Unsigned(String),
 }
 
 #[derive(Serialize)]
@@ -140,7 +148,7 @@ impl Delegation {
     /// # Errors
     /// [`DelegationError::Invalid`] for out-of-bounds fields.
     pub fn sign(
-        root: &SigningKey,
+        root: &dyn StatementSigner,
         device_public_key: [u8; 32],
         delegate: Delegate,
         label: impl Into<String>,
@@ -150,7 +158,7 @@ impl Delegation {
         expires_at_ns: u64,
     ) -> Result<Self, DelegationError> {
         let mut delegation = Self {
-            user_public_key: root.verifying_key().to_bytes(),
+            user_public_key: root.public_key(),
             device_public_key,
             delegate,
             label: label.into(),
@@ -161,11 +169,13 @@ impl Delegation {
             signature: [0; 64],
         };
         delegation.validate()?;
-        delegation.signature = root.sign(&delegation.signing_bytes()).to_bytes();
+        delegation.signature = root
+            .sign_digest(&delegation.digest()?)
+            .map_err(|error| DelegationError::Unsigned(error.to_string()))?;
         Ok(delegation)
     }
 
-    fn signing_bytes(&self) -> Vec<u8> {
+    fn digest(&self) -> Result<[u8; 32], DelegationError> {
         let unsigned = Unsigned {
             user_public_key: &self.user_public_key,
             device_public_key: &self.device_public_key,
@@ -176,9 +186,8 @@ impl Delegation {
             issued_at_ns: self.issued_at_ns,
             expires_at_ns: self.expires_at_ns,
         };
-        let mut bytes = DELEGATION_DOMAIN.to_vec();
-        bytes.extend(postcard::to_allocvec(&unsigned).unwrap_or_default());
-        bytes
+        signing_digest(DELEGATION_DOMAIN, &unsigned)
+            .map_err(|error| DelegationError::Unsigned(error.to_string()))
     }
 
     fn validate(&self) -> Result<(), DelegationError> {
@@ -236,11 +245,8 @@ impl Delegation {
         self.validate()?;
         let key =
             VerifyingKey::from_bytes(user_public_key).map_err(|_| DelegationError::Signature)?;
-        key.verify(
-            &self.signing_bytes(),
-            &Signature::from_bytes(&self.signature),
-        )
-        .map_err(|_| DelegationError::Signature)?;
+        key.verify(&self.digest()?, &Signature::from_bytes(&self.signature))
+            .map_err(|_| DelegationError::Signature)?;
         if now_ns < self.issued_at_ns || now_ns >= self.expires_at_ns {
             return Err(DelegationError::Expired);
         }
@@ -297,7 +303,7 @@ impl DelegateProposal {
     /// [`DelegationError::Invalid`] for out-of-bounds fields.
     pub fn sign(
         &self,
-        root: &SigningKey,
+        root: &dyn StatementSigner,
         device_public_key: [u8; 32],
         now_ns: u64,
     ) -> Result<Delegation, DelegationError> {
@@ -348,6 +354,7 @@ impl DelegateProposal {
 mod tests {
     use super::*;
     use collab_types::WorkspaceId;
+    use ed25519_dalek::{Signer, SigningKey};
 
     const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const OTHER_WORKSPACE: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
