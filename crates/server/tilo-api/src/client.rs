@@ -228,9 +228,10 @@ enum Transport {
 
 impl Client {
     /// The client `reach` names: this desktop's own API at its socket when
-    /// one serves it, else its key file, else `TILO_API_KEY` at an API
-    /// server, else this computer's own device as `tilo login` made it, at the
-    /// socket of the process holding its session ([`device::held_api`]).
+    /// one serves it; this computer's own device as `tilo login` made it, at
+    /// the socket of the process holding its session, when `reach` names no
+    /// key or names that device's own ([`held_api_for`]); else its key file;
+    /// else `TILO_API_KEY` at an API server.
     pub fn open(reach: Reach<'_>) -> Result<Self> {
         // A desktop of this login serves its person at its own socket, and a
         // program of this login answers as the person there with no key of its
@@ -242,6 +243,9 @@ impl Client {
             && api_key().is_none()
             && let Some(socket) = desktop_socket()
         {
+            return Ok(Self::session(&socket));
+        }
+        if let Some(socket) = held_api_for(reach)? {
             return Ok(Self::session(&socket));
         }
         if let Some(path) = reach.key_file {
@@ -256,9 +260,6 @@ impl Client {
                     http: tilo_net::Client::new(),
                 },
             });
-        }
-        if let Some(socket) = device::held_api()? {
-            return Ok(Self::session(&socket));
         }
         bail!(
             "no key: set {KEY_ENV} (`tilo keys create \"<what will use it>\"` asks you for one), \
@@ -1027,6 +1028,56 @@ pub fn login_key(name: Option<&str>) -> Result<Option<crate::direct::KeyFile>> {
             None => None,
         },
     }))
+}
+
+/// Where calls with `reach` go to this computer's held session
+/// ([`device::held_api`]): when it names no key and this computer logged in,
+/// or when its key file or `TILO_API_KEY` is this computer's own device key.
+/// A key has one holder: a program acting with the device's key on a session
+/// of its own would cut the computer's off. `None` for any other key.
+///
+/// # Errors
+/// The key file cannot be read, or the login is damaged.
+pub fn held_api_for(reach: Reach<'_>) -> Result<Option<std::path::PathBuf>> {
+    let named = match (reach.key_file, api_key()) {
+        (Some(path), _) => Some(
+            crate::direct::KeyFile::read(path)
+                .map_err(anyhow::Error::msg)?
+                .key,
+        ),
+        (None, Some(token)) => Some(
+            crate::store::carried_key(&token)
+                .map(|(_, key)| hex::encode(key.secret()))
+                .unwrap_or_default(),
+        ),
+        (None, None) => None,
+    };
+    if let Some(secret) = named {
+        let Some((key, _)) = device::load(&device::device_dir()?)? else {
+            return Ok(None);
+        };
+        if !crate::constant_time_eq(
+            secret.to_ascii_lowercase().as_bytes(),
+            hex::encode(key.to_bytes()).as_bytes(),
+        ) {
+            return Ok(None);
+        }
+    }
+    device::held_api()
+}
+
+/// The key a script was approved (`token`, as `tilo keys create` answers it),
+/// as a key file reaching where this computer's login reaches: a key of its
+/// own, never the device's, so the script's session and the computer's each
+/// have one holder. `None` when this computer did not log in.
+///
+/// # Errors
+/// The token is not a key's, or the login is damaged.
+pub fn script_key(token: &str) -> Result<Option<crate::direct::KeyFile>> {
+    let Some(file) = login_key(None)? else {
+        return Ok(None);
+    };
+    Ok(Some(file.with_token(token).map_err(anyhow::Error::msg)?))
 }
 
 /// What a path segment leaves as it is: letters, digits and `-._~`.

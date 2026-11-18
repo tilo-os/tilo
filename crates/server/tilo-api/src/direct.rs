@@ -78,6 +78,22 @@ impl KeyFile {
         }
     }
 
+    /// The key `token` carries (`tilo_sk_…`, as an approved key is answered),
+    /// reaching where this file's key reaches.
+    ///
+    /// # Errors
+    /// The token carries no key.
+    pub fn with_token(self, token: &str) -> Result<Self, String> {
+        let (name, key) =
+            crate::store::carried_key(token).ok_or_else(|| "the answer is not a key".to_owned())?;
+        Ok(Self {
+            name,
+            key: hex::encode(key.secret()),
+            cert: hex::encode(key.cert_bytes()),
+            ..self
+        })
+    }
+
     /// The key file at `path`.
     ///
     /// # Errors

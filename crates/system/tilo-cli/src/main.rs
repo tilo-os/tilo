@@ -1035,10 +1035,10 @@ fn run_hosted(
         key_file,
         json,
     };
-    // Acting as this computer's own login, each command is a call to the process holding its
-    // device's session, started now when none is up.
-    if api_key_absent(api, key_file)
-        && api::desktop_socket().is_none()
+    // Acting as this computer's own device (no key, or the device's own key named), each command
+    // is a call to the process holding its device's session, started now when none is up.
+    if !(api_key_absent(api, key_file) && api::desktop_socket().is_some())
+        && api::held_api_for(reach).ok().flatten().is_some()
         && acts_as_the_login(&cmd, workspace.is_some())
         && let Err(error) = mcp::ensure_held()
     {
@@ -1095,13 +1095,14 @@ fn run_hosted(
 
 /// Whether `cmd` calls Tilo's API, which without a key is as this computer's login: a `do`
 /// in a named workspace (else it acts on this desktop), an `sdk` or `migrate` into one, and
-/// every other workspace command but `keys export`, which only writes the login's key out.
+/// every other workspace command but `keys create` and `keys export`, which ask the API server.
 fn acts_as_the_login(cmd: &Cmd, named: bool) -> bool {
     match cmd {
         Cmd::Do { args, .. } => named || args.iter().any(|arg| arg == "-w" || arg == "--workspace"),
         Cmd::Sdk { .. } | Cmd::Migrate { .. } => named,
+        // A new key is asked of the API server, never of this computer's session.
         Cmd::Keys {
-            cmd: hosted::KeysCmd::Export { .. },
+            cmd: hosted::KeysCmd::Export { .. } | hosted::KeysCmd::Create { .. },
         } => false,
         Cmd::Keys { .. } | Cmd::Workspace { .. } | Cmd::View { .. } => true,
         other => acts_in_a_workspace(other),

@@ -25,10 +25,12 @@ The CLI calls [`/v1`](api.md): `POST
 /v1/workspaces/<workspace>/resources/<path>/actions/<action>` for an action,
 `POST /v1/workspaces` for one more workspace,
 `POST /v1/workspaces/<workspace>/branches` for a branch of one. It reaches the API through an
-API server with `TILO_API_KEY`, or with no server at all: as this computer's
-own key, in process (`tilo keys export` writes that key as a file, which
-`tilo --key-file` acts with and which holds nothing but the key, its
-certificate and the host it reaches).
+API server with `TILO_API_KEY`, or with no server at all: on a computer `tilo
+login` made one of your devices, through the process holding that device's
+session, and for a script, as a key of its own in process (`tilo keys export
+"<what will use it>"` asks for a new key, approved as `tilo keys create`'s is,
+and writes it as a file `tilo --key-file` acts with; it never holds the
+computer's own key, which has one holder).
 
 Every resource has a **path**, `app/resource#action`, as MCP's `tilo_do` takes it:
 `pdf-viewer/application.pdf#read-form-fields`. The account is a resource too:

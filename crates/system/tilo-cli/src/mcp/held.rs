@@ -1154,6 +1154,29 @@ mod tests {
             assert_eq!(refusal.code(), "not_in_workspace", "{refused}");
             assert!(refused.to_string().contains("asked 1"), "{refused}");
         }
+        // A key file naming the device's own key is the device: it goes to the holder too.
+        let own = state.path().join("own.json");
+        std::fs::write(
+            &own,
+            serde_json::to_vec(&crate::api::login_key(None).unwrap().unwrap()).unwrap(),
+        )
+        .unwrap();
+        let refused = runtime
+            .block_on(
+                crate::api::Client::open(crate::api::Reach {
+                    api: None,
+                    key_file: Some(&own),
+                    json: false,
+                })
+                .unwrap()
+                .get("/v1/workspaces"),
+            )
+            .expect_err("this device is not in the workspace");
+        assert_eq!(
+            crate::api::Refusal::of(&refused).map(crate::api::Refusal::code),
+            Some("not_in_workspace"),
+            "{refused}"
+        );
         assert_eq!(
             counting.0.load(Ordering::SeqCst),
             1,
