@@ -212,15 +212,13 @@ impl Desktop {
 async fn until(desktops: &[&Desktop], step: &str, done: impl Fn(&Desktop) -> bool + Sync) {
     let mut waits: Vec<_> = desktops
         .iter()
-        .map(|desktop| Some((*desktop, desktop.link().changes())))
+        .enumerate()
+        .map(|(position, desktop)| (position, *desktop, desktop.link().changes()))
         .collect();
-    tokio::time::timeout(Duration::from_secs(60), async {
+    let timeout = tokio::time::timeout(Duration::from_secs(60), async {
         while !waits.is_empty() {
             for index in (0..waits.len()).rev() {
-                let (desktop, changes) = waits
-                    .get_mut(index)
-                    .and_then(Option::as_mut)
-                    .expect("a desktop still waits");
+                let (_, desktop, changes) = waits.get_mut(index).expect("a desktop still waits");
                 if done(desktop) {
                     waits.swap_remove(index);
                 } else {
@@ -229,8 +227,15 @@ async fn until(desktops: &[&Desktop], step: &str, done: impl Fn(&Desktop) -> boo
             }
         }
     })
-    .await
-    .unwrap_or_else(|_| panic!("every device converges: {step}"));
+    .await;
+    if timeout.is_err() {
+        let left: Vec<_> = waits
+            .iter()
+            .filter(|(_, desktop, _)| !done(desktop))
+            .map(|(position, _, _)| *position)
+            .collect();
+        panic!("every device converges: {step} (waiting on {left:?})");
+    }
 }
 
 /// The invitation the workspace's own device issues, as the text a person
@@ -356,6 +361,11 @@ async fn held_by_five(directory: &Path) -> [Desktop; 5] {
     // B's second desktop is B's own device, so the workspace admits it as one:
     // no second invitation. B's first desktop is a key holder, and any key
     // holder lets a member's further device in.
+    let before = b1
+        .owner
+        .replica(workspace())
+        .expect("B's first desktop holds the workspace")
+        .read(|peer| peer.workspace_heads().unwrap_or_default());
     enters_as_member(&b2, &b1).await;
 
     a1.serve();
@@ -364,14 +374,38 @@ async fn held_by_five(directory: &Path) -> [Desktop; 5] {
     b1.serve();
     b2.serve();
     // The holders reach each other: each dials the holders above it, one link
-    // per pair. B's second desktop keeps its link with one holder at a time,
-    // as a member's device does.
+    // per pair. A's first desktop reaches B's first before the rest: B's first
+    // desktop hands what it admitted to the holders it links with, as it hands
+    // every mark it makes in the workspace, and A's first desktop carries it
+    // on to the others in the governance its own links start with.
+    a1.dials(&b1);
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        a1.link().caught_up().wait_for(|up| *up),
+    )
+    .await
+    .expect("A's first desktop reaches B's first")
+    .unwrap();
+    b1.publish_workspace_since(&before);
+    until(&[&a1], "the holders know B's second desktop", |desktop| {
+        desktop
+            .link()
+            .read(|peer| peer.permissions(b2.id(), SystemTime::now()).is_ok())
+    })
+    .await;
+    assert_eq!(
+        b2.link()
+            .read(|peer| peer.governance().owner_user_public_key()),
+        a1.cert.user_public_key,
+        "B's second desktop holds the workspace's owner, not the device it joined through"
+    );
     a1.dials(&a2);
     a1.dials(&a3);
-    a1.dials(&b1);
     a2.dials(&a3);
     a2.dials(&b1);
     a3.dials(&b1);
+    // B's second desktop keeps its link with one holder at a time, as a
+    // member's device does: it reaches a holder that knows it.
     b2.dials(&a1);
 
     [a1, a2, a3, b1, b2]

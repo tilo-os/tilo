@@ -5,11 +5,14 @@ use crate::TransportOrigin;
 
 impl StatePeer {
     /// [`Self::joined`] from a join's answer as it travels (a
-    /// [`crate::join::JoinBootstrap`] or its owner form): the workspace, its
-    /// governing `authority`, its `roster` and the `revocations` its
-    /// governance holds. The replica admits app documents by exact writer;
-    /// its governance follows from the answer's signed messages or the
-    /// workspace's replay.
+    /// [`crate::join::JoinBootstrap`] or its owner form): the workspace, the
+    /// `authority`, its `roster` and the `revocations` its governance holds.
+    /// The `authority` is the device the join was answered by, no particular
+    /// device of the workspace's owner: it is the replica's origin, and the
+    /// person of its owner only until the workspace's governance arrives,
+    /// which names the owner the replica then holds to. The replica admits
+    /// app documents by exact writer; its governance follows from the
+    /// answer's signed messages or the workspace's replay.
     ///
     /// # Errors
     /// A revocation does not verify, or [`Self::joined`] refuses the workspace.

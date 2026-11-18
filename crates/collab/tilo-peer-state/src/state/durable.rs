@@ -39,8 +39,8 @@ pub struct Durable<'a> {
 }
 
 impl<'a> Durable<'a> {
-    /// The durable state `bytes` hold, of `workspace` owned by `owner`.
-    fn read(bytes: &'a [u8], workspace: &str, owner: [u8; 32]) -> Result<Self, String> {
+    /// The durable state `bytes` hold, of `workspace`.
+    fn read(bytes: &'a [u8], workspace: &str) -> Result<Self, String> {
         let (version, _) = postcard::take_from_bytes::<u32>(bytes).map_err(err)?;
         if version != DURABLE_VERSION {
             return Err(format!("unsupported durable version {version}"));
@@ -53,7 +53,7 @@ impl<'a> Durable<'a> {
         if !durable.sealed.is_empty() && durable.exact.is_none() {
             return Err("sealed record history requires exact admissions".into());
         }
-        if durable.workspace != workspace || durable.owner != owner {
+        if durable.workspace != workspace {
             return Err("durable admission namespace mismatch".into());
         }
         Ok(durable)
@@ -545,6 +545,9 @@ impl StatePeer {
     }
 
     /// Restore a peer from durable state produced by [`StatePeer::durable`].
+    /// The workspace's owner is the one its governance names, which the
+    /// durable state carries; `owner_device` is the device this replica was
+    /// made on or joined through (`[`StatePeer::from_join`]).
     #[expect(
         clippy::needless_pass_by_value,
         reason = "public API: callers hand over the pinned revocation list"
@@ -557,7 +560,8 @@ impl StatePeer {
         revocations: RevocationList,
         now: SystemTime,
     ) -> Result<Self, String> {
-        let durable = Durable::read(bytes, workspace, owner_device.user_public_key)?;
+        let durable = Durable::read(bytes, workspace)?;
+        let owner = durable.owner;
         let exact_admissions = durable
             .exact
             .map(ExactAdmissions::decode)
@@ -574,7 +578,7 @@ impl StatePeer {
         let mut peer = Self {
             core: PeerCore {
                 workspace: canonical_workspace,
-                owner: owner_device.user_public_key,
+                owner,
                 origin: owner_device.device_public_key,
                 certificates: verified_certificates.into(),
                 revocations: RevocationList::new(),
@@ -607,6 +611,13 @@ impl StatePeer {
             .as_deref()
             .map(restored_workspace)
             .transpose()?;
+        // The governance is what names the workspace's owner: the durable
+        // state of another owner's is not this workspace's.
+        if let Some(doc) = peer.core.workspace_doc.as_deref()
+            && super::receiving::owner_named_by(doc, workspace) != Some(owner)
+        {
+            return Err("durable admission namespace mismatch".into());
+        }
         for document in durable.documents {
             check_governed_snapshot(
                 peer.core.workspace_doc.as_deref(),
