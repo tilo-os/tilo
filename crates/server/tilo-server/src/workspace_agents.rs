@@ -84,6 +84,7 @@ mod learned;
 mod logged;
 mod mail;
 mod mail_connect;
+mod shares;
 mod skills;
 mod steps;
 mod sub_agents;
@@ -383,6 +384,9 @@ impl ActionProvider for WorkspaceActionProvider {
             && !sub_agents::admits(own, caller, &request)
         {
             return Pending::ready(Err(ActionCallError::NotPermitted));
+        }
+        if let Some(reason) = shares::refuses(caller, &request) {
+            return Pending::ready(Err(ActionCallError::InvalidRequest { reason }));
         }
         if let Some(events) = &self.events
             && request.target.provider == person_events::PROVIDER
@@ -1846,6 +1850,7 @@ impl TurnScope {
             workspace: self.workspace.clone(),
             ask: turn.ask.clone(),
             written: written::Written::of(turn, followed),
+            shows_in: shares::shows_in(turn),
         }
     }
 }
@@ -1859,6 +1864,8 @@ struct Reply {
     ask: Ask,
     /// How far the reply has grown while its model wrote it.
     written: written::Written,
+    /// The conversation the turn may show a document in, where it has one ([`shares::shows_in`]).
+    shows_in: Option<String>,
 }
 
 impl Reply {
@@ -2321,7 +2328,7 @@ async fn work(
         Err(error) => return (Outcome::Failed(error), 0),
     };
     // A turn in a conversation may answer with a view it writes.
-    tools.extend(view_tool(turn));
+    tools.extend([view_tool(turn), shares::tool(turn)].into_iter().flatten());
     let mut messages = vec![
         Message::text(Role::System, instructions(turn, &scope.workspace)),
         Message::text(Role::User, turn.request.clone()),
@@ -2548,6 +2555,8 @@ async fn run_calls(
         let (content, is_error) = Box::pin(step.carried_out(async {
             if call.name == ANSWER_WITH_VIEW {
                 Box::pin(reply.view(&call.input)).await
+            } else if call.name == shares::ANSWER_WITH_DOCUMENT {
+                Box::pin(reply.document(server, &call.input)).await
             } else {
                 match learned::call(keeping, &call.name, &call.input).await {
                     Some(answered) => answered,
@@ -2638,7 +2647,8 @@ fn instructions(turn: &Turn, workspace: &str) -> String {
         ""
     };
     format!(
-        "{every}{view}{}{}{}{told}",
+        "{every}{view}{}{}{}{}{told}",
+        shares::told(turn),
         learned::told_how(turn),
         skills::told_how(turn, workspace),
         sub_agents::told(turn)

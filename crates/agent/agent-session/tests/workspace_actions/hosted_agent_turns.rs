@@ -1461,6 +1461,9 @@ mod asks;
 /// for them.
 #[path = "hosted_learning.rs"]
 mod learning;
+/// A turn that answers with the thing it worked on, shown live.
+#[path = "hosted_agent_shares.rs"]
+mod shares;
 /// A turn that answers with a view it wrote.
 #[path = "hosted_agent_views.rs"]
 mod views;
