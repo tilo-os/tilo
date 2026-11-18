@@ -2727,14 +2727,96 @@ async fn an_approved_submission_is_performed_once_by_one_of_the_workspaces_holde
         "the holder that took it hands it over: {ended:?}"
     );
     assert_eq!(*fixture.meter.recorded.lock().unwrap(), 1, "it ran once");
-    assert_eq!(
-        seen.lock()
-            .unwrap()
-            .iter()
-            .filter(|handed| handed.approved)
-            .count(),
-        1,
-        "the window was handed the person's answer once"
-    );
+    let handed = seen.lock().unwrap().iter().filter(|h| h.approved).count();
+    assert_eq!(handed, 1, "the window was handed the person's answer once");
     lease_held_by(&there, &lease, None).await;
+    answers_are_kept(
+        &fixture,
+        (&here, &there, &other),
+        &lease,
+        &caller,
+        &mut approver,
+    )
+    .await;
+}
+
+/// The person's answer to the submission `allowed` is kept in the
+/// workspace, so the other holder (`keeping`, the server `other`) answers it
+/// rather than asking again; and a submission the person refused when that
+/// holder asked them arrives at `asking` later: it is answered from what was
+/// kept, and the person is not asked again.
+async fn answers_are_kept(
+    fixture: &Fixture,
+    (asking, keeping, other): (
+        &tilo_server::workspaces::Workspaces,
+        &tilo_server::workspaces::Workspaces,
+        &TestDevice,
+    ),
+    allowed: &str,
+    caller: &ServerClient,
+    approver: &mut Approver,
+) {
+    tilo_test_env::within("the other holder reads the person's answer", async {
+        loop {
+            let kept = keeping
+                .state(&WS.to_string())
+                .await
+                .and_then(|state| state.workspace().done(allowed));
+            if let Some(kept) = kept {
+                assert_eq!(kept.device, fixture.home, "kept by the holder that asked");
+                assert!(kept.answer.get("Ok").is_some(), "an approval: {kept:?}");
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+
+    let id = InvocationId::new();
+    let lease = format!("browser-hold/{}", id.0);
+    let refused = serde_json::to_value(Err::<(), _>(ActionCallError::NotPermitted)).unwrap();
+    keeping
+        .author_own_workspace_state(&WS.to_string(), &other.cert, |peer| {
+            peer.workspace_mut().keep_done(
+                &other.cert,
+                &lease,
+                refused,
+                std::time::SystemTime::now(),
+            )
+        })
+        .await
+        .expect("the other holder keeps the person's refusal");
+    tilo_test_env::within("this holder reads the refusal", async {
+        while asking
+            .state(&WS.to_string())
+            .await
+            .and_then(|state| state.workspace().done(&lease))
+            .is_none()
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    caller
+        .send(to_server(WS, fixture.home, frame(submit(id))))
+        .unwrap();
+    assert_eq!(
+        receipt_for(caller, id).await.status,
+        ReceiptStatus::Accepted
+    );
+    let ended = followed(caller, fixture.home, id).await;
+    let tilo_actions::InvocationUpdate::Failed { error, .. } = ended else {
+        panic!("a refused submission ends unrun: {ended:?}");
+    };
+    assert_eq!(error.code, ActionCallError::NotPermitted.code());
+    assert!(
+        approver.list_confirmations().await.unwrap().is_empty(),
+        "the person is not asked twice"
+    );
+    assert_eq!(
+        *fixture.meter.recorded.lock().unwrap(),
+        1,
+        "nothing more ran"
+    );
+    lease_held_by(asking, &lease, None).await;
 }

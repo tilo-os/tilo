@@ -1148,8 +1148,7 @@ impl Workspaces {
             let answer = serde_json::to_value(sent).map_err(|error| error.to_string())?;
             if let Err(error) = self
                 .author_own_workspace_state(workspace, &device, |peer| {
-                    peer.workspace_mut()
-                        .keep_mail_sent(&device, &message, answer, now)
+                    peer.workspace_mut().keep_done(&device, &lease, answer, now)
                 })
                 .await
             {
@@ -1192,7 +1191,7 @@ impl Workspaces {
             .state(workspace?)
             .await?
             .workspace()
-            .mail_sent(message)?;
+            .done(&tilo_peer_state::mail_send_lease(message))?;
         match serde_json::from_value(sent.answer) {
             Ok(sent) => Some(sent),
             Err(error) => {

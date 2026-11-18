@@ -1,20 +1,20 @@
-//! How a workspace's mail outbox is sent once: one key holder takes a
-//! message, sends it, and keeps that it left.
+//! Work a workspace's key holders do once: one key holder takes it under a
+//! lease, does it, and keeps that it is done.
 //!
-//! A workspace's outgoing mail is workspace state, so every key holder of it
-//! reads the same outbox, and any of them may be the one that hands a message
-//! to its account's server. A side effect is not state: two key holders that
-//! send the same message send it twice. So each message is taken under a
-//! lease of the message's own ([`MAIL_SEND_LEASE`], one id per outbox entry),
-//! and the sender keeps what left in the workspace ([`MAIL_SENDS_KEY`]).
+//! A workspace's state is every key holder's, so any of them may be the one
+//! that sends a message from its outbox or asks the person about a page
+//! submission. A side effect is not state: two key holders that do the same
+//! work do it twice, and a lease ([`super::leases`]) only says who does it
+//! while it is held. So the one that did it keeps what it answered in the
+//! workspace ([`DONE_KEY`]), under the id of the lease it was done under.
 //!
 //! What is kept is per device, like a lease claim: each device writes the row of
-//! the message it sent, rows merge by union, and the earliest row is the send
-//! every device reads. A device that takes a message another one already sent
-//! answers the send already kept instead of sending it again, so a takeover — a
-//! machine restarted, a lease taken over after its holder stopped — never sends
-//! one twice. A send that failed leaves no row, so the next holder tries
-//! again and nothing is dropped.
+//! the work it did, rows merge by union, and the earliest row is the answer
+//! every device reads. A device that takes work another one already did
+//! answers what was kept instead of doing it again, so a takeover — a machine
+//! restarted, a lease taken over after its holder stopped, the same work
+//! arriving later at another holder — never does it twice. Work that failed
+//! leaves no row, so the next holder tries again and nothing is dropped.
 //!
 //! Neither is a server's: a group of desktops with no server between them
 //! holds the same lease and keeps the same rows.
@@ -26,10 +26,10 @@ use automerge::transaction::Transactable as _;
 use automerge::{ObjType, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
 
-/// Key of the messages a workspace's key holders sent, in its own document: a
-/// map from each message's id to a map from each sending device key (hex) to
-/// what it sent.
-pub const MAIL_SENDS_KEY: &str = "mail_sends_v1";
+/// Key of the work a workspace's key holders did, in its own document: a map
+/// from each lease id the work was done under to a map from each device key
+/// (hex) that did it to what it answered.
+pub const DONE_KEY: &str = "done_v1";
 
 /// The lease a message is sent under, named by the outbox entry the message
 /// is: one message, one lease, so two key holders never work on two messages
@@ -39,37 +39,36 @@ pub fn mail_send_lease(message: &str) -> String {
     format!("mail-send/{message}")
 }
 
-/// What one device recorded of a message it sent.
+/// What one device kept of work it did.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct MailSent {
-    /// The device that handed it to its account's server.
+pub struct Done {
+    /// The device that did it.
     pub device: [u8; 32],
-    /// When it left, ms since the epoch, on that device's clock.
-    pub sent_at_ms: u64,
-    /// What the send answered: the account's Sent folder's verdict, as the
-    /// sender answered the caller.
+    /// When it was done, ns since the epoch, on that device's clock.
+    pub done_at_ns: u64,
+    /// What the work answered, as the device that did it answered its caller.
     pub answer: serde_json::Value,
 }
 
-/// How a send is stored: the JSON every device reads.
+/// How a row is stored: the JSON every device reads.
 #[derive(Serialize, Deserialize)]
-struct StoredSent {
-    sent_at_ms: u64,
+struct StoredDone {
+    done_at_ns: u64,
     answer: serde_json::Value,
 }
 
-/// The rows of the message `message` in `doc`.
-fn rows_of(doc: Option<&automerge::AutoCommit>, message: &str) -> Vec<MailSent> {
+/// The rows of the work done under `id` in `doc`.
+fn rows_of(doc: Option<&automerge::AutoCommit>, id: &str) -> Vec<Done> {
     let Some(doc) = doc else {
         return Vec::new();
     };
-    let Ok(Some((Value::Object(ObjType::Map), sends))) = doc.get(ROOT, MAIL_SENDS_KEY) else {
+    let Ok(Some((Value::Object(ObjType::Map), done))) = doc.get(ROOT, DONE_KEY) else {
         return Vec::new();
     };
-    let Ok(Some((Value::Object(ObjType::Map), devices))) = doc.get(&sends, message) else {
+    let Ok(Some((Value::Object(ObjType::Map), devices))) = doc.get(&done, id) else {
         return Vec::new();
     };
-    let mut sent = Vec::new();
+    let mut rows = Vec::new();
     for device in doc.keys(&devices) {
         let Ok(Some((Value::Scalar(value), _))) = doc.get(&devices, device.as_str()) else {
             continue;
@@ -78,25 +77,25 @@ fn rows_of(doc: Option<&automerge::AutoCommit>, message: &str) -> Vec<MailSent> 
             continue;
         };
         let (Ok(stored), Some(key)) =
-            (serde_json::from_str::<StoredSent>(json), device_of(&device))
+            (serde_json::from_str::<StoredDone>(json), device_of(&device))
         else {
             continue;
         };
-        sent.push(MailSent {
+        rows.push(Done {
             device: key,
-            sent_at_ms: stored.sent_at_ms,
+            done_at_ns: stored.done_at_ns,
             answer: stored.answer,
         });
     }
-    sent
+    rows
 }
 
-/// The send `rows` say: the earliest one, so a message two key holders
-/// sent while neither could see the other answers as the one that left first,
+/// The work `rows` say was done: the earliest row, so work two key holders
+/// did while neither could see the other answers as the one done first,
 /// alike on every device.
-fn earliest(rows: Vec<MailSent>) -> Option<MailSent> {
+fn earliest(rows: Vec<Done>) -> Option<Done> {
     rows.into_iter()
-        .min_by(|left, right| (left.sent_at_ms, left.device).cmp(&(right.sent_at_ms, right.device)))
+        .min_by(|left, right| (left.done_at_ns, left.device).cmp(&(right.done_at_ns, right.device)))
 }
 
 /// The key a device row's hex names, if it is one.
@@ -109,53 +108,42 @@ fn device_of(device: &str) -> Option<[u8; 32]> {
 }
 
 impl PeerWorkspace<'_> {
-    /// What a key holder recorded of the message `message` having left, if
-    /// one did.
+    /// What a key holder kept of the work done under the lease `id`, if one
+    /// did it.
     #[must_use]
-    pub fn mail_sent(self, message: &str) -> Option<MailSent> {
-        earliest(rows_of(self.peer.core.workspace_doc.as_deref(), message))
+    pub fn done(self, id: &str) -> Option<Done> {
+        earliest(rows_of(self.peer.core.workspace_doc.as_deref(), id))
     }
 }
 
 impl PeerWorkspaceMut<'_> {
     /// Keep that `device`, a member's device whose exact current
-    /// certificate this workspace holds and who may change it, sent the
-    /// message `message`, and what the send answered. A row already kept for
-    /// that device stays: one device sent it once. Answers whether the
-    /// workspace changed.
+    /// certificate this workspace holds and who may change it, did the work
+    /// of the lease `id`, and what it answered. A row already kept for that
+    /// device stays: one device did it once. Answers whether the workspace
+    /// changed.
     ///
     /// # Errors
     ///
     /// `device` is not allowed to change this workspace, or what is kept cannot
     /// be written.
-    pub fn keep_mail_sent(
+    pub fn keep_done(
         &mut self,
         device: &tilo_user_identity::DeviceCert,
-        message: &str,
+        id: &str,
         answer: serde_json::Value,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.check_writer(device, now)?;
         let row = hex::encode(device.device_public_key);
-        let kept = {
-            let doc = self.peer.core.workspace_doc.as_deref();
-            doc.and_then(|doc| {
-                let (Value::Object(ObjType::Map), sends) = doc.get(ROOT, MAIL_SENDS_KEY).ok()??
-                else {
-                    return None;
-                };
-                let (Value::Object(ObjType::Map), devices) = doc.get(&sends, message).ok()?? else {
-                    return None;
-                };
-                doc.get(&devices, row.as_str()).ok()?
-            })
-            .is_some()
-        };
-        if kept {
+        if rows_of(self.peer.core.workspace_doc.as_deref(), id)
+            .iter()
+            .any(|done| done.device == device.device_public_key)
+        {
             return Ok(false);
         }
-        let json = serde_json::to_string(&StoredSent {
-            sent_at_ms: now_ns(now),
+        let json = serde_json::to_string(&StoredDone {
+            done_at_ns: now_ns(now),
             answer,
         })
         .map_err(|error| error.to_string())?;
@@ -165,21 +153,21 @@ impl PeerWorkspaceMut<'_> {
             .core
             .workspace_doc
             .as_deref()
-            .ok_or("mail sends workspace is absent")?;
+            .ok_or("the workspace's document is absent")?;
         let mut candidate = workspace.clone();
         candidate.set_actor(actor);
-        let sends = match candidate.get(ROOT, MAIL_SENDS_KEY).map_err(error_text)? {
-            Some((Value::Object(ObjType::Map), sends)) => sends,
-            Some(_) => return Err("the workspace's mail sends are malformed".into()),
+        let done = match candidate.get(ROOT, DONE_KEY).map_err(error_text)? {
+            Some((Value::Object(ObjType::Map), done)) => done,
+            Some(_) => return Err("the workspace's done work is malformed".into()),
             None => candidate
-                .put_object(ROOT, MAIL_SENDS_KEY, ObjType::Map)
+                .put_object(ROOT, DONE_KEY, ObjType::Map)
                 .map_err(error_text)?,
         };
-        let devices = match candidate.get(&sends, message).map_err(error_text)? {
+        let devices = match candidate.get(&done, id).map_err(error_text)? {
             Some((Value::Object(ObjType::Map), devices)) => devices,
-            Some(_) => return Err(format!("message `{message}`'s sends are malformed")),
+            Some(_) => return Err(format!("the work done under `{id}` is malformed")),
             None => candidate
-                .put_object(&sends, message, ObjType::Map)
+                .put_object(&done, id, ObjType::Map)
                 .map_err(error_text)?,
         };
         candidate
@@ -246,17 +234,17 @@ mod tests {
         let claim = take(&mut left, message, now, 60).expect("the first taker holds it");
         assert_eq!(claim.device, left_cert.device_public_key);
         assert!(
-            left.workspace().mail_sent(message).is_none(),
+            left.workspace().done(&mail_send_lease(message)).is_none(),
             "nothing sent yet"
         );
         assert!(
             left.workspace_mut()
-                .keep_mail_sent(&left_cert, message, sent(""), now)
+                .keep_done(&left_cert, &mail_send_lease(message), sent(""), now)
                 .unwrap()
         );
         let left_over = left
             .workspace()
-            .mail_sent(message)
+            .done(&mail_send_lease(message))
             .expect("the send is kept");
         assert_eq!(left_over.device, left_cert.device_public_key);
         assert_eq!(left_over.answer, sent(""));
@@ -265,18 +253,18 @@ mod tests {
         // takes no lease for it: it is done.
         sync(&left, &mut right);
         assert_eq!(
-            right.workspace().mail_sent(message),
+            right.workspace().done(&mail_send_lease(message)),
             Some(left_over.clone())
         );
         assert!(
             right
                 .workspace_mut()
-                .keep_mail_sent(&right_cert, message, sent("again"), now)
+                .keep_done(&right_cert, &mail_send_lease(message), sent("again"), now)
                 .unwrap(),
             "a row of its own is written"
         );
         assert_eq!(
-            right.workspace().mail_sent(message),
+            right.workspace().done(&mail_send_lease(message)),
             Some(left_over),
             "the earliest send is the one every device answers, so nothing sends again"
         );
@@ -310,18 +298,20 @@ mod tests {
         // over by the clock-skew bound does the other device take it, and it
         // sends the message the first one never did: nothing is dropped.
         let over = at(now, 62 + CLOCK_SKEW_NS / 1_000_000_000);
-        assert!(right.workspace().mail_sent(message).is_none());
+        assert!(right.workspace().done(&mail_send_lease(message)).is_none());
         let taken = take(&mut right, message, over, 60).expect("the over lease is taken");
         assert_eq!(taken.device, right_cert.device_public_key);
         assert!(
             right
                 .workspace_mut()
-                .keep_mail_sent(&right_cert, message, sent(""), over)
+                .keep_done(&right_cert, &mail_send_lease(message), sent(""), over)
                 .unwrap()
         );
         sync(&right, &mut left);
         assert_eq!(
-            left.workspace().mail_sent(message).map(|sent| sent.device),
+            left.workspace()
+                .done(&mail_send_lease(message))
+                .map(|sent| sent.device),
             Some(right_cert.device_public_key),
             "the takeover's send is the one kept"
         );
@@ -367,8 +357,8 @@ mod tests {
             vec![right_cert.device_public_key],
             "one claim is left"
         );
-        assert!(right.workspace().mail_sent(message).is_none());
-        assert!(left.workspace().mail_sent(message).is_none());
+        assert!(right.workspace().done(&mail_send_lease(message)).is_none());
+        assert!(left.workspace().done(&mail_send_lease(message)).is_none());
     }
 
     #[test]
@@ -390,9 +380,13 @@ mod tests {
         tilo_user_identity::sign_device_cert(&mut stranger, &stranger_root).unwrap();
         assert!(
             left.workspace_mut()
-                .keep_mail_sent(&stranger, "outbox-4", sent(""), now)
+                .keep_done(&stranger, &mail_send_lease("outbox-4"), sent(""), now)
                 .is_err()
         );
-        assert!(left.workspace().mail_sent("outbox-4").is_none());
+        assert!(
+            left.workspace()
+                .done(&mail_send_lease("outbox-4"))
+                .is_none()
+        );
     }
 }

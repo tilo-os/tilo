@@ -929,7 +929,8 @@ impl HostedBrowsers {
         );
         tokio::runtime::Handle::current().spawn(async move {
             let (result, taken) = match taking.await {
-                Ok(taken) => {
+                Ok(Taking::Answered(answer)) => (answer.map(Box::new), None),
+                Ok(Taking::Taken(taken)) => {
                     let answered_by_person = certification.confirm_for(person, question).await;
                     let result = taken
                         .handing(asked.confirmed(&answered_by_person, &key))
@@ -1065,7 +1066,11 @@ impl HostedBrowsers {
         let taking = self.submission(workspace_id, format!("browser-hold/{}", invocation.0));
         tokio::runtime::Handle::current().spawn(async move {
             let (confirmed, taken) = match taking.await {
-                Ok(taken) => {
+                // The person answered it already: their answer goes to the
+                // window as it did then, and the window, which keeps what
+                // each invocation did, carries it out at most once.
+                Ok(Taking::Answered(answer)) => (answer, None),
+                Ok(Taking::Taken(taken)) => {
                     let answered = certification.confirm_for(person, question).await;
                     (
                         taken.handing(asked.confirmed(&answered, &key)).await,
@@ -1348,12 +1353,15 @@ impl HostedBrowsers {
     /// as this server's device, for as long as the person is given to answer
     /// and their answer to be handed over: of the workspace's holders, the
     /// one that took it asks the person and hands over their answer, and no
-    /// other does, after a takeover or across a partition alike.
+    /// other does, after a takeover or across a partition alike. A
+    /// submission the person already answered — through this holder or
+    /// another, before a restart or a takeover — is answered as they did,
+    /// from what the workspace kept, and never asked about again.
     fn submission(
         &self,
         workspace_id: WorkspaceId,
         lease: String,
-    ) -> impl Future<Output = Result<Submission, ActionCallError>> + Send + 'static {
+    ) -> impl Future<Output = Result<Taking, ActionCallError>> + Send + 'static {
         let workspaces = self.workspaces();
         let ttl = self.answer_wait.saturating_add(SUBMISSION_HANDOVER);
         async move {
@@ -1365,6 +1373,9 @@ impl HostedBrowsers {
                 .workspace_identity(workspace_id)
                 .await
                 .ok_or_else(unheld)?;
+            if let Some(answer) = kept_answer(&workspaces, &workspace, &lease).await {
+                return Ok(Taking::Answered(answer));
+            }
             let device = workspaces.serving_certificate().clone();
             let claimed = workspaces
                 .author_own_workspace_state(&workspace, &device, |peer| {
@@ -1385,11 +1396,20 @@ impl HostedBrowsers {
                     reason: ANOTHER_HOLDER_ASKS.into(),
                 });
             }
-            Ok(Submission {
+            let taken = Submission {
                 workspaces,
                 workspace,
                 lease,
-            })
+            };
+            // The merged state may hold an answer given before this holder
+            // took the submission: it is the answer, asked never again.
+            if let Some(answer) =
+                kept_answer(&taken.workspaces, &taken.workspace, &taken.lease).await
+            {
+                taken.release().await;
+                return Ok(Taking::Answered(answer));
+            }
+            Ok(Taking::Taken(taken))
         }
     }
 
@@ -1892,6 +1912,31 @@ const SUBMISSION_HANDOVER: Duration = Duration::from_secs(60);
 /// Why a holder that did not take a page submission asks nothing about it.
 pub const ANOTHER_HOLDER_ASKS: &str = "another holder of the workspace is asking the person";
 
+/// What came of taking a page submission ([`HostedBrowsers::submission`]).
+enum Taking {
+    /// This server's device took it: it asks the person.
+    Taken(Submission),
+    /// The person already answered it; the answer the workspace kept.
+    Answered(Result<ConfirmedInvocation, ActionCallError>),
+}
+
+/// The person's answer to the page submission `lease`, as a holder of
+/// `workspace` kept it once it was handed over.
+async fn kept_answer(
+    workspaces: &crate::workspaces::Workspaces,
+    workspace: &str,
+    lease: &str,
+) -> Option<Result<ConfirmedInvocation, ActionCallError>> {
+    let done = workspaces.state(workspace).await?.workspace().done(lease)?;
+    match serde_json::from_value(done.answer) {
+        Ok(answer) => Some(answer),
+        Err(error) => {
+            tracing::warn!(%lease, %error, "a kept answer is not one this build reads");
+            None
+        }
+    }
+}
+
 /// A page submission this server's device took in its workspace's state
 /// ([`HostedBrowsers::submission`]).
 struct Submission {
@@ -1904,12 +1949,14 @@ impl Submission {
     /// `confirmed`, the person's answer, as it may be handed over: only
     /// while this server still holds the submission. A holder that lost it
     /// while the person decided — another one took it over, or won it once
-    /// a partition healed — hands over nothing, so the page acts once.
+    /// a partition healed — hands over nothing, so the page acts once. The
+    /// person's answer, an approval or a denial, is kept in the workspace
+    /// before it is handed over, so the same submission arriving later at
+    /// any holder is answered with it ([`Taking::Answered`]).
     async fn handing(
         &self,
         confirmed: Result<ConfirmedInvocation, ActionCallError>,
     ) -> Result<ConfirmedInvocation, ActionCallError> {
-        let confirmed = confirmed?;
         let ours = self.workspaces.serving_certificate().device_public_key;
         let held = self
             .workspaces
@@ -1922,12 +1969,39 @@ impl Submission {
                     .holder
             })
             .is_some_and(|holder| holder.device == ours);
-        if held {
-            Ok(confirmed)
-        } else {
-            Err(ActionCallError::Unavailable {
+        if !held {
+            return Err(ActionCallError::Unavailable {
                 reason: ANOTHER_HOLDER_ASKS.into(),
-            })
+            });
+        }
+        // A question nobody answered is no answer: the next arrival asks.
+        if matches!(confirmed, Ok(_) | Err(ActionCallError::NotPermitted)) {
+            self.keep(&confirmed).await;
+        }
+        confirmed
+    }
+
+    /// Keep `answer` as the person's answer to this submission.
+    async fn keep(&self, answer: &Result<ConfirmedInvocation, ActionCallError>) {
+        let device = self.workspaces.serving_certificate().clone();
+        let kept = match serde_json::to_value(answer) {
+            Ok(answer) => self
+                .workspaces
+                .author_own_workspace_state(&self.workspace, &device, |peer| {
+                    peer.workspace_mut().keep_done(
+                        &device,
+                        &self.lease,
+                        answer,
+                        std::time::SystemTime::now(),
+                    )
+                })
+                .await
+                .map(drop)
+                .map_err(|error| error.to_string()),
+            Err(error) => Err(error.to_string()),
+        };
+        if let Err(error) = kept {
+            tracing::warn!(lease = %self.lease, %error, "the person's answer was not kept");
         }
     }
 
