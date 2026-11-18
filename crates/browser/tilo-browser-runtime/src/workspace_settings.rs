@@ -448,6 +448,35 @@ impl PageWorkspaceSettings {
             ..sheet::Settings::default()
         }
     }
+
+    /// Which servers keep the workspace, its owners' to choose: the page shows them the tab
+    /// once the server answered with them, and a person who may not choose sees nothing of them.
+    fn general(&self) -> sheet::General {
+        match &*self.servers.borrow() {
+            Some(servers) => sheet::General {
+                servers: Some(sheet::Servers {
+                    group: sheet::Group {
+                        title: t("workspace-settings-servers-title"),
+                        description: t("workspace-settings-servers-description"),
+                    },
+                    origin_label: t("workspace-settings-servers-origin-label"),
+                    add_label: t("workspace-settings-servers-add"),
+                    remove_label: t("workspace-settings-servers-remove"),
+                    here_label: t("workspace-settings-servers-here"),
+                    rows: servers
+                        .iter()
+                        .map(|server| sheet::Server {
+                            key: server.device.clone(),
+                            label: server.device.clone(),
+                            here: server.here,
+                        })
+                        .collect(),
+                }),
+                ..sheet::General::default()
+            },
+            None => sheet::General::default(),
+        }
+    }
 }
 
 /// Take the host's answer: the workspace it answers with, or why it refused, over the sheet.
