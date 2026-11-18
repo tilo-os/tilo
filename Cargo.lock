@@ -15141,12 +15141,22 @@ dependencies = [
  "anyhow",
  "blake3",
  "runtime-dylib",
+ "scratchpad-model",
  "serde",
  "serde_json",
  "tempfile",
  "tilo-app",
  "tilo-files",
  "tilo-test-env",
+ "workspace-hack",
+]
+
+[[package]]
+name = "scratchpad-model"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tilo-resource",
  "workspace-hack",
 ]
 
