@@ -3,10 +3,9 @@
 //! A turn's answer is its reply in the conversation, and its model writes that answer over
 //! seconds. The words go into the reply as they arrive, through Chat's own `stream-output`,
 //! which puts them at the end of the reply's text as one change of the conversation: the
-//! person reads along on every device. The first words go at once. After them the reply
-//! takes what came at most once in [`EVERY`], so an answer a minute long is some hundreds of
-//! changes for everyone who holds the conversation, where one for each piece a model sends
-//! would be thousands.
+//! person reads along on every device. Each piece goes the moment it comes, and no clock
+//! holds a word back. What a model writes while a piece is on its way to Chat goes with the
+//! next one, so a reply takes no more changes than its server can write.
 //!
 //! What a model writes before it uses a tool stays where its person read it, and what it
 //! writes afterwards stands a paragraph below. A reply whose turn ends before its answer
@@ -17,7 +16,6 @@
 //! at its turn's end. So is the reply of a model whose answers arrive whole.
 
 use std::sync::Mutex;
-use std::time::Duration;
 
 use chat::agent_stream::{AgentFinish, AgentOutput, AgentStreamEvent};
 use serde_json::{Map, json};
@@ -26,11 +24,6 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use ui::permissions::MemberId;
 
 use super::{Ask, CHAT, Outcome, Reply, Turn, asks, invoke_named};
-
-/// How often, at most, a reply takes more of what its model writes, once it holds the first
-/// words: five changes a second read as writing, and keep a long answer to hundreds of
-/// changes.
-const EVERY: Duration = Duration::from_millis(200);
 
 /// What stands between what a model wrote before a tool, or before its turn ended early, and
 /// what follows it: a paragraph's break.
@@ -347,43 +340,185 @@ impl Reply {
     }
 }
 
+/// What takes a model's words while it writes them: a turn's reply.
+pub(super) trait Takes {
+    /// The model is asked anew: what it writes now stands below what came.
+    fn asked_anew(&self);
+
+    /// Put `more`, which the model wrote just now, at the end.
+    fn take(&self, more: &str) -> impl std::future::Future<Output = ()> + Send;
+
+    /// What of `whole`, the words of the answer to the call that just ended, it lacks.
+    fn lacks(&self, whole: &str) -> Option<String>;
+}
+
+impl Takes for Reply {
+    fn asked_anew(&self) {
+        self.written.asked_anew();
+    }
+
+    async fn take(&self, more: &str) {
+        self.wrote(more).await;
+    }
+
+    fn lacks(&self, whole: &str) -> Option<String> {
+        self.written.lacks(whole)
+    }
+}
+
 /// Wait for `answer`, a model's answer on its way, and put what the model writes meanwhile
-/// (`writes`) into `reply`: the first words at once, then what came since at most once in
-/// [`EVERY`]. Words go in whole: a blank a model wrote last waits for the word after it,
-/// and is left out at the answer's end. When the answer is there, `whole` reads its words,
-/// and what of them the provider said only at the end goes into the reply as well.
+/// (`writes`) into `reply`, each piece the moment it comes: what arrives while a piece is on
+/// its way goes with the next. Words go in whole: a blank a model wrote last waits for the
+/// word after it, and is left out at the answer's end. When the answer is there, `whole`
+/// reads its words, and what of them the provider said only at the end goes into the reply
+/// as well.
 pub(super) async fn follow<T, E>(
-    reply: &Reply,
+    reply: &(impl Takes + Sync),
     mut answer: tokio::task::JoinHandle<Result<T, E>>,
     writes: &Writes,
     whole: impl FnOnce(&T) -> String,
 ) -> Result<Result<T, E>, tokio::task::JoinError> {
-    reply.written.asked_anew();
+    reply.asked_anew();
     let mut words = String::new();
-    let mut due = tokio::time::Instant::now();
     let answer = loop {
         tokio::select! {
             answer = &mut answer => break answer,
             () = writes.more.notified() => {
                 words.push_str(&writes.take());
                 words = settled(&words);
-            }
-            () = tokio::time::sleep_until(due), if !words.trim_end().is_empty() => {
-                // Counted from where this write begins: the time Chat takes for it is no
-                // wait on top.
-                due = tokio::time::Instant::now().checked_add(EVERY).unwrap_or(due);
-                let rest = words.split_off(words.trim_end().len());
-                reply.wrote(&words).await;
-                words = rest;
+                // No clock holds a word back: it goes now. What the model writes while it
+                // is on its way waits for nothing but that, and goes next.
+                if !words.trim_end().is_empty() {
+                    let rest = words.split_off(words.trim_end().len());
+                    reply.take(&words).await;
+                    words = rest;
+                }
             }
         }
     };
     words.push_str(&writes.take());
-    reply.wrote(settled(&words).trim_end()).await;
+    reply.take(settled(&words).trim_end()).await;
     if let Ok(Ok(answer)) = &answer
-        && let Some(rest) = reply.written.lacks(&whole(answer))
+        && let Some(rest) = reply.lacks(&whole(answer))
     {
-        reply.wrote(&rest).await;
+        reply.take(&rest).await;
     }
     answer
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use super::*;
+
+    /// Keeps each piece it is given with the millisecond it came, on the test's own clock.
+    /// Taking a piece costs it `costs`, as a write into a conversation costs a server.
+    struct Kept {
+        began: tokio::time::Instant,
+        costs: Duration,
+        pieces: Mutex<Vec<(u128, String)>>,
+    }
+
+    impl Kept {
+        fn new(costs: Duration) -> Self {
+            Self {
+                began: tokio::time::Instant::now(),
+                costs,
+                pieces: Mutex::default(),
+            }
+        }
+
+        /// What it was given, each piece with the millisecond it came.
+        fn pieces(&self) -> Vec<(u128, String)> {
+            self.pieces.lock_recover().clone()
+        }
+    }
+
+    impl Takes for Kept {
+        fn asked_anew(&self) {}
+
+        async fn take(&self, more: &str) {
+            if more.is_empty() {
+                return;
+            }
+            self.pieces
+                .lock_recover()
+                .push((self.began.elapsed().as_millis(), more.to_owned()));
+            tokio::time::sleep(self.costs).await;
+        }
+
+        fn lacks(&self, _: &str) -> Option<String> {
+            None
+        }
+    }
+
+    /// A model that writes each of `pieces` after its wait in milliseconds, and answers a
+    /// tenth of a second after the last.
+    fn writing(
+        writes: &Arc<Writes>,
+        pieces: &'static [(u64, &'static str)],
+    ) -> tokio::task::JoinHandle<Result<(), ()>> {
+        let writes = Arc::clone(writes);
+        tokio::spawn(async move {
+            for (after, piece) in pieces {
+                tokio::time::sleep(Duration::from_millis(*after)).await;
+                writes.push(piece);
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            Ok(())
+        })
+    }
+
+    /// A word that arrives alone stands in the reply the millisecond it came: no clock holds
+    /// it back until more has come.
+    #[tokio::test(start_paused = true)]
+    async fn a_word_that_arrives_alone_is_written_when_it_arrives() {
+        let writes = Arc::new(Writes::default());
+        let kept = Kept::new(Duration::from_millis(2));
+        let model = writing(
+            &writes,
+            &[
+                (0, "The "),
+                (10, "launch "),
+                (10, "is "),
+                (150, "planned "),
+                (10, "for May."),
+            ],
+        );
+        let answered = follow(&kept, model, &writes, |()| String::new()).await;
+        assert!(matches!(answered, Ok(Ok(()))), "the model answered");
+        assert_eq!(
+            kept.pieces(),
+            [
+                (0, "The"),
+                (10, " launch"),
+                (20, " is"),
+                (170, " planned"),
+                (180, " for May.")
+            ]
+            .map(|(at, said)| (at, said.to_owned())),
+            "each word stands in the reply the millisecond it came"
+        );
+    }
+
+    /// What a model writes while a piece is on its way goes with the next one: a reply takes
+    /// no more changes than its server can write, and waits for nothing else.
+    #[tokio::test(start_paused = true)]
+    async fn what_arrives_while_a_piece_is_on_its_way_goes_with_the_next() {
+        let writes = Arc::new(Writes::default());
+        let kept = Kept::new(Duration::from_millis(30));
+        let model = writing(
+            &writes,
+            &[(0, "One "), (5, "two "), (5, "three "), (5, "four.")],
+        );
+        let answered = follow(&kept, model, &writes, |()| String::new()).await;
+        assert!(matches!(answered, Ok(Ok(()))), "the model answered");
+        assert_eq!(
+            kept.pieces(),
+            [(0, "One"), (30, " two three four.")].map(|(at, said)| (at, said.to_owned())),
+            "the pieces that came during the first write go together, when it has ended"
+        );
+    }
 }
