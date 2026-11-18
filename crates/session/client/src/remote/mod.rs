@@ -1316,6 +1316,8 @@ mod tests {
         heard: Mutex<Vec<Heard>>,
         wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
         observed: Mutex<usize>,
+        /// How many files each many-files step carried.
+        many: Mutex<Vec<usize>>,
         holds: bool,
     }
 
@@ -1328,6 +1330,7 @@ mod tests {
                 heard: Mutex::default(),
                 wake: Mutex::default(),
                 observed: Mutex::default(),
+                many: Mutex::default(),
                 holds,
             })
         }
@@ -1386,6 +1389,27 @@ mod tests {
                     self.say(RemoteActionMessage::ChangedResponse {
                         correlation,
                         result: Ok(()),
+                    });
+                }
+                // An upload step: a many-files one stores each file and answers its
+                // reference, as the device's own content store does.
+                RemoteActionMessage::ContentPutRequest { correlation, step } => {
+                    let result = match step {
+                        tilo_actions::remote::ContentPutStep::Many { files } => {
+                            self.many.lock_recover().push(files.len());
+                            Ok(ContentPutAnswer::Many {
+                                contents: (0..files.len())
+                                    .map(|at| format!("tilo.content:{at}"))
+                                    .collect(),
+                            })
+                        }
+                        other => Err(ActionCallError::Unavailable {
+                            reason: format!("this device does not answer {other:?}"),
+                        }),
+                    };
+                    self.say(RemoteActionMessage::ContentPutResponse {
+                        correlation,
+                        result,
                     });
                 }
                 RemoteActionMessage::Observe {
@@ -1659,6 +1683,30 @@ mod tests {
             *device.observed.lock_recover(),
             1,
             "only the held ask went to the device"
+        );
+    }
+
+    /// A folder of small files goes up in steps of at most
+    /// [`tilo_actions::remote::MAX_PUT_MANY_FILES`] files: one step answers
+    /// within the peer's reply deadline however many files there are.
+    #[test]
+    fn a_folder_of_small_files_goes_up_in_bounded_steps() {
+        use tilo_actions::remote::MAX_PUT_MANY_FILES;
+
+        let device = Device::new(InvocationId::new(), false);
+        let actions = SessionActions::new(
+            Arc::clone(&device) as Arc<dyn RemoteSession>,
+            WorkspaceId::from_u128(1),
+            DEVICE,
+        );
+        let puts = actions.content_puts().expect("a device's content puts");
+        let files = vec![vec![b'x']; MAX_PUT_MANY_FILES.saturating_add(1)];
+        let contents = puts.put_many(&caller(), &files).expect("stored");
+        assert_eq!(contents.len(), files.len(), "every file has its reference");
+        assert_eq!(
+            *device.many.lock_recover(),
+            [MAX_PUT_MANY_FILES, 1],
+            "the folder went in steps of at most {MAX_PUT_MANY_FILES} files"
         );
     }
 }

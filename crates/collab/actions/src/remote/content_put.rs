@@ -201,6 +201,11 @@ impl HostedContentPuts {
                 reason: "store at least one file".into(),
             });
         }
+        if files.len() > MAX_PUT_MANY_FILES {
+            return Err(ActionCallError::InvalidRequest {
+                reason: format!("one call carries at most {MAX_PUT_MANY_FILES} files"),
+            });
+        }
         let mut decoded = Vec::with_capacity(files.len());
         let mut total = 0usize;
         for file in files {
@@ -460,6 +465,28 @@ mod tests {
             puts.step(&Memory, &ada, ContentPutStep::Finish { upload })
                 .is_err(),
             "a finished upload is closed"
+        );
+    }
+
+    /// A many-files step takes at most [`MAX_PUT_MANY_FILES`] files, so it
+    /// answers within the peer's reply deadline however small they are.
+    #[test]
+    fn a_many_files_step_takes_at_most_its_files() {
+        let puts = HostedContentPuts::default();
+        let ada = Caller::local_person("ada");
+        let whole = vec![String::new(); MAX_PUT_MANY_FILES];
+        let ContentPutAnswer::Many { contents } = puts
+            .step(&Memory, &ada, ContentPutStep::Many { files: whole })
+            .unwrap()
+        else {
+            panic!("many")
+        };
+        assert_eq!(contents.len(), MAX_PUT_MANY_FILES);
+        let past = vec![String::new(); MAX_PUT_MANY_FILES.saturating_add(1)];
+        assert!(
+            puts.step(&Memory, &ada, ContentPutStep::Many { files: past })
+                .is_err(),
+            "a step of more files is refused rather than made to wait"
         );
     }
 }
