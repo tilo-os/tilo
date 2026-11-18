@@ -282,7 +282,14 @@ impl Model for RichText {
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         let obj = slot.object(doc, ObjType::Map)?;
         if tilo_doc::model::open(doc, &obj).is_err() {
-            Self::initialize_under(doc, &obj)?;
+            // A new value with text starts with the schema alone: its text is
+            // the body, and a paragraph to type in, written and then replaced
+            // at once, is operations every value made so carries for nothing.
+            if self.initial.is_some() {
+                tilo_doc::model::init(doc, &obj);
+            } else {
+                Self::initialize_under(doc, &obj)?;
+            }
         }
         if let Some(markdown) = &self.initial {
             RichTextAction::ReplaceBody {
