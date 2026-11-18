@@ -249,6 +249,72 @@ fn all_in_runs_the_board_out() {
     assert_eq!(table.chips("ada") + table.chips("grace"), 2 * BUY_IN);
 }
 
+/// A player who lost every chip buys back in once the hand is over, and a player still
+/// holding chips waits for the next hand; nobody buys back while their hand is live.
+#[test]
+fn a_player_with_no_chips_buys_back_in_after_the_hand() {
+    let mut workspace = Workspace::new(&["ada", "grace"]);
+    workspace.seat_all();
+
+    // Every hand puts both stacks at stake: the loser holds nothing once it is over.
+    for _ in 0..16 {
+        let dealer = workspace
+            .table()
+            .dealer()
+            .map(str::to_owned)
+            .expect("a dealer");
+        workspace.act(&dealer, Table::DEAL.invoke()).expect("deal");
+        let first = workspace
+            .table()
+            .hand
+            .actor()
+            .expect("someone acts")
+            .player
+            .clone();
+        assert!(
+            workspace.act(&first, Table::REBUY.invoke()).is_err(),
+            "a hand being played is not the time to buy back in"
+        );
+        workspace
+            .act(&first, Table::ALL_IN.invoke())
+            .expect("all in");
+        let second = workspace
+            .table()
+            .hand
+            .actor()
+            .expect("the other answers")
+            .player
+            .clone();
+        workspace.act(&second, Table::CALL.invoke()).expect("call");
+
+        let broke: Vec<&'static str> = workspace
+            .names
+            .iter()
+            .copied()
+            .filter(|name| workspace.table().chips(name) == 0)
+            .collect();
+        let [broke] = broke.as_slice() else {
+            continue; // a split pot leaves both holding chips: the next hand decides.
+        };
+        let holding = workspace
+            .names
+            .iter()
+            .copied()
+            .find(|name| *name != *broke)
+            .expect("the player with chips");
+        assert!(
+            workspace.act(holding, Table::REBUY.invoke()).is_err(),
+            "a player with chips buys none"
+        );
+        workspace
+            .act(broke, Table::REBUY.invoke())
+            .expect("the chips are bought back");
+        assert_eq!(workspace.table().chips(broke), BUY_IN);
+        return;
+    }
+    panic!("no player ever lost their stack");
+}
+
 #[test]
 fn leaving_folds_your_hand() {
     let mut workspace = Workspace::new(&["ada", "grace", "alan"]);
