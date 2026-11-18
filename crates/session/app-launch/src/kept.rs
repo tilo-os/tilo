@@ -51,6 +51,9 @@ use std::time::Duration;
 pub use tilo_app_keeper::registry::{KeptLaunch, LAUNCH_VERSION};
 use tilo_app_keeper::wire::{self, Description, FromKeeper, ToKeeper};
 use tilo_lock::MutexRecover as _;
+/// When a process started, `None` once it exited (reaped or not): an app or keeper that exited
+/// is never taken for one still running.
+pub(crate) use tilo_process::start_time;
 
 use crate::spawner::End;
 
@@ -641,13 +644,6 @@ pub(crate) fn peer_pid(stream: &UnixStream) -> io::Result<u32> {
         .ok()
         .filter(|pid| *pid != 0)
         .ok_or_else(|| io::Error::other("the keeper's process is unknown"))
-}
-
-/// When `pid` started, in clock ticks since boot: field 22 of `/proc/<pid>/stat`.
-pub(crate) fn start_time(pid: u32) -> Option<u64> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let (_, rest) = stat.rsplit_once(')')?;
-    rest.split_whitespace().nth(19)?.parse().ok()
 }
 
 /// Whether the app a keeper described is the process it started: its pid names a process that

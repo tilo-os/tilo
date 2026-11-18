@@ -81,7 +81,9 @@ pub fn open_file_count(pid: u32) -> Option<usize> {
 }
 
 /// The kernel's start time for `pid`, the value that tells a live process from another
-/// that reused its id. `None` where the system has no process table, or the process is gone.
+/// that reused its id. `None` where the system has no process table, or the process is gone:
+/// one that exited and was not reaped yet (a zombie) still has its table entry, but does
+/// nothing and holds nothing, so it is gone too.
 #[must_use]
 pub fn start_time(pid: u32) -> Option<u64> {
     table::start_time(pid)
@@ -159,12 +161,16 @@ mod table {
             .map(|entries| entries.flatten().count())
     }
 
-    /// Field 22 of `/proc/<pid>/stat`. `comm` is parenthesised and may itself hold spaces or a
-    /// `)`, so the last closing parenthesis is what precedes the fields after it.
+    /// Field 22 of `/proc/<pid>/stat`, of a process whose state (field 3) is not zombie or dead.
+    /// `comm` is parenthesised and may itself hold spaces or a `)`, so the last closing
+    /// parenthesis is what precedes the fields after it.
     pub fn start_time(pid: u32) -> Option<u64> {
         let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-        let tail = stat.rsplit_once(')')?.1;
-        tail.split_whitespace().nth(19)?.parse().ok()
+        let mut fields = stat.rsplit_once(')')?.1.split_whitespace();
+        if matches!(fields.next()?, "Z" | "X") {
+            return None;
+        }
+        fields.nth(18)?.parse().ok()
     }
 
     pub fn probe() -> std::io::Result<()> {
@@ -255,5 +261,34 @@ mod tests {
         for malformed in ["", "\n", "not a record", "1", "1 2 3"] {
             assert!(!identity_names(malformed, own), "{malformed:?}");
         }
+    }
+
+    /// A child that exited and was not reaped yet keeps its table entry, but is not alive: it has
+    /// no start time, so nothing takes it for the live process it was.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_exited_process_not_yet_reaped_has_no_start_time() {
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("a child starts");
+        let pid = child.id();
+        // Wait for the exit without reaping it: the child stays a zombie until `wait`.
+        let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+        // SAFETY: waitid writes only the siginfo it is given; WNOWAIT leaves the child unreaped.
+        let waited = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid,
+                info.as_mut_ptr(),
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        };
+        assert_eq!(waited, 0, "{}", std::io::Error::last_os_error());
+        assert!(
+            std::fs::metadata(format!("/proc/{pid}")).is_ok(),
+            "the zombie is still in the table"
+        );
+        assert_eq!(start_time(pid), None);
+        child.wait().expect("reaped");
     }
 }

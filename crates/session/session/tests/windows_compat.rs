@@ -1184,11 +1184,7 @@ fn real_launcher_keeper(handed: &[String]) -> (String, Vec<String>) {
 }
 
 fn alive(pid: u32) -> bool {
-    Path::new(&format!("/proc/{pid}")).exists()
-        && !fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
-            stat.rsplit_once(')')
-                .is_some_and(|(_, rest)| rest.trim_start().starts_with('Z'))
-        })
+    tilo_process::start_time(pid).is_some()
 }
 
 #[test]

@@ -357,15 +357,10 @@ fn places(
         .collect()
 }
 
-/// Whether `pid` is the process that started at `at`.
+/// Whether `pid` is the process that started at `at`, still alive: one that exited and is not
+/// reaped yet is not.
 fn running(pid: u32, at: u64) -> bool {
-    let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
-        return false;
-    };
-    stat.rsplit_once(')')
-        .and_then(|(_, rest)| rest.split_whitespace().nth(19))
-        .and_then(|field| field.parse::<u64>().ok())
-        == Some(at)
+    tilo_process::start_time(pid) == Some(at)
 }
 
 /// The process that started `pid`.

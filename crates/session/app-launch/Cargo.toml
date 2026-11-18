@@ -44,6 +44,8 @@ tilo-service = { path = "../service" }
 # always keeps.
 tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-metrics" }
 tilo-lock = { path = "../../platform/tilo-lock" }
+# Whether a process the session met is still that process, and still running.
+tilo-process = { path = "../../platform/tilo-process" }
 tilo-paths.workspace = true
 # The type a document's path names, for the app that claims it.
 tilo-mime = { version = "0.1.0", path = "../../platform/tilo-mime" }
