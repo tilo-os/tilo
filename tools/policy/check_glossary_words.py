@@ -24,10 +24,17 @@ judging the tree names their word and lists the uses added since the baseline
 was last written, until they are renamed. A word the baseline
 does not list has no uses at all.
 
+Raising the counts is its own commit: `--recount` writes the tree's counts,
+and a commit that stages nothing but a baseline holding exactly the index's
+counts keeps them. That is for a baseline that fell below its own tree (a
+merge that took one side's lower counts with both sides' code), where the
+check would otherwise fail on every tree until all of those uses are renamed.
+
     check_glossary_words.py            judge the tree
     check_glossary_words.py --staged   judge what the commit changes (the hook)
     check_glossary_words.py --list W   print every counted use of W
     check_glossary_words.py --update   lower the baseline to the tree's counts
+    check_glossary_words.py --recount  write the tree's counts, raised or not
 """
 
 from __future__ import annotations
@@ -373,6 +380,9 @@ def judge_staged() -> int:
     if not recount and not any(count < 0 for count in delta.values()):
         return 0
     total = Counter(hit.word for hit in hits(matcher, allowed, ["--cached"], None))
+    if names == [BASELINE] and show("", BASELINE) == render_baseline(total, words):
+        # A recount: the commit holds nothing but the index's own counts.
+        return 0
     if has_head:
         # A staged baseline may lower a count by hand and never raises one.
         may, staged_may = read_baseline(show("HEAD", BASELINE)), read_baseline(show("", BASELINE))
@@ -420,6 +430,13 @@ def update() -> int:
     return 0
 
 
+def recount() -> int:
+    words, matcher, allowed = setup(None)
+    counts = Counter(hit.word for hit in hits(matcher, allowed, [], None))
+    (ROOT / BASELINE).write_text(render_baseline(counts, words), encoding="utf-8")
+    return 0
+
+
 def list_uses(word: str) -> int:
     _, matcher, allowed = setup(None)
     for hit in hits(matcher, allowed, [], None):
@@ -433,12 +450,16 @@ def main() -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--staged", action="store_true", help="judge the staged change")
     mode.add_argument("--update", action="store_true", help="lower the baseline")
+    mode.add_argument("--recount", action="store_true",
+                      help="write the tree's counts, raised or not")
     mode.add_argument("--list", metavar="WORD", help="print every counted use of WORD")
     args = parser.parse_args()
     if args.staged:
         return judge_staged()
     if args.update:
         return update()
+    if args.recount:
+        return recount()
     if args.list:
         return list_uses(args.list)
     return judge_tree()

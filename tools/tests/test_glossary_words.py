@@ -178,6 +178,28 @@ class TreeTests(unittest.TestCase):
         self.assertEqual(self.run_mode(words.judge_staged)[0], 0)
         self.assertEqual(self.staged_baseline(root), words.BASELINE_HEADER + "room 1\n")
 
+    def test_a_commit_of_the_recounted_baseline_alone_raises_it(self):
+        root = self.repository(words.BASELINE_HEADER + "room 1\nhost 1\n")
+        self.commit_unjudged(root)
+        self.assertEqual(self.run_mode(words.recount)[0], 0)
+        self.git(root, "add", ".")
+        self.assertEqual(self.run_mode(words.judge_staged)[0], 0)
+        self.assertEqual(self.staged_baseline(root),
+                         words.BASELINE_HEADER + "room 2\nhost 1\n")
+        self.git(root, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
+                 "commit", "-q", "-m", "recount")
+        self.assertEqual(self.run_mode(words.judge_tree), (0, ""))
+
+    def test_a_recount_staged_with_other_changes_raises_nothing(self):
+        root = self.repository(words.BASELINE_HEADER + "room 1\nhost 1\n")
+        self.commit_unjudged(root)
+        self.run_mode(words.recount)
+        (root / "tools/a.py").write_text("entry = 2\n")
+        self.git(root, "add", ".")
+        self.assertEqual(self.run_mode(words.judge_staged)[0], 0)
+        self.assertEqual(self.staged_baseline(root),
+                         words.BASELINE_HEADER + "room 1\nhost 1\n")
+
     def test_judges_tilos_own_sources_in_every_language(self):
         root = self.repository(words.BASELINE_HEADER + "room 1\nhost 1\n")
         (root / "dist/apple/Sources/A.swift").write_text("let doorOffer = 1\n")
