@@ -18,7 +18,6 @@ use ui::tilo_actions::ActionSpec;
 // `#[derive(Effect)]` names the crate as `tilo_resource`.
 use ui::tilo_resource::{self, Effect};
 
-use crate::camera::SharedCapture;
 use crate::model::{CaptureKind, CaptureMode, Facing, Settings};
 
 pub use ui::tilo_actions::remote::ApplicationLaunch;
@@ -308,15 +307,12 @@ pub fn open_photos_action() -> ActionSpec {
 }
 
 pub(crate) fn capture_resource_id(it: &CaptureItem) -> String {
-    format!(
-        "{}:{}",
-        if it.is_video {
-            "camera.video"
-        } else {
-            "camera.photo"
-        },
-        it.id
-    )
+    let kind = if it.is_video {
+        CaptureKind::Video
+    } else {
+        CaptureKind::Photo
+    };
+    camera_model::capture_resource_id(kind, &it.id)
 }
 
 /// The recent capture, offering to open its verified bytes in Photos or
@@ -344,15 +340,6 @@ pub(crate) fn recent_row(it: &CaptureItem) -> LiveRow {
         row = row.operation(spec);
     }
     row
-}
-
-pub(crate) fn capture_item_from_shared(shared: &SharedCapture) -> CaptureItem {
-    CaptureItem {
-        id: shared.id.clone(),
-        label: shared.label.clone(),
-        is_video: matches!(shared.kind, CaptureKind::Video),
-        media_id: Some(shared.media_id.clone()).filter(|id| !id.is_empty()),
-    }
 }
 
 /// The row of the capture pipeline published by the surface.

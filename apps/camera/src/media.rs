@@ -9,13 +9,10 @@ use std::path::Path;
 
 use tilo_content::ContentStore;
 
-pub const MEDIA_PREFIX: &str = "media:blake3:";
+pub use camera_model::media::MEDIA_PREFIX;
 pub const MAX_MEDIA_BYTES: usize = 64 * 1024 * 1024;
 
-pub fn is_media_id(id: &str) -> bool {
-    id.strip_prefix(MEDIA_PREFIX)
-        .is_some_and(tilo_content::valid_reference)
-}
+pub use camera_model::media::is_media_id;
 
 /// The content address `id` names, which a thumbnail cache keys on.
 pub fn address(id: &str) -> Option<String> {
