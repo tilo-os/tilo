@@ -18,7 +18,7 @@ struct ChangeWait {
 }
 
 /// Who waits for a change of one workspace, and when each wait ends ([`MAX_REMOTE_WAIT`] after it
-/// began). One landing answers both what a watch reads of the records and of who is in the
+/// began). One landing answers both what a watch reads of the documents and of who is in the
 /// workspace: the roster its governance names is one of its records, and the caller reads what it
 /// follows again either way. Whom a landing answers is decided where the workspace's policy is
 /// at hand ([`Worker::wake_watchers`]): until then, where the writes landed is kept here.
@@ -43,7 +43,10 @@ impl Watchers {
 
     /// Answer the waits past their bound, and those whose caller went away, so none is held for
     /// ever: a change nothing signalled costs an answer on time, not a stalled caller.
-    pub(super) fn expire(&mut self, now: Instant) {
+    ///
+    /// Answers whether the last of them ended here: nobody waits for this workspace any more.
+    pub(super) fn expire(&mut self, now: Instant) -> bool {
+        let waited = !self.waiting.is_empty();
         self.waiting.retain(|waiting| {
             if waiting.done.is_abandoned() || waiting.until <= now {
                 return false;
@@ -53,6 +56,12 @@ impl Watchers {
         if self.waiting.is_empty() {
             self.landed.clear();
         }
+        waited && self.waiting.is_empty()
+    }
+
+    /// Whether someone waits for a change of this workspace.
+    pub(super) fn any(&self) -> bool {
+        !self.waiting.is_empty()
     }
 
     /// Hold `done` until a change `caller` may read lands or `until` passes.
@@ -209,6 +218,23 @@ impl Worker {
     /// landed in something they may read whole ([`Self::reads_whole`]): a write to what the
     /// workspace keeps from a caller is no word to them, and their wait goes on to its bound.
     pub(super) fn wake_watchers(&mut self) {
+        // A workspace someone waits for is read here for what landed: the change that woke this
+        // thread was no request, so nothing else reads it. Its next change is asked for before
+        // the read, because the session hands a change over once: one that landed between the
+        // read and the ask would wake nobody. A workspace nobody waits for is not read and
+        // not asked for.
+        let waited: Vec<WorkspaceId> = self
+            .workspaces
+            .iter()
+            .filter(|(_, workspace)| workspace.watchers.any())
+            .map(|(workspace_id, _)| *workspace_id)
+            .collect();
+        for workspace_id in waited {
+            self.awaiting(workspace_id, true);
+            if let Some(workspace) = self.workspaces.get_mut(&workspace_id) {
+                workspace.pump(workspace_id);
+            }
+        }
         let landed: Vec<(WorkspaceId, Vec<DocumentRoute>, Vec<ChangeWait>)> = self
             .workspaces
             .iter_mut()
@@ -236,14 +262,24 @@ impl Worker {
             if let Some(workspace) = self.workspaces.get_mut(&workspace_id) {
                 workspace.watchers.waiting.append(&mut held);
             }
+            // Where everyone who waited was answered, the workspace's changes wake this thread
+            // no longer.
+            self.stop_waiting_if_idle(workspace_id);
         }
     }
 
     /// Answer the waits for a change of any workspace that ran out, so none is held for ever.
     pub(super) fn expire_watchers(&mut self) {
         let now = Instant::now();
-        for workspace in self.workspaces.values_mut() {
-            workspace.watchers.expire(now);
+        let mut ended = Vec::new();
+        for (workspace_id, workspace) in &mut self.workspaces {
+            if workspace.watchers.expire(now) {
+                ended.push(*workspace_id);
+            }
+        }
+        // Nobody waits there any more: its changes wake this thread no longer.
+        for workspace_id in ended {
+            self.stop_waiting_if_idle(workspace_id);
         }
     }
 

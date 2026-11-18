@@ -1689,9 +1689,14 @@ impl Worker {
         }
     }
 
-    /// Stop asking to be woken for `workspace_id` once nothing waits for it.
+    /// Stop asking to be woken for `workspace_id` once nothing waits for it: no request held
+    /// for its join or its keys, and nobody waiting for a change of it.
     fn stop_waiting_if_idle(&self, workspace_id: WorkspaceId) {
-        if !self.joining.contains_key(&workspace_id) {
+        let watched = self
+            .workspaces
+            .get(&workspace_id)
+            .is_some_and(|workspace| workspace.watchers.any());
+        if !self.joining.contains_key(&workspace_id) && !watched {
             self.awaiting(workspace_id, false);
         }
     }

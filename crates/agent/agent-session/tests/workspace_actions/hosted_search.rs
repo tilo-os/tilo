@@ -817,6 +817,50 @@ async fn a_write_wakes_no_agent_whose_rules_refuse_it_the_read() {
     page.peer.close();
 }
 
+/// A write by another device answers a wait for a change by itself: no request to the service
+/// follows the write. A person waits; their page writes the workspace's layout through its own
+/// session, as a colleague's device would write anything; the wait is answered within a second.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_write_by_another_device_answers_a_wait_for_a_change_within_a_second() {
+    use tilo_actions::remote::{RemoteActionMessage, WatchScope};
+    let mut served = Served::start(1).await;
+    let (workspace, mut page, _) = served.workspace(|_| Vec::new()).await;
+    let ada = Served::person(&served.ada, &served.devices.1, &workspace);
+    let id = WorkspaceId::parse(&workspace).unwrap();
+    let asked = RemoteActionMessage::ChangedRequest {
+        correlation: 1,
+        scope: WatchScope::Records,
+    };
+    let waiting = served
+        .actions
+        .serve(id, &ada, asked)
+        .expect("the service answers a wait for a change");
+    // The service takes its requests in the order they came: once this one is answered, the
+    // wait before it is kept.
+    feed(&served, &workspace, &ada, None).await;
+    let began = Instant::now();
+    page.put_layout();
+    let answered = tokio::task::spawn_blocking(move || {
+        waiting
+            .wait_timeout(Duration::from_secs(1))
+            .map_err(|_still_held| ())
+    })
+    .await
+    .unwrap();
+    assert!(
+        matches!(
+            answered,
+            Ok(Some(RemoteActionMessage::ChangedResponse {
+                result: Ok(()),
+                ..
+            }))
+        ),
+        "the wait is answered within a second of another device's write (after {:?}): {answered:?}",
+        began.elapsed()
+    );
+    page.peer.close();
+}
+
 /// What a person tells an agent is found by that person and by a turn of theirs, and by nobody
 /// else: not by another member, though they read the workspace's chat, and not through a turn
 /// another member started on the same agent, though the agent takes part in both conversations.
