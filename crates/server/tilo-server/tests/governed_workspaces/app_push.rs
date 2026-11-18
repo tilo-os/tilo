@@ -1,171 +1,15 @@
-//! A developer pushes a build of an app, and a bot's program, into a
-//! running workspace from their own machine (`tilo-app push`): one of their
-//! devices dials the workspace's host by the workspace's link and invokes the workspace's
-//! `install-app` and `request-bot`, which the workspace decides like any of its
-//! governance. Every member reads the version the workspace runs from its
-//! governance.
+//! The version of an app a workspace uses: its `install-app` governance
+//! (`workspace/apps#install-app` in its action API) names it, every member is
+//! to use it, and a change made with another version waits until its author
+//! has. A developer pushes a version and a bot's program through that API
+//! (`tilo-app push`, proved in `workspace_actions/api_apps.rs`); here the
+//! workspace's server is asked directly and every member follows.
 use tilo_action_policy::{Answer, Grant, Grantee, KindSet, roles, roles::governance};
-use tilo_server_session::workspaces::WorkspaceSummary;
-use tilo_server_session::workspaces::govern::{self, WorkspaceLink};
+use tilo_peer_state::workspace_membership::{AppRelease, WorkspaceMembershipCommand};
 
 use super::*;
 
-/// The workspace's link as its host publishes it, reached on the socket the server listens on:
-/// a device pushing from this machine dials the address the workspace announces, so a test's server
-/// is reached on the loopback address of the port it bound, never through the host's own
-/// outside address.
-fn workspace_link(server: &tilo_server::Server, workspace: &WorkspaceSummary) -> WorkspaceLink {
-    let port = server
-        .bound_sockets()
-        .first()
-        .expect("the server's endpoint listens somewhere")
-        .port();
-    WorkspaceLink {
-        server: server.node_addr().id,
-        direct: Some(std::net::SocketAddr::from((
-            std::net::Ipv4Addr::LOCALHOST,
-            port,
-        ))),
-        workspace_id: workspace.workspace_id,
-        workspace: workspace.workspace.clone(),
-    }
-}
-
-fn release(
-    publisher: [u8; 32],
-    version: &str,
-    surface: u8,
-) -> serde_json::Map<String, serde_json::Value> {
-    let serde_json::Value::Object(release) = serde_json::json!({
-        "app": "so.tilo.notes",
-        "version": version,
-        "surface": hex::encode([surface; 32]),
-        "package": hex::encode([surface ^ 0xff; 32]),
-        "publisher": hex::encode(publisher),
-        "dev": true,
-    }) else {
-        unreachable!("an object")
-    };
-    release
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_developer_pushes_an_app_version_and_a_bot_program_into_a_running_workspace() {
-    let alice = TestUser::fresh("Alice");
-    let ada = TestUser::fresh("Ada");
-    let host = alice.enrol("alice-home", DeviceCapabilities::member());
-    let laptop = ada.enrol("ada-laptop", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
-    let server = start(state.path(), &alice, &host).await;
-    let workspaces = server.workspaces().unwrap();
-    let workspace = workspaces.create("Lounge").await.unwrap();
-    super::members::admit(&server, &host, &laptop, &workspace.workspace).await;
-    let link: WorkspaceLink = workspace_link(&server, &workspace)
-        .to_string()
-        .parse()
-        .unwrap();
-    let push = |action: &'static str, argument: serde_json::Map<String, serde_json::Value>| {
-        let link = link.clone();
-        let (cert, key) = (laptop.cert.clone(), laptop.sk.clone());
-        async move {
-            let client = govern::connect(&link, cert, key).await?;
-            govern::invoke(
-                &client,
-                link.workspace_id,
-                &link.workspace,
-                action,
-                argument,
-            )
-            .await
-        }
-    };
-
-    // An Editor by role alone installs no version of an app.
-    let refused = push(
-        governance::INSTALL_APP,
-        release(laptop.cert.user_public_key, "1.5.0-dev.1", 1),
-    )
-    .await
-    .unwrap_err();
-    assert!(refused.contains("no such action"), "{refused}");
-    assert!(
-        workspaces
-            .app_versions(&workspace.workspace)
-            .await
-            .unwrap()
-            .is_empty()
-    );
-
-    // The owner lets Ada install apps: she is the workspace's developer.
-    let who = hex::encode(laptop.cert.user_public_key);
-    let grant = |action: &str| {
-        Grant::new(
-            format!("developer:{action}:{who}"),
-            Grantee::person(who.clone()),
-            roles::governance_action(&workspace.workspace, action),
-            KindSet::ALL,
-            Answer::Allow,
-            Grantee::person(hex::encode(host.cert.user_public_key)),
-        )
-    };
-    workspaces
-        .put_workspace_grants(
-            &workspace.workspace,
-            &host.cert,
-            [7; 32],
-            vec![
-                grant(governance::INSTALL_APP),
-                grant(governance::INSTALL_BOT),
-            ],
-        )
-        .await
-        .unwrap();
-
-    let answer = push(
-        governance::INSTALL_APP,
-        release(laptop.cert.user_public_key, "1.5.0-dev.1", 1),
-    )
-    .await
-    .unwrap();
-    assert_eq!(answer["running"]["release"]["version"], "1.5.0-dev.1");
-    assert_eq!(answer["running"]["installed_by"], who);
-    push(
-        governance::INSTALL_APP,
-        release(laptop.cert.user_public_key, "1.5.0-dev.2", 2),
-    )
-    .await
-    .unwrap();
-    let running = workspaces.app_versions(&workspace.workspace).await.unwrap();
-    assert_eq!(running.len(), 1);
-    assert_eq!(running[0].release.version, "1.5.0-dev.2");
-    assert!(running[0].release.dev, "a developer's own build says so");
-
-    // Her bot's program goes the same way: the workspace keeps it with the
-    // request, for its host to run.
-    let program = include_str!("../../../../../apps/discord/bridge/program.json");
-    let serde_json::Value::Object(bot) = serde_json::json!({
-        "entry": "dev.ada.bridge",
-        "version": "0.1.0-dev.1",
-        "program": program,
-    }) else {
-        unreachable!("an object")
-    };
-    // The bridge's program reaches outside the workspace, which an Editor does
-    // not hold: the host would run it as the workspace's root, so the workspace
-    // refuses it from her.
-    let refused = push("request-bot", bot).await;
-    assert!(refused.is_err(), "{refused:?}");
-    assert!(
-        workspaces
-            .bot_requests(&workspace.workspace)
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    server.shutdown().await;
-}
-
-/// Two versions of the fixture app's surface: the second adds a field.
+/// The version of the fixture app's surface: the second adds a field.
 const V1: &str = "[[resources]]\nkind = \"fixture\"\nlabel = \"Fixture\"\nversion = 1\n\n\
     [[resources.fields]]\nowner = \"fixture\"\npath = \"topic\"\nstored = \"value\"\n\
     title = \"Topic\"\ntype = \"String\"\n";
@@ -288,31 +132,26 @@ async fn a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_
 
     // Ada hands the workspace her v2 package and makes it the workspace's version.
     let package = b"a developer's v2 build of the fixture app".repeat(9000);
-    let link = workspace_link(&server, &workspace);
-    let client = govern::connect(&link, laptop.cert.clone(), laptop.sk.clone())
+    let file = workspaces
+        .keep_app_file(&workspace.workspace, &package)
+        .unwrap();
+    workspaces
+        .govern_app(
+            &workspace.workspace,
+            &laptop.cert,
+            [9; 32],
+            WorkspaceMembershipCommand::InstallApp(AppRelease {
+                app: APP.into(),
+                version: "2.0.0-dev.1".into(),
+                surface: hex::encode(surface_of(2)),
+                package: hex::encode([2_u8 ^ 0xff; 32]),
+                publisher: hex::encode(laptop.cert.user_public_key),
+                file: Some(file.clone()),
+                dev: true,
+            }),
+        )
         .await
         .unwrap();
-    let file = govern::upload(
-        &client,
-        workspace.workspace_id,
-        &workspace.workspace,
-        &package,
-    )
-    .await
-    .unwrap();
-    let mut v2 = release(laptop.cert.user_public_key, "2.0.0-dev.1", 2);
-    v2.insert("app".into(), APP.into());
-    v2.insert("surface".into(), hex::encode(surface_of(2)).into());
-    v2.insert("file".into(), file.clone().into());
-    govern::invoke(
-        &client,
-        workspace.workspace_id,
-        &workspace.workspace,
-        governance::INSTALL_APP,
-        v2,
-    )
-    .await
-    .unwrap();
 
     // Bob, still on v1, edits: the workspace holds it.
     receive_until(

@@ -19,7 +19,6 @@
 //! desktops: field and variant order are the wire, so append only.
 
 use collab_types::WorkspaceId;
-pub mod govern;
 
 use serde::{Deserialize, Serialize};
 use tilo_actions::ActionAddress;

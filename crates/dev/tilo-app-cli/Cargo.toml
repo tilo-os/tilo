@@ -59,17 +59,15 @@ tilo-headless-schema = { path = "../headless-schema" }
 zip.workspace = true
 # Reuse the validator generation/features already locked in workspace-hack.
 wasmparser = { version = "=0.239.0", default-features = false, features = ["features", "simd", "std", "validate"] }
-# `tilo-app push`: a device of the developer's dials the workspace's host
-# and invokes the workspace's governance.
-tilo-server-session = { path = "../../server/tilo-server-session" }
+# `tilo-app push`: the workspace's governance actions reached through its
+# action API, as a key of the developer's, as `tilo` reaches it.
+tilo-api = { path = "../../server/tilo-api" }
 # The shared workspace's entry: a person is admitted through the directory's
 # entry, as any public workspace admits them.
 tilo-workspace-directory = { path = "../../session/workspace-directory" }
 tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
-tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-automation = { path = "../../collab/automation" }
 tokio = { workspace = true, features = ["rt"] }
-tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

@@ -999,7 +999,6 @@ package = "tilo-server"
 inputs = ["apps/discord/bridge/program.json", "apps/notes/surface.toml"]
 readers = [
   "crates/server/tilo-server/src/workspace_bots/tests.rs",
-  "crates/server/tilo-server/tests/governed_workspaces/app_push.rs",
 ]
 
 [[cargo]]

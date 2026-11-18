@@ -6,30 +6,43 @@
 //! made with another version waits until its author has. A bot's program
 //! goes to the workspace's host as the workspace's request for that bot
 //! (`request-bot`), which the host runs at once, keeping the bot's
-//! installation. This machine acts as one of the developer's devices,
-//! enrolled like any other (`--identity`), and the workspace decides whether
-//! that person may.
+//! installation.
+//!
+//! Both are the workspace's governance in its action API, so this command
+//! opens the API as a key of the developer's (`TILO_API_KEY`, a `--key-file`,
+//! or the key `tilo login` kept here) and invokes them on the workspace's
+//! `workspace/apps` path, exactly as `tilo do` does. The workspace decides
+//! whether the key's person may.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
 use serde_json::{Map, Value, json};
-use tilo_server_session::workspaces::govern::{self, WorkspaceLink};
+use tilo_api::client::{Client, Reach};
+
+/// The path of a workspace's apps and bots in its action API.
+const APPS: &str = "workspace/apps";
+/// The bytes of a package file one `upload-app-file` piece carries: the most
+/// the workspace's server takes in one call.
+const UPLOAD_PIECE: usize = 256 * 1024;
 
 #[derive(clap::Args)]
 pub struct PushArgs {
     /// App directory, or a file or directory inside it. Defaults to the
     /// current directory.
     path: Option<PathBuf>,
-    /// The workspace to push to, by its host's link:
-    /// `tilo-workspace:<server>[@<ip:port>]/<workspace>/<id>`.
+    /// The workspace to push to, by its id or the name it is listed under.
     #[arg(long = "workspace")]
     workspace: String,
-    /// This machine's Tilo identity: a device of yours, enrolled for the
-    /// person the workspace knows (`tilo-enroll certify`). Defaults to
-    /// `$TILO_IDENTITY`.
+    /// The API server the workspace is reached through (also
+    /// `$TILO_API_URL`). Defaults to `https://mcp.tilo.sh`, or to the server
+    /// `tilo login` logged in to here.
+    #[arg(long, hide = true)]
+    api: Option<String>,
+    /// A key this computer holds (`tilo keys export`), instead of
+    /// `$TILO_API_KEY`.
     #[arg(long)]
-    identity: Option<PathBuf>,
+    key_file: Option<PathBuf>,
     /// The `.tapp` to run; defaults to the newest in the app's `dist/`
     /// (`tilo-app package`).
     #[arg(long, conflicts_with = "bot")]
@@ -61,7 +74,6 @@ pub struct Push {
 }
 
 pub fn run_push(args: PushArgs) -> Result<Value> {
-    let link: WorkspaceLink = args.workspace.parse().map_err(anyhow::Error::msg)?;
     let push = if let Some(program) = &args.bot {
         bot_push(
             program,
@@ -76,52 +88,72 @@ pub fn run_push(args: PushArgs) -> Result<Value> {
         };
         app_push(&app_dir, &package, !args.published)?
     };
-    let identity = args
-        .identity
-        .or_else(|| std::env::var_os("TILO_IDENTITY").map(PathBuf::from))
-        .context("name this machine's Tilo identity: --identity <dir> or $TILO_IDENTITY")?;
-    let paths = tilo_device_identity::IdentityPaths::under(&identity);
-    let key = tilo_device_identity::persist::read_device_key(&paths.device_privkey)
-        .with_context(|| format!("read the device key {}", paths.device_privkey.display()))?;
-    let cert =
-        tilo_device_identity::persist::read_device_cert(&paths.device_cert).with_context(|| {
-            format!(
-                "read the device certificate {}",
-                paths.device_cert.display()
-            )
-        })?;
+    let client = Client::open(Reach {
+        api: args.api.as_deref(),
+        key_file: args.key_file.as_deref(),
+        json: false,
+    })
+    .context("reach the workspace's action API")?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     let started = std::time::Instant::now();
-    let upload = push
-        .upload
-        .as_ref()
-        .map(|path| std::fs::read(path).with_context(|| format!("read {}", path.display())))
-        .transpose()?;
     let answer = runtime.block_on(async {
-        let client = govern::connect(&link, cert, key).await?;
-        let mut argument = push.argument.clone();
-        if let Some(bytes) = &upload {
-            let file = govern::upload(&client, link.workspace_id, &link.workspace, bytes).await?;
-            argument.insert("file".into(), Value::from(file));
+        let workspace = client.workspace_id(&args.workspace).await?;
+        let mut argument = Value::Object(push.argument.clone());
+        if let Some(path) = &push.upload {
+            let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
+            let file = upload_app_file(&client, &workspace, &bytes).await?;
+            if let Some(fields) = argument.as_object_mut() {
+                fields.insert("file".into(), Value::from(file));
+            }
         }
-        govern::invoke(
-            &client,
-            link.workspace_id,
-            &link.workspace,
-            push.action,
-            argument,
-        )
-        .await
+        let title = format!("push {}", describe(&push));
+        let answer = client
+            .act(&workspace, APPS, push.action, &argument, &title)
+            .await?;
+        Ok::<_, anyhow::Error>((workspace, answer))
     });
-    let answer = answer.map_err(|error| anyhow::anyhow!("{link} refused the push: {error}"))?;
+    let (workspace, answer) = answer.map_err(|error| {
+        anyhow::anyhow!("the workspace {} refused the push: {error}", args.workspace)
+    })?;
     eprintln!(
-        "[tilo-app] {} runs in {link} ({} ms)",
+        "[tilo-app] {} is in {workspace} ({} ms)",
         describe(&push),
         started.elapsed().as_millis()
     );
-    Ok(json!({ "workspace": link.to_string(), "action": push.action, "answer": answer }))
+    Ok(json!({ "workspace": workspace, "action": push.action, "answer": answer }))
+}
+
+/// Hand the package `bytes` to `workspace`'s server in the pieces it takes,
+/// naming it by its BLAKE3 hash: what `install-app` names as the version's
+/// `file`.
+async fn upload_app_file(client: &Client, workspace: &str, bytes: &[u8]) -> Result<String> {
+    if bytes.is_empty() {
+        bail!("the package file is empty");
+    }
+    let hash = blake3::hash(bytes).to_hex().to_string();
+    let total = bytes.len() as u64;
+    let mut offset = 0_u64;
+    for piece in bytes.chunks(UPLOAD_PIECE) {
+        let argument = json!({
+            "file": hash,
+            "offset": offset,
+            "total": total,
+            "data": hex::encode(piece),
+        });
+        client
+            .act(
+                workspace,
+                APPS,
+                "upload-app-file",
+                &argument,
+                "hand the workspace an app version's package",
+            )
+            .await?;
+        offset = offset.saturating_add(piece.len() as u64);
+    }
+    Ok(hash)
 }
 
 fn describe(push: &Push) -> String {
