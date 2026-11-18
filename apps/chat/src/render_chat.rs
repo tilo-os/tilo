@@ -1055,9 +1055,9 @@ mod tests {
                 ),
             ];
             let lines = [
-                "Requested: Add function",
-                "No change: Add function",
-                "Refused: Set bounds: Outside the granted range",
+                "Requested: Add function: calculator.workspace",
+                "No change: Add function: calculator.workspace",
+                "Refused: Set bounds: calculator.graph: Outside the granted range",
             ];
             // While it works, one line counts the dispatched operations, and opens them.
             let running = AgentWork::new(AgentWorkState::Taken, 42).with_trace(steps.clone());
@@ -1146,7 +1146,7 @@ mod tests {
             let presentation = AgentWorkPresentation::of(&work, true, false).unwrap();
             assert_eq!(presentation.steps.len(), 7);
             for (index, line) in presentation.steps.iter().enumerate() {
-                assert_eq!(*line, format!("Applied: Action {index}"));
+                assert_eq!(*line, format!("Applied: Action {index}: resource-{index}"));
             }
 
             let row = RowM {

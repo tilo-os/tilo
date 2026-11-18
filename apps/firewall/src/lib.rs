@@ -10,13 +10,13 @@ mod app;
 pub mod backend;
 pub mod blocked;
 pub mod locales;
-pub mod model;
 pub mod resource;
 #[cfg(feature = "samples")]
 pub mod sample;
 
 mod view;
 
+pub use firewall_model::model;
 pub use resource::{Firewall, FirewallShell};
 
 pub fn definition() -> &'static ui::application::ApplicationDefinition {

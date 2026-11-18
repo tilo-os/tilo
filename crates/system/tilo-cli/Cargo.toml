@@ -83,6 +83,9 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # An install plan is the installer's own model: `tilo machine add` writes a
 # plan the live installer and the Imager both read.
 install-profile-model = { path = "../../session/install-profile-model" }
+# The one maker of a machine's plan and its single-use token, shared with the
+# Imager's window so both write the same document.
+install-plan = { path = "../../session/install-plan" }
 # The peer `tilo login` leaves running: the person's workspaces' file trees,
 # held over the device's session and mounted at ~/Tilo with the filesystem
 # Tilo OS mounts.

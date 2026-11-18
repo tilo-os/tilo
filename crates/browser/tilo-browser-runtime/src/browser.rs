@@ -1580,7 +1580,7 @@ fn present_desktop(
         &config.author(),
         &people,
         &here,
-        &shared.woken,
+        (&handle, &shared.woken),
     );
     let files = files_of_the_workspace(config, &owners, &shared, &content_store);
     let search = mount_search(

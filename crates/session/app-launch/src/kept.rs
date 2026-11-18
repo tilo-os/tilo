@@ -67,6 +67,10 @@ pub mod testing;
 /// keeper is not taken.
 pub(crate) const ANSWER: Duration = Duration::from_secs(5);
 
+/// How long a session ending a kept launch's cgroup waits for its keeper to be gone before it
+/// clears what the keeper's X11 display left: a killed process ends in moments.
+pub(crate) const KEEPER_END: Duration = Duration::from_secs(1);
+
 /// A connection to the desktop for the process `pid`: what a keeper is attached with.
 pub type Desktop = Arc<dyn Fn(u32) -> io::Result<UnixStream> + Send + Sync>;
 
@@ -137,6 +141,65 @@ fn x11_of(dir: &Path) -> Option<(String, PathBuf)> {
     display
         .starts_with(':')
         .then(|| (display.to_owned(), dir.join("Xauthority")))
+}
+
+/// `N` of the X11 display `:N` the keeper in `dir` bound, once it wrote it.
+fn display_number(dir: &Path) -> Option<u32> {
+    x11_of(dir)?.0.strip_prefix(':')?.parse().ok()
+}
+
+/// Remove the keeper directory `dir`, and what its X11 display left in `/tmp` once its keeper is
+/// gone.
+pub(crate) fn remove_dir(dir: &Path) -> io::Result<()> {
+    let display = display_number(dir);
+    let removed = std::fs::remove_dir_all(dir);
+    if let Some(number) = display {
+        clear_dead_display(Path::new("/tmp"), number);
+    }
+    removed
+}
+
+/// Remove the lock and socket files of X11 display `number` under `tmp` when no process holds
+/// the display any more: a keeper that was killed (a stop past its grace, a logout's end of its
+/// cgroup) cannot remove its own, and over a long uptime they pile up. Nothing is removed while
+/// the display's abstract name is bound (a keeper holds it for as long as it lives) or while the
+/// lock names a process that is still alive. The name is held here meanwhile, as a keeper takes a
+/// display, so one taking the number at the same moment never loses its files. True when the
+/// files were a dead keeper's and are gone.
+pub(crate) fn clear_dead_display(tmp: &Path, number: u32) -> bool {
+    use std::os::linux::net::SocketAddrExt as _;
+    let Ok(name) =
+        std::os::unix::net::SocketAddr::from_abstract_name(format!("/tmp/.X11-unix/X{number}"))
+    else {
+        return false;
+    };
+    let Ok(_held) = std::os::unix::net::UnixListener::bind_addr(&name) else {
+        return false;
+    };
+    let lock = tmp.join(format!(".X{number}-lock"));
+    let holder = std::fs::read_to_string(&lock)
+        .ok()
+        .and_then(|text| text.trim().parse::<u32>().ok());
+    if holder.is_some_and(alive) {
+        return false;
+    }
+    for file in [lock, tmp.join(".X11-unix").join(format!("X{number}"))] {
+        if let Err(error) = std::fs::remove_file(&file)
+            && error.kind() != io::ErrorKind::NotFound
+        {
+            tracing::warn!(file = %file.display(), %error, "a dead X11 display's file stays");
+        }
+    }
+    true
+}
+
+/// Whether `pid` is alive: an ended process nobody reaped yet is not.
+fn alive(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+        stat.rsplit_once(')')
+            .and_then(|(_, rest)| rest.split_whitespace().next())
+            .is_some_and(|state| state != "Z" && state != "X")
+    })
 }
 
 /// A kept launch's keeper, as the spawner holds it.
@@ -317,6 +380,14 @@ impl Kept {
         self.adopted.store(true, Ordering::Release);
     }
 
+    /// The X11 display the keeper bound, by number, and a descriptor of the keeper's process:
+    /// what is left to clear once a keeper ended by its cgroup is gone.
+    pub(crate) fn display_and_keeper(&self) -> Option<(u32, Option<OwnedFd>)> {
+        let number = display_number(&self.dir)?;
+        let keeper = self.keeper.load(Ordering::Acquire);
+        Some((number, (keeper != 0).then(|| pidfd(keeper)).flatten()))
+    }
+
     /// Let go of the keeper without touching it: the next desktop takes it back.
     pub(crate) fn release(&self) {
         self.released.store(true, Ordering::Release);
@@ -355,7 +426,7 @@ impl Kept {
         if self.service {
             return;
         }
-        if let Err(error) = std::fs::remove_dir_all(&self.dir)
+        if let Err(error) = remove_dir(&self.dir)
             && error.kind() != io::ErrorKind::NotFound
         {
             tracing::warn!(dir = %self.dir.display(), %error, "a kept app's directory stays");
@@ -478,7 +549,7 @@ pub(crate) fn end_outdated(dir: &Path, keeper: u32, keeper_started: Option<u64>)
             signal(keeper, libc::SIGTERM);
         }
     }
-    if let Err(error) = std::fs::remove_dir_all(dir)
+    if let Err(error) = remove_dir(dir)
         && error.kind() != io::ErrorKind::NotFound
     {
         tracing::warn!(dir = %dir.display(), %error, "an outdated keeper's directory stays");
@@ -692,7 +763,7 @@ pub(crate) fn end_leftover(dir: &Path) {
             None => signal(keeper, libc::SIGTERM),
         }
     }
-    if let Err(error) = std::fs::remove_dir_all(dir)
+    if let Err(error) = remove_dir(dir)
         && error.kind() != io::ErrorKind::NotFound
     {
         tracing::warn!(dir = %dir.display(), %error, "a leftover keeper directory stays");
@@ -863,6 +934,47 @@ mod tests {
     use crate::plan::{Kind, Planned};
     use crate::spawner::{Event, Spawner, Teardown};
     use tilo_test_env::SpawnUnderEnvLock as _;
+
+    /// A display number no X server of this machine uses: the abstract name is machine-wide.
+    fn unused_display() -> u32 {
+        64_000_u32.saturating_add(std::process::id().checked_rem(1_000).unwrap_or(0))
+    }
+
+    #[test]
+    fn a_dead_keepers_display_files_go_and_a_live_ones_stay() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join(".X11-unix")).unwrap();
+        let number = unused_display();
+        let lock = tmp.path().join(format!(".X{number}-lock"));
+        let socket = tmp.path().join(".X11-unix").join(format!("X{number}"));
+        let leave = |pid: u32| {
+            std::fs::write(&lock, format!("{pid:>10}\n")).unwrap();
+            std::fs::write(&socket, "").unwrap();
+        };
+        let mut ended = std::process::Command::new("/bin/true").spawn().unwrap();
+        let dead = ended.id();
+        ended.wait().unwrap();
+
+        // A live process's display stays.
+        leave(std::process::id());
+        assert!(!clear_dead_display(tmp.path(), number));
+        assert!(lock.exists() && socket.exists());
+        // A display whose abstract name is bound is held, whatever its lock says.
+        leave(dead);
+        {
+            use std::os::linux::net::SocketAddrExt as _;
+            let name = std::os::unix::net::SocketAddr::from_abstract_name(format!(
+                "/tmp/.X11-unix/X{number}"
+            ))
+            .unwrap();
+            let _holder = std::os::unix::net::UnixListener::bind_addr(&name).unwrap();
+            assert!(!clear_dead_display(tmp.path(), number));
+            assert!(lock.exists() && socket.exists());
+        }
+        // A killed keeper's display leaves nothing behind.
+        assert!(clear_dead_display(tmp.path(), number));
+        assert!(!lock.exists() && !socket.exists());
+    }
 
     #[test]
     fn an_end_the_keeper_saw_the_kernel_make_for_memory_says_so() {

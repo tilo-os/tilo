@@ -139,10 +139,30 @@ public final class TiloEngine: NSObject {
     /// Why the page last stopped on its way in and was loaded again: the page's own sentence,
     /// or the system's. Nil while it never did.
     public private(set) var lastStop: String?
+    /// The technical details the page showed last under a failure's sentence (its
+    /// `#arrival-failure-text`), and the sentence they stood under.
+    private var detailsSaid: (under: String, text: String)?
+    /// What the page offers to read or copy under the sentence the last try ended with: what it
+    /// makes of the stop, the server, the step, the error and its build. Its sentence may say
+    /// "copy the technical details below": these are what it points to. Empty where the try
+    /// ended with another sentence than the one the page showed them under, and while none ended.
+    public var stopDetails: String {
+        guard let detailsSaid else { return "" }
+        switch state {
+        case .refused(let why), .failed(let why), .gone(let why): return detailsSaid.under == why ? detailsSaid.text : ""
+        default: return ""
+        }
+    }
     /// How long a page that was loaded again after it stopped may say nothing before its stop
     /// is said. A page takes seconds to load, and a minute on a machine that is busy.
     var stopPatience: Duration = .seconds(60)
     private var retrying: Task<Void, Never>?
+    /// Whether the try that ended last ended on the site's own page: the page was served and
+    /// said that its join stopped, in a case that tells of a site that answered
+    /// (`answered(failure:)`). A load the network failed says nothing of the kind, nor does a
+    /// page that never said where it stands.
+    private var stoppedOnItsPage = false
+    private var endListeners: [UUID: AsyncStream<Void>.Continuation] = [:]
     /// The address asked for last, which a retry loads again.
     private var wanted: URL?
     /// The workspace asked for last. A page that got in elsewhere is opened there.
@@ -276,6 +296,24 @@ public final class TiloEngine: NSObject {
         return stream
     }
 
+    /// Whether this device's site answers and does not let its page in: the try that ended
+    /// last ended on the site's own page, which said that its join stopped. False while a try
+    /// is in work, while the page is in, and where the try ended otherwise.
+    public var joinStops: Bool {
+        if case .failed = state { stoppedOnItsPage } else { false }
+    }
+
+    /// Word of every try that ended without getting in, from now on. The state says the same
+    /// only where its sentence changed: a try that ends in the sentence of the one before
+    /// changes no state, and may still change `joinStops`.
+    public func triesEnded() -> AsyncStream<Void> {
+        let (stream, continuation) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
+        let id = UUID()
+        endListeners[id] = continuation
+        continuation.onTermination = { [weak self] _ in Task { @MainActor in self?.endListeners[id] = nil } }
+        return stream
+    }
+
     /// Word that what the page holds changed, from now on. It says nothing of what changed:
     /// the listener reads what it shows. Changes that come while it reads are one word.
     public func changes() -> AsyncStream<Void> {
@@ -401,6 +439,13 @@ public final class TiloEngine: NSObject {
         view.callAsyncJavaScript("globalThis.__tiloLive?.rest()", arguments: [:], in: nil, in: .page, completionHandler: nil)
     }
 
+    /// What a live thing draws now, as its mount in the page says it: its frames, the size its
+    /// content asks for and the names its semantics hold. For a check that has no eyes, never
+    /// for a person.
+    public func drawn(live id: String) async throws -> JSON {
+        try await ask("return globalThis.__tiloLive.drawn(id)", ["id": id])
+    }
+
     /// Take a live thing down. Its record stays what it is.
     public func close(live id: String) async {
         _ = try? await view.callAsyncJavaScript("return globalThis.__tiloLive?.close(id)", arguments: ["id": id],
@@ -516,6 +561,19 @@ public final class TiloEngine: NSObject {
         ["gone", "deleted"].contains(failure) || status.contains(resetSaid)
     }
 
+    /// The cases of the page's failure screen that say nothing of a site that answered and
+    /// stopped the page's join (web/failure-screen.mjs, `failureCause`): the browser is
+    /// offline, the site answered nothing once the page stopped, the server the page was sent
+    /// to was not reached, and the device's own key was held by another page of its store.
+    static let unanswered: Set<String> = ["offline", "no-connection", "unreachable", "device-key-busy"]
+
+    /// Whether a page that names its entry `failed` says, by its failure screen's case, that
+    /// its site answered and its join stopped there. A page that has not named its case yet
+    /// says nothing either way.
+    static func answered(failure: String) -> Bool {
+        !failure.isEmpty && !unanswered.contains(failure)
+    }
+
     static func sameDocument(_ one: URL, _ other: URL) -> Bool {
         let bare = { (url: URL) -> String? in
             var parts = URLComponents(url: url, resolvingAgainstBaseURL: false)
@@ -546,12 +604,19 @@ public final class TiloEngine: NSObject {
             let size = CGSize(width: min(width, 4096), height: min(height, 4096))
             for listener in sizeListeners.values { listener.yield((id, size)) }
         case "state":
+            let details = said["details"] as? String ?? ""
+            let under = said["status"] as? String ?? ""
+            let came = !details.isEmpty && (detailsSaid?.under != under || detailsSaid?.text != details)
+            if came { detailsSaid = (under: under, text: details) }
             stand(entry: said["entry"] as? String ?? "", arrival: said["arrival"] as? String ?? "",
                   code: said["code"] as? String ?? "", status: said["status"] as? String ?? "",
                   failure: said["failure"] as? String ?? "", refusal: said["refusal"] as? String ?? "",
                   connection: said["connection"] as? String ?? "",
                   route: said["route"] as? String ?? "", mounted: said["mounted"] as? Bool ?? false,
                   ask: PairingAsk(said["ask"]))
+            // A page may say its sentence first and show the details under it a moment later:
+            // whoever was told how the try ended hears that there is more to it.
+            if came { for listener in endListeners.values { listener.yield() } }
         default:
             break
         }
@@ -604,7 +669,7 @@ public final class TiloEngine: NSObject {
                 guard moves > 0, let address = EngineAddress.page(of: EngineAddress.chat, in: elsewhere ? wantedWorkspace ?? inside : inside,
                                                                   of: settings)
                 else {
-                    state = .failed(elsewhere ? "The site opened another workspace than the one that was asked for"
+                    fail(elsewhere ? "The site opened another workspace than the one that was asked for"
                         : "The site did not open the page that shows one app")
                     return
                 }
@@ -624,7 +689,7 @@ public final class TiloEngine: NSObject {
             // The page was let in and cannot draw here (a simulator offers a page no graphics
             // adapter). Nothing a second load brings changes that, so it is not loaded again,
             // and what is said is the page's own sentence.
-            state = .failed(status.isEmpty ? "Tilo's page cannot draw on this device" : status)
+            fail(status.isEmpty ? "Tilo's page cannot draw on this device" : status)
         case "failed":
             // A page whose join stopped otherwise than by its server's refusal names its entry
             // `failed`, asks its site what became of the workspace it remembers, and names its
@@ -638,7 +703,9 @@ public final class TiloEngine: NSObject {
                 state = .gone(status)
                 return
             }
-            stopped(status)
+            // Its site served this page, and the page's case says whether its site answered
+            // where the join stopped.
+            stopped(status, onItsPage: TiloEngine.answered(failure: failure))
         default:
             // The page's question stands before anything else is asked of anyone.
             if let ask {
@@ -658,9 +725,9 @@ public final class TiloEngine: NSObject {
     /// link is spent. A device that is its person's already is not given up: its key is in its
     /// store, and its person's server may only be away. Its page is loaded again after a pause
     /// that grows with every load that stops, up to a minute, for as long as it takes.
-    private func stopped(_ why: String) {
+    private func stopped(_ why: String, onItsPage: Bool = false) {
         guard let wanted else {
-            state = .failed(why)
+            fail(why, onItsPage: onItsPage)
             return
         }
         let before = stops
@@ -669,7 +736,7 @@ public final class TiloEngine: NSObject {
             lastStop = why
             state = .arriving("load")
         } else {
-            state = .failed(why)
+            fail(why, onItsPage: onItsPage)
             if pairs { return }
         }
         let pause = min(stopPause * (1 << min(before, 6)), .seconds(60))
@@ -688,6 +755,14 @@ public final class TiloEngine: NSObject {
             guard !Task.isCancelled, self.state == .arriving("load") else { return }
             self.stopped(why)
         }
+    }
+
+    /// A try ended without getting in. `onItsPage`: on the site's own page, which said that its
+    /// join stopped where its site answered.
+    private func fail(_ why: String, onItsPage: Bool = false) {
+        stoppedOnItsPage = onItsPage
+        state = .failed(why)
+        for listener in endListeners.values { listener.yield() }
     }
 
     private func failed(_ error: any Error) {

@@ -5,7 +5,6 @@ pub const APP_TITLE: &str = "Activity";
 
 mod detail;
 mod effects;
-mod filter;
 mod history;
 pub mod locales;
 mod replay;
@@ -21,6 +20,7 @@ use ui::tilo_actions::remote::InvokeArgument;
 use ui::tilo_actions::remote::workspace_activity as wire;
 use ui::widget::{NavItem, NavSection};
 
+pub use activity_model as filter;
 pub use effects::ActivityEffect;
 pub use filter::Filter;
 

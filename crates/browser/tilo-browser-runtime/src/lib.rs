@@ -311,6 +311,17 @@ mod person_resources;
     )
 )]
 mod read_bounds;
+// What a page holds of its workspace's documents as its person may read them, and what it asks
+// its workspace for when a read names one it holds none of: its tests are built natively too.
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(
+        dead_code,
+        reason = "only the browser page answers a window's reads; natively only its tests do"
+    )
+)]
+mod held_reads;
 // What a page times of the members' presence itself: its tests run on the
 // host too.
 #[cfg(any(target_arch = "wasm32", test))]

@@ -33,7 +33,6 @@ use crate::service::ServerProtocol;
 use crate::transport::{
     ALPN, ContentEndpointAdvertisement, ContentEndpointRequest, DISCOVERY_ALPN,
     HomePeerManagementRequest, HomePeerManagementResponse, MANAGEMENT_ALPN, MAX_FRAME_BYTES,
-    ServerOperationResult,
 };
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_server_protocol::WorkspaceId;
@@ -793,16 +792,38 @@ impl Server {
                     cfg.state_root.clone(),
                 ))?;
                 push_background_task(&background_tasks, rollout);
-                // What this server is, and what the person's other servers are
-                // told to be, is its entry in the admin workspace's document:
-                // it applies the document now and after each change to it.
+            }
+            // What this device is, and what the person's servers are told to
+            // be, is its record in the Servers workspace's document: it applies
+            // the document now and after each change to it. A device that holds
+            // no Servers workspace yet asks a server it manages to take it in,
+            // and starts applying the document once it does.
+            if crate::servers::holds_admin(governed).await {
                 push_background_task(
                     &background_tasks,
                     crate::servers::applied::follow(
                         governed,
                         crate::servers::applied::Requests::default(),
                         Some(endpoint.clone()),
+                        cfg.state_root.clone(),
                     ),
+                );
+            } else if !enrolled_server
+                && let Some((server, addr)) =
+                    earlier_servers(&cfg.identity_root, &identity.device_cert)?
+                        .into_iter()
+                        .next()
+            {
+                push_background_task(
+                    &background_tasks,
+                    tokio::spawn(ask_to_be_taken_in(
+                        endpoint.clone(),
+                        identity.clone(),
+                        governed.clone(),
+                        cfg.state_root.clone(),
+                        server,
+                        addr,
+                    )),
                 );
             }
             // A server's name is its entry's in its person's admin workspace:
@@ -1125,6 +1146,55 @@ fn earlier_servers(
                 && cert.device_public_key != own.device_public_key
         })
         .collect())
+}
+
+/// Ask a server of the person's that holds their Servers workspace to take
+/// this device in: it holds that workspace from then on like any other of
+/// theirs, and applies its document from the moment it does. A server that
+/// cannot be reached is asked again after a while, longer each time.
+async fn ask_to_be_taken_in(
+    endpoint: Endpoint,
+    identity: ServerIdentity,
+    workspaces: crate::workspaces::Workspaces,
+    state_root: PathBuf,
+    server: tilo_user_identity::DeviceCert,
+    addr: EndpointAddr,
+) {
+    let mut wait = Duration::from_secs(1);
+    loop {
+        let asked = crate::client::ServerClient::manage_home_peer(
+            &endpoint,
+            addr.clone(),
+            identity.user_public_key,
+            server.device_public_key,
+            identity.device_cert.clone(),
+            identity.device_signing_key.clone(),
+            identity.revocations.clone(),
+            HomePeerManagementRequest::HoldAdmin {
+                endpoint: endpoint.addr(),
+            },
+        )
+        .await;
+        match asked {
+            Ok(_) => {
+                tracing::info!(server = %hex::encode(server.device_public_key), "a server handed this device its Servers workspace");
+                // What the person's servers are told to be is its document,
+                // which this device applies from now on.
+                let _following = crate::servers::applied::follow(
+                    &workspaces,
+                    crate::servers::applied::Requests::default(),
+                    Some(endpoint.clone()),
+                    state_root,
+                );
+                return;
+            }
+            Err(error) => {
+                tracing::info!(server = %hex::encode(server.device_public_key), %error, "a server did not hand this device its Servers workspace");
+            }
+        }
+        tokio::time::sleep(wait).await;
+        wait = wait.saturating_mul(2).min(Duration::from_secs(300));
+    }
 }
 
 /// Ask the person's earlier servers, in turn, to take this one in among
@@ -1527,21 +1597,25 @@ impl ProtocolHandler for ManagementProtocol {
             postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
                 .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
         let mut decommissioned = false;
-        let mut operation = ServerOperationResult::nothing();
         match request {
             HomePeerManagementRequest::Status => {}
-            HomePeerManagementRequest::Operate(asked) => {
-                // Everything an owner does to this server from another of
-                // their devices: read live where it reads, and ask a root-run
-                // helper where the machine itself has to change.
-                operation = crate::operations::operate(
-                    &self.state_root,
-                    self.workspaces.as_ref(),
-                    &self.identity.cert,
-                    asked,
-                )
-                .await
-                .map_err(|error| AcceptError::from_err(std::io::Error::other(error)))?;
+            HomePeerManagementRequest::RetiredOperate(_) => {
+                return Err(AcceptError::from_err(std::io::Error::other(
+                    "a server is operated through its person's Servers workspace, as an action",
+                )));
+            }
+            HomePeerManagementRequest::HoldAdmin { endpoint } => {
+                // A device of the person's holds their Servers workspace like
+                // any other workspace of theirs: it asks a server that holds
+                // it to take it in, and never makes one itself.
+                let workspaces = self.workspaces.as_ref().ok_or_else(|| {
+                    AcceptError::from_err(std::io::Error::other(
+                        "this home peer keeps no Servers workspace",
+                    ))
+                })?;
+                crate::servers::take_in(workspaces, &peer.cert, &endpoint)
+                    .await
+                    .map_err(|error| AcceptError::from_err(std::io::Error::other(error)))?;
             }
             HomePeerManagementRequest::Rename { label } => {
                 if !peer.cert.capabilities.can_admit_devices {
@@ -1652,7 +1726,6 @@ impl ProtocolHandler for ManagementProtocol {
                 files_ready,
                 services,
                 decommissioned,
-                operation,
             })
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?,
         )
@@ -1800,38 +1873,6 @@ mod tests {
     use tilo_user_identity::{
         DeviceCapabilities, DeviceCert, DeviceIdentity, UserIdentity, sign_device_cert,
     };
-
-    /// Stand in for the root-run helper that carries out an owner's
-    /// operations: answer every request written under `state_root` at the same
-    /// files the real helper uses, until the guard is dropped.
-    struct OperationsHelper(tokio::task::JoinHandle<()>);
-
-    impl Drop for OperationsHelper {
-        fn drop(&mut self) {
-            self.0.abort();
-        }
-    }
-
-    fn operations_helper(state_root: &std::path::Path) -> OperationsHelper {
-        let request = state_root.join(crate::operations::CONTROL_REQUEST);
-        let result = state_root.join(crate::operations::CONTROL_RESULT);
-        OperationsHelper(tokio::spawn(async move {
-            let mut seen = String::new();
-            loop {
-                if let Ok(text) = std::fs::read_to_string(&request)
-                    && text != seen
-                {
-                    seen = text.clone();
-                    let id = text
-                        .lines()
-                        .find_map(|line| line.strip_prefix("id="))
-                        .unwrap_or_default();
-                    std::fs::write(&result, format!("{id} 1\n")).unwrap();
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        }))
-    }
 
     fn identity(capabilities: DeviceCapabilities) -> ServerIdentity {
         let (root, user) = UserIdentity::generate("test user", 1);
@@ -2314,79 +2355,6 @@ mod tests {
                 "Living workspace NAS"
             );
             assert!(!temp.path().join("server/home-peer-name").exists());
-            // Everything its owner does to it from another of their devices
-            // comes over the same route: what it is, and a service restarted
-            // through the root-run helper (stood in for here, at the same
-            // request and answer files).
-            let _helper = operations_helper(&temp.path().join("server"));
-            let operated = |cert: DeviceCert, sk: ed25519_dalek::SigningKey, operation| {
-                let client_endpoint = client_endpoint.clone();
-                let addr = server.node_addr();
-                async move {
-                    crate::client::ServerClient::manage_home_peer(
-                        &client_endpoint,
-                        addr,
-                        user.public_key,
-                        host.public_key,
-                        cert,
-                        sk,
-                        RevocationList::new(),
-                        HomePeerManagementRequest::Operate(operation),
-                    )
-                    .await
-                }
-            };
-            let status = operated(
-                admin_cert.clone(),
-                admin_key.clone(),
-                crate::transport::ServerOperation::Status,
-            )
-            .await
-            .unwrap();
-            assert_eq!(status.operation.operation, "status");
-            assert!(
-                matches!(
-                    &status.operation.answer,
-                    crate::transport::ServerAnswer::Status(_)
-                ),
-                "{:?}",
-                status.operation
-            );
-            let restarted = operated(
-                admin_cert.clone(),
-                admin_key.clone(),
-                crate::transport::ServerOperation::Restart {
-                    service: "tilo-server.service".into(),
-                },
-            )
-            .await
-            .unwrap();
-            assert_eq!(restarted.operation.operation, "restart");
-            assert!(restarted.operation.done);
-            // Someone else's device is refused the route whatever it asks.
-            let (other_root, other_user) = UserIdentity::generate("someone else", 9);
-            let (other_key, other_device) = DeviceIdentity::generate("their laptop", 10);
-            let mut other_cert = DeviceCert {
-                user_public_key: other_user.public_key,
-                device_public_key: other_device.public_key,
-                device_label: other_device.label,
-                capabilities: DeviceCapabilities::primary(),
-                issued_at_ns: 4,
-                expires_at_ns: None,
-                signature: [0; 64],
-                issuer: None,
-            };
-            sign_device_cert(&mut other_cert, &other_root).unwrap();
-            assert!(
-                operated(
-                    other_cert,
-                    other_key,
-                    crate::transport::ServerOperation::Status,
-                )
-                .await
-                .is_err(),
-                "only the server's own person manages it"
-            );
             // Its OS update waits its turn in that admin workspace: the
             // update service asks on the server's socket, the server takes
             // the update lease and drains before it answers that the machine
@@ -2556,171 +2524,6 @@ mod tests {
             client_endpoint.close().await;
             server.shutdown().await;
         }
-    }
-
-    /// An owner's own device runs each operation on their server over the
-    /// owner-only route, and another person's device is refused.
-    #[tokio::test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario keeps the server, its owner's device and the other person's device side by side"
-    )]
-    async fn an_owner_operates_their_server_and_another_person_cannot() {
-        let temp = tempfile::tempdir().unwrap();
-        let (root, user) = UserIdentity::generate("owner", 1);
-        let (server_key, server_device) = DeviceIdentity::generate("server", 2);
-        let (client_key, client) = DeviceIdentity::generate("laptop", 3);
-        let mut server_cert = DeviceCert {
-            user_public_key: user.public_key,
-            device_public_key: server_device.public_key,
-            device_label: server_device.label,
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 4,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        let mut client_cert = DeviceCert {
-            user_public_key: user.public_key,
-            device_public_key: client.public_key,
-            device_label: client.label,
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 4,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut server_cert, &root).unwrap();
-        sign_device_cert(&mut client_cert, &root).unwrap();
-        let status_path = temp.path().join("status.json");
-        let bundle_path = temp.path().join("home-peer.toml");
-        let bundle = fs::full_replica::HomePeerSet {
-            status_file: status_path.clone(),
-            workspaces: vec![fs::full_replica::HomePeerBundle {
-                ticket: fs::Ticket {
-                    node: EndpointAddr::new(iroh::SecretKey::from_bytes(&[91; 32]).public()),
-                    workspace: [29; 32],
-                }
-                .encode()
-                .unwrap(),
-                cache_dir: temp.path().join("replica"),
-                capability_json: "[]".into(),
-                authority: None,
-                members: Vec::new(),
-                server_workspace_ids: vec![WorkspaceId::from_u128(0)],
-            }],
-        };
-        std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();
-        let state_root = temp.path().join("server");
-        let server = Server::start(
-            ServerConfig {
-                state_root: state_root.clone(),
-                full_replica_status: status_path,
-                home_peer_bundle: bundle_path,
-                services: crate::mesh::ServiceCapabilities::home_peer(),
-                packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
-                ..ServerConfig::default()
-            },
-            ServerIdentity {
-                user_public_key: user.public_key,
-                device_signing_key: server_key,
-                device_cert: server_cert,
-                revocations: RevocationList::new(),
-            },
-        )
-        .await
-        .unwrap();
-        let _helper = operations_helper(&state_root);
-        let client_endpoint = test_server::direct_endpoint().await;
-        let operated = |cert: DeviceCert, sk: ed25519_dalek::SigningKey, operation| {
-            let client_endpoint = client_endpoint.clone();
-            let addr = server.node_addr();
-            async move {
-                crate::client::ServerClient::manage_home_peer(
-                    &client_endpoint,
-                    addr,
-                    user.public_key,
-                    server_device.public_key,
-                    cert,
-                    sk,
-                    RevocationList::new(),
-                    HomePeerManagementRequest::Operate(operation),
-                )
-                .await
-            }
-        };
-        let status = operated(
-            client_cert.clone(),
-            client_key.clone(),
-            crate::transport::ServerOperation::Status,
-        )
-        .await
-        .unwrap();
-        assert_eq!(status.operation.operation, "status");
-        assert!(status.operation.done);
-        assert!(
-            matches!(
-                &status.operation.answer,
-                crate::transport::ServerAnswer::Status(_)
-            ),
-            "{:?}",
-            status.operation.answer
-        );
-        for operation in [
-            crate::transport::ServerOperation::Restart {
-                service: "tilo-server.service".into(),
-            },
-            crate::transport::ServerOperation::Update,
-            crate::transport::ServerOperation::PauseUpdates,
-            crate::transport::ServerOperation::ResumeUpdates,
-            crate::transport::ServerOperation::Logs {
-                service: "tilo-server.service".into(),
-                lines: 10,
-            },
-            crate::transport::ServerOperation::Drain,
-        ] {
-            let answered = operated(client_cert.clone(), client_key.clone(), operation)
-                .await
-                .unwrap();
-            assert!(answered.operation.done, "{:?}", answered.operation);
-        }
-        // Rebooting and rolling back answer what was asked, not a wait.
-        for operation in [
-            crate::transport::ServerOperation::Reboot,
-            crate::transport::ServerOperation::Rollback,
-        ] {
-            let answered = operated(client_cert.clone(), client_key.clone(), operation)
-                .await
-                .unwrap();
-            assert!(!answered.operation.done);
-        }
-
-        // Another person's device, however well certified, is refused.
-        let (other_root, other_user) = UserIdentity::generate("someone else", 9);
-        let (other_key, other_device) = DeviceIdentity::generate("their laptop", 10);
-        let mut other_cert = DeviceCert {
-            user_public_key: other_user.public_key,
-            device_public_key: other_device.public_key,
-            device_label: other_device.label,
-            capabilities: DeviceCapabilities::primary(),
-            issued_at_ns: 4,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut other_cert, &other_root).unwrap();
-        assert!(
-            operated(
-                other_cert,
-                other_key,
-                crate::transport::ServerOperation::Status,
-            )
-            .await
-            .is_err(),
-            "only the server's own person manages it"
-        );
-        client_endpoint.close().await;
-        server.shutdown().await;
     }
 
     #[test]

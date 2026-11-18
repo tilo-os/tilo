@@ -1346,7 +1346,6 @@ impl Device {
             // session records this process as the Files endpoint the login's unit would be.
             .env("TILO_FILES_ENDPOINT_PID", std::process::id().to_string())
             .env_remove("TILO_TEST_CONTROL")
-            .env_remove("TILO_MCP_SERVER")
             .env_remove("TILO_ADMIN_CONTROL")
             .env_remove("TILO_SHELL_JOIN_INVITATION_FILE")
             .env_remove("TILO_SHELL_JOIN_ADMINISTRATOR")

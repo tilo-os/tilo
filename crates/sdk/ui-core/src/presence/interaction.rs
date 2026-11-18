@@ -270,6 +270,7 @@ impl PresenceCtx {
         // A phase within the flash its invocation set off carries that flash
         // on.
         let pulsed_at = self.pulse_of(&interaction, now).or(pulsed);
+        self.supersede_on_its_items(&interaction);
         self.note_written(&interaction);
         self.interactions.insert(
             interaction.invocation,
@@ -328,6 +329,27 @@ impl PresenceCtx {
             .and_then(|at| at.checked_add(AGENT_TARGET_DWELL))
             .map_or(now, |rest_ends| rest_ends.max(now));
         (starts_at, pulsed)
+    }
+
+    /// An agent's step on an item takes the place of its earlier finished steps there: the item
+    /// says what it did last ("renamed"), not what it did before ("created").
+    fn supersede_on_its_items(&mut self, interaction: &SemanticInteraction) {
+        let items = anchored_items(interaction);
+        if items.is_empty() || interaction.actor.is_person() {
+            return;
+        }
+        for entry in self.interactions.values_mut().filter(|entry| {
+            entry.interaction.invocation != interaction.invocation
+                && entry.interaction.actor.by == interaction.actor.by
+                && entry.interaction.phase.is_terminal()
+        }) {
+            if anchored_items(&entry.interaction)
+                .iter()
+                .any(|item| items.contains(item))
+            {
+                entry.superseded = true;
+            }
+        }
     }
 
     /// When `interaction`'s arrival flashes its actor's cursor: now, unless
@@ -1240,6 +1262,22 @@ pub(crate) fn acted_item(interaction: &SemanticInteraction) -> Option<String> {
     id.rsplit_once('/').map(|(_, item)| item.to_owned())
 }
 
+/// The items `interaction`'s anchor names: the rows it acts on, or the items whose text it
+/// wrote (an issue, for its title or a comment under it, `<issue>/<comment>`).
+fn anchored_items(interaction: &SemanticInteraction) -> Vec<&str> {
+    match &interaction.anchor {
+        tilo_actions::InteractionAnchor::ListItems { ids } => {
+            ids.iter().map(String::as_str).collect()
+        }
+        tilo_actions::InteractionAnchor::Text { ranges, .. } => ranges
+            .iter()
+            .filter_map(|range| range.block.split('/').next())
+            .filter(|item| !item.is_empty())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// Whether `update` names what `current` named: the same resource, or the item a step on the
 /// resource made there, which it names once it landed. Its label is the app's to say
 /// ([`PresenceCtx::relabel_items`]), so it is no part of what the step acts on.
@@ -1968,6 +2006,43 @@ pub(crate) mod tests {
             1,
             "work nothing on the page shows keeps its card"
         );
+    }
+
+    #[test]
+    fn an_agents_later_step_on_an_item_takes_its_marks_place() {
+        let at = crate::time::now();
+        let mut presence = PresenceCtx::empty();
+        let mut created = interaction(120, 2, InteractionPhase::Committed);
+        created.action.id = "create".into();
+        created.anchor = InteractionAnchor::ListItems {
+            ids: vec!["7d2b".into()],
+        };
+        presence.apply_interaction_at(created, at).unwrap();
+        let mut renamed = interaction(121, 1, InteractionPhase::Applying);
+        presence.apply_interaction_at(renamed.clone(), at).unwrap();
+        let shown = |presence: &PresenceCtx| -> Vec<u128> {
+            presence
+                .visible_interactions(at + Duration::from_secs(1))
+                .iter()
+                .map(|shown| shown.invocation.0.as_u128())
+                .collect()
+        };
+        assert!(
+            shown(&presence).contains(&120),
+            "a step naming no item leaves it"
+        );
+        renamed.sequence = 2;
+        renamed.phase = InteractionPhase::Committed;
+        renamed.anchor = InteractionAnchor::Text {
+            region: "title".into(),
+            ranges: vec![tilo_actions::InteractionTextRange {
+                block: "7d2b".into(),
+                start: 0,
+                end: 11,
+            }],
+        };
+        presence.apply_interaction_at(renamed, at).unwrap();
+        assert_eq!(shown(&presence), [121], "the item says it was renamed");
     }
 
     tilo_test_env::scenario! {

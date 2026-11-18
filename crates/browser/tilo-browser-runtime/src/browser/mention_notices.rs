@@ -63,7 +63,10 @@ pub(super) fn role(
     store: tilo_session::platform::Store,
     peer: u32,
     person: &str,
-    name: Rc<dyn Fn(&str) -> String>,
+    (name, shown): (
+        tilo_session::mentions::Names,
+        tilo_session::mentions::OnScreen,
+    ),
     wake: std::sync::Arc<dyn Fn() + Send + Sync>,
 ) -> Mentions {
     Mentions::over(tilo_session::mentions::Given {
@@ -75,6 +78,7 @@ pub(super) fn role(
         })),
         notices: Some(crate::host_services::notices()),
         name,
+        shown,
         wake: Some(wake),
     })
 }
@@ -149,29 +153,40 @@ pub(super) fn over(
     person: &str,
     people: &Rc<RefCell<HashMap<String, crate::desktop::PersonIdentity>>>,
     here: &tilo_desktop::here::Here,
-    woken: &Arc<std::sync::atomic::AtomicBool>,
+    (shell, woken): (
+        &tilo_desktop_surface::DesktopHandle,
+        &Arc<std::sync::atomic::AtomicBool>,
+    ),
 ) -> Mentions {
+    let shell = shell.clone();
     role(
         store,
         asks.peer().unwrap_or_default(),
         person,
-        name_of(here, people),
+        (
+            name_of(here, people),
+            Rc::new(move |app: &str, item: &str| shell.shows_item(app, item)),
+        ),
         waking(woken),
     )
 }
 
-/// The name the person's page knows `user` by: who is here, else who it has met, else a guest's.
+/// The name the person's page knows `user` by: a person who is here, else one it has met, else
+/// what a member nobody named is called.
 fn name_of(
     here: &tilo_desktop::here::Here,
     people: &Rc<RefCell<HashMap<String, crate::desktop::PersonIdentity>>>,
-) -> Rc<dyn Fn(&str) -> String> {
+) -> tilo_session::mentions::Names {
     let seen = Rc::clone(here);
     let known = Rc::clone(people);
-    Rc::new(move |user: &str| {
-        seen.borrow()
-            .person(user)
-            .or_else(|| known.borrow().get(user).cloned())
-            .map_or_else(tilo_desktop::here::guest_label, |(name, _)| name)
+    Rc::new(move |user: &ui::MemberId| {
+        user.person_id()
+            .and_then(|person| {
+                seen.borrow()
+                    .person(person)
+                    .or_else(|| known.borrow().get(person).cloned())
+            })
+            .map_or_else(|| ui::presence::unnamed_label(user), |(name, _)| name)
     })
 }
 

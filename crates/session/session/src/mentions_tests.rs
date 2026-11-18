@@ -26,12 +26,20 @@ const NOTES: &str = "so.tilo.notes";
 const CHAT: &str = "so.tilo.chat";
 const WORKSPACE: &str = "6d1c1f36-0000-4000-8000-000000000001";
 
-fn name(id: &str) -> String {
-    match id {
+const SCRIBE: &str = "scribe";
+
+fn name(member: &ui::MemberId) -> String {
+    match member.id() {
         ADA => "Ada".into(),
         BEA => "Bea".into(),
-        _ => id.into(),
+        SCRIBE if member.is_agent() => "Scribe".into(),
+        _ => ui::presence::unnamed_label(member),
     }
+}
+
+/// No window on screen shows anything.
+fn nothing_shown() -> OnScreen {
+    Rc::new(|_, _| false)
 }
 
 /// A device's records: the store they are kept in, the one stream their writes land in, and the
@@ -106,6 +114,11 @@ impl Device {
 
     /// The role over these records for `person`, telling them through `shown`.
     fn role_as(&self, person: &str, shown: &Rc<Shown>) -> Mentions {
+        self.role_seeing(person, shown, nothing_shown())
+    }
+
+    /// [`Self::role_as`], with the windows on screen showing what `on_screen` says.
+    fn role_seeing(&self, person: &str, shown: &Rc<Shown>, on_screen: OnScreen) -> Mentions {
         Mentions::over(Given {
             person: vec![person.to_owned()],
             store: Some(self.store.clone()),
@@ -114,6 +127,7 @@ impl Device {
             ),
             notices: Some(Rc::clone(shown) as Rc<dyn Notices>),
             name: Rc::new(name),
+            shown: on_screen,
             wake: None,
         })
     }
@@ -437,6 +451,7 @@ tilo_test_env::scenario! {
                 tree: None,
                 quiet: false,
                 read: &reading_nothing,
+                shown: &|_, _| false,
             },
             &me,
             &name,
@@ -457,23 +472,47 @@ fn post(
     text: &str,
     write_value: &dyn Fn(&mut AutoCommit, &ObjId),
 ) {
+    say(
+        part,
+        id,
+        (&ui::MemberId::person(ADA), "c_general"),
+        text,
+        Some(write_value),
+    );
+}
+
+/// What writes a mention's mark value into its span.
+type WriteValue<'a> = &'a dyn Fn(&mut AutoCommit, &ObjId);
+
+/// Post message `id` by `author` in the conversation `to` into `part`: a paragraph, whose mark
+/// span names Bea where `write_value` writes its value.
+fn say(
+    part: &mut AutoCommit,
+    id: &str,
+    (author, to): (&ui::MemberId, &str),
+    text: &str,
+    write_value: Option<WriteValue<'_>>,
+) {
     let messages = match part.get(ROOT, "messages").unwrap() {
         Some((_, messages)) => messages,
         None => part.put_object(ROOT, "messages", ObjType::Map).unwrap(),
     };
     let entry = part.put_object(&messages, id, ObjType::Map).unwrap();
     let message = part.put_object(&entry, "v", ObjType::Map).unwrap();
-    part.put(&message, "author", member_value(ADA)).unwrap();
-    part.put(&message, "channel", "c_general").unwrap();
+    part.put(&message, "author", serde_json::to_string(author).unwrap())
+        .unwrap();
+    part.put(&message, "channel", to).unwrap();
     let body = part.put_object(&message, "body", ObjType::List).unwrap();
     let block = part.insert_object(&body, 0, ObjType::Map).unwrap();
     part.put(&block, "text", text).unwrap();
-    let marks = part.put_object(&block, "marks", ObjType::List).unwrap();
-    let span = part.insert_object(&marks, 0, ObjType::Map).unwrap();
-    part.put(&span, "start", 0_i64).unwrap();
-    part.put(&span, "end", 4_i64).unwrap();
-    part.put(&span, "name", MARK).unwrap();
-    write_value(part, &span);
+    if let Some(write_value) = write_value {
+        let marks = part.put_object(&block, "marks", ObjType::List).unwrap();
+        let span = part.insert_object(&marks, 0, ObjType::Map).unwrap();
+        part.put(&span, "start", 0_i64).unwrap();
+        part.put(&span, "end", 4_i64).unwrap();
+        part.put(&span, "name", MARK).unwrap();
+        write_value(part, &span);
+    }
     part.commit();
 }
 
@@ -532,6 +571,103 @@ fn chat_part_mention(write_value: &dyn Fn(&mut AutoCommit, &ObjId)) {
         .collect();
     places.sort();
     assert_eq!(places, vec![opens("m1"), opens("m2")], "{up:?}");
+}
+
+/// Bea's conversation with her agent Scribe, by id.
+fn with_scribe() -> String {
+    ui::MemberId::direct_conversation([ui::MemberId::person(BEA), ui::MemberId::agent(SCRIBE)])
+}
+
+/// Chat's messages on Bea's device, and what her mentions over them told her.
+struct Talk {
+    shown: Rc<Shown>,
+    device: Device,
+    route: String,
+    part: AutoCommit,
+    mentions: Mentions,
+}
+
+/// What Bea is told of `said` (id, author, words) in her conversation with Scribe, while a window
+/// on screen shows what `on_screen` takes (app, item).
+fn bea_and_scribe(said: &[(&str, ui::MemberId, &str)], on_screen: OnScreen) -> Talk {
+    ui::app_surface::register_built_in(CHAT, CHAT_SURFACE);
+    let part_id = DocumentId::derived("messages", &DocumentId::workspace_default()).part(0);
+    let mut part = AutoCommit::new();
+    ui::resource::init(
+        &mut part,
+        &part_id,
+        &ResourceType::new("chat.messages"),
+        "workspace",
+    );
+    for (id, author, text) in said {
+        say(&mut part, id, (author, &with_scribe()), text, None);
+    }
+    let route = part_id.as_str().to_owned();
+    let device = Device::holding(&[(CHAT, "", &AutoCommit::new()), (CHAT, &route, &part)]);
+    let shown = Rc::new(Shown::default());
+    let mentions = device.role_seeing(BEA, &shown, on_screen);
+    mentions.step();
+    Talk {
+        shown,
+        device,
+        route,
+        part,
+        mentions,
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_direct_message_tells_only_the_others_and_only_where_they_do_not_see_it;
+
+    phase the_persons_own_message_to_their_agent_tells_them_nothing;
+    // Bea asks her agent something: she wrote it, on whichever of her devices, so none tells her.
+    {
+        let asked = [("m1", ui::MemberId::person(BEA), "Rename the task")];
+        let shown = bea_and_scribe(&asked, nothing_shown()).shown;
+        assert!(shown.up.borrow().is_empty(), "{:?}", shown.up.borrow());
+    }
+
+    phase the_agents_answer_is_told_under_its_own_name;
+    // Her agent's answer is news for her, named as the workspace names the agent: never a guest.
+    {
+        let answered = [("m2", ui::MemberId::agent(SCRIBE), "Renamed it")];
+        let shown = bea_and_scribe(&answered, nothing_shown()).shown;
+        let up = shown.up.borrow();
+        assert_eq!(up.len(), 1, "{up:?}");
+        assert_eq!(up.values().next().unwrap().title, "Scribe wrote to you");
+    }
+
+    phase an_answer_in_the_conversation_on_screen_tells_nothing;
+    // The conversation stands open in a window she sees: the answer is before her and no notice
+    // covers it, nor comes once she looks away. A message in a conversation she does not see is
+    // told.
+    {
+        let seeing = Rc::new(std::cell::Cell::new(true));
+        let on_screen = {
+            let seeing = Rc::clone(&seeing);
+            // The window shows the conversation as Chat's item.
+            let open = format!("/{}", with_scribe());
+            Rc::new(move |app: &str, item: &str| {
+                seeing.get() && app == CHAT && item.starts_with("chat.workspace/") && item.ends_with(&open)
+            })
+        };
+        let answered = [("m3", ui::MemberId::agent(SCRIBE), "Working")];
+        let Talk { shown, device, route, mut part, mentions } =
+            bea_and_scribe(&answered, on_screen);
+        assert!(shown.up.borrow().is_empty(), "{:?}", shown.up.borrow());
+
+        seeing.set(false);
+        let scribe = ui::MemberId::agent(SCRIBE);
+        say(&mut part, "m3", (&scribe, &with_scribe()), "Renamed it", None);
+        let ada = ui::MemberId::person(ADA);
+        let with_ada = ui::MemberId::direct_conversation([ui::MemberId::person(BEA), ada.clone()]);
+        say(&mut part, "m4", (&ada, &with_ada), "Lunch?", None);
+        device.writes(CHAT, &route, &mut part);
+        look_again(&mentions);
+        let up = shown.up.borrow();
+        let titles: Vec<&str> = up.values().map(|notice| notice.title.as_str()).collect();
+        assert_eq!(titles, ["Ada wrote to you"], "{up:?}");
+    }
 }
 
 /// A device's records as a page reads them: what changed of a record since some heads, apart from
@@ -683,6 +819,7 @@ fn a_large_record_is_read_whole_only_for_the_change_that_mentions_the_person() {
         records: Some(Rc::clone(&records) as Rc<dyn Records>),
         notices: Some(Rc::clone(&shown) as Rc<dyn Notices>),
         name: Rc::new(name),
+        shown: nothing_shown(),
         wake: None,
     });
     // Each look a second after the one before, past the pause the role keeps between looks.
@@ -764,6 +901,7 @@ fn a_large_record_is_read_whole_only_for_the_change_that_mentions_the_person() {
         records: Some(Rc::clone(&records) as Rc<dyn Records>),
         notices: Some(Rc::clone(&shown) as Rc<dyn Notices>),
         name: Rc::new(name),
+        shown: nothing_shown(),
         wake: None,
     });
     comment(&device, &mut doc, 11, None);

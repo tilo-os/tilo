@@ -1816,7 +1816,8 @@ impl FrameHarness {
         let (resource, action) =
             crate::bound_dispatch::history_action_resource(&snapshots, binding, request)?;
         let address = tilo_actions::ActionAddress::new(resource.id.as_str(), action);
-        self.invoke_address(&address, &serde_json::Map::new(), false)
+        let author = tilo_actions::Actor::Member(self.author.clone());
+        self.invoke_address(&author, &address, &serde_json::Map::new(), false)
     }
 
     /// Undo the last action as the live host does, through
@@ -8149,12 +8150,32 @@ impl FrameHarness {
         confirm: bool,
         confirmation_phrase: Option<&str>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+        let author = tilo_actions::Actor::Member(self.author.clone());
+        self.invoke_action_as(&author, address, arguments, confirm, confirmation_phrase)
+    }
+
+    /// [`Self::invoke_action`] for `actor`, which need not be the person at
+    /// this device: an agent or another member calling the app.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::invoke_action`], and the refusals of a caller who is not
+    /// this device's person.
+    pub fn invoke_action_as(
+        &mut self,
+        actor: &tilo_actions::Actor,
+        address: &tilo_actions::ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirm: bool,
+        confirmation_phrase: Option<&str>,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.invalidate_local();
         self.pump_component_wakes();
         let _ = crate::widget::take_presses();
         let resources = self.resources();
         let spec = tilo_actions::api::resolve(&resources, address)
             .ok_or_else(|| tilo_actions::ApiError::Unknown(address.clone()))?;
+        crate::invocation_scope::check_shown_here(actor, &self.author, spec)?;
         if let tilo_actions::Availability::Unavailable { code, reason } =
             &spec.contract.availability
         {
@@ -8190,7 +8211,7 @@ impl FrameHarness {
         } else if controls::is_control_operation(spec) {
             self.invoke_control_action(address, arguments)
         } else {
-            self.invoke_address(address, arguments, confirmed)
+            self.invoke_address(actor, address, arguments, confirmed)
         };
         self.host_tick();
         self.settle_owed();
@@ -8280,6 +8301,7 @@ impl FrameHarness {
 
     fn invoke_address(
         &mut self,
+        actor: &tilo_actions::Actor,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirmed: bool,
@@ -8293,8 +8315,7 @@ impl FrameHarness {
         .and_then(|snapshots| crate::bound_dispatch::select_bound_target(&snapshots, address, None))
         .map_err(crate::bound_dispatch::BoundActionError::into_api)?;
         let argument = crate::app_core::json_argument(arguments);
-        let author = tilo_actions::Actor::Member(self.author.clone());
-        let request = crate::app_core::ResourceInvocation::new(address, &author)
+        let request = crate::app_core::ResourceInvocation::new(address, actor)
             .argument(Some(&argument))
             .confirmed(confirmed);
         match selected {

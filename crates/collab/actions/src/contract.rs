@@ -556,10 +556,11 @@ pub enum ResultSpec {
 read_through_json_value!(ResultSpec);
 
 /// The fields a write adds beside the answer it declared: the ids it minted
-/// (`minted`) and each item it made, with the item's id and the address it is
-/// published under (`made`). What a create answers its caller, whether or not
-/// its action declares a result.
-pub const MADE_FIELDS: [&str; 2] = ["made", "minted"];
+/// (`minted`), each item it made, with the item's id and the address it is
+/// published under (`made`), and the text it wrote (`wrote`,
+/// [`crate::ActionOutput::wrote`]). What a write answers its caller, whether or
+/// not its action declares a result.
+pub const MADE_FIELDS: [&str; 3] = ["made", "minted", "wrote"];
 
 impl crate::ActionOutput {
     /// The answer the action declared, without what a write adds beside it
@@ -900,6 +901,18 @@ impl ActionContract {
     /// ([`ATTENDED_TAG`]).
     pub fn runs_on_invokers_device(&self) -> bool {
         self.is_own_device() || self.is_attended()
+    }
+
+    /// Whether an effect under this contract only changes what is on the
+    /// screen it is invoked on: it reads, answers nothing and asks no one (a
+    /// form it opens, a panel or a place it shows). Only the person at that
+    /// screen invokes it; for anyone else it would move their window and tell
+    /// the caller nothing.
+    pub fn only_shows(&self) -> bool {
+        self.kind == ActionKind::Read
+            && matches!(self.result, ResultSpec::None)
+            && !self.is_own_device()
+            && !self.is_attended()
     }
 
     /// Who the action is listed for, as its tags record it. See [`Audience`].

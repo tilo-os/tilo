@@ -596,7 +596,7 @@ struct GovernedMember {
 /// keys made for them, and whom nobody named, has no name here, and the row
 /// says so rather than borrowing a key's.
 #[derive(Default)]
-struct Naming {
+pub(super) struct Naming {
     /// The name of their own device whose certificate was issued earliest,
     /// with when it was issued and that device's key, the tie-break.
     own: Option<(u64, [u8; 32], String)>,
@@ -607,12 +607,13 @@ impl Naming {
     /// own: one they hold and act with, not one made to act for them. `theirs`
     /// is false for a delegate of theirs — an agent or an installed bot — which
     /// goes by a name of its own whatever its certificate says.
-    fn learn(&mut self, identity: &DeviceCert, theirs: bool, name: Option<&str>) {
+    pub(super) fn learn(&mut self, identity: &DeviceCert, theirs: bool, name: Option<&str>) {
         let capabilities = &identity.capabilities;
         if !theirs || capabilities.agent.is_some() || capabilities.stand_in {
             return;
         }
-        let Some(name) = name.filter(|name| !name.trim().is_empty()) else {
+        // The stand-in a device nobody named carries ("Primary device") is no name of the person's.
+        let Some(name) = name.and_then(tilo_user_identity::device_name) else {
             return;
         };
         let issued = identity.issued_at_ns;
@@ -628,7 +629,7 @@ impl Naming {
     }
 
     /// The person's name here, when the workspace recorded one.
-    fn name(&self) -> Option<&str> {
+    pub(super) fn name(&self) -> Option<&str> {
         self.own.as_ref().map(|(_, _, name)| name.as_str())
     }
 }

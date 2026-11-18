@@ -1,3 +1,29 @@
+tilo-servers-ask-operation = Einen Server um etwas bitten
+tilo-servers-set-floor-key = Rollback-Schlüssel festlegen
+tilo-servers-answer-operation = Festhalten, was ein Server geantwortet hat
+
+## Actions
+
+tilo-servers = Server
+tilo-servers-enroll-server = Server hinzufügen
+tilo-servers-plan-machine = Einen Rechner planen, der noch nicht installiert ist
+tilo-servers-begin-install = Der Rechner ist beigetreten und installiert
+tilo-servers-answer-machine-choice = Eine Frage seines Rechners beantworten
+tilo-servers-finish-install = Die Installation des Rechners ist fertig
+tilo-servers-rename-server = Server umbenennen
+tilo-servers-hold-workspace = Arbeitsbereich halten
+tilo-servers-release-workspace = Arbeitsbereich freigeben
+tilo-servers-set-appetite = Angebot festlegen
+tilo-servers-set-updates = Die Updates festlegen, denen ein Server folgt
+tilo-servers-set-maintenance-window = Wartungsfenster festlegen
+tilo-servers-set-unlock-policy = Entsperrung festlegen
+tilo-servers-set-hostname = Hostnamen festlegen
+tilo-servers-use-disk = Eine Festplatte verwenden
+tilo-servers-release-disk = Eine Festplatte freigeben
+tilo-servers-set-interface = Eine Netzwerkschnittstelle einrichten
+tilo-servers-release-interface = Eine Netzwerkschnittstelle nicht mehr einrichten
+tilo-servers-report-device-config = Festhalten, was sein Rechner angewendet hat
+tilo-servers-retire-server = Server stilllegen
 # The name a person's own workspace gets when they do not name it, read in
 # their language when they found it.
 workspace-default-name = Mein Arbeitsbereich

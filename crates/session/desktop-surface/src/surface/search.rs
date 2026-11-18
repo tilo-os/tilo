@@ -767,35 +767,6 @@ fn workspace_holding(tree: &Layout, strip: StripId) -> Option<String> {
         .map(|workspace| workspace.id().to_string())
 }
 
-/// The people in the active workspace, as search finds them, and its workspace.
-fn people(
-    tree: &Layout,
-) -> (
-    String,
-    Vec<tilo_desktop_search::providers::people::PersonEntry>,
-) {
-    let Some(workspace) = tree.active_workspace() else {
-        return (String::new(), Vec::new());
-    };
-    let people = workspace
-        .members
-        .iter()
-        .filter(|member| !member.name.trim().is_empty())
-        .map(
-            |member| tilo_desktop_search::providers::people::PersonEntry {
-                id: member.id.id().to_owned(),
-                name: member.name.clone(),
-                activity: workspace
-                    .present
-                    .iter()
-                    .find(|here| here.member == member.id)
-                    .and_then(|here| here.app.clone()),
-            },
-        )
-        .collect();
-    (workspace.id().to_string(), people)
-}
-
 /// What search offers to do, in this order: the host's actions (a workspace's own, the session's),
 /// then what the focused window allows (no close for a window someone else holds, `held` ), then
 /// the other workspaces. Each row says whether it may stand there with nothing typed: closing a
@@ -1092,34 +1063,34 @@ impl DesktopSurface {
         doc: &AutoCommit,
         scope: &Scope,
     ) -> (SearchData, Option<tilo_desktop_search::Usage>) {
-        let (windows, commands, (workspace, people), host) = {
+        let (windows, commands, workspace, search_host) = {
             let shared = self.shared.borrow();
             (
                 windows(&shared.tree, &shared.holders),
                 commands(&shared.tree, &shared.host_actions, &|tab| {
                     shared.holders.contains_key(&tab)
                 }),
-                people(&shared.tree),
+                shared
+                    .tree
+                    .active_workspace()
+                    .map(|workspace| workspace.id().to_string())
+                    .unwrap_or_default(),
                 shared.search_host.clone(),
             )
         };
-        let mut feed = host
-            .map(|host| host.feed(&workspace, scope))
+        let mut feed = search_host
+            .map(|search| search.feed(&workspace, scope))
             .unwrap_or_default();
         let usage = feed.usage.take();
         let mut applications = self.tiles.search_applications();
         applications.extend(feed.applications);
-        let mut sources = feed.sources;
-        sources.push(tilo_desktop_search::Held::new(
-            tilo_desktop_search::providers::people::People::new(workspace, people),
-        ));
         let mut data = SearchData {
             applications,
             windows,
             commands,
             scope: scope.clone(),
             published: feed.published,
-            sources,
+            sources: feed.sources,
             preferences: feed.preferences,
             now: feed.now,
             ..SearchData::default()

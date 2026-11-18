@@ -594,39 +594,13 @@ impl Shared {
         people_of(self.recipients())
     }
 
-    /// The agents, people and conversations a message can go to, the most recent first, with
-    /// reporting a problem last: what the apps published and who is here, then every member the
-    /// workspace's governance lists — a person or the software that works beside them — except the
-    /// person sitting here, who sends nothing to themselves.
+    /// Whom a message can go to, the most recent first, with reporting a problem last: who can be
+    /// found in the workspace here ([`crate::search::SessionSearch::recipients`]), the list desktop
+    /// search reads too.
     pub(crate) fn recipients(&self) -> Vec<Recipient> {
-        let workspace = self.active_workspace_id();
-        let mut found = self.search.recipients(&workspace);
-        if let Some(engine) = &self.engine
-            && let Ok(members) = engine.people(&workspace)
-        {
-            for member in members {
-                if member.removed || member.is_self {
-                    continue;
-                }
-                let kind = match &member.id {
-                    tilo_action_policy::MemberId::Person(_) => RecipientKind::Person,
-                    tilo_action_policy::MemberId::Agent(_)
-                    | tilo_action_policy::MemberId::Bot(_) => RecipientKind::Agent,
-                };
-                found.push(Recipient::found(kind, member.id.id(), member.name));
-            }
-        }
+        let mut found = self.search.recipients(&self.active_workspace_id());
         found.push(self.feedback_row());
-        let mut out: Vec<Recipient> = Vec::new();
-        for recipient in found {
-            if !out
-                .iter()
-                .any(|kept| kept.kind == recipient.kind && kept.id == recipient.id)
-            {
-                out.push(recipient);
-            }
-        }
-        out
+        found
     }
 }
 

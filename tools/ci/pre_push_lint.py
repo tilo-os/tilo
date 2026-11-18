@@ -475,6 +475,12 @@ def reading_packages(root: Path, paths: list[str]) -> list[str]:
         return []
 
 
+def whole_workspace(packages: dict, members: set[str], metadata: dict) -> Selection:
+    """Every member, and the page: what a change that reaches how all of them build is linted as."""
+    web = (wasm_crates(packages) | {PAGE_ENTRY}) & members
+    return Selection(sorted(members), sorted(web), [], metadata)
+
+
 def select(root: Path, push: Push, files: set[str], wide: bool = True) -> Selection | None:
     """The packages to lint for the host and the page, or None when the push cannot be named.
 
@@ -507,15 +513,15 @@ def select(root: Path, push: Push, files: set[str], wide: bool = True) -> Select
         reached = lock_seeds(root, push, members)
         if reached is None:
             say(f"pre-push: {WORKSPACE_LOCK}'s change cannot be attributed to the packages it "
-                "reaches; that reaches the whole workspace and only CI builds all of it")
-            return None
+                "reaches, so the whole workspace is linted")
+            return whole_workspace(packages, members, metadata)
         seeds |= reached
     if WORKSPACE_MANIFEST in files:
         reached = manifest_seeds(root, push, metadata)
         if reached is None:
-            say(f"pre-push: {WORKSPACE_MANIFEST}'s change decides how every member is built, which "
-                "only a workspace-wide lint speaks for (`t cargo clippy --workspace`)")
-            return None
+            say(f"pre-push: {WORKSPACE_MANIFEST}'s change decides how every member is built, so "
+                "the whole workspace is linted")
+            return whole_workspace(packages, members, metadata)
         seeds |= reached
     if not wide:
         return Selection(sorted(seeds), [], [], metadata)

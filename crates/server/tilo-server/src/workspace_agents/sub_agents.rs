@@ -149,7 +149,7 @@ fn conversation_of(agent: &Agent) -> String {
 }
 
 /// The conversation `message` is in, as Chat names it.
-fn conversation_id(message: &Message) -> &Id {
+pub(super) fn conversation_id(message: &Message) -> &Id {
     &message.channel
 }
 
@@ -243,9 +243,19 @@ pub(super) struct Own {
     /// goes into that reply while it writes, and into no other. None for a turn that answers
     /// no message.
     reply: Option<String>,
+    /// The messages that reply's answer went on in, where it is longer than one message
+    /// holds: the ids this server derived for this one turn. What its model writes goes into
+    /// those as into its reply, and into no other message.
+    followed: super::written::Followed,
 }
 
 impl Own {
+    /// The messages the answer of the turn that answers with `reply` goes on in, for that
+    /// turn's writer to add to as its server derives them: none for another turn's.
+    pub(super) fn followed_by(&self, reply: Option<&str>) -> Option<super::written::Followed> {
+        (reply.is_some() && self.reply.as_deref() == reply).then(|| self.followed.clone())
+    }
+
     /// Whether `text` names nobody Chat would bind a mention to.
     fn names_nobody(&self, text: &str) -> bool {
         self.members
@@ -328,11 +338,12 @@ pub(super) fn admits(own: &Own, caller: &Caller, request: &InvokeRequest) -> boo
         plain && only(&[TO, "text"])
     } else if action == sub::OWN_GROWTH {
         // Chat makes a message of a reply it does not hold yet, in whatever conversation the
-        // call names and under whatever name it gives: so only the reply its turn answers,
-        // where it works, and nothing said beside.
+        // call names and under whatever name it gives: so only the reply its turn answers
+        // and the messages its server derived for that answer to go on in, where it works,
+        // and nothing said beside.
         own.reply.as_deref().is_some_and(|reply| {
             said(TO) == Some(own.conversation.as_str())
-                && said("reply") == Some(reply)
+                && said("reply").is_some_and(|named| named == reply || own.followed.holds(named))
                 && only(&[TO, "reply", "event"])
         })
     } else {
@@ -661,6 +672,7 @@ impl HostAgents {
             conversation: conversation.to_owned(),
             members,
             reply: None,
+            followed: super::written::Followed::default(),
         }
     }
 
@@ -1147,6 +1159,7 @@ mod tests {
             conversation: "own".to_owned(),
             members,
             reply: None,
+            followed: super::super::written::Followed::default(),
         };
         let kept = own(Some(named([
             (
@@ -1201,6 +1214,7 @@ mod tests {
             conversation: "own".to_owned(),
             members: Some(Vec::new()),
             reply: Some("m_reply_own".to_owned()),
+            followed: super::super::written::Followed::default(),
         };
         let caller = Caller::agent_turn(
             "writer",
@@ -1251,6 +1265,40 @@ mod tests {
             ),
         ] {
             assert!(!taken(&own, said), "{what} it is refused");
+        }
+        // Where its answer went on past one message, the message its server derived for it
+        // takes its model's words as its reply does, and no other message does.
+        let went_on = Own {
+            followed: super::super::written::Followed::of(&["m_reply_next"]),
+            ..own.clone()
+        };
+        assert!(
+            taken(&went_on, said("own", "m_reply_next", None)),
+            "into the message its server derived for its answer to go on in"
+        );
+        for (what, own, said) in [
+            (
+                "into a message no server derived for its turn",
+                &own,
+                said("own", "m_reply_next", None),
+            ),
+            (
+                "into another message than the one derived",
+                &went_on,
+                said("own", "m_reply_other", None),
+            ),
+            (
+                "into the derived message, named in its starter's conversation,",
+                &went_on,
+                said("thread", "m_reply_next", None),
+            ),
+            (
+                "into the derived message under a name of its choosing",
+                &went_on,
+                said("own", "m_reply_next", Some(("name", json!("Ada")))),
+            ),
+        ] {
+            assert!(!taken(own, said), "{what} it is refused");
         }
         let answers_none = Own { reply: None, ..own };
         assert!(

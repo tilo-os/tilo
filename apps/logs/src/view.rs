@@ -121,7 +121,7 @@ fn severity_options() -> Vec<(String, String)> {
 
 /// Paint a row's severity badge, leading in its cell and centred on the row.
 pub(crate) fn severity_style(priority: Priority) -> ChipStyle {
-    match priority.tone() {
+    match crate::model::tone(priority) {
         ui::widget::Tone::Neutral => ChipStyle::Neutral,
         tone => ChipStyle::Tinted(tone),
     }
@@ -133,8 +133,12 @@ fn journal_table() -> DataTable<JournalRow> {
         ColumnDef::new("time", "Time", ColumnWidth::Auto)
             .with_kind(TextKind::Numeric)
             .with_text(|row: &JournalRow| row.time.clone()),
-        ColumnDef::new("level", "Level", ColumnWidth::Auto)
-            .with_badge(|row: &JournalRow| (row.priority.long().to_owned(), row.priority.tone())),
+        ColumnDef::new("level", "Level", ColumnWidth::Auto).with_badge(|row: &JournalRow| {
+            (
+                row.priority.long().to_owned(),
+                crate::model::tone(row.priority),
+            )
+        }),
         ColumnDef::new("unit", "Unit", ColumnWidth::Auto)
             .with_text(|row: &JournalRow| row.unit.clone())
             .priority(1),

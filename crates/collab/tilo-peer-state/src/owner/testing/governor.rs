@@ -379,9 +379,9 @@ impl TestGovernor {
     }
 
     /// Let `member`'s device sign into the workspace a delegation of their own
-    /// work to `server`, and publish it with the server named as a holder of
-    /// its own: what every device reads as their work given to that server,
-    /// until `expires_at_ns`.
+    /// work to `server`, letting it use none of their vault items, and publish
+    /// it with the server named as a holder of its own: what every device
+    /// reads as their work given to that server, until `expires_at_ns`.
     pub fn delegate_work(
         &mut self,
         member: (&DeviceCert, &SigningKey),

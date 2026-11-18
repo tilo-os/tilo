@@ -82,7 +82,7 @@ mod own;
 #[cfg(not(target_arch = "wasm32"))]
 mod packaged_model;
 #[cfg(not(target_arch = "wasm32"))]
-pub use packaged_model::PackagedAction;
+pub use packaged_model::{PackagedAction, packaged_action_verb};
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod packaged_model_tests;
 mod pages;
@@ -145,6 +145,7 @@ pub use sealed_documents::fixtures as sealed_fixtures;
 mod desktop_document;
 #[cfg(test)]
 mod naming_tests;
+pub mod servers;
 mod shares;
 #[cfg(test)]
 pub(crate) mod tests;

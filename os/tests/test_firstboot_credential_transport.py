@@ -69,7 +69,8 @@ exit "${FIXTURE_SEEDS_FAILURE-0}" """,
 
 
 class CredentialTransportTests(unittest.TestCase):
-    def run_firstboot(self, root, full_name, seeded_home, fail_password=False, fail_seeds=False):
+    def start_firstboot(self, root, full_name, seeded_home, fail_password=False, fail_seeds=False,
+                      server_image=False):
         credential = root / "install-user.conf"
         credential.write_text("fixtureuser:" + SYNTHETIC_HASH + "\n")
         credential.chmod(0o600)
@@ -82,8 +83,11 @@ class CredentialTransportTests(unittest.TestCase):
             home.mkdir(parents=True)
         (root / "home").mkdir(exist_ok=True)
         seeds = root / "home-seeds"
+        flavour = root / "image-flavour"
+        flavour.write_text("server\n" if server_image else "release\n")
         source = SOURCE.read_text()
         replacements = {
+            '${TILO_IMAGE_FLAVOUR_FILE:-/usr/lib/tilo/image-flavour}': str(flavour),
             "CONF=/etc/tilo/install-user.conf": f"CONF={credential}",
             "FULL_NAME_CONF=/etc/tilo/install-user-full-name": f"FULL_NAME_CONF={name}",
             "TRANSACTION=/etc/tilo/install-user.transaction": f"TRANSACTION={root}/install-user.transaction",
@@ -123,6 +127,8 @@ class CredentialTransportTests(unittest.TestCase):
                            FIXTURE_ROOT=str(root), FIXTURE_PASSWORD_FAILURE=str(int(fail_password)),
                            FIXTURE_SEEDS_FAILURE=str(int(fail_seeds)))
         result = subprocess.run(["bash", str(script)], env=environment, capture_output=True, text=True)
+        if server_image:
+            return result, credential
         arguments = json.loads((root / "useradd.json").read_text())
         self.assertNotIn(SYNTHETIC_HASH, arguments, "password hashes must not be process arguments")
         self.assertRegex(arguments[arguments.index("-p") + 1], r"^!tilo-firstboot-[a-f0-9]{32}$")
@@ -146,21 +152,31 @@ class CredentialTransportTests(unittest.TestCase):
             for seeded_home in [False, True]:
                 with self.subTest(full_name=full_name, seeded_home=seeded_home):
                     with tempfile.TemporaryDirectory() as work:
-                        result, credential = self.run_firstboot(Path(work), full_name, seeded_home)
+                        result, credential = self.start_firstboot(Path(work), full_name, seeded_home)
                         self.assertEqual(result.returncode, 0, result.stderr)
                         self.assertFalse(credential.exists())
 
     def test_seed_failure_never_installs_password_or_discards_repair_seed(self):
         with tempfile.TemporaryDirectory() as work:
-            result, credential = self.run_firstboot(Path(work), False, False, fail_seeds=True)
+            result, credential = self.start_firstboot(Path(work), False, False, fail_seeds=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("account remains locked", result.stderr)
             self.assertNotIn("created account", result.stdout)
             self.assertTrue(credential.exists())
 
+    def test_server_image_refuses_a_credential_seed(self):
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work)
+            result, credential = self.start_firstboot(root, True, False, server_image=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("has no login account", result.stderr)
+            self.assertFalse(credential.exists(), "the refused seed must not stay")
+            self.assertFalse((root / "useradd.json").exists(), "no account is created")
+            self.assertNotIn(SYNTHETIC_HASH, result.stdout + result.stderr)
+
     def test_password_install_failure_never_creates_an_unlocked_account(self):
         with tempfile.TemporaryDirectory() as work:
-            result, _ = self.run_firstboot(Path(work), False, False, fail_password=True)
+            result, _ = self.start_firstboot(Path(work), False, False, fail_password=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertNotIn("created account", result.stdout)
 

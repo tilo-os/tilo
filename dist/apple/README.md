@@ -340,6 +340,17 @@ those first seconds waits for the try to end and for the assistant to be found, 
 then; where the try fails it is back in the field with the reason, as any message that did
 not go through.
 
+**A site that answers and lets the device in no more.** A device that is its person's can
+stand before a site that serves its page and whose page's join stops at every load: a store
+that missed the one time Tilo's page said that its workspace is gone stands so for ever. The
+engine tells a try that ended so from one that met no server, by the case the page's failure
+screen names (`TiloEngine.joinStops`, `answered(failure:)`); `TiloSource` says it to a device
+that is its person's (`AssistantSource.joinStops()`); and where the window would say that Tilo
+cannot be reached it says so in one sentence and offers the way in: one button, which does
+what "Sign out of this device" does. Nothing of the device is given up before that press, and
+nothing presses for the person. `WorkspaceGoneTests` checks the engine and the source,
+`WayInOfferedTests` the window.
+
 **The provider step.** While no provider of the person's has a key, the main chat says so
 and offers the step: the person picks a provider and types a key of their own into the
 protected field, the one field of the app a secret is typed into (`ProtectedField`), and
@@ -486,6 +497,15 @@ which is when the system keeps a picture of the window.
 While a device where the person is signed in asks about a code, the window shows that code
 large (`Session.confirming`), so the two are compared before anyone approves.
 
+**A pairing that ends.** A pairing can end before the device is anybody's: its site refuses
+the link, the page stops after the person pressed its button, or the device is let in and its
+page cannot draw there. The engine keeps the page's own sentence for it (`TiloEngine.State`
+`refused` and `failed`), `TiloSource` says it (`AssistantSource.pairingEnded()`), and the way in
+shows it under its buttons until another link is taken or the device is in: whoever stands at
+the way in again reads why. A device that is its person's already is told nothing there.
+`PairingEndedTests` checks this against a page that speaks as Tilo's does, `ModelTests` in the
+window's model.
+
 **A workspace that is gone.** A device goes back to its way in by itself when Tilo's page says
 that the workspace it was let into is no longer there: the site's server was set up again
 since, or the workspace was deleted. The engine reads the page's own name for the case
@@ -549,6 +569,15 @@ with it, a read gives it back (`Message.answers`), and the conversation shows th
 the reply's words, where a press goes to the answered piece. On a Tilo whose Chat does not keep
 it yet the words are sent with one line of the answered message above them as a quote, so the
 assistant is told what is answered either way.
+
+**Quoting words of a message.** Quote in a piece's menu lays its words out as Select text does,
+under a line that says to select the part. With a part marked there, Quote answers that part: a
+button in the sheet's head, and the first row of the menu the text itself opens over marked
+words (the system's own on an iPhone). The marked words stand above the field; the message then
+sent carries them and where they stand in the answered message's own words
+(`Answered.span(of:in:)`, as Chat keeps a quote: `text`, `start`, `end` in UTF-8 bytes). A part
+is marked in the plain words, so where Markdown's signs stand between its words the place
+reaches from its first word to its last.
 
 **A task's replies.** A task's line counts the replies the conversation does not show.
 Pressed, they open under the line (`AssistantSource.replies(of:in:)`), and the same press

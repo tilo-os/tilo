@@ -10,6 +10,10 @@
 //! here; one of a record still arriving, or asked before the workspace said what this person may
 //! do, waits for it.
 //!
+//! A resource the page holds none of is asked of its workspace when a window first reads it, as
+//! a window that opens it asks ([`crate::held_reads`]): a workspace sends some only to a device
+//! that asked for them, and a reader names resources no window of the page ever opens.
+//!
 //! A read held for a write costs a frame one comparison of the record's heads and is read again
 //! only once they moved. A page none of whose windows reads another app's records does nothing.
 //!
@@ -24,16 +28,15 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use tilo_actions::remote::{
-    ActionCallError, Caller, RemoteActionMessage, ResourceAddress, ResourceCopy,
-};
-use tilo_desktop_surface::session::{HeldRecords, Openings, RecordAnswers};
-use ui::automerge::AutoCommit;
-use ui::automerge::transaction::Transactable as _;
+use tilo_actions::remote::{ActionCallError, Caller, RemoteActionMessage, ResourceAddress};
+use tilo_desktop_surface::session::{Openings, RecordAnswers};
+use ui::automerge::{AutoCommit, ChangeHash};
 use ui::permissions::SharedPermissions;
-use ui::resource::ResourceStore;
+use ui::resource::{ResourceStore, WorkspaceAnswer};
 
 use super::super::{Desktop, Mount};
+
+use crate::held_reads::{Beyond, Held};
 
 /// The page's end of its windows' record reads.
 pub(super) struct Reads {
@@ -82,15 +85,18 @@ impl Desktop {
     }
 
     /// What this desktop's page holds, as its person may read it.
-    fn held(&self) -> Held<'_> {
+    fn held(&self) -> Held<'_, Page<'_>> {
         Held {
             person: &self.author,
             workspace: &self.workspace,
-            peer: self.asks.peer(),
             role: self.shared.role.code(),
             permissions: &self.permissions,
             stores: &self.shared.stores,
-            reads: &self.asks.records,
+            beyond: Page {
+                peer: self.asks.peer(),
+                workspace: &self.workspace,
+                reads: &self.asks.records,
+            },
         }
     }
 }
@@ -179,15 +185,18 @@ impl MountReads {
     }
 
     /// What this mount's page holds, as its person may read it.
-    fn held(&self) -> Held<'_> {
+    fn held(&self) -> Held<'_, Page<'_>> {
         Held {
             person: &self.person,
             workspace: &self.workspace,
-            peer: Some(self.peer),
             role: crate::replication::role_code(self.peer),
             permissions: &self.permissions,
             stores: &self.stores,
-            reads: &self.reads,
+            beyond: Page {
+                peer: Some(self.peer),
+                workspace: &self.workspace,
+                reads: &self.reads,
+            },
         }
     }
 
@@ -310,39 +319,37 @@ impl Mount {
     }
 }
 
-/// What this page holds of its workspace's records, as its person may read them: the same for a
-/// desktop and for a mount of one app, so one policy decides both.
-struct Held<'a> {
-    /// The person at this page: a read is theirs or nobody's.
-    person: &'a str,
-    workspace: &'a str,
+/// What a page holds of its workspace's resources beyond the ones its windows hold open
+/// ([`Beyond`]): what the workspace's replication holds, on a page that joined a workspace, and
+/// else what the page's own store keeps.
+struct Page<'a> {
     /// The peer replicating the workspace, if the page has one.
     peer: Option<u32>,
-    /// The role the workspace answered this person holds, as
-    /// [`crate::desktop::SharedRole::code`] counts it: 0 until it has.
-    role: u8,
-    permissions: &'a SharedPermissions,
-    /// The stores the page's windows hold open.
-    stores: &'a RefCell<Vec<ResourceStore>>,
+    workspace: &'a str,
     reads: &'a Reads,
 }
 
-impl Held<'_> {
-    /// `read` of the record `address` as a window of its app holds it open, if one does.
-    fn open<R>(&self, address: &ResourceAddress, read: impl FnOnce(&AutoCommit) -> R) -> Option<R> {
-        let id = ui::resource::DocumentId::from_route(&address.record)?;
-        let stores = self.stores.borrow();
-        stores
-            .iter()
-            .find(|store| {
-                let (app, home) = store.app_and_home();
-                app == address.app && home == self.workspace
-            })?
-            .read(&id, read)
+impl Beyond for Page<'_> {
+    fn joined(&self) -> bool {
+        self.peer.is_some()
     }
 
-    /// The record `address` as its app last committed it where this page keeps it, when no window
-    /// holds it open and no workspace host sends it.
+    fn replicated(&self, address: &ResourceAddress) -> Option<AutoCommit> {
+        crate::replicated::resource_document(self.peer?, &address.app, &address.record)
+    }
+
+    fn delivered(&self, address: &ResourceAddress) -> Option<Vec<ChangeHash>> {
+        crate::replicated::record_heads(self.peer?, &address.app, &address.record)
+    }
+
+    fn ask(&self, address: &ResourceAddress) -> Option<WorkspaceAnswer> {
+        crate::replicated::ask_resource(self.peer?, &address.app, &address.record)
+    }
+
+    fn answered(&self, address: &ResourceAddress) -> Option<WorkspaceAnswer> {
+        crate::replicated::resource_answer(self.peer?, &address.app, &address.record)
+    }
+
     fn stored(&self, address: &ResourceAddress) -> Option<AutoCommit> {
         tilo_session::platform::records::document(
             &*self.reads.store,
@@ -352,88 +359,17 @@ impl Held<'_> {
         )
     }
 
-    /// The record `address` as this page holds it: what the workspace's replication holds, on a
-    /// page with a workspace host, and else what a window has open or the page's store keeps.
-    /// Without what is still being typed, as a read answers committed content.
-    fn committed(&self, address: &ResourceAddress) -> Option<Vec<u8>> {
-        let mut record = match self.peer {
-            Some(peer) => {
-                crate::replicated::resource_document(peer, &address.app, &address.record)?
-            }
-            None => self
-                .open(address, Clone::clone)
-                .or_else(|| self.stored(address))?,
-        };
-        if record.pending_ops() > 0 {
-            record.rollback();
-        }
-        Some(record.save())
-    }
-}
-
-impl HeldRecords for Held<'_> {
-    fn read(
-        &self,
-        caller: &Caller,
-        address: &ResourceAddress,
-    ) -> Result<ResourceCopy, ActionCallError> {
-        let hosted = self.peer.is_some();
-        // Who may read is decided before anything is read ([`crate::read_bounds`]).
-        crate::read_bounds::Reader {
-            person: self.person,
-            workspace: self.workspace,
-            joined: hosted,
-            role: self.role,
-            permissions: self.permissions,
-        }
-        .may_read(caller, address)?;
-        match self.committed(address) {
-            Some(record) => Ok(ResourceCopy::Document(record)),
-            None if hosted => Err(ActionCallError::Unavailable {
-                reason: "the record is still arriving from the workspace".into(),
-            }),
-            None => Ok(ResourceCopy::Absent),
-        }
-    }
-
-    fn mark(&self, address: &ResourceAddress) -> Option<Vec<u8>> {
-        // A record a window holds open moves with its committed heads, whoever wrote it.
-        let heads = self.open(address, AutoCommit::base_heads).or_else(|| {
-            // One no window holds moves only as the workspace delivers it.
-            crate::replicated::record_heads(self.peer?, &address.app, &address.record)
-        });
-        if let Some(heads) = heads {
-            return Some(heads.iter().flat_map(|head| head.0).collect());
-        }
-        if self.peer.is_some() {
-            return None;
-        }
-        let record = (address.app.clone(), address.record.clone());
-        let kept = *self
+    fn keeps(&self, address: &ResourceAddress) -> bool {
+        let kept = (address.app.clone(), address.record.clone());
+        *self
             .reads
             .kept
             .borrow_mut()
-            .entry(record)
-            .or_insert_with(|| self.stored(address).is_some());
-        kept.then(Vec::new)
-    }
-
-    fn authority(&self) -> u64 {
-        ui::permissions::shared_revision()
-            .wrapping_mul(8)
-            .wrapping_add(u64::from(self.role))
+            .entry(kept)
+            .or_insert_with(|| self.stored(address).is_some())
     }
 
     fn moved(&self) -> u64 {
-        use std::hash::{Hash as _, Hasher as _};
-        let mut moved = std::collections::hash_map::DefaultHasher::new();
-        for store in self.stores.borrow().iter() {
-            store.kept_revision().hash(&mut moved);
-            store.content_revision().hash(&mut moved);
-        }
-        crate::replicated::changes()
-            .moved_in(self.workspace)
-            .hash(&mut moved);
-        moved.finish()
+        crate::replicated::changes().moved_in(self.workspace)
     }
 }

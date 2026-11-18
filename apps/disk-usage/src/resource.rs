@@ -1,57 +1,15 @@
-//! Disk Usage as a resource: scans and navigation are the view's [`DiskUsageEffect`]s.
+//! Disk Usage as a resource: `disk-usage-model` keeps the resources and their
+//! verbs; scans and navigation are the view's [`DiskUsageEffect`]s.
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use ui::framework::{Fixture, LiveRow, ResourceApp, ViewCx};
-use ui::tilo_resource::{self, AbsolutePath, Model, Recents, resource};
+use ui::tilo_resource::{self, AbsolutePath};
 use ui::widget::Element;
 
 use crate::scan::ScanResult;
 
-/// The folders one device analyzed lately, newest first.
-pub type Folders = Recents<PathBuf, 5>;
-
-/// The folders analyzed lately, by the device whose disk they are on: a resource Disk Usage
-/// keeps beside the app's resource in the workspace, each device reading and writing only its
-/// own list.
-#[derive(Model, Clone, Debug, Default, PartialEq)]
-pub struct RecentFolders {
-    pub devices: BTreeMap<String, Folders>,
-}
-
-impl RecentFolders {
-    /// What the resource holds: the folders analyzed lately, by device.
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
-}
-
-#[resource(
-    kind = "disk-usage.recent-folders",
-    read_content = RecentFolders::read_document
-)]
-impl RecentFolders {
-    /// `folder` on `device` was analyzed: it moves to the front.
-    #[action(housekeeping)]
-    pub fn remember(&mut self, device: String, folder: AbsolutePath) {
-        self.devices
-            .entry(device)
-            .or_default()
-            .remember(folder.into_path_buf());
-    }
-}
-
-impl RecentFolders {
-    /// The folders `device` analyzed lately, newest first.
-    #[must_use]
-    pub fn on(&self, device: &str) -> Folders {
-        self.devices.get(device).cloned().unwrap_or_default()
-    }
-}
+pub use disk_usage_model::{DiskUsage, Folders, RecentFolders};
 
 /// What the analyzer does that changes no document: scanning a folder and moving between
 /// the views.
@@ -74,27 +32,6 @@ pub enum DiskUsageEffect {
 }
 
 pub(crate) const DISKS_LINK: &str = "tilo://open#/me/so.tilo.disks";
-
-/// The disk-usage analyzer: the API its effects and live rows are published on.
-#[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct DiskUsage {}
-
-impl DiskUsage {
-    /// What the resource holds: nothing — what it scans is this device's disk, and the
-    /// folders it remembers are kept in the resource beside it.
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
-}
-
-#[resource(
-    kind = "disk-usage",
-    read_content = DiskUsage::read_document
-)]
-impl DiskUsage {}
 
 /// One remembered folder, offered to analyze again.
 pub(crate) fn recent_row(path: &std::path::Path) -> LiveRow {

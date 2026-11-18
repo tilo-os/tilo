@@ -2069,12 +2069,17 @@ impl ChainState {
         invoker: &ActionInvoker,
         place: Option<String>,
     ) -> Result<Made, ActionError> {
-        self.write_answering(index, action, encoded, invoker, place, None)
+        let created = self
+            .core
+            .write(index, action, encoded, invoker, place, &mut |_, _| {})?;
+        self.refresh();
+        self.core.moved();
+        Ok(created)
     }
 
-    /// [`Self::write`], keeping what the verb `answering` answers its caller
-    /// with ([`Resource::answer`]: the note it made) for
-    /// [`ResourceApi::apply_answering`].
+    /// [`Self::write`] of the action its caller invoked, keeping what it answers the caller with
+    /// for [`ResourceApi::apply_answering`]: what the verb `answering` answers
+    /// ([`Resource::answer`]: the note it made), and the text it wrote.
     fn write_answering(
         &self,
         index: u64,
@@ -2086,16 +2091,15 @@ impl ChainState {
     ) -> Result<Made, ActionError> {
         let answer = self.part().answer;
         let mut answered = |doc: &mut ui_core::automerge::AutoCommit, before: &[ChangeHash]| {
-            if let Some(verb) = answering {
-                let after = doc.get_heads();
-                let changes = doc.diff(before, &after);
-                let value = answer(doc, verb, &changes);
-                // The answer names the text it wrote, as the app's own answers do.
-                *self.answered.borrow_mut() = match ui_core::presence::written_by(&changes) {
-                    Some(wrote) => tilo_actions::ActionOutput::noting_wrote(value, &wrote),
-                    None => value,
-                };
-            }
+            let after = doc.get_heads();
+            let changes = doc.diff(before, &after);
+            let value = answering.and_then(|verb| answer(doc, verb, &changes));
+            // The answer names the text it wrote, whatever else the verb answers: where it landed
+            // is known here, even for a verb that named its item by what it says.
+            *self.answered.borrow_mut() = match ui_core::presence::written_by(doc, &changes) {
+                Some(wrote) => tilo_actions::ActionOutput::noting_wrote(value, &wrote),
+                None => value,
+            };
         };
         let created = self
             .core
@@ -2912,9 +2916,14 @@ impl Chains {
         // A verb declared to answer nothing answers nothing of its own
         // ([`Self::answering`] kept only what the write made), which a caller
         // still needs: a create's made items are the ids of what it made, and
-        // without them it cannot learn the id it created.
+        // without them it cannot learn the id it created. It still names the
+        // text it wrote: where it landed.
         if request.quiet {
-            output.value = api::only_made(output.value);
+            let made = api::only_made(output.value.take());
+            output.value = match output.wrote() {
+                Some(wrote) => tilo_actions::ActionOutput::noting_wrote(made, &wrote),
+                None => made,
+            };
         }
         Ok(output)
     }

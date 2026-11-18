@@ -1,20 +1,28 @@
 //! `tilo server`: what this person's servers are, and what they can be asked
 //! to do from here.
 //!
-//! A server of the person's is headless; its owner reaches it over the
-//! owner-only management route from another of their devices, never over ssh.
-//! This command is that device: it reads the servers this computer enrolled
-//! ([`home_peer_registry_path`]) and asks one for its health, a service's
-//! journal, a restart, a reboot, an update, a rollback or a drain
-//! ([`ServerOperation`]). Every answer is the server's own
-//! ([`ServerOperationResult`]).
+//! A server of the person's is headless. Its operations are actions on their
+//! Servers workspace, which every device of theirs holds, and this command is
+//! the device asking: it reads the servers this computer enrolled
+//! ([`home_peer_registry_path`]) and asks one of them, over the workspace's
+//! own session, for its health, a service's journal, a restart, a reboot, an
+//! update, a rollback or a drain ([`ServerOperation`]). Every answer is the
+//! server's own ([`ServerOperationResult`]), recorded in its entry in that
+//! workspace.
 
 use anyhow::{Context as _, Result, bail};
 use clap::Subcommand;
+use tilo_actions::remote::{
+    InvokeArgument, InvokeRequest, RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
+    WORKSPACE_GOVERNANCE_PROVIDER, workspace_governance_resource,
+};
+use tilo_actions::{ActionAddress, InvocationId};
 use tilo_device_identity::{IdentityPaths, persist};
+use tilo_server_protocol::WorkspaceId;
+use tilo_server_protocol::servers::admin_workspace_id;
 use tilo_server_protocol::transport::{
-    HomePeerManagementRequest, Opening, ServerAnswer, ServerOperation, ServerOperationResult,
-    ServerStatus, UnlockMethod,
+    Envelope, Opening, REMOTE_ACTION_ENVELOPE_VERSION, ServerAnswer, ServerOperation,
+    ServerOperationResult, ServerStatus, UnlockMethod,
 };
 use tilo_server_protocol::{HomePeerRegistration, read_home_peers};
 use tilo_user_identity::{RevocationList, home_peer_registry_path};
@@ -112,7 +120,7 @@ pub fn serve(cmd: ServerCmd) -> Result<std::process::ExitCode> {
                 ServerCmd::Drain { server } => (server, ServerOperation::Drain, false),
                 ServerCmd::List => return list(),
             };
-            let result = ask(&server, operation)?;
+            let result = ask(&server, &operation)?;
             print(&result, json)?;
             Ok(std::process::ExitCode::SUCCESS)
         }
@@ -268,8 +276,9 @@ fn opened_at(at_ns: u64) -> String {
         .unwrap_or_default()
 }
 
-/// Ask `server` to do `operation`, as this computer's device.
-fn ask(server: &str, operation: ServerOperation) -> Result<ServerOperationResult> {
+/// Ask `server` to do `operation`, as this computer's device, through the
+/// action on the person's Servers workspace that asks it.
+fn ask(server: &str, operation: &ServerOperation) -> Result<ServerOperationResult> {
     let dir = identity::dir()?;
     let paths = IdentityPaths::under(&dir);
     let user = persist::read_public_key(&paths.user_pubkey)
@@ -287,6 +296,34 @@ fn ask(server: &str, operation: ServerOperation) -> Result<ServerOperationResult
         _ => iroh_addr(service)
             .with_context(|| format!("{} is not a server endpoint", peer.server_node_id))?,
     };
+    let admin = admin_workspace_id(&user);
+    let workspace_id = WorkspaceId::parse(&admin).context("the Servers workspace is not an id")?;
+    let mut argument = serde_json::Map::new();
+    argument.insert("server".into(), hex::encode(expected).into());
+    if !operation.service().is_empty() {
+        argument.insert("service".into(), operation.service().into());
+    }
+    if operation.lines() > 0 {
+        argument.insert("lines".into(), operation.lines().into());
+    }
+    let message = RemoteActionMessage::Invoke(InvokeRequest {
+        invocation: InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: WORKSPACE_GOVERNANCE_PROVIDER.into(),
+            address: ActionAddress::new(
+                workspace_governance_resource(&admin),
+                format!("server.{}", operation.name()),
+            ),
+        },
+        argument: InvokeArgument::Json(argument),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+    });
+    let frame = RemoteActionFrame::new(message).encode()?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -296,22 +333,68 @@ fn ask(server: &str, operation: ServerOperation) -> Result<ServerOperationResult
             .bind(None)
             .await
             .map_err(|error| anyhow::anyhow!("{error}"))?;
-        let answer = tilo_server_session::client::ServerClient::manage_home_peer(
-            &endpoint,
+        let client = tilo_server_session::client::ServerClient::connect_to_pinned_host(
+            endpoint.clone(),
             addr,
-            user,
-            expected,
             cert,
             signing_key,
             RevocationList::new(),
-            HomePeerManagementRequest::Operate(operation),
         )
         .await
         .map_err(|error| anyhow::anyhow!("{error}"))?;
+        client
+            .send(Envelope::RemoteAction {
+                workspace_id,
+                version: REMOTE_ACTION_ENVELOPE_VERSION,
+                to_device_public_key: expected,
+                from_device_public_key: [0; 32],
+                from_user_public_key: [0; 32],
+                frame,
+            })
+            .map_err(|_| anyhow::anyhow!("the session closed before the server was asked"))?;
+        let answer = tokio::time::timeout(std::time::Duration::from_secs(120), async {
+            loop {
+                match client.recv().await {
+                    Some(Envelope::RemoteAction { frame, .. }) => {
+                        let message = RemoteActionFrame::decode(&frame)
+                            .map_err(|error| anyhow::anyhow!("{error}"))?
+                            .message;
+                        return answer_of(message);
+                    }
+                    Some(Envelope::RemoteActionUndeliverable { refusal, .. }) => {
+                        return Err(anyhow::anyhow!("the server did not take it: {refusal}"));
+                    }
+                    None => return Err(anyhow::anyhow!("the session closed")),
+                    Some(_) => {}
+                }
+            }
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("the server did not answer"))?;
+        client.close().await;
         endpoint.close().await;
-        Ok::<_, anyhow::Error>(answer.operation)
+        answer
     })?;
     Ok(result)
+}
+
+/// What an invocation came to: the operation's result, or why the server
+/// refused.
+fn answer_of(message: RemoteActionMessage) -> Result<ServerOperationResult> {
+    use tilo_actions::remote::ReceiptStatus;
+    let RemoteActionMessage::Receipt(receipt) = message else {
+        bail!("the server answered no receipt");
+    };
+    match receipt.status {
+        ReceiptStatus::Completed { output } => serde_json::from_value(
+            output
+                .value
+                .ok_or_else(|| anyhow::anyhow!("the server answered nothing"))?,
+        )
+        .context("the server's answer does not read"),
+        ReceiptStatus::Rejected { error } => Err(anyhow::anyhow!("{error}")),
+        other => bail!("the server answered {other:?}"),
+    }
 }
 
 /// The server this computer enrolled, by its name or its device key.
@@ -349,29 +432,6 @@ fn peers_in(dir: &std::path::Path) -> Result<Vec<HomePeerRegistration>> {
 fn key_of(hex_key: &str) -> Option<[u8; 32]> {
     let bytes = hex::decode(hex_key).ok()?;
     bytes.try_into().ok()
-}
-
-/// The person's devices this computer knows, as an enrollment token names
-/// them: where each is reached over the network, so a machine handed only a
-/// token can dial the devices that admit it from anywhere.
-pub(crate) fn dial_peers(dir: &std::path::Path, user: [u8; 32]) -> Vec<tilo_user_identity::Dial> {
-    let Ok(peers) = peers_in(dir) else {
-        return Vec::new();
-    };
-    peers
-        .into_iter()
-        .filter(|peer| peer.user_public_key == hex::encode(user))
-        .filter_map(|peer| peer.server_endpoint)
-        .filter(|endpoint| !endpoint.is_empty())
-        .map(|endpoint| tilo_user_identity::Dial {
-            endpoint: *endpoint.id.as_bytes(),
-            relay_url: endpoint
-                .relay_urls()
-                .next()
-                .map(ToString::to_string)
-                .unwrap_or_default(),
-        })
-        .collect()
 }
 
 fn iroh_addr(key: [u8; 32]) -> Option<iroh_base::EndpointAddr> {

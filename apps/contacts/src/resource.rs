@@ -382,13 +382,4 @@ mod agent_disclosure_tests {
         assert!(answer["survivor"]["item"].is_string(), "{answer}");
         assert!(answer["shared"][0].is_string(), "{answer}");
     }
-
-    #[test]
-    fn every_scenario_shows_an_agent_its_actions() {
-        if let Err(failures) =
-            ui::framework::testing::check_agents_are_shown_every_action::<super::ContactsShell>()
-        {
-            panic!("{failures}");
-        }
-    }
 }

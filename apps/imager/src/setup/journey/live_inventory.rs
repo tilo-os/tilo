@@ -78,6 +78,7 @@ mod tests {
             purpose: install_profile_model::default_purpose(),
             deferred: false,
             target: None,
+            plan: draft::PlanDraft::default(),
         };
         let pending = store.reserve(&choices, IdentityKind::New).unwrap();
         let prepared = Arc::new(

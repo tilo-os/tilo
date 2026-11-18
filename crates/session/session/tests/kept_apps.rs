@@ -114,6 +114,8 @@ struct Rig {
     /// The session serves its workspaces X11 displays, so a launch is given one and its keeper
     /// serves the app a display of its own.
     x11: bool,
+    /// The desktop entry the app is launched by.
+    entry: String,
 }
 
 /// One run of the desktop: its session, its apps, and how it ends when dropped.
@@ -145,6 +147,11 @@ impl Rig {
     }
 
     fn with_x11(titles: &[&str], x11: bool) -> Self {
+        Self::launched_by(titles, x11, APP)
+    }
+
+    /// A rig whose app is launched by the desktop entry `entry`: its windows say they are `APP`.
+    fn launched_by(titles: &[&str], x11: bool, entry: &str) -> Self {
         let mut home = tilo_test_env::TestHome::new().expect("a home");
         let workspaces = [(1, "Home"), (2, "Two"), (3, "Three")].map(|(n, name)| {
             let mut workspace = Workspace::new(WorkspaceId::from_u128(n), name);
@@ -163,7 +170,7 @@ impl Rig {
         let applications = home.data().join("applications");
         fs::create_dir_all(&applications).unwrap();
         fs::write(
-            applications.join(format!("{APP}.desktop")),
+            applications.join(format!("{entry}.desktop")),
             "[Desktop Entry]\nType=Application\nName=Kept\nExec=/bin/true\n",
         )
         .unwrap();
@@ -192,6 +199,7 @@ impl Rig {
             keeper,
             root,
             x11,
+            entry: entry.to_owned(),
         }
     }
 
@@ -244,7 +252,7 @@ impl Rig {
         pass.apps
             .start(
                 &tilo_app_launch::Launch::Host {
-                    desktop_id: APP.to_owned(),
+                    desktop_id: self.entry.clone(),
                     open: None,
                 },
                 &pass.apps.workspace_named(&workspace),
@@ -446,6 +454,76 @@ fn a_kept_app_stays_through_an_in_place_restart_in_its_tabs_and_a_logout_ends_it
 /// The command line the session starts an app that is not Tilo's with is one the real launcher
 /// takes: asked to plan the launch rather than make it, the launcher names the app the session
 /// asked for. A launcher that answers to another command opens no such app at all.
+/// A keeper killed takes its app with it: the person is told the app stopped working, in the tab
+/// its window was in, and nothing else opens.
+#[test]
+fn an_app_whose_keeper_stops_says_so_in_its_own_tab() {
+    let _settled = ui::motion::testing::settled();
+    let rig = Rig::new(&["Only"]);
+    let mut pass = rig.desktop(false);
+    rig.launch(&pass);
+    let placed = shown_and_told(&rig, &mut pass, &["Only"]);
+    let tab = placed[0].1;
+    let (_, pid, _) = rig.kept();
+    signal(parent_of(pid), libc::SIGKILL);
+    tilo_test_env::exited("the app of a keeper that is gone", pid);
+    until(&mut pass.session, "its tab says it stopped", |session| {
+        matches!(
+            tile_of(session, tab),
+            Some(TileContent::AppPlaceholder { .. })
+        )
+    });
+    for _ in 0..100 {
+        pass.session.step(Duration::from_millis(1)).expect("step");
+    }
+    assert_eq!(
+        tabs(&pass.session)
+            .into_iter()
+            .map(|(other, _)| other)
+            .collect::<Vec<_>>(),
+        [tab],
+        "the notice stands where the window was, and no other tab opens"
+    );
+    pass.end(Teardown::Logout);
+}
+
+/// A program whose window names its app otherwise than the desktop entry it was launched by takes
+/// the tab the shell held for that launch: the window comes on the keeper connection the session
+/// handed over for exactly that launch.
+#[test]
+fn a_kept_window_whose_id_differs_from_its_launch_takes_the_launchs_tab() {
+    let _settled = ui::motion::testing::settled();
+    let rig = Rig::launched_by(&["Only"], false, "org.example.Launched");
+    let mut pass = rig.desktop(false);
+    // As a press on the app's tile does: the shell holds the tab the window takes.
+    let launch = tilo_app_launch::Launch::Host {
+        desktop_id: "org.example.Launched".to_owned(),
+        open: None,
+    };
+    pass.session
+        .handle()
+        .dispatch(tilo_desktop_surface::navigation::ChromeEffect::OpenApp {
+            app: launch.id(),
+            beside: None,
+            background: None,
+            float: None,
+        })
+        .expect("the person opens the app");
+    let placed = shown_and_told(&rig, &mut pass, &["Only"]);
+    for _ in 0..100 {
+        pass.session.step(Duration::from_millis(1)).expect("step");
+    }
+    assert_eq!(
+        tabs(&pass.session)
+            .into_iter()
+            .map(|(tab, _)| tab)
+            .collect::<Vec<_>>(),
+        [placed[0].1],
+        "the window is in the tab its launch held, and no tab waits empty"
+    );
+    pass.end(Teardown::Logout);
+}
+
 #[test]
 fn the_launcher_takes_the_command_line_the_session_starts_an_app_with() {
     let _settled = ui::motion::testing::settled();

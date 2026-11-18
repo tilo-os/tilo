@@ -1,9 +1,8 @@
 //! The calculator's in-memory state: authored here and committed as actions,
 //! so undo and collaboration see the same resource.
 
-use crate::actions::GraphKind;
 use crate::engine::{self, Ctx};
-use ui::tilo_resource::{self, Model};
+pub use calculator_model::{GraphKind, HISTORY_CAP, HistoryEntry, PlotFn};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
@@ -54,24 +53,6 @@ impl Mode {
 
 /// The conversion a capture shows.
 pub const CONVERT_DEMO_AMOUNT: &str = "40";
-
-#[derive(Model, Clone, Debug, PartialEq)]
-pub struct HistoryEntry {
-    /// Calculation
-    #[model(label)]
-    pub expr: String,
-    /// Result
-    pub result: String,
-}
-
-#[derive(Model, Clone, Debug, PartialEq)]
-pub struct PlotFn {
-    /// Formula
-    #[model(label)]
-    pub expr: String,
-    /// Shown
-    pub visible: bool,
-}
 
 /// World-space centre and pixels per unit.
 #[derive(Clone, Copy, Debug, PartialEq)]

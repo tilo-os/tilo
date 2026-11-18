@@ -25,6 +25,17 @@ public protocol AssistantSource: Sendable {
     /// it is `.unknown`, and nothing is said to have failed: a page on its way in is not away.
     func reach() -> AsyncStream<Reach>
 
+    /// Why the last pairing ended without letting this device in, in Tilo's own sentence: its
+    /// site refused the link, or its page could not go on. Nil where none did, and again once
+    /// another link is taken or the device is in. The way in says it.
+    func pairingEnded() -> AsyncStream<String?>
+
+    /// The technical details Tilo's page offers under that sentence, to read or copy: what the
+    /// page makes of the stop, the server, the step, the error and its build, never a token, a
+    /// key or a certificate. Tilo's sentence may say "copy the technical details below": the
+    /// way in shows these below it. Nil where the page shows none, and while no end is said.
+    func pairingEndedDetails() -> AsyncStream<String?>
+
     /// Pair this device with a link that "Pair a new device" made on a device where the person is
     /// signed in: scanned as a code, or pasted. `session()` says how it goes on.
     func pair(with link: PairingLink) async throws
@@ -35,6 +46,13 @@ public protocol AssistantSource: Sendable {
 
     /// Forget this device's place in the person's Tilo.
     func signOut() async
+
+    /// Whether the person's Tilo answers and does not let this device in: in the try that ended
+    /// last its site served its page, and the page's join stopped. False while the device is in,
+    /// while it stands at a way in, and where its site did not answer. The window then offers
+    /// the way in where it would say that Tilo cannot be reached. Nothing is given up by that:
+    /// only the person's own press signs the device out.
+    func joinStops() -> AsyncStream<Bool>
 
     // MARK: The first run
 
@@ -197,12 +215,17 @@ extension AssistantSource {
     // A source with no first run of its own asks nothing before it pairs, has nothing in the
     // way of an answer and links no provider.
     public func answerPairing(goOn: Bool) async {}
+    /// A source whose pairings end with no sentence of Tilo's has none to say.
+    public func pairingEnded() -> AsyncStream<String?> { AsyncStream { $0.yield(nil) } }
+    public func pairingEndedDetails() -> AsyncStream<String?> { AsyncStream { $0.yield(nil) } }
     public func setup() -> AsyncStream<Setup> { AsyncStream { $0.yield(.ready) } }
     public func makeAssistant() async throws {}
     public func link(_ provider: ProviderChoice.ID, key: Secret) async throws -> [ModelChoice] {
         throw SourceProblem.refused("No provider can be linked here")
     }
     public func providers() async throws -> [ProviderChoice] { [] }
+    /// A source that never tries to get in is never stopped at it.
+    public func joinStops() -> AsyncStream<Bool> { AsyncStream { $0.yield(false) } }
 }
 
 /// How a conversation changed.

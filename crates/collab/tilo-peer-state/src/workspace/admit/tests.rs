@@ -162,6 +162,7 @@ fn admit(
             source,
             owner,
             now_ns: crate::workspace::saved_shortcut::ns_at(NOW),
+            keeps_delegations: false,
         },
         changes,
     )
@@ -682,6 +683,7 @@ tilo_test_env::scenario! {
                 source: member(&writer, editor_root()),
                 owner: &owner_root(),
                 now_ns: NOW_NS + 700_000_000,
+                keeps_delegations: false,
             },
             &batch,
         )

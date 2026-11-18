@@ -5,6 +5,7 @@
 //! own. What a target cannot provide is an [`Unsupported`] error at run time,
 //! never a missing item.
 
+pub mod address;
 mod caps;
 #[cfg(feature = "http")]
 mod client;

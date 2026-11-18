@@ -178,7 +178,12 @@ trap finish EXIT
 console() { ./os/tests/serial_runner.sh "$1"; }
 as_root() { console "printf '%s\n' '$TILO_PASS' | sudo -S -p '' bash -c $(printf '%q' "$1")"; }
 ok()   { printf 'ok    %s\n' "$*" >&2; }
-refuse() { local what="$1"; shift; as_root "$@" > "$out/$what.txt" 2>&1 || die "FAIL $what (see $out/$what.txt)"; ok "$what"; }
+# A failed check keeps no outputs, so what the machine answered goes to the log.
+refuse() {
+  local what="$1"; shift
+  as_root "$@" > "$out/$what.txt" 2>&1 || { tail -40 "$out/$what.txt" >&2; die "FAIL $what"; }
+  ok "$what"
+}
 
 boot_vm
 for _ in $(seq 1 60); do console 'true' >/dev/null 2>&1 && break; sleep 2; done
@@ -219,6 +224,64 @@ done
 as_root 'test -S /run/tilo-hosted/hosted.sock' >/dev/null \
   || { as_root 'journalctl -b --no-pager -u tilo-hosted | tail -40' >&2; die 'tilo-hosted never bound /run/tilo-hosted/hosted.sock'; }
 ok 'the hosted-VM service is serving its socket' 
+
+say 'the boot is hardened'
+# What the image asked for is what this boot does: the kernel locked itself
+# down from the boot entry's arguments, nothing merges over the image, nobody but
+# the account this test disk was given signs in, sudo is the only setuid
+# program, and nothing listens beyond the machine but its network manager and
+# Tilo's own transport.
+refuse 'the kernel is locked down and the boot entry carries the hardening arguments' '
+set -eu
+grep -q "\[integrity\]" /sys/kernel/security/lockdown \
+  || { echo "lockdown: $(cat /sys/kernel/security/lockdown)"; exit 1; }
+for karg in lockdown=integrity init_on_alloc=1 slab_nomerge vsyscall=none systemd.import_credentials=no; do
+  grep -qw -- "$karg" /proc/cmdline || { echo "no $karg in: $(cat /proc/cmdline)"; exit 1; }
+done
+echo "lockdown: $(cat /sys/kernel/security/lockdown)"
+'
+refuse 'nothing merges an extension over the image at boot' '
+set -eu
+for u in systemd-sysext.service systemd-confext.service systemd-sysext.socket; do
+  state=$(systemctl is-enabled "$u" 2>/dev/null || true)
+  [ "$state" = masked ] || { echo "$u is $state"; exit 1; }
+done
+'
+refuse 'only the account this test disk was given has a password' "
+set -eu
+open=\$(awk -F: '\$2 !~ /^[!*]/ { print \$1 }' /etc/shadow)
+[ \"\$open\" = '$TILO_USER' ] || { echo \"accounts with a password: \$open\"; exit 1; }
+"
+refuse 'sudo is the only setuid program' '
+set -eu
+found=$(find /usr -xdev -type f -perm /6000 | sort)
+[ "$found" = /usr/bin/sudo ] || { echo "setuid or setgid: $found"; exit 1; }
+'
+refuse 'the firewall opens nothing but DHCPv6 replies' '
+set -eu
+[ "$(firewall-cmd --get-default-zone)" = FedoraServer ]
+[ "$(firewall-cmd --list-services)" = dhcpv6-client ] \
+  || { echo "services: $(firewall-cmd --list-services)"; exit 1; }
+'
+refuse 'nothing listens beyond this machine but the network manager and Tilo' '
+set -eu
+ss -H -tulnp > /run/host-assurance-listeners
+cat /run/host-assurance-listeners
+beyond=$(grep -Ev "^[a-z]+ +[A-Z]+ +[0-9]+ +[0-9]+ +(127\.[0-9.]+|\[::1\]|\[::ffff:127\.[0-9.]+\])(%[^:]+)?:" /run/host-assurance-listeners || true)
+odd=$(printf "%s\n" "$beyond" | grep -Ev "users:\(\(\"(NetworkManager|tilo-server|fs)\"" | grep . || true)
+[ -z "$odd" ] || { echo "listening beyond this machine: $odd"; exit 1; }
+tcp=$(printf "%s\n" "$beyond" | grep "^tcp" || true)
+[ -z "$tcp" ] || { echo "a TCP port beyond loopback: $tcp"; exit 1; }
+'
+# The boot-entry pass ran 30 seconds into the boot and turned the boot menu's
+# editor off, which bootc leaves on for kernel/initrd entries.
+refuse 'the boot menu edits no kernel arguments' '
+set -eu
+systemctl is-active --quiet tilo-boot-entries.service \
+  || { systemctl status --no-pager tilo-boot-entries.service; exit 1; }
+cat /boot/loader/loader.conf
+[ "$(grep -E "^ *editor( |\$)" /boot/loader/loader.conf)" = "editor no" ]
+'
 
 # The boot's own verdict, through the production unit: a machine not paired yet
 # is judged by reaching multi-user, and that verdict is what boot-complete asks.

@@ -137,6 +137,26 @@ fn the_reply_a_turn_left_without_words_or_work_has_no_row() {
     );
 }
 
+/// A conversation with an agent shows its replies among its messages, and reads them out
+/// there: the person's two messages and the one answer, in the order they stand, and nothing
+/// for the reply the turn left.
+#[test]
+fn a_conversation_with_an_agent_reads_out_its_replies_where_it_shows_them() {
+    let (app, _) = written_again();
+    let told = told(&app);
+    let words = |name: &String| name.split_once(": ").map(|(_, words)| words.to_owned());
+    assert_eq!(
+        told.iter().filter_map(words).collect::<Vec<_>>(),
+        [
+            "Draft a note to Maya about Friday.",
+            "And say that I bring the numbers.",
+            "The note is drafted, with the numbers."
+        ],
+        "{told:?}"
+    );
+    assert!(!tells_a_message_without_words(&app), "{told:?}");
+}
+
 /// What keeps its row: a reply while its turn works, a reply that ended without words but
 /// did something, and a reply whose model failed.
 #[test]

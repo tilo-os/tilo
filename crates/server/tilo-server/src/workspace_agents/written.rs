@@ -15,13 +15,20 @@
 //! writes afterwards stands a paragraph below. A reply whose turn ends before its answer
 //! keeps the words that came and says below them why ([`Reply::grown_ends`]).
 //!
+//! A message of Chat holds a bounded text, and an answer may be longer. Where the reply holds
+//! all a message takes, the answer goes on in the agent's next message, which grows as the
+//! reply did: its id is the one Chat derives from the full message's, so every server finds
+//! it again with nothing kept beside the conversation. Every word stands once and in order,
+//! and each message ends where a word ends. The reply keeps the turn's thinking, its steps
+//! and its end: every message of an answer says it goes on until the turn has ended.
+//!
 //! Only the reply to a message grows: an issue's turn answers with a comment, written once.
 //! A sub-agent's reply grows in the conversation of its own, the one place its turn writes,
 //! and whoever serves that turn takes its model's words for that reply alone
 //! ([`super::sub_agents::admits`]). The reply of a model whose answers arrive whole is
 //! written once, at its turn's end.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use chat::agent_stream::{AgentFinish, AgentOutput, AgentStreamEvent};
 use collaboration::permissions::MemberId;
@@ -39,7 +46,14 @@ const BELOW: &str = "\n\n";
 /// refuses a piece past that, so what a model thinks beyond it is not shown.
 const MOST_THINKING: usize = 256 * 1024;
 
-/// Where a reply grows, in Chat's own names: its conversation, and the reply.
+/// How much of a message is kept free for the word its model is in the middle of. An answer
+/// longer than one message goes on in the next from the last word's end that leaves this
+/// much, so a word begun in a message ends in it and every message ends where a word ends.
+/// It bounds nothing an agent writes: it is where an answer turns to its next message.
+const KEPT_FOR_A_WORD: usize = 1024;
+
+/// Where words go, in Chat's own names: the conversation, and the message there, which is
+/// the reply or a message its answer went on in.
 #[derive(Clone)]
 struct Place {
     conversation: String,
@@ -49,11 +63,49 @@ struct Place {
 /// One more piece of a reply's text on its way to Chat.
 struct Piece {
     place: Place,
-    /// Its number among the events of the reply's stream.
+    /// Which message of the answer it goes into: none for the reply itself, else that
+    /// message's number among those the answer went on in.
+    on: Option<usize>,
+    /// Its number among the events of that message's stream.
     sequence: u64,
     /// What stands before the words: [`BELOW`], or nothing.
     lead: &'static str,
+    /// The blanks of the model's that stand before the words in its answer and in no
+    /// message: a message the answer went on in begins with a word.
+    passed: String,
     said: String,
+}
+
+/// The messages one turn's answer went on in after its reply, by the ids this server derived
+/// for them as the message before each was full. Whoever keeps a sub-agent's turn to its own
+/// writes reads them here ([`super::sub_agents::admits`]): what that turn's model writes is
+/// taken for these and for its reply, and for no other message.
+#[derive(Clone, Default)]
+pub(super) struct Followed(Arc<Mutex<Vec<String>>>);
+
+impl Followed {
+    /// Whether `reply` is one of them.
+    pub(super) fn holds(&self, reply: &str) -> bool {
+        self.0.lock_recover().iter().any(|held| held == reply)
+    }
+
+    /// The answer goes on in `reply`.
+    fn add(&self, reply: &str) {
+        let mut held = self.0.lock_recover();
+        if !held.iter().any(|known| known == reply) {
+            held.push(reply.to_owned());
+        }
+    }
+
+    /// Those `replies`, as a server derived them.
+    #[cfg(test)]
+    pub(super) fn of(replies: &[&str]) -> Self {
+        let followed = Self::default();
+        for reply in replies {
+            followed.add(reply);
+        }
+        followed
+    }
 }
 
 /// What a model wrote that its reply does not hold yet. The thread the model is asked on
@@ -114,11 +166,26 @@ pub(super) fn reply_of(turn: &Turn) -> Option<String> {
     }
 }
 
-/// How far a turn's reply has grown.
+/// How far a turn's reply has grown, and the messages its answer went on in.
 pub(super) struct Written {
     /// None for a reply that does not grow.
     place: Option<Place>,
+    /// Who writes the reply: Chat derives the message an answer goes on in from the full
+    /// one's id and its author's ([`chat::chat::reply_id`]).
+    agent: MemberId,
     grown: Mutex<Grown>,
+    /// The messages the answer went on in, as whoever serves a sub-agent's turn reads them.
+    followed: Followed,
+}
+
+/// A message an answer went on in after its reply.
+struct Link {
+    /// Its id, which Chat derives from the id of the message before it.
+    reply: String,
+    /// How many events of its stream Chat took.
+    sequence: u64,
+    /// Whether its stream took its end: it takes no more.
+    ended: bool,
 }
 
 #[derive(Default)]
@@ -127,7 +194,9 @@ struct Grown {
     open: bool,
     /// How many events of the reply's stream Chat took.
     sequence: u64,
-    /// How many bytes of words the reply holds.
+    /// The messages the answer went on in after the reply, in order.
+    on: Vec<Link>,
+    /// How many bytes of words the newest message of the answer holds.
     bytes: usize,
     /// What the call to the model that is under way put into the reply.
     call: String,
@@ -142,8 +211,8 @@ struct Grown {
 impl Written {
     /// Where the reply of `turn` grows: nowhere for an issue's turn, whose answer is a
     /// comment. A sub-agent's grows in the conversation its item names, the only one its
-    /// turn writes in.
-    pub(super) fn of(turn: &Turn) -> Self {
+    /// turn writes in. `followed` takes the messages its answer goes on in.
+    pub(super) fn of(turn: &Turn, followed: Followed) -> Self {
         let place = reply_of(turn).map(|reply| Place {
             conversation: turn.agent.sub.as_ref().map_or_else(
                 || asks::conversation_id_of(&turn.conversation, &turn.person, &turn.agent.id.0),
@@ -153,7 +222,9 @@ impl Written {
         });
         Self {
             place,
+            agent: MemberId::agent(&turn.agent.id.0),
             grown: Mutex::default(),
+            followed,
         }
     }
 
@@ -163,8 +234,8 @@ impl Written {
     }
 
     /// Take up what the reply holds already, as `held` keeps it: words a turn wrote into it
-    /// on a server that stopped before that turn ended. What this turn writes stands below
-    /// them.
+    /// on a server that stopped before that turn ended, and into the messages its answer went
+    /// on in. What this turn writes stands below them, in the newest of those messages.
     pub(super) fn goes_on_from(&self, held: &chat::parts::ChatMessages) {
         let Some(place) = &self.place else {
             return;
@@ -178,10 +249,91 @@ impl Written {
         let Some(stream) = reply.work.as_ref().and_then(|work| work.stream.as_ref()) else {
             return;
         };
+        let in_reply = reply.text.len();
+        let newest = self.takes_up(place, held);
         let mut grown = self.grown.lock_recover();
         grown.open = true;
         grown.sequence = stream.sequence;
-        grown.bytes = reply.text.len();
+        grown.bytes = newest.unwrap_or(in_reply);
+        // A message whose stream took its end takes no more: the answer goes on in the next.
+        if grown.on.last().is_some_and(|link| link.ended) {
+            self.turns(&mut grown, place);
+        }
+    }
+
+    /// Take up the messages the reply's answer went on in, as `held` keeps them, for a turn
+    /// that is ended without work: each of them ends with it.
+    pub(super) fn follows_from(&self, held: &chat::parts::ChatMessages) {
+        if let Some(place) = &self.place {
+            self.takes_up(place, held);
+        }
+    }
+
+    /// The id of the message an answer goes on in after the message `full`.
+    fn after(&self, full: &str) -> String {
+        chat::chat::reply_id(&tilo_resource::Id::from_raw(full), &self.agent).to_string()
+    }
+
+    /// Find the messages the answer went on in after the reply, as `held` keeps them: each by
+    /// the id Chat derives from the one before it, written by this agent in this
+    /// conversation, for as far as the part holds them. How many bytes of words the newest
+    /// holds; none where the answer stands in the reply alone.
+    fn takes_up(&self, place: &Place, held: &chat::parts::ChatMessages) -> Option<usize> {
+        let mut on = Vec::new();
+        let mut newest = None;
+        let mut full = place.reply.clone();
+        // Each step finds another message of the part, so the part's size ends the walk.
+        for _ in held.messages.iter() {
+            let next = self.after(&full);
+            let Some(message) = held
+                .messages
+                .get(&tilo_resource::Id::from_raw(&next))
+                .filter(|message| {
+                    message.author == self.agent
+                        && super::sub_agents::conversation_id(message).as_str()
+                            == place.conversation
+                })
+            else {
+                break;
+            };
+            let stream = message.work.as_ref().and_then(|work| work.stream.as_ref());
+            on.push(Link {
+                reply: next.clone(),
+                sequence: stream.map_or(0, |stream| stream.sequence),
+                ended: stream.is_some_and(|stream| stream.finish.is_some()),
+            });
+            newest = Some(message.text.len());
+            full = next;
+        }
+        for link in &on {
+            self.followed.add(&link.reply);
+        }
+        self.grown.lock_recover().on = on;
+        newest
+    }
+
+    /// The newest message of the answer takes no more: the answer goes on in the agent's next
+    /// message, by the id Chat derives for it from the full one's.
+    fn goes_on(&self) {
+        if let Some(place) = &self.place {
+            self.turns(&mut self.grown.lock_recover(), place);
+        }
+    }
+
+    /// Turn `grown` to the message after its newest.
+    fn turns(&self, grown: &mut Grown, place: &Place) {
+        let full = grown
+            .on
+            .last()
+            .map_or(place.reply.as_str(), |link| link.reply.as_str());
+        let next = self.after(full);
+        self.followed.add(&next);
+        grown.on.push(Link {
+            reply: next,
+            sequence: 0,
+            ended: false,
+        });
+        grown.bytes = 0;
     }
 
     /// The model is asked anew: what it writes now stands below what the reply holds.
@@ -191,43 +343,79 @@ impl Written {
         grown.thinking = false;
     }
 
-    /// The piece that puts `more` at the reply's end: none where the reply does not grow,
-    /// where `more` is no words, or where the reply holds all a message may.
-    fn next(&self, more: &str) -> Option<Piece> {
+    /// What of `more` the newest message of the answer takes at its end, as a piece, and
+    /// what of it is left for the message the answer then goes on in ([`Self::goes_on`]).
+    /// No piece where that message takes none of it; nothing at all where the reply does not
+    /// grow or `more` is no words.
+    fn next<'a>(&self, more: &'a str) -> Option<(Option<Piece>, &'a str)> {
         let place = self.place.as_ref()?;
         let grown = self.grown.lock_recover();
         if !grown.open || grown.lost {
             return None;
         }
         // A call's first words begin without the blanks a model may lead with, and below
-        // whatever the reply holds.
-        let (lead, more) = match (grown.call.is_empty(), grown.bytes) {
-            (true, 0) => ("", more.trim_start()),
+        // whatever the reply holds. A message with nothing in it begins with a word as well,
+        // also where the answer went on in it in the middle of a call.
+        let (lead, words) = match (grown.call.is_empty(), grown.bytes) {
+            (_, 0) => ("", more.trim_start()),
             (true, _) => (BELOW, more.trim_start()),
             (false, _) => ("", more),
         };
-        let fits = chat::chat::MAX_MESSAGE_TEXT_BYTES
+        if words.is_empty() {
+            return None;
+        }
+        // The blanks left out inside a call are the model's all the same ([`Self::lacks`]).
+        let passed = if grown.call.is_empty() {
+            ""
+        } else {
+            more.strip_suffix(words).unwrap_or_default()
+        };
+        let left = chat::chat::MAX_MESSAGE_TEXT_BYTES
             .saturating_sub(grown.bytes)
             .saturating_sub(lead.len());
-        let sequence = grown.sequence.saturating_add(1);
+        let empty = grown.bytes == 0;
+        // Whether the message ends inside a word that `words` goes on with.
+        let within = !empty && lead.is_empty() && !words.starts_with(char::is_whitespace);
+        let (on, reply, sequence) = match grown.on.last() {
+            Some(link) => (
+                grown.on.len().checked_sub(1),
+                link.reply.clone(),
+                link.sequence.saturating_add(1),
+            ),
+            None => (None, place.reply.clone(), grown.sequence.saturating_add(1)),
+        };
         drop(grown);
-        let said = beginning(more, fits);
-        (!said.is_empty()).then(|| Piece {
-            place: place.clone(),
+        let (said, rest) = words.split_at_checked(taken(words, left, within || empty))?;
+        let piece = (!said.is_empty()).then(|| Piece {
+            place: Place {
+                conversation: place.conversation.clone(),
+                reply,
+            },
+            on,
             sequence,
             lead,
+            passed: passed.to_owned(),
             said: said.to_owned(),
-        })
+        });
+        Some((piece, rest))
     }
 
     /// Chat took `piece`.
     fn took(&self, piece: &Piece) {
         let mut grown = self.grown.lock_recover();
-        grown.sequence = piece.sequence;
+        match piece.on {
+            Some(at) => {
+                if let Some(link) = grown.on.get_mut(at) {
+                    link.sequence = piece.sequence;
+                }
+            }
+            None => grown.sequence = piece.sequence,
+        }
         grown.bytes = grown
             .bytes
             .saturating_add(piece.lead.len())
             .saturating_add(piece.said.len());
+        grown.call.push_str(&piece.passed);
         grown.call.push_str(&piece.said);
     }
 
@@ -260,8 +448,10 @@ impl Written {
         let said = beginning(more, fits);
         (!said.is_empty()).then(|| Piece {
             place: place.clone(),
+            on: None,
             sequence,
             lead,
+            passed: String::new(),
             said: said.to_owned(),
         })
     }
@@ -285,7 +475,7 @@ impl Written {
         let grown = self.grown.lock_recover();
         // A reply whose stream holds thinking and no word yet has its words still to come:
         // they go into it here, or its stream would end without them.
-        if grown.call.is_empty() && grown.bytes == 0 && grown.thought == 0 {
+        if grown.call.is_empty() && grown.bytes == 0 && grown.thought == 0 && grown.on.is_empty() {
             return None;
         }
         let rest = whole.strip_prefix(grown.call.as_str())?;
@@ -302,10 +492,55 @@ impl Written {
             .then(|| (place.clone(), grown.sequence.saturating_add(1)))
     }
 
-    /// Whether the reply holds words and may lack some, because Chat refused a piece.
+    /// Where the end of each message the answer went on in goes, with that message's number
+    /// among them and the end's among its stream's events: the newest first, and none for a
+    /// message whose stream took its end or took nothing.
+    fn went_on(&self) -> Vec<(usize, Place, u64)> {
+        let Some(place) = &self.place else {
+            return Vec::new();
+        };
+        let grown = self.grown.lock_recover();
+        grown
+            .on
+            .iter()
+            .enumerate()
+            .rev()
+            .filter(|(_, link)| !link.ended && link.sequence > 0)
+            .map(|(at, link)| {
+                let place = Place {
+                    conversation: place.conversation.clone(),
+                    reply: link.reply.clone(),
+                };
+                (at, place, link.sequence.saturating_add(1))
+            })
+            .collect()
+    }
+
+    /// The stream of the message numbered `at` among those the answer went on in took its
+    /// end.
+    fn ended(&self, at: usize) {
+        if let Some(link) = self.grown.lock_recover().on.get_mut(at) {
+            link.ended = true;
+        }
+    }
+
+    /// Whether `words`, an answer that arrived whole, go into the reply as words written
+    /// while they came: nothing was written into it yet, and they are more than one message
+    /// holds, so the turn's end cannot say them in the reply alone.
+    fn takes_whole(&self, words: &str) -> bool {
+        let grown = self.grown.lock_recover();
+        self.place.is_some()
+            && grown.open
+            && !grown.lost
+            && grown.sequence == 0
+            && grown.on.is_empty()
+            && words.len() > chat::chat::MAX_MESSAGE_TEXT_BYTES
+    }
+
+    /// Whether the answer holds words and may lack some, because Chat refused a piece.
     pub(super) fn lacks_words(&self) -> bool {
         let grown = self.grown.lock_recover();
-        grown.lost && grown.bytes > 0
+        grown.lost && (grown.bytes > 0 || !grown.on.is_empty())
     }
 }
 
@@ -332,24 +567,70 @@ fn beginning(text: &str, most: usize) -> &str {
     text.get(..end).unwrap_or_default()
 }
 
+/// Where each word of `words` ends: every place a blank follows what is none.
+fn word_ends(words: &str) -> impl Iterator<Item = usize> + '_ {
+    let mut in_word = false;
+    words.char_indices().filter_map(move |(at, letter)| {
+        let ends = in_word && letter.is_whitespace();
+        in_word = !letter.is_whitespace();
+        ends.then_some(at)
+    })
+}
+
+/// How many bytes of `words`, the next of an answer, a message takes that has `left` bytes
+/// to its bound. All of them where that leaves it [`KEPT_FOR_A_WORD`]; else up to the last
+/// word's end that does, and the answer goes on in the next message from there. A message
+/// that takes none that way still takes its word's end where it `must`, because it ends
+/// inside that word or holds nothing yet: then what is kept for a word is used, and a word
+/// longer than the message has left is cut where the message is full.
+fn taken(words: &str, left: usize, must: bool) -> usize {
+    let free = left.saturating_sub(KEPT_FOR_A_WORD);
+    if words.len() <= free {
+        return words.len();
+    }
+    if let Some(end) = word_ends(words).take_while(|end| *end <= free).last() {
+        return end;
+    }
+    if !must {
+        return 0;
+    }
+    match word_ends(words).next() {
+        Some(end) if end <= left => end,
+        None if words.len() <= left => words.len(),
+        _ => beginning(words, left).len(),
+    }
+}
+
 impl Reply {
-    /// Put `more`, which the turn's model wrote just now, at the end of the reply.
+    /// Put `more`, which the turn's model wrote just now, at the end of the answer: into the
+    /// reply, and where that holds all a message takes, on into the agent's next message, so
+    /// that every word stands once and in order.
     pub(super) async fn wrote(&self, more: &str) {
-        let Some(piece) = self.written.next(more) else {
-            return;
-        };
-        let text = format!("{}{}", piece.lead, piece.said);
-        if self
-            .stream(
-                &piece.place,
-                piece.sequence,
-                AgentOutput::TextDelta { text },
-            )
-            .await
-        {
-            self.written.took(&piece);
-        } else {
-            self.written.lost();
+        let mut more = more;
+        // Whether the answer just went on in a message that then took nothing.
+        let mut idle = false;
+        while let Some((piece, rest)) = self.written.next(more) {
+            if let Some(piece) = piece {
+                let text = format!("{}{}", piece.lead, piece.said);
+                let event = AgentOutput::TextDelta { text };
+                if !self.stream(&piece.place, piece.sequence, event).await {
+                    self.written.lost();
+                    return;
+                }
+                self.written.took(&piece);
+                idle = false;
+            } else if idle {
+                // A message with nothing in it takes words, so this is not reached.
+                self.written.lost();
+                return;
+            } else {
+                idle = true;
+            }
+            if rest.is_empty() {
+                return;
+            }
+            self.written.goes_on();
+            more = rest;
         }
     }
 
@@ -378,25 +659,41 @@ impl Reply {
     /// the words that came, and its stream ends as the turn did. Whether it was such a reply
     /// and Chat took its end; where not, its end is written as a reply's that did not grow.
     pub(super) async fn grown_ends(&self, outcome: &Outcome) -> bool {
-        if self.written.end().is_none() {
-            return false;
+        // An answer that arrived whole and is longer than one message goes in as one that
+        // was written while it came.
+        if let Outcome::Answered(words) = outcome
+            && self.written.takes_whole(words)
+        {
+            self.written.asked_anew();
+            self.wrote(words).await;
         }
-        let (outcome, why) = match outcome {
+        let (finish, why) = match outcome {
             Outcome::Answered(_) => (AgentFinish::Complete, ""),
             Outcome::Stopped(words) => (AgentFinish::Truncated, words.as_str()),
             Outcome::Failed(words) => (AgentFinish::Failed, words.as_str()),
             Outcome::Cancelled => (AgentFinish::Cancelled, ""),
         };
-        self.written.asked_anew();
-        self.wrote(why).await;
+        if self.written.end().is_some() {
+            self.written.asked_anew();
+            self.wrote(why).await;
+        }
+        let ended = || AgentOutput::Finished {
+            outcome: finish,
+            detail: String::new(),
+        };
+        // Every message the answer went on in ends as the turn does, the newest first and
+        // the reply last. The reply keeps the turn's end: a turn is over only when no message
+        // of its answer says it goes on, and a server that stops in between finds the turn
+        // open and ends the rest.
+        for (at, place, sequence) in self.written.went_on() {
+            if self.stream(&place, sequence, ended()).await {
+                self.written.ended(at);
+            }
+        }
         let Some((place, sequence)) = self.written.end() else {
             return false;
         };
-        let ended = AgentOutput::Finished {
-            outcome,
-            detail: String::new(),
-        };
-        self.stream(&place, sequence, ended).await
+        self.stream(&place, sequence, ended()).await
     }
 
     /// Hand Chat the event numbered `sequence` of the reply's stream: whether it took it.
@@ -713,7 +1010,9 @@ mod tests {
                 conversation: "conversation".to_owned(),
                 reply: "reply".to_owned(),
             }),
+            agent: MemberId::agent("scout"),
             grown: Mutex::default(),
+            followed: Followed::default(),
         };
         written.open();
         written
@@ -790,6 +1089,114 @@ mod tests {
         assert!(
             written.next_thought("more").is_none(),
             "nothing more is handed to Chat"
+        );
+    }
+
+    /// Put `words` into `written` as a turn's reply does, Chat taking every piece: the
+    /// message each piece went into, and the piece.
+    fn put(written: &Written, words: &str) -> Vec<(String, String)> {
+        let mut pieces = Vec::new();
+        let mut more = words;
+        while let Some((piece, rest)) = written.next(more) {
+            if let Some(piece) = piece {
+                pieces.push((
+                    piece.place.reply.clone(),
+                    format!("{}{}", piece.lead, piece.said),
+                ));
+                written.took(&piece);
+            }
+            if rest.is_empty() {
+                break;
+            }
+            written.goes_on();
+            more = rest;
+        }
+        pieces
+    }
+
+    /// The id Chat derives for the message that follows `full` in an answer of the agent.
+    fn after(full: &str) -> String {
+        chat::chat::reply_id(
+            &tilo_resource::Id::from_raw(full),
+            &MemberId::agent("scout"),
+        )
+        .to_string()
+    }
+
+    /// An answer longer than one message goes on in the agent's next message, by the id Chat
+    /// derives for it: every word once and in order, each message within what a message
+    /// holds, and each ending where a word ends. What a message keeps free for a word is
+    /// where one message ends, never where an answer ends: every word still arrives.
+    #[test]
+    fn an_answer_longer_than_one_message_goes_on_in_the_next_where_a_word_ends() {
+        let written = growing();
+        let words: Vec<String> = (0..15_000).map(|n| format!("word{n}")).collect();
+        let answer = words.join(" ");
+        assert!(
+            answer.len() > chat::chat::MAX_MESSAGE_TEXT_BYTES.saturating_mul(2),
+            "the answer is longer than two messages hold"
+        );
+        let pieces = put(&written, &answer);
+        let (second, third) = (after("reply"), after(&after("reply")));
+        assert_eq!(
+            pieces
+                .iter()
+                .map(|(into, _)| into.as_str())
+                .collect::<Vec<_>>(),
+            ["reply", second.as_str(), third.as_str()],
+            "one piece into the reply and one into each message the answer went on in"
+        );
+        for (into, said) in &pieces {
+            assert!(
+                said.len() <= chat::chat::MAX_MESSAGE_TEXT_BYTES && said.trim() == said,
+                "{into} holds no more than a message does, and begins and ends with a word"
+            );
+        }
+        let stands: Vec<&str> = pieces
+            .iter()
+            .flat_map(|(_, said)| said.split(' '))
+            .collect();
+        assert_eq!(stands, words, "every word stands once and in order");
+        assert!(
+            written.followed.holds(&second) && written.followed.holds(&third),
+            "whoever serves the turn reads the messages its server derived"
+        );
+        assert!(
+            !written.followed.holds(&after(&third)),
+            "and none it did not derive"
+        );
+    }
+
+    /// A word the model is in the middle of ends in the message it began in, in what a
+    /// message keeps free for that, and the answer goes on in the next message with the word
+    /// after it: the blank between them stands in neither, and is the model's all the same.
+    #[test]
+    fn a_word_begun_in_a_message_ends_in_it() {
+        let written = growing();
+        let free = chat::chat::MAX_MESSAGE_TEXT_BYTES.saturating_sub(KEPT_FOR_A_WORD);
+        let begun = format!("{} rep", "a".repeat(free.saturating_sub(4)));
+        assert_eq!(begun.len(), free);
+        let mut pieces = put(&written, &begun);
+        pieces.extend(put(&written, "ort: nothing is left out"));
+        let next = after("reply");
+        assert_eq!(
+            pieces,
+            [
+                ("reply", begun.as_str()),
+                ("reply", "ort:"),
+                (next.as_str(), "nothing is left out"),
+            ]
+            .map(|(into, said)| (into.to_owned(), said.to_owned())),
+            "the word ends where it began, and the next message begins with a word"
+        );
+        assert_eq!(
+            written
+                .lacks(&format!(
+                    "{begun}ort: nothing is left out, and nothing twice."
+                ))
+                .as_deref(),
+            Some(", and nothing twice."),
+            "what the provider said only at the end is what the messages lack"
         );
     }
 }

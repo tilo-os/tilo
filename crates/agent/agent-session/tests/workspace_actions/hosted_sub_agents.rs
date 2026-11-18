@@ -1414,6 +1414,10 @@ async fn a_sub_agent_writes_only_into_its_own_conversation() {
 #[path = "hosted_sub_agent_teams.rs"]
 mod teams;
 
+/// An answer longer than one message holds.
+#[path = "hosted_reply_goes_on.rs"]
+mod reply_goes_on;
+
 /// Skills on the server: written and corrected from a turn, told to the turn they fit, and
 /// what gives a sub-agent its model.
 #[path = "hosted_skills.rs"]

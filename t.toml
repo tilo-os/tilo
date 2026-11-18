@@ -594,15 +594,16 @@ run = "bash tools/ci/app-models.sh"
 outputs = ["/target/app-models/**"]
 default = false
 
-# The one test that installs an app from its package and applies its action
-# through the module the package carries: it reads what `app-models` built, so
-# it is left out of the package's own test family (which builds no module) and
-# runs here, where the module is in place. `workspace-unify` comes beside the
+# The tests that install an app from its package and apply its action through
+# the module the package carries: the server's own, and an agent's through the
+# workspace's action API. They read what `app-models` built, so they are left
+# out of their packages' own test families (which build no module) and run
+# here, where the module is in place. `workspace-unify` comes beside the
 # package so its features resolve as the test family's build gives them.
 [[check]]
 name = "test-packaged-model"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "TILO_APP_MODELS=\"$CARGO_TARGET_DIR/app-models\" cargo test --locked -p tilo-workspace-service -p workspace-unify --lib packaged_model -- --ignored\n"
+run = "TILO_APP_MODELS=\"$CARGO_TARGET_DIR/app-models\" cargo test --locked -p tilo-workspace-service -p workspace-unify --lib packaged_model -- --ignored && TILO_APP_MODELS=\"$CARGO_TARGET_DIR/app-models\" cargo test --locked -p tilo-agent-session --test it an_agent_applies_a_packaged\n"
 needs = ["app-models"]
 
 [[check]]

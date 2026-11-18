@@ -41,8 +41,11 @@ ARG RPMS_REF
 # initramfs brings up when another of the owner's devices releases its half.
 # Then the base's desktop pieces leave: the SSH server, its clients and the VPN
 # plugins (a server is reached at its console and through Tilo's own transport),
-# the image-signing tools, git, fwupd and the modem manager. mokutil stays,
-# because the base's shim requires it and removing it breaks a protected package.
+# the image-signing tools, git, fwupd and the modem manager. So do
+# systemd-resolved, which listens for LLMNR on every interface, systemd-networkd,
+# a second network manager, and systemd-coredump: NetworkManager alone owns the
+# network and its resolver file, as on the desktop. mokutil stays, because the
+# base's shim requires it and removing it breaks a protected package.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         chrony \
         cryptsetup \
@@ -56,12 +59,19 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         wpa_supplicant \
         curl grep gzip libcap passt sed shadow-utils skopeo tar util-linux xfsprogs \
     && dnf clean all \
+    && ln -sfn ../run/NetworkManager/resolv.conf /etc/resolv.conf \
     && installed="$(rpm -qa --qf '%{NAME}\n')" \
-    && printf '%s\n' "$installed" | awk '/^(openssl|sbsigntools|efitools|pesign|nss-tools|gnutls-utils|git|git-core|openvpn|NetworkManager-openvpn|openssh|openssh-clients|openssh-server|ModemManager|fwupd)$/' \
+    && printf '%s\n' "$installed" | awk '/^(systemd-resolved|systemd-networkd|systemd-coredump|openssl|sbsigntools|efitools|pesign|nss-tools|gnutls-utils|git|git-core|openvpn|NetworkManager-openvpn|openssh|openssh-clients|openssh-server|ModemManager|fwupd)$/' \
            | xargs -r dnf --disablerepo='*' remove -y \
     && installed="$(rpm -qa --qf '%{NAME}\n')" \
-    && ! printf '%s\n' "$installed" | grep -Eq '^(openssl|sbsigntools|efitools|pesign|nss-tools|gnutls-utils|git|git-core|openvpn|NetworkManager-openvpn|openssh|openssh-clients|openssh-server|ModemManager|fwupd)$' \
+    && test "$(readlink /etc/resolv.conf)" = ../run/NetworkManager/resolv.conf \
+    && ! printf '%s\n' "$installed" | grep -Eq '^(systemd-resolved|systemd-networkd|systemd-coredump|openssl|sbsigntools|efitools|pesign|nss-tools|gnutls-utils|git|git-core|openvpn|NetworkManager-openvpn|openssh|openssh-clients|openssh-server|ModemManager|fwupd)$' \
     && dnf clean all
+# Nothing built on this base resolves a name, and with the resolver file
+# pointing into /run every RUN would have a DNS file put there, which bootc's
+# lint refuses: a plain placeholder until os/Containerfile.host's last layer
+# restores the link.
+RUN rm -f /etc/resolv.conf && printf '# build-only resolver placeholder\n' > /etc/resolv.conf
 
 # Same bootloader swap as the desktop image: install systemd-boot,
 # drop the GRUB stack, tell bootc to plant systemd-boot on the ESP at

@@ -1,105 +1,30 @@
 //! Pure data model for the Logs viewer — syslog priorities, a single journal entry, and the
 //! filter predicate.
 
-use ui::prelude::{Model, tilo_resource};
 use ui::widget::Tone;
 
-/// The eight syslog severities, ordered most-severe (`Emerg`, level 0) to least-severe
-/// (`Debug`, level 7). Level numbers match RFC 5424 and the integer in the journal's
-/// `PRIORITY` field.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, PartialOrd, Ord, serde::Serialize, Model)]
-#[serde(rename_all = "snake_case")]
-pub enum Priority {
-    Emerg,
-    Alert,
-    Crit,
-    Err,
-    Warning,
-    Notice,
-    Info,
-    #[default]
-    Debug,
+pub use logs_model::{Logs, Priority};
+
+/// The status tone a severity is marked with: errors and worse are danger, warnings are
+/// warnings, notices are information, and the verbose tail carries no status.
+#[must_use]
+pub fn tone(priority: Priority) -> Tone {
+    match priority {
+        Priority::Emerg | Priority::Alert | Priority::Crit | Priority::Err => Tone::Danger,
+        Priority::Warning => Tone::Warning,
+        Priority::Notice => Tone::Info,
+        Priority::Info | Priority::Debug => Tone::Neutral,
+    }
 }
 
-impl Priority {
-    pub const ALL: [Priority; 8] = [
-        Priority::Emerg,
-        Priority::Alert,
-        Priority::Crit,
-        Priority::Err,
-        Priority::Warning,
-        Priority::Notice,
-        Priority::Info,
-        Priority::Debug,
-    ];
-
-    /// Map a journal `PRIORITY` integer to a [`Priority`]. Anything out of the 0..=7 range
-    /// clamps to `Debug` (the most verbose bucket), which is the safe default for an
-    /// unknown resource.
-    pub fn from_level(n: i64) -> Priority {
-        match n {
-            0 => Priority::Emerg,
-            1 => Priority::Alert,
-            2 => Priority::Crit,
-            3 => Priority::Err,
-            4 => Priority::Warning,
-            5 => Priority::Notice,
-            6 => Priority::Info,
-            _ => Priority::Debug,
-        }
-    }
-
-    /// The RFC 5424 level number (0 = emerg … 7 = debug).
-    pub fn level(self) -> i64 {
-        match self {
-            Priority::Emerg => 0,
-            Priority::Alert => 1,
-            Priority::Crit => 2,
-            Priority::Err => 3,
-            Priority::Warning => 4,
-            Priority::Notice => 5,
-            Priority::Info => 6,
-            Priority::Debug => 7,
-        }
-    }
-
-    /// The severity's name, the same in the list and the detail.
-    pub fn long(self) -> &'static str {
-        match self {
-            Priority::Emerg => "Emergency",
-            Priority::Alert => "Alert",
-            Priority::Crit => "Critical",
-            Priority::Err => "Error",
-            Priority::Warning => "Warning",
-            Priority::Notice => "Notice",
-            Priority::Info => "Info",
-            Priority::Debug => "Debug",
-        }
-    }
-
-    /// The status tone a severity is marked with: errors and worse are danger, warnings are
-    /// warnings, notices are information, and the verbose tail carries no status.
-    pub fn tone(self) -> Tone {
-        match self {
-            Priority::Emerg | Priority::Alert | Priority::Crit | Priority::Err => Tone::Danger,
-            Priority::Warning => Tone::Warning,
-            Priority::Notice => Tone::Info,
-            Priority::Info | Priority::Debug => Tone::Neutral,
-        }
-    }
-
-    /// The threshold this severity sets, as the severity filter names it.
-    pub fn threshold_label(self) -> &'static str {
-        match self {
-            Priority::Emerg => "Emergency only",
-            Priority::Alert => "Alert and above",
-            Priority::Crit => "Critical and above",
-            Priority::Err => "Error and above",
-            Priority::Warning => "Warning and above",
-            Priority::Notice => "Notice and above",
-            Priority::Info => "Info and above",
-            Priority::Debug => "All levels",
-        }
+/// The filter the shared journal resource sets: the entries it lets through.
+#[must_use]
+pub fn filter_of(logs: &Logs) -> Filter {
+    Filter {
+        min_priority: logs.severity.level(),
+        unit: logs.unit.0.clone(),
+        boot: logs.boot.0.clone(),
+        search: logs.search.clone(),
     }
 }
 

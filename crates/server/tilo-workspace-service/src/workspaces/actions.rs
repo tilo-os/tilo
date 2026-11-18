@@ -85,6 +85,7 @@ mod invocation_states;
 mod mail;
 #[cfg(not(target_arch = "wasm32"))]
 mod model_asks;
+mod server;
 use invocation_states::{answered_within, failed, still_running, succeeded};
 #[cfg(not(target_arch = "wasm32"))]
 mod telling;
@@ -96,6 +97,7 @@ use super::{
 };
 use crate::app_serving::AppActionServer;
 use tilo_lock::MutexRecover as _;
+use tilo_resource::Id;
 use tilo_server_protocol::WorkspaceId;
 
 /// Listing the invitations still redeemable: part of inviting.
@@ -1232,54 +1234,66 @@ impl Workspaces {
         let mut offer = Offer::default();
         if wants(WORKSPACE_GOVERNANCE_PROVIDER)
             && let Some(workspace_id) = workspace_id
-            && let Some((governed, device)) = self.governed_by(workspace_id, caller).await
         {
-            // What an agent's grants here refuse it is not offered to it.
-            let person = agents::is_the_person(caller, &device);
-            let grants = if person {
-                None
-            } else {
-                Some(self.agent_grants(Some(workspace_id), caller).await)
-            };
-            let workspace = governed.lock().await;
-            offer.generation = workspace.record.generation;
-            let now = tilo_clock::unix_now_ns();
-            let resource = workspace_governance_resource(workspace.workspace());
-            let owner = device.user_public_key == self.inner.host.cert.user_public_key;
-            let confirmed: &[Verb] = if owner { &OWNER_CONFIRMED } else { &[] };
-            let agent_may = |verb: &Verb| {
-                grants.as_ref().is_none_or(|grants| {
-                    grants.answer(&verb.operation(GOVERNANCE), now) != Answer::Deny
-                })
-            };
-            let rows: Vec<CatalogueRow> = VERBS
-                .iter()
-                .chain(confirmed)
-                .filter(|verb| {
-                    // A verb with no check is the caller's own business. Naming
-                    // themselves is every person's, and an agent's grant has it
-                    // not. Its own grant is a key's: the key lists and revokes
-                    // it by asking for the verb by name, and no person is
-                    // offered what only a key or the key that minted it can do.
-                    if verb.check.is_empty() {
-                        return verb.id == NAME && caller.acting().is_person();
-                    }
-                    if !agent_may(verb) {
-                        return false;
-                    }
-                    if verb.check == CHOOSES_SERVERS {
-                        return Self::chooses_servers(&workspace, &device);
-                    }
-                    self.permits(
-                        &device,
-                        Some(&workspace),
-                        WorkspaceOp::Govern(verb.check),
-                        now,
-                    )
-                })
-                .map(|verb| verb.row(GOVERNANCE, &resource, &workspace.name()))
-                .collect();
-            offer.add(GOVERNANCE, workspace.workspace(), rows);
+            let operating = self
+                .server_operator(workspace_id, caller, certificate)
+                .await;
+            if let Some((governed, device)) = self.governed_by(workspace_id, caller).await {
+                // What an agent's grants here refuse it is not offered to it.
+                let person = agents::is_the_person(caller, &device);
+                let grants = if person {
+                    None
+                } else {
+                    Some(self.agent_grants(Some(workspace_id), caller).await)
+                };
+                let workspace = governed.lock().await;
+                offer.generation = workspace.record.generation;
+                let now = tilo_clock::unix_now_ns();
+                let resource = workspace_governance_resource(workspace.workspace());
+                let owner = device.user_public_key == self.inner.host.cert.user_public_key;
+                let confirmed: &[Verb] = if owner { &OWNER_CONFIRMED } else { &[] };
+                let agent_may = |verb: &Verb| {
+                    grants.as_ref().is_none_or(|grants| {
+                        grants.answer(&verb.operation(GOVERNANCE), now) != Answer::Deny
+                    })
+                };
+                let mut rows: Vec<CatalogueRow> = VERBS
+                    .iter()
+                    .chain(confirmed)
+                    .filter(|verb| {
+                        // A verb with no check is the caller's own business. Naming
+                        // themselves is every person's, and an agent's grant has it
+                        // not. Its own grant is a key's: the key lists and revokes
+                        // it by asking for the verb by name, and no person is
+                        // offered what only a key or the key that minted it can do.
+                        if verb.check.is_empty() {
+                            return verb.id == NAME && caller.acting().is_person();
+                        }
+                        if !agent_may(verb) {
+                            return false;
+                        }
+                        if verb.check == CHOOSES_SERVERS {
+                            return Self::chooses_servers(&workspace, &device);
+                        }
+                        self.permits(
+                            &device,
+                            Some(&workspace),
+                            WorkspaceOp::Govern(verb.check),
+                            now,
+                        )
+                    })
+                    .map(|verb| verb.row(GOVERNANCE, &resource, &workspace.name()))
+                    .collect();
+                if operating.is_some() {
+                    rows.extend(server::rows(&workspace));
+                }
+                offer.add(GOVERNANCE, workspace.workspace(), rows);
+            } else if let Some((governed, _device)) = operating {
+                // An agent of the person's asks what they ask of their
+                // servers: the workspace's governance is not theirs.
+                let workspace = governed.lock().await;
+                offer.add(GOVERNANCE, workspace.workspace(), server::rows(&workspace));
+            }
         }
         if wants(HOST_ACTIONS_PROVIDER)
             && let Some(certificate) = certificate
@@ -1345,7 +1359,8 @@ impl Workspaces {
                     .await
             }
             (WORKSPACE_GOVERNANCE_PROVIDER, Some(workspace_id)) => {
-                self.governance_invoke(workspace_id, caller, request).await
+                self.governance_invoke(workspace_id, caller, certificate, request)
+                    .await
             }
             (HOST_ACTIONS_PROVIDER, _) => {
                 // Unknown and forbidden are the same answer.
@@ -1486,9 +1501,15 @@ impl Workspaces {
         &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
+        certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
     ) -> Result<Value, ActionCallError> {
         let address = &request.target.address;
+        if let Some(verb) = server::verb(&address.action) {
+            return self
+                .server_operation_invoke(workspace_id, caller, certificate, verb, request)
+                .await;
+        }
         let check = check_of(&address.action).ok_or(ActionCallError::UnknownAction)?;
         // A key's own record is read by the key itself, whatever its grant may
         // govern: the workspace lists the grants of its person's, and only the

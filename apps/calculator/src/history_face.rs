@@ -211,16 +211,6 @@ fn graph_kind(edit: &FieldEdit) -> Option<GraphKind> {
     }
 }
 
-impl GraphKind {
-    /// `y` for a curve, `z` for a surface.
-    fn variable(self) -> &'static str {
-        match self {
-            GraphKind::Curve2d => "y",
-            GraphKind::Surface3d => "z",
-        }
-    }
-}
-
 /// A calculation: the expression in the math layout, its result beneath.
 struct CalculationBody {
     field: RefCell<MathField>,

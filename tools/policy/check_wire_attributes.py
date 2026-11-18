@@ -87,11 +87,14 @@ REFUSED_VALUES = ("content", "skip_serializing_if", "tag")
 
 # The calls that write or read a compact value at a type written in the call:
 # `postcard::from_bytes::<T>`, `postcard::take_from_bytes::<T>`,
-# `postcard::to_stdvec::<T>`, `bincode::deserialize::<T>`, and every other one. A
-# call that lets the type be inferred names nothing that can be read here.
-AT_TYPE = re.compile(r"\b(?:postcard|bincode)\s*::\s*[A-Za-z_][A-Za-z0-9_:]*\s*::\s*<")
-# The two formats `check_wire_enums.POSITIONAL` names, as a call writes them.
-COMPACT = ("postcard", "bincode")
+# `postcard::to_stdvec::<T>`, `bincode::deserialize::<T>`, and every other one,
+# and `from_canonical_bytes::<T>`, collab-types' postcard reader. A call that
+# lets the type be inferred names nothing that can be read here.
+AT_TYPE = re.compile(r"\b(?:(?:postcard|bincode)\s*::\s*[\w:]+|from_canonical_bytes)\s*::\s*<")
+# What a source that writes or reads a compact value mentions.
+COMPACT = ("postcard", "bincode", "from_canonical_bytes")
+# The type an `impl` block is for: what `Self` names inside it.
+IMPL = re.compile(r"^[ \t]*impl\b(?:\s*<[^>{]*>)?\s+(?:[^{;]*?\bfor\s+)?(?:\w+::)*(\w+)", re.M)
 
 # What serde derives write a value's fields; a type without them writes its own
 # bytes (a JSON text in a binary format, say), and serde reads no field of it by
@@ -172,15 +175,18 @@ def serde_derived(text: str) -> set[str]:
 
 
 def named_call_types(text: str) -> set[str]:
-    """The types a `postcard::…::<T>` or `bincode::…::<T>` call in `text` writes or
-    reads as."""
+    """The types a compact call in `text` (`AT_TYPE`) writes or reads as; `Self`
+    names the type of the `impl` block the call is in."""
     found = set()
     for match in AT_TYPE.finditer(text):
         at, depth = match.end(), 1
         while at < len(text) and depth:
             depth += {"<": 1, ">": -1}.get(text[at], 0)
             at += 1
-        found.update(named_types(tokenize(text[match.end() : at - 1])))
+        written = text[match.end() : at - 1]
+        found.update(named_types(tokenize(written)))
+        if re.search(r"\bSelf\b", written):
+            found.update(impl.group(1) for impl in list(IMPL.finditer(text, 0, match.start()))[-1:])
     return found
 
 

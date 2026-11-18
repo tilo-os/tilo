@@ -104,6 +104,8 @@ public final class TiloSource: AssistantSource {
     /// the device is paired again or its person signs out: the way in says why it stands there.
     private static let resetKey = "TiloLiveReset"
     private var wasReset = false
+    /// Whether the person's Tilo answers and does not let this device in (`joinStops()`).
+    private let joins = Told<Bool>(false)
 
     private var person: Person?
     /// The ask for the person's name that goes on beside the way in.
@@ -170,6 +172,12 @@ public final class TiloSource: AssistantSource {
 
     private let sessions = Told<Session>(.signedOut)
     private let reaches = Told<Reach>(.unknown)
+    /// Why the last pairing ended without letting this device in, in the page's own sentence.
+    private let endings = Told<String?>(nil)
+    /// The technical details the page offers under that sentence, where it shows them.
+    private let endingDetails = Told<String?>(nil)
+    /// Whether a link was taken here and the device has not got in since.
+    private var pairsNow = false
     /// Whether the page just got in and who the main chat is with is still being found.
     private var finds = false
     /// The calls that wait for the device's way in to end.
@@ -234,6 +242,10 @@ public final class TiloSource: AssistantSource {
                 for await state in engine.states() { await self?.stood(state) }
             },
             Task { [weak self] in
+                // A try that ends in the sentence of the one before changes no state.
+                for await _ in engine.triesEnded() { self?.sayReach(); self?.sayEndingDetails() }
+            },
+            Task { [weak self] in
                 for await _ in engine.changes() {
                     await self?.look()
                     await self?.survey(.records)
@@ -258,14 +270,20 @@ public final class TiloSource: AssistantSource {
 
     public nonisolated func session() -> AsyncStream<Session> { sessions.stream() }
     public nonisolated func reach() -> AsyncStream<Reach> { reaches.stream() }
+    public nonisolated func pairingEnded() -> AsyncStream<String?> { endings.stream() }
+    public nonisolated func pairingEndedDetails() -> AsyncStream<String?> { endingDetails.stream() }
 
     public func pair(with link: PairingLink) async throws {
         // A sign-in begins. Whatever key this device still keeps is not the next person's: a
         // new one is made when their server is handed this device's address.
         forgetClosedKey()
+        // Another link is taken: what the last pairing ended with is said no more.
+        endings.set(nil)
+        endingDetails.set(nil)
         do {
             soughtOwn = false
             try engine.pair(with: link.url)
+            pairsNow = true
         } catch {
             // Of a link it refuses the app says where the link is from, by name and port, and
             // nothing else: what the link carries to pair with is shown, kept and written nowhere.
@@ -282,6 +300,8 @@ public final class TiloSource: AssistantSource {
     public func answerPairing(goOn: Bool) async {
         await engine.answerPairing(goOn: goOn)
     }
+
+    public nonisolated func joinStops() -> AsyncStream<Bool> { joins.stream() }
 
     /// Forgets what the app keeps of the person and puts the page away. The device's key stays
     /// in its store until the app removes the store: the page has no way yet to forget its
@@ -317,6 +337,9 @@ public final class TiloSource: AssistantSource {
 
     /// Everything the app keeps and holds of its person and their workspace is forgotten.
     private func forget() {
+        pairsNow = false
+        endings.set(nil)
+        endingDetails.set(nil)
         address = nil
         handing.settle()
         forgetClosedKey()
@@ -389,11 +412,21 @@ public final class TiloSource: AssistantSource {
     /// try: its page's own word does, or the network's failure.
     private func sayReach() {
         switch engine.state {
-        case .open: reaches.set(.reachable)
-        case .refused, .failed: reaches.set(.unreachable)
+        case .open:
+            reaches.set(.reachable)
+            joins.set(false)
+        case .refused, .failed:
+            reaches.set(.unreachable)
+            // The try ended on the site's own page, which said that its join stopped: Tilo
+            // answers and does not let this device in. Said only to a device that is its
+            // person's: one that pairs stands at its way in already. While the next try is
+            // in work it holds, as what is said of reach does.
+            joins.set(person != nil && engine.joinStops)
         // Nothing is tried, so nothing is known. Where the workspace is gone nothing is tried
         // either: the way in says so, and no try at it failed.
-        case .away, .gone: reaches.set(.unknown)
+        case .away, .gone:
+            reaches.set(.unknown)
+            joins.set(false)
         // A try is in work, or the page waits for its person: nothing new is known.
         case .arriving, .asking, .pairing: break
         }
@@ -426,12 +459,42 @@ public final class TiloSource: AssistantSource {
         }
     }
 
+    /// A pairing that ends before this device is anybody's puts it back at its way in. What
+    /// the page said of it, a refused link or a page that could not go on, is kept for the way
+    /// in to say, until another link is taken or the device is in. A device that is its
+    /// person's already stands at no way in, and is told nothing here.
+    private func sayEnding(_ state: TiloEngine.State) {
+        switch state {
+        case .open:
+            pairsNow = false
+            endings.set(nil)
+            endingDetails.set(nil)
+        case .refused(let why), .failed(let why):
+            guard pairsNow, person == nil else { return }
+            endingDetails.set(why.isEmpty || engine.stopDetails.isEmpty ? nil : engine.stopDetails)
+            endings.set(why.isEmpty ? nil : why)
+        case .away, .arriving, .asking, .pairing, .gone:
+            break
+        }
+    }
+
+    /// A page may say its sentence first and show the details under it a moment later: they
+    /// are said when they come, while the way in still says that sentence.
+    private func sayEndingDetails() {
+        guard pairsNow, person == nil else { return }
+        switch engine.state {
+        case .refused, .failed: endingDetails.set(engine.stopDetails.isEmpty ? nil : engine.stopDetails)
+        default: break
+        }
+    }
+
     private func stood(_ state: TiloEngine.State) async {
         // The workspace this device was let into is gone: the app goes back to its way in by itself.
         if case .gone = state {
             lost()
             return
         }
+        sayEnding(state)
         // The page is in, and her assistant is looked for next. It is said before the word that
         // Tilo answers, so that the window's one sentence stands from its opening until the
         // main chat does, with no moment between the two in which nothing is said.
@@ -1434,9 +1497,13 @@ public final class TiloSource: AssistantSource {
             let withdrawn = !(question["withdrawn"]?.isNull ?? true)
             if TiloSource.variant(question["kind"]) == "secret" {
                 let detail = TiloSource.detail(of: question)
-                let state: SecretRequest.State = answered == "filled" ? .kept : answered == "declined" || withdrawn ? .declined : .waiting
+                // What they typed may be kept and still not be taken where it belongs: their server
+                // says so on the question, and the card says it after it.
+                let refused = TiloSource.variant(question["outcome"]?["outcome"]) == "failed"
+                let state: SecretRequest.State = refused ? .refused(question["outcome"]?["detail"]?.string ?? "")
+                    : answered == "filled" ? .kept : answered == "declined" || withdrawn ? .declined : .waiting
                 return Item(id: id, at: message.at, .secret(SecretRequest(
-                    id: .init(message.id), text: message.text, name: TiloSource.placeName(detail?["belongsTo"]?[0]?.string ?? ""),
+                    id: .init(message.id), text: message.text, name: TiloSource.placeNames(detail?["belongsTo"]),
                     state: state)))
             }
             // A service their assistant proposes to connect is its card (Connections.swift).
@@ -1493,10 +1560,19 @@ public final class TiloSource: AssistantSource {
     static func answered(by message: ChatMessage, among held: [String: ChatMessage]) -> Answered? {
         guard let name = message.fields["answers"]?.string, !name.isEmpty else { return nil }
         let piece = held[name]?.id ?? (message.id.split(separator: "/").dropLast().map(String.init) + [name]).joined(separator: "/")
-        if let part = message.fields["quoted"]?["text"]?.string, !part.isEmpty {
-            return Answered(Item.ID(piece), words: part, isPart: true)
+        if let quoted = message.fields["quoted"], let part = quoted["text"]?.string, !part.isEmpty {
+            let span = quoted["start"]?.number.flatMap { start in quoted["end"]?.number.map { Int(start)..<max(Int(start), Int($0)) } }
+            return Answered(Item.ID(piece), words: part, isPart: true, span: span)
         }
         return Answered(Item.ID(piece), words: held[name]?.text ?? "")
+    }
+
+    /// A marked part as Chat keeps a quote: its words, and where they stand in the answered
+    /// message's text. Nil for a message answered whole.
+    static func quote(of answered: Answered) -> JSON? {
+        guard answered.isPart, let span = answered.span, span.lowerBound < span.upperBound else { return nil }
+        return ["text": .string(Markdown.copied(answered.words)), "start": .number(Double(span.lowerBound)),
+                "end": .number(Double(span.upperBound))]
     }
 
     /// The name Chat's actions take for a piece's message: the last part of its item.
@@ -1550,6 +1626,18 @@ public final class TiloSource: AssistantSource {
         URLComponents(string: place)?.host ?? place
     }
 
+    /// Every place a secret belongs to, by its name, each once and in the order given: a mail
+    /// account's password belongs to the server its mail is read from and to the one it is sent
+    /// through, and a person reads both before they type it.
+    private static func placeNames(_ places: JSON?) -> String {
+        var names: [String] = []
+        for place in (places?.array ?? []).compactMap(\.string) {
+            let name = placeName(place)
+            if !names.contains(name) { names.append(name) }
+        }
+        return names.joined(separator: ", ")
+    }
+
     public func send(_ draft: Draft, to chat: Chat) async throws {
         // A message written while the device is still on its way in waits for the way in to end.
         await tried()
@@ -1583,7 +1671,8 @@ public final class TiloSource: AssistantSource {
             // does not yet is sent the answered line as a quote above the person's words: their
             // assistant is told what is answered either way, and nothing is kept in the app.
             if try await self.engine.chatKeepsAnswers() {
-                try await self.engine.chatPost(draft.text, in: conversation, answering: TiloSource.name(of: answered.piece), carrying: carried)
+                try await self.engine.chatPost(draft.text, in: conversation, answering: TiloSource.name(of: answered.piece),
+                                               quoted: TiloSource.quote(of: answered), carrying: carried)
             } else {
                 _ = try await self.engine.chatSend(TiloSource.quoting(answered, above: draft.text), to: to, carrying: carried)
             }

@@ -242,10 +242,20 @@ mod tests {
                 advance(&mut app);
                 assert_eq!(state(&mut app)["page"], "devices");
                 advance(&mut app);
-                for page in ["belongings", "accounts", "storage", "review"] {
+                for page in ["belongings", "accounts", "storage"] {
                     assert_eq!(state(&mut app)["page"], page, "{destination}/{identity}");
                     advance(&mut app);
                 }
+                if destination == "another" {
+                    assert_eq!(
+                        state(&mut app)["page"],
+                        "method",
+                        "{destination}/{identity}"
+                    );
+                    advance(&mut app);
+                }
+                assert_eq!(state(&mut app)["page"], "review");
+                advance(&mut app);
                 assert_eq!(state(&mut app)["page"], "ready");
             }
         }

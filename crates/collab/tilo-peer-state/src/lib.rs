@@ -61,6 +61,7 @@ pub use installation::{AppearancePolicy, ArmedRecord, DirectoryRef, Installation
 mod verified_certificate;
 pub use collab_types::work_delegation::WorkDelegation;
 pub use state::ChangeRefused;
+pub use state::DelegatedWork;
 /// A state of a workspace's governance, kept to ask which heads it holds.
 pub use state::GovernanceHeads;
 pub use state::mail_send_lease;

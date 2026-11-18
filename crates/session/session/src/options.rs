@@ -164,7 +164,7 @@ pub struct Options {
     pub app_socket: AppSocket,
     /// Where the session's MCP server listens ([`mcp_server::path`]): the socket a program of this
     /// login asks on to work in a workspace as an agent, and the person admits it. `None` : this
-    /// session serves no agents (a test, or a session in a window of another desktop).
+    /// session serves no agents (a test).
     pub mcp_server: Option<std::path::PathBuf>,
     /// Where the session serves Tilo's API to its person's own programs on this computer, as them
     /// ([`crate::api_server`]): its login's `api.sock`. `None` : it serves none.

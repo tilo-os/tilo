@@ -461,6 +461,9 @@ final class Recording: AssistantSource, @unchecked Sendable {
     func startSubAgent(job: String) async throws { note("startSubAgent(\(String(reflecting: job)))"); try await inner.startSubAgent(job: job) }
     func stop(_ subAgent: SubAgent.ID) async throws { note("stop(\(subAgent))"); try await inner.stop(subAgent) }
     func tasks() -> AsyncStream<[AssistantTask]> { inner.tasks() }
+    func joinStops() -> AsyncStream<Bool> { inner.joinStops() }
+    func pairingEnded() -> AsyncStream<String?> { inner.pairingEnded() }
+    func pairingEndedDetails() -> AsyncStream<String?> { inner.pairingEndedDetails() }
     func addTask(_ title: String) async throws { note("addTask(\(String(reflecting: title)))"); try await inner.addTask(title) }
     func automations() -> AsyncStream<[Automation]> { inner.automations() }
     func setOn(_ on: Bool, for automation: Automation.ID) async throws { note("setOn(\(on), \(automation))"); try await inner.setOn(on, for: automation) }

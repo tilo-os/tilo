@@ -214,18 +214,20 @@ fn written_text(
 
 /// How many characters of a text an invocation writes: what its parameter of
 /// type [`Text`](tilo_actions::ParamType::Text) holds, counted as characters
-/// because a place counts them that way.
+/// because a place counts them that way. The parameter named `names_item` names
+/// the item it writes in ([`item_param`]), by its id or by what it says, and is
+/// none of its text.
 fn written_chars(
     action: &PublishedAction,
     argument: &serde_json::Map<String, serde_json::Value>,
-    item: Option<&str>,
+    names_item: Option<&str>,
 ) -> u64 {
     action
         .params
         .iter()
         .filter(|param| param.ty == tilo_actions::ParamType::Text)
+        .filter(|param| Some(param.name.as_ref()) != names_item)
         .filter_map(|param| argument.get(param.name.as_ref())?.as_str())
-        .filter(|text| Some(*text) != item)
         .map(|text| text.chars().count() as u64)
         .next()
         .unwrap_or(0)
@@ -375,41 +377,55 @@ fn item_of_resource(resource: &str, kind: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// The item `argument` names of the resource `action` acts in, as the surface published it: the
-/// same verb on the item's own resource, labelled in words its app chose ("Book the studio for
-/// Friday").
-///
-/// An item's actions are published on the item's own resource and again on the
-/// record, the record's copy addressing the item by its id: the one parameter
-/// the item's copy leaves out, its method's first. That is what says which id
-/// in the argument names the item — an action can name another item beside it
-/// (`move-under` takes the new parent) without that being the one it acts on.
-/// `None` where the argument names no item: the step then says the record.
-fn item_named<'a>(
-    action: &PublishedAction,
+/// The same verb as `action` on each item of its resource the surface published, with the item it
+/// is on.
+fn item_copies<'a>(
+    action: &'a PublishedAction,
     surface: &'a PublishedSurface,
-    argument: Option<&str>,
-) -> Option<&'a PublishedAction> {
-    let argument = json_argument(argument)?;
-    surface.actions.iter().find_map(|descriptor| {
-        // The same verb on an item of this record, by the item resource the app
-        // published for it: what a person reads it by.
+) -> impl Iterator<Item = (&'a PublishedAction, String)> {
+    surface.actions.iter().filter_map(|descriptor| {
         if descriptor.action != action.action
             || descriptor.resource_kind.rsplit_once('.')?.0 != action.resource_kind
         {
             return None;
         }
-        let names_the_item = action
-            .params
-            .iter()
-            .find(|param| !descriptor.params.iter().any(|own| own.name == param.name))?;
-        let item = item_of_resource(&descriptor.resource, &descriptor.resource_kind)?;
-        (argument
-            .get(names_the_item.name.as_ref())
-            .and_then(serde_json::Value::as_str)
-            == Some(item.as_str()))
-        .then_some(descriptor)
+        Some((
+            descriptor,
+            item_of_resource(&descriptor.resource, &descriptor.resource_kind)?,
+        ))
     })
+}
+
+/// The parameter of `action`, offered on the resource, that names the item it acts on.
+///
+/// An item's actions are published on the item's own resource and again on the
+/// resource, the resource's copy addressing the item: the one parameter the item's
+/// copy leaves out, its method's first. That is what says which value in the
+/// argument names the item — an action can name another item beside it
+/// (`move-under` takes the new parent) without that being the one it acts on.
+fn item_param<'a>(action: &'a PublishedAction, surface: &PublishedSurface) -> Option<&'a str> {
+    let (copy, _) = item_copies(action, surface).next()?;
+    action
+        .params
+        .iter()
+        .find(|param| !copy.params.iter().any(|own| own.name == param.name))
+        .map(|param| param.name.as_ref())
+}
+
+/// The item `argument` names of the resource `action` acts in by its id, as the surface
+/// published it: the same verb on the item's own resource, labelled in words its app chose
+/// ("Book the studio for Friday"). `None` where the argument names no item by its id: the step
+/// then says the resource.
+fn item_named<'a>(
+    action: &'a PublishedAction,
+    surface: &'a PublishedSurface,
+    argument: Option<&str>,
+) -> Option<&'a PublishedAction> {
+    let argument = json_argument(argument)?;
+    let named = argument
+        .get(item_param(action, surface)?)
+        .and_then(serde_json::Value::as_str)?;
+    item_copies(action, surface).find_map(|(copy, item)| (item == named).then_some(copy))
 }
 
 impl ShownActor {
@@ -452,11 +468,7 @@ impl ShownActor {
                 did: action.did.clone(),
             },
             anchor: anchor_of(action, &resource, argument),
-            adds: adds_of(
-                action,
-                argument,
-                item_of_resource(&resource.id, &resource.kind).as_deref(),
-            ),
+            adds: adds_of(action, argument, item_param(action, surface)),
             key: (resource.id.clone(), resource.kind.clone()),
             resource,
             group: context.and_then(|context| context.group.clone()),
@@ -507,11 +519,11 @@ fn made_item(
 fn adds_of(
     action: &PublishedAction,
     argument: Option<&str>,
-    item: Option<&str>,
+    names_item: Option<&str>,
 ) -> Option<(String, u64)> {
     let field = action.contract.field.clone()?;
     let written =
-        json_argument(argument).map_or(0, |argument| written_chars(action, &argument, item));
+        json_argument(argument).map_or(0, |argument| written_chars(action, &argument, names_item));
     Some((field, written))
 }
 
@@ -525,7 +537,7 @@ fn json_argument(argument: Option<&str>) -> Option<serde_json::Map<String, serde
 
 /// Where a step that began at `anchor` stands once it applied, from what it answered: the
 /// characters it says it wrote; else the one item it made, which is where it acted. A comment
-/// added to an issue's thread (`adds`) is its words there, under the issue
+/// added to an issue's thread (`adds`) is its words there, under the issue it was made in
 /// (`<issue>/<comment>`), so the thread draws them and a row showing the issue stands for them;
 /// an item a verb of the tracker made (an issue created) is its row.
 fn landed_anchor(
@@ -541,14 +553,10 @@ fn landed_anchor(
         return None;
     };
     let (collection, id) = made.rsplit_once('/')?;
-    let field = collection
-        .rsplit_once('/')
-        .map_or(collection, |(_, field)| field);
+    let (under, field) = collection.rsplit_once('/').unwrap_or(("", collection));
     match (anchor, adds) {
-        (InteractionAnchor::ListItems { ids }, Some((adds, chars))) if adds == field => {
-            let [item] = ids.as_slice() else {
-                return None;
-            };
+        (_, Some((adds, chars))) if adds == field => {
+            let (_, item) = under.rsplit_once('/')?;
             Some(InteractionAnchor::Text {
                 region: field.to_owned(),
                 ranges: vec![tilo_actions::InteractionTextRange {
@@ -1110,8 +1118,13 @@ mod anchor_tests {
             );
             // Once it applied, the comment is the words it added under the issue: the thread
             // draws them, and a row showing the issue stands for them.
-            let adds = adds_of(&comment, Some(&said), Some("7d2b"));
+            let adds = adds_of(&comment, Some(&said), Some("issue"));
             assert_eq!(adds, Some(("comments".to_owned(), 18)), "its words, not the issue's id");
+            // Named by what it says, the issue is no word of the comment either.
+            let said_by_title =
+                argument(&serde_json::json!({ "issue": "Book the studio", "text": "The studio is free" }));
+            let by_title = adds_of(&comment, Some(&said_by_title), Some("issue"));
+            assert_eq!(by_title, adds, "its words, not the issue's title");
             let made = tilo_actions::ActionOutput {
                 value: None,
                 resources: vec!["tasks.issues/issues/7d2b/comments/c9f1".into()],
@@ -1121,6 +1134,13 @@ mod anchor_tests {
             };
             assert_eq!(
                 text_range(&landed_anchor(&at_issue, adds.as_ref(), &made).expect("it landed")),
+                ("comments".into(), "7d2b/c9f1".into(), 0, 18),
+            );
+            // Begun on the resource, an issue named by its title, it lands under the issue it was
+            // made in.
+            let on_resource_anchor = tilo_actions::InteractionAnchor::Resource;
+            assert_eq!(
+                text_range(&landed_anchor(&on_resource_anchor, by_title.as_ref(), &made).expect("it landed")),
                 ("comments".into(), "7d2b/c9f1".into(), 0, 18),
             );
             // An issue made from the tracker's own control is its new row once it applied.

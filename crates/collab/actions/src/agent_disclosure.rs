@@ -74,11 +74,12 @@ fn hide(
     view: &ActionSpec,
     hidden: &mut Vec<ContractViolation>,
 ) {
-    for action in resource
-        .actions
-        .iter()
-        .filter(|action| action.kind != OperationKind::View && action.contract.reaches_agents())
-    {
+    for action in resource.actions.iter().filter(|action| match action.kind {
+        // Only the person at the screen invokes these: no agent is shown them.
+        OperationKind::View => false,
+        OperationKind::Effect => !action.contract.only_shows() && action.contract.reaches_agents(),
+        OperationKind::Document => action.contract.reaches_agents(),
+    }) {
         hidden.push(ContractViolation {
             address: format!("{}\u{1f}{}", resource.id.as_str(), action.id),
             reason: format!(

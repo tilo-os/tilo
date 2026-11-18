@@ -19,7 +19,10 @@ struct CardBox<Content: View>: View {
             : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 12))
         VStack(alignment: .leading, spacing: 10) {
             head {
+                // A name is read whole: a secret that belongs to two servers names both, and
+                // a person reads both before they type it. It wraps and is never cut short.
                 Text(name).font(.tilo(14, .semibold)).foregroundStyle(Token.ink)
+                    .fixedSize(horizontal: false, vertical: true)
                 if !large { Spacer(minLength: 0) }
                 Text(note).font(.small125).foregroundStyle(Token.ink2).accessibilityLabel(note.spoken)
             }
@@ -59,7 +62,7 @@ struct SecretCard: View {
 
     var body: some View {
         Bubble { MarkdownText(text: request.text) }
-        CardBox(name: request.name, note: AssistantWords.keptInVault.said) {
+        CardBox(name: request.name, note: refused ? "" : AssistantWords.keptInVault.said) {
             switch request.state {
             case .waiting:
                 ProtectedField(typed: $typed, label: AssistantWords.secretField.said(["name": request.name]), submit: save)
@@ -80,10 +83,19 @@ struct SecretCard: View {
                 Settled(words: AssistantWords.secretKept.said)
             case .declined:
                 Settled(words: AssistantWords.secretDeclined.said, good: false)
+            case .refused(let why):
+                Settled(words: why.isEmpty ? AssistantWords.secretDeclined.said : why, good: false)
             }
         }
         .onAppear { if typed.isEmpty { typed = pictured } }
         .onDisappear { typed = "" }
+    }
+
+    /// Whether where the secret belongs did not take it: nothing of it is kept then, and the
+    /// card does not say beside its name that the vault keeps it.
+    private var refused: Bool {
+        if case .refused = request.state { return true }
+        return false
     }
 
     private func save() {

@@ -305,7 +305,7 @@ mod tests {
         document_id: &str,
         peer: &mut AutoCommit,
     ) -> bool {
-        let commit = WorkspaceCommit::of_envelope(op).unwrap();
+        let commit = WorkspaceCommit::of_envelope_payload(op, &op.payload).unwrap();
         let claims: Vec<[u8; 32]> = op.claims.iter().map(|claim| claim.change).collect();
         match check(state, commit, &claims, (app, document_id), event(op)) {
             Delivery::Now(event) => {
@@ -637,7 +637,7 @@ mod tests {
             assert!(matches!(
                 check(
                     &state,
-                    WorkspaceCommit::of_envelope(&op).unwrap(),
+                    WorkspaceCommit::of_envelope_payload(&op, &op.payload).unwrap(),
                     &claims,
                     ("tasks", "elsewhere"),
                     event(&op)
@@ -647,7 +647,7 @@ mod tests {
             assert!(matches!(
                 check(
                     &state,
-                    WorkspaceCommit::of_envelope(&op).unwrap(),
+                    WorkspaceCommit::of_envelope_payload(&op, &op.payload).unwrap(),
                     &[[0; 32]],
                     ("tasks", "a"),
                     event(&op)
@@ -674,7 +674,7 @@ mod tests {
                 1,
             );
             assert_eq!(
-                WorkspaceCommit::of_envelope(&op),
+                WorkspaceCommit::of_envelope_payload(&op, &op.payload),
                 Err(collab_types::CommitError::ForeignDevice)
             );
         }

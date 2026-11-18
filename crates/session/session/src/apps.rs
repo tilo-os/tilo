@@ -226,6 +226,10 @@ struct Launching {
     /// The tab the shell held for this launch's window, when it held one: where a launch that
     /// could not open says so.
     instance: Option<u64>,
+    /// The launch's last window, and the tab it was last seen in: where a launch that stopped
+    /// working says so.
+    window: Option<u64>,
+    tab: Option<u64>,
     /// When it was started, for the log of a launch that could not open.
     started: std::time::Instant,
     /// How far it got.
@@ -810,6 +814,8 @@ impl Apps {
                         workspace: kept.launch.workspace.clone(),
                         pid: Some(kept.pid),
                         instance: None,
+                        window: None,
+                        tab: None,
                         started: std::time::Instant::now(),
                         got: Got::Landed,
                     },
@@ -2702,6 +2708,8 @@ mod tests {
                 workspace: WORKSPACE.to_owned(),
                 pid,
                 instance,
+                window: None,
+                tab: None,
                 started,
                 got,
             },

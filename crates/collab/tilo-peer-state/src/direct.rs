@@ -475,6 +475,9 @@ impl DirectSync {
     /// action service authorizes against the state this link admits into.
     #[must_use]
     pub fn over(replica: Replica, signer: impl DeviceSigner + 'static) -> Self {
+        // The replica is this device's copy: told so, it keeps as this device
+        // what a base it adopts lacks (`StatePeer::write_as_device`).
+        replica.write(|peer| peer.write_as_device(signer.device_public_key()));
         Self(Arc::new(Inner {
             replica,
             admission: None,

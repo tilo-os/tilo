@@ -1,59 +1,13 @@
-//! Logs as a resource: the journal filter follows the person and syncs to members;
-//! the journal itself is this device's, shown and offered as live rows by the window's
+//! The app on the shared filter: `logs-model` keeps the resource and its verb; the
+//! journal itself is this device's, shown and offered as live rows by the window's
 //! view.
 
 use ui::prelude::*;
 
 use crate::journal::{JournalLoadError, sample_entries};
-use crate::model::{Filter, LogEntry, Priority};
+use crate::model::{LogEntry, Priority};
 
-/// The shared journal filter.
-#[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct Logs {
-    /// The least severe priority shown.
-    pub severity: Priority,
-    /// Exact unit, or empty for every unit.
-    pub unit: Atom,
-    /// Exact boot id, or empty for every boot.
-    pub boot: Atom,
-    /// Text to find in messages, units or identifiers.
-    pub search: String,
-}
-
-impl Logs {
-    /// The filter entries pass to be shown.
-    pub fn filter(&self) -> Filter {
-        Filter {
-            min_priority: self.severity.level(),
-            unit: self.unit.0.clone(),
-            boot: self.boot.0.clone(),
-            search: self.search.clone(),
-        }
-    }
-}
-
-impl Logs {
-    /// What the resource holds: the shared journal filter: severity, unit, boot and search
-    /// text.
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
-}
-
-#[resource(
-    kind = "logs.journal",
-    read_content = Logs::read_document
-)]
-impl Logs {
-    /// Clear every journal filter.
-    #[action]
-    pub fn clear_filters(&mut self) {
-        *self = Self::default();
-    }
-}
+pub use logs_model::Logs;
 
 /// What a capture shows in place of this device's journal.
 pub enum JournalFixture {

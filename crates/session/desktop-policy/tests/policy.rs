@@ -653,6 +653,48 @@ fn a_shell_launch_holds_the_tab_the_apps_window_takes() {
     );
 }
 
+/// A program whose window names its app otherwise than its launch did (`glxgears` from the
+/// desktop entry `kg-glxgears`) takes the tab held for its launch, which the session knows by the
+/// window's process; a window of no launch the session knows lands in a tab of its own.
+#[test]
+fn a_window_takes_the_tab_of_its_own_launch_whatever_it_calls_its_app() {
+    let (mut driver, mut policy) = mount();
+    policy
+        .handle()
+        .dispatch(ChromeEffect::OpenApp {
+            app: "kg-glxgears".into(),
+            beside: None,
+            background: None,
+            float: None,
+        })
+        .unwrap();
+    settle(&mut driver);
+    let asked = policy.take_launches();
+    let tab = asked[0]
+        .tab
+        .expect("the shell holds the tab the window takes");
+    // The session knows process 501 as one of that launch.
+    policy.reads_launch_tabs(std::rc::Rc::new(move |pid| (pid == 501).then_some(tab)));
+
+    policy
+        .map(Window {
+            pid: Some(777),
+            ..window(9, "stranger")
+        })
+        .unwrap();
+    settle(&mut driver);
+    policy
+        .map(Window {
+            pid: Some(501),
+            ..window(10, "glxgears")
+        })
+        .unwrap();
+    settle(&mut driver);
+    assert_eq!(policy.tab_of(10), Some(tab), "the launch's own tab");
+    assert_ne!(policy.tab_of(9), Some(tab));
+    assert_eq!(tabs(&policy).len(), 2, "no tab is left waiting");
+}
+
 #[test]
 fn a_conversation_opens_beside_its_sender() {
     let (mut driver, mut policy) = mount();
@@ -938,6 +980,7 @@ fn a_stopped_app_leaves_a_notice_that_asks_for_it_again() {
             asked,
             "Probe",
             tilo_desktop_surface::outcome::Closed::Crashed,
+            None,
         )
         .unwrap();
     settle(&mut driver);
@@ -977,6 +1020,60 @@ fn a_stopped_app_leaves_a_notice_that_asks_for_it_again() {
     assert!(
         reopened[0].tab.is_some(),
         "the window that comes takes the tab the answer stands in"
+    );
+}
+
+/// An app that stopped working says so in the tab its window was in, between the same
+/// neighbours, whether its window went away before the end was known or not.
+#[test]
+fn a_stopped_app_says_so_where_its_window_was() {
+    let (mut driver, mut policy) = mount();
+    map(&mut driver, &mut policy, 31, "org.example.Left");
+    map(&mut driver, &mut policy, 32, "org.example.Probe");
+    map(&mut driver, &mut policy, 33, "org.example.Right");
+    let before: Vec<u64> = tabs(&policy).iter().map(|(tab, _)| *tab).collect();
+    let tab = policy.tab_of(32).expect("the window's tab");
+
+    policy.unmap(32);
+    settle(&mut driver);
+    policy
+        .stopped(
+            "org.example.Probe",
+            "Probe",
+            tilo_desktop_surface::outcome::Closed::Crashed,
+            Some(tab),
+        )
+        .unwrap();
+    settle(&mut driver);
+    let after: Vec<u64> = tabs(&policy).iter().map(|(tab, _)| *tab).collect();
+    assert_eq!(after, before, "the tab is back where it was");
+    let texts = ui::a11y::texts(driver.root_widget());
+    assert!(
+        texts
+            .iter()
+            .any(|text| text.starts_with("Probe stopped working")),
+        "{texts:?}"
+    );
+
+    // An end known while the window is still there takes its tab at once; the window leaving
+    // after does not close it.
+    let other = policy.tab_of(33).expect("the other window's tab");
+    policy
+        .stopped(
+            "org.example.Right",
+            "Right",
+            tilo_desktop_surface::outcome::Closed::Crashed,
+            Some(other),
+        )
+        .unwrap();
+    policy.unmap(33);
+    settle(&mut driver);
+    assert_eq!(
+        tabs(&policy)
+            .iter()
+            .map(|(tab, _)| *tab)
+            .collect::<Vec<_>>(),
+        before
     );
 }
 

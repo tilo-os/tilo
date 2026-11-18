@@ -272,6 +272,21 @@ esp_plan_commit() {
   ${TILO_ESP_WRITE_CMD:-systemctl start --wait tilo-esp-write@boot-entries.service}
 }
 
+# systemd-boot lets whoever is at the console edit an entry's kernel arguments
+# (`init=/bin/sh`, a dropped `lockdown=`) unless loader.conf says `editor no`,
+# and bootc writes no loader.conf for kernel/initrd entries. Nothing Tilo boots
+# needs the editor; stage the file with it off when it does not say so already.
+loader_editor_off() {  # ESP
+  local conf="$1/loader/loader.conf"
+  if [ -f "$conf" ] && [ "$(grep -E '^[[:space:]]*editor([[:space:]]|$)' "$conf")" = 'editor no' ]; then
+    return 0
+  fi
+  { [ ! -f "$conf" ] || grep -Ev '^[[:space:]]*editor([[:space:]]|$)' "$conf"; echo 'editor no'; } \
+    > "$ESP_PLAN_DIR/loader.conf" || die "cannot stage loader.conf"
+  esp_plan_install loader.conf loader/loader.conf || die "cannot stage loader.conf"
+  log "boot menu: the kernel command line editor is off"
+}
+
 # --- listing ------------------------------------------------------------------
 bootc_status_json() { bootc status --format json 2>/dev/null; }
 
@@ -1008,11 +1023,9 @@ cmd_entries() {
     log "boot counter: $id gets $BOOT_TRIES tries"; changed=1
   done
   [ "$proven" = 1 ] || die "no retained entry matches the running deployment"
-  if [ "$changed" = 0 ]; then
-    log "boot counters: nothing to add"
-  else
-    esp_plan_commit || die "could not apply the boot counters"
-  fi
+  [ "$changed" = 1 ] || log "boot counters: nothing to add"
+  loader_editor_off "$esp"
+  esp_plan_commit || die "could not apply the boot counters and the boot menu settings"
 
   # cmd_repair_entry takes the same ESP lock and may hand it to the sealed-key
   # signer. Release this phase's descriptor before entering that operation.

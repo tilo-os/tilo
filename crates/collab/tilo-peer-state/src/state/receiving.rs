@@ -504,9 +504,29 @@ impl StatePeer {
         };
         let owner = self.core.owner;
         let from = hex::encode(source);
+        // A copy that knows its device, a member's that may write here, keeps
+        // the work delegations it holds where a base lacks them.
+        let keeper = self.own_device.filter(|device| {
+            self.certificate(device, now).is_ok_and(|cert| {
+                let access = workspace::SenderAccess::Member {
+                    person: cert.user_public_key,
+                    foreign: backend::member::foreign(cert, &self.core.origin),
+                };
+                workspace::writes_workspace(
+                    self.core.workspace_doc.as_deref(),
+                    &self.core.workspace,
+                    &workspace::Writer {
+                        key: &hex::encode(device),
+                        access,
+                    },
+                    &owner,
+                    now_ns(now),
+                )
+            })
+        });
         // The one workspace admission the shell's workspace tree runs too.
         let workspace::AdmittedWorkspace {
-            candidate,
+            mut candidate,
             media,
             rebased,
         } = workspace::admit_workspace_changes(
@@ -516,9 +536,20 @@ impl StatePeer {
                 source: workspace::Writer { key: &from, access },
                 owner: &owner,
                 now_ns: now_ns(now),
+                keeps_delegations: keeper.is_some(),
             },
             workspace_changes,
         )?;
+        // The copy keeps what it saw: the forms the base lacks go back into
+        // their rows as its device's own change, before anything reads the
+        // adopted document.
+        if rebased
+            && let Some(device) = keeper
+            && let Some(before) = self.core.workspace_doc.as_deref()
+        {
+            let actor = self.workspace_actor_for(&device);
+            super::work_delegations::carried(before, &mut candidate, &actor)?;
+        }
         // The workspace's owner is the person its governance names, not the
         // person of the device this replica was joined through: a member's
         // device admits its person's further device too, and the workspace

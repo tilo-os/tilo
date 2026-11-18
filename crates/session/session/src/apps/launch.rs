@@ -70,6 +70,9 @@ impl Apps {
                     launches.started_windowless(pid, &planned.app, workspace);
                 } else {
                     launches.started(pid, &planned.app, workspace, !planned.kind.is_host());
+                    if let Some(tab) = instance {
+                        launches.held_for(pid, tab);
+                    }
                 }
             }
         });
@@ -109,6 +112,8 @@ impl Apps {
                     workspace: workspace.to_owned(),
                     pid: Some(started.pid),
                     instance,
+                    window: None,
+                    tab: None,
                     started: std::time::Instant::now(),
                     got,
                 },
@@ -241,7 +246,9 @@ impl Apps {
                         let answer = not_opened(policy, &asked, &why);
                         policy.not_opened(&asked, &event.title, answer)
                     } else {
-                        policy.stopped(&asked, &event.title, closed)
+                        // In the tab its last window was in, where the person left it.
+                        let tab = launch.as_ref().and_then(|launch| launch.tab);
+                        policy.stopped(&asked, &event.title, closed, tab)
                     }
                 });
                 if let Err(error) = notice {
@@ -272,20 +279,45 @@ impl Apps {
                 continue;
             };
             let lineage = tilo_app_launch::links::ancestry(pid);
-            let Some(launch) = state.launched.values_mut().find(|launch| {
+            let of_it = |launch: &&mut Launching| {
+                launch
+                    .pid
+                    .is_some_and(|launcher| lineage.contains(&launcher))
+            };
+            // A launch still waiting for its first window is the one a new window answers.
+            let arriving = state.launched.values().any(|launch| {
                 launch.got == Got::Arriving
                     && launch
                         .pid
                         .is_some_and(|launcher| lineage.contains(&launcher))
-            }) else {
+            });
+            let Some(launch) = state
+                .launched
+                .values_mut()
+                .filter(of_it)
+                .find(|launch| !arriving || launch.got == Got::Arriving)
+            else {
                 continue;
             };
-            launch.got = Got::Landed;
-            tracing::info!(
-                app = %launch.app,
-                window = placed.window,
-                "a launch opened: a window of it appeared"
-            );
+            launch.window = Some(placed.window);
+            if launch.got == Got::Arriving {
+                launch.got = Got::Landed;
+                tracing::info!(
+                    app = %launch.app,
+                    window = placed.window,
+                    "a launch opened: a window of it appeared"
+                );
+            }
+        }
+        // Where each launch's window stands while it is shown: once it is gone, the tab it was
+        // last in is where its end is told.
+        for launch in state.launched.values_mut() {
+            if let Some(tab) = launch
+                .window
+                .and_then(|window| desktop.with_policy(|policy| policy.tab_of(window)))
+            {
+                launch.tab = Some(tab);
+            }
         }
     }
 

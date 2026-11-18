@@ -1011,8 +1011,10 @@ impl ChatMessages {
         let starter = crate::cause::starter(cx)?;
         let at = seconds(cx);
         // Whoever shows an agent at work holds its reply, where the work is kept: a stop that
-        // names the reply is a stop of the message it answers, held to the same check.
-        let answered = self.answered_by(message);
+        // names the reply is a stop of the message it answers, held to the same check. An
+        // answer longer than one message goes on in further messages, and a stop that names
+        // any of them is a stop of the message the first of them answers.
+        let answered = self.asked_with(message);
         let message = answered.as_ref().unwrap_or(message);
         let row = self
             .messages
@@ -1247,12 +1249,16 @@ impl ChatMessages {
             ));
         }
         if existing.is_none() {
+            // An answer longer than one message goes on in its author's next message, which
+            // stands where the full one does.
+            let parent = self.thread_of_next(&id, &author(cx)?, &channel);
             self.append(
                 cx,
                 id.clone(),
                 &channel,
                 seconds(cx),
                 Posting {
+                    parent,
                     appearance: name.map(|name| tilo_actions::Appearance {
                         name: name.into_string(),
                         avatar: None,
@@ -1466,6 +1472,45 @@ impl ChatMessages {
                     && reply_id_at(id, &row.author, asked.attempts) == *reply
             })
             .map(|(id, _)| id.clone())
+    }
+
+    /// The message that asked, when `reply` is a message of the answer to it: the agent's
+    /// reply ([`Self::answered_by`]), or a message that answer went on in, each of which
+    /// follows the one before it as a reply follows what it answers.
+    fn asked_with(&self, reply: &Id) -> Option<Id> {
+        let mut asked = self.answered_by(reply)?;
+        // Each step goes to another message of the part, so the part's size ends the walk.
+        for _ in self.messages.iter() {
+            let asks = self
+                .messages
+                .get(&asked)
+                .is_some_and(|message| crate::summons::asks_for(message).is_some());
+            match self.answered_by(&asked) {
+                Some(above) if !asks => asked = above,
+                _ => break,
+            }
+        }
+        Some(asked)
+    }
+
+    /// The message `reply` stands under when it is the next message of an answer longer than
+    /// one message holds: where the message before it stands. Its id is the one derived from
+    /// that message's and their author's ([`reply_id_at`]).
+    fn thread_of_next(
+        &self,
+        reply: &Id,
+        author: &tilo_resource::MemberId,
+        channel: &Id,
+    ) -> Option<Id> {
+        self.messages
+            .iter()
+            .find(|&(id, before)| {
+                before.channel == *channel
+                    && before.author == *author
+                    && before.work.is_some()
+                    && reply_id_at(id, author, 0) == *reply
+            })
+            .and_then(|(_, before)| before.parent.clone())
     }
 
     /// The message a verb on one message names.

@@ -2305,6 +2305,7 @@ fn source_home_checkpoint_requires_current_acknowledged_operation_and_keeps_gene
                 purpose: install_profile_model::default_purpose(),
                 deferred: false,
                 target: None,
+                plan: super::super::draft::PlanDraft::default(),
             },
             IdentityKind::New,
         )

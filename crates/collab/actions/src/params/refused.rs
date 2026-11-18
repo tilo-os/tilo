@@ -203,7 +203,9 @@ fn list(schema: &Map<String, Value>) -> String {
 }
 
 /// How an object under `schema` is written: the keys it requires, then the
-/// ones that may be left out, each with the shape of its value.
+/// ones that may be left out, each with the shape of its value, then `<key>`
+/// for the keys of the caller's own, with the shape the object declares for
+/// what stands under them.
 fn object(schema: &Map<String, Value>) -> String {
     let properties = schema.get("properties").and_then(Value::as_object);
     let required: Vec<&str> = schema
@@ -227,8 +229,13 @@ fn object(schema: &Map<String, Value>) -> String {
             fields.push(format!("{}?: {}", quoted(key), shape(property)));
         }
     }
-    if fields.is_empty() && schema.get("additionalProperties") != Some(&Value::Bool(false)) {
-        return format!("{{<key>: {ANY}}}");
+    match schema.get("additionalProperties") {
+        Some(of_its_own @ Value::Object(_)) => {
+            fields.push(format!("<key>: {}", shape(of_its_own)));
+        }
+        Some(Value::Bool(false)) => {}
+        _ if fields.is_empty() => fields.push(format!("<key>: {ANY}")),
+        _ => {}
     }
     format!("{{{}}}", fields.join(", "))
 }
@@ -262,12 +269,34 @@ pub(super) fn shape_of_param(param: &ActionParam) -> String {
         .as_deref()
         .and_then(Value::as_object)
         .unwrap_or(&nothing);
-    let shape = shape_under(schema, own);
-    match param.ty {
-        ParamType::Resource if shape == TEXT => "\"<kind:id>\"".to_owned(),
-        ParamType::DateTime if shape == TEXT => DATE_TIME.to_owned(),
-        _ => shape,
+    let own_shape = shape_under(schema, own);
+    let written = match param.ty {
+        ParamType::Resource if own_shape == TEXT => "\"<kind:id>\"".to_owned(),
+        ParamType::DateTime if own_shape == TEXT => DATE_TIME.to_owned(),
+        _ => own_shape,
+    };
+    match by_another(param) {
+        Some(decided) => format!("{written} ({decided})"),
+        None => written,
     }
+}
+
+/// What another argument's value decides of `param`'s shape, where its
+/// declaration says so: each value that names a shape, with that shape.
+fn by_another(param: &ActionParam) -> Option<String> {
+    let (argument, shapes) = param.shapes_by()?;
+    let decided: Vec<String> = shapes
+        .iter()
+        .map(|(value, schema)| {
+            format!(
+                "when {} is {}: {}",
+                quoted(argument),
+                quoted(value),
+                shape(schema)
+            )
+        })
+        .collect();
+    (!decided.is_empty()).then(|| decided.join("; "))
 }
 
 /// The arguments an action with `params` takes, as the one object a call
@@ -323,6 +352,32 @@ pub(super) fn missing(param: &ActionParam) -> ArgError {
     ArgError::Missing {
         name: param.name.to_string(),
         takes: format!("{}: {}", kind(param.ty), shape_of_param(param)),
+    }
+}
+
+/// `param` was left out where the shape another argument's value names for
+/// it, `named`, requires it.
+pub(super) fn missing_shaped(param: &ActionParam, named: &Value) -> ArgError {
+    let nothing = Map::new();
+    let fields = named.as_object().unwrap_or(&nothing);
+    ArgError::Missing {
+        name: param.name.to_string(),
+        takes: format!(
+            "{}: {}",
+            kinds(&types(fields, written_as(param.ty))),
+            shape(named)
+        ),
+    }
+}
+
+/// What text that is not written as the `format` its `schema` asks is told:
+/// the format, and how such text is written where this crate can say so.
+pub(super) fn off_format(format: &str, schema: &Map<String, Value>) -> String {
+    let written = text(schema);
+    if written == TEXT {
+        format!("must match format `{format}`")
+    } else {
+        format!("must match format `{format}`: {written}")
     }
 }
 

@@ -199,13 +199,19 @@ fn live_another_new_identity_prepares_before_your_data_and_review() {
         .unwrap();
     app.effect(&InstallerPreviewEffect::ContinuePreview)
         .unwrap();
+    wait(&mut app, |value| value["page"] == "storage");
+    for page in ["storage", "method"] {
+        assert_eq!(state(&mut app)["page"], page);
+        app.effect(&InstallerPreviewEffect::ContinuePreview)
+            .unwrap();
+    }
     wait(&mut app, |value| value["page"] == "review");
     let review = state(&mut app);
     assert_eq!(review["prepared_identity"]["state"], "prepared");
     assert!(review["prepared_identity"]["public_key"].is_string());
     app.with_widget::<InstallerPreview, _>(|preview| {
         assert!(preview.personal.prepared_handle().is_some());
-        assert!(!preview.journey.history.contains(&Page::Storage));
+        assert!(preview.journey.history.contains(&Page::Method));
     })
     .unwrap();
     paint(

@@ -93,6 +93,11 @@ pub(crate) struct Replicated {
     pub(crate) record_since: fn(u32, &str, &str, &[ui::automerge::ChangeHash]) -> Since,
     /// The heads the workspace last delivered a record at, as the page took it in.
     pub(crate) record_heads: fn(u32, &str, &str) -> Option<Vec<ui::automerge::ChangeHash>>,
+    /// Ask the workspace for a resource a reader on this page named and the page holds none of;
+    /// what the workspace answered of one it sent none of, once it has.
+    pub(crate) ask_resource: fn(u32, &str, &str) -> Option<ui::resource::WorkspaceAnswer>,
+    /// What the workspace answered of a resource it sent this page none of.
+    pub(crate) resource_answer: fn(u32, &str, &str) -> Option<ui::resource::WorkspaceAnswer>,
     /// Answer what the window of a mount that shows one app alone asked to read of other apps'
     /// documents ([`crate::browser::Mount::answer_reads_alone`]). The session that takes such a
     /// read and what a reading is made of are reached from here alone, so they load with the
@@ -202,6 +207,24 @@ pub(crate) fn record_heads(
 ) -> Option<Vec<ui::automerge::ChangeHash>> {
     installed(None, |replicated| {
         (replicated.record_heads)(id, app, record)
+    })
+}
+
+pub(crate) fn ask_resource(
+    id: u32,
+    app: &str,
+    wire: &str,
+) -> Option<ui::resource::WorkspaceAnswer> {
+    installed(None, |replicated| (replicated.ask_resource)(id, app, wire))
+}
+
+pub(crate) fn resource_answer(
+    id: u32,
+    app: &str,
+    wire: &str,
+) -> Option<ui::resource::WorkspaceAnswer> {
+    installed(None, |replicated| {
+        (replicated.resource_answer)(id, app, wire)
     })
 }
 

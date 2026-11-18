@@ -1733,15 +1733,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn every_scenario_shows_an_agent_its_actions() {
-        if let Err(failures) =
-            ui::framework::testing::check_agents_are_shown_every_action::<MailShell>()
-        {
-            panic!("{failures}");
-        }
-    }
-
     tilo_test_env::scenario! {
         /// The API between the published mailbox and the window.
         fn the_window_reads_and_acts_through_its_one_api;

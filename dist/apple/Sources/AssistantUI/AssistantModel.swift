@@ -61,6 +61,9 @@ public final class AssistantModel {
     public private(set) var session: Session?
     /// Not known until the source has said it: nothing is said to have failed before a try has ended.
     public private(set) var reach = Reach.unknown
+    /// Whether the person's Tilo answers and does not let this device in. The window then
+    /// offers the way in where it would say that Tilo cannot be reached.
+    public private(set) var joinStops = false
     public private(set) var subAgents: [SubAgent] = []
     public private(set) var tasks: [AssistantTask] = []
     public private(set) var automations: [Automation] = []
@@ -102,6 +105,13 @@ public final class AssistantModel {
     public var drafts: [Chat: Draft] = [:]
     /// Why the last call did not go through, for the person to read. The next call that does clears it.
     public var problem: String?
+    /// The sentence a pairing ended with, while `problem` says it.
+    @ObservationIgnored private var endedSaid: String?
+    /// The technical details Tilo's page offers under the sentence a pairing ended with.
+    private var endedDetails: String?
+    /// Those details while the way in says that sentence: what its "copy the technical details
+    /// below" points to. Nil: what is said is no pairing's end, or its page shows none.
+    public var problemDetails: String? { problem != nil && problem == endedSaid ? endedDetails : nil }
     /// Whether the window asks for a new sub-agent's job.
     public var asksForJob = false
     /// The piece whose words are laid out for the person to mark a part of them: Select text in
@@ -153,6 +163,8 @@ public final class AssistantModel {
         follow(source.session()) { $0.take($1) }
         follow(source.setup()) { $0.setup = $1 }
         follow(source.reach()) { $0.take($1) }
+        follow(source.pairingEnded()) { $0.take(ended: $1) }
+        follow(source.pairingEndedDetails()) { $0.endedDetails = $1 }
         follow(source.subAgents()) { model, agents in
             model.subAgents = agents
             for agent in agents { model.listen(.subAgent(agent.id)) }
@@ -161,6 +173,7 @@ public final class AssistantModel {
         follow(source.automations()) { $0.automations = $1 }
         follow(source.supervision()) { $0.supervision = $1 }
         follow(source.sinceLeft()) { $0.sinceLeft = $1 }
+        follow(source.joinStops()) { $0.joinStops = $1 }
         listen(.main)
     }
 
@@ -174,17 +187,32 @@ public final class AssistantModel {
         if let stands = await first(source.session()) { take(stands) }
         setup = await first(source.setup()) ?? .unknown
         reach = await first(source.reach()) ?? .unknown
+        if let ended = await first(source.pairingEnded()) { take(ended: ended) }
+        if let details = await first(source.pairingEndedDetails()) { endedDetails = details }
         subAgents = await first(source.subAgents()) ?? []
         tasks = await first(source.tasks()) ?? []
         automations = await first(source.automations()) ?? []
         supervision = await first(source.supervision()) ?? Supervision()
         sinceLeft = await first(source.sinceLeft()) ?? nil
+        joinStops = await first(source.joinStops()) ?? false
         for chat in [Chat.main] + subAgents.map({ Chat.subAgent($0.id) }) {
             guard let change = await first(source.conversation(chat)) else { continue }
             var conversation = Conversation()
             conversation.apply(change)
             conversations[chat] = conversation
         }
+    }
+
+    /// Why a pairing ended without letting this device in: the way in says Tilo's own sentence
+    /// under its buttons, until another link is taken or the device is in.
+    private func take(ended why: String?) {
+        if let why {
+            problem = why
+        } else if problem == endedSaid {
+            // Only its own sentence is taken back: what a call said since stays.
+            problem = nil
+        }
+        endedSaid = why
     }
 
     /// Where the device stands now. Whose devices it would join and on which server is kept
@@ -363,7 +391,7 @@ public final class AssistantModel {
     public func reply(to piece: Item.ID, saying words: String, part: String? = nil) {
         guard case .chat(let chat) = place else { return }
         var draft = drafts[chat] ?? Draft(text: "")
-        draft.answers = Answered(piece, words: part ?? words, isPart: part != nil)
+        draft.answers = Answered(piece, words: part ?? words, isPart: part != nil, span: part.map { Answered.span(of: $0, in: words) })
         drafts[chat] = draft
         fieldCalls += 1
     }

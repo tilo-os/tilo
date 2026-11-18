@@ -44,8 +44,51 @@ pub struct PackagedAction<'a> {
     pub action: &'a str,
     /// Its arguments, as the action API binds them.
     pub arguments: serde_json::Map<String, serde_json::Value>,
+    /// The member whose invocation this is: the person, agent or bot the
+    /// change is authored by and history names, never the governor the
+    /// device signs as.
+    pub member: MemberId,
+    /// Who acts, and for whom, as the action API admitted it: the agent a
+    /// person's session handed the action to, which the receipt decides the
+    /// change by. A member acting for themselves is named by `member` alone.
+    pub acting: tilo_actions::Acting,
     /// The origin clock, milliseconds since the Unix epoch.
     pub now_ms: i64,
+}
+
+/// The app version's signed surface: what a change it makes is decided
+/// against, read from the package at its payload root.
+///
+/// # Errors
+/// Bytes that hold no package, a package that is not `app`, or one whose
+/// payload has no surface.
+fn package_surface(package: &[u8], app: &str) -> Result<Vec<u8>, CollaborationError> {
+    let mut blobs: BTreeMap<BlobHash, Vec<u8>> = BTreeMap::new();
+    let package = tapp::read(package, &mut blobs)
+        .map_err(|error| CollaborationError::new(format!("the package: {error}")))?;
+    if package.meta.manifest.package.id != app {
+        return Err(CollaborationError::new(
+            "the package is another app's, not the one the action names",
+        ));
+    }
+    let hash = package
+        .meta
+        .collection
+        .entries
+        .get("surface.toml")
+        .ok_or_else(|| CollaborationError::new("the package carries no surface"))?;
+    blobs
+        .get(hash)
+        .cloned()
+        .ok_or_else(|| CollaborationError::new("the package's surface is missing"))
+}
+
+/// Keep `app`'s `surface` where this device decides the receipts of the
+/// changes that name it: the package carries the surface, so what is signed
+/// names it, and the change is decided without asking a member for it.
+fn keep_surface(app: &str, surface: &[u8]) {
+    collab_types::app_surface::register_package(app, surface);
+    crate::surfaces::keep(&hex::encode(blake3::hash(surface).as_bytes()), surface);
 }
 
 /// The app version's model, compiled from the package's `model.wasm`.
@@ -84,6 +127,19 @@ fn packaged_model(package: &[u8], app: &str) -> Result<Model, CollaborationError
 }
 
 impl Workspaces {
+    /// The `.tapp` file this device keeps for the version of `app` the
+    /// workspace has, when its governance installs one: the model that every
+    /// holder of the workspace applies the app's actions from, whichever
+    /// device built the app.
+    pub async fn installed_package(&self, workspace: &str, app: &str) -> Option<Vec<u8>> {
+        let state = self.workspace(workspace).await.ok()?;
+        let installed = {
+            let governed = state.lock().await;
+            governed.peer().governance().app_version(app)?
+        };
+        self.app_file(workspace, installed.release.file.as_deref()?)
+    }
+
     /// Make a registered app's document (`""` for what it keeps per
     /// workspace) from the model its package carries, under exact governor
     /// ownership. An existing document remains byte-identical.
@@ -130,11 +186,6 @@ impl Workspaces {
         if governed.peer().holds_document(app, document) {
             return Ok(false);
         }
-        if self.sealing_keys(&governed, app, document).await?.is_some() {
-            return Err(CollaborationError::new(
-                "a packaged model's document is written in the clear",
-            ));
-        }
         // The model is an engine and its memory, which no thread may carry:
         // it is compiled, asked and let go before anything waits.
         let genesis = {
@@ -146,6 +197,7 @@ impl Workspaces {
                     home: workspace,
                     bytes: &[],
                     member: &hex::encode(governor.user_public_key),
+                    acting: None,
                     action: "",
                     arguments: serde_json::Map::new(),
                     now: i64::try_from(now / 1_000_000).unwrap_or(i64::MAX),
@@ -159,10 +211,16 @@ impl Workspaces {
                 "the model's genesis exceeds the bootstrap limit",
             ));
         }
+        // What the write is decided against: the package carries the surface,
+        // so the receipt is decided without asking a member for it.
+        keep_surface(app, &package_surface(package, app)?);
+        // A document members write sealed starts sealed: its genesis is
+        // sealed with the workspace's keys, as a native app's would be.
+        let keys = self.sealing_keys(&governed, app, document).await?;
         let mut candidate = governed.peer().clone();
         publish_genesis(
             &mut candidate,
-            None,
+            keys.as_ref(),
             (app, document),
             genesis,
             (&self.inner.host.key, system_time(now)),
@@ -206,6 +264,8 @@ impl Workspaces {
             package,
             action,
             arguments,
+            member,
+            acting,
             now_ms,
         } = action;
         let now = tilo_clock::unix_now_ns();
@@ -237,17 +297,11 @@ impl Workspaces {
             document,
             system_time(now),
         )?;
-        if self.sealing_keys(&governed, app, document).await?.is_some() {
-            return Err(CollaborationError::new(
-                "a packaged model's document is written in the clear",
-            ));
-        }
         let bytes = governed
             .readable_document(app, document)
             .await
             .map_err(CollaborationError::new)?
             .ok_or_else(|| CollaborationError::new("the document is not prepared"))?;
-        let member = MemberId::person(hex::encode(governor.user_public_key));
         // The model is an engine and its memory, which no thread may carry:
         // it is compiled, asked and let go before anything waits.
         let answer = {
@@ -259,6 +313,7 @@ impl Workspaces {
                     home: workspace,
                     bytes: &bytes,
                     member: &member_string(&member),
+                    acting: serde_json::to_value(&acting).ok(),
                     action,
                     arguments,
                     now: now_ms,
@@ -273,10 +328,17 @@ impl Workspaces {
                 "the action's changes exceed the publication limit",
             ));
         }
+        // The change names the app version's surface, which the package
+        // carries: the receipt is decided here.
+        keep_surface(app, &package_surface(package, app)?);
+        // What the model wrote is published as the governor's signed change,
+        // sealed with the workspace's keys where its members write sealed.
+        let keys = self.sealing_keys(&governed, app, document).await?;
         let mut candidate = governed.peer().clone();
-        candidate.publication_mut().publish_incremental(
-            app,
-            document,
+        crate::workspaces::sealed_documents::publish_changes(
+            &mut candidate,
+            keys.as_ref(),
+            (app, document),
             changes,
             &self.inner.host.key,
             system_time(now),
@@ -290,6 +352,30 @@ impl Workspaces {
             .envelope
             .ok_or_else(|| CollaborationError::new("the model made no invocation"))
     }
+}
+
+/// The verb `action` of the app version `package` carries, when the package's
+/// signed surface declares it: what the action API offers a caller and the
+/// kind the invocation is decided by, read without the app's code.
+///
+/// # Errors
+/// Bytes that hold no package, a package that is not `app`, or one whose
+/// surface does not parse.
+pub fn packaged_action_verb(
+    package: &[u8],
+    app: &str,
+    action: &str,
+) -> Result<tilo_actions::surface::VerbSurface, CollaborationError> {
+    let bytes = package_surface(package, app)?;
+    let surface = collab_types::surface::SurfaceFile::parse(&bytes)
+        .map_err(|error| CollaborationError::new(format!("the package's surface: {error}")))?;
+    surface
+        .resources
+        .iter()
+        .flat_map(|resource| resource.verbs.iter())
+        .find(|verb| verb.id == action)
+        .cloned()
+        .ok_or_else(|| CollaborationError::new("the app declares no such action"))
 }
 
 /// `member` as the model module reads it ([`MemberId::of_actor_bytes`]).

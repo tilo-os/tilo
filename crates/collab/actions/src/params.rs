@@ -119,6 +119,48 @@ pub const CONTENT_ANNOTATION: &str = "content";
 /// assertion: binding takes any value of the parameter's type.
 pub const PICK_ANNOTATION: &str = "pick";
 
+/// Schema annotation of a parameter whose shape another argument of the same
+/// call decides: `{"argument": "<its name>", "shapes": {"<a value of it>":
+/// <schema>}}`. What a question keeps is its kind's: a secret keeps what is
+/// asked for and where it belongs. Where the other argument is text that
+/// names a shape, [`ActionArgs::bind`] holds this one against that shape, in
+/// the words every refused argument is told; any other value of it leaves
+/// this one to its own schema. A listing writes the shapes out
+/// ([`ActionParam::declared_shape`]). See [`ActionParam::shaped_by`].
+pub const SHAPED_BY_ANNOTATION: &str = "shaped_by";
+
+/// `schema` with the shapes the argument `argument` decides
+/// ([`SHAPED_BY_ANNOTATION`]): the schema a type publishes whose JSON form
+/// another argument of its action decides.
+#[must_use]
+pub fn shaped_by_schema<V: Into<String>>(
+    schema: serde_json::Value,
+    argument: &str,
+    shapes: impl IntoIterator<Item = (V, serde_json::Value)>,
+) -> serde_json::Value {
+    let mut schema = match schema {
+        serde_json::Value::Object(schema) => schema,
+        _ => serde_json::Map::new(),
+    };
+    schema.insert(
+        SHAPED_BY_ANNOTATION.into(),
+        shapes_decided_by(argument, shapes),
+    );
+    serde_json::Value::Object(schema)
+}
+
+/// What a [`SHAPED_BY_ANNOTATION`] holds.
+fn shapes_decided_by<V: Into<String>>(
+    argument: &str,
+    shapes: impl IntoIterator<Item = (V, serde_json::Value)>,
+) -> serde_json::Value {
+    let shapes: serde_json::Map<String, serde_json::Value> = shapes
+        .into_iter()
+        .map(|(value, schema)| (value.into(), schema))
+        .collect();
+    serde_json::json!({"argument": argument, "shapes": shapes})
+}
+
 /// What a parameter's value names in the workspace, so a person picks it
 /// from what is there instead of typing its encoding ([`PICK_ANNOTATION`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -458,6 +500,32 @@ impl ActionParam {
             .get(CHOICE_LABELS_ANNOTATION)?
             .get(choice)?
             .as_str()
+    }
+
+    /// Let the value the argument `argument` is given decide this
+    /// parameter's shape ([`SHAPED_BY_ANNOTATION`]): `shapes` names a schema
+    /// for each value of it that has one. A call is held to the shape its
+    /// own value of `argument` names, and to this parameter's own schema
+    /// alone where it names none.
+    #[must_use]
+    pub fn shaped_by<V: Into<String>>(
+        self,
+        argument: &str,
+        shapes: impl IntoIterator<Item = (V, serde_json::Value)>,
+    ) -> Self {
+        self.annotate(SHAPED_BY_ANNOTATION, shapes_decided_by(argument, shapes))
+    }
+
+    /// The argument whose value decides this parameter's shape, and the
+    /// shape each of its values names, where the declaration says so
+    /// ([`SHAPED_BY_ANNOTATION`]).
+    #[must_use]
+    pub fn shapes_by(&self) -> Option<(&str, &serde_json::Map<String, serde_json::Value>)> {
+        let declared = self.schema.as_deref()?.get(SHAPED_BY_ANNOTATION)?;
+        Some((
+            declared.get("argument")?.as_str()?,
+            declared.get("shapes")?.as_object()?,
+        ))
     }
 
     fn annotate(mut self, key: &str, value: serde_json::Value) -> Self {
@@ -1111,6 +1179,7 @@ impl ActionArgs {
                 return Err(refused::missing(param));
             }
         }
+        hold_to_decided_shapes(params, &values)?;
         Ok(Self { values, from: None })
     }
 
@@ -1316,7 +1385,7 @@ fn validate_string_schema(
             _ => return Err(format!("uses unsupported schema format `{format}`")),
         };
         if !valid {
-            return Err(format!("must match format `{format}`"));
+            return Err(refused::off_format(format, schema));
         }
     }
     Ok(())
@@ -1344,15 +1413,30 @@ fn validate_object_schema(
             }
         }
     }
-    if schema.get("additionalProperties") == Some(&serde_json::Value::Bool(false)) {
-        let properties = schema
+    // What the object declares of the keys it does not list: `false` takes
+    // none, and a schema holds the value under each of them (a map's values).
+    let listed = |key: &str| {
+        schema
             .get("properties")
-            .and_then(serde_json::Value::as_object);
-        for key in object.keys() {
-            if !properties.is_some_and(|properties| properties.contains_key(key)) {
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|properties| properties.contains_key(key))
+    };
+    match schema.get("additionalProperties") {
+        Some(serde_json::Value::Bool(false)) => {
+            if let Some(key) = object.keys().find(|key| !listed(key.as_str())) {
                 return Err(refused::takes_no(key, schema));
             }
         }
+        Some(of_its_own @ serde_json::Value::Object(_)) => {
+            // Such a key is the caller's own, so a refusal never says it.
+            for (key, value) in object {
+                if !listed(key.as_str()) {
+                    validate_schema_value(value, of_its_own)
+                        .map_err(|reason| format!("property <key> {reason}"))?;
+                }
+            }
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -1398,6 +1482,51 @@ impl std::fmt::Display for SchemaRefusal {
 /// [`validate_schema`], keeping a refusal by the top level's own numeric
 /// bound as data. A bound nested inside is refused in words, as part of the
 /// property or item it bounds.
+/// Hold each argument whose shape another argument's value decides
+/// ([`SHAPED_BY_ANNOTATION`]) against the shape that value names, in the
+/// words of every refused argument. An argument left out is asked for with
+/// the shape, unless the shape takes nothing.
+fn hold_to_decided_shapes(
+    params: &[ActionParam],
+    values: &BTreeMap<String, ArgValue>,
+) -> Result<(), ArgError> {
+    for param in params {
+        let Some((argument, shapes)) = param.shapes_by() else {
+            continue;
+        };
+        let Some(ArgValue::Text(decides)) = values.get(argument) else {
+            continue;
+        };
+        let Some(shape) = shapes.get(decides.as_str()) else {
+            continue;
+        };
+        let name = param.name.to_string();
+        if let Some(own) = &param.schema {
+            validate_shared_schema_definition(own).map_err(|reason| ArgError::Constraint {
+                name: name.clone(),
+                reason,
+            })?;
+        }
+        let Some(given) = values.get(param.name.as_ref()).map(ArgValue::to_json) else {
+            if check_schema_value(&serde_json::Value::Null, shape).is_ok() {
+                continue;
+            }
+            return Err(refused::missing_shaped(param, shape));
+        };
+        check_schema_value(&given, shape).map_err(|refusal| match refusal {
+            SchemaRefusal::Bound(violation) => ArgError::OutOfRange {
+                name: name.clone(),
+                violation,
+            },
+            SchemaRefusal::Other(reason) => ArgError::Constraint {
+                name: name.clone(),
+                reason,
+            },
+        })?;
+    }
+    Ok(())
+}
+
 fn check_schema(
     value: &serde_json::Value,
     schema: &serde_json::Value,
@@ -1765,6 +1894,7 @@ const SCHEMA_ANNOTATIONS: &[&str] = &[
     CHOICE_LABELS_ANNOTATION,
     PEOPLE_ANNOTATION,
     PICK_ANNOTATION,
+    SHAPED_BY_ANNOTATION,
 ];
 
 /// Validate the assertion vocabulary itself before a surface is published.
@@ -1790,6 +1920,7 @@ pub(crate) fn validate_schema_definition(schema: &serde_json::Value) -> Result<(
     validate_schema_definition_type(object)?;
     validate_schema_definition_strings(object)?;
     validate_schema_definition_collections(object)?;
+    validate_schema_definition_shaped(object)?;
     validate_schema_definition_numbers(object)
 }
 
@@ -1851,11 +1982,17 @@ fn validate_schema_definition_collections(
     if object.get("enum").is_some_and(|values| !values.is_array()) {
         return Err("schema `enum` must be an array".into());
     }
-    if object
-        .get("additionalProperties")
-        .is_some_and(|value| !value.is_boolean())
-    {
-        return Err("schema `additionalProperties` must be a boolean".into());
+    // `false` closes an object; a schema says what stands under the keys of
+    // the caller's own (a map's values).
+    match object.get("additionalProperties") {
+        None | Some(serde_json::Value::Bool(_)) => {}
+        Some(of_its_own @ serde_json::Value::Object(_)) => {
+            validate_schema_definition(of_its_own)
+                .map_err(|reason| format!("additionalProperties {reason}"))?;
+        }
+        Some(_) => {
+            return Err("schema `additionalProperties` must be a boolean or a schema".into());
+        }
     }
     if object
         .get("uniqueItems")
@@ -1893,6 +2030,33 @@ fn validate_schema_definition_collections(
             validate_schema_definition(alternative)
                 .map_err(|reason| format!("oneOf alternative {index} {reason}"))?;
         }
+    }
+    Ok(())
+}
+
+/// A [`SHAPED_BY_ANNOTATION`] names the argument that decides and, for values
+/// of it, shapes that are themselves schemas a value can be held to.
+fn validate_schema_definition_shaped(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    let Some(declared) = object.get(SHAPED_BY_ANNOTATION) else {
+        return Ok(());
+    };
+    let argument = declared
+        .get("argument")
+        .and_then(serde_json::Value::as_str)
+        .filter(|argument| !argument.trim().is_empty());
+    let shapes = declared
+        .get("shapes")
+        .and_then(serde_json::Value::as_object);
+    let (Some(_), Some(shapes)) = (argument, shapes) else {
+        return Err(format!(
+            "schema `{SHAPED_BY_ANNOTATION}` must name an `argument` and the `shapes` its values decide"
+        ));
+    };
+    for (value, shape) in shapes {
+        validate_schema_definition(shape)
+            .map_err(|reason| format!("`{SHAPED_BY_ANNOTATION}` shape `{value}` {reason}"))?;
     }
     Ok(())
 }
@@ -2405,7 +2569,15 @@ mod rich_schema_tests {
             .is_err()
         );
         assert!(validate_schema_definition(&json!({"minProperties": 1})).is_err());
-        assert!(validate_schema_definition(&json!({"additionalProperties": {}})).is_err());
+        assert!(validate_schema_definition(&json!({"additionalProperties": 1})).is_err());
+        assert!(
+            validate_schema_definition(&json!({"additionalProperties": {"type": "mystery"}}))
+                .is_err()
+        );
+        assert!(
+            validate_schema_definition(&json!({"additionalProperties": {"type": "integer"}}))
+                .is_ok()
+        );
         assert!(validate_schema_definition(&json!({"title": "accepted annotation"})).is_ok());
     }
 
@@ -2470,7 +2642,8 @@ place
 content
 choice_labels
 people
-pick";
+pick
+shaped_by";
 
     tilo_test_env::scenario! {
         fn the_schema_vocabulary_is_pinned;

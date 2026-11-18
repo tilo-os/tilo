@@ -1,6 +1,6 @@
 //! A small company's workspace at real size, worked through the API the way
 //! an agent moving it in does: a notebook of 1,000 notes, each a page of
-//! Markdown, and a tracker of 500 issues, every one made through the record's
+//! Markdown, and a tracker of 500 issues, every one made through the resource's
 //! own action on the server host. Listing, reading, finding and a write
 //! followed by a read each answer in a time that does not grow with how much
 //! the records hold, a listing pages through every row with an honest cursor,

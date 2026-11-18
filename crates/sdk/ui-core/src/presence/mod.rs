@@ -36,7 +36,7 @@ pub use interaction::{
     TERMINAL_INTERACTION_DWELL, interaction_card_slots,
 };
 pub use key::{DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange};
-pub use labels::{MemberLabels, guest_label, name_key, shown_name};
+pub use labels::{MemberLabels, guest_label, name_key, shown_name, unnamed_label};
 #[cfg(feature = "native")]
 pub use layer::LayerMarks;
 pub use layer::{PresenceLayer, WidgetPresence};
@@ -1317,11 +1317,7 @@ impl PresenceCtx {
                     .and_then(|(_, name)| shown_name(name))
             })
             .map(str::to_owned);
-        // A person nobody named yet is a guest, never their key.
-        name.unwrap_or_else(|| match user {
-            MemberId::Person(_) => guest_label(),
-            MemberId::Agent(id) | MemberId::Bot(id) => id.clone(),
-        })
+        name.unwrap_or_else(|| unnamed_label(user))
     }
 
     /// What every surface calls `user`, whose name is `name`: that name, numbered while another

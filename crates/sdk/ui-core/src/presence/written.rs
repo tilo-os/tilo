@@ -263,19 +263,26 @@ pub(crate) fn written_under(interaction: &SemanticInteraction) -> Option<String>
     }
 }
 
-/// The characters `changes`, one action's patches, wrote into a rich text, as the anchor an
-/// invocation names text by: each block it wrote into, the field holding the text being the
-/// region. Each block's range spans what it inserted there, counted in characters. `None` when it
-/// wrote into no block. A plain text field is left out: where its item sits is the record's own
-/// layout, and a write to one names its field and item in its arguments.
-pub fn written_by(changes: &[automerge::Patch]) -> Option<tilo_actions::InteractionAnchor> {
-    use automerge::Prop;
+/// The characters `changes`, one action's patches, wrote into `doc`, as the anchor an invocation
+/// names text by: the region and block each text is drawn in, and a range in each block counted
+/// in characters. A rich text's block is the paragraph the field holding the text names (`body`)
+/// and its range what was inserted there; the first region it wrote in is the one it names.
+/// Without one, an action that changed one plain text field of what is already there (a rename)
+/// names all of that field, as one value: the resource's own field is its own block (empty), an
+/// item's field (`title`) is in the item's block, and the words of an item kept in another item's
+/// collection (a comment in an issue's `comments`) are in that collection, under both items
+/// (`<issue>/<comment>`). An action that made an item names what it made instead. `None` when it
+/// wrote no text.
+pub fn written_by(
+    doc: &impl automerge::ReadDoc,
+    changes: &[automerge::Patch],
+) -> Option<tilo_actions::InteractionAnchor> {
+    use automerge::{ObjType, PatchAction, Prop, Value};
     let mut region: Option<&str> = None;
     let mut ranges: Vec<tilo_actions::InteractionTextRange> = Vec::new();
+    let mut fields: Vec<(&automerge::ObjId, Vec<&str>)> = Vec::new();
+    let mut made = false;
     for patch in changes {
-        let automerge::PatchAction::SpliceText { index, value, .. } = &patch.action else {
-            continue;
-        };
         let keys: Vec<&str> = patch
             .path
             .iter()
@@ -284,35 +291,98 @@ pub fn written_by(changes: &[automerge::Patch]) -> Option<tilo_actions::Interact
                 Prop::Seq(_) => "",
             })
             .collect();
+        let rich = keys
+            .iter()
+            .position(|key| *key == tilo_doc::schema::KEY_BLOCKS);
+        let (blocks, at, inserted) = match (&patch.action, rich) {
+            (PatchAction::SpliceText { index, value, .. }, Some(blocks)) => (blocks, *index, value),
+            (PatchAction::SpliceText { .. } | PatchAction::DeleteSeq { .. }, None) => {
+                if !fields.iter().any(|(obj, _)| **obj == patch.obj) {
+                    fields.push((&patch.obj, keys));
+                }
+                continue;
+            }
+            (
+                PatchAction::PutMap {
+                    value: (Value::Object(ObjType::Map), _),
+                    ..
+                },
+                _,
+            ) => {
+                made = true;
+                continue;
+            }
+            _ => continue,
+        };
         // A block's text is `…/<field>/blocks/<block>/text`.
-        let (Some(blocks), [.., block, tilo_doc::schema::BLOCK_TEXT]) = (
-            keys.iter()
-                .position(|key| *key == tilo_doc::schema::KEY_BLOCKS),
-            keys.as_slice(),
-        ) else {
+        let [.., block, tilo_doc::schema::BLOCK_TEXT] = keys.as_slice() else {
             continue;
         };
-        let (field, block) = (blocks.checked_sub(1).map_or("body", |at| keys[at]), *block);
+        let field = blocks.checked_sub(1).map_or("body", |at| keys[at]);
         // One region: the first the action wrote in.
         if block.is_empty() || field.is_empty() || *region.get_or_insert(field) != field {
             continue;
         }
-        let (start, end) = (
-            *index as u64,
-            (*index + value.make_string().chars().count()) as u64,
-        );
-        if let Some(range) = ranges.iter_mut().find(|range| range.block == block) {
+        let start = at as u64;
+        let end = start + inserted.make_string().chars().count() as u64;
+        if let Some(range) = ranges.iter_mut().find(|range| range.block == *block) {
             range.start = range.start.min(start);
             range.end = range.end.max(end);
         } else if ranges.len() < tilo_actions::MAX_ANCHOR_ITEMS {
-            let block = block.to_owned();
+            let block = (*block).to_owned();
             ranges.push(tilo_actions::InteractionTextRange { block, start, end });
         }
     }
+    if let Some(region) = region {
+        return Some(tilo_actions::InteractionAnchor::Text {
+            region: region.to_owned(),
+            ranges,
+        });
+    }
+    let [(obj, keys)] = fields.as_slice() else {
+        return None;
+    };
+    if made {
+        return None;
+    }
+    let (region, block) = field_place(keys)?;
+    let end = doc.text(*obj).ok()?.chars().count() as u64;
     Some(tilo_actions::InteractionAnchor::Text {
-        region: region?.to_owned(),
-        ranges,
+        region,
+        ranges: vec![tilo_actions::InteractionTextRange {
+            block,
+            start: 0,
+            end,
+        }],
     })
+}
+
+/// The region and block a plain text field at `keys` is drawn in ([`written_by`]): the field
+/// and the item holding it, or, for an item inside another item's collection, that collection
+/// and the items' path. `None` where a list stands on the way.
+fn field_place(keys: &[&str]) -> Option<(String, String)> {
+    let (field, above) = keys.split_last()?;
+    if keys.iter().any(|key| key.is_empty()) {
+        return None;
+    }
+    // Each item on the way is `<collection>/<id>/v`.
+    let items: Vec<(&str, &str)> = above
+        .windows(3)
+        .filter(|keys| keys[2] == tilo_resource::shape::ENTRY_VALUE_KEY)
+        .map(|keys| (keys[0], keys[1]))
+        .collect();
+    match items.as_slice() {
+        [] => Some(((*field).to_owned(), String::new())),
+        [(_, item)] => Some(((*field).to_owned(), (*item).to_owned())),
+        [.., (collection, _)] => Some((
+            (*collection).to_owned(),
+            items
+                .iter()
+                .map(|(_, id)| *id)
+                .collect::<Vec<_>>()
+                .join("/"),
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -496,6 +566,103 @@ mod tests {
         assert_eq!(
             frame(&presence, shown + Trace::LIFE, TITLE, (None, None)),
             (1, 0)
+        );
+    }
+
+    /// What `change` wrote into a document holding issue `7d2b` titled "Book the hall", with
+    /// one comment `c9f1`.
+    fn wrote(change: impl FnOnce(&mut automerge::AutoCommit)) -> Option<InteractionAnchor> {
+        use automerge::{ObjType, ROOT, transaction::Transactable};
+        let mut doc = automerge::AutoCommit::new();
+        let issues = doc.put_object(ROOT, "issues", ObjType::Map).unwrap();
+        let entry = doc.put_object(&issues, "7d2b", ObjType::Map).unwrap();
+        let issue = doc.put_object(&entry, "v", ObjType::Map).unwrap();
+        let title = doc.put_object(&issue, "title", ObjType::Text).unwrap();
+        doc.splice_text(&title, 0, 0, "Book the hall").unwrap();
+        let comments = doc.put_object(&issue, "comments", ObjType::Map).unwrap();
+        let entry = doc.put_object(&comments, "c9f1", ObjType::Map).unwrap();
+        let comment = doc.put_object(&entry, "v", ObjType::Map).unwrap();
+        let text = doc.put_object(&comment, "text", ObjType::Text).unwrap();
+        doc.splice_text(&text, 0, 0, "Hall 4").unwrap();
+        let before = doc.get_heads();
+        change(&mut doc);
+        let after = doc.get_heads();
+        let changes = doc.diff(&before, &after);
+        written_by(&doc, &changes)
+    }
+
+    fn text_at(region: &str, block: &str, end: u64) -> InteractionAnchor {
+        InteractionAnchor::Text {
+            region: region.into(),
+            ranges: vec![InteractionTextRange {
+                block: block.into(),
+                start: 0,
+                end,
+            }],
+        }
+    }
+
+    #[test]
+    fn a_change_to_one_text_field_names_all_of_it_where_it_is_drawn() {
+        use automerge::{ROOT, ReadDoc, transaction::Transactable};
+        let field = |doc: &automerge::AutoCommit, path: &[&str]| {
+            path.iter().fold(ROOT, |obj, key| {
+                doc.get(&obj, *key).unwrap().expect("there").1
+            })
+        };
+        let renamed = wrote(|doc| {
+            let title = field(doc, &["issues", "7d2b", "v", "title"]);
+            doc.splice_text(&title, 5, 4, "").unwrap();
+            doc.splice_text(&title, 9, 0, " 4").unwrap();
+        });
+        assert_eq!(
+            renamed,
+            Some(text_at("title", "7d2b", 11)),
+            "a rename names all of the title, in its item's block"
+        );
+        let shortened = wrote(|doc| {
+            let title = field(doc, &["issues", "7d2b", "v", "title"]);
+            doc.splice_text(&title, 4, 9, "").unwrap();
+        });
+        assert_eq!(shortened, Some(text_at("title", "7d2b", 4)), "a cut too");
+        let said = wrote(|doc| {
+            let text = field(
+                doc,
+                &["issues", "7d2b", "v", "comments", "c9f1", "v", "text"],
+            );
+            doc.splice_text(&text, 6, 0, " is free").unwrap();
+        });
+        assert_eq!(
+            said,
+            Some(text_at("comments", "7d2b/c9f1", 14)),
+            "a comment's words are in its issue's thread"
+        );
+        let both = wrote(|doc| {
+            let title = field(doc, &["issues", "7d2b", "v", "title"]);
+            doc.splice_text(&title, 0, 0, "Re: ").unwrap();
+            let text = field(
+                doc,
+                &["issues", "7d2b", "v", "comments", "c9f1", "v", "text"],
+            );
+            doc.splice_text(&text, 0, 0, "Re: ").unwrap();
+        });
+        assert_eq!(both, None, "two fields are no one place");
+        let made = wrote(|doc| {
+            let issues = field(doc, &["issues"]);
+            let entry = doc
+                .put_object(&issues, "e41a", automerge::ObjType::Map)
+                .unwrap();
+            let issue = doc
+                .put_object(&entry, "v", automerge::ObjType::Map)
+                .unwrap();
+            let title = doc
+                .put_object(&issue, "title", automerge::ObjType::Text)
+                .unwrap();
+            doc.splice_text(&title, 0, 0, "New").unwrap();
+        });
+        assert_eq!(
+            made, None,
+            "what made an item names the item, not its title"
         );
     }
 

@@ -58,6 +58,8 @@
 "replying-to" = "Replying to";
 "drop-reply" = "Do not reply to this message";
 "earlier-message" = "An earlier message";
+"quote" = "Quote";
+"select-to-quote" = "Select the words to quote";
 "view-not-offered" = "This Tilo cannot show views in messages yet";
 "live-not-shown" = "Tilo could not show this";
 "stop-sharing" = "Stop sharing";
@@ -222,6 +224,10 @@
 "camera-not-allowed" = "Allow the camera for {app} in the system's settings to scan a code.";
 "try-again" = "Try again";
 "not-reachable" = "Tilo cannot be reached right now";
+"join-stops" = "Tilo answers but does not let this device in: signing out here lets you pair it again.";
+"sign-out-to-pair" = "Sign out and pair again";
+"technical-details" = "Technical details";
+"copy-details" = "Copy details";
 "open-app" = "Open {app}";
 "waits-one" = "1 thing waits for you";
 "waits-many" = "{count} things wait for you";

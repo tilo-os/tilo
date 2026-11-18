@@ -324,6 +324,44 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(left, "draft:none took down uuid:1f0e")
     }
 
+    func testWhatALiveThingDrawsIsSaidByItsOwnMount() async throws {
+        _ = try await engine.view.callAsyncJavaScript(
+            "location.hash = '#/w/ws-1/so.tilo.chat'; offerBeside(); enter()", arguments: [:], in: nil, contentWorld: .page)
+        try await until("the engine is in") { if case .open = self.engine.state { true } else { false } }
+        // A mount that draws: a canvas in its place, a count of frames, the size its content asks
+        // for and the names its semantics hold once they are asked for.
+        _ = try await engine.view.callAsyncJavaScript(#"""
+            const mounts = globalThis.tiloOpen;
+            globalThis.tiloOpen = async (element, what) => {
+              const made = await mounts(element, what);
+              element.append(document.createElement('canvas'));
+              const state = made.state;
+              return {...made, requestSemantics: () => { window.askedSemantics = true; },
+                state: () => ({...state(), frames: 3, logicalSize: [320, 149], content: {width: 320, height: 149},
+                  semantics: {root: {semantics: {name: 'The tide comes in', children: [{value: 'on quiet feet'}]}, children: []}}})};
+            };
+            """#, arguments: [:], in: nil, contentWorld: .page)
+        // The view a message carries: Chat mounted beside and told the message, as a person's app shows it.
+        try await engine.show(live: "m7", .messageView(message: "m7", conversation: "c_chat"))
+        let drawn = try await engine.drawn(live: "m7")
+        XCTAssertEqual(drawn["phase"]?.string, "presented")
+        XCTAssertEqual(drawn["frames"]?.number, 3)
+        XCTAssertEqual(drawn["content"], .object(["width": .number(320), "height": .number(149)]))
+        XCTAssertEqual(drawn["words"], .array([.string("The tide comes in"), .string("on quiet feet")]))
+        XCTAssertEqual(drawn["canvas"], .array([.number(300), .number(150)]))
+        XCTAssertNil(drawn["picture"], "a canvas read out gives a frame it drew before: no picture of it is handed on")
+        let asked = try await engine.view.callAsyncJavaScript(
+            "return window.askedSemantics === true", arguments: [:], in: nil, contentWorld: .page) as? Bool
+        XCTAssertEqual(asked, true, "the mount is asked for its semantics before they are read")
+        // A thing that is not mounted draws nothing, and the engine says so as it says a page that is not in.
+        do {
+            _ = try await engine.drawn(live: "nothing")
+            XCTFail("a thing that is not mounted was read")
+        } catch let problem as TiloEngine.Problem {
+            XCTAssertEqual(problem, .notOpen)
+        }
+    }
+
     func testAMessagesViewIsChatMountedBesideToldItsMessageAndItsSizeIsHeardOnce() async throws {
         try await run("location.hash = '#/w/ws-1/so.tilo.chat'; offerBeside(); enter()")
         try await until("the engine is in") { if case .open = self.engine.state { true } else { false } }
@@ -730,6 +768,26 @@ final class EngineTests: XCTestCase {
         // An app that names nothing leaves the name to the page.
         let unnamed = try await engine.view.callAsyncJavaScript("return globalThis.tiloNativeHost.name", arguments: [:], in: nil, contentWorld: .page) as? String
         XCTAssertEqual(unnamed, "")
+    }
+
+    func testAProgramForAMacOrAPhoneTellsThePageNothingOfHowItDraws() {
+        // What a simulator's program adds to the script is the compiler's to decide, by its own
+        // condition for a simulator: no argument, setting or environment of a program says it.
+        let script = EngineScript.source(origin: Self.site, unseen: true, pass: "a pass", providers: ["anthropic"], device: "A device")
+        // No place of the script is left unfilled, whichever program this is.
+        XCTAssertNil(script.range(of: "%[A-Z_]+%", options: .regularExpression))
+        #if targetEnvironment(simulator)
+        XCTAssertTrue(script.contains("name: \"A device\", html: true, /* a simulator offers the page no graphics adapter */\n"))
+        XCTAssertTrue(script.contains("{...what, dom: true, /* shown as HTML in a simulator */ profile, device, workspace: scope.workspace,"))
+        #else
+        XCTAssertEqual(EngineScript.simulator.says, "")
+        XCTAssertEqual(EngineScript.simulator.mounts, "")
+        XCTAssertFalse(script.contains("html:"))
+        XCTAssertFalse(script.contains("dom:"))
+        // Its two places read as they do without a simulator's words.
+        XCTAssertTrue(script.contains("name: \"A device\",\n"))
+        XCTAssertTrue(script.contains("{...what, profile, device, workspace: scope.workspace,"))
+        #endif
     }
 
     func testOnlyTheFirstEntryOfADocumentIsTakenAndTheHostCannotBeReplaced() async throws {

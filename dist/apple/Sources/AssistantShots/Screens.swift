@@ -91,6 +91,13 @@ enum Screens {
         var reset = MemorySource.Content()
         reset.session = .reset
         await add("phone-way-in-reset", reset)
+        // A pairing that stopped on Tilo's page: its sentence, and under it the technical details
+        // that sentence points to, folded as they are on the page.
+        var halted = MemorySource.Content()
+        halted.session = .signedOut
+        halted.pairingEnded = "Couldn’t open Tilo. It stopped while joining. Try again. If it stops again, copy the technical details below."
+        halted.pairingEndedDetails = "Cause: loading\nStopped at: join\nError: The page could not join.\nPage build: 0.1.13"
+        await add("phone-way-in-stopped", halted)
         await add("phone-empty", empty)
         // The start, from the app's opening until the main chat stands: one sentence over the field.
         var starting = empty
@@ -140,6 +147,13 @@ enum Screens {
         var reset = MemorySource.Content()
         reset.session = .reset
         screens.append(Screen(name: "way-in-reset", size: window, view: rooted(await model(reset), scheme) { MacWindow() }))
+        // A pairing that stopped on Tilo's page: its sentence, and under it the technical details
+        // that sentence points to, folded as they are on the page.
+        var halted = MemorySource.Content()
+        halted.session = .signedOut
+        halted.pairingEnded = "Couldn’t open Tilo. It stopped while joining. Try again. If it stops again, copy the technical details below."
+        halted.pairingEndedDetails = "Cause: loading\nStopped at: join\nError: The page could not join.\nPage build: 0.1.13"
+        screens.append(Screen(name: "way-in-stopped", size: window, view: rooted(await model(halted), scheme) { MacWindow() }))
         // The first run: what Tilo asks before it pairs, and the provider step in the main chat.
         var asked = MemorySource.Content()
         asked.session = .asked(Drawing.pairingAsk)
@@ -193,6 +207,20 @@ enum Screens {
                 .background(Token.content)
             }))
         }
+        // Tilo answers and does not let this device in: one sentence and the way in offered,
+        // where the window would say that Tilo cannot be reached. At the Mac's size and at an
+        // iPhone's width.
+        var turnedBack = Drawing.content()
+        turnedBack.joinStops = true
+        screens.append(Screen(name: "way-in-offered", size: window, view: rooted(await model(turnedBack), scheme) { MacWindow() }))
+        screens.append(Screen(name: "way-in-offered-phone", size: phone, view: rooted(await model(turnedBack), scheme) {
+            VStack(spacing: 0) {
+                ConversationView(chat: .main, picturedSecret: "")
+                ReachLine()
+                Composer(chat: .main)
+            }
+            .background(Token.content)
+        }))
         screens.append(Screen(name: "lock-screen", size: CGSize(width: 300, height: 470), view: rooted(await model(empty), scheme) { LockScreenBoard() }))
         screens.append(Screen(name: "live-activities", size: CGSize(width: 393, height: 560), view: rooted(await model(empty), scheme) { LiveBoard() }))
         // What the person's Tilo told them, as the app says it. What came while they were away

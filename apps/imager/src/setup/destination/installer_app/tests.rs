@@ -329,6 +329,52 @@ tilo_test_env::scenario! {
         }
     }
 
+    phase server_destination_asks_for_the_disk_secret_and_no_account;
+    {
+        let mut app = InstallerApp::with_disks(sample());
+        app.purpose = imager_backend::destination::install::SERVER_PURPOSE.into();
+        app.step = Step::Account;
+        *app.password.lock().unwrap() = "correct horse battery staple".into();
+        *app.password_confirmation.lock().unwrap() = "correct horse battery staple".into();
+        let _ = build(&mut app);
+        assert!(
+            find_test_id(&app, "installer.full_name").is_none(),
+            "a server has no account name to ask for"
+        );
+        assert!(
+            find_test_id(&app, "installer.username").is_none(),
+            "a server has no sign-in name to ask for"
+        );
+        assert!(
+            find_accessible(
+                &app,
+                &crate::setup::strings::t("installer-account-server-title")
+            )
+            .is_some()
+        );
+        let access = find_test_id(&app, "installer.password")
+            .expect("disk secret field")
+            .accessibility()
+            .unwrap();
+        assert_eq!(
+            access.name.as_deref(),
+            Some(crate::setup::strings::t("installer-account-server-secret").as_str())
+        );
+        assert!(access.state.protected, "the disk secret stays private");
+        assert!(app.validate_account_details().is_ok());
+        assert!(validate_step(Step::Account, Some(0), "", "tilo", &app.purpose).is_ok());
+        let opts = app.install_options();
+        assert_eq!(
+            opts.purpose,
+            imager_backend::destination::install::SERVER_PURPOSE
+        );
+        assert_eq!(
+            opts.pin.as_str(),
+            "correct horse battery staple",
+            "the one secret unlocks the disk"
+        );
+    }
+
     phase online_accounts_skip_uses_semantic_api_without_sharing_form_fields;
     {
         let mut app = InstallerApp::with_disks(sample());
@@ -1079,11 +1125,13 @@ tilo_test_env::scenario! {
         ];
         for (step, disk, username, hostname, ok) in steps {
             assert_eq!(
-                validate_step(step, disk, username, hostname).is_ok(),
+                validate_step(step, disk, username, hostname, "computer").is_ok(),
                 ok,
                 "validate_step case {step:?} {disk:?} {username:?} {hostname:?}"
             );
         }
+        // A server has no account name to require; the step only holds the disk secret.
+        assert!(validate_step(Step::Account, Some(0), "", "tilo", "server").is_ok());
 
         assert_eq!(
             validate_passwords("", "").unwrap_err(),
