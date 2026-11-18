@@ -1152,6 +1152,30 @@ impl Workspaces {
         Ok(answer)
     }
 
+    /// The device holding `workspace`'s lease `lease` now, if any: the one
+    /// whose claim wins it in the workspace's own state, as every device that
+    /// holds the workspace reads it.
+    ///
+    /// # Errors
+    /// The workspace is not held here.
+    pub async fn lease_holder(
+        &self,
+        workspace: &str,
+        lease: &str,
+    ) -> Result<Option<[u8; 32]>, CollaborationError> {
+        let now = system_time(tilo_clock::unix_now_ns());
+        Ok(self
+            .workspace(workspace)
+            .await?
+            .lock()
+            .await
+            .peer()
+            .workspace()
+            .lease(lease, now)
+            .holder
+            .map(|claim| claim.device))
+    }
+
     /// Install a bot as a governed member of `workspace`, update its program,
     /// renew its delegation or uninstall it
     /// ([`WorkspaceMembershipCommand::InstallBot`],

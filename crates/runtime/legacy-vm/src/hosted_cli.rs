@@ -60,11 +60,11 @@ usage: tilo-legacy hosted <command>
                          reachable from outside, or a loopback address when
                          the server runs on the host itself.
   status --run DIR       every VM, its phase and its last wake
-  place --listen ADDR --record FILE
+  place --listen ADDR
         (--statefulset NAMESPACE/NAME --status-port PORT --max N
          | --hosts NAME=ADDR[,NAME=ADDR])
-                         say which host runs each workspace's VM (the one holding
-                         it, else the first with room), and start hosts, the
+                         say which host takes a workspace's VM nobody keeps
+                         (the first with room), and start hosts, the
                          StatefulSet's pods NAME-0, NAME-1, …, as their VMs fill
                          them: past three quarters, or for any VM waiting.
                          --hosts names a stack's hosts and where each answers
@@ -541,13 +541,7 @@ fn place(flags: &Flags) -> Result<ExitCode, String> {
                 .join(", ")
         },
     );
-    let placer = Arc::new(Placer::new(
-        &flags.path("--record")?,
-        max,
-        scale,
-        Box::new(read_load),
-        system_clock(),
-    )?);
+    let placer = Arc::new(Placer::new(max, scale, Box::new(read_load), system_clock()));
     let address = flags.need("--listen")?;
     let listener =
         std::net::TcpListener::bind(address).map_err(|e| format!("--listen {address}: {e}"))?;

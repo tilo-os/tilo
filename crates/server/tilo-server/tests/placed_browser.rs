@@ -78,6 +78,11 @@ fn hosted_service(dir: &std::path::Path) -> (std::path::PathBuf, Arc<Opened>) {
                     }
                 }
                 Request::StopBrowser { .. } => Reply::Done,
+                // The member looks at which VMs it keeps, whose leases it holds.
+                Request::Status => Reply::Status {
+                    vms: Vec::new(),
+                    load: legacy_vm::hosted::control::HostLoad::default(),
+                },
                 other => panic!("Browser's service is asked about it: {other:?}"),
             };
             let _ = control::FRAMING.write_value(&mut stream, &reply);

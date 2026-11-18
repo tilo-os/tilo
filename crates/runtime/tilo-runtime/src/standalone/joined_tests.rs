@@ -454,6 +454,7 @@ fn assert_changed_ownership_refused(joined: &Joined, workspace: WorkspaceId, act
         keys: joined.keys.clone(),
         content: std::sync::OnceLock::new(),
         own_host: std::sync::OnceLock::new(),
+        entered: Arc::default(),
         this: std::sync::Weak::new(),
     };
     assert!(

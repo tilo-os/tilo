@@ -20,6 +20,11 @@
 //!   the account and size each run is paid for coming from the server's
 //!   request.
 //!
+//! The member keeps the lease of each VM its hosted-VM service keeps
+//! (`tilo_peer_state::vm_lease`), claiming it in the VM's workspace as its
+//! own member's write and renewing it while the VM is there: the server reads
+//! the lease to know which machine keeps the VM.
+//!
 //! The member's endpoint listens on [`PORT`], where the server's members file
 //! reaches it. It serves only the workspaces it holds; the first request for
 //! one it does not hold yet makes it ask the server to enter it (the
@@ -56,6 +61,10 @@ pub const SERVER_ENDPOINT_ENV: &str = "TILO_TAKE_WORK_ENDPOINT";
 /// What a member keeps of its shells, under the profile, and where each
 /// workspace's files are below it.
 const STATE: &str = "state/take-work";
+/// How long a VM lease this member claims lasts unrenewed, and how often it
+/// renews the leases of the VMs it keeps.
+const VM_LEASE: std::time::Duration = std::time::Duration::from_secs(30);
+const VM_RENEWAL: std::time::Duration = std::time::Duration::from_secs(10);
 const FILES: &str = "state/take-work/files";
 
 /// The server a member serves: the host that places work here. It is the
@@ -185,6 +194,12 @@ pub(in crate::standalone) fn action_service(
     replicas: Option<super::files::ReplicaSlot>,
     browsers: Option<PathBuf>,
 ) -> std::io::Result<ActionService> {
+    let vms = browsers
+        .clone()
+        .or_else(|| std::env::var_os(ush::hosted_vm::SOCKET_ENV).map(PathBuf::from));
+    if let Some(vms) = vms {
+        keep_vm_leases(joined, vms);
+    }
     let dispatcher = shell_runs(profile, joined, replicas, browsers).ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::Unsupported,
@@ -204,6 +219,47 @@ pub(in crate::standalone) fn action_service(
     // the device it signs its runs as.
     action_service.reach_device_at(device, endpoint);
     Ok(action_service)
+}
+
+/// Claim and renew, for as long as `joined` is held, the lease of each VM the
+/// hosted-VM service at `vms` keeps, in the VM's workspace where this member
+/// holds it: a VM is kept where its disk is, so the member ranks itself as
+/// the machine that holds it ([`tilo_peer_state::vm_rank`]). A workspace
+/// this member enters is looked at once it holds it, so a VM it was entered
+/// for is claimed at once.
+fn keep_vm_leases(holding: &Arc<Joined>, vms: PathBuf) {
+    let entered = holding.entered();
+    let joined = Arc::downgrade(holding);
+    let renewing = move || {
+        while let Some(joined) = joined.upgrade() {
+            for (workspace, environment) in ush::hosted_vm::kept(&vms) {
+                let Some(id) = tilo_desktop_model::WorkspaceId::parse(&workspace)
+                    .filter(|id| joined.holds(*id))
+                else {
+                    continue;
+                };
+                let rank = tilo_peer_state::vm_rank(tilo_peer_state::unranked(), 0, true);
+                let lease = tilo_peer_state::vm_lease(&environment);
+                if let Err(error) = tilo_rt::app()
+                    .handle()
+                    .block_on(joined.claim_lease(id, lease, VM_LEASE, rank))
+                {
+                    tracing::warn!(%workspace, %error, "the lease of a VM kept here was not claimed");
+                }
+            }
+            drop(joined);
+            // The timer is made on the runtime, which drives it.
+            tilo_rt::app().handle().block_on(async {
+                let _ = tokio::time::timeout(VM_RENEWAL, entered.notified()).await;
+            });
+        }
+    };
+    if let Err(error) = std::thread::Builder::new()
+        .name("vm-leases".into())
+        .spawn(renewing)
+    {
+        tracing::warn!(%error, "the leases of the VMs kept here are not claimed");
+    }
 }
 
 /// The runs this member answers with: the workspace's shell, asked by the
