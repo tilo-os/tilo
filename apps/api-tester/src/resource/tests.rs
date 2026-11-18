@@ -2,10 +2,12 @@
 //! and search), and an agent and history through the hosted app.
 
 use super::*;
-use crate::model::BodyMode;
+use crate::model::{BodyMode, HttpMethod, Id};
+use crate::workspace::HISTORY_LIMIT;
 use crate::workspace::{AuthScheme, Row};
 use ui::framework::testing::TestApp;
 use ui::tilo_actions::ResourceSpec as Published;
+use ui::tilo_resource::items::item_resource_id;
 use ui::tilo_resource::{Edit, Replica, Resource as _};
 
 fn edit(workspace: &mut Replica<Workspace>, edit: &Edit<Workspace>) -> Result<(), String> {

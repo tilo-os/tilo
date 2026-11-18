@@ -103,6 +103,7 @@ members = [
     "apps/console-model",
     "apps/agent",
     "apps/api-tester",
+    "apps/api-tester-model",
     "apps/assistant",
     "apps/backups",
     "apps/browser",

@@ -1841,6 +1841,7 @@ checksum = "ade8366b8bd5ba243f0a58f036cc0ca8a2f069cff1a2351ef1cac6b083e16fc0"
 name = "calculator"
 version = "0.1.0"
 dependencies = [
+ "calculator-model",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -1850,6 +1851,16 @@ dependencies = [
  "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
+ "workspace-hack",
+]
+
+[[package]]
+name = "calculator-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-resource",
  "workspace-hack",
 ]
 

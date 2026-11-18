@@ -717,4 +717,47 @@ mod tests {
             }
         }
     }
+
+    /// The summaries the response chrome displays: status families,
+    /// durations, and the bundled sample response.
+    #[test]
+    fn response_summaries_bucket_statuses_and_format_durations() {
+        use crate::model::{ResponseData, StatusClass, human_duration};
+
+        // Case "status class": buckets by family.
+        let mut r = ResponseData {
+            status: 200,
+            status_text: "OK".into(),
+            duration_ms: 1,
+            size_bytes: 0,
+            size_exact: true,
+            shown_bytes: 0,
+            binary: false,
+            headers: vec![],
+            body: String::new(),
+            content_type: String::new(),
+        };
+        for (status, class) in [
+            (200, StatusClass::Success),
+            (301, StatusClass::Redirect),
+            (404, StatusClass::ClientError),
+            (503, StatusClass::ServerError),
+        ] {
+            r.status = status;
+            assert_eq!(r.status_class(), class, "case status {status}");
+        }
+
+        // Case "human duration": switches to seconds.
+        assert_eq!(human_duration(84), "84 ms", "case duration 84");
+        assert_eq!(human_duration(1200), "1.20 s", "case duration 1200");
+
+        // Case "sample response": valid JSON with a 200 status.
+        let sample = sample_response();
+        assert!(sample.is_json(), "case sample response");
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&sample.body).is_ok(),
+            "case sample response"
+        );
+        assert_eq!(sample.status, 200, "case sample response");
+    }
 }

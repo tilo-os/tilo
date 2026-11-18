@@ -3,14 +3,23 @@
 //! stay on this device.
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{self, Model};
+use tilo_resource::{self, Model};
 use uuid::Uuid;
 
 /// The id of a saved request, a collection, an environment or a sent request.
-pub type Id = ui::tilo_resource::Id;
+pub type Id = tilo_resource::Id;
 
 pub fn fresh_id() -> Id {
     Id::from_raw(Uuid::new_v4().to_string())
+}
+
+/// The path tail of `url`, for compact history labels.
+pub fn short_path(url: &str) -> String {
+    let no_scheme = url.split("://").nth(1).unwrap_or(url);
+    match no_scheme.find('/') {
+        Some(i) => no_scheme.get(i..).unwrap_or(no_scheme).to_string(),
+        None => no_scheme.to_string(),
+    }
 }
 
 /// HTTP verb, in the order the method dropdown presents them.
@@ -51,6 +60,10 @@ impl HttpMethod {
     }
 
     /// The verb of a wire string, unknown values reading as GET.
+    #[allow(
+        clippy::should_implement_trait,
+        reason = "the verb is read from a wire string, never parsed by a generic caller"
+    )]
     pub fn from_str(s: &str) -> HttpMethod {
         match s.to_ascii_uppercase().as_str() {
             "POST" => HttpMethod::Post,
@@ -510,7 +523,12 @@ pub fn human_duration(ms: u64) -> String {
     if ms < 1000 {
         format!("{ms} ms")
     } else {
-        format!("{:.2} s", ms as f64 / 1000.0)
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "a person reads the duration, and sub-millisecond precision is noise"
+        )]
+        let seconds = ms as f64 / 1000.0;
+        format!("{seconds:.2} s")
     }
 }
 
@@ -534,46 +552,5 @@ mod tests {
         ] {
             assert_eq!(method.has_body(), has_body, "has_body {method:?}");
         }
-    }
-
-    /// The summaries the response chrome displays: status families,
-    /// durations, and the bundled sample response.
-    #[test]
-    fn response_summaries_bucket_statuses_and_format_durations() {
-        // Case "status class": buckets by family.
-        let mut r = ResponseData {
-            status: 200,
-            status_text: "OK".into(),
-            duration_ms: 1,
-            size_bytes: 0,
-            size_exact: true,
-            shown_bytes: 0,
-            binary: false,
-            headers: vec![],
-            body: String::new(),
-            content_type: String::new(),
-        };
-        for (status, class) in [
-            (200, StatusClass::Success),
-            (301, StatusClass::Redirect),
-            (404, StatusClass::ClientError),
-            (503, StatusClass::ServerError),
-        ] {
-            r.status = status;
-            assert_eq!(r.status_class(), class, "case status {status}");
-        }
-
-        // Case "human duration": switches to seconds.
-        assert_eq!(human_duration(84), "84 ms", "case duration 84");
-        assert_eq!(human_duration(1200), "1.20 s", "case duration 1200");
-
-        // Case "sample response": valid JSON with a 200 status.
-        let sample = crate::http::sample_response();
-        assert!(sample.is_json(), "case sample response");
-        assert!(
-            serde_json::from_str::<serde_json::Value>(&sample.body).is_ok(),
-            "case sample response"
-        );
-        assert_eq!(sample.status, 200, "case sample response");
     }
 }

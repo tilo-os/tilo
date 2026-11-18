@@ -1,11 +1,11 @@
 //! What the shared workspace stores: collections of requests, environments with their
 //! variables, the request in the builder, and the history of what was sent.
-//! `#[derive(Model)]` is the storage contract. A credential never enters the record: the
+//! `#[derive(Model)]` is the storage contract. A credential never enters the resource: the
 //! document holds references into this device's secret store, keyed by the resource they
 //! belong to.
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{self, Atom, Collection, Id, Model, Refusal};
+use tilo_resource::{self, Atom, Collection, Id, Model, Refusal};
 
 use crate::model::{self, Auth, BodyMode, HttpMethod, KeyValue};
 
@@ -432,7 +432,7 @@ impl Workspace {
             saved
                 .requests
                 .get(request)
-                .map(|record| (collection, record))
+                .map(|saved| (collection, saved))
         })
     }
 }
@@ -460,9 +460,9 @@ mod tests {
                 username: "ada".into(),
                 password: "hunter2".into(),
             };
-            let record = RequestResource::of(&request);
-            assert_eq!(record.auth.username, "ada");
-            let shown = record.shown(&request.id);
+            let kept = RequestResource::of(&request);
+            assert_eq!(kept.auth.username, "ada");
+            let shown = kept.shown(&request.id);
             assert_eq!(
                 shown.auth,
                 Auth::Basic {

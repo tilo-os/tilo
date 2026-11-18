@@ -765,3 +765,8 @@ reason = "Chat's own name for the conversation a question is put in, as its ask 
 words = ["channel"]
 identifiers = ["channel"]
 paths = ["crates/agent/agent-session/tests/workspace_actions/hosted_consent_notification.rs"]
+
+[[allow]]
+reason = "The verb that keeps a sent request, its action-id constant and the catalogue keys the action macro reads, moved from the app with the resource: renaming them is an action-id change of its own."
+words = ["record"]
+paths = ["apps/api-tester-model/src/workspace_verbs.rs", "apps/api-tester-model/locales/en-US.ftl", "apps/api-tester-model/locales/de-DE.ftl"]
