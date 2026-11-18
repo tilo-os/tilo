@@ -222,6 +222,23 @@ tilo_test_env::scenario! {
         assert_eq!(first_page.entries.len(), 1);
         assert_eq!(first_page.entries[0].id, newest);
         assert_eq!(first_page.total, feed.total);
+
+        assert!(pane.select_range(&wire::Range::one(&newest)));
+        let selected = pane.timeline.selection();
+        let narrowed = pane.serve_feed(
+            &wire::FeedQuery {
+                author: Some("nobody-by-that-name".into()),
+                ..wire::FeedQuery::default()
+            },
+            &tree,
+        );
+        assert_eq!(narrowed.total, 0);
+        assert_eq!(
+            pane.timeline.selection(),
+            selected,
+            "another reader's narrowing keeps what this one selected"
+        );
+        assert_eq!(pane.serve_feed(&wire::FeedQuery::default(), &tree).total, feed.total);
     }
 
     phase a_deep_link_is_offered_until_an_app_shows_it;

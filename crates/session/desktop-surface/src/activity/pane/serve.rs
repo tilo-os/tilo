@@ -339,23 +339,21 @@ impl WorkspaceActivityPane {
         value.map_err(|error| error.to_string())
     }
 
-    /// Narrow the timeline as `query` says, then read it.
+    /// Read the timeline narrowed as `query` says. The narrowing is the query's own: the pane keeps
+    /// none of it, so readers asking differently never narrow each other's reads.
     pub fn serve_feed(&mut self, query: &wire::FeedQuery, tree: &impl ActivityTree) -> wire::Feed {
         self.set_scope(scope(query.scope), tree);
-        let lens = lens_of(query.lens.as_deref());
-        let narrowed =
-            self.period != period(query.period) || self.author != query.author || self.lens != lens;
-        if narrowed {
-            self.period = period(query.period);
-            self.author.clone_from(&query.author);
-            self.lens = lens;
-            self.reinstall_filter();
-        }
+        let filter = self.filter_for(
+            period(query.period),
+            query.author.as_deref(),
+            &lens_of(query.lens.as_deref()),
+        );
         let groups = self.groups_by_entry();
         let refused = self.refusals_by_change();
         let window = query.resources.as_ref();
         let visible = (0..self.timeline.visible_len())
             .filter_map(|index| self.timeline.visible_entry(index))
+            .filter(|entry| filter.matches(entry))
             .filter(|entry| window.is_none_or(|window| self.in_window(entry, window)))
             .collect::<Vec<_>>();
         // A window's own history names nothing of the workspace's beyond its resources: no other
@@ -471,6 +469,11 @@ impl WorkspaceActivityPane {
         let context = entry.context.as_ref();
         wire::Entry {
             id: hex(&entry.id),
+            change: self
+                .projected_origins
+                .get(&entry.id)
+                .filter(|origin| origin.change != entry.id)
+                .map(|origin| hex(&origin.change)),
             author: author(&entry.author),
             kind: kind(entry.entry_kind),
             at_ms: millis(entry.timestamp),
@@ -610,8 +613,7 @@ impl WorkspaceActivityPane {
         }
     }
 
-    /// Select the run `range` names in the timeline as it is narrowed now;
-    /// whether both ends are in it.
+    /// Select the run `range` names in the timeline; whether both ends are in it.
     pub fn select_range(&mut self, range: &wire::Range) -> bool {
         let position = |hex: &str| {
             let id = entry_id(hex)?;

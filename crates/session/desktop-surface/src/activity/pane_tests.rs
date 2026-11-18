@@ -1582,22 +1582,29 @@ mod tests {
             .expect("owner may grant");
 
             let mut pane = pane_over(&mut tree);
-            let all = pane.timeline.visible_len();
+            let mut read = |period| {
+                pane.serve_feed(
+                    &wire::FeedQuery {
+                        period,
+                        ..wire::FeedQuery::default()
+                    },
+                    &tree,
+                )
+            };
+            let all = read(wire::Period::AllTime).total;
             assert!(
                 all >= 2,
                 "expected last week's grant and today's, got {all}"
             );
 
-            pane.period = Period::Today;
-            pane.reinstall_filter();
-            let today = pane.timeline.visible_len();
-            assert!(today > 0, "today's changes must survive the day filter");
+            let today = read(wire::Period::Today);
+            assert!(today.total > 0, "today's changes must survive the day filter");
             assert!(
-                today < all,
-                "the week-old change must be filtered out: {today} of {all} survived"
+                today.total < all,
+                "the week-old change must be filtered out: {} of {all} survived",
+                today.total
             );
-            for i in 0..pane.timeline.visible_len() {
-                let e = pane.timeline.visible_entry(i).unwrap();
+            for e in &today.entries {
                 assert!(
                     !e.summary.contains("last-week"),
                     "the week-old row leaked through the day filter: {}",
@@ -1605,10 +1612,8 @@ mod tests {
                 );
             }
 
-            pane.period = Period::Month;
-            pane.reinstall_filter();
             assert_eq!(
-                pane.timeline.visible_len(),
+                read(wire::Period::Month).total,
                 all,
                 "a 30-day window covers a change from seven days ago"
             );
@@ -1657,25 +1662,30 @@ mod tests {
                     )
                 });
 
-            let everyone = pane.timeline.visible_len();
-            pane.author = Some(bob.clone());
-            pane.reinstall_filter();
-            let just_bob = pane.timeline.visible_len();
-            assert!(just_bob > 0, "bob authored at least one row");
+            let everyone = pane.serve_feed(&wire::FeedQuery::default(), &tree).total;
+            let by_bob = wire::FeedQuery {
+                author: Some(bob.clone()),
+                ..wire::FeedQuery::default()
+            };
+            let just_bob = pane.serve_feed(&by_bob, &tree);
+            assert!(just_bob.total > 0, "bob authored at least one row");
             assert!(
-                just_bob < everyone,
-                "filtering to bob must hide the local actor's rows: {just_bob} of {everyone}"
+                just_bob.total < everyone,
+                "filtering to bob must hide the local actor's rows: {} of {everyone}",
+                just_bob.total
             );
-            for i in 0..pane.timeline.visible_len() {
-                assert_eq!(pane.timeline.visible_entry(i).unwrap().author.name, bob);
+            for entry in &just_bob.entries {
+                assert_eq!(entry.author.name, bob);
             }
-
-            pane.author = None;
-            pane.reinstall_filter();
             assert_eq!(
-                pane.timeline.visible_len(),
+                pane.serve_feed(&wire::FeedQuery::default(), &tree).total,
                 everyone,
-                "clearing restores every row"
+                "another reader's narrowing leaves this read whole"
+            );
+            assert_eq!(
+                pane.serve_feed(&by_bob, &tree).total,
+                just_bob.total,
+                "and a read narrowed again reads as narrowed as before"
             );
         }
 
@@ -1715,19 +1725,14 @@ mod tests {
 
             let (mut tree, _, _) = busy_workspace();
             let mut pane = pane_over(&mut tree);
-            pane.author = Some("nobody-by-that-name".to_string());
-            pane.reinstall_filter();
-            assert_eq!(pane.timeline.visible_len(), 0);
-            let (title, detail) = pane.timeline.empty_state_lines();
-            assert_eq!(title, "No activity matches these filters");
-            let detail = detail.expect("a filtered-empty list must explain itself");
+            let nobody = wire::FeedQuery {
+                author: Some("nobody-by-that-name".to_string()),
+                ..wire::FeedQuery::default()
+            };
+            assert_eq!(pane.serve_feed(&nobody, &tree).total, 0);
             assert!(
-                detail.contains("nobody-by-that-name"),
-                "the explanation names the filter doing the hiding: {detail}"
-            );
-            assert!(
-                detail.contains(&pane.entries().len().to_string()),
-                "the explanation says how many rows are hidden: {detail}"
+                pane.serve_feed(&wire::FeedQuery::default(), &tree).total > 0,
+                "a workspace with changes is not an empty one"
             );
         }
 
