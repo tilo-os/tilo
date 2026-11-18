@@ -600,3 +600,135 @@ async fn a_note_read_before_its_answer_is_not_handed_to_the_next_turn() {
     );
     page.peer.close();
 }
+
+/// A model that looks through the workspace until `steps` of its looks were answered, then says
+/// `words`. Every call is kept in `asked`.
+fn looks_then_says(
+    steps: usize,
+    words: &'static str,
+    asked: &Arc<Mutex<Vec<ModelRequest>>>,
+) -> Model {
+    plays(asked, move |request| {
+        let answered = request
+            .messages
+            .iter()
+            .filter(|message| matches!(message.role, Role::Tool))
+            .count();
+        if answered < steps {
+            looks()
+        } else {
+            says(words)
+        }
+    })
+}
+
+/// Whether the agent's reply to `message` has ended.
+async fn has_ended(workspaces: &Workspaces, workspace: &str, message: &Id) -> bool {
+    conversation_part(workspaces, workspace)
+        .await
+        .messages
+        .get(&chat::chat::reply_id(message, &MemberId::agent(SCOUT)))
+        .is_some_and(|reply| !chat::summons::unanswered(Some(reply)))
+}
+
+/// Her agent needs thirty looks through the workspace before it can answer. Nothing of the
+/// server's counts them: the turn asks its model for as long as the model calls tools, and ends
+/// with the model's own answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_turn_of_thirty_steps_ends_with_its_models_answer() {
+    team!(root, browser, actions, workspaces, workspace, page, person);
+    let first = write_to_agent(
+        &actions,
+        &workspaces,
+        &workspace,
+        (&root, &browser),
+        "tidy the workspace",
+    )
+    .await;
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let agents = worked(
+        &workspaces,
+        &actions,
+        looks_then_says(30, "All thirty are tidied.", &asked),
+    );
+    let read = agents.turns(&workspace).await.unwrap();
+    assert_eq!(read.len(), 1, "{read:?}");
+    agents.answer(&workspace, &read[0]).await.unwrap();
+    let reply = ended(&workspaces, &workspace, &first).await;
+    assert_eq!(
+        reply.text, "All thirty are tidied.",
+        "the turn ends with its model's answer: {:?}",
+        reply.work
+    );
+    assert_eq!(
+        end_of(&reply),
+        Some(chat::agent_stream::AgentFinish::Complete),
+        "and its reply says it is whole: {:?}",
+        reply.work
+    );
+    assert_eq!(
+        asked.lock().unwrap().len(),
+        31,
+        "its model was asked for each of the thirty steps and for the answer"
+    );
+    let _ = person;
+    page.peer.close();
+}
+
+/// Her agent's model never answers: every call of it asks for one more look. Nothing of the
+/// server's ends such a turn, so it is still at work past its thirtieth step, and it is hers to
+/// stop: her stop ends it at its next step, and no step follows.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_turn_that_never_answers_goes_on_until_its_person_stops_it() {
+    team!(root, browser, actions, workspaces, workspace, page, person);
+    let me = themselves(&root, &browser, &workspace);
+    let first = write_to_agent(
+        &actions,
+        &workspaces,
+        &workspace,
+        (&root, &browser),
+        "tidy the workspace",
+    )
+    .await;
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let agents = worked(&workspaces, &actions, plays(&asked, |_| looks()));
+    agents.look(&workspace).await.unwrap();
+    // A server that counted its asks would have ended the turn by itself before this.
+    let deadline = tilo_test_env::hang_deadline();
+    while asked.lock().unwrap().len() <= 30 {
+        assert!(
+            !has_ended(&workspaces, &workspace, &first).await,
+            "the turn ended by itself after {} asks of its model, and nobody stopped it",
+            asked.lock().unwrap().len()
+        );
+        assert!(
+            Instant::now() < deadline,
+            "the turn never came past its thirtieth step"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    stop_agent(&actions, &workspace, &me, &first)
+        .await
+        .expect("she stops her agent's work");
+    agents.look(&workspace).await.unwrap();
+    let reply = ended(&workspaces, &workspace, &first).await;
+    assert_eq!(
+        end_of(&reply),
+        Some(chat::agent_stream::AgentFinish::Cancelled),
+        "its reply says it was stopped: {:?}",
+        reply.work
+    );
+    let steps = asked.lock().unwrap().len();
+    assert!(
+        agents.turns(&workspace).await.unwrap().is_empty(),
+        "a stopped message asks nobody"
+    );
+    assert_eq!(
+        asked.lock().unwrap().len(),
+        steps,
+        "no step follows her stop"
+    );
+    let _ = person;
+    page.peer.close();
+}
