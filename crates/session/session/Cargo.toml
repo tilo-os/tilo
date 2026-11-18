@@ -443,6 +443,9 @@ tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 
 [dev-dependencies]
 pollster.workspace = true
+# A check that answers a sheet as the person does asks the questions service the
+# sheets show, and reads its answer back.
+tilo-service = { path = "../service" }
 # The manager an app's window joins its workspace's record with: a test speaks as the window.
 collaboration = { path = "../../collab/collaboration" }
 # A Rust app's views, drawn by the shell as it draws a tilolang app's (one-app-model.md §2):

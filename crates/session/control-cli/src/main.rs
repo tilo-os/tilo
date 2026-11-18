@@ -248,6 +248,12 @@ enum Command {
         item: Option<String>,
         json: bool,
     },
+    /// The questions waiting for the person, as their sheets show them: each
+    /// one's handle, kind and label, and the action that answers or declines
+    /// it (a development session's socket only).
+    Questions {
+        json: bool,
+    },
 }
 
 impl Command {
@@ -392,6 +398,18 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
         "state-dump" | "windows" => parse_state_read(op, &mut iter)?,
         "actions" => parse_actions_command(&mut iter)?,
         "read" => parse_read(&mut iter)?,
+        "questions" => {
+            let json = match iter.next().map(String::as_str) {
+                None => false,
+                Some("--json") => true,
+                Some(other) => {
+                    return Err(ParseError::Usage(format!(
+                        "questions takes no arguments or --json (got `{other}`)"
+                    )));
+                }
+            };
+            Command::Questions { json }
+        }
         "raw" => {
             let json = iter.next().ok_or_else(|| {
                 ParseError::Usage("raw '<json>' requires the JSON payload".to_string())
@@ -1292,6 +1310,7 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
         Command::StateDump { .. } => json!({ "op": "state_dump" }),
         Command::Windows { .. } => json!({ "op": "windows" }),
         Command::Read { .. } => json!({ "op": "actions_enumerate", "query": "read" }),
+        Command::Questions { .. } => json!({ "op": "questions" }),
         Command::ActionsList {
             query,
             include_programmatic,
@@ -1531,6 +1550,7 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
             // round trips.
             println!("{response}");
         }
+        Command::Questions { json } => print_questions(response, *json),
         Command::Raw { .. } => {
             // For raw passthrough, dump the response JSON verbatim
             // so the caller can pipe it into `jq` without
@@ -1539,6 +1559,45 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
         }
     }
     0
+}
+
+/// Print the `questions` op's rows: the sheets waiting for the person, and
+/// the invocation that answers or declines each, ready to paste back into
+/// `actions invoke`.
+fn print_questions(response: &serde_json::Value, json: bool) {
+    let questions = response
+        .get("answer")
+        .and_then(|answer| answer.get("questions"))
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if json {
+        println!("{}", serde_json::Value::Array(questions));
+    } else if questions.is_empty() {
+        println!("no question is waiting");
+    } else {
+        for question in &questions {
+            let field = |name: &str| {
+                question
+                    .get(name)
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned()
+            };
+            let resource = field("resource");
+            println!(
+                "{} — {} ({})",
+                field("label"),
+                field("kind"),
+                field("handle")
+            );
+            for (verb, action) in [("answer", "answer"), ("decline", "cancel")] {
+                let address = format!("{resource}\u{1f}{action}");
+                let id = printable_id(&address);
+                println!("  {verb}:  actions invoke so.tilo.session {id}");
+            }
+        }
+    }
 }
 
 /// Print the `windows` op's rows.
@@ -1673,6 +1732,10 @@ fn print_usage() {
          \x20                               the file is complete, and says on stderr when it\n\
          \x20                               shows the lock screen\n\
          \x20 unlock                        unlock the session, as an accepted password does\n\
+         \x20 questions [--json]            the questions waiting for the person, each with\n\
+         \x20                               the `actions invoke so.tilo.session …` pair that\n\
+         \x20                               answers or declines it: a check driving a sheet\n\
+         \x20                               (a device asking to be unlocked) answers it here\n\
          \x20 watch on|off                  headless: rasterize every frame for a viewer, or stop"
     );
 }
