@@ -9,6 +9,17 @@
 //! the actor the server acts as (the member, or the member's agent), and until
 //! when. It lives in the workspace, so every holder replays the same rule; the
 //! member revokes it by signing it again with the revocation set.
+//!
+//! Every form of a delegation is the member's own signed statement, and the
+//! forms of one row are ordered by what they say, never by who wrote the row,
+//! when a form arrived or what a device's clock read
+//! ([`WorkDelegation::replaces`]). Each form signs the number of its giving. A
+//! withdrawal stands over every form of its giving and of the givings before
+//! it, and only work given by a device that holds the withdrawal takes the
+//! next number and stands over it ([`WorkDelegation::given_after`]). A
+//! delegation lives [`MAX_LIFETIME_NS`] at most; the member's own devices sign
+//! it again to live on ([`WorkDelegation::renewed`]), so a device that never
+//! saw a withdrawal is held by an end that is near.
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
@@ -21,7 +32,13 @@ use tilo_action_policy::{ActionKind, Answer, Grant, TreePath};
 pub const WORK_DELEGATIONS_KEY: &str = "work_delegations_v1";
 
 /// The signing domain: a signature made over another shape never verifies.
-const WORK_DELEGATION_DOMAIN: &[u8] = b"tilo-work-delegation-v1\0";
+const WORK_DELEGATION_DOMAIN: &[u8] = b"tilo-work-delegation-v2\0";
+
+/// Longest a delegation lives from its issue: seven days. A withdrawal is kept
+/// by every device that saw it; a device that never saw it is held by nothing
+/// but the delegation's end, so the end is near. Nothing signs past it and
+/// nothing longer verifies.
+pub const MAX_LIFETIME_NS: u64 = 7 * 24 * 60 * 60 * 1_000_000_000;
 
 /// Most grant paths one delegation may name.
 pub const MAX_DELEGATED_WORK: usize = 32;
@@ -75,7 +92,14 @@ pub struct WorkDelegation {
     /// says only which items the server may be answered about at all.
     #[serde(default)]
     pub secrets: Vec<String>,
-    /// When it was issued, ns since the epoch.
+    /// The number of this giving of the work, from 1. A form signed again to
+    /// live on ([`Self::renewed`]) and a withdrawal keep the number of the
+    /// form they are signed over; only work given by a device that holds the
+    /// withdrawal of a giving takes the next number ([`Self::given_after`]).
+    /// The forms of a row are ordered by it ([`Self::replaces`]), so no
+    /// device's clock decides whether a withdrawal stays.
+    pub giving: u64,
+    /// When this form was issued, ns since the epoch.
     pub issued_at_ns: u64,
     /// When it stops working, ns since the epoch.
     pub expires_at_ns: u64,
@@ -96,6 +120,7 @@ struct Unsigned<'a> {
     agent: &'a Option<String>,
     grants: &'a [Grant],
     secrets: &'a [String],
+    giving: u64,
     issued_at_ns: u64,
     expires_at_ns: u64,
     revoked_at_ns: &'a Option<u64>,
@@ -105,7 +130,9 @@ impl WorkDelegation {
     /// A delegation by `key`'s device of its person's work to `server` in
     /// `workspace`, as `agent` (or as the person) and within `grants`, letting
     /// it use the vault items `secrets`, from `valid`'s first instant until its
-    /// second, both ns since the epoch.
+    /// second, both ns since the epoch and [`MAX_LIFETIME_NS`] apart at most.
+    /// It is the first giving of that work: work given where a form of its
+    /// row is held follows that form ([`Self::given_after`]).
     ///
     /// # Errors
     /// [`WorkDelegationError::Invalid`] for out-of-bounds fields,
@@ -130,6 +157,7 @@ impl WorkDelegation {
                 agent,
                 grants,
                 secrets,
+                giving: 1,
                 issued_at_ns,
                 expires_at_ns,
                 revoked_at_ns: None,
@@ -169,6 +197,91 @@ impl WorkDelegation {
         Self::sealed(key, revoked)
     }
 
+    /// The same giving of the same work, signed again by the member's device
+    /// `key` to live from `valid`'s first instant until its second: how a
+    /// delegation outlives [`MAX_LIFETIME_NS`] without its member being asked
+    /// again. It is no new giving: a withdrawal of this giving stands over it
+    /// ([`Self::replaces`]), so a device that renews before a withdrawal
+    /// reaches it puts nothing back.
+    ///
+    /// # Errors
+    /// As [`Self::sign`], and [`WorkDelegationError::Invalid`] for a withdrawn
+    /// delegation: what its member withdrew is given again, never renewed.
+    pub fn renewed(
+        &self,
+        key: &dyn DeviceSigner,
+        (issued_at_ns, expires_at_ns): (u64, u64),
+    ) -> Result<Self, WorkDelegationError> {
+        if self.revoked_at_ns.is_some() {
+            return Err(WorkDelegationError::Invalid(
+                "a withdrawn delegation is given again, not renewed",
+            ));
+        }
+        let mut renewed = self.clone();
+        renewed.device = key.device_public_key();
+        renewed.issued_at_ns = issued_at_ns;
+        renewed.expires_at_ns = expires_at_ns;
+        Self::sealed(key, renewed)
+    }
+
+    /// This work as the member's device `key` gives it where its row holds
+    /// `held`: the giving after `held`'s once `held` is a withdrawal, and
+    /// `held`'s own giving while it is not. So only a device that holds a
+    /// withdrawal signs work that stands over it ([`Self::replaces`]): work
+    /// given on a device the withdrawal has not reached stays withdrawn,
+    /// whatever either device's clock read.
+    ///
+    /// # Errors
+    /// As [`Self::sign`], and [`WorkDelegationError::Invalid`] when this is a
+    /// withdrawal, `held` is of another row or workspace, or the row's
+    /// givings are used up.
+    pub fn given_after(
+        &self,
+        key: &dyn DeviceSigner,
+        held: &Self,
+    ) -> Result<Self, WorkDelegationError> {
+        if self.revoked_at_ns.is_some() {
+            return Err(WorkDelegationError::Invalid(
+                "a withdrawal is of the giving it withdraws",
+            ));
+        }
+        if self.row_key() != held.row_key() || self.workspace != held.workspace {
+            return Err(WorkDelegationError::Invalid("another delegation"));
+        }
+        let mut given = self.clone();
+        given.device = key.device_public_key();
+        given.giving = if held.revoked_at_ns.is_some() {
+            held.giving
+                .checked_add(1)
+                .ok_or(WorkDelegationError::Invalid("giving"))?
+        } else {
+            held.giving
+        };
+        Self::sealed(key, given)
+    }
+
+    /// Whether this form stands in its row where `held` stood. The member's
+    /// own signed statements decide, never who wrote the row, when a form
+    /// arrived or what a clock read: a later giving stands over an earlier
+    /// one; of one giving, its withdrawal stands over every other form, and
+    /// otherwise the form issued later. So the form a delegation was first
+    /// signed in never stands again once it was withdrawn, nor does a renewal
+    /// of it, and every holder of the same forms reads the same one.
+    #[must_use]
+    pub fn replaces(&self, held: &Self) -> bool {
+        self.signed_order() > held.signed_order()
+    }
+
+    /// Where this form stands among the forms of its row, largest last.
+    fn signed_order(&self) -> (u64, bool, u64, &[u8; 64]) {
+        (
+            self.giving,
+            self.revoked_at_ns.is_some(),
+            self.issued_at_ns,
+            &self.signature,
+        )
+    }
+
     fn signing_bytes(&self) -> Vec<u8> {
         let unsigned = Unsigned {
             person: &self.person,
@@ -178,6 +291,7 @@ impl WorkDelegation {
             agent: &self.agent,
             grants: &self.grants,
             secrets: &self.secrets,
+            giving: self.giving,
             issued_at_ns: self.issued_at_ns,
             expires_at_ns: self.expires_at_ns,
             revoked_at_ns: &self.revoked_at_ns,
@@ -229,8 +343,14 @@ impl WorkDelegation {
         {
             return Err(WorkDelegationError::Invalid("secrets"));
         }
+        if self.giving == 0 {
+            return Err(WorkDelegationError::Invalid("giving"));
+        }
         if self.expires_at_ns <= self.issued_at_ns {
             return Err(WorkDelegationError::Invalid("validity window"));
+        }
+        if self.expires_at_ns.saturating_sub(self.issued_at_ns) > MAX_LIFETIME_NS {
+            return Err(WorkDelegationError::Invalid("lifetime"));
         }
         if self
             .revoked_at_ns
@@ -338,7 +458,15 @@ mod tests {
     /// The one vault item the test's delegation names.
     const SECRET: &str = "0123456789abcdef0123456789abcdef";
 
+    /// One day, ns.
+    const DAY: u64 = 24 * 60 * 60 * 1_000_000_000;
+
     fn delegation(key: &SigningKey, server: [u8; 32], expires_at_ns: u64) -> WorkDelegation {
+        signed(key, server, (1, expires_at_ns))
+    }
+
+    /// The test's work as `key`'s device first gives it to `server` for `valid`.
+    fn signed(key: &SigningKey, server: [u8; 32], valid: (u64, u64)) -> WorkDelegation {
         let person = SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes();
         let grant = Grant::new(
             "send-mail",
@@ -356,7 +484,7 @@ mod tests {
             None,
             vec![grant],
             vec![SECRET.to_owned()],
-            (1, expires_at_ns),
+            valid,
         )
         .unwrap()
     }
@@ -444,6 +572,249 @@ mod tests {
             Some(([8; 32], delegation.person))
         );
         assert_eq!(WorkDelegation::row_parts("nonsense"), None);
+        Ok(())
+    }
+
+    /// A delegation lives seven days at most: nothing signs a longer one, and
+    /// one made longer after it was signed is refused before its signature is
+    /// read, live or withdrawn.
+    #[test]
+    fn a_delegation_lives_seven_days_at_most_and_nothing_signs_past_it() {
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let person = SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes();
+        let whole = delegation(&key, [8; 32], 1 + MAX_LIFETIME_NS);
+        assert_eq!(whole.verify("w", MAX_LIFETIME_NS), Ok(()));
+        assert_eq!(MAX_LIFETIME_NS, 7 * DAY);
+
+        let longer = WorkDelegation::sign(
+            &key,
+            person,
+            [8; 32],
+            "w",
+            None,
+            whole.grants.clone(),
+            Vec::new(),
+            (1, 2 + MAX_LIFETIME_NS),
+        );
+        assert_eq!(
+            longer,
+            Err(WorkDelegationError::Invalid("lifetime")),
+            "nothing signs past seven days"
+        );
+        assert_eq!(
+            whole.renewed(&key, (5, 6 + MAX_LIFETIME_NS)),
+            Err(WorkDelegationError::Invalid("lifetime")),
+            "nor does a renewal"
+        );
+
+        let mut stretched = whole;
+        stretched.expires_at_ns += 1;
+        assert_eq!(
+            stretched.verify_signature("w"),
+            Err(WorkDelegationError::Invalid("lifetime")),
+            "a longer one is refused whoever holds it"
+        );
+        assert_eq!(
+            stretched.verify("w", 500),
+            Err(WorkDelegationError::Invalid("lifetime"))
+        );
+    }
+
+    /// The forms of one row stand by what their member signed. A withdrawal
+    /// stands over the form it withdrew, over a renewal signed after it by a
+    /// device that had not seen it and over work such a device gives; only
+    /// work given by a device that holds the withdrawal stands over it; a
+    /// renewal stands over what it renews.
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the regression returns setup errors and asserts actual production outcomes"
+    )]
+    fn a_withdrawal_stands_over_everything_given_before_it() -> TestResult {
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let other = SigningKey::from_bytes(&[6; 32]);
+        let first = delegation(&key, [8; 32], 1_000);
+        assert_eq!(first.giving, 1, "work is first given as its first giving");
+        let withdrawn = first.revoked(&key, 600)?;
+        assert_eq!(
+            withdrawn.giving, 1,
+            "a withdrawal is of the giving it withdraws"
+        );
+        assert!(
+            withdrawn.replaces(&first),
+            "a withdrawal stands over its delegation"
+        );
+        assert!(
+            !first.replaces(&withdrawn),
+            "the first form never stands again once it was withdrawn"
+        );
+        assert!(!first.replaces(&first) && !withdrawn.replaces(&withdrawn));
+
+        // The member's other device signs the work again to live on.
+        let renewed = first.renewed(&other, (500, 2_000))?;
+        renewed.verify("w", 1_500)?;
+        assert_eq!(renewed.device, other.verifying_key().to_bytes());
+        assert_eq!(renewed.giving, first.giving, "a renewal is no new giving");
+        assert!(renewed.replaces(&first) && !first.replaces(&renewed));
+        assert!(
+            withdrawn.replaces(&renewed) && !renewed.replaces(&withdrawn),
+            "a withdrawal stands over a renewal of what it withdrew"
+        );
+
+        // A device that had not seen the withdrawal renews after it, and its
+        // member gives the work there again: neither puts anything back.
+        let late = first.renewed(&other, (700, 2_000))?;
+        assert!(
+            withdrawn.replaces(&late) && !late.replaces(&withdrawn),
+            "a renewal signed after a withdrawal puts nothing back"
+        );
+        let unseen = signed(&other, [8; 32], (800, 2_000)).given_after(&other, &late)?;
+        assert_eq!(
+            unseen.giving, 1,
+            "work given over a live form is of its giving"
+        );
+        assert!(
+            withdrawn.replaces(&unseen) && !unseen.replaces(&withdrawn),
+            "work given without the withdrawal in hand stays withdrawn"
+        );
+        assert_eq!(
+            withdrawn.renewed(&key, (700, 2_000)),
+            Err(WorkDelegationError::Invalid(
+                "a withdrawn delegation is given again, not renewed"
+            ))
+        );
+
+        // Only work given by a device that holds the withdrawal stands over it.
+        let again = signed(&key, [8; 32], (601, 2_000)).given_after(&key, &withdrawn)?;
+        assert_eq!(again.giving, 2);
+        again.verify("w", 700)?;
+        assert!(again.replaces(&withdrawn) && !withdrawn.replaces(&again));
+        assert!(again.replaces(&unseen) && again.replaces(&first));
+        let later_withdrawal = again.revoked(&key, 900)?;
+        assert!(later_withdrawal.replaces(&again) && later_withdrawal.replaces(&withdrawn));
+        assert_eq!(
+            signed(&key, [3; 32], (601, 2_000)).given_after(&key, &withdrawn),
+            Err(WorkDelegationError::Invalid("another delegation")),
+            "work follows a form of its own row"
+        );
+
+        // A form whose number is moved is another statement: it does not
+        // verify, and one that names no giving is none.
+        let mut moved = late;
+        moved.giving = 2;
+        assert_eq!(
+            moved.verify_signature("w"),
+            Err(WorkDelegationError::Signature),
+            "the signed bytes bind the number of the giving"
+        );
+        moved.giving = 0;
+        assert_eq!(
+            moved.verify_signature("w"),
+            Err(WorkDelegationError::Invalid("giving"))
+        );
+        Ok(())
+    }
+
+    /// The order of a row's forms rests on the number of the giving and on no
+    /// clock. A member's device whose clock is a day ahead gives the work;
+    /// the member withdraws it on a device whose clock is right, so the
+    /// withdrawal is stamped a day before the giving it withdraws. It stands
+    /// all the same: over that giving, over the renewal the first device signs
+    /// unasked, and over work given there again without the withdrawal.
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the regression returns setup errors and asserts actual production outcomes"
+    )]
+    fn a_giving_stamped_ahead_of_a_later_withdrawal_stays_withdrawn() -> TestResult {
+        let ahead = SigningKey::from_bytes(&[7; 32]);
+        let right = SigningKey::from_bytes(&[6; 32]);
+        let given = signed(&ahead, [8; 32], (DAY, 2 * DAY));
+        assert_eq!(
+            given.revoked(&ahead, 1_000),
+            Err(WorkDelegationError::Invalid("revocation")),
+            "no withdrawal is stamped before the form it is signed over"
+        );
+        // So the device with the right clock signs the giving as its own form,
+        // by its own clock, and withdraws that.
+        let withdrawn = given.renewed(&right, (999, DAY))?.revoked(&right, 1_000)?;
+        assert_eq!(withdrawn.giving, given.giving);
+        assert!(
+            withdrawn.revoked_at_ns < Some(given.issued_at_ns),
+            "the withdrawal is stamped before the giving"
+        );
+        assert!(
+            withdrawn.replaces(&given) && !given.replaces(&withdrawn),
+            "a withdrawal stamped before its giving stands over it"
+        );
+        assert_eq!(
+            withdrawn.verify("w", 1_000),
+            Err(WorkDelegationError::NotCurrent)
+        );
+
+        let renewal = given.renewed(&ahead, (DAY + 5, 3 * DAY))?;
+        assert!(
+            withdrawn.replaces(&renewal) && !renewal.replaces(&withdrawn),
+            "a renewal stamped a day after the withdrawal puts nothing back"
+        );
+        let unseen = signed(&ahead, [8; 32], (DAY + 6, 3 * DAY)).given_after(&ahead, &renewal)?;
+        assert!(
+            withdrawn.replaces(&unseen) && !unseen.replaces(&withdrawn),
+            "nor does work given there without the withdrawal in hand"
+        );
+        Ok(())
+    }
+
+    /// A member's device whose clock is a day behind holds a withdrawal,
+    /// and its member gives the work again there: stamped before the
+    /// withdrawal, the new giving stands over it by its number, and its own
+    /// withdrawal stands over everything before in turn. What a clock still
+    /// decides is each form's own window, and that fails closed.
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the regression returns setup errors and asserts actual production outcomes"
+    )]
+    fn a_giving_stamped_behind_an_earlier_withdrawal_stands_by_its_number() -> TestResult {
+        let right = SigningKey::from_bytes(&[7; 32]);
+        let behind = SigningKey::from_bytes(&[6; 32]);
+        let first = signed(&right, [8; 32], (10 * DAY, 11 * DAY));
+        let withdrawn = first.revoked(&right, 10 * DAY + 500)?;
+
+        // The device behind reads nine days where the others read ten.
+        let again =
+            signed(&behind, [8; 32], (9 * DAY + 600, 12 * DAY)).given_after(&behind, &withdrawn)?;
+        assert!(
+            Some(again.issued_at_ns) < withdrawn.revoked_at_ns,
+            "the new giving is stamped before the withdrawal"
+        );
+        assert_eq!(again.giving, 2);
+        assert!(
+            again.replaces(&withdrawn) && !withdrawn.replaces(&again),
+            "work given after a withdrawal stands over it, whatever its stamp"
+        );
+        again.verify("w", 10 * DAY + 600)?;
+
+        let short = signed(&behind, [8; 32], (9 * DAY + 600, 9 * DAY + 700))
+            .given_after(&behind, &withdrawn)?;
+        assert!(short.replaces(&withdrawn));
+        assert_eq!(
+            short.verify("w", 10 * DAY + 600),
+            Err(WorkDelegationError::NotCurrent),
+            "a window that is past by the reader's clock takes no work"
+        );
+
+        let withdrawn_again = again.revoked(&behind, 9 * DAY + 800)?;
+        assert!(
+            withdrawn_again.replaces(&again)
+                && withdrawn_again.replaces(&withdrawn)
+                && withdrawn_again.replaces(&first),
+            "its withdrawal stands over the giving and everything before it"
+        );
+        assert_eq!(
+            withdrawn_again.verify("w", 10 * DAY + 600),
+            Err(WorkDelegationError::NotCurrent)
+        );
         Ok(())
     }
 }

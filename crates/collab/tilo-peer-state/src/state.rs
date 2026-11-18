@@ -89,7 +89,8 @@ mod publication;
 mod workspace_grants;
 pub use workspace_grants::workspace_grants_of;
 mod work_delegations;
-pub use work_delegations::work_delegations_of;
+pub(crate) use work_delegations::rows_kept as work_delegation_rows_kept;
+pub use work_delegations::{DelegatedWork, work_delegations_of};
 mod keeping_devices;
 pub use keeping_devices::{
     WORKSPACE_KEEPING_DEVICES_KEY, holder_role, keeping_device_keys_of, keeping_devices_of,
@@ -355,6 +356,11 @@ pub struct StatePeer {
     /// Whether this is a workspace host's copy of the workspace
     /// ([`Self::write_as_workspace_host`]). Set by the host, never persisted.
     workspace_host: bool,
+    /// The device whose copy this is, once the device's own program said so
+    /// ([`Self::write_as_device`]): what lets the copy keep, as that device's
+    /// own change, a work delegation's form that a base it adopts lacks.
+    /// Never persisted.
+    own_device: Option<[u8; 32]>,
 }
 
 /// The Automerge actor a workspace host's own changes to a workspace are made under,
