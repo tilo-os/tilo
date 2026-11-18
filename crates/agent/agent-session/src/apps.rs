@@ -258,6 +258,10 @@ pub enum ReplicaActor {
         /// The agent's session that acted, when one did: History names the session's writer
         /// beside the person, as the person's files name it.
         agent_session: Option<String>,
+        /// The device the person's work is admitted on, when the caller names this device:
+        /// a server taking a member's work under their delegation. History names it as where
+        /// the change was made ([`tilo_actions::ActionInvoker::device`]).
+        device: Option<tilo_actions::InvokerDevice>,
     },
 }
 
@@ -1667,6 +1671,7 @@ fn replica_access(
             agent,
             agent_name,
             agent_session,
+            device,
         } => {
             let person = access.person_id().unwrap_or_default().to_owned();
             let permissions = member_permissions(access, sandbox, unix_time);
@@ -1680,6 +1685,9 @@ fn replica_access(
                     invoker.acting = invoker.acting.in_session(session);
                 }
             }
+            // Where the work was made, when the caller named this device: a server taking
+            // a member's work under the delegation that admits it.
+            invoker.device = device;
             permissions
         }
     };

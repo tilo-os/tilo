@@ -707,8 +707,10 @@ impl Workspaces {
     ///
     /// It holds where the caller is an agent on a turn, on an agent session
     /// its person handed it, and no app; the caller's workspace is the
-    /// turn's; the device the caller names is the one the workspace admits
-    /// that person with now; and the agent's keeper is that person. It does
+    /// turn's; the device the caller names is one the workspace admits that
+    /// person's work on now (one of their own, or this server's own where they
+    /// delegated that work to it as the actor the turn acts as); and the
+    /// agent's keeper is that person. It does
     /// not say that the keeper made the agent or agreed to it, so whatever
     /// uses or hands out something of the person's decides that by a rule of
     /// its own after this one.
@@ -741,10 +743,18 @@ impl Workspaces {
         if WorkspaceId::parse(workspace) != Some(turn.workspace) {
             return Err(UnknownAction);
         }
-        // Whether the workspace admits the person now, on the device the
-        // turn names: a person it no longer admits leaves their agent
-        // nothing.
-        if self.person_device(turn.workspace, person).await != Some(device) {
+        // Whether the workspace admits the person's work now on the device the
+        // turn names: one of their own devices, or — where they delegated that
+        // work to this server as the actor this turn acts as — this server's
+        // own device, which their work is carried out on then. A person it no longer
+        // admits leaves their agent nothing, on any device.
+        let Some(member) = acting.by.member_id().cloned() else {
+            return Err(UnknownAction);
+        };
+        if !self
+            .admits_work(turn.workspace, person, device, &member)
+            .await
+        {
             return Err(UnknownAction);
         }
         // The agent acts for its keeper and for nobody else.
@@ -1174,6 +1184,32 @@ impl super::GovernedWorkspace {
             .max_by_key(|cert| cert.issued_at_ns)
             .map(|cert| cert.device_public_key)
     }
+
+    /// Whether the workspace admits `person`'s work on `device` for a turn
+    /// acting as `actor`: on one of their own devices, or on `server`, this
+    /// device, where the member delegated that work
+    /// to it as `actor` ([`collab_types::work_delegation::WorkDelegation`]). A
+    /// device that is neither is no device their work is admitted on, whatever
+    /// certificate it holds.
+    pub(super) fn admits_work(
+        &self,
+        person: &[u8; 32],
+        device: &[u8; 32],
+        actor: &tilo_action_policy::MemberId,
+        server: &[u8; 32],
+        placed: impl Fn(&[u8; 32]) -> bool,
+    ) -> bool {
+        if self.person_device(person, placed) == Some(*device) {
+            return true;
+        }
+        if device != server {
+            return false;
+        }
+        let peer = self.peer();
+        peer.workspace()
+            .work_delegation(server, person, tilo_clock::wall())
+            .is_some_and(|delegation| delegation.actor() == *actor)
+    }
 }
 
 impl Workspaces {
@@ -1223,6 +1259,59 @@ impl Workspaces {
         runtime.person_device(&person, |device| {
             never.as_ref() == Some(device) || placed.of(device, now_ns).is_some()
         })
+    }
+
+    /// Whether the workspace `workspace` admits `person`'s work on `device` for a
+    /// turn acting as `actor` ([`GovernedWorkspace::admits_work`]): one of their
+    /// own devices, or this server's own device where they delegated that work
+    /// to it as `actor`. `false` for a workspace not governed here.
+    pub async fn admits_work(
+        &self,
+        workspace: WorkspaceId,
+        person: [u8; 32],
+        device: [u8; 32],
+        actor: &tilo_action_policy::MemberId,
+    ) -> bool {
+        let Some(governed) = self.held(workspace).await else {
+            return false;
+        };
+        let runtime = governed.lock().await;
+        let placed = &self.inner.host.environments;
+        let now_ns = tilo_clock::unix_now_ns();
+        runtime.admits_work(
+            &person,
+            &device,
+            actor,
+            &self.governor().device_public_key,
+            |device| placed.of(device, now_ns).is_some(),
+        )
+    }
+
+    /// The device the workspace `workspace` admits `person`'s work on for a turn
+    /// acting as `actor`: this server's own device where they delegated that work
+    /// to it as `actor`, else the newest of their own devices it admits now.
+    /// `None` for a workspace not governed here, or a person whose work no device
+    /// here is admitted on: a turn of theirs does not start.
+    pub async fn work_device(
+        &self,
+        workspace: WorkspaceId,
+        person: [u8; 32],
+        actor: &tilo_action_policy::MemberId,
+    ) -> Option<[u8; 32]> {
+        let governed = self.held(workspace).await?;
+        let runtime = governed.lock().await;
+        let placed = &self.inner.host.environments;
+        let now_ns = tilo_clock::unix_now_ns();
+        let server = self.governor().device_public_key;
+        let delegated = runtime
+            .peer()
+            .workspace()
+            .work_delegation(&server, &person, tilo_clock::wall())
+            .is_some_and(|delegation| delegation.actor() == *actor);
+        if delegated {
+            return Some(server);
+        }
+        runtime.person_device(&person, |device| placed.of(device, now_ns).is_some())
     }
 }
 

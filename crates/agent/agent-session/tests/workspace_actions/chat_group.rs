@@ -65,6 +65,7 @@ fn a_member_below_moderator_is_offered_the_batch_and_a_batch_is_one_step() {
             agent: None,
             agent_name: None,
             agent_session: None,
+            device: None,
         },
         Seed::New,
     )

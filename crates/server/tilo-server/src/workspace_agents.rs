@@ -1228,7 +1228,11 @@ impl HostAgents {
             .ok_or("the ask names no person")?;
         let device = self
             .workspaces
-            .person_device(workspace_id, person)
+            .work_device(
+                workspace_id,
+                person,
+                &tilo_action_policy::MemberId::agent(turn.agent.id.0.clone()),
+            )
             .await
             .ok_or("the person who asked is admitted here on no device")?;
         let mut scope = TurnScope {

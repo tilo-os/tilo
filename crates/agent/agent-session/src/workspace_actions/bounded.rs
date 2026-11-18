@@ -397,11 +397,18 @@ pub(super) fn bounded_permissions(
 }
 
 /// The replica actor the host runs `who`'s actions as, on their access
-/// under `policy` ([`bounded_access`]).
+/// under `policy` ([`bounded_access`]), with `own_device` wherever `who` names
+/// this device: the work is admitted on it then, as a member's is on the server
+/// they delegated it to.
 pub(super) fn member_actor(
     policy: &super::ViewReadPolicy,
     who: &Bounded,
+    own_device: &super::HostDevice,
 ) -> Result<crate::ReplicaActor, ActionCallError> {
+    let own = own_device.key.verifying_key().to_bytes();
+    let device = (who.caller.device_public_key() == Some(&own)).then(|| {
+        tilo_actions::InvokerDevice::certified(own, &own_device.endpoint.host_cert.device_label)
+    });
     Ok(crate::ReplicaActor::Member {
         access: bounded_access(policy, who)?,
         sandbox: policy.sandbox.clone(),
@@ -414,6 +421,7 @@ pub(super) fn member_actor(
             .agent_session
             .as_ref()
             .map(|session| session.as_str().to_owned()),
+        device,
     })
 }
 
@@ -550,8 +558,8 @@ impl Worker {
             link.admits(
                 workspace_id,
                 &Caller::authenticated(
-                    self.host_device.endpoint.host_cert.user_public_key,
-                    self.host_device.endpoint.host_cert.device_public_key,
+                    self.own_device.endpoint.host_cert.user_public_key,
+                    self.own_device.endpoint.host_cert.device_public_key,
                 ),
             )
         })
@@ -632,7 +640,11 @@ impl Worker {
         if same
             && !current
             && let Some(held) = self.bounded.get_mut(&key)
-            && held.held.app.renew(&member_actor(&policy, who)?).is_ok()
+            && held
+                .held
+                .app
+                .renew(&member_actor(&policy, who, &self.own_device)?)
+                .is_ok()
         {
             held.unix_time = policy.unix_time;
             current = true;
@@ -656,7 +668,7 @@ impl Worker {
                 &holder.app_id,
                 &holder.cluster_id,
                 &ui::permissions::MemberId::Person(who.person.clone()),
-                &member_actor(&policy, who)?,
+                &member_actor(&policy, who, &self.own_device)?,
                 Seed::Existing {
                     record: reads::document_id(&holder.document).map_err(unavailable)?,
                     changes: vec![bytes],

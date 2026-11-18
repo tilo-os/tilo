@@ -75,7 +75,7 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
     /// The user root the host chains to: the person whose device this service is.
     fn user_public_key(&self) -> [u8; 32];
     /// The host's own device, as the service joins its workspaces.
-    fn host_device(&self) -> HostDevice;
+    fn own_device(&self) -> HostDevice;
     /// Whether `workspace` admits `caller`, on the device it speaks for: a
     /// person the workspace lets in, as its governance records them, and the
     /// person the host serves itself. Anyone else is a stranger to it.

@@ -153,7 +153,7 @@ struct Shared {
     link: OnceLock<Arc<dyn WorkspaceDocumentsLink>>,
     jobs: Mutex<Option<Jobs>>,
     /// How the service joins workspaces, once its thread runs.
-    host_device: OnceLock<HostDevice>,
+    own_device: OnceLock<HostDevice>,
     /// The host device's one session, in every workspace the service joined.
     member: OnceLock<Arc<member::Member>>,
     /// Every workspace a request named, by id: joined as the request
@@ -212,7 +212,7 @@ impl WorkspaceActions {
                 log: Mutex::new(InvocationLog::default()),
                 link: OnceLock::new(),
                 jobs: Mutex::new(None),
-                host_device: OnceLock::new(),
+                own_device: OnceLock::new(),
                 member: OnceLock::new(),
                 joins: Mutex::default(),
                 stores: Mutex::default(),
@@ -342,14 +342,14 @@ impl WorkspaceActions {
     /// Joining sends the subscription and returns; the session runs on the
     /// member's runtime.
     fn join_ahead(&self, workspace_id: WorkspaceId) {
-        let Some(host_device) = self.shared.host_device.get() else {
+        let Some(own_device) = self.shared.own_device.get() else {
             return;
         };
         let mut joins = self.shared.joins.lock_recover();
         if joins.contains_key(&workspace_id) {
             return;
         }
-        match Workspace::join(host_device, workspace_id, &self.shared) {
+        match Workspace::join(own_device, workspace_id, &self.shared) {
             Ok(workspace) => {
                 joins.insert(workspace_id, Some(workspace));
                 drop(joins);
@@ -943,20 +943,20 @@ impl Drop for Workspace {
 
 impl Workspace {
     fn join(
-        host_device: &HostDevice,
+        own_device: &HostDevice,
         workspace_id: WorkspaceId,
         shared: &Arc<Shared>,
     ) -> Result<Self, String> {
         let member = Arc::clone(
             shared
                 .member
-                .get_or_init(|| member::Member::start(host_device, shared)),
+                .get_or_init(|| member::Member::start(own_device, shared)),
         );
         member.join(workspace_id)?;
         Ok(Self {
             sessions: session_voice::Sessions::new(
                 workspace_id,
-                host_device.endpoint.host_cert.device_public_key,
+                own_device.endpoint.host_cert.device_public_key,
             ),
             id: workspace_id,
             peer: member.peer().clone(),
@@ -1166,7 +1166,7 @@ struct Waiting {
 }
 
 struct Worker {
-    host_device: HostDevice,
+    own_device: HostDevice,
     catalogue: AppCatalogue,
     shared: Arc<Shared>,
     member: ui::permissions::policy::PersonId,
@@ -1329,11 +1329,11 @@ impl Worker {
         catalogue: AppCatalogue,
         shared: Arc<Shared>,
     ) -> Self {
-        let host_device = link.host_device();
-        let _ = shared.host_device.set(host_device.clone());
+        let own_device = link.own_device();
+        let _ = shared.own_device.set(own_device.clone());
         Self {
             member: ui::permissions::policy::PersonId::from_root(link.user_public_key()),
-            host_device,
+            own_device,
             catalogue,
             shared,
             workspaces: HashMap::new(),
@@ -1834,7 +1834,7 @@ impl Worker {
                 .flatten();
             let workspace = match ahead {
                 Some(workspace) => workspace,
-                None => Workspace::join(&self.host_device, workspace_id, &self.shared)
+                None => Workspace::join(&self.own_device, workspace_id, &self.shared)
                     .map_err(|reason| ActionCallError::Unavailable { reason })?,
             };
             self.workspaces.insert(workspace_id, workspace);
@@ -2714,7 +2714,8 @@ impl Worker {
                 {
                     return Err(Outcome::Rejected(ActionCallError::NotPermitted));
                 }
-                let actor = bounded::member_actor(&policy, who).map_err(Outcome::Rejected)?;
+                let actor = bounded::member_actor(&policy, who, &self.own_device)
+                    .map_err(Outcome::Rejected)?;
                 (who.person.clone(), actor, Some(permissions))
             }
         };

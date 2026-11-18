@@ -944,7 +944,7 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         self.user_public_key
     }
 
-    fn host_device(&self) -> HostDevice {
+    fn own_device(&self) -> HostDevice {
         self.host_device.clone()
     }
 
