@@ -1043,13 +1043,17 @@ impl ActionProvider for Notes {
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let invocation = request.invocation;
-        let known = self
-            .rows(&request.target.provider)
-            .iter()
-            .any(|row| row.resource.id == request.target.address.resource)
-            // An app takes its steps back on its own package resource.
-            || request.target.address.resource == format!("tl:{APP}");
-        if !known || (request.target.provider != WORKSPACE && !*self.running.lock().unwrap()) {
+        let (address, rows) = (&request.target.address, self.rows(&request.target.provider));
+        // An app takes its steps back on its own package resource. As a workspace answers, an
+        // action the resource does not publish is no such action.
+        let offered = address.resource == format!("tl:{APP}")
+            || rows.iter().any(|row| {
+                row.resource.id == address.resource
+                    && (request.target.provider == WORKSPACE
+                        || row.action.as_ref().map(|it| &it.address.action)
+                            == Some(&address.action))
+            });
+        if !offered || (request.target.provider != WORKSPACE && !*self.running.lock().unwrap()) {
             return Pending::ready(Err(ActionCallError::UnknownAction));
         }
         // What the workspace's grants put to the person first: nothing runs
@@ -2977,6 +2981,8 @@ mod runs;
 mod status;
 #[path = "mcp_agent_typed_calls_tests.rs"]
 mod typed_calls;
+#[path = "mcp_agent_unlisted_tests.rs"]
+mod unlisted;
 #[path = "mcp_agent_view_tests.rs"]
 mod viewing;
 #[path = "mcp_agent_page_tests.rs"]

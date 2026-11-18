@@ -20,8 +20,9 @@
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use tilo_server::ServerClient;
+use tilo_peer_state::CopyRole;
 use tilo_server::coedit::ServerCoeditSession;
+use tilo_server::{Server, ServerClient};
 use tilo_server_protocol::Envelope;
 use tilo_server_protocol::voice::CallOperation;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
@@ -91,13 +92,16 @@ async fn session(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_call_is_joined_in_every_kind_of_workspace() {
     let alice = SigningKey::generate(&mut UnwrapErr(SysRng));
-    let host = enrol(&alice, "alice-home", DeviceCapabilities::member());
+    let home = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let laptop = enrol(&alice, "alice-laptop", DeviceCapabilities::primary());
     let phone = enrol(&alice, "alice-phone", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
     let TestHost { server, web, .. } =
-        start_workspace_host(&alice, &host, state.path(), false).await;
+        start_workspace_host(&alice, &home, state.path(), false).await;
     let address = server.node_addr();
+    // The servers that make the workspaces this test's server only carries,
+    // with the state they keep them in.
+    let mut governors: Vec<(tempfile::TempDir, Server)> = Vec::new();
 
     for (index, kind) in KINDS.into_iter().enumerate() {
         let request = u8::try_from(index).unwrap();
@@ -115,7 +119,7 @@ async fn a_call_is_joined_in_every_kind_of_workspace() {
                     address.clone(),
                     workspace.workspace_id,
                     &workspace.workspace,
-                    &host.cert,
+                    &home.cert,
                     &laptop,
                 )
                 .await;
@@ -139,12 +143,31 @@ async fn a_call_is_joined_in_every_kind_of_workspace() {
                 (workspace.workspace_id, owner, other, channel)
             }
             Kind::Carried => {
-                // Her devices sync her workspace through her host: it takes
-                // it on for them, and governs no workspace for it.
-                let workspace_id = WorkspaceId::from_u128(0x0077_6e00_0000_0001);
-                let first = session(address.clone(), workspace_id, &laptop).await;
-                let second = session(address.clone(), workspace_id, &phone).await;
-                (workspace_id, first, second, "voice".to_owned())
+                // Her workspace is another server's of hers: that server
+                // hands its copy to the one her devices reach, which keeps it
+                // for them and governs no workspace of its own for.
+                let own_state = tempfile::tempdir().unwrap();
+                let office = enrol(&alice, "alice-office", DeviceCapabilities::primary());
+                let own_server = start_workspace_host(&alice, &office, own_state.path(), false)
+                    .await
+                    .server;
+                let workspaces = own_server.workspaces().unwrap();
+                let workspace = workspaces.create("Carried").await.unwrap();
+                enter(&own_server, &laptop.cert, &workspace.workspace).await;
+                enter(&own_server, &phone.cert, &workspace.workspace).await;
+                workspaces
+                    .attach_server(
+                        &workspace.workspace,
+                        home.cert.device_public_key,
+                        address.clone(),
+                        CopyRole::KeyHolder,
+                    )
+                    .await
+                    .unwrap();
+                let first = session(address.clone(), workspace.workspace_id, &laptop).await;
+                let second = session(address.clone(), workspace.workspace_id, &phone).await;
+                governors.push((own_state, own_server));
+                (workspace.workspace_id, first, second, "voice".to_owned())
             }
         };
         let open = || CallOperation::Open {
@@ -152,11 +175,14 @@ async fn a_call_is_joined_in_every_kind_of_workspace() {
             document_id: String::new(),
             channel_id: channel.clone(),
         };
-        let opened = wait_for("the host to open the voice channel's call", || {
-            let second = &second;
-            let open = open();
-            async move { operate(second, workspace_id, request, open).await.ok() }
-        })
+        let opened = wait_for(
+            &format!("{kind:?}: the server to open the voice channel's call"),
+            || {
+                let second = &second;
+                let open = open();
+                async move { operate(second, workspace_id, request, open).await.ok() }
+            },
+        )
         .await;
         assert!(
             opened.active,
@@ -193,5 +219,8 @@ async fn a_call_is_joined_in_every_kind_of_workspace() {
     }
 
     drop(web);
+    for (_, governor) in governors {
+        governor.shutdown().await;
+    }
     server.shutdown().await;
 }

@@ -2090,36 +2090,27 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         self.refused_when_asked(provider, resource, "read").await
     }
 
-    /// What a call of `action`, which `resolved`'s directory does not offer this caller, is
-    /// answered (`error`, why it was not found there): refused for the caller's role when the
-    /// host refuses it so by its address, else that there is no such action and where they are
-    /// listed. Only an action nothing here offers by that name is asked of the host: one it
-    /// offers twice, or whose name only begins another, is the caller's to name better.
-    async fn unoffered_answer(
+    /// How a call of `action`, which `resolved`'s directory does not offer this caller, ends
+    /// (`error`, why it was not found there). Only an action nothing here offers by that name
+    /// goes to the host, by its address and with exactly the arguments the caller sent, and the
+    /// host decides it as it decides every call: refused for the caller's role, refused for
+    /// what the caller sent, or done as asked, never with arguments nobody gave. One the host
+    /// knows nowhere, offered twice, or whose name only begins another is the caller's to name
+    /// better, and told where actions are listed.
+    async fn unoffered(
         &self,
         resolved: &Resolved,
         action: &str,
         error: &str,
-    ) -> Result<String, String> {
+        asked: (serde_json::Map<String, Value>, Option<String>, Option<u64>),
+    ) -> Result<Resolution, Failure> {
         let offered_nowhere = error.contains(&format!("has no action {action}"))
             && !error.contains("is another action");
-        if offered_nowhere && let Some(why) = self.refused_action(resolved, action).await? {
-            return Ok(format!("not_permitted: {why}"));
+        let not_listed = || Failure::from(format!("{error}; tilo_ls {} lists them", resolved.path));
+        if !offered_nowhere {
+            return Err(not_listed());
         }
-        Ok(format!("{error}; tilo_ls {} lists them", resolved.path))
-    }
-
-    /// Why the action `action` that `resolved` names, which its directory does not offer this
-    /// caller, is not theirs: the host is asked for it by its address, on the resource named
-    /// or, for a path naming the app, on each of the app's own resources, and refuses it as not
-    /// permitted when the caller's role keeps it from them. `None` when the app has no such
-    /// action: the caller is told the near names then. Asked with no arguments, so a call the
-    /// host would take still does nothing.
-    async fn refused_action(
-        &self,
-        resolved: &Resolved,
-        action: &str,
-    ) -> Result<Option<String>, String> {
+        let (arguments, invocation, wait_ms) = asked;
         let resources = if let Some(node) = resolved.node.as_ref() {
             vec![node.id.clone()]
         } else {
@@ -2131,15 +2122,43 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 .map(|node| node.id.clone())
                 .collect()
         };
+        // The first resource the workspace knows the action on decides the call: it is done
+        // there at most once, and nowhere else is asked after it.
         for resource in resources {
-            if let Some(why) = self
-                .refused_when_asked(&resolved.provider, &resource, action)
-                .await?
-            {
-                return Ok(Some(why));
+            let call = OneCall {
+                provider: Addressed {
+                    provider: resolved.provider.clone(),
+                    app_id: Some(resolved.app_id.clone()),
+                },
+                workspace: false,
+                revision: None,
+                resource,
+                action: action.to_owned(),
+                arguments: arguments.clone(),
+                invocation_id: invocation.clone(),
+                wait_ms,
+            };
+            match Box::pin(self.invoke_one(call)).await {
+                Ok(value) => {
+                    let reply = outcome(&value);
+                    return Ok(Resolution::Done(Box::new(Done::Launched {
+                        value,
+                        reply,
+                        not_shown: None,
+                    })));
+                }
+                Err(why) if not_permitted(&why) => {
+                    return Err(format!("not_permitted: {why}").into());
+                }
+                Err(why)
+                    if matches!(
+                        why.host,
+                        Some(tilo_actions::remote::ActionCallError::UnknownAction)
+                    ) => {}
+                Err(why) => return Err(why),
             }
         }
-        Ok(None)
+        Err(not_listed())
     }
 
     /// Why the host refuses `action` on `resource` at `provider` as not permitted, asked with no
@@ -2164,17 +2183,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             wait_ms: Some(DEFAULT_WAIT_MS),
         };
         match Box::pin(self.invoke_one(call)).await {
-            Err(why)
-                if matches!(
-                    why.host,
-                    Some(
-                        tilo_actions::remote::ActionCallError::NotPermitted
-                            | tilo_actions::remote::ActionCallError::Refused { .. }
-                    )
-                ) =>
-            {
-                Ok(Some(why.to_string()))
-            }
+            Err(why) if not_permitted(&why) => Ok(Some(why.to_string())),
             _ => Ok(None),
         }
     }
@@ -2681,10 +2690,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     // Not offered here: the host decides whether it is the caller's role that
                     // keeps it from them, as a call by its address is decided.
                     Err(error) => {
-                        return Err(self
-                            .unoffered_answer(&resolved, &action, &error)
-                            .await?
-                            .into());
+                        let asked = (arguments, invocation, wait_ms);
+                        return Box::pin(self.unoffered(&resolved, &action, &error, asked)).await;
                     }
                 }
             };
@@ -2983,3 +2990,14 @@ mod publisher_tests;
 #[cfg(test)]
 #[path = "mcp_lost_answer_tests.rs"]
 mod lost_answer_tests;
+
+/// Whether the host refused a call as not the caller's: their role or grants keep it from them.
+fn not_permitted(failure: &Failure) -> bool {
+    matches!(
+        failure.host,
+        Some(
+            tilo_actions::remote::ActionCallError::NotPermitted
+                | tilo_actions::remote::ActionCallError::Refused { .. }
+        )
+    )
+}
