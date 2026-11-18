@@ -86,11 +86,16 @@ pub(crate) async fn spawn_ticking(
         }),
         Vec::new(),
     );
+    let mut config = ServiceConfig::new(
+        state.join("workspace-service"),
+        tilo_server_protocol::WorkSetting::none(),
+    );
+    // A loopback endpoint is never reached from another network: waiting to
+    // learn such an address would hold each device back for the whole wait
+    // before its workspace service serves.
+    config.reaching = tilo_endpoint_reachability::Reaching::OnItsOwn;
     let host = WorkspaceService::open(
-        ServiceConfig::new(
-            state.join("workspace-service"),
-            tilo_server_protocol::WorkSetting::none(),
-        ),
+        config,
         workspace_service::ServiceIdentity {
             user_public_key: cert.user_public_key,
             device_signing_key: key,
