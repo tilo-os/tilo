@@ -1,10 +1,10 @@
 //! Every feature of a device's session, over each way a device reaches its
-//! host: directly, as a native device does, and only through the host's
+//! server: directly, as a native device does, and only through the server's
 //! packet relay, as a page does (it holds no UDP socket). Each scenario runs
-//! once per [`Carrier`] against a real host running its own packet relay, so a
+//! once per [`Carrier`] against a real server running its own packet relay, so a
 //! feature that works over one carrier and not the other fails here.
 //!
-//! The device under test reaches the host over the carrier, and so does
+//! The device under test reaches the server over the carrier, and so does
 //! whatever approves it (a root-holding laptop, or a page holding the
 //! person's root); the person's other devices that answer it (the one that
 //! writes back) dial directly.
@@ -19,6 +19,7 @@
 )]
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tilo_session_client::{Cmd, Event, Events, Link, Outbox, TransportPhase, VoiceEvent};
 
 use collab_types::presence::Presence;
@@ -26,7 +27,9 @@ use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use key_group::{ContentKeys, KeyGroup, MemberKey};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_server_client::{Carrier, Host, answer_pairing, certify, pending_pairings};
+use tilo_server_client::{
+    Carrier, Host, MemberApprover, answer_pairing, certify, pending_pairings,
+};
 use tilo_server_protocol::Envelope;
 use tilo_server_protocol::voice::VoiceGrant;
 use tilo_session_client::MemoryPeerStore;
@@ -546,4 +549,132 @@ async fn the_device_takes_part_in_a_call(carrier: Carrier) {
     assert_eq!(alice.call, workspace.call.call);
     peer.close();
     workspace.shutdown().await;
+}
+
+impl Ada {
+    /// A page's way to Ada's server through a port that counts who sends to
+    /// it. Every WebTransport session a device opens is a QUIC connection
+    /// from a socket of its own, so the count is the sessions the device
+    /// made: what a browser's network process holds a socket for.
+    async fn counted(&self) -> (Host, Arc<AtomicUsize>) {
+        use tokio::net::UdpSocket;
+        let served = &self.host;
+        let listens = served.web.addr;
+        let front = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let mut link = served.web.link.clone();
+        link.origin = format!("https://127.0.0.1:{}", front.local_addr().unwrap().port());
+        let sessions = Arc::new(AtomicUsize::new(0));
+        tokio::spawn({
+            let sessions = Arc::clone(&sessions);
+            async move {
+                let mut backs =
+                    std::collections::HashMap::<std::net::SocketAddr, Arc<UdpSocket>>::new();
+                let mut packet = vec![0u8; 65_536];
+                while let Ok((len, from)) = front.recv_from(&mut packet).await {
+                    let back = if let Some(back) = backs.get(&from) {
+                        Arc::clone(back)
+                    } else {
+                        let back = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+                        back.connect(listens).await.unwrap();
+                        sessions.fetch_add(1, Ordering::SeqCst);
+                        backs.insert(from, Arc::clone(&back));
+                        tokio::spawn({
+                            let (front, back) = (Arc::clone(&front), Arc::clone(&back));
+                            async move {
+                                let mut packet = vec![0u8; 65_536];
+                                while let Ok(len) = back.recv(&mut packet).await {
+                                    let sent =
+                                        front.send_to(packet.get(..len).unwrap(), from).await;
+                                    if sent.is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                        });
+                        back
+                    };
+                    let _ = back.send(packet.get(..len).unwrap()).await;
+                }
+            }
+        });
+        (
+            served
+                .iroh()
+                .with_web(Some(link))
+                .over(Carrier::WebTransport),
+            sessions,
+        )
+    }
+
+    /// Ada's server stops.
+    async fn stop(self) {
+        self.host.server.shutdown().await;
+    }
+}
+
+/// More asks than a session holds streams open at once (256): each ask ends
+/// its stream, or the link would take no more after those.
+const ASKS: usize = 300;
+
+/// What a page asks its server before it holds a session there (who waits to
+/// be paired, every few seconds while an invitation of the page is open):
+/// every ask goes over the one link the page keeps. A browser holds a socket
+/// for every WebTransport session a page makes, and `WebKit` holds it after the
+/// session closed for as long as its network process lives, so a link for
+/// each ask filled that process until the browser could open nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_ask_of_a_page_goes_over_the_one_link_it_keeps() {
+    let ada = Ada::start().await;
+    let (reach, sessions) = ada.counted().await;
+    let approver = MemberApprover::new(reach);
+    for _ in 0..ASKS {
+        assert!(
+            pending_pairings(&approver, &ada.root)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+    assert_eq!(
+        sessions.load(Ordering::SeqCst),
+        1,
+        "three hundred asks made one WebTransport session"
+    );
+    approver.close().await;
+    ada.stop().await;
+}
+
+/// What a page in a session asks its server every two seconds for as long as
+/// it is open (what its person's agents ask them): the asks go over one link
+/// the page keeps beside its session, and make no session of their own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_page_in_a_session_asks_its_server_over_the_one_link_it_keeps() {
+    let ada = Ada::start().await;
+    let (reach, sessions) = ada.counted().await;
+    let (page_key, page_cert, served_cert) = ada.certified(&reach).await;
+    let session = start_page(
+        reach,
+        page_cert,
+        served_cert,
+        page_key,
+        Arc::new(MemoryPeerStore::default()),
+    );
+    let asks = tilo_session_client::member_host(&session);
+    // Until the session first reaches its server it has no way to ask; the
+    // first ask answered is the one that dials the link.
+    wait_for("the page's first ask to be answered", || async {
+        pending_pairings(&asks, &ada.root).await.ok()
+    })
+    .await;
+    let before = sessions.load(Ordering::SeqCst);
+    for _ in 0..ASKS {
+        assert!(pending_pairings(&asks, &ada.root).await.unwrap().is_empty());
+    }
+    assert_eq!(
+        sessions.load(Ordering::SeqCst),
+        before,
+        "three hundred asks made no WebTransport session: they went over the link the page keeps"
+    );
+    session.close();
+    ada.stop().await;
 }

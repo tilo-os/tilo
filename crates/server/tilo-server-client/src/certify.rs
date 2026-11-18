@@ -23,6 +23,7 @@ use tilo_server_protocol::certify::{
 use tilo_server_protocol::certify::{
     ApproverReply, CertifyOpen, CertifyReply, MAX_CERTIFY_FRAME_BYTES, MemberApproval,
 };
+use tilo_server_protocol::web::LINK_CERTIFY_KEPT;
 use tilo_user_identity::{
     CERTIFICATION_CLOCK_ALLOWANCE_NS, CERTIFICATION_SCHEMA_VERSION, CertificationPolicy,
     CertificationRequest, DeviceCapabilities, DeviceCert, RevocationList, verify_device_cert_at,
@@ -420,13 +421,131 @@ pub async fn ask_member(
     read(&mut recv).await
 }
 
+/// The link a device keeps to its server's certification, and how many it
+/// has dialled: an ask lets go only of the link it failed on.
+#[derive(Default)]
+struct Kept {
+    link: Option<Link>,
+    dialled: u64,
+}
+
+/// A device's asks of its server's certification ([`MemberApproval`]s), each
+/// on a stream of its own on one link the device keeps.
+///
+/// Over WebTransport every link is a session of its own, and a browser gives
+/// each a socket: Chrome gives it back when the session closes, `WebKit` keeps
+/// it for as long as its network process lives. A page that asked every two
+/// seconds on a link of its own filled that process with sockets until the
+/// browser could open nothing. So a page offers to keep the link
+/// ([`LINK_CERTIFY_KEPT`]) and asks on it for as long as it stands; a link
+/// that failed is let go, and the next ask dials another. A server that does
+/// not answer the offer serves one conversation per link and is asked as
+/// before. Over iroh nothing is offered and nothing kept: a link there is a
+/// connection of the endpoint the device already has, and costs no socket.
+#[derive(Default)]
+pub struct KeptAsks {
+    kept: tokio::sync::Mutex<Kept>,
+}
+
+impl KeptAsks {
+    /// The server's answer to `approval`, asked through `dialer`.
+    ///
+    /// # Errors
+    ///
+    /// The server was not reached, or its answer did not decode. A server
+    /// that turns the command away answers [`ApproverReply::Refused`].
+    pub async fn ask(
+        &self,
+        dialer: &Dialer,
+        approval: &MemberApproval,
+    ) -> Result<ApproverReply, CertifyError> {
+        let mut first = true;
+        loop {
+            let (link, dialled, kept_before) = self.link(dialer).await?;
+            let (mut send, mut recv) = match link.open_bi().await {
+                Ok(streams) => streams,
+                Err(error) => {
+                    self.let_go(&link, dialled).await;
+                    // A kept link that closed since the last ask heard
+                    // nothing of this one: it is asked on a new link, once.
+                    if kept_before && std::mem::take(&mut first) {
+                        continue;
+                    }
+                    return Err(error.into());
+                }
+            };
+            let reply = async {
+                write(&mut send, &CertifyOpen::Member(approval.clone())).await?;
+                // Said whole: the stream ends here, so the link holds no
+                // more streams open than asks wait for an answer.
+                send.finish();
+                read(&mut recv).await
+            }
+            .await;
+            if reply.is_err() || link.protocol() != Some(LINK_CERTIFY_KEPT) {
+                self.let_go(&link, dialled).await;
+            }
+            return reply;
+        }
+    }
+
+    /// The link to ask on, which dial of this device's it was, and whether it
+    /// was kept from an earlier ask: the kept one, else one dialled now,
+    /// which is kept when the server answers the offer to.
+    async fn link(&self, dialer: &Dialer) -> Result<(Link, u64, bool), CertifyError> {
+        let mut kept = self.kept.lock().await;
+        if let Some(link) = &kept.link {
+            return Ok((link.clone(), kept.dialled, true));
+        }
+        let link = dialer
+            .link_offering(Purpose::Certify, &[LINK_CERTIFY_KEPT])
+            .await?;
+        kept.dialled = kept.dialled.saturating_add(1);
+        if link.protocol() == Some(LINK_CERTIFY_KEPT) {
+            kept.link = Some(link.clone());
+        }
+        Ok((link, kept.dialled, false))
+    }
+
+    /// Close `link`, the `dialled`th this device dialled, and keep it no
+    /// longer.
+    async fn let_go(&self, link: &Link, dialled: u64) {
+        let mut kept = self.kept.lock().await;
+        if kept.dialled == dialled {
+            kept.link = None;
+        }
+        drop(kept);
+        link.close("");
+    }
+
+    /// Let go of the kept link: the device asks nothing more.
+    pub async fn close(&self) {
+        let link = self.kept.lock().await.link.take();
+        if let Some(link) = link {
+            link.close("");
+        }
+    }
+}
+
+impl Drop for KeptAsks {
+    fn drop(&mut self) {
+        // A page's session closes only when it is told to: one left open
+        // holds its socket for as long as the page lives.
+        if let Some(link) = self.kept.get_mut().link.take() {
+            link.close("");
+        }
+    }
+}
+
 /// A member's root asking one host its approver commands before the device
 /// holds any session there: what a page runs to pair an agent's device
 /// through a host it is not yet let into. It reaches the host as [`Host`]
-/// says, from one endpoint bound on the first command, each command on a
-/// connection of its own.
+/// says, from one endpoint bound on the first command; over WebTransport on
+/// one link it keeps ([`KeptAsks`]), over iroh each command on a connection
+/// of its own.
 pub struct MemberApprover {
     dialer: Dialer,
+    asks: KeptAsks,
 }
 
 impl MemberApprover {
@@ -435,20 +554,19 @@ impl MemberApprover {
     pub fn new(host: Host) -> Self {
         Self {
             dialer: Dialer::new(host, None),
+            asks: KeptAsks::default(),
         }
     }
 
     /// Let go of the host, waiting for it to hear.
     pub async fn close(&self) {
+        self.asks.close().await;
         self.dialer.close().await;
     }
 }
 
 impl MemberHost for MemberApprover {
     async fn ask(&self, approval: &MemberApproval) -> Result<ApproverReply, CertifyError> {
-        let link = self.dialer.link(Purpose::Certify).await?;
-        let reply = ask_member(&link, approval).await;
-        link.close("");
-        reply
+        self.asks.ask(&self.dialer, approval).await
     }
 }
