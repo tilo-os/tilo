@@ -66,6 +66,7 @@ pub(crate) fn merge_committed(
         }
     };
     let before = super::sorted_heads(doc.base_heads());
+    let _phase = tilo_resource::profiling::Phase::start("committed.merge");
     doc.merge_incoming(&mut incoming)
         .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?;
     Ok(before != super::sorted_heads(doc.base_heads()))
@@ -102,11 +103,13 @@ fn ready(doc: &AutoCommit) -> Result<(), RemoteApplyError> {
 }
 
 fn load(bytes: &[u8]) -> Result<AutoCommit, RemoteApplyError> {
+    let _phase = tilo_resource::profiling::Phase::start("committed.load");
     AutoCommit::load(bytes).map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))
 }
 
 /// Apply an incremental stream to `doc`, whole or not at all.
 pub(crate) fn load_incremental(doc: &mut AutoCommit, bytes: &[u8]) -> Result<(), RemoteApplyError> {
+    let _phase = tilo_resource::profiling::Phase::start("committed.changes");
     let changes = automerge::Automerge::parse_changes(bytes)
         .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?;
     doc.apply_incoming(changes)

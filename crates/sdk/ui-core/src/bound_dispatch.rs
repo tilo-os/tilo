@@ -5363,15 +5363,20 @@ pub(crate) fn merge_remote_owned_document(
                 .ok_or_else(|| {
                     RemoteApplyError::Unavailable("document generation exhausted".into())
                 })?;
+            let copy = tilo_resource::profiling::Phase::start("committed.copy");
             let mut candidate = doc.clone();
+            copy.end();
             let before = doc.base_heads();
             let changed =
                 crate::history_mode::routes::merge_committed_into_copy(&mut candidate, mutation)?;
+            let validate = tilo_resource::profiling::Phase::start("committed.validate");
             identity
                 .validate(&candidate)
                 .map_err(RemoteApplyError::InvalidMutation)?;
+            validate.end();
             let mut observed = Vec::new();
             if changed {
+                let _observe = tilo_resource::profiling::Phase::start("committed.observe");
                 observed = candidate
                     .get_changes(&before)
                     .into_iter()
@@ -5388,6 +5393,7 @@ pub(crate) fn merge_remote_owned_document(
                 }
                 *doc = candidate;
                 state.pending = None;
+                let _rebase = tilo_resource::profiling::Phase::start("committed.rebase");
                 history.rebase(doc);
                 state.statuses.clear();
                 state.generation = Some(next);
