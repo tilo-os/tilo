@@ -246,6 +246,10 @@ pub struct Engine {
     founder: std::sync::OnceLock<Arc<dyn Founder>>,
 }
 
+/// What this device's own workspace service answers an ask, once it has.
+pub type ServiceAnswer =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>>;
+
 /// What this device asks its own workspace service, once it is open: founding a workspace this
 /// device made there, and asking a workspace held there one of its governance actions as this
 /// device, a member of it.
@@ -264,11 +268,7 @@ pub trait Founder: Send + Sync {
         workspace: WorkspaceId,
         action: &str,
         arguments: serde_json::Map<String, serde_json::Value>,
-    ) -> Option<
-        std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>,
-        >,
-    >;
+    ) -> Option<ServiceAnswer>;
 }
 
 /// What [`Engine::name_own_hosts`] last named: the address of the endpoint it named, and the
@@ -1927,11 +1927,7 @@ impl Engine {
         workspace: WorkspaceId,
         action: &str,
         arguments: serde_json::Map<String, serde_json::Value>,
-    ) -> Option<
-        std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>,
-        >,
-    > {
+    ) -> Option<ServiceAnswer> {
         self.founder.get()?.ask(workspace, action, arguments)
     }
 

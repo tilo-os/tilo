@@ -860,7 +860,7 @@ impl DeviceLists {
 /// client that lists them from a host reads the same fields.
 /// What this device's own workspace service answered `asked`, as `shape` puts it.
 fn answered_by_service(
-    asked: std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, String>> + Send>>,
+    asked: tilo_session_client::engine::ServiceAnswer,
     shape: impl FnOnce(Value) -> Result<Value, String> + Send + 'static,
 ) -> Started {
     Started::Later(crate::landing::off_loop(async move {

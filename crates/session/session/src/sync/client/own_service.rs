@@ -162,11 +162,7 @@ impl tilo_session_client::engine::Founder for Founding {
         workspace: tilo_desktop_model::WorkspaceId,
         action: &str,
         arguments: serde_json::Map<String, serde_json::Value>,
-    ) -> Option<
-        std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>,
-        >,
-    > {
+    ) -> Option<tilo_session_client::engine::ServiceAnswer> {
         let engine = self.engine.upgrade()?;
         let workspace = workspace.to_string();
         // The service holds a workspace this device is the holder of: it shares this device's key.
