@@ -163,6 +163,14 @@ async fn a_note_holds_no_tool_back_and_the_reply_still_says_each_step_in_order()
     for line in &timing {
         assert_eq!(field(line, "outcome"), "ok", "{line}");
     }
+    // The note that goes before a tool that may change something is waited for: its time is
+    // the step's, said as the note's, and stands outside what the tool waits for its action.
+    let before: u64 = field(timing[3], "note_ms").parse().expect("a number");
+    assert!(
+        before > 0,
+        "the note of a tool that may change something is written before the tool begins: {}",
+        timing[3]
+    );
 
     // What its person read on the reply while the model thought: the newest step each time.
     assert_eq!(
