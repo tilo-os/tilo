@@ -94,15 +94,9 @@ pub fn required_workspace_action(msg: &NeighbourMsg) -> Option<WorkspaceAction> 
         | NeighbourMsg::MlsGovernanceWanted { .. }
         | NeighbourMsg::WriteRefusals { .. }
         // Retired generations, refused where they enter
-        // (`NeighbourMsg::is_retired`): presence is a frame on the live session,
-        // not a message here.
+        // (`NeighbourMsg::is_retired`).
         | NeighbourMsg::IdentityAnnouncement { .. }
-        | NeighbourMsg::PermissionRequest { .. }
-        | NeighbourMsg::RetiredPresenceMoved { .. }
-        | NeighbourMsg::RetiredPresenceCleared { .. }
-        | NeighbourMsg::RetiredAppPresenceV2 { .. }
-        | NeighbourMsg::RetiredPersonalWorkspaces
-        | NeighbourMsg::RetiredPersonalHosts => None,
+        | NeighbourMsg::PermissionRequest { .. } => None,
     }
 }
 
@@ -184,24 +178,6 @@ mod tests {
                 Some(change()),
             ),
             (
-                NeighbourMsg::RetiredPresenceMoved {
-                    peer: 1,
-                    user: "ada".into(),
-                    key: "cursor".into(),
-                    point: (0.0, 0.0),
-                    ts: 0,
-                    colour: None,
-                },
-                None,
-            ),
-            (
-                NeighbourMsg::RetiredPresenceCleared {
-                    peer: 1,
-                    key: "cursor".into(),
-                },
-                None,
-            ),
-            (
                 NeighbourMsg::SurfaceFrame {
                     surface: 7,
                     source_peer: 1,
@@ -277,19 +253,6 @@ mod tests {
                     own: None,
                 },
                 Some(comment()),
-            ),
-            (
-                NeighbourMsg::RetiredAppPresenceV2 {
-                    peer: 1,
-                    app_id: "so.tilo.notes".into(),
-                    cluster_id: WORKSPACE.into(),
-                    presence: PeerPresence {
-                        key: vec![1],
-                        payload: PeerPresencePayload::Selection { start: 0, end: 1 },
-                    },
-                    colour: None,
-                },
-                None,
             ),
             (
                 NeighbourMsg::ScrollbackRequest {

@@ -44,7 +44,7 @@ pub enum CommitOperation {
     },
     /// Retired agent runtime fact. It keeps the variants after it at their
     /// encoded positions, and every binding of it is refused.
-    RetiredAgentRuntime,
+    RefusedAgentRuntime,
     /// A proposal to bring a whole document into the workspace, or the owner's
     /// answer to one. The broker supplies the caller from its authenticated
     /// durable admission, never from arguments.
@@ -56,7 +56,7 @@ pub enum CommitOperation {
     /// Retired workspace task command: tasks are the Tasks app's issues. It keeps
     /// the variants after it at their encoded positions, and every binding of
     /// it is refused.
-    RetiredWorkspaceTask,
+    RefusedWorkspaceTask,
     /// Original authenticated person command; governor signing ownership is
     /// supplied out of band by the installed owning host, never by arguments.
     WorkspaceMembershipCommand {
@@ -69,7 +69,7 @@ pub enum CommitOperation {
     /// ([`crate::workspace_membership::SettingsChange::Shortcuts`]). It keeps
     /// the variants after it at their encoded positions, still reads where a
     /// device holds it, and is refused.
-    RetiredShortcutChange {
+    RefusedShortcutChange {
         invocation: uuid::Uuid,
         caller: tilo_user_identity::DeviceCert,
         change: Vec<u8>,
@@ -87,13 +87,13 @@ pub enum CommitTarget {
     DesktopCommand {
         invocation: uuid::Uuid,
     },
-    RetiredAgentRuntime,
+    RefusedAgentRuntime,
     DocumentImport {
         invocation: uuid::Uuid,
     },
-    /// Retired with [`CommitOperation::RetiredWorkspaceTask`]; keeps the
+    /// Retired with [`CommitOperation::RefusedWorkspaceTask`]; keeps the
     /// targets after it at their encoded positions.
-    RetiredWorkspaceTask,
+    RefusedWorkspaceTask,
     WorkspaceMembershipCommand {
         device: [u8; 32],
         invocation: uuid::Uuid,
@@ -103,9 +103,9 @@ pub enum CommitTarget {
     NativeCheckpointRoot {
         root: [u8; 32],
     },
-    /// Retired with [`CommitOperation::RetiredShortcutChange`]; keeps the
+    /// Retired with [`CommitOperation::RefusedShortcutChange`]; keeps the
     /// targets after it at their encoded positions.
-    RetiredShortcutChange {
+    RefusedShortcutChange {
         device: [u8; 32],
         invocation: uuid::Uuid,
     },
@@ -117,7 +117,7 @@ pub enum CommitTarget {
     /// Retired with the pair it named: a conversation is an ordinary record of
     /// the workspace. It keeps the variants after it at their encoded
     /// positions.
-    RetiredDirectPair,
+    RefusedDirectPair,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitBinding {
@@ -145,13 +145,13 @@ impl OwnerCommitRequest {
             return Err("owner commit requires the exact canonical workspace UUID".into());
         }
         let (target, bytes) = match &self.operation {
-            CommitOperation::RetiredAgentRuntime => {
+            CommitOperation::RefusedAgentRuntime => {
                 return Err("agent runtime owner commits are retired".into());
             }
-            CommitOperation::RetiredWorkspaceTask => {
+            CommitOperation::RefusedWorkspaceTask => {
                 return Err("workspace task owner commits are retired".into());
             }
-            CommitOperation::RetiredShortcutChange { .. } => {
+            CommitOperation::RefusedShortcutChange { .. } => {
                 return Err("shortcut owner commits are retired".into());
             }
             CommitOperation::DesktopCommand {
@@ -392,7 +392,7 @@ mod tests {
             encoded(&CommitTarget::DesktopCommand { invocation }),
             [vec![2, 16], vec![7; 16]].concat()
         );
-        assert_eq!(encoded(&CommitTarget::RetiredWorkspaceTask), vec![5]);
+        assert_eq!(encoded(&CommitTarget::RefusedWorkspaceTask), vec![5]);
         assert_eq!(
             encoded(&CommitTarget::WorkspaceMembershipCommand {
                 device: [9; 32],

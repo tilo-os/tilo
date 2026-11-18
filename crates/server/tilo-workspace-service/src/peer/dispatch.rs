@@ -173,7 +173,6 @@ pub(super) async fn handle_envelope(
         | Envelope::Committed { .. }
         | Envelope::CommitRefused { .. }
         | Envelope::ChangeRefused { .. }
-        | Envelope::LiveLeave { .. }
         | Envelope::LiveMember { .. }
         | Envelope::Position { .. }
         | Envelope::VoiceCallResult { .. }

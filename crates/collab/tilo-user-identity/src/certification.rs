@@ -271,7 +271,7 @@ impl CertificationPolicy {
             // where they make it, never a device enrolled through a request.
             browser_pages: false,
             // Retired grants are never granted again.
-            retired: crate::RetiredFlags::default(),
+            retired: crate::SignedGrants::default(),
         }
     }
 

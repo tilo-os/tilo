@@ -2734,8 +2734,6 @@ impl WasmPeer {
                             crate::peer_sync::narrated(self.id, workspace_id, from, &event);
                             return None;
                         }
-                        // Presence no longer comes this way.
-                        LiveFrame::RetiredPresence => return None,
                     };
                     serde_json::to_value(event).ok()
                 }

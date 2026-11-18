@@ -2011,9 +2011,7 @@ impl Task {
         let Some(frame) = tilo_server_protocol::live::LiveFrame::decode(frame).ok() else {
             return Sealing::Dropped;
         };
-        let Some((_, _, record)) = frame.seal_tags() else {
-            return Sealing::Dropped;
-        };
+        let (_, _, record) = frame.seal_tags();
         let keys = self.keyed_routes().find_map(|route| {
             let names = tilo_server_protocol::live::LiveResource {
                 app: route.app_id.clone(),

@@ -247,18 +247,6 @@ impl Workspaces {
             request @ (WorkspacesRequest::Servers { .. }
             | WorkspacesRequest::AddServer { .. }
             | WorkspacesRequest::RemoveServer { .. }) => self.page_servers(device, request).await?,
-            // Retired: a conversation is an ordinary record of the workspace,
-            // so a host names no pair of people.
-            WorkspacesRequest::RetiredPair {} => {
-                WorkspacesReply::Refused("a conversation is a record of the workspace".into())
-            }
-            // Retired: an invitation admits by itself, so nobody waits for
-            // the owner to let them in.
-            WorkspacesRequest::RetiredJoinRequests {}
-            | WorkspacesRequest::RetiredAdmit {}
-            | WorkspacesRequest::RetiredDecline {} => {
-                WorkspacesReply::Refused("an invitation admits by itself".into())
-            }
         })
     }
 

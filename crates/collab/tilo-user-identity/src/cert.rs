@@ -352,8 +352,8 @@ pub struct DeviceCapabilities {
     pub browser_pages: bool,
 
     /// Grants a certificate signed before they were retired may carry, which
-    /// mean nothing now (see [`RetiredFlags`]). New certificates set none.
-    pub retired: RetiredFlags,
+    /// mean nothing now (see [`SignedGrants`]). New certificates set none.
+    pub retired: SignedGrants,
 }
 
 /// Two grants certificates carried until they were retired: acting as an
@@ -364,12 +364,12 @@ pub struct DeviceCapabilities {
 /// the ones every device and host already stores, and its signature covers
 /// them. Nothing outside this module sets one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct RetiredFlags {
+pub struct SignedGrants {
     act_as_host: bool,
     read_all_workspaces: bool,
 }
 
-impl RetiredFlags {
+impl SignedGrants {
     /// Whether the certificate was signed with either retired grant: one
     /// that may carry nothing else (an agent's grant, a stand-in) is refused
     /// with one, as it was before they were retired.
@@ -390,7 +390,7 @@ impl RetiredFlags {
 struct CapabilitiesJson {
     can_own_workspaces: bool,
     can_admit_devices: bool,
-    /// Retired ([`RetiredFlags`]), still written: every peer reads the v1
+    /// Retired ([`SignedGrants`]), still written: every peer reads the v1
     /// fields, and refuses a certificate without them.
     #[serde(default)]
     can_act_as_host: bool,
@@ -495,7 +495,7 @@ impl<'de> Deserialize<'de> for DeviceCapabilities {
                 can_own_workspaces: json.can_own_workspaces,
                 can_admit_devices: json.can_admit_devices,
                 foreign: json.foreign,
-                retired: RetiredFlags {
+                retired: SignedGrants {
                     act_as_host: json.can_act_as_host,
                     read_all_workspaces: json.can_read_all_workspaces,
                 },
@@ -623,7 +623,7 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
                 stand_in: extended & EXTENDED_STAND_IN != 0,
                 server_key: extended & EXTENDED_SERVER_KEY != 0,
                 browser_pages: extended & EXTENDED_BROWSER_PAGES != 0,
-                retired: RetiredFlags {
+                retired: SignedGrants {
                     act_as_host: flag(flags[2])?,
                     read_all_workspaces: flag(flags[3])?,
                 },
@@ -647,7 +647,7 @@ impl DeviceCapabilities {
             stand_in: false,
             server_key: false,
             browser_pages: false,
-            retired: RetiredFlags {
+            retired: SignedGrants {
                 act_as_host: false,
                 read_all_workspaces: false,
             },

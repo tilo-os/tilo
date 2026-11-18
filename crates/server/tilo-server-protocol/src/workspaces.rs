@@ -255,14 +255,6 @@ pub enum WorkspacesRequest {
     Pending {
         workspace: String,
     },
-    /// Retired: an invitation admits by itself, so nobody waits for the
-    /// owner's answer. It keeps the requests after it at their encoded
-    /// positions.
-    RetiredJoinRequests {},
-    /// Retired with [`WorkspacesRequest::RetiredJoinRequests`].
-    RetiredAdmit {},
-    /// Retired with [`WorkspacesRequest::RetiredJoinRequests`].
-    RetiredDecline {},
     /// Change a member's role.
     SetRole {
         workspace: String,
@@ -391,9 +383,6 @@ pub enum WorkspacesRequest {
         workspace: String,
         name: String,
     },
-    /// Retired: a conversation is an ordinary record of the workspace. It
-    /// keeps the requests after it at their encoded positions.
-    RetiredPair {},
     /// Rename `workspace` to `name` (1–80 characters) as the calling device's
     /// person, for everyone in it and every list that names it: the
     /// workspace's owner, or a moderator. Answered with the workspace, as it
@@ -441,9 +430,6 @@ pub enum WorkspacesReply {
     },
     /// The redeemable invitations.
     Pending(Vec<PendingInvite>),
-    /// Retired with [`WorkspacesRequest::RetiredJoinRequests`]; it keeps the
-    /// replies after it at their encoded positions.
-    RetiredAnsweredJoinRequests,
     /// Refused, and why.
     Refused(String),
     /// What happened without the owner deciding it then, oldest first.
@@ -457,9 +443,6 @@ pub enum WorkspacesReply {
     Shared(u32),
     /// The workspace names the caller as asked, for [`WorkspacesRequest::Name`].
     Named,
-    /// Retired with [`WorkspacesRequest::RetiredPair`]; it keeps the replies
-    /// after it at their encoded positions.
-    RetiredPaired,
     /// The servers keeping a workspace ([`WorkspacesRequest::Servers`],
     /// [`WorkspacesRequest::AddServer`] and [`WorkspacesRequest::RemoveServer`]):
     /// the one asked first.

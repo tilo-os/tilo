@@ -329,14 +329,6 @@ pub enum Envelope {
         workspace_id: WorkspaceId,
     },
 
-    /// Leave the workspace's live session. Nothing sends it — a device that
-    /// goes is dropped with its connection — and it stays only so every
-    /// later variant keeps its postcard position.
-    LiveLeave {
-        /// Workspace id.
-        workspace_id: WorkspaceId,
-    },
-
     /// A device joined (`active`) or left the workspace's live session, sent
     /// by the host to the live session's other members.
     LiveMember {
@@ -745,7 +737,6 @@ impl Envelope {
             Self::Committed { .. } => "Committed",
             Self::CommitRefused { .. } => "CommitRefused",
             Self::LiveJoin { .. } => "LiveJoin",
-            Self::LiveLeave { .. } => "LiveLeave",
             Self::LiveMember { .. } => "LiveMember",
             Self::SubscribeFrom { .. } => "SubscribeFrom",
             Self::Position { .. } => "Position",
@@ -807,7 +798,6 @@ impl Envelope {
             | Self::CommitRefused { workspace_id, .. }
             | Self::ChangeRefused { workspace_id, .. }
             | Self::LiveJoin { workspace_id }
-            | Self::LiveLeave { workspace_id }
             | Self::LiveMember { workspace_id, .. }
             | Self::SubscribeFrom { workspace_id, .. }
             | Self::Position { workspace_id, .. }
@@ -964,7 +954,7 @@ mod tests {
                         call: [1; 32],
                         participation: None,
                     },
-                    [vec![26], id(7), vec![1; 32], vec![0]].concat(),
+                    [vec![25], id(7), vec![1; 32], vec![0]].concat(),
                 ),
                 (
                     Envelope::VoiceJoin {
@@ -972,7 +962,7 @@ mod tests {
                         call: [1; 32],
                         participation: Some([2; 32]),
                     },
-                    [vec![26], id(7), vec![1; 32], vec![1], vec![2; 32]].concat(),
+                    [vec![25], id(7), vec![1; 32], vec![1], vec![2; 32]].concat(),
                 ),
                 (
                     Envelope::VoiceLeave {
@@ -980,7 +970,7 @@ mod tests {
                         call: [1; 32],
                         participation: [2; 32],
                     },
-                    [vec![29], id(7), vec![1; 32], vec![2; 32]].concat(),
+                    [vec![28], id(7), vec![1; 32], vec![2; 32]].concat(),
                 ),
             ];
             for (envelope, payload) in cases {

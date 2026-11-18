@@ -490,3 +490,44 @@ reason = "the picture slot served only the planner's own reads of pictures, whic
 file = "crates/session/desktop-model/src/capability.rs"
 enum = "Capability"
 reason = "desktop control is an action grant naming the app on the desktop's own actions, no longer a sandbox capability; a `Capability` is what an app asks for and no byte of one is kept, and a stored sandbox grant of the old desktop-control device reads as nothing"
+
+[[break]]
+file = "crates/server/tilo-server-protocol/src/transport.rs"
+enum = "Envelope"
+reason = "the live-session leave frame goes: a device that goes is dropped with its connection, so nothing sent it. The peer protocol version is bumped from 56 to 57 with the removal and `previous-peer-frames.txt` moves to it, so a device at another version admits nothing from this one"
+[[break]]
+file = "crates/collab/neighbour-wire/src/lib.rs"
+enum = "NeighbourMsg"
+reason = "the presence and personal-list tombstones go: presence is a frame on the workspace's live session and the person's workspace list is a resource of their own store, so no build produced any of them. The peer protocol version is bumped from 56 to 57 with the removal and `previous-peer-frames.txt` moves to it, so a device at another version admits nothing from this one"
+[[break]]
+file = "crates/server/tilo-server-protocol/src/workspaces.rs"
+enum = "WorkspacesRequest"
+reason = "the join-request and conversation pair requests go: an invitation admits by itself and a conversation is a record of the workspace, so no build produced them. They are live messages of a session between a page and the host that served it, and the peer protocol version is bumped to 57 with the removal"
+[[break]]
+file = "crates/server/tilo-server-protocol/src/workspaces.rs"
+enum = "WorkspacesReply"
+reason = "the answers to those requests, live on the same session and kept nowhere; the peer protocol version is bumped to 57 with the removal"
+[[break]]
+file = "crates/collab/tilo-peer-state/src/workspace_membership.rs"
+enum = "WorkspaceMembershipCommand"
+reason = "the refused agent-membership and task-grant commands take their names back (`RefusedAddAgent` and its neighbours) at the positions they kept: postcard writes no names, so the bytes and every stored command read as they did"
+[[break]]
+file = "crates/collab/tilo-peer-state/src/owner_commit.rs"
+enum = "CommitOperation"
+reason = "the refused agent-runtime, task, shortcut and pair operations take `Refused...` names at the positions they kept: postcard writes no names, so the request digests and the stored record read as they did"
+[[break]]
+file = "crates/collab/tilo-peer-state/src/owner_commit.rs"
+enum = "CommitTarget"
+reason = "the targets of those operations take `Refused...` names at the positions they kept: postcard writes no names, so the stored bindings and their digests read as they did"
+[[break]]
+file = "crates/collab/actions/src/remote/workspace_activity.rs"
+enum = "DetailAction"
+reason = "the old `undo-run` name reads as `UndoSession` through its serde alias, so the variant that held it goes and the name a stored view wrote still reads"
+[[break]]
+file = "crates/server/tilo-server-protocol/src/live.rs"
+enum = "LiveFrame"
+reason = "the presence frame goes: presence is a frame of the workspace's live session's own kind, and a live frame is sealed, sent and dropped on the connection, never stored; the peer protocol version is bumped to 57 with the removal"
+[[break]]
+file = "crates/server/tilo-server-protocol/src/live.rs"
+enum = "LiveKind"
+reason = "the presence kind goes with the frame it named; a sealed live frame lives only as long as the connection, and the peer protocol version is bumped to 57 with the removal"

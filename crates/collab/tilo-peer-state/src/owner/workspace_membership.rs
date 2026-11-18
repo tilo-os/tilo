@@ -217,7 +217,7 @@ mod tests {
         let mut changed = request;
         if let CommitOperation::WorkspaceMembershipCommand { command, .. } = &mut changed.operation
         {
-            *command = WorkspaceMembershipCommand::RetiredRemoveAgent {
+            *command = WorkspaceMembershipCommand::RefusedRemoveAgent {
                 agent: "scribe".into(),
             };
         }

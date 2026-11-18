@@ -47,7 +47,7 @@ use serde::{Deserialize, Serialize};
 /// [`NeighbourMsg::IdentityHello`] carries it first, at a variant index that
 /// never changes ([`IDENTITY_HELLO_INDEX`]), so every version reads another
 /// device's number before anything else it says.
-pub const PEER_PROTOCOL_VERSION: u32 = 56;
+pub const PEER_PROTOCOL_VERSION: u32 = 57;
 
 /// The oldest peer version this build still works with: the one before
 /// [`PEER_PROTOCOL_VERSION`] when this build reads and writes the frames of
@@ -56,7 +56,7 @@ pub const PEER_PROTOCOL_VERSION: u32 = 56;
 /// version wrote are kept beside `tilo-server-protocol`
 /// (`previous/peer-v<N>.txt`), and its test fails a build that reads or
 /// writes them differently.
-pub const OLDEST_PEER_PROTOCOL_VERSION: u32 = 56;
+pub const OLDEST_PEER_PROTOCOL_VERSION: u32 = 57;
 
 /// Whether a device at peer version `theirs` and this one work together:
 /// the same version, the one before when this build still speaks it
@@ -67,10 +67,10 @@ pub const fn works_with_peer_version(theirs: u32) -> bool {
     theirs >= OLDEST_PEER_PROTOCOL_VERSION && theirs <= PEER_PROTOCOL_VERSION.saturating_add(1)
 }
 
-/// [`NeighbourMsg::IdentityHello`]'s postcard variant index, frozen: the one
-/// message every version decodes far enough to learn the sender's
+/// [`NeighbourMsg::IdentityHello`]'s postcard variant index: the one message
+/// every version decodes far enough to learn the sender's
 /// [`PEER_PROTOCOL_VERSION`].
-pub const IDENTITY_HELLO_INDEX: u8 = 11;
+pub const IDENTITY_HELLO_INDEX: u8 = 9;
 
 /// The [`PEER_PROTOCOL_VERSION`] an encoded [`NeighbourMsg`] says it is
 /// from, when it is an identity announcement: read from its frozen prefix,
@@ -360,10 +360,7 @@ impl WriteRefusal {
 }
 
 /// Tagged envelope for everything that crosses the neighbour boundary.
-///
-/// `f64` lives inside [`NeighbourMsg::RetiredPresenceMoved`] so we cannot derive
-/// [`Eq`]; [`PartialEq`] is sufficient for tests and dispatch logic.
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
 pub enum NeighbourMsg {
     /// Request: replay every Automerge change to the workspace named by `workspace`
     /// after the included clock.
@@ -396,24 +393,6 @@ pub enum NeighbourMsg {
         changes: Vec<Vec<u8>>,
         workspace: String,
     },
-    /// Retired: a peer's presence cursor moved within `key`'s coordinate
-    /// space. A pointer move is a frame on the workspace's live session now; no
-    /// build produces this, and it stays only so every later Postcard
-    /// discriminant keeps its value.
-    RetiredPresenceMoved {
-        peer: PeerId,
-        user: String,
-        key: PresenceKey,
-        point: (f64, f64),
-        ts: u64,
-        #[serde(default)]
-        colour: PresenceColour,
-    },
-    /// Retired: a peer's presence cursor disappeared from `key`'s coordinate
-    /// space. A leaving pointer is a frame on the workspace's live session now;
-    /// no build produces this, and it stays only so every later Postcard
-    /// discriminant keeps its value.
-    RetiredPresenceCleared { peer: PeerId, key: PresenceKey },
     /// One encoded access unit (H.264/HEVC), frame (VP9) or temporal unit
     /// (AV1) for a shared surface, in the codec the preceding
     /// [`Self::SurfaceStreamStart`] named. `encoded_h264` keeps its historical
@@ -557,18 +536,6 @@ pub enum NeighbourMsg {
         /// for a sealed record too, so a host that cannot read it routes it.
         own: Option<collab_types::OwnResource>,
     },
-    /// Retired: app-level presence crossing the host boundary. An app's
-    /// presence is a frame on the workspace's live session now; no build
-    /// produces this, and it stays only so every later Postcard discriminant
-    /// keeps its value.
-    RetiredAppPresenceV2 {
-        peer: PeerId,
-        app_id: String,
-        cluster_id: String,
-        presence: collab_types::PeerPresence,
-        #[serde(default)]
-        colour: PresenceColour,
-    },
     /// Cooperative scrollback request, published on the workspace when a peer's
     /// local broker has no in-memory scrollback for a range an app asked for.
     /// Any peer holding the range replies with
@@ -677,12 +644,6 @@ pub enum NeighbourMsg {
         /// ignore it.
         delivery: u64,
     },
-    /// Retired: the person's list of workspaces as one of their devices held
-    /// it. The list is a resource of the person's own store now, which
-    /// carries it as it carries every other resource of theirs; no build
-    /// produces this, and it stays only so every later Postcard discriminant
-    /// keeps its value.
-    RetiredPersonalWorkspaces,
     /// A device asking the workspace for one piece of content a record of
     /// `app_id` in workspace `cluster_id` refers to, by its BLAKE3 `hash`. Rides
     /// the workspace's topic, so only peers admitted to read the workspace see it;
@@ -768,11 +729,6 @@ pub enum NeighbourMsg {
     /// workspace's. Appended to preserve every existing Postcard
     /// discriminant.
     WriteRefusals { refusals: Vec<WriteRefusal> },
-    /// Retired: where the workspaces one of the person's devices holds are
-    /// hosted. The person's list of workspaces carries that now; no build
-    /// produces this, and it stays only so every later Postcard discriminant
-    /// keeps its value.
-    RetiredPersonalHosts,
     /// One of the person's devices holds a write of `workspace` sealed under
     /// a key it lacks: it asks the others for the frames of the workspace's
     /// group from `from_epoch`, the epoch it holds, on. A device that is in
@@ -787,7 +743,7 @@ impl NeighbourMsg {
     /// Postcard variant index of [`NeighbourMsg::AppDocument`]. Variant order
     /// is wire-frozen (peers and hosts persist and exchange these frames), and
     /// a unit test pins this value to a real encoding.
-    pub const APP_DOCUMENT_TAG: u8 = 12;
+    pub const APP_DOCUMENT_TAG: u8 = 10;
 
     /// Whether `bytes` encode an [`NeighbourMsg::AppDocument`], reading only
     /// the postcard variant tag and not the variant's fields.
@@ -804,9 +760,9 @@ impl NeighbourMsg {
 
     /// Postcard variant index of [`NeighbourMsg::MlsGovernance`], pinned to
     /// a real encoding by a unit test as [`Self::APP_DOCUMENT_TAG`] is.
-    pub const MLS_GOVERNANCE_TAG: u8 = 20;
+    pub const MLS_GOVERNANCE_TAG: u8 = 17;
     /// Postcard variant index of [`NeighbourMsg::MlsAccessRequest`].
-    pub const MLS_ACCESS_REQUEST_TAG: u8 = 21;
+    pub const MLS_ACCESS_REQUEST_TAG: u8 = 18;
 
     /// Whether `bytes` encode a governance frame
     /// ([`NeighbourMsg::MlsGovernance`]), reading only the variant tag as
@@ -835,14 +791,7 @@ impl NeighbourMsg {
             // receiver must see before trusting the certificate.
             Self::IdentityAnnouncement { .. }
             // Never acted on; control consent rides `PermissionGrant`.
-            | Self::PermissionRequest { .. }
-            // Presence is a frame on the workspace's live session.
-            | Self::RetiredPresenceMoved { .. }
-            | Self::RetiredPresenceCleared { .. }
-            | Self::RetiredAppPresenceV2 { .. }
-            // The person's list of workspaces is a resource of their own store.
-            | Self::RetiredPersonalWorkspaces
-            | Self::RetiredPersonalHosts => true,
+            | Self::PermissionRequest { .. } => true,
             Self::SyncReq { .. }
             | Self::SyncResp { .. }
             | Self::SurfaceFrame { .. }
@@ -889,8 +838,6 @@ impl NeighbourMsg {
         match self {
             Self::SyncReq { .. } => "SyncReq",
             Self::SyncResp { .. } => "SyncResp",
-            Self::RetiredPresenceMoved { .. } => "RetiredPresenceMoved",
-            Self::RetiredPresenceCleared { .. } => "RetiredPresenceCleared",
             Self::SurfaceFrame { .. } => "SurfaceFrame",
             Self::SurfaceStreamStart { .. } => "SurfaceStreamStart",
             Self::SurfaceStreamEnd { .. } => "SurfaceStreamEnd",
@@ -900,7 +847,6 @@ impl NeighbourMsg {
             Self::Heartbeat { .. } => "Heartbeat",
             Self::IdentityHello { .. } => "IdentityHello",
             Self::AppDocument { .. } => "AppDocument",
-            Self::RetiredAppPresenceV2 { .. } => "RetiredAppPresenceV2",
             Self::ScrollbackRequest { .. } => "ScrollbackRequest",
             Self::ScrollbackResponse { .. } => "ScrollbackResponse",
             Self::IdentityAnnouncement { .. } => "IdentityAnnouncement",
@@ -909,7 +855,6 @@ impl NeighbourMsg {
             Self::MediaCapabilities { .. } => "MediaCapabilities",
             Self::MlsGovernance { .. } => "MlsGovernance",
             Self::MlsAccessRequest { .. } => "MlsAccessRequest",
-            Self::RetiredPersonalWorkspaces => "RetiredPersonalWorkspaces",
             Self::DocumentContentWant { .. } => "DocumentContentWant",
             Self::DocumentContentPiece { .. } => "DocumentContentPiece",
             Self::SurfaceKeyframeRequest { .. } => "SurfaceKeyframeRequest",
@@ -917,7 +862,6 @@ impl NeighbourMsg {
             Self::SurfaceViewRequest { .. } => "SurfaceViewRequest",
             Self::DocumentContentLacks { .. } => "DocumentContentLacks",
             Self::WriteRefusals { .. } => "WriteRefusals",
-            Self::RetiredPersonalHosts => "RetiredPersonalHosts",
             Self::MlsGovernanceWanted { .. } => "MlsGovernanceWanted",
         }
     }
@@ -1167,24 +1111,6 @@ mod tests {
                 },
             ),
             (
-                "presence moved",
-                NeighbourMsg::RetiredPresenceMoved {
-                    peer: 42,
-                    user: "bob".into(),
-                    key: "cursor".into(),
-                    point: (12.5, -3.25),
-                    ts: 1_700_000_000,
-                    colour: Some("violet".into()),
-                },
-            ),
-            (
-                "presence cleared",
-                NeighbourMsg::RetiredPresenceCleared {
-                    peer: 42,
-                    key: "cursor".into(),
-                },
-            ),
-            (
                 "surface frame",
                 NeighbourMsg::SurfaceFrame {
                     surface: 7,
@@ -1302,10 +1228,6 @@ mod tests {
                 },
             ),
             (
-                "personal workspaces",
-                NeighbourMsg::RetiredPersonalWorkspaces,
-            ),
-            (
                 "remote action",
                 NeighbourMsg::RemoteAction {
                     frame: b"{}".to_vec(),
@@ -1325,8 +1247,6 @@ mod tests {
     }
 
     fn fixtures_app_crdt_and_scrollback() -> Vec<(&'static str, NeighbourMsg)> {
-        use collab_types::{PeerPresence, PeerPresencePayload};
-
         vec![
             (
                 "signed app document",
@@ -1340,19 +1260,6 @@ mod tests {
                         kind: "notes.page".into(),
                         owner: [7; 32],
                     }),
-                },
-            ),
-            (
-                "app presence",
-                NeighbourMsg::RetiredAppPresenceV2 {
-                    peer: 0x00AB_CDEF,
-                    app_id: "notes".into(),
-                    cluster_id: WORKSPACE.into(),
-                    presence: PeerPresence {
-                        key: vec![4, 5],
-                        payload: PeerPresencePayload::Selection { start: 3, end: 8 },
-                    },
-                    colour: Some("teal".into()),
                 },
             ),
             (
@@ -1467,10 +1374,9 @@ mod tests {
         assert!(!NeighbourMsg::is_access_request(&[]));
     }
 
-    /// Only generations no build produces any more are retired: the two
-    /// identity predecessors, the presence messages that live-live session frames
-    /// replaced, and the person's list of workspaces their own store carries now. Every other variant, including both identity successors,
-    /// stays live.
+    /// Only generations no build produces any more are retired: the identity
+    /// predecessor and the permission request control consent replaced. Every
+    /// other variant, including the identity successor, stays live.
     #[test]
     fn only_the_unproduced_generations_are_retired() {
         let mut retired: Vec<&str> = fixtures()
@@ -1479,17 +1385,7 @@ mod tests {
             .map(|(_, message)| variant(message))
             .collect();
         retired.sort_unstable();
-        assert_eq!(
-            retired,
-            [
-                "IdentityAnnouncement",
-                "PermissionRequest",
-                "RetiredAppPresenceV2",
-                "RetiredPersonalWorkspaces",
-                "RetiredPresenceCleared",
-                "RetiredPresenceMoved",
-            ]
-        );
+        assert_eq!(retired, ["IdentityAnnouncement", "PermissionRequest"]);
     }
 
     /// Names every variant through an exhaustive match, so adding a variant
@@ -1498,7 +1394,7 @@ mod tests {
         message.kind()
     }
 
-    const VARIANT_COUNT: usize = 30;
+    const VARIANT_COUNT: usize = 26;
 
     /// Postcard encodings pinned byte for byte. Peers running older builds
     /// decode these frames, so a change here is a wire break, not a refactor.
@@ -1506,184 +1402,156 @@ mod tests {
         (
             "sync request",
             concat!(
-                "00030102032436623366396131302d303030302d343030302d383030302d3030",
-                "3030303030303030306301090909090909090909090909090909090909090909",
-                "090909090909090909090907",
+                "00030102032436623366396131302d303030302d343030302d383030302d3030303030303030",
+                "3030306301090909090909090909090909090909090909090909090909090909090909090907",
             ),
         ),
         (
             "sync response",
             concat!(
-                "010202aabb01cc2436623366396131302d303030302d343030302d383030302d",
-                "303030303030303030303063",
+                "010202aabb01cc2436623366396131302d303030302d343030302d383030302d303030303030",
+                "303030303063",
             ),
         ),
-        (
-            "presence moved",
-            concat!(
-                "022a03626f6206637572736f7200000000000029400000000000000ac080e2cf",
-                "aa06010676696f6c6574",
-            ),
-        ),
-        ("presence cleared", "032a06637572736f72"),
-        ("surface frame", "0407cdd70205000000016781e2cfaa0603"),
+        ("surface frame", "0207cdd70205000000016781e2cfaa0603"),
         (
             "SDR stream start",
             concat!(
-                "0507cdd702800ad005046832363482e2cfaa0682e2cfaa06000000126f72672e",
-                "6578616d706c652e456469746f7200",
+                "0307cdd702800ad005046832363482e2cfaa0682e2cfaa06000000126f72672e6578616d706c",
+                "652e456469746f7200",
             ),
         ),
         (
             "HDR stream start",
             concat!(
-                "0508cdd702800fb8080b686576632d6d61696e313083e2cfaa0683e2cfaa0601",
-                "0101010001c894028872b442aab7029633fc11937ac2800180ade204f4030000",
-                "0a156f72672e6578616d706c652e486472456469746f7200",
+                "0308cdd702800fb8080b686576632d6d61696e313083e2cfaa0683e2cfaa06010101010001c8",
+                "94028872b442aab7029633fc11937ac2800180ade204f40300000a156f72672e6578616d706c",
+                "652e486472456469746f7200",
             ),
         ),
-        ("stream end", "0607cdd70284e2cfaa06"),
-        ("surface keyframe request", "190307ac02"),
+        ("stream end", "0407cdd70284e2cfaa06"),
+        ("surface keyframe request", "150307ac02"),
         (
             "surface view request",
             concat!(
-                "1b032430373834386666652d313839382d346637322d383431392d3062353463",
-                "3933653664616401878080808080c0f65e800ad00501046832363401800fb808",
+                "17032430373834386666652d313839382d346637322d383431392d3062353463393365366461",
+                "6401878080808080c0f65e800ad00501046832363401800fb808",
             ),
         ),
-        ("remote input", "07030704deadbeef"),
-        ("permission request", "08050c73686172652d73637265656e"),
-        ("permission grant", "09050c73686172652d73637265656e"),
-        ("heartbeat", "0aeffdb6f50d85e2cfaa06"),
+        ("remote input", "05030704deadbeef"),
+        ("permission request", "06050c73686172652d73637265656e"),
+        ("permission grant", "07050c73686172652d73637265656e"),
+        ("heartbeat", "08effdb6f50d85e2cfaa06"),
         (
             "identity hello",
             concat!(
-                // The variant index and the sender's peer protocol version.
-                "0b38",
-                "01010101010101010101010101010101010101010101010101010101010101",
-                "0102020202020202020202020202020202020202020202020202020202020202",
-                "02064c6170746f70010000000a00400303030303030303030303030303030303",
-                "0303030303030303030303030303030303030303030303030303030303030303",
-                // No revocations.
-                "03030303030303030303030303030300",
+                "0939010101010101010101010101010101010101010101010101010101010101010102020202",
+                "02020202020202020202020202020202020202020202020202020202064c6170746f70010000",
+                "000a004003030303030303030303030303030303030303030303030303030303030303030303",
+                "03030303030303030303030303030303030303030303030303030303030300",
             ),
         ),
         (
             "identity announcement",
             concat!(
-                "102436623366396131302d303030302d343030302d383030302d303030303030",
-                "3030303030630101010101010101010101010101010101010101010101010101",
-                "0101010101010202020202020202020202020202020202020202020202020202",
-                "020202020202064c6170746f70010000000a0040030303030303030303030303",
-                "0303030303030303030303030303030303030303030303030303030303030303",
-                "0303030303030303030303030303030303030303",
+                "0d2436623366396131302d303030302d343030302d383030302d303030303030303030303063",
+                "0101010101010101010101010101010101010101010101010101010101010101020202020202",
+                "0202020202020202020202020202020202020202020202020202064c6170746f70010000000a",
+                "0040030303030303030303030303030303030303030303030303030303030303030303030303",
+                "03030303030303030303030303030303030303030303030303030303",
             ),
         ),
         (
             "identity announcement v2",
             concat!(
-                "112436623366396131302d303030302d343030302d383030302d303030303030",
-                "3030303030630101010101010101010101010101010101010101010101010101",
-                "0101010101010202020202020202020202020202020202020202020202020202",
-                "020202020202064c6170746f70010000000a0040030303030303030303030303",
-                "0303030303030303030303030303030303030303030303030303030303030303",
-                "030303030303030303030303030303030303030300",
+                "0e2436623366396131302d303030302d343030302d383030302d303030303030303030303063",
+                "0101010101010101010101010101010101010101010101010101010101010101020202020202",
+                "0202020202020202020202020202020202020202020202020202064c6170746f70010000000a",
+                "0040030303030303030303030303030303030303030303030303030303030303030303030303",
+                "0303030303030303030303030303030303030303030303030303030300",
             ),
         ),
-        ("personal workspaces", "16"),
-        ("remote action", "12027b7d"),
+        ("remote action", "0f027b7d"),
         (
             "media capabilities",
-            concat!(
-                "13cdd702020361763103767039010468323634010361763101",
-                "03767039",
-            ),
+            "10cdd70202036176310376703901046832363401036176310103767039",
         ),
         (
             "signed app document",
             concat!(
-                "0cef9baf05056e6f7465732436623366396131302d303030302d343030302d38",
-                "3030302d30303030303030303030306309757569643a3163326604deadbeef10",
-                "1111111111111111111111111111111107070707070707070707070707070707",
-                "0707070707070707070707070707070710222222222222222222222222222222",
-                "220000002a000000400000000000000000000000000000000000000000000000",
-                "0000000000000000000000000000000000000000000000000000000000000000",
-                "000000000000000000010a6e6f7465732e706167650707070707070707070707",
-                "070707070707070707070707070707070707070707",
-            ),
-        ),
-        (
-            "app presence",
-            concat!(
-                "0def9baf05056e6f7465732436623366396131302d303030302d343030302d38",
-                "3030302d303030303030303030303063020405020308",
-                "01047465616c",
+                "0aef9baf05056e6f7465732436623366396131302d303030302d343030302d383030302d3030",
+                "3030303030303030306309757569643a3163326604deadbeef10111111111111111111111111",
+                "1111111107070707070707070707070707070707070707070707070707070707070707071022",
+                "2222222222222222222222222222220000002a00000040000000000000000000000000000000",
+                "0000000000000000000000000000000000000000000000000000000000000000000000000000",
+                "0000000000000000000000010a6e6f7465732e70616765070707070707070707070707070707",
+                "0707070707070707070707070707070707",
             ),
         ),
         (
             "record content want",
-            "17ef9baf050e736f2e74696c6f2e736c6964657309776f726b737061636502616200",
+            "13ef9baf050e736f2e74696c6f2e736c6964657309776f726b737061636502616200",
         ),
         (
             "record content piece",
             concat!(
-                "18d6e848ef9baf050e736f2e74696c6f2e736c6964657309776f726b737061636502616203",
-                "0003010203",
+                "14d6e848ef9baf050e736f2e74696c6f2e736c6964657309776f726b73706163650261620300",
+                "03010203",
             ),
         ),
         (
             "scrollback request",
-            "0e10333333333333333333333333333333332a32ef9baf05",
+            "0b10333333333333333333333333333333332a32ef9baf05",
         ),
         (
             "scrollback response",
             concat!(
-                "0f10444444444444444444444444444444440204deadbeef1011111111111111",
-                "1111111111111111110707070707070707070707070707070707070707070707",
-                "07070707070707070710222222222222222222222222222222220000002a0000",
-                "0040000000000000000000000000000000000000000000000000000000000000",
-                "0000000000000000000000000000000000000000000000000000000000000000",
-                "000004deadbeef10111111111111111111111111111111110707070707070707",
-                "0707070707070707070707070707070707070707070707071022222222222222",
-                "2222222222222222220000002a00000040000000000000000000000000000000",
-                "0000000000000000000000000000000000000000000000000000000000000000",
-                "0000000000000000000000000000000000d6e848",
+                "0c10444444444444444444444444444444440204deadbeef1011111111111111111111111111",
+                "1111110707070707070707070707070707070707070707070707070707070707070707102222",
+                "22222222222222222222222222220000002a0000004000000000000000000000000000000000",
+                "0000000000000000000000000000000000000000000000000000000000000000000000000000",
+                "0000000000000000000004deadbeef1011111111111111111111111111111111070707070707",
+                "0707070707070707070707070707070707070707070707070707102222222222222222222222",
+                "22222222220000002a0000004000000000000000000000000000000000000000000000000000",
+                "0000000000000000000000000000000000000000000000000000000000000000000000000000",
+                "00d6e848",
             ),
         ),
         (
             "governance frame",
             concat!(
-                "142436623366396131302d303030302d343030302d383030302d303030303030",
-                "3030303030630210555555555555555555555555555555550707070707070707",
-                "0707070707070707070707070707070707070707070707070301010808080808",
-                "0808080808080808080808080808080808080808080808080808080002c03300",
-                // No history handed over.
-                "00",
-                "0909090909090909090909090909090909090909090909090909090909090909",
-                "40ababababababababababababababababababababababababababababababab",
-                "abababababababababababababababababababababababababababababababab",
-                "ab07",
+                "112436623366396131302d303030302d343030302d383030302d303030303030303030303063",
+                "0210555555555555555555555555555555550707070707070707070707070707070707070707",
+                "0707070707070707070707070301010808080808080808080808080808080808080808080808",
+                "0808080808080808080002c03300000909090909090909090909090909090909090909090909",
+                "09090909090909090940abababababababababababababababababababababababababababab",
+                "abababababababababababababababababababababababababababababababababababab07",
             ),
         ),
         (
             "access request",
             concat!(
-                "152436623366396131302d303030302d343030302d383030302d303030303030",
-                "3030303030630110555555555555555555555555555555550202020202020202",
-                "020202020202020202020202020202020202020202020202024b5080e2cfaa06",
-                "40cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
-                "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
-                "cd08",
+                "122436623366396131302d303030302d343030302d383030302d303030303030303030303063",
+                "0110555555555555555555555555555555550202020202020202020202020202020202020202",
+                "020202020202020202020202024b5080e2cfaa0640cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+                "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+                "cdcdcdcdcdcdcdcdcd08",
             ),
         ),
-        ("live presence", "1a0303010203"),
+        ("live presence", "160303010203"),
         (
             "record content lacks",
-            "1c03040e736f2e74696c6f2e736c6964657309776f726b7370616365026162",
+            "1803040e736f2e74696c6f2e736c6964657309776f726b7370616365026162",
         ),
         (
             "write refusals",
-            "1d0109776f726b73706163650d736f2e74696c6f2e6e6f746573056461696c79111111111111111111111111111111111111111111111111111111111111111107046f702d37012222222222222222222222222222222222222222222222222222222222222222030d6e6f207065726d697373696f6e3333333333333333333333333333333333333333333333333333333333333333090444444444",
+            concat!(
+                "190109776f726b73706163650d736f2e74696c6f2e6e6f746573056461696c79111111111111",
+                "111111111111111111111111111111111111111111111111111107046f702d37012222222222",
+                "222222222222222222222222222222222222222222222222222222030d6e6f207065726d6973",
+                "73696f6e33333333333333333333333333333333333333333333333333333333333333330904",
+                "44444444",
+            ),
         ),
     ];
 

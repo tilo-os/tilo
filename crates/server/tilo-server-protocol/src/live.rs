@@ -22,17 +22,11 @@ mod pointer;
 pub use layout::{LAYOUT_UNITS, LiveLayout, LiveWindow, MAX_LAYOUT_APP_BYTES, MAX_LAYOUT_WINDOWS};
 pub use pointer::{LivePointer, PointerLayout, ShownStrip};
 
-/// Largest encoded presence frame. Kept at datagram size so presence can
-/// move to QUIC datagrams without a format change.
-pub const MAX_PRESENCE_FRAME_BYTES: usize = 1100;
 /// Largest encoded ordered frame.
 pub const MAX_OPS_FRAME_BYTES: usize = 64 * 1024;
 /// What sealing adds to a frame: the clear tags, the epoch, the
 /// envelope's nonce and authentication tag.
 pub const SEALED_LIVE_OVERHEAD_BYTES: usize = 256;
-/// Largest sealed presence frame.
-pub const MAX_SEALED_PRESENCE_FRAME_BYTES: usize =
-    MAX_PRESENCE_FRAME_BYTES + SEALED_LIVE_OVERHEAD_BYTES;
 /// Largest sealed ordered frame.
 pub const MAX_SEALED_OPS_FRAME_BYTES: usize = MAX_OPS_FRAME_BYTES + SEALED_LIVE_OVERHEAD_BYTES;
 /// Text preview payload ceiling per operation.
@@ -362,13 +356,9 @@ impl OpsFrame {
     }
 }
 
-/// One sealed live frame's content: an ordered per-record frame, or nothing.
+/// One sealed live frame's content: an ordered per-record frame.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum LiveFrame {
-    /// Retired: latest-value presence. Presence travels per device on the
-    /// workspace's live session; the variant stays only so every later one
-    /// keeps its postcard position, and a frame written under it is dropped.
-    RetiredPresence,
     /// Ordered per-record frame.
     Ops(OpsFrame),
 }
@@ -376,14 +366,12 @@ pub enum LiveFrame {
 impl LiveFrame {
     fn validate(&self) -> Result<()> {
         match self {
-            Self::RetiredPresence => Ok(()),
             Self::Ops(frame) => frame.validate(),
         }
     }
 
-    fn cap(&self) -> usize {
+    const fn cap(&self) -> usize {
         match self {
-            Self::RetiredPresence => MAX_PRESENCE_FRAME_BYTES,
             Self::Ops(_) => MAX_OPS_FRAME_BYTES,
         }
     }
@@ -414,9 +402,6 @@ impl LiveFrame {
 /// What a sealed live frame says in the clear about its kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LiveKind {
-    /// Retired: latest-value presence. It stays only so `Ops` keeps its
-    /// postcard position.
-    RetiredPresence,
     /// An ordered per-record frame.
     Ops,
 }
@@ -424,14 +409,12 @@ pub enum LiveKind {
 impl LiveKind {
     const fn tag(self) -> u8 {
         match self {
-            Self::RetiredPresence => 0,
-            Self::Ops => 1,
+            Self::Ops => 0,
         }
     }
 
     const fn cap(self) -> usize {
         match self {
-            Self::RetiredPresence => MAX_SEALED_PRESENCE_FRAME_BYTES,
             Self::Ops => MAX_SEALED_OPS_FRAME_BYTES,
         }
     }
@@ -440,9 +423,6 @@ impl LiveKind {
 /// Why a live frame was not sealed or opened.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum LiveSealError {
-    /// The frame names no record, so nothing may seal it.
-    #[error("the live frame names no record")]
-    NoRecord,
     /// The frame or its sealed form violates the wire format.
     #[error(transparent)]
     Wire(#[from] LiveWireError),
@@ -475,16 +455,12 @@ pub struct SealedLiveFrame {
 }
 
 impl LiveFrame {
-    /// The kind, sequence and record a sealed form names in the clear, or
-    /// `None` when the frame names no record.
-    pub fn seal_tags(&self) -> Option<(LiveKind, u64, &LiveResource)> {
+    /// The kind, sequence and record a sealed form names in the clear.
+    pub fn seal_tags(&self) -> (LiveKind, u64, &LiveResource) {
         match self {
-            Self::RetiredPresence => None,
-            Self::Ops(OpsFrame::Preview { seq, record, .. }) => Some((LiveKind::Ops, *seq, record)),
-            Self::Ops(OpsFrame::End { record }) => Some((LiveKind::Ops, 0, record)),
-            Self::Ops(OpsFrame::Semantic { record, event }) => {
-                Some((LiveKind::Ops, event.seq, record))
-            }
+            Self::Ops(OpsFrame::Preview { seq, record, .. }) => (LiveKind::Ops, *seq, record),
+            Self::Ops(OpsFrame::End { record }) => (LiveKind::Ops, 0, record),
+            Self::Ops(OpsFrame::Semantic { record, event }) => (LiveKind::Ops, event.seq, record),
         }
     }
 }
@@ -518,8 +494,7 @@ impl SealedLiveFrame {
     ///
     /// # Errors
     ///
-    /// [`LiveSealError::NoRecord`] for a frame naming no record, and wire or
-    /// sealing failures.
+    /// Wire or sealing failures.
     pub fn seal<E: std::fmt::Display>(
         frame: &LiveFrame,
         seal: impl FnOnce(
@@ -528,7 +503,7 @@ impl SealedLiveFrame {
             &[u8],
         ) -> std::result::Result<(EncryptionMetadata, Vec<u8>), E>,
     ) -> std::result::Result<Vec<u8>, LiveSealError> {
-        let (kind, seq, record) = frame.seal_tags().ok_or(LiveSealError::NoRecord)?;
+        let (kind, seq, record) = frame.seal_tags();
         let cleartext = frame.encode()?;
         let record = record.digest();
         let (metadata, payload) = seal(
@@ -570,13 +545,11 @@ impl SealedLiveFrame {
         let cleartext = open(self.artifact(), &metadata, &self.payload)
             .map_err(|error| LiveSealError::Crypto(error.to_string()))?;
         let frame = LiveFrame::decode(&cleartext)?;
-        match frame.seal_tags() {
-            Some((kind, seq, record))
-                if kind == self.kind && seq == self.seq && record.digest() == self.record =>
-            {
-                Ok(frame)
-            }
-            _ => Err(LiveSealError::Mismatch),
+        let (kind, seq, record) = frame.seal_tags();
+        if kind == self.kind && seq == self.seq && record.digest() == self.record {
+            Ok(frame)
+        } else {
+            Err(LiveSealError::Mismatch)
         }
     }
 
@@ -685,7 +658,7 @@ mod tests {
         phase semantic_events_are_versioned_bounded_record_ops_not_pointers;
         {
             let frame = semantic();
-            assert_eq!(frame.seal_tags(), Some((LiveKind::Ops, 42, &record())));
+            assert_eq!(frame.seal_tags(), (LiveKind::Ops, 42, &record()));
             assert_eq!(LiveFrame::decode(&frame.encode().unwrap()).unwrap(), frame);
             let bytes = SealedLiveFrame::seal(&frame, seal).unwrap();
             assert_eq!(
@@ -709,7 +682,7 @@ mod tests {
                 LiveFrame::Ops(OpsFrame::End { record: record() })
                     .encode()
                     .unwrap(),
-                b"\x01\x01\x0dso.tilo.notes\x02r1"
+                b"\x00\x01\x0dso.tilo.notes\x02r1"
             );
         }
 
@@ -725,7 +698,6 @@ mod tests {
                         text: "hi".into(),
                     }],
                 }),
-                LiveFrame::RetiredPresence,
             ] {
                 let bytes = frame.encode().unwrap();
                 assert_eq!(LiveFrame::decode(&bytes).unwrap(), frame);
@@ -849,8 +821,8 @@ mod tests {
             );
             assert_eq!(sealed.open(open).unwrap(), frame);
 
-            // Tags are bound into the seal: another sequence, record or kind
-            // does not open.
+            // Tags are bound into the seal: another sequence or record does
+            // not open.
             for tampered in [
                 SealedLiveFrame {
                     seq: 10,
@@ -858,10 +830,6 @@ mod tests {
                 },
                 SealedLiveFrame {
                     record: [1; 32],
-                    ..sealed.clone()
-                },
-                SealedLiveFrame {
-                    kind: LiveKind::RetiredPresence,
                     ..sealed
                 },
             ] {
@@ -869,13 +837,8 @@ mod tests {
             }
         }
 
-        phase a_live_frame_without_a_record_or_cipher_is_never_sealed;
+        phase a_live_frame_without_a_cipher_is_never_sealed;
         {
-            // A presence frame is retired: it names no record, so it is dropped.
-            assert_eq!(
-                SealedLiveFrame::seal(&LiveFrame::RetiredPresence, seal),
-                Err(LiveSealError::NoRecord)
-            );
             let refused = SealedLiveFrame::seal(&named(), |_, _, _| {
                 Err::<(EncryptionMetadata, Vec<u8>), _>("no key")
             });

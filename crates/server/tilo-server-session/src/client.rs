@@ -211,7 +211,6 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         | Envelope::CommitRefused { workspace_id, .. }
         | Envelope::ChangeRefused { workspace_id, .. }
         | Envelope::LiveJoin { workspace_id }
-        | Envelope::LiveLeave { workspace_id }
         | Envelope::LiveMember { workspace_id, .. }
         | Envelope::SubscribeFrom { workspace_id, .. }
         | Envelope::Position { workspace_id, .. }

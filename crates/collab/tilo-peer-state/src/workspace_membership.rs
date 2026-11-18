@@ -253,11 +253,11 @@ pub const RETIRED_AGENT_MEMBERSHIP: &str =
     "agent membership by preset is retired; an agent is a chat.agent record";
 
 /// The preset an agent was admitted with, as workspaces hold it. Admission by
-/// preset is retired ([`WorkspaceMembershipCommand::RetiredAddAgent`]): this
+/// preset is retired ([`WorkspaceMembershipCommand::RefusedAddAgent`]): this
 /// reads what a workspace holds and decides nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum RetiredAgentPreset {
+pub enum AgentPreset {
     Observer,
     Contributor,
     Operator,
@@ -271,26 +271,26 @@ pub enum WorkspaceMembershipCommand {
     /// key holder. It keeps the commands after it at their encoded positions,
     /// still reads where workspaces hold it, and is refused.
     #[serde(rename = "AddAgent")]
-    RetiredAddAgent {
+    RefusedAddAgent {
         agent: String,
-        preset: RetiredAgentPreset,
+        preset: AgentPreset,
     },
-    /// Retired with admission by preset, as [`Self::RetiredAddAgent`].
+    /// Retired with admission by preset, as [`Self::RefusedAddAgent`].
     #[serde(rename = "RemoveAgent")]
-    RetiredRemoveAgent { agent: String },
+    RefusedRemoveAgent { agent: String },
     /// Retired with workspace tasks: an issue's grants are ordinary grants. It
     /// keeps the commands after it at their encoded positions, still reads
     /// where workspaces hold it, and is refused.
     #[serde(rename = "GrantForTask")]
-    RetiredGrantForTask {
+    RefusedGrantForTask {
         task: String,
         node: TreePath,
         kinds: KindSet,
         answer: Answer,
     },
-    /// Retired with workspace tasks, as [`Self::RetiredGrantForTask`].
+    /// Retired with workspace tasks, as [`Self::RefusedGrantForTask`].
     #[serde(rename = "RevokeForTask")]
-    RetiredRevokeForTask { task: String, grant: GrantId },
+    RefusedRevokeForTask { task: String, grant: GrantId },
     /// Record `grant` in the workspace, as the caller gives it: they must hold the
     /// workspace's grant action and may give no more than they hold.
     Grant { grant: Grant },
@@ -405,10 +405,10 @@ impl WorkspaceMembershipCommand {
     #[must_use]
     pub fn agent(&self) -> Option<&str> {
         match self {
-            Self::RetiredAddAgent { .. }
-            | Self::RetiredRemoveAgent { .. }
-            | Self::RetiredGrantForTask { .. }
-            | Self::RetiredRevokeForTask { .. }
+            Self::RefusedAddAgent { .. }
+            | Self::RefusedRemoveAgent { .. }
+            | Self::RefusedGrantForTask { .. }
+            | Self::RefusedRevokeForTask { .. }
             | Self::Grant { .. }
             | Self::Revoke { .. }
             | Self::InstallBot(_)
@@ -433,13 +433,13 @@ impl WorkspaceMembershipCommand {
     pub fn validate(&self) -> Result<(), String> {
         if matches!(
             self,
-            Self::RetiredGrantForTask { .. } | Self::RetiredRevokeForTask { .. }
+            Self::RefusedGrantForTask { .. } | Self::RefusedRevokeForTask { .. }
         ) {
             return Err(RETIRED_TASK_GRANTS.into());
         }
         if matches!(
             self,
-            Self::RetiredAddAgent { .. } | Self::RetiredRemoveAgent { .. }
+            Self::RefusedAddAgent { .. } | Self::RefusedRemoveAgent { .. }
         ) {
             return Err(RETIRED_AGENT_MEMBERSHIP.into());
         }
@@ -641,18 +641,18 @@ mod tests {
         {
             let cases: Vec<(WorkspaceMembershipCommand, Vec<u8>)> = vec![
                 (
-                    WorkspaceMembershipCommand::RetiredAddAgent {
+                    WorkspaceMembershipCommand::RefusedAddAgent {
                         agent: "a".into(),
-                        preset: RetiredAgentPreset::Observer,
+                        preset: AgentPreset::Observer,
                     },
                     vec![0x00, 0x01, b'a', 0x00],
                 ),
                 (
-                    WorkspaceMembershipCommand::RetiredRemoveAgent { agent: "a".into() },
+                    WorkspaceMembershipCommand::RefusedRemoveAgent { agent: "a".into() },
                     vec![0x01, 0x01, b'a'],
                 ),
                 (
-                    WorkspaceMembershipCommand::RetiredGrantForTask {
+                    WorkspaceMembershipCommand::RefusedGrantForTask {
                         task: "t".into(),
                         node: TreePath::workspace("r"),
                         kinds: KindSet::READ,
@@ -666,7 +666,7 @@ mod tests {
                     .concat(),
                 ),
                 (
-                    WorkspaceMembershipCommand::RetiredRevokeForTask {
+                    WorkspaceMembershipCommand::RefusedRevokeForTask {
                         task: "t".into(),
                         grant: GrantId::new("g"),
                     },
@@ -708,7 +708,7 @@ mod tests {
             let command = postcard::from_bytes::<WorkspaceMembershipCommand>(&held).unwrap();
             assert_eq!(
                 command,
-                WorkspaceMembershipCommand::RetiredGrantForTask {
+                WorkspaceMembershipCommand::RefusedGrantForTask {
                     task: "t".into(),
                     node: TreePath::workspace("r"),
                     kinds: KindSet::READ,

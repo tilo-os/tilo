@@ -511,15 +511,12 @@ pub enum DetailAction {
     Compare,
     Restore,
     Undo,
-    /// Retired: what a session's undo was called before it was a session's.
-    /// Reads as [`Self::UndoSession`].
-    #[serde(rename = "undo-run")]
-    RetiredUndoSession,
     Split,
     Merge,
     ChooseSource,
     UndoEntry,
-    /// Undo the whole agent session.
+    /// Undo the whole agent session. An older view named it `undo-run`.
+    #[serde(alias = "undo-run")]
     UndoSession,
 }
 
@@ -533,7 +530,7 @@ impl DetailAction {
             Self::Compare => DETAIL,
             Self::Restore => RESTORE,
             Self::Undo => UNDO,
-            Self::UndoSession | Self::RetiredUndoSession => UNDO_SESSION,
+            Self::UndoSession => UNDO_SESSION,
             Self::UndoEntry => UNDO_RECORD,
             Self::Split => SPLIT,
             Self::Merge => MERGE,

@@ -56,8 +56,8 @@ impl AppBrokerState {
     ) -> Result<super::StagedJob, String> {
         command.validate()?;
         let (resource, action, argument) = match command {
-            WorkspaceMembershipCommand::RetiredAddAgent { .. }
-            | WorkspaceMembershipCommand::RetiredRemoveAgent { .. } => {
+            WorkspaceMembershipCommand::RefusedAddAgent { .. }
+            | WorkspaceMembershipCommand::RefusedRemoveAgent { .. } => {
                 return Err(tilo_peer_state::workspace_membership::RETIRED_AGENT_MEMBERSHIP.into());
             }
             WorkspaceMembershipCommand::Grant { grant } => {
@@ -76,8 +76,8 @@ impl AppBrokerState {
                 );
                 (WORKSPACE.into(), "revoke", Some(argument))
             }
-            WorkspaceMembershipCommand::RetiredGrantForTask { .. }
-            | WorkspaceMembershipCommand::RetiredRevokeForTask { .. } => {
+            WorkspaceMembershipCommand::RefusedGrantForTask { .. }
+            | WorkspaceMembershipCommand::RefusedRevokeForTask { .. } => {
                 return Err(tilo_peer_state::workspace_membership::RETIRED_TASK_GRANTS.into());
             }
             WorkspaceMembershipCommand::InstallBot(_)

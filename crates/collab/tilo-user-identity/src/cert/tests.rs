@@ -118,7 +118,7 @@ tilo_test_env::scenario! {
                 stand_in: false,
                 server_key: false,
                 browser_pages: false,
-                retired: RetiredFlags::default(),
+                retired: SignedGrants::default(),
             },
             issued_at_ns: 1_000_000,
             expires_at_ns: None,
@@ -493,7 +493,7 @@ fn certificates_signed_with_retired_grants_keep_their_bytes_and_signature() {
             device_public_key: [2; 32],
             device_label: "Home server".into(),
             capabilities: DeviceCapabilities {
-                retired: RetiredFlags {
+                retired: SignedGrants {
                     act_as_host,
                     read_all_workspaces,
                 },
@@ -547,7 +547,7 @@ fn certificates_signed_with_retired_grants_keep_their_bytes_and_signature() {
         assert_eq!(serde_json::from_str::<DeviceCert>(&json).unwrap(), cert);
     }
     let grant = DeviceCapabilities {
-        retired: RetiredFlags {
+        retired: SignedGrants {
             act_as_host: false,
             read_all_workspaces: true,
         },

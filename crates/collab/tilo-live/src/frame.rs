@@ -138,21 +138,6 @@ impl LiveKeys {
     }
 }
 
-/// Which kind of stream of a call a frame travels on.
-///
-/// Voice travels on the workspace's live session, not on a stream of a call; the place its
-/// variant held is kept so a hello written before still reads.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
-)]
-pub enum StreamKind {
-    /// The stream voice was carried on, retired.
-    RetiredAudio,
-    /// Pictures, on unidirectional streams, one per source, layer and group
-    /// of pictures.
-    Video,
-}
-
 /// One media stream of a call: what its frames carry.
 ///
 /// The tags are keys: one derived key per tag, so a stream's frames are never

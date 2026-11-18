@@ -163,7 +163,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase native_publication_closed_families_do_not_promote_presence_or_requests;
+    phase native_publication_closed_families_do_not_promote_requests;
     {
         let (mut peer, _, _, _, now) = crate::admission_tests::seeded();
         let origin = native(&peer);
@@ -175,9 +175,9 @@ tilo_test_env::scenario! {
                 invite_id: None,
                 nonce: 0,
             },
-            NeighbourMsg::RetiredPresenceCleared {
+            NeighbourMsg::PermissionRequest {
                 peer: 0,
-                key: "cursor".into(),
+                capability: "remote-input".into(),
             },
         ] {
             assert!(peer.receive_from(origin, message, now).is_err());
