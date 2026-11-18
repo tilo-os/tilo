@@ -142,8 +142,10 @@ public protocol AssistantSource: Sendable {
     /// The models the person can choose from, of the providers they linked.
     func models() async throws -> [ModelChoice]
 
-    /// Choose the model for a kind of work.
-    func choose(_ model: ModelChoice.ID, for work: WorkKind) async throws
+    /// Choose one model for several kinds of work together: one ask of the person's server, so
+    /// that no moment stands between them in which the model answers for one kind and none for
+    /// the other.
+    func choose(_ model: ModelChoice.ID, for work: [WorkKind]) async throws
 
     /// Take back something it has learned.
     func forget(_ learned: Supervision.Learned.ID) async throws
@@ -338,6 +340,13 @@ public struct PushAddress: Equatable, Sendable {
         case activityStart
         /// News for one live activity that runs, named as `LiveActivityPlan` names it.
         case activity(String)
+    }
+}
+
+extension AssistantSource {
+    /// The same choice with its kinds of work written out one after the other.
+    public func choose(_ model: ModelChoice.ID, for work: WorkKind...) async throws {
+        try await choose(model, for: work)
     }
 }
 

@@ -146,7 +146,7 @@ final class SourceTests: XCTestCase {
             func supervision() -> AsyncStream<Supervision> { AsyncStream { $0.finish() } }
             func setAssistantOn(_ on: Bool) async throws {}
             func models() async throws -> [ModelChoice] { [] }
-            func choose(_ model: ModelChoice.ID, for work: WorkKind) async throws {}
+            func choose(_ model: ModelChoice.ID, for work: [WorkKind]) async throws {}
             func forget(_ learned: Supervision.Learned.ID) async throws {}
         }
         let plain = await take(1, of: Plain().setup())
@@ -197,7 +197,7 @@ final class SourceTests: XCTestCase {
             func supervision() -> AsyncStream<Supervision> { inner.supervision() }
             func setAssistantOn(_ on: Bool) async throws {}
             func models() async throws -> [ModelChoice] { [] }
-            func choose(_ model: ModelChoice.ID, for work: WorkKind) async throws {}
+            func choose(_ model: ModelChoice.ID, for work: [WorkKind]) async throws {}
             func forget(_ learned: Supervision.Learned.ID) async throws {}
         }
         let replies = try await Plain().replies(of: "maya", in: .main)

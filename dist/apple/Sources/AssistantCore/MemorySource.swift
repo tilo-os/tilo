@@ -419,13 +419,13 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         return lock.withLock { modelChoices + linked }
     }
 
-    public func choose(_ model: ModelChoice.ID, for work: WorkKind) async throws {
+    public func choose(_ model: ModelChoice.ID, for work: [WorkKind]) async throws {
         try signedIn()
         guard let chosen = lock.withLock({ modelChoices + linked }).first(where: { $0.id == model }) else {
             throw SourceProblem.refused("This model is not one of yours.")
         }
         // The view names the main chat's model: the one that answers.
-        guard work == .request else { return }
+        guard work.contains(.request) else { return }
         supervisionNow.change { $0.model = chosen.name }
         if case .needsModel = setupNow.current { setupNow.set(.ready) }
     }

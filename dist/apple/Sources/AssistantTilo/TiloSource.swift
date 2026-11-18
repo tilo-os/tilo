@@ -1968,9 +1968,10 @@ public final class TiloSource: AssistantSource {
     private static let catalogue = [("anthropic", "Anthropic"), ("gemini", "Google Gemini"), ("openai", "OpenAI"),
                                     ("openrouter", "OpenRouter")]
 
-    /// What the person's providers leave to do before the main chat is answered.
+    /// What the person's providers leave to do before the main chat is answered. A turn in the
+    /// main chat is worked as a task, so nothing is said to be ready before a model stands for that.
     private static func setup(of linked: ModelProviders, choices: [ModelChoice]) -> Setup {
-        if let answers = linked.model(for: WorkKind.request.rawValue), answers.provider.hasKey { return .ready }
+        if let answers = linked.model(for: WorkKind.task.rawValue), answers.provider.hasKey { return .ready }
         if !choices.isEmpty { return .needsModel(choices) }
         return .needsProvider(linkable(beside: linked))
     }
@@ -1993,10 +1994,10 @@ public final class TiloSource: AssistantSource {
         return read
     }
 
-    public func choose(_ model: ModelChoice.ID, for work: WorkKind) async throws {
+    public func choose(_ model: ModelChoice.ID, for work: [WorkKind]) async throws {
         let parts = model.value.split(separator: "/", maxSplits: 1).map(String.init)
         guard parts.count == 2 else { throw SourceProblem.refused("This is no model of a provider you linked") }
-        try await taken { try await self.engine.chooseModel((id: parts[1], provider: parts[0]), for: [work.rawValue]) }
+        try await taken { try await self.engine.chooseModel((id: parts[1], provider: parts[0]), for: work.map(\.rawValue)) }
         await survey(.server)
     }
 

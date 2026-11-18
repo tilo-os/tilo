@@ -1378,8 +1378,27 @@ final class TiloSourceTests: XCTestCase {
         XCTAssertFalse(String(describing: setups).contains(typed))
         XCTAssertFalse(String(describing: changes).contains(typed))
         XCTAssertFalse(String(describing: defaults.dictionaryRepresentation()).contains(typed))
-        // The model that answers is one of those her server listed.
+        // The model that answers and works is one of those her server listed: one ask for both.
+        try await source.choose("anthropic/m-2", for: .request, .task)
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        let chosen = try await page("return String(window.asks.filter(what => what === 'tilo.models set-assignments').length) + ' ' + JSON.stringify(window.assignments.map(row => row.kind))")
+        XCTAssertEqual(chosen, #"1 ["request","task"]"#)
+    }
+
+    /// Nothing is said to stand in the way no more before a model stands for the kind of work a
+    /// turn in the main chat is worked as: a message sent in between found no model linked.
+    func testNothingIsSaidToBeReadyBeforeAModelStandsForTheKindATurnIsWorkedAs() async throws {
+        try await start(.assistant)
+        try await enter(device: true, "window.byKind = true; window.unlinked = true; window.agents = [kept('assistant', {name: 'Assistant'})]")
+        try await until("the step is offered") { if case .needsProvider = self.setups.last { true } else { false } }
+        // A made-up key, typed as into the protected field.
+        _ = try await source.link("anthropic", key: Secret("sk-made-up-and-typed-into-the-protected-field"))
+        try await until("the models are offered in the main chat") { if case .needsModel = self.setups.last { true } else { false } }
+        // As a choice that reached her server for the answering alone.
         try await source.choose("anthropic/m-2", for: .request)
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertNotEqual(setups.last, .ready, "the app said that nothing stands in the way while no model stood for the work of a turn")
+        try await source.choose("anthropic/m-2", for: .task)
         try await until("nothing more stands in the way") { self.setups.last == .ready }
     }
 
@@ -1390,7 +1409,7 @@ final class TiloSourceTests: XCTestCase {
             window.byKind = true; window.unlinked = true; window.agents = [kept('assistant', {name: 'Assistant'})];
             window.added = [{id: 'p-7', name: 'OpenRouter', protocol: 'openrouter', endpoint: 'https://openrouter.example',
               configured: true, models: [{id: 'm-1', label: 'Model one'}], defaultModel: 'm-1'}];
-            window.assignments = [{kind: 'request', provider: 'p-7', model: 'm-1'}]
+            window.assignments = [{kind: 'request', provider: 'p-7', model: 'm-1'}, {kind: 'task', provider: 'p-7', model: 'm-1'}]
             """)
         try await until("nothing stands in the way of an answer") { self.setups.last == .ready }
         // The step they come back to offers the provider they linked, said to be linked, and the
@@ -1411,7 +1430,7 @@ final class TiloSourceTests: XCTestCase {
         XCTAssertEqual(keys, "[\"\(typed)\"]")
         // The model they chose stands, and nothing came to stand in the way of an answer.
         let assigned = try await page("return JSON.stringify(window.assignments)")
-        XCTAssertEqual(assigned, #"[{"kind":"request","provider":"p-7","model":"m-1"}]"#)
+        XCTAssertEqual(assigned, #"[{"kind":"request","provider":"p-7","model":"m-1"},{"kind":"task","provider":"p-7","model":"m-1"}]"#)
         XCTAssertEqual(setups.dropFirst(said).filter { $0 != .ready }, [])
         XCTAssertEqual(setups.last, .ready)
         // The key stands nowhere else.
