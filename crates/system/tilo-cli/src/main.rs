@@ -803,6 +803,27 @@ fn noun_of(args: &[OsString]) -> Option<String> {
     (noun != "tilo").then(|| noun.to_string())
 }
 
+/// Log to standard error as `RUST_LOG` names targets and levels (`debug`,
+/// `tilo_mcp::timing=debug`), else at `default`. Read as targets and levels: a
+/// filter of regular expressions would link a regex engine into every `tilo`,
+/// which `tilo mcp` holds in memory for as long as an agent runs.
+pub(crate) fn log_to_stderr(default: tracing_subscriber::filter::LevelFilter) {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::util::SubscriberInitExt as _;
+    let targets = std::env::var("RUST_LOG")
+        .ok()
+        .and_then(|filter| filter.parse::<tracing_subscriber::filter::Targets>().ok())
+        .unwrap_or_else(|| tracing_subscriber::filter::Targets::new().with_default(default));
+    let _ = tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_ansi(false),
+        )
+        .with(targets)
+        .try_init();
+}
+
 fn main() -> ExitCode {
     // Started again as the worker that applies documents (`tilo login`'s
     // and `tilo mcp`'s peer): that, before anything else runs.

@@ -354,7 +354,11 @@ fn runtime() -> Result<tokio::runtime::Runtime> {
 }
 
 /// Run `future` on a fresh runtime, printing an error as the command's.
+///
+/// The API in process logs as `RUST_LOG` asks, and says nothing without it: a
+/// call's phases (`tilo_mcp::timing=debug`) show where its time goes.
 pub(crate) fn run(future: impl std::future::Future<Output = Result<ExitCode>>) -> ExitCode {
+    crate::log_to_stderr(tracing_subscriber::filter::LevelFilter::OFF);
     match runtime().and_then(|runtime| runtime.block_on(future)) {
         Ok(code) => code,
         Err(error) => {
