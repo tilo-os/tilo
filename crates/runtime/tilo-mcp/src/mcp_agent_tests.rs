@@ -109,7 +109,14 @@ pub(super) struct Notes {
     /// An action still under way, by its name, and when it ends: until then the app says
     /// only that it accepted it.
     late: Arc<Mutex<Option<(&'static str, tokio::time::Instant)>>>,
+    /// An action its person is asked to allow, by its name, and when they answer: until
+    /// then the app says that its person is asked, and nothing of it has happened.
+    person_asked: Arc<Mutex<Option<(&'static str, tokio::time::Instant)>>>,
 }
+
+/// Where the test app says a person is asked, as a workspace's service says it.
+pub(super) const ASKED_ON_DEVICES: &str = "Its person is asked about this on their devices, \
+     and it is done when they allow it there. Nothing happened yet.";
 
 /// What a workspace answers about its installed apps.
 #[derive(Clone, Copy, PartialEq)]
@@ -173,6 +180,7 @@ impl Notes {
             placed: Arc::default(),
             refuses: Arc::default(),
             late: Arc::default(),
+            person_asked: Arc::default(),
         }
     }
 
@@ -1105,7 +1113,22 @@ impl ActionProvider for Notes {
         let late = self.late.lock().unwrap().is_some_and(|(late, ends)| {
             late == action.as_str() && tokio::time::Instant::now() < ends
         });
+        let person_asked = self
+            .person_asked
+            .lock()
+            .unwrap()
+            .is_some_and(|(asked, answers)| {
+                asked == action.as_str() && tokio::time::Instant::now() < answers
+            });
         let update = match action.as_str() {
+            _ if person_asked => InvocationUpdate::Progress {
+                invocation: *id,
+                sequence: 1,
+                phase: tilo_actions::remote::CONFIRMATION_REQUIRED_CODE.to_owned(),
+                completed: None,
+                total: None,
+                message: Some(ASKED_ON_DEVICES.to_owned()),
+            },
             _ if late => InvocationUpdate::Accepted { invocation: *id },
             "slow" => InvocationUpdate::Accepted { invocation: *id },
             // The workspace's start of Notes names the instance it started.

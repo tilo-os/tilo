@@ -2532,6 +2532,13 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             if let Some(state) = state.as_ref().filter(|state| state.update.is_terminal()) {
                 return Ok(state_json(id, state));
             }
+            // Its person is asked to allow it. A person who may not be there is no tool: a
+            // call held until its action has ended is answered now, and its turn goes on.
+            if matches!(wait, Hold::UntilEnded)
+                && let Some(state) = state.as_ref().filter(|state| person_asked(&state.update))
+            {
+                return Ok(state_json(id, state));
+            }
             let wait = match wait {
                 Hold::For(wait) => wait,
                 // Held for as long as its provider says the action is under way: nothing
@@ -2776,6 +2783,16 @@ const OPENED_NO_ACTION: &str = "the app offers no open action taking a path, so 
 /// than told the run is still pending after 30.
 const DEFAULT_WAIT_MS: u64 = 5_000;
 const MAX_WAIT_MS: u64 = 60_000;
+/// Whether `update` says that its invocation's person is asked to allow it: nothing of it
+/// happened yet, and nothing will for as long as they take to answer. Its provider says so
+/// by a progress whose phase is the protocol's own word for a confirmation that is required.
+fn person_asked(update: &tilo_actions::InvocationUpdate) -> bool {
+    matches!(
+        update,
+        tilo_actions::InvocationUpdate::Progress { phase, .. }
+            if phase == tilo_actions::remote::CONFIRMATION_REQUIRED_CODE
+    )
+}
 /// How long a call is held for its action.
 #[derive(Clone, Copy)]
 enum Hold {

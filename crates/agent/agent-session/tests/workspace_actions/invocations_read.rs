@@ -143,10 +143,21 @@ fn receipt(
     caller: &Caller,
     request: &InvokeRequest,
 ) -> ReceiptStatus {
+    receipt_by_id(actions, workspace, caller, request).1
+}
+
+/// The same, with the id the answered attempt went by.
+fn receipt_by_id(
+    actions: &tilo_agent_session::WorkspaceActions,
+    workspace: WorkspaceId,
+    caller: &Caller,
+    request: &InvokeRequest,
+) -> (InvocationId, ReceiptStatus) {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let mut attempt = request.clone();
         attempt.invocation = InvocationId::new();
+        let invocation = attempt.invocation;
         let answered = actions
             .serve(workspace, caller, RemoteActionMessage::Invoke(attempt))
             .unwrap()
@@ -167,8 +178,51 @@ fn receipt(
             std::thread::sleep(Duration::from_millis(50));
             continue;
         }
-        return receipt.status;
+        return (invocation, receipt.status);
     }
+}
+
+/// How `invocation` stands, as `caller` is answered when they ask; `None` once it is
+/// no longer kept.
+fn observed(
+    actions: &tilo_agent_session::WorkspaceActions,
+    workspace: WorkspaceId,
+    caller: &Caller,
+    invocation: InvocationId,
+) -> Option<tilo_actions::InvocationUpdate> {
+    let answered = actions
+        .serve(
+            workspace,
+            caller,
+            RemoteActionMessage::Observe {
+                invocation,
+                wait_ms: None,
+                seen: None,
+            },
+        )
+        .unwrap()
+        .wait_timeout(tilo_test_env::hang_bound())
+        .ok()
+        .flatten()
+        .unwrap();
+    let RemoteActionMessage::Update { state, .. } = answered else {
+        panic!("expected how it stands, got {answered:?}")
+    };
+    state.map(|state| state.update)
+}
+
+/// Whether `update` says that its call's person is asked to allow it on their devices, and
+/// that nothing of it happened yet: under way by the protocol's own word for a confirmation
+/// that is required, so whoever follows the call can tell it from one that is merely slow.
+fn says_asked(update: Option<&tilo_actions::InvocationUpdate>) -> bool {
+    matches!(
+        update,
+        Some(tilo_actions::InvocationUpdate::Progress { phase, message, .. })
+            if phase == tilo_actions::remote::CONFIRMATION_REQUIRED_CODE
+                && message.as_deref().is_some_and(|said| {
+                    said.contains("on their devices") && said.contains("Nothing happened yet")
+                })
+    )
 }
 
 /// Every run of the workspace `caller` is listed.
@@ -393,17 +447,19 @@ async fn a_member_lists_only_the_invocations_in_records_they_may_read_now() {
 
     // A removal of theirs waits for the person; once they may no longer
     // read the books, it is neither listed to them nor counted as waiting.
-    let removal = receipt(
-        &actions,
-        workspace,
-        &member,
-        &request(
-            &books_provider,
-            ActionAddress::new("", "remove-from-library"),
-            json(serde_json::json!({"book": "book:dusk"})),
-        ),
+    let removal_asked = request(
+        &books_provider,
+        ActionAddress::new("", "remove-from-library"),
+        json(serde_json::json!({"book": "book:dusk"})),
     );
+    let (removal_id, removal) = receipt_by_id(&actions, workspace, &member, &removal_asked);
     assert_eq!(removal, ReceiptStatus::Accepted, "it waits for the person");
+    // Whoever follows the call is told that its person is asked, and need not wait for them.
+    let waiting = observed(&actions, workspace, &member, removal_id);
+    assert!(
+        says_asked(waiting.as_ref()),
+        "its person is asked, and how it stands says so: {waiting:?}"
+    );
     let asking = invocations(&actions, workspace, &member);
     assert_eq!(asking["waiting"], 1, "{asking}");
     reading.unreadable.lock().unwrap().insert(EBOOK.to_owned());
@@ -419,6 +475,18 @@ async fn a_member_lists_only_the_invocations_in_records_they_may_read_now() {
         "{asking} {hidden}"
     );
     assert_eq!(invocations(&actions, workspace, &owner)["waiting"], 1);
+    // The person refuses: the call ends, and says that.
+    let question = reading.asked.lock().unwrap().pop().unwrap();
+    question.complete(Ok(ConfirmationReply::Deny));
+    let refused = observed(&actions, workspace, &member, removal_id);
+    assert!(
+        matches!(
+            &refused,
+            Some(tilo_actions::InvocationUpdate::Failed { error, .. })
+                if error.message.contains("did not allow")
+        ),
+        "{refused:?}"
+    );
 
     // The record's policy admits them to the notes, while a grant of their
     // own takes Read there: what a read decides, the listing decides too.
@@ -438,6 +506,18 @@ async fn a_member_lists_only_the_invocations_in_records_they_may_read_now() {
         in_notes,
         "the host's own person still lists them"
     );
+
+    // Asked once more, and allowed: from their answer on it is no longer said to wait
+    // for them.
+    reading.unreadable.lock().unwrap().remove(EBOOK);
+    let (again_id, again) = receipt_by_id(&actions, workspace, &member, &removal_asked);
+    assert_eq!(again, ReceiptStatus::Accepted, "it waits for the person");
+    let waiting = observed(&actions, workspace, &member, again_id);
+    assert!(says_asked(waiting.as_ref()), "{waiting:?}");
+    let question = reading.asked.lock().unwrap().pop().unwrap();
+    question.complete(Ok(ConfirmationReply::AllowOnce));
+    let allowed = observed(&actions, workspace, &member, again_id);
+    assert!(!says_asked(allowed.as_ref()), "{allowed:?}");
 }
 
 /// The runs of `listed` in `app`'s records, once `caller`'s listing holds a

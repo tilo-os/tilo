@@ -304,12 +304,46 @@ pub(super) fn actions_named(actions: &[ActionDescriptor]) -> Vec<Value> {
     actions.iter().map(action_named).collect()
 }
 
+/// What an invocation whose person is asked says of it where its provider said no more.
+const PERSON_ASKED: &str = "Its person is asked to allow this. Nothing happened yet.";
+/// What whoever made such a call does meanwhile.
+const ASKED_MEANWHILE: &str = "Go on with what does not need it, tell them it waits for their \
+     answer, and do not make this call again.";
+
+/// Whether the answer `value` says that its invocation's person is asked to allow it: a
+/// progress whose phase is the protocol's own word for a confirmation that is required.
+fn says_asked(value: &Value) -> bool {
+    value.pointer("/update/state").and_then(Value::as_str) == Some("progress")
+        && value.pointer("/update/phase").and_then(Value::as_str)
+            == Some(tilo_actions::remote::CONFIRMATION_REQUIRED_CODE)
+}
+
+/// What an agent reads of an invocation whose person is asked to allow it: where they are
+/// asked, what to do meanwhile, and the id that says how it went.
+fn asked_words(value: &Value) -> String {
+    let id = value
+        .get("invocation_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let said = value
+        .pointer("/update/message")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|said| !said.is_empty())
+        .unwrap_or(PERSON_ASKED);
+    format!(
+        "asked: {said} {ASKED_MEANWHILE}\ntilo_status {{\"invocation_id\":\"{id}\"}} says how it \
+         went"
+    )
+}
+
 /// What an invocation's final update says, as an agent reads it.
 pub(super) fn outcome(value: &Value) -> Reply {
     let state = value
         .pointer("/update/state")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    let asked = says_asked(value);
     let mut text = match state {
         "succeeded" => {
             let mut text = String::from("ok");
@@ -351,6 +385,8 @@ pub(super) fn outcome(value: &Value) -> Reply {
             format!("failed: {code}: {message}")
         }
         "cancelled" => "cancelled".to_owned(),
+        // Its person is asked to allow it, which is no failure and nothing to wait for.
+        "progress" if asked => asked_words(value),
         "item" | "progress" => {
             let id = value
                 .get("invocation_id")
@@ -400,7 +436,7 @@ pub(super) fn outcome(value: &Value) -> Reply {
         let _ = write!(text, "\n(adjusted: {adjusted})");
     }
     Reply {
-        failed: state != "succeeded",
+        failed: state != "succeeded" && !asked,
         text,
         structured: None,
         images: Vec::new(),

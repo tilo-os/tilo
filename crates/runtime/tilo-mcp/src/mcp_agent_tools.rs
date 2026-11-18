@@ -12,7 +12,7 @@ pub(crate) fn tool_definitions() -> &'static [Value] {
 /// What `tilo_do` says of waiting where a call that names no wait is answered `pending`.
 const PENDING_BY_DEFAULT: &str = "past wait_ms (default 5000), `pending <id>` for tilo_status";
 /// What it says on a turn's own server, which holds such a call until its action has ended.
-const HELD_UNTIL_ENDED: &str = "a call is held until its action has ended; name wait_ms only for what is meant to keep going (a server started in a shell): past it, `pending <id>` for tilo_status";
+const HELD_UNTIL_ENDED: &str = "a call is held until its action has ended, and answers `asked` at once where your person must allow it first; name wait_ms only for what is meant to keep going (a server started in a shell): past it, `pending <id>` for tilo_status";
 
 /// `tools` as a server tells them that holds a call until its action has ended.
 pub(crate) fn held_until_ended(tools: &mut [Value]) {
