@@ -12,6 +12,7 @@ use tilo_resource::items::{ItemAction, ItemCollection};
 use ui_core::automerge::AutoCommit;
 use ui_core::published::{SharedChildren, SharedResource};
 
+use super::super::chain_of_resource_id;
 use super::super::rows::{LiveRow, join, outside_document};
 use super::typed::ResourceType;
 use super::{
@@ -91,15 +92,16 @@ pub(super) struct NestedViews {
     views: Rc<HashSet<String>>,
 }
 
-/// The children of the publication with the records kept beside the
-/// resource, at the records' revisions, one locale and whether `open` is
-/// offered on items.
+/// The children of the publication with the resources kept beside the
+/// resource, and the chains among them, at the kept resources' revisions,
+/// one locale and whether `open` is offered on items.
 pub(super) struct ResourceChildren {
     document: SharedChildren,
     records: Vec<(String, u64)>,
     i18n: u64,
     opens: bool,
     children: SharedChildren,
+    chains: Vec<SharedResource>,
 }
 
 /// What a publication adds to each child of the document.
@@ -345,14 +347,15 @@ impl ResourceRoot {
         self.keep_nested_views(tree.children())
     }
 
-    /// Answer the nested views of `document`, until the live revision moves.
+    /// Answer the nested views of `document` and the chains kept beside it,
+    /// until the live revision moves.
     pub(super) fn keep_nested_views(&self, document: &SharedChildren) -> Rc<HashSet<String>> {
-        let children = self.with_resource_children(document.clone(), self.stages.opens());
+        let (children, chains) = self.with_resource_children(document.clone(), self.stages.opens());
         let at = (self.version(), self.storage.resources_key());
         let mut kept = self.nested_views.borrow_mut();
         let views = match kept.as_ref() {
             Some(last) if last.children.ptr_eq(&children) => Rc::clone(&last.views),
-            _ => Rc::new(nested_view_types(children.as_slice())),
+            _ => Rc::new(nested_view_types(children.as_slice(), &chains)),
         };
         *kept = Some(NestedViews {
             at,
@@ -402,11 +405,11 @@ impl ResourceRoot {
             } else {
                 document
             };
-            let children = self.with_resource_children(document, opens);
+            let (children, chains) = self.with_resource_children(document, opens);
             if opens && !head.actions.iter().any(|existing| existing.id == "open") {
                 head = head.with_action(open_spec());
             }
-            (head, children)
+            (head, children, chains)
         };
         let mut extras = Vec::new();
         for extra in ui_core::resources::resources_for(self.content.as_ref(), None, doc) {
@@ -417,6 +420,7 @@ impl ResourceRoot {
             extras.push(SharedResource::from_resource(outside_document(extra)));
         }
         let mut resources = vec![SharedResource::new(root.0, root.1)];
+        resources.extend(root.2);
         resources.append(&mut extras);
         Some(resources)
     }
@@ -471,14 +475,20 @@ impl ResourceRoot {
         published
     }
 
-    /// `document` followed by the records kept beside the resource, as the
+    /// `document` followed by the resources kept beside the resource, as the
     /// publication carries them (with `open` on their items when a view
-    /// `opens` them). The same children while neither moved, so what reads
-    /// the forest skips them as seen.
-    fn with_resource_children(&self, document: SharedChildren, opens: bool) -> SharedChildren {
+    /// `opens` them), and the chains kept beside it: each chain's items are
+    /// the app's own, so a chain stands at the top of the app's tree and not
+    /// under the resource it hangs off. The same children while neither
+    /// moved, so what reads the forest skips them as seen.
+    fn with_resource_children(
+        &self,
+        document: SharedChildren,
+        opens: bool,
+    ) -> (SharedChildren, Vec<SharedResource>) {
         let records = self.storage.resources_key();
         if records.is_empty() {
-            return document;
+            return (document, Vec::new());
         }
         let i18n = ui_core::i18n::I18nManager::revision();
         let mut kept = self.resource_children.borrow_mut();
@@ -488,44 +498,43 @@ impl ResourceRoot {
                 && kept.i18n == i18n
                 && kept.opens == opens
         }) {
-            return kept.children.clone();
+            return (kept.children.clone(), kept.chains.clone());
         }
-        let children = SharedChildren::new(
-            document
-                .iter()
-                .cloned()
-                .chain(
-                    self.storage
-                        .resource_resources_shared()
-                        .into_iter()
-                        .map(|record| {
-                            if !opens {
-                                return record;
-                            }
-                            // The opener is the record's own: its items stay the nodes they were.
-                            let mut head = record.head().clone();
-                            offer_item_open(self.resource.opens_as_item, &mut head);
-                            // It only ever adds: an opener, and the view it shows.
-                            let before = record.head();
-                            if head.actions.len() == before.actions.len()
-                                && head.views.len() == before.views.len()
-                            {
-                                record
-                            } else {
-                                SharedResource::new(head, record.children().clone())
-                            }
-                        }),
-                )
-                .collect(),
-        );
+        let opened = |beside: SharedResource| {
+            if !opens {
+                return beside;
+            }
+            // The opener is the resource's own: its items stay the nodes they were.
+            let mut head = beside.head().clone();
+            offer_item_open(self.resource.opens_as_item, &mut head);
+            // It only ever adds: an opener, and the view it shows.
+            let before = beside.head();
+            if head.actions.len() == before.actions.len() && head.views.len() == before.views.len()
+            {
+                beside
+            } else {
+                SharedResource::new(head, beside.children().clone())
+            }
+        };
+        let mut children = document.iter().cloned().collect::<Vec<_>>();
+        let mut chains = Vec::new();
+        for beside in self.storage.resource_resources_shared() {
+            if chain_of_resource_id(beside.id()).is_some() {
+                chains.push(opened(beside));
+            } else {
+                children.push(opened(beside));
+            }
+        }
+        let children = SharedChildren::new(children);
         *kept = Some(ResourceChildren {
             document,
             records,
             i18n,
             opens,
             children: children.clone(),
+            chains: chains.clone(),
         });
-        children
+        (children, chains)
     }
 
     /// Whether the view holds a hosted surface of this resource.
@@ -789,7 +798,7 @@ fn same_members(last: &[ItemCollection], next: &[ItemCollection]) -> bool {
         })
 }
 
-fn nested_view_types(resources: &[SharedResource]) -> HashSet<String> {
+fn nested_view_types(children: &[SharedResource], chains: &[SharedResource]) -> HashSet<String> {
     fn collect(resources: &[SharedResource], views: &mut HashSet<String>) {
         for resource in resources {
             views.extend(
@@ -804,7 +813,8 @@ fn nested_view_types(resources: &[SharedResource]) -> HashSet<String> {
         }
     }
     let mut views = HashSet::new();
-    collect(resources, &mut views);
+    collect(children, &mut views);
+    collect(chains, &mut views);
     views
 }
 

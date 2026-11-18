@@ -2283,7 +2283,21 @@ impl RootPublishes for ResourceRoot {
         if let Some(table) = self.resource.resource_table {
             offer_item_reads(&mut resource, table, self.resource.kind);
         }
+        // A chain holds the app's items, so its resource stands at the top
+        // of the app's tree, beside the app's own resource rather than under
+        // it: a path names the chain and its item, nothing in between.
+        let mut chains = Vec::new();
+        let mut children = Vec::with_capacity(resource.children.len());
+        for child in std::mem::take(&mut resource.children) {
+            if super::chain_of_resource_id(child.id.as_str()).is_some() {
+                chains.push(child);
+            } else {
+                children.push(child);
+            }
+        }
+        resource.children = children;
         let mut resources = vec![resource];
+        resources.append(&mut chains);
         resources.append(&mut extras);
         resources
     }

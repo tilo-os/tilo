@@ -151,6 +151,26 @@ fn put(app: &mut TestApp<ShelfApp>, id: &str, text: &str) {
 tilo_test_env::scenario! {
     fn work_a_chain_owes_is_done_once_and_reads_only_the_part_that_changed;
 
+    phase a_chains_resource_stands_at_the_top_of_the_apps_tree;
+    // A chain holds the app's items, so its resource is published beside
+    // the app's own resource and not under it: a path an agent reads for an
+    // item names the chain and the item, nothing in between.
+    {
+        let mut app = TestApp::<ShelfApp>::new().unwrap();
+        app.settle();
+        let chain = tilo_app::framework::chain_resource_id(&ShelfPart::chain());
+        let forest = app.harness().resources();
+        let top: Vec<&str> = forest.iter().map(|resource| resource.id.as_str()).collect();
+        assert!(top.contains(&chain.as_str()), "the chain is published: {top:?}");
+        assert!(
+            forest.iter().all(|resource| resource
+                .children
+                .iter()
+                .all(|child| child.id.as_str() != chain)),
+            "the chain is not one of the app resource's children: {top:?}"
+        );
+    }
+
     phase each_item_is_told_once_and_confirmed_in_its_part;
     {
         let _parts = PartLimits::scoped(PART_ITEMS, usize::MAX);

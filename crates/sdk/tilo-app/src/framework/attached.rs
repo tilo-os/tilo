@@ -1163,10 +1163,9 @@ impl AttachedView {
     /// id and the kind of its parts.
     #[must_use]
     pub fn chains(&self) -> Vec<DocumentCheckout> {
-        // Published beside the app's resource, among its children.
+        // Published beside the app's resource, at the top of its tree.
         self.frame_tree()
             .iter()
-            .flat_map(|resource| std::iter::once(resource).chain(&resource.children))
             .filter_map(|resource| {
                 let chain = super::chain_of_resource_id(resource.id.as_str())?;
                 Some(DocumentCheckout::new(
