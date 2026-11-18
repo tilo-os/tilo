@@ -90,8 +90,8 @@ pub(super) use arguments::invoke_arguments;
 pub use content::MAX_PUT_BYTES;
 pub use host_actions::HostActions;
 pub use link::{
-    AskedInTurn, AsksInConversation, FeedbackReviewer, HostDevice, ViewDocument, ViewReadPolicy,
-    WorkspaceDocumentsLink,
+    AskedInTurn, AsksInConversation, FeedbackReviewer, HostDevice, PackagedCall, ViewDocument,
+    ViewReadPolicy, WorkspaceDocumentsLink,
 };
 pub use terminal::{ShellRan, TERMINAL_APP, Watching, WorkspaceShell};
 
@@ -2349,7 +2349,7 @@ impl Worker {
 
     #[allow(
         clippy::result_large_err,
-        reason = "the outcome becomes the receipt the host records"
+        reason = "the outcome becomes the receipt answered"
     )]
     #[allow(
         clippy::too_many_lines,
@@ -2394,15 +2394,34 @@ impl Worker {
             return self.open_in_workspace(workspace_id, caller, request, (named, &state));
         }
         let workspace = workspace.ok_or_else(unknown_action)?;
-        let route = resource_of(&target.provider, &workspace)
-            .filter(|route| self.catalogue.get(&route.app_id).is_some())
-            .ok_or_else(unknown_action)?;
+        let route = resource_of(&target.provider, &workspace).ok_or_else(unknown_action)?;
+        // The package of the version `workspace` installs, when this device
+        // keeps it: an installed app's action is applied from the model its
+        // package carries, whichever device built the app, because that is the
+        // same module every holder of the workspace replays it with.
+        let packaged = self.installed_package(workspace_id, &route.app_id);
+        if self.catalogue.get(&route.app_id).is_none() && packaged.is_none() {
+            return Err(unknown_action());
+        }
         let target = &self.with_document_resource(target, &route.app_id);
         let arguments = invoke_arguments(&request.argument);
         // What is said in a direct conversation the caller's person takes no part in is not
         // there for them: an action on it is answered as one on nothing, and no read answers
         // with a row of it ([`direct`]).
         let withheld = self.kept_from_caller(caller, &route, &state);
+        if let Some(package) = packaged {
+            if stale_revision(request.revision.as_deref(), &state.revision.to_string()) {
+                return Err(Outcome::Rejected(ActionCallError::StaleRevision));
+            }
+            let performed = self.perform_packaged(
+                workspace_id,
+                caller,
+                &route,
+                &package,
+                (target, arguments, &withheld),
+            )?;
+            return Ok((withheld.shown(performed.0), performed.1));
+        }
         // What the record publishes, its own API runs. What only its
         // committed source publishes — a canonical read of it — is asked of
         // that source, which reads the record and opens a worker for it: an
@@ -2492,6 +2511,94 @@ impl Worker {
         Ok((withheld.shown(output), left_at))
     }
 
+    /// The `.tapp` `workspace` keeps for `app`, when its governance installs
+    /// a version and this device has the package file.
+    fn installed_package(&self, workspace_id: WorkspaceId, app: &str) -> Option<Vec<u8>> {
+        self.shared
+            .link
+            .get()
+            .and_then(|link| link.installed_package(workspace_id, app))
+    }
+
+    /// Apply `request` to the resource at `route` from the model the app
+    /// version's package carries, as `caller`: what the workspace's installed
+    /// app offers, applied by the holder that keeps the package. The device
+    /// executes the module, admits and publishes what it wrote under the
+    /// caller's own actor, and answers the invocation a peer replays.
+    ///
+    /// An action a grant leaves to the person, or refuses them, is refused
+    /// here: nothing is asked on the server's behalf, and the app's own code
+    /// never checks a permission.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the outcome becomes the receipt answered"
+    )]
+    fn perform_packaged(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        route: &DocumentRoute,
+        package: &[u8],
+        (target, arguments, withheld): (
+            &tilo_actions::remote::RemoteActionTarget,
+            serde_json::Map<String, serde_json::Value>,
+            &direct::Kept,
+        ),
+    ) -> Result<(ActionOutput, Option<ActorPlace>), Outcome> {
+        let Some(link) = self.shared.link.get().cloned() else {
+            return Err(unknown_action());
+        };
+        let verb = link
+            .packaged_action(workspace_id, &route.app_id, &target.address.action)
+            .ok_or_else(unknown_action)?;
+        withheld.refuses(&target.address.resource)?;
+        let kind = verb.kind;
+        if !self.serves_as_owner(caller) {
+            let who = self.bounded(caller).ok_or_else(unknown_action)?;
+            if !self.admits_bounded(workspace_id, &who) {
+                return Err(Outcome::Rejected(ActionCallError::NotPermitted));
+            }
+            // Only what their access answers allow is applied: an action that
+            // would ask the person first waits for a device of theirs, never
+            // goes unasked on a server.
+            let allowed =
+                self.permissions_at(workspace_id, &who, route)
+                    .is_some_and(|permissions| {
+                        permissions.answer(&TreePath::root(), kind) == Answer::Allow
+                    });
+            if !allowed {
+                return Err(Outcome::Rejected(ActionCallError::NotPermitted));
+            }
+        }
+        let now_ms = i64::try_from(tilo_clock::unix_now_ns() / 1_000_000).unwrap_or(i64::MAX);
+        let answer = link
+            .apply_packaged_action(
+                workspace_id,
+                caller,
+                PackagedCall {
+                    app: &route.app_id,
+                    document: &route.document,
+                    package,
+                    action: &target.address.action,
+                    arguments,
+                    now_ms,
+                },
+            )
+            .map_err(|reason| {
+                Outcome::Failed(ActionFailure {
+                    code: "packaged_action".into(),
+                    message: reason,
+                    details: None,
+                    retryable: false,
+                })
+            })?;
+        // The invocation is the change's, which a peer replays; the action
+        // answers nothing more, as a verb that returns nothing does.
+        answer
+            .map(|_envelope| (ActionOutput::default(), None))
+            .ok_or_else(unknown_action)
+    }
+
     /// The answer the committed source gives `request`, when what answers here
     /// does not publish that action itself: one it publishes never pays to
     /// open a worker for it.
@@ -2538,7 +2645,7 @@ impl Worker {
     /// now.
     #[allow(
         clippy::result_large_err,
-        reason = "the outcome becomes the receipt the host records"
+        reason = "the outcome becomes the receipt answered"
     )]
     fn open_asked(
         &mut self,
@@ -2691,7 +2798,7 @@ impl Worker {
     /// may not write is never saved, as no change of theirs is.
     #[allow(
         clippy::result_large_err,
-        reason = "the outcome becomes the receipt the host records"
+        reason = "the outcome becomes the receipt answered"
     )]
     fn open_new(
         &mut self,

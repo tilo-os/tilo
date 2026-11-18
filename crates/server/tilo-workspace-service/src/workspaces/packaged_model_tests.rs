@@ -20,6 +20,10 @@ const TASKS: &str = "so.tilo.tasks";
 /// The invocation's origin clock, milliseconds since the Unix epoch.
 const NOW_MS: i64 = 1_760_000_000_000;
 
+/// The Tasks app's signed surface, which its package ships and its changes are
+/// decided against.
+const TASKS_SURFACE: &[u8] = include_bytes!("../../../../../apps/tasks/surface.toml");
+
 /// The Tasks model module, built for wasm32 by `tilo-app model` beside the app
 /// (`apps/tasks-model-wasm`). A tree keeps no built module, so the check that
 /// exercises this test needs `app-models`, whose outputs land under the target
@@ -45,7 +49,8 @@ fn tasks_model() -> Vec<u8> {
     std::fs::read(&module).expect(&asked)
 }
 
-/// An app's package: `model`, when it has one, is the payload's model module.
+/// An app's package: `model`, when it has one, is the payload's model module,
+/// beside the surface the app ships.
 #[expect(
     clippy::unwrap_used,
     reason = "a fixture that cannot be written or packed is a test failure"
@@ -55,6 +60,7 @@ fn package(app: &str, model: Option<&[u8]>) -> Vec<u8> {
     let payload = scratch.path().join("payload");
     std::fs::create_dir_all(payload.join("bin")).unwrap();
     std::fs::write(payload.join("bin/tasks"), b"the app's window").unwrap();
+    std::fs::write(payload.join("surface.toml"), TASKS_SURFACE).unwrap();
     if let Some(model) = model {
         std::fs::write(payload.join(tilo_app_package::MODEL_MODULE), model).unwrap();
     }
@@ -129,6 +135,10 @@ async fn a_server_applies_an_installed_apps_action_from_its_package() {
                 package: &package,
                 action: "create-area",
                 arguments: create_area("Ship it"),
+                member: tilo_actions::MemberId::person(hex::encode(cert.user_public_key)),
+                acting: tilo_actions::Acting::member(tilo_actions::MemberId::person(hex::encode(
+                    cert.user_public_key,
+                ))),
                 now_ms: NOW_MS,
             },
         )
@@ -164,6 +174,7 @@ async fn a_server_applies_an_installed_apps_action_from_its_package() {
             home: &created.workspace,
             bytes: &base,
             member: &hex::encode(cert.user_public_key),
+            acting: None,
             action: "create-area",
             arguments: create_area("Ship it"),
             now: NOW_MS,

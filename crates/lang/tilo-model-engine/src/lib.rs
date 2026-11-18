@@ -83,6 +83,10 @@ pub struct Request<'a> {
     /// The invoking member ([`tilo_action_policy::MemberId::of_actor_bytes`]:
     /// a person's key, `agent:<id>` or `bot:<id>`).
     pub member: &'a str,
+    /// Who acts and for whom, as the device's action API recorded it, when the
+    /// member acts for someone ([`tilo_actions::Acting`]): an agent a person's
+    /// session handed the action to. `None` for a member acting for themselves.
+    pub acting: Option<serde_json::Value>,
     /// The action's id in the resource's vocabulary.
     pub action: &'a str,
     /// Its arguments, as the action API binds them.
@@ -161,6 +165,7 @@ fn encode(request: &Request<'_>) -> Result<Vec<u8>, ModelError> {
         "home": request.home,
         "document": base64::Engine::encode(&base, request.bytes),
         "member": request.member,
+        "acting": request.acting,
         "action": request.action,
         "arguments": request.arguments,
         "now": request.now,

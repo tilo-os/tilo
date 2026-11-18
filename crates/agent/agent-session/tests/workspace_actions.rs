@@ -147,6 +147,9 @@ mod member_roles;
 #[path = "workspace_actions/own_agent.rs"]
 mod own_agent;
 #[cfg(test)]
+#[path = "workspace_actions/packaged_model.rs"]
+mod packaged_model;
+#[cfg(test)]
 #[path = "workspace_actions/public_documents.rs"]
 mod public_documents;
 #[cfg(test)]

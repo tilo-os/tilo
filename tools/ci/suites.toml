@@ -1491,6 +1491,7 @@ package = "tilo-agent-session"
 # start, from its source.
 inputs = [
   "apps/pdf-viewer/surface.toml",
+  "apps/tasks/surface.toml",
   "crates/server/tilo-workspace-service/src/workspaces/person_settings/calendars/fake_caldav.rs",
   "crates/sdk/ui-core/assets/fonts/",
   "crates/session/client/tests/support/",
@@ -1503,9 +1504,17 @@ readers = [
   "crates/agent/agent-session/tests/it.rs",
   "crates/agent/agent-session/tests/workspace_actions/api.rs",
   "crates/agent/agent-session/tests/workspace_actions/meeting_rundown.rs",
+  "crates/agent/agent-session/tests/workspace_actions/packaged_model.rs",
   "crates/agent/agent-session/examples/api-on-server.rs",
   "crates/agent/agent-session/examples/mounted-resource.rs",
 ]
+
+[[cargo]]
+package = "tilo-workspace-service"
+# The packaged-model test installs the surface the Tasks app ships, read from
+# the tree; the module its package carries comes from the app-models check.
+inputs = ["apps/tasks/surface.toml"]
+readers = ["crates/server/tilo-workspace-service/src/workspaces/packaged_model_tests.rs"]
 
 [[cargo]]
 package = "tilo-video-render"
