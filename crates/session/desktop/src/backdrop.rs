@@ -295,7 +295,7 @@ impl DesktopBackdrop {
         }
         self.drawn_wallpaper = None;
         let stops = ground_stops(theme);
-        self.wallpaper_source.set(None);
+        self.wallpaper_source.set_gradient(stops);
         // Bit-exact comparison, not "close enough": any change (even one
         // ULP, from a layout recompute) must invalidate the cached scene,
         // so a tolerant comparison would let a real resize slip through

@@ -553,6 +553,48 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase a_surface_over_the_shells_gradient_draws_that_gradient_under_the_tint;
+    {
+        let theme = Theme::dark();
+        let ground = crate::chrome::panel_ground(&theme);
+        let source = wallpaper::Source::new();
+        let draw = |theme: &Theme| {
+            let mut scene = Scene::new();
+            wallpaper::fill(
+                &mut scene,
+                &source,
+                Affine::IDENTITY,
+                &panel(),
+                Material::Floating,
+                theme,
+                ground,
+            );
+            scene
+        };
+        let ramps = |scene: &Scene| {
+            scene
+                .encoding()
+                .resources
+                .patches
+                .iter()
+                .filter(|patch| matches!(patch, crate::vello_encoding::Patch::Ramp { .. }))
+                .count()
+        };
+        source.set_gradient((Color::from_rgb8(30, 40, 60), Color::from_rgb8(10, 12, 20)));
+        assert_eq!(
+            ramps(&draw(&theme)),
+            1,
+            "the shell's gradient shows through, not a flat ground"
+        );
+        assert_eq!(
+            ramps(&draw(&theme.clone().with_reduce_transparency(true))),
+            0,
+            "reduced transparency is opaque"
+        );
+        source.set(None);
+        assert_eq!(ramps(&draw(&theme)), 0, "a shell showing nothing: opaque");
+    }
+
     phase a_provided_backdrop_of_the_right_size_is_drawn_in_place_of_the_placeholder;
     {
         let theme = Theme::dark();

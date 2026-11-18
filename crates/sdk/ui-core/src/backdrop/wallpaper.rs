@@ -14,8 +14,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use vello::Scene;
-use vello::kurbo::{Affine, Rect, Shape};
-use vello::peniko::{BlendMode, Brush, Color, Extend, Fill, ImageBrush, ImageData, ImageFormat};
+use vello::kurbo::{Affine, Point, Rect, Shape};
+use vello::peniko::{
+    BlendMode, Brush, Color, Extend, Fill, Gradient, ImageBrush, ImageData, ImageFormat,
+};
 
 use crate::floating_surface::Material;
 use crate::theme::Theme;
@@ -56,6 +58,8 @@ pub struct Source {
 #[derive(Debug, Default)]
 struct State {
     picture: Option<ImageData>,
+    /// The shell's gradient, from its first stop to its last, where it shows no picture.
+    gradient: Option<(Color, Color)>,
 }
 
 impl Source {
@@ -67,11 +71,20 @@ impl Source {
     /// Take `picture` as the shell's wallpaper, or none for a shell without one.
     pub fn set(&self, picture: Option<ImageData>) {
         let mut state = self.state.borrow_mut();
+        state.gradient = None;
         let known = state.picture.as_ref().map(|known| known.data.id());
         if known == picture.as_ref().map(|image| image.data.id()) {
             return;
         }
         state.picture = picture;
+    }
+
+    /// Take the shell's gradient, drawn corner to corner from `stops.0` to `stops.1`, as what it
+    /// shows where it has no picture.
+    pub fn set_gradient(&self, stops: (Color, Color)) {
+        let mut state = self.state.borrow_mut();
+        state.picture = None;
+        state.gradient = Some(stops);
     }
 
     /// The picture the shell shows now, as the session holds it.
@@ -91,8 +104,9 @@ impl Source {
 }
 
 /// Fill `shape` with `material` over `source`: the shell's wallpaper, blurred and fitted to the
-/// shape, behind it under the material's tint of `ground`; the tint alone where the shell has no
-/// wallpaper.
+/// shape, behind it under the material's tint of `ground`; where the shell shows its gradient, that
+/// gradient (already as smooth as its blur) across the shape; `ground` alone for an opaque material
+/// or a shell that shows neither.
 pub(crate) fn fill(
     scene: &mut Scene,
     source: &Source,
@@ -110,19 +124,26 @@ pub(crate) fn fill(
     } else {
         None
     };
-    let Some((image, placed)) = cover else {
+    let gradient = if super::blurs(material, theme) {
+        source.state.borrow().gradient
+    } else {
+        None
+    };
+    let (brush, brush_transform) = if let Some((image, placed)) = cover {
+        let brush = Brush::Image(ImageBrush::new(image).with_extend(Extend::Pad));
+        (brush, Some(transform.inverse() * placed))
+    } else if let Some((from, to)) = gradient {
+        let bounds = shape.bounding_box();
+        let gradient = Gradient::new_linear(bounds.origin(), Point::new(bounds.x1, bounds.y1))
+            .with_extend(Extend::Pad)
+            .with_stops([from, to].as_slice());
+        (Brush::Gradient(gradient), None)
+    } else {
         scene.fill(Fill::NonZero, transform, ground, None, shape);
         return;
     };
-    let brush = Brush::Image(ImageBrush::new(image).with_extend(Extend::Pad));
     scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, shape);
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        &brush,
-        Some(transform.inverse() * placed),
-        shape,
-    );
+    scene.fill(Fill::NonZero, transform, &brush, brush_transform, shape);
     scene.pop_layer();
     super::settle(scene, transform, shape, theme, ground);
     scene.fill(
