@@ -709,6 +709,7 @@ where
                         let authority = Arc::clone(&listener_authority);
                         let entries = entries.clone();
                         let authenticator = authenticator.clone();
+                        let stop = Arc::clone(&thread_stop);
                         let worker = std::thread::Builder::new()
                             .name("tilo-windows-compat-client".to_string())
                             .spawn(move || {
@@ -720,6 +721,7 @@ where
                                         authority.as_ref(),
                                         &authenticator,
                                         &entries,
+                                        &stop,
                                     );
                                 }
                             });
@@ -821,6 +823,7 @@ fn serve_client<R, B, E, V>(
     authority: &dyn CapabilityAuthority,
     authenticator: &LauncherAuthenticator,
     entries: &EntryDirectory,
+    stop: &AtomicBool,
 ) -> Result<(), SessionError>
 where
     R: RuntimeRegistry + 'static,
@@ -836,6 +839,9 @@ where
     let mut pending_vm_install = None;
     let mut ends_read = EndsRead::default();
     loop {
+        if !next_request_arrives(&stream, stop)? {
+            return Ok(());
+        }
         let (request, descriptor) = match read_request_frame(&mut stream, FRAMING) {
             Ok(request) => request,
             Err(SessionError::Io(error)) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
@@ -1564,6 +1570,28 @@ impl SessionClient {
     }
 }
 
+/// Waits, as long as the manager stays connected and the service is up, for the first byte of
+/// its next request: `false` once it hung up or the service stops.
+///
+/// A manager asks again only when its window draws, so a connection may stay quiet for minutes
+/// (the person is choosing an installer, or looking at another window). The read timeout bounds
+/// a request that has begun, not the wait between requests; it serves here as the interval at
+/// which the wait looks whether the service stops.
+fn next_request_arrives(stream: &UnixStream, stop: &AtomicBool) -> Result<bool, SessionError> {
+    let mut first = [0_u8; 1];
+    loop {
+        if stop.load(Ordering::Acquire) {
+            return Ok(false);
+        }
+        match rustix::net::recv(stream, &mut first[..], RecvFlags::PEEK) {
+            Ok((0, _)) => return Ok(false),
+            Ok(_) => return Ok(true),
+            Err(rustix::io::Errno::AGAIN | rustix::io::Errno::INTR) => {}
+            Err(error) => return Err(std::io::Error::from(error).into()),
+        }
+    }
+}
+
 fn read_request_frame(
     stream: &mut UnixStream,
     framing: Framing,
@@ -1944,6 +1972,47 @@ mod tests {
             assert!(matches!(response, ProtocolResponse::Error { .. }));
             worker.join().unwrap();
         }
+    }
+
+    /// A manager asks only when its window draws: a quiet connection stays open past the read
+    /// timeout and its next request is read whole, while a hang-up or a stopping service ends it.
+    #[test]
+    fn a_quiet_manager_connection_stays_open_for_its_next_request() {
+        let (mut writer, mut reader) = UnixStream::pair().unwrap();
+        reader
+            .set_read_timeout(Some(Duration::from_millis(10)))
+            .unwrap();
+        let stop = AtomicBool::new(false);
+        let later = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            write_frame(
+                &mut writer,
+                &ProtocolRequest::List {
+                    version: PROTOCOL_VERSION,
+                },
+                FRAMING,
+            )
+            .unwrap();
+            writer
+        });
+        assert!(next_request_arrives(&reader, &stop).unwrap());
+        let (request, _) = read_request_frame(&mut reader, FRAMING).unwrap();
+        assert!(matches!(request, ProtocolRequest::List { .. }));
+        drop(later.join().unwrap());
+        assert!(
+            !next_request_arrives(&reader, &stop).unwrap(),
+            "a hang-up ends it"
+        );
+
+        let (_writer, reader) = UnixStream::pair().unwrap();
+        reader
+            .set_read_timeout(Some(Duration::from_millis(10)))
+            .unwrap();
+        stop.store(true, Ordering::Release);
+        assert!(
+            !next_request_arrives(&reader, &stop).unwrap(),
+            "a stopping service ends it"
+        );
     }
 
     #[test]
