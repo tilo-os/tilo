@@ -429,9 +429,10 @@ pub(super) struct ChildRef {
 
 impl ResourceRead {
     /// `value`, an app's read or an action's output, taken apart: a list
-    /// whose every entry names an item and a title is children, the rest is
-    /// fields.
+    /// whose every entry names an item and a title, or holds a collection's
+    /// row (`{id, value}`), is children, the rest is fields.
     fn of(value: &Value) -> Self {
+        let kind = value.get("kind").and_then(Value::as_str).map(str::to_owned);
         let mut fields = value.clone();
         let mut children = Vec::new();
         if let Value::Object(map) = &mut fields {
@@ -442,18 +443,7 @@ impl ResourceRead {
                 };
                 let named: Vec<ChildRef> = entries
                     .iter()
-                    .filter_map(|entry| {
-                        let item = entry.get("item").and_then(Value::as_str)?;
-                        let name = ["title", "name", "label"]
-                            .iter()
-                            .find_map(|key| entry.get(*key).and_then(Value::as_str))?;
-                        Some(ChildRef {
-                            list: list.clone(),
-                            name: name.to_owned(),
-                            item: item.to_owned(),
-                            path: String::new(),
-                        })
-                    })
+                    .filter_map(|entry| child(list, entry, kind.as_deref()))
                     .collect();
                 if !named.is_empty() && named.len() == entries.len() {
                     whole.push(list.clone());
@@ -466,7 +456,7 @@ impl ResourceRead {
         }
         Self {
             path: String::new(),
-            kind: value.get("kind").and_then(Value::as_str).map(str::to_owned),
+            kind,
             cursor: next_cursor(value),
             fields,
             children,
@@ -544,6 +534,50 @@ impl ResourceRead {
         }
         (!text.is_empty()).then(|| text.trim_end().to_owned())
     }
+}
+
+/// `entry`, an entry of the list `list` a read answers, as the child it
+/// names: a listing's row (`{item, title}`), or a collection's row
+/// (`{id, value}`, the value as the model writes it), whose id is the item's
+/// own and whose name is the title, name, label or text its value carries,
+/// else the id's last step. A collection's item is addressed by the resource
+/// id its collection publishes it under (`chat.messages/messages/m1`), which
+/// is what a read or an action takes.
+fn child(list: &str, entry: &Value, kind: Option<&str>) -> Option<ChildRef> {
+    let row = |item: String, name: String| ChildRef {
+        list: list.to_owned(),
+        name,
+        item,
+        path: String::new(),
+    };
+    // A collection's entry holds its item's id and value and nothing else,
+    // and the read names the collection's kind, which the item's address is
+    // built from.
+    let collection_row = entry.as_object().is_some_and(|fields| {
+        fields.len() == 2 && fields.contains_key("id") && fields.contains_key("value")
+    });
+    if let (true, Some(kind), Some(id), Some(value)) = (
+        collection_row,
+        kind,
+        entry.get("id").and_then(Value::as_str),
+        entry.get("value"),
+    ) {
+        let named = ["title", "name", "label", "text"]
+            .iter()
+            .find_map(|key| value.get(*key).and_then(Value::as_str))
+            .map(|text| text.lines().next().unwrap_or(text).trim())
+            .filter(|name| !name.is_empty());
+        let tail = id.rsplit('/').next().unwrap_or(id).to_owned();
+        return Some(row(
+            format!("{kind}/{list}/{id}"),
+            named.unwrap_or(&tail).to_owned(),
+        ));
+    }
+    let item = entry.get("item").and_then(Value::as_str)?;
+    let name = ["title", "name", "label"]
+        .iter()
+        .find_map(|key| entry.get(*key).and_then(Value::as_str))?;
+    Some(row(item.to_owned(), name.to_owned()))
 }
 
 /// The output's cursor to continue a read from, when the app gave one.
@@ -2628,6 +2662,10 @@ use resolved::{Resolution, ResolvedAction};
 #[cfg(test)]
 #[path = "mcp_agent_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "mcp_agent_read_tests.rs"]
+mod read_tests;
 
 #[cfg(test)]
 #[path = "mcp_agent_surface_tests.rs"]
