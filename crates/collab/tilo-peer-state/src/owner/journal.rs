@@ -29,9 +29,24 @@ struct Entry {
 }
 
 /// What the next entry is a delta of: the record as the last entry left it.
-pub(super) struct Written {
+pub(crate) struct Written {
     fields: Arc<[u8]>,
     peer: Vec<Arc<[u8]>>,
+}
+
+impl Written {
+    /// Go on from `parts`, the replica restored from these bytes as it
+    /// encodes itself: read back, the replica is one stretch of bytes no part
+    /// of its own encoding shares, and a delta of that matches nothing by place.
+    /// `false`, with nothing changed, when `parts` are other bytes.
+    pub(super) fn resume(&mut self, parts: Vec<Arc<[u8]>>) -> bool {
+        let parts = crate::owner::stored::DurablePeer::from(parts);
+        if parts != crate::owner::stored::DurablePeer::from(self.peer.clone()) {
+            return false;
+        }
+        self.peer = parts.parts().to_vec();
+        true
+    }
 }
 
 /// Length and digest ahead of each entry.
@@ -82,10 +97,7 @@ pub(super) fn next(
     let peer = stored.peer.parts().to_vec();
     let entry = Entry {
         revision,
-        fields: delta(
-            std::slice::from_ref(&written.fields),
-            std::slice::from_ref(&fields),
-        ),
+        fields: delta_chunked(&written.fields, &fields),
         peer: delta(&written.peer, &peer),
     };
     Ok((frame(&entry)?, Written { fields, peer }))
@@ -108,24 +120,130 @@ fn frame(entry: &Entry) -> Result<Vec<u8>, String> {
 pub(super) fn replay(
     stored: StoredWorkspace,
     log: &[u8],
-    cap: usize,
 ) -> Result<(StoredWorkspace, Option<u64>), String> {
-    let mut fields = fields_of(&stored)?.to_vec();
-    let mut peer = stored.peer.to_vec();
+    let mut fields = Rope::of(&fields_of(&stored)?);
+    let mut peer = Rope::of(&stored.peer.to_vec().into());
     let mut revision = None;
     let mut rest = log;
     while let Some(entry) = take(&mut rest) {
-        fields = apply(&fields, &entry.fields, cap)?;
-        peer = apply(&peer, &entry.peer, cap)?;
+        fields = fields.apply(entry.fields)?;
+        peer = peer.apply(entry.peer)?;
         revision = Some(entry.revision);
     }
     if revision.is_none() {
         return Ok((stored, None));
     }
-    let mut replayed: StoredWorkspace = serde_json::from_slice(&fields)
+    let mut replayed: StoredWorkspace = serde_json::from_slice(&fields.to_vec())
         .map_err(|error| format!("the record's journal does not parse: {error}"))?;
-    replayed.peer = peer.into();
+    replayed.peer = peer.to_vec().into();
     Ok((replayed, revision))
+}
+
+/// Bytes as stretches of the buffers they came from: the snapshot's, and the
+/// bytes of the entries after it. A replay takes each entry as stretches of
+/// the bytes before it, so an entry costs what it changed, not a copy of
+/// all the record holds; the bytes are put together once, at its end.
+struct Rope {
+    /// Each stretch: its buffer, and where in it the stretch starts and ends.
+    stretches: Vec<(Arc<[u8]>, usize, usize)>,
+    /// Where each stretch ends in the bytes.
+    ends: Vec<u64>,
+}
+
+impl Rope {
+    fn of(bytes: &Arc<[u8]>) -> Self {
+        let mut rope = Self {
+            stretches: Vec::new(),
+            ends: Vec::new(),
+        };
+        rope.push(bytes, 0, bytes.len());
+        rope
+    }
+
+    fn len(&self) -> u64 {
+        self.ends.last().copied().unwrap_or(0)
+    }
+
+    /// Add `buffer[start..end]`, as a longer stretch where it goes on from the last one.
+    fn push(&mut self, buffer: &Arc<[u8]>, start: usize, end: usize) {
+        if start >= end {
+            return;
+        }
+        let len = end.saturating_sub(start) as u64;
+        let total = self.len().saturating_add(len);
+        if let Some((last, _, last_end)) = self.stretches.last_mut()
+            && Arc::ptr_eq(last, buffer)
+            && *last_end == start
+        {
+            *last_end = end;
+            if let Some(at) = self.ends.last_mut() {
+                *at = total;
+            }
+            return;
+        }
+        self.stretches.push((Arc::clone(buffer), start, end));
+        self.ends.push(total);
+    }
+
+    /// These bytes as `ops` make the next ones of them.
+    fn apply(&self, ops: Vec<Op>) -> Result<Self, String> {
+        let mut out = Self {
+            stretches: Vec::new(),
+            ends: Vec::new(),
+        };
+        for op in ops {
+            match op {
+                Op::Copy { from, len } => {
+                    let end = from
+                        .checked_add(len)
+                        .filter(|end| *end <= self.len())
+                        .ok_or("a journal entry copies bytes the record does not hold")?;
+                    let mut at = from;
+                    let mut index = self.ends.partition_point(|stretch_end| *stretch_end <= at);
+                    while at < end {
+                        let (Some((buffer, start, stop)), Some(stretch_end)) =
+                            (self.stretches.get(index), self.ends.get(index))
+                        else {
+                            return Err(
+                                "a journal entry copies bytes the record does not hold".into()
+                            );
+                        };
+                        let stretch_start =
+                            stretch_end.saturating_sub(stop.saturating_sub(*start) as u64);
+                        let skip = usize::try_from(at.saturating_sub(stretch_start))
+                            .map_err(|e| e.to_string())?;
+                        let take = usize::try_from(end.min(*stretch_end).saturating_sub(at))
+                            .map_err(|e| e.to_string())?;
+                        let from = start.saturating_add(skip);
+                        out.push(buffer, from, from.saturating_add(take));
+                        at = at.saturating_add(take as u64);
+                        index = index.saturating_add(1);
+                    }
+                }
+                Op::Bytes(bytes) => {
+                    let len = bytes.len();
+                    out.push(&Arc::from(bytes), 0, len);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn to_vec(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(usize::try_from(self.len()).unwrap_or(0));
+        for (buffer, start, end) in &self.stretches {
+            bytes.extend_from_slice(buffer.get(*start..*end).unwrap_or_default());
+        }
+        bytes
+    }
+}
+
+/// Whether every byte of `log` is an entry: one a write cut short ends it
+/// early, and an entry appended after that would never be read.
+pub(super) fn read_whole(log: &[u8]) -> bool {
+    let mut rest = log;
+    while take(&mut rest).is_some() {}
+    rest.is_empty()
 }
 
 /// The next whole entry of `rest`, advancing past it.
@@ -140,27 +258,6 @@ fn take(rest: &mut &[u8]) -> Option<Entry> {
     let entry = postcard::from_bytes(payload).ok()?;
     *rest = rest.get(end..)?;
     Some(entry)
-}
-
-fn apply(old: &[u8], ops: &[Op], cap: usize) -> Result<Vec<u8>, String> {
-    let mut out = Vec::new();
-    for op in ops {
-        match op {
-            Op::Copy { from, len } => {
-                let range = usize::try_from(*from)
-                    .ok()
-                    .zip(usize::try_from(*len).ok())
-                    .and_then(|(from, len)| old.get(from..from.checked_add(len)?))
-                    .ok_or("a journal entry copies bytes the record does not hold")?;
-                out.extend_from_slice(range);
-            }
-            Op::Bytes(bytes) => out.extend_from_slice(bytes),
-        }
-        if out.len() > cap {
-            return Err("joined-workspace record exceeds its cap".into());
-        }
-    }
-    Ok(out)
 }
 
 /// `new` as runs of `old`: a part that is an allocation of `old` is copied
@@ -214,6 +311,80 @@ fn delta(old: &[Arc<[u8]>], new: &[Arc<[u8]>]) -> Vec<Op> {
         match old.get(at).zip(offsets.get(at)) {
             Some((before, offset)) => changed(&mut ops, before, *offset, rest),
             None => ops.bytes(rest),
+        }
+    }
+    ops.0
+}
+
+/// Where content-defined chunks are cut: a rolling hash of the bytes before
+/// a place has these bits clear, so a chunk ends where its own bytes say and
+/// an edit moves the cuts near it only.
+const CUT_MASK: u64 = 0xff00_0000_0000_0000;
+/// The least and most a chunk holds.
+const MIN_CHUNK: usize = 64;
+const MAX_CHUNK: usize = 4096;
+
+/// A table of 256 hashes for the rolling hash, made by splitmix64.
+const GEAR: [u64; 256] = {
+    let mut table = [0u64; 256];
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut index = 0;
+    while index < 256 {
+        state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "the index stays below the table's length"
+        )]
+        {
+            table[index] = z ^ (z >> 31);
+        }
+        index += 1;
+    }
+    table
+};
+
+/// `bytes` cut into chunks by their content, as ranges.
+fn chunks(bytes: &[u8]) -> impl Iterator<Item = std::ops::Range<usize>> + '_ {
+    let mut start = 0;
+    std::iter::from_fn(move || {
+        if start >= bytes.len() {
+            return None;
+        }
+        let rest = after(bytes, start);
+        let mut hash = 0u64;
+        let mut len = rest.len().min(MAX_CHUNK);
+        for (at, byte) in rest.iter().take(MAX_CHUNK).enumerate() {
+            let gear = GEAR.get(usize::from(*byte)).copied().unwrap_or_default();
+            hash = (hash << 1).wrapping_add(gear);
+            if at >= MIN_CHUNK && hash & CUT_MASK == 0 {
+                len = at;
+                break;
+            }
+        }
+        let range = start..start.saturating_add(len);
+        start = range.end;
+        Some(range)
+    })
+}
+
+/// `new` as stretches of `old`, one buffer each, matched a content-defined
+/// chunk at a time: the workspace's own fields change in several places at
+/// once (what this device sent, what its server answered), and each chunk in `old`
+/// anywhere is copied, so a write carries the chunks it changed and not the
+/// stretch between its first change and its last.
+fn delta_chunked(old: &[u8], new: &[u8]) -> Vec<Op> {
+    let known: std::collections::HashMap<&[u8], u64> = chunks(old)
+        .filter_map(|range| Some((old.get(range.clone())?, range.start as u64)))
+        .collect();
+    let mut ops = Ops(Vec::new());
+    for range in chunks(new) {
+        let chunk = new.get(range).unwrap_or_default();
+        match known.get(chunk) {
+            Some(offset) => ops.copy(*offset, chunk.len()),
+            None => ops.bytes(chunk),
         }
     }
     ops.0
@@ -376,7 +547,13 @@ mod tests {
                 Op::Copy { .. } => 0,
             })
             .sum();
-        (apply(&old.concat(), &ops, usize::MAX).unwrap(), literal)
+        // Applied over the old bytes kept as their parts, as a replay of
+        // several entries keeps them.
+        let mut rope = Rope::of(&Arc::from(&[][..]));
+        for part in old {
+            rope.push(part, 0, part.len());
+        }
+        (rope.apply(ops).unwrap().to_vec(), literal)
     }
 
     tilo_test_env::scenario! {

@@ -266,6 +266,11 @@ impl Replicas {
                         .unwrap_or(false)
                 })
             });
+        if let Some(owner) = &owner
+            && let Some(journaled) = workspaces.journaled.lock_recover().as_mut()
+        {
+            journaled.resume(owner);
+        }
         let owner = owner.unwrap_or_else(|| NativeWorkspaceOwner::empty(workspaces));
         let workspaces = owner
             .storage()

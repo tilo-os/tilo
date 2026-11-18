@@ -20,7 +20,7 @@ use tilo_desktop_model::WorkspaceId;
 
 use super::journal;
 use super::stored::{StoredPendingEnrollment, StoredWorkspace};
-use super::{Change, MAX_AUTHORITY_BYTES, NativeAuthorityStorage, limits::preflight_document};
+use super::{Change, NativeAuthorityStorage};
 
 /// The index's place among the parts.
 const INDEX_NAME: &str = "index";
@@ -113,9 +113,11 @@ impl Journaled {
                 appended: 0,
             };
             let log = journal_name(*workspace, *snapshot_revision);
+            let mut whole = true;
             if let Some(entries) = parts.read_part(&log)? {
                 written.insert(log);
-                let (replayed, last) = journal::replay(stored, &entries, MAX_AUTHORITY_BYTES)
+                whole = journal::read_whole(&entries);
+                let (replayed, last) = journal::replay(stored, &entries)
                     .map_err(|error| format!("{workspace}'s journal does not read: {error}"))?;
                 stored = replayed;
                 revision = revision.max(last.unwrap_or(0));
@@ -126,7 +128,10 @@ impl Journaled {
                 return Err(format!("{workspace}'s record holds another workspace"));
             }
             workspaces.insert(*workspace, stored);
-            kept.insert(*workspace, journal_kept);
+            // A journal a write cut short is let go with a snapshot first.
+            if whole {
+                kept.insert(*workspace, journal_kept);
+            }
         }
         let record = NativeAuthorityStorage {
             revision,
@@ -158,6 +163,15 @@ impl Journaled {
             kept: BTreeMap::new(),
             written: BTreeSet::new(),
         }
+    }
+
+    /// Go on from the replicas `owner` restored from the record [`Self::open`]
+    /// read, as they encode themselves: the next write of each appends what
+    /// it changed. One whose replica encodes other bytes writes a snapshot
+    /// first.
+    pub fn resume(&mut self, owner: &super::NativeWorkspaceOwner) {
+        self.kept
+            .retain(|workspace, kept| owner.resume_journal(*workspace, &mut kept.written));
     }
 
     /// The revision of the record as the index last named it.
@@ -251,9 +265,7 @@ impl Journaled {
         }
         let (entry, written) = journal::next(&kept.written, stored, next.revision)?;
         let appended = kept.appended.saturating_add(entry.len());
-        if appended > kept.snapshot.max(JOURNAL_FLOOR)
-            || stored.peer.len().saturating_mul(2) > MAX_AUTHORITY_BYTES
-        {
+        if appended > kept.snapshot.max(JOURNAL_FLOOR) {
             return Ok(false);
         }
         let name = journal_name(workspace, kept.revision);
@@ -272,7 +284,6 @@ impl Journaled {
         revision: u64,
         stored: &StoredWorkspace,
     ) -> Result<(), String> {
-        preflight_document(stored, MAX_AUTHORITY_BYTES).map_err(|error| error.to_string())?;
         let snapshot = serde_json::to_vec(stored).map_err(|error| error.to_string())?;
         let name = snapshot_name(workspace, revision);
         let log = journal_name(workspace, revision);

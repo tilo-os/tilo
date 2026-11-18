@@ -50,7 +50,6 @@ pub use file_store::{FileHost, open_file, open_file_with, owner_file_of, read_fi
 #[cfg(not(target_arch = "wasm32"))]
 pub use history_content::HistoryContent;
 pub use journaled::{JournalParts, Journaled};
-pub use limits::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES};
 pub use publication::{
     DocumentWrites, HostAnswer, NativeOutgoing, NativeOutgoingEntry, SealedHistoryKeys,
     outgoing_bytes, ownership_name_between, ownership_run_name, validate_file_layout,
@@ -638,6 +637,20 @@ impl NativeWorkspaceOwner {
         read(&*self.view(workspace)?)
     }
 
+    /// Let `written`, what a store's journal of `workspace` goes on from, go on
+    /// from the parts the restored replica encodes itself in, so its next
+    /// entry carries what that write changed. `false` when the workspace is
+    /// not held here or its replica encodes other bytes: the store writes a
+    /// snapshot first then.
+    pub(crate) fn resume_journal(
+        &self,
+        workspace: WorkspaceId,
+        written: &mut journal::Written,
+    ) -> bool {
+        self.with_current(workspace, |view| view.peer().durable_parts())
+            .is_ok_and(|parts| written.resume(parts))
+    }
+
     /// This device's live replica of `workspace`: what its direct link admits
     /// into, and what [`Self::persist`] publishes.
     ///
@@ -1013,8 +1026,6 @@ impl NativeWorkspaceOwner {
                 }
             }
         };
-        limits::preflight_document(&record, limits::MAX_AUTHORITY_BYTES)
-            .map_err(|e| e.to_string())?;
         if changed {
             record.continuity = record
                 .continuity

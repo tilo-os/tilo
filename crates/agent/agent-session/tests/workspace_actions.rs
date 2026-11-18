@@ -80,6 +80,9 @@ mod branch_workspace;
 mod computer_agent;
 
 #[cfg(test)]
+#[path = "workspace_actions/bulk_import.rs"]
+mod bulk_import;
+#[cfg(test)]
 #[path = "workspace_actions/chat_group.rs"]
 mod chat_group;
 #[cfg(test)]
