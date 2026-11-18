@@ -129,11 +129,6 @@ impl Adding {
         }
     }
 
-    /// The machines waiting for the person's answer now, as the person's store holds them.
-    pub(crate) fn enrolling(&self) -> Vec<crate::enrollment::Waiting> {
-        self.machines.borrow().clone()
-    }
-
     /// What the person's store holds now: the asks no device answered yet.
     pub(crate) fn holding(&self, machines: Vec<crate::enrollment::Waiting>) {
         *self.machines.borrow_mut() = machines;
@@ -155,7 +150,7 @@ impl Adding {
 
     /// Let in the machine whose own `tilo://enroll?…` line the person pasted: this device dials
     /// it and approves it there, answering as either kind of machine.
-    pub(crate) fn scan(&self, link: &str) {
+    pub(crate) fn scan(link: &str) {
         let Ok(paths) = tilo_identity::device_admin::PersonPaths::from_env() else {
             return;
         };
@@ -186,16 +181,16 @@ impl Adding {
 
     /// Carry out what the person pressed in the sheet, and say the link is on the clipboard when it
     /// is.
-    pub(crate) fn take(&self, state: &AddDeviceState) {
+    pub(crate) fn take(&self, state: &AddDeviceState, answer: impl Fn(&str, bool)) {
         for effect in state.take_asked() {
             match effect {
                 PairDeviceEffect::Copy { link } => {
                     self.clipboard.copy(link.clone(), ON_CLIPBOARD_FOR);
                     *self.copied.borrow_mut() = Some(link);
                 }
-                PairDeviceEffect::Approve { ask } => self.answer(&ask, true),
-                PairDeviceEffect::Decline { ask } => self.answer(&ask, false),
-                PairDeviceEffect::Link { link } => self.scan(&link),
+                PairDeviceEffect::Approve { ask } => answer(&ask, true),
+                PairDeviceEffect::Decline { ask } => answer(&ask, false),
+                PairDeviceEffect::Link { link } => Self::scan(&link),
                 // Its own close: the sheet took itself down as it asked.
                 PairDeviceEffect::Done => {}
             }
@@ -222,13 +217,14 @@ const MINUTE_MS: u64 = 60_000;
 pub(crate) fn follow(
     state: Option<&AddDeviceState>,
     adding: &Adding,
+    answer: impl Fn(&str, bool),
     place: impl FnOnce() -> Result<Place, NoLink>,
     now_ms: u64,
 ) {
     let Some(state) = state else {
         return;
     };
-    adding.take(state);
+    adding.take(state, answer);
     if !state.presentation().is_open() {
         return;
     }
@@ -255,6 +251,7 @@ impl crate::Shared {
         crate::pair_device::follow(
             self.pair_device.as_ref(),
             &self.adding,
+            |ask, approve| self.answer_enrolling(ask, approve),
             || self.pairing_place(),
             ui::time::unix_now_ms(),
         );
@@ -506,7 +503,7 @@ mod tests {
             let (adding, _) = adding();
             let state = AddDeviceState::default();
             state.presentation().open(false);
-            follow(Some(&state), &adding, || Ok(place()), START);
+            follow(Some(&state), &adding, |_, _| {}, || Ok(place()), START);
             let shown = state.device();
             assert_eq!(shown, adding.device(Ok(place()), START));
             assert!(shown.link.contains("?pair="));

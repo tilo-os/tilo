@@ -196,7 +196,7 @@ pub(crate) fn v2_header() -> [u8; 8] {
 }
 
 /// The sealed box inside `bytes`, or `None` without the envelope prefix.
-pub(crate) fn v2_body(bytes: &[u8]) -> Option<&[u8]> {
+pub fn v2_body(bytes: &[u8]) -> Option<&[u8]> {
     bytes.strip_prefix(&v2_header()[..])
 }
 

@@ -48,7 +48,7 @@ pub use waiting::{Console, Decision, Person, WaitingMachine, hardware_summary};
 /// (a token still lapses a fixed time after it is minted, a personal
 /// certificate has none), revocation is by key, and certificates this side
 /// issues keep their relative order.
-const ISSUANCE_CLOCK_ALLOWANCE_NS: u64 = 60 * 1_000_000_000;
+pub const ISSUANCE_CLOCK_ALLOWANCE_NS: u64 = 60 * 1_000_000_000;
 
 /// What the clock says, for what an enrollment issues and answers.
 pub fn now_ns() -> anyhow::Result<u64> {

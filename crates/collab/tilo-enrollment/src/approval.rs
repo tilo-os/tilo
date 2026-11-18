@@ -11,12 +11,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
-use tilo_identity::device_fleet::DeviceFleetStore;
 use tilo_identity::enrollment::{Certifier, NonceStore, Redemption};
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{
-    DeviceCert, IdentityPaths, decode_enrollment_token, verify_device_cert, verify_device_cert_at,
-    verify_enrollment_token,
+    DeviceCert, IdentityPaths, decode_enrollment_token, verify_device_cert, verify_enrollment_token,
 };
 
 use crate::protocol::{
@@ -24,9 +22,8 @@ use crate::protocol::{
     decrypt_request, encrypt_response, make_finalized,
 };
 use crate::{
-    Decision, Person, RootSigner, WaitingMachine, bounded_home_peer_registry, deadline_after,
-    fleet_store, load_root, now_ns, read_bounded, remember_personal_devices,
-    restore_owner_from_parent, sign_response, socket_timeout, validity_start_ns,
+    RootSigner, WaitingMachine, bounded_home_peer_registry, deadline_after, fleet_store, load_root,
+    now_ns, remember_personal_devices, restore_owner_from_parent, sign_response, validity_start_ns,
 };
 
 /// What a device of the person answering a machine is told to do it. One

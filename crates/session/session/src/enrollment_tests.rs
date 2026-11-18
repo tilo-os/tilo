@@ -95,24 +95,6 @@ impl Keeper {
             cert,
         }
     }
-
-    fn options(&self, kind: EnrollmentKind) -> ApprovalOptions<'_> {
-        ApprovalOptions {
-            identity_root: self.root.path(),
-            identity_dir: Some(self.identities.path()),
-            timeout: 60,
-            workspace_cache: std::path::Path::new(""),
-            acl: std::path::Path::new(""),
-            server_workspace_ids: &[],
-            expected_device: None,
-            expected_service: None,
-            kind,
-            port: 0,
-            ready: None,
-            approved: None,
-            person_uid: None,
-        }
-    }
 }
 
 /// A machine's own key, as the image it boots hands it one.
@@ -167,6 +149,10 @@ impl Loopback {
 }
 
 /// What `read` answers, once it does, within the test's hang bound.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "test arithmetic: the bound is a small duration"
+)]
 fn wait_for<T>(mut read: impl FnMut() -> Option<T>) -> T {
     let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
     loop {
@@ -182,22 +168,20 @@ fn wait_for<T>(mut read: impl FnMut() -> Option<T>) -> T {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one test walks an enrollment from the machine's dial to the answer taken on another device"
+)]
 fn a_machine_answered_on_another_device_is_admitted_with_no_sheet_open() {
-    let runtime = runtime().expect("a runtime for the enrollment");
-    let relay = Loopback::start(&runtime);
+    let driven = runtime().expect("a runtime for the enrollment");
+    let relay = Loopback::start(&driven);
     let serving = Keeper::new(31);
-    let answering = Keeper::new(41);
-    // Both are the person's devices: the same root, certified by it.
-    let mut answering_cert = answering.cert.clone();
-    answering_cert.user_public_key = serving.root_key.verifying_key().to_bytes();
-    sign_device_cert(&mut answering_cert, &serving.root_key).unwrap();
+    // The other device is the same person's: its certificate is the serving
+    // device's root's, and its store is the person's own.
+    let answering_device = SigningKey::from_bytes(&[141; 32]);
+    let answering_cert = certificate(&serving.root_key, &answering_device, "Other laptop");
     let serve_store = store_of(&serving.cert, &answering_cert, &serving.device);
-    let answer_store = store_of(&answering_cert, &serving.cert, &answering.device);
-    assert_eq!(
-        serving.root_key.verifying_key().to_bytes(),
-        answering.root_key.verifying_key().to_bytes(),
-        "one person's root"
-    );
+    let answer_store = store_of(&answering_cert, &serving.cert, &answering_device);
 
     // The serving device's session answers its enrollment endpoint for as
     // long as the session is up, noting each machine in the person's store.
@@ -205,9 +189,10 @@ fn a_machine_answered_on_another_device_is_admitted_with_no_sheet_open() {
     let relay_map = relay.relays();
     let root = serving.root.path().to_path_buf();
     let identities = serving.identities.path().to_path_buf();
+    let serving_store = serve_store.clone();
     let served = std::thread::spawn(move || {
         let mut asked = Asked {
-            personal: serve_store.clone(),
+            personal: serving_store,
         };
         let options = ApprovalOptions {
             identity_root: &root,
@@ -257,7 +242,7 @@ fn a_machine_answered_on_another_device_is_admitted_with_no_sheet_open() {
     .unwrap();
     let decoded = decode_enrollment_token(&token).unwrap();
     let request = Request {
-        token: token.clone(),
+        token,
         device_public_key: machine_key,
         server_node_id: tilo_server_protocol::server_node_id(&machine.device.to_bytes()),
         label: "Cupboard".into(),
@@ -275,8 +260,8 @@ fn a_machine_answered_on_another_device_is_admitted_with_no_sheet_open() {
     .unwrap();
     let machine_relays = relay.relays();
     let joining = std::thread::spawn(move || {
-        let runtime = runtime().expect("a runtime for the machine");
-        runtime.block_on(async move {
+        let machine_runtime = runtime().expect("a runtime for the machine");
+        machine_runtime.block_on(async move {
             let endpoint = endpoint_for(&machine.device, Some(&machine_relays))
                 .await
                 .expect("the machine's endpoint");

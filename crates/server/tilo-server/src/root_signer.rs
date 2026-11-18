@@ -4,6 +4,9 @@ use anyhow::Context;
 
 pub use tilo_enrollment::root::{RootSigner, load_root};
 
+#[cfg(test)]
+use tilo_user_identity::IdentityPaths;
+
 /// Sign a revocation of `device` with `root` and append it to the server
 /// state's revocation log at `state_root`, where every start of the host reads
 /// it. Returns the entry as signed, and whether the log changed.

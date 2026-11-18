@@ -32,10 +32,7 @@ use crate::approval::{
     ApprovalIdentity, ApprovalOptions, PreparedApproval, accept_request, commit_approval,
     expected_pair, load_approval_identity, prepare_approval, waiting_of,
 };
-use crate::protocol::{
-    EnrollmentKind, PAIR_MAGIC, PairSolicitation, decrypt_pair_offer, encrypt_pair_offer,
-    verify_ack,
-};
+use crate::protocol::{PairSolicitation, encrypt_pair_offer, verify_ack};
 use crate::waiting::{Decision, Person, WaitingMachine};
 use crate::{valid_solicitation, validity_start_ns};
 
@@ -315,9 +312,8 @@ pub fn serve_for_lifetime(
             "answering machines on this device's enrollment endpoint"
         );
         loop {
-            let incoming = match endpoint.accept().await {
-                Some(incoming) => incoming,
-                None => return Ok(()),
+            let Some(incoming) = endpoint.accept().await else {
+                return Ok(());
             };
             let connection = match incoming.await {
                 Ok(connection) => connection,
@@ -399,10 +395,10 @@ async fn approve_connection(
                     .map(|pending| (options, pending))
             })
             .context("the machine's request did not verify")?;
-        if let Some(person) = person.as_deref_mut() {
-            if person.decide(&waiting_of(&pending))? == Decision::Decline {
-                return Ok(Admission::Declined);
-            }
+        if let Some(person) = person.as_deref_mut()
+            && person.decide(&waiting_of(&pending))? == Decision::Decline
+        {
+            return Ok(Admission::Declined);
         }
         finish(connection, options, identity, &pending).await?;
         Ok(Admission::Admitted)
