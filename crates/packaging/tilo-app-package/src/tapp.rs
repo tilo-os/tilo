@@ -425,6 +425,10 @@ type = "gui"
 
     /// `bytes` with its header naming `format`: the number the archive writes after
     /// `format = `.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "offsets into an archive this test built"
+    )]
     fn header_names(bytes: &mut Vec<u8>, format: u32) {
         let marker = b"format = ";
         let at = bytes
