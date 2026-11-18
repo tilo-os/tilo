@@ -297,12 +297,15 @@ pub(super) fn in_workspace_folder(
 /// which Files on that computer reads.
 fn reads_workspace_folder(action: &str, arguments: &serde_json::Map<String, Value>) -> bool {
     use fs_protocol::tree::{LIST, READ_TEXT};
+    // Content the workspace keeps is on no one computer either: a read of it by its address
+    // (`content`) is the workspace's to answer.
     action == LIST
         || (action == READ_TEXT
-            && arguments
-                .get("file")
-                .and_then(Value::as_str)
-                .is_some_and(|file| !file.trim_start().starts_with(['/', '~'])))
+            && (arguments.contains_key("content")
+                || arguments
+                    .get("file")
+                    .and_then(Value::as_str)
+                    .is_some_and(|file| !file.trim_start().starts_with(['/', '~']))))
 }
 
 /// What Files says of a name that is neither an absolute path nor an entry of the folder it

@@ -679,7 +679,7 @@ pub(super) async fn conversation_part(
 }
 
 /// What Chat's `post` takes to say `text` in `conversation`.
-fn saying(conversation: &Id, text: &str) -> serde_json::Value {
+pub(super) fn saying(conversation: &Id, text: &str) -> serde_json::Value {
     serde_json::json!({"channel": conversation.as_str(), "text": text})
 }
 

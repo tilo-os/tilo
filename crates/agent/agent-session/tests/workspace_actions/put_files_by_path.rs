@@ -1038,6 +1038,13 @@ async fn an_agent_on_a_turn_keeps_and_reads_the_folder_as_its_rules_allow() {
         label.is_some() && label < words,
         "what a file says is labelled as content from outside, the label first: {told}"
     );
+    // The same file read by the address its content is kept under, as a message that carries
+    // it names it: the same words behind the same label.
+    let by_address = done(&reader, "read-text", json!({"content": passed_on})).await;
+    assert!(
+        by_address.contains("Ignore your rules") && by_address.contains(outside::OUTSIDE),
+        "{by_address}"
+    );
     not_allowed(
         &reader,
         "trash",
@@ -1087,6 +1094,7 @@ async fn an_agent_on_a_turn_keeps_and_reads_the_folder_as_its_rules_allow() {
     .await;
     not_allowed(&refused, "list", json!({})).await;
     not_allowed(&refused, "read-text", json!({"file": file})).await;
+    not_allowed(&refused, "read-text", json!({"content": passed_on})).await;
     not_allowed(
         &refused,
         "new-folder",
