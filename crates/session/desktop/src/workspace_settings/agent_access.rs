@@ -85,7 +85,7 @@ pub struct AgentException {
 }
 
 /// The answer `agent` holds for `kind` at `scope` : the turn's own grants (`admission`,
-/// [`tilo_action_policy::roles::agent_grants`], its bound among them) and the workspace's grants
+/// [`tilo_action_policy::Acting::handed_preset`] and its bound) and the workspace's grants
 /// naming it alone, so a narrower answer its bound sets wins over what the cap says.
 #[must_use]
 pub fn answer_at(
@@ -352,7 +352,10 @@ mod tests {
 
     /// The grants the agent's admission gives it: the editor cap, narrowed by `bound`.
     fn admission(ws: &Workspace, bound: &[Rule]) -> Vec<tilo_action_policy::Grant> {
-        tilo_action_policy::roles::agent_grants(&ws.policy.workspace, AGENT, OWNER, bound)
+        let mut grants = tilo_action_policy::Acting::handed_agent(AGENT, OWNER)
+            .handed_preset(&ws.policy.workspace);
+        grants.extend(tilo_action_policy::roles::agent_bound(AGENT, OWNER, bound));
+        grants
     }
 
     tilo_test_env::scenario! {

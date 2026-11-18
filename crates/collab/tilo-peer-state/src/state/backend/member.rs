@@ -93,12 +93,13 @@ fn current<'peer, P: Policy>(
         .map(|row| match &row.delegation.delegate {
             Delegate::Agent { agent_id } => crate::state::ActingAs {
                 actor: tilo_action_policy::Actor::Member(MemberId::agent(agent_id.clone())),
-                grants: tilo_action_policy::roles::agent_grants(
-                    &peer.workspace,
-                    agent_id,
+                // Its person handed it the delegation its root-signed
+                // certificate names.
+                grants: tilo_action_policy::Acting::handed_agent(
+                    agent_id.as_str(),
                     person.as_str(),
-                    &[],
-                ),
+                )
+                .handed_preset(&peer.workspace),
             },
             Delegate::Bot { installation } => crate::state::ActingAs {
                 actor: tilo_action_policy::Actor::Member(MemberId::bot(installation.clone())),

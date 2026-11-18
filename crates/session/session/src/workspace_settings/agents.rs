@@ -378,12 +378,13 @@ impl Agents {
         let tag = (kept.keeper == record.me().id()).then(|| t("workspace-settings-agent-yours"));
         // What the turn admits it to, before the answers the person set for its apps: the cap's
         // grants, narrowed by the bound its record keeps.
-        let admission = tilo_action_policy::roles::agent_grants(
-            &workspace.policy.workspace,
+        let mut admission = tilo_action_policy::Acting::handed_agent(agent, kept.keeper.as_str())
+            .handed_preset(&workspace.policy.workspace);
+        admission.extend(tilo_action_policy::roles::agent_bound(
             agent,
             &kept.keeper,
             &kept.bound_rules().unwrap_or_default(),
-        );
+        ));
         let rows = agent_access::agent_access_rows(workspace, agent, &admission, apps);
         let exceptions =
             agent_access::agent_exceptions(&kept.bound_rules().unwrap_or_default(), apps);

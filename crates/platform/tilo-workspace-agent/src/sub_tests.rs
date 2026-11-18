@@ -687,7 +687,8 @@ fn an_agents_team_is_those_it_started_and_theirs_and_nobody_above_or_beside_it()
 
 /// What the policy answers an agent's turn that carries `rules`, for `kind` at `node`.
 fn decided(agent: &str, rules: &[Rule], node: &TreePath, kind: ActionKind) -> Answer {
-    let grants = roles::agent_grants(WORKSPACE, agent, ADA, rules);
+    let mut grants = tilo_action_policy::Acting::handed_agent(agent, ADA).handed_preset(WORKSPACE);
+    grants.extend(roles::agent_bound(agent, ADA, rules));
     let cx = Context::at(1_700_000_000_000);
     Party::new(vec![Grantee::agent(agent)], &grants)
         .decide(node, kind, &cx)

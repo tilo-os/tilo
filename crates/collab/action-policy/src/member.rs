@@ -367,7 +367,7 @@ pub struct Acting {
     pub foreign_device: bool,
     /// An agent a person's own device handed its session to, acting for that
     /// person: it carries the delegation a device gives its agents
-    /// ([`crate::roles::agent_grants`]). A claim the signer of a change makes,
+    /// ([`Self::handed_preset`]). A claim the signer of a change makes,
     /// honoured only from the device of the person it acts for
     /// ([`Self::signed_by`]).
     #[serde(default, skip_serializing_if = "is_false")]
@@ -455,6 +455,14 @@ impl Acting {
     pub fn on_foreign_device(mut self, foreign: bool) -> Self {
         self.foreign_device = foreign;
         self
+    }
+
+    /// The agent `agent` acting for `person`, carrying the delegation the
+    /// person handed it ([`Self::handed`]).
+    #[must_use]
+    #[track_caller]
+    pub fn handed_agent(agent: impl Into<String>, person: impl Into<PersonId>) -> Self {
+        Self::agent(agent).handed().acting_for(Self::person(person))
     }
 
     /// The same acting, by an agent a person's own device handed its session

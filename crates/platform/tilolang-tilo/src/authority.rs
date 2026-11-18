@@ -22,7 +22,7 @@ use std::rc::Rc;
 
 use tilo_action_policy::{
     Answer, Authority as Policy, Context, Grant, Grantee, MemberAccess, MemberId, Party, TreePath,
-    authorship, roles,
+    authorship,
 };
 use tilolang_runtime::meta::Meta;
 use tilolang_runtime::{ActionInfo, Actor, Authority, Decision, ModuleHash};
@@ -293,9 +293,10 @@ impl Authority for TiloAuthority {
             (None, _, _) => Party::default().owning(TreePath::root()),
         };
         let delegation = match (agent, person) {
-            (Some(_), Some(person)) => {
-                Some(roles::agent_grants(workspace, invoker.id(), person, &[]))
-            }
+            (Some(_), Some(person)) => Some(
+                tilo_action_policy::Acting::handed_agent(invoker.id(), person)
+                    .handed_preset(workspace),
+            ),
             _ => None,
         };
         // Each author of the code that led here, once, with what it holds of its own. A block is

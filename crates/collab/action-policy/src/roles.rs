@@ -828,29 +828,14 @@ pub mod agent_policy {
     }
 }
 
-/// The authority an agent's turn carries in `workspace`: the preset of
-/// [`agent_policy::ROLE_CAP`], narrowed by the bound the agent's resource keeps
-/// (`bound`; empty follows the default, which is the cap's own). The agent acts
-/// with its person's grants bounded by them, so it changes what its person may
-/// change, never more than the cap allows, never more than its resource bounds it
-/// to, and never the workspace's governance.
-///
-/// This is the only place an agent's authority is made: an action API or a receiver
-/// hands it the person whose message caused the turn, and the bound it holds
-/// for the agent's resource ([`crate::turn::authority`]).
-#[must_use]
-pub fn agent_grants(workspace: &str, agent: &str, person: &str, bound: &[Rule]) -> Vec<Grant> {
-    let mut grants = agent_preset(workspace, agent, person);
-    grants.extend(agent_bound(agent, person, bound));
-    grants
-}
-
 /// The preset of [`agent_policy::ROLE_CAP`] an agent acting for `person` in
-/// `workspace` carries, before any bound: what a person's own device hands the
-/// agent it gives its session to ([`crate::Acting::handed`]), which
-/// [`crate::Authority::of_acting`] gives such an agent.
+/// `workspace` carries, before any bound: the delegation a person hands their
+/// agent ([`crate::Acting::handed`]). Never more than the cap, never more than
+/// the person may change, and never the workspace's governance. Only
+/// [`crate::Acting::handed_preset`] makes it, so every API and every receiver
+/// gives an agent the same.
 #[must_use]
-pub fn agent_preset(workspace: &str, agent: &str, person: &str) -> Vec<Grant> {
+pub(crate) fn agent_preset(workspace: &str, agent: &str, person: &str) -> Vec<Grant> {
     let grantee = Grantee::agent(agent.to_owned());
     let granted_by = Grantee::person(person.to_owned());
     let prefix = format!("turn:agent:{agent}");
@@ -862,8 +847,9 @@ pub fn agent_preset(workspace: &str, agent: &str, person: &str) -> Vec<Grant> {
     )
 }
 
-/// The rules of `agent`'s bound (`bound`) as grants, given by `person`: what
-/// narrows its preset ([`agent_preset`]).
+/// The rules of `agent`'s bound (`bound`; empty follows the default, which is
+/// the cap's own) as grants, given by `person`: what narrows its preset
+/// ([`agent_preset`]) to what its resource or the workspace's list keeps.
 #[must_use]
 pub fn agent_bound(agent: &str, person: &str, bound: &[Rule]) -> Vec<Grant> {
     let grantee = Grantee::agent(agent.to_owned());
@@ -883,12 +869,12 @@ pub fn agent_bound(agent: &str, person: &str, bound: &[Rule]) -> Vec<Grant> {
         .collect()
 }
 
-/// Where the ids of the grants [`agent_grants`] makes of `agent`'s bound begin.
+/// Where the ids of the grants [`agent_bound`] makes of `agent`'s bound begin.
 fn bound_prefix(agent: &str) -> String {
     format!("turn:agent:{agent}:bound:")
 }
 
-/// Whether `grant` is one of the rules of `agent`'s bound, as [`agent_grants`] carries it.
+/// Whether `grant` is one of the rules of `agent`'s bound, as [`agent_bound`] carries it.
 #[must_use]
 pub fn is_agent_bound(grant: &Grant, agent: &str) -> bool {
     grant.id.0.starts_with(&bound_prefix(agent))
