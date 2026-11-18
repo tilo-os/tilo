@@ -78,12 +78,12 @@ pub(crate) fn parse<R: WorkspaceRead, D: PolicyDecode>(
             if matches!(value, WorkspaceValue::Str(workspace) if workspace == expected) {
                 Ok(())
             } else {
-                Err(Error::Policy(MediaPolicyError::Binding))
+                Err(Error::Policy(MediaPolicyError::Workspace))
             }
         })
         .map_err(read_error)?;
     if count == 0 {
-        return Err(Error::Policy(MediaPolicyError::Binding));
+        return Err(Error::Policy(MediaPolicyError::Workspace));
     }
     Ok(Some(value))
 }

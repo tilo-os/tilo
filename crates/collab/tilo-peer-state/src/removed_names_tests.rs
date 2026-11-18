@@ -38,9 +38,13 @@ fn a_removed_persons_name_goes_with_them() {
     let origin = TransportOrigin::ServerDelta(delegate_key.verifying_key().to_bytes());
     peer.receive_from(origin, named.workspace_message(), now)
         .expect("the naming merges");
-    assert!(
-        peer.security_basis().unwrap().is_err(),
-        "the merge names nobody the workspace holds"
+    assert_eq!(
+        peer.security_basis().unwrap().unwrap_err().to_string(),
+        format!(
+            "the workspace keeps a name for {}, who is no longer a member nor one of its devices",
+            hex::encode(root)
+        ),
+        "the refusal says what it found"
     );
     assert!(
         peer.governance_mut()

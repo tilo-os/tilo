@@ -106,13 +106,13 @@ tilo_test_env::scenario! {
             document.doc.put(&voice, "kind", "text").unwrap();
             document.doc.commit();
         }
-        assert_eq!(refusal(&peer, &policy), "invalid media binding");
+        assert_eq!(refusal(&peer, &policy), "a call's binding to its place in Chat does not hold");
         assert_eq!(
             bindings(&policy, false, |app, document| legacy_binding(
                 &peer, &policy, app, document
             ))
             .map_err(ReadinessError::legacy),
-            Err("invalid media binding".to_owned()),
+            Err("a call's binding to its place in Chat does not hold".to_owned()),
             "a partial check refuses a change too, not only a missing document"
         );
     }

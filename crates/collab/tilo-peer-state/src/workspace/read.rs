@@ -327,7 +327,7 @@ pub(crate) fn strict_string_of<O>(
     }
     result
         .map(str::to_owned)
-        .ok_or(ReadError::Visitor(MediaPolicyError::Binding))
+        .ok_or(ReadError::Visitor(MediaPolicyError::Missing))
 }
 
 /// [`strict_bytes`] of an entry [`WorkspaceRead::visit_entries`] read.
@@ -350,7 +350,7 @@ pub(crate) fn strict_bytes_of<O>(
     }
     result
         .map(<[u8]>::to_vec)
-        .ok_or(ReadError::Visitor(MediaPolicyError::Binding))
+        .ok_or(ReadError::Visitor(MediaPolicyError::Missing))
 }
 
 pub(crate) fn strict_string<R: WorkspaceRead>(
@@ -374,7 +374,7 @@ pub(crate) fn strict_string<R: WorkspaceRead>(
         Ok(())
     })
     .map_err(ReadError::flatten)?;
-    result.ok_or(ReadError::Visitor(MediaPolicyError::Binding))
+    result.ok_or(ReadError::Visitor(MediaPolicyError::Missing))
 }
 
 #[cfg(test)]
@@ -399,7 +399,7 @@ pub(crate) fn strict_bytes<R: WorkspaceRead>(
         Ok(())
     })
     .map_err(ReadError::flatten)?;
-    result.ok_or(ReadError::Visitor(MediaPolicyError::Binding))
+    result.ok_or(ReadError::Visitor(MediaPolicyError::Missing))
 }
 
 /// The policy error a read failure is reported as.

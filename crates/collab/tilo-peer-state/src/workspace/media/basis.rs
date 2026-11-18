@@ -134,16 +134,16 @@ fn project<'a, R: WorkspaceRead, D: Decode>(
             let row = &decoder.identity(key, &bytes)?;
             let device = super::canonical_key(key).map_err(policy)?;
             if device != row.device_cert.device_public_key {
-                return Err(policy(MediaPolicyError::Binding));
+                return Err(policy(MediaPolicyError::Identity));
             }
             tilo_user_identity::verify_device_cert(&row.device_cert)
-                .map_err(|_| policy(MediaPolicyError::Binding))?;
+                .map_err(|_| policy(MediaPolicyError::Identity))?;
             let mut admissions = BTreeSet::new();
             for proof in row.admission.iter().chain(&row.admissions) {
                 if proof.device_public_key != device
                     || proof.user_public_key != row.device_cert.user_public_key
                 {
-                    return Err(policy(MediaPolicyError::Binding));
+                    return Err(policy(MediaPolicyError::Identity));
                 }
                 let bytes = work.encoded(proof)?;
                 work.tree_entry::<Vec<u8>, ()>()?;
@@ -161,7 +161,7 @@ fn project<'a, R: WorkspaceRead, D: Decode>(
             }
             for entry in &row.revocations {
                 if entry.user_public_key != row.device_cert.user_public_key {
-                    return Err(policy(MediaPolicyError::Binding));
+                    return Err(policy(MediaPolicyError::Revocation));
                 }
                 work.push(&mut revocations, entry.clone())?;
             }
@@ -174,7 +174,7 @@ fn project<'a, R: WorkspaceRead, D: Decode>(
         })
         .map_err(visit_error)?;
     if !certificates.values().any(|root| *root == owner_key) {
-        return Err(policy(MediaPolicyError::Binding));
+        return Err(policy(MediaPolicyError::OwnerUnadmitted));
     }
     // The roster is the devices the policy's authorization rests on: every
     // device name is one of them. A name kept under a root names nobody's
@@ -186,7 +186,7 @@ fn project<'a, R: WorkspaceRead, D: Decode>(
         if certificates.contains_key(&key) {
             roster.insert(key);
         } else if key != owner_key && !members.contains_key(&hex::encode(key)) {
-            return Err(policy(MediaPolicyError::Binding));
+            return Err(policy(MediaPolicyError::NamesNobody(key)));
         }
     }
     for entry in extra {
@@ -201,7 +201,7 @@ fn project<'a, R: WorkspaceRead, D: Decode>(
                 .get(&entry.revoked_device_public_key)
                 .is_some_and(|root| *root != entry.user_public_key)
         {
-            return Err(policy(MediaPolicyError::Binding));
+            return Err(policy(MediaPolicyError::Revocation));
         }
         let bytes = work.encoded(&entry)?;
         work.tree_entry::<Vec<u8>, RevocationEntry>()?;
@@ -214,7 +214,7 @@ fn project<'a, R: WorkspaceRead, D: Decode>(
     for entry in encoded.into_values() {
         verified
             .insert(entry)
-            .map_err(|_| policy(MediaPolicyError::Binding))?;
+            .map_err(|_| policy(MediaPolicyError::Revocation))?;
     }
     let mut revocations = BTreeMap::new();
     for entry in verified.iter() {

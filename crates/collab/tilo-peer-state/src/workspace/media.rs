@@ -88,10 +88,31 @@ pub enum MediaPolicyError {
     Malformed,
     Conflict,
     UnsupportedVersion,
+    /// A call's binding to its place in Chat does not hold.
     Binding,
     Counter,
     Exhausted,
     Capacity,
+    /// A field the workspace's governance needs is not there.
+    Missing,
+    /// A device row of the workspace does not hold together.
+    Identity,
+    /// The workspace's owner has no admitted device.
+    OwnerUnadmitted,
+    /// The workspace keeps a name for this key, which is no member's, no
+    /// device's and not the owner's.
+    NamesNobody([u8; 32]),
+    /// A revocation names a person the workspace does not hold, or another
+    /// person's device.
+    Revocation,
+    /// A change lowers a revocation already seen.
+    RevocationLowered,
+    /// The call policy rests on governance the workspace no longer has.
+    Unreconciled,
+    /// The call policy names another workspace.
+    Workspace,
+    /// A call id is not a canonical nonzero key.
+    CallId,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransitionMode {
@@ -143,13 +164,13 @@ pub fn validate_transition(
                     .get(key)
                     .is_none_or(|current| current > floor)
             }) {
-                return Err(MediaPolicyError::Binding);
+                return Err(MediaPolicyError::RevocationLowered);
             }
         }
         if !after.get_missing_deps(&[]).is_empty()
             || policy.authorization_basis != security_basis(after, &[])?
         {
-            return Err(MediaPolicyError::Binding);
+            return Err(MediaPolicyError::Unreconciled);
         }
     }
     Ok(current)
@@ -183,10 +204,10 @@ fn revocation_floors(doc: &AutoCommit) -> Result<RevocationFloors, MediaPolicyEr
                 .map_err(|_| MediaPolicyError::Malformed)?;
             for entry in row.revocations {
                 if entry.user_public_key != row.device_cert.user_public_key {
-                    return Err(MediaPolicyError::Binding);
+                    return Err(MediaPolicyError::Revocation);
                 }
                 tilo_user_identity::verify_revocation_entry(&entry)
-                    .map_err(|_| MediaPolicyError::Binding)?;
+                    .map_err(|_| MediaPolicyError::Revocation)?;
                 let floor = floors
                     .entry((entry.user_public_key, entry.revoked_device_public_key))
                     .or_insert(entry.revoked_at_ns);
@@ -215,10 +236,10 @@ pub fn refresh_authorization(
         return if parse(after)?.is_none() {
             Ok(())
         } else {
-            Err(MediaPolicyError::Binding)
+            Err(MediaPolicyError::Unreconciled)
         };
     };
-    let mut current = parse(after)?.ok_or(MediaPolicyError::Binding)?;
+    let mut current = parse(after)?.ok_or(MediaPolicyError::Unreconciled)?;
     let basis = security_basis(after, &[])?;
     if basis != previous.authorization_basis {
         current.authorization_basis = basis;
@@ -305,7 +326,7 @@ pub fn validate(value: &WorkspaceMediaV1) -> Result<(), MediaPolicyError> {
         return Err(MediaPolicyError::UnsupportedVersion);
     }
     if value.workspace == [0; 16] {
-        return Err(MediaPolicyError::Binding);
+        return Err(MediaPolicyError::Workspace);
     }
     if value.authorization_revision == 0 {
         return Err(MediaPolicyError::Counter);
@@ -316,7 +337,7 @@ pub fn validate(value: &WorkspaceMediaV1) -> Result<(), MediaPolicyError> {
     let mut denied_total = 0usize;
     for (id, call) in &value.calls {
         if *id == [0; 32] {
-            return Err(MediaPolicyError::Binding);
+            return Err(MediaPolicyError::CallId);
         }
         call.binding.validate()?;
         // At most 64 rows: compare only earlier keys without constructing a
@@ -415,7 +436,7 @@ pub fn validate_policy_transition(
         return Ok(());
     };
     if before.workspace != after.workspace {
-        return Err(MediaPolicyError::Binding);
+        return Err(MediaPolicyError::Workspace);
     }
     counter_transition(
         before.authorization_revision,
@@ -473,15 +494,15 @@ pub fn next_counter(value: u64) -> Result<u64, MediaPolicyError> {
 ///
 /// # Errors
 ///
-/// Returns [`MediaPolicyError::Binding`] if `value` is not canonical.
+/// Returns [`MediaPolicyError::CallId`] if `value` is not canonical.
 pub fn parse_call_id(value: &str) -> Result<[u8; 32], MediaPolicyError> {
     if value.len() != 64 || !lower_hex(value) {
-        return Err(MediaPolicyError::Binding);
+        return Err(MediaPolicyError::CallId);
     }
     let mut key = [0; 32];
-    hex::decode_to_slice(value, &mut key).map_err(|_| MediaPolicyError::Binding)?;
+    hex::decode_to_slice(value, &mut key).map_err(|_| MediaPolicyError::CallId)?;
     if key == [0; 32] {
-        return Err(MediaPolicyError::Binding);
+        return Err(MediaPolicyError::CallId);
     }
     Ok(key)
 }
@@ -492,7 +513,7 @@ impl MediaCallResultV1 {
             return Err(MediaPolicyError::UnsupportedVersion);
         }
         if self.call_id == [0; 32] {
-            return Err(MediaPolicyError::Binding);
+            return Err(MediaPolicyError::CallId);
         }
         if self.epoch == 0 || self.authorization_revision == 0 {
             return Err(MediaPolicyError::Counter);
@@ -716,10 +737,31 @@ impl fmt::Display for MediaPolicyError {
             Self::Malformed => "malformed media policy",
             Self::Conflict => "conflicting media policy",
             Self::UnsupportedVersion => "unsupported media policy version",
-            Self::Binding => "invalid media binding",
+            Self::Binding => "a call's binding to its place in Chat does not hold",
             Self::Counter => "invalid media policy counter",
             Self::Exhausted => "media policy counter exhausted",
             Self::Capacity => "media policy capacity exceeded",
+            Self::Missing => "a field the workspace's governance needs is missing",
+            Self::Identity => {
+                "a device row of the workspace does not hold together: its key, certificate or admission"
+            }
+            Self::OwnerUnadmitted => "the workspace's owner has no admitted device",
+            Self::NamesNobody(key) => {
+                return write!(
+                    formatter,
+                    "the workspace keeps a name for {}, who is no longer a member nor one of its devices",
+                    hex::encode(key)
+                );
+            }
+            Self::Revocation => {
+                "a revocation names a person the workspace does not hold, or another person's device"
+            }
+            Self::RevocationLowered => "a change lowers a revocation this replica already saw",
+            Self::Unreconciled => {
+                "the call policy rests on governance the workspace no longer has"
+            }
+            Self::Workspace => "the call policy names another workspace",
+            Self::CallId => "a call id is not a canonical nonzero key",
         })
     }
 }
@@ -920,7 +962,7 @@ mod workspace_media_tests {
                 );
                 assert_eq!(
                     validate_transition(Some(&before), &after, TransitionMode::Admission),
-                    Err(MediaPolicyError::Binding),
+                    Err(MediaPolicyError::RevocationLowered),
                 );
             }
         }
