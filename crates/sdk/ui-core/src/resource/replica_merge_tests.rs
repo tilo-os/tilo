@@ -158,8 +158,14 @@ tilo_test_env::scenario! {
         );
 
         // Merged on another window's route: this window's own merge finds nothing.
-        let answer = collab_types::DocumentMutation::Incremental(peer_change("reply"));
-        let merge = || crate::bound_dispatch::merge_remote_owned_document(&store, &want, &answer);
+        let answer = peer_change("reply");
+        let merge = || {
+            crate::bound_dispatch::merge_remote_owned_document(
+                &store,
+                &want,
+                crate::collaboration::Incoming::Changes(&answer),
+            )
+        };
         assert_eq!(merge().unwrap().changed, Some(true));
         assert_eq!(woken.load(Ordering::SeqCst), 3, "merged on a route");
         assert_eq!(merge().unwrap().changed, Some(false));

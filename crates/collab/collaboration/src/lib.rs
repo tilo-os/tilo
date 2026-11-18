@@ -102,6 +102,8 @@ pub mod action_directory;
 pub mod document;
 pub mod document_routes;
 pub mod history_source;
+mod incoming;
+pub use incoming::Incoming;
 pub mod invocation_scope;
 pub mod local_document_action;
 pub mod local_identity;
@@ -242,11 +244,13 @@ mod portable_committed {
         pub fn was_refused(&self) -> bool {
             match self.never {}
         }
-        pub fn take_into<D, T, E>(
+        pub fn with_incoming<T>(
             &self,
-            _document: &mut D,
-            _merge: impl FnOnce(&mut D, &collab_types::DocumentMutation) -> Result<T, E>,
-        ) -> Option<T> {
+            _apply: impl FnOnce(crate::Incoming<'_>) -> T,
+        ) -> Result<T, String> {
+            match self.never {}
+        }
+        pub fn take_into(&self, _document: &mut automerge::AutoCommit) -> Option<bool> {
             match self.never {}
         }
     }

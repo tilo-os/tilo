@@ -2324,7 +2324,7 @@ mod tests {
                 search.perform_choices(&handle, &mut |_| Ok(())).is_empty(),
                 "the row runs"
             );
-            let (provider, resource, action, _) = invoked
+            let (provider, resource, action, told) = invoked
                 .borrow_mut()
                 .pop()
                 .unwrap_or_else(|| panic!("choosing {title:?} opens something"));
@@ -2333,9 +2333,20 @@ mod tests {
                 Some(NOTES_APP),
                 "{title:?} opens in Notes"
             );
+            // The notes live in a chain beside the notebook, which publishes no `open` of its
+            // own: the note opens through the notebook's, told the note as its anchor.
             assert_eq!(
                 (resource.as_str(), action.as_str()),
-                (note.as_str(), "open"),
+                (
+                    <notes::Notebook as tilo_resource::Resource>::KIND,
+                    tilo_desktop_search::OPEN_ACTION
+                ),
+                "{title:?} opens through the notebook"
+            );
+            assert_eq!(
+                told.get(tilo_desktop_search::OPEN_ANCHOR)
+                    .and_then(serde_json::Value::as_str),
+                Some(note.as_str()),
                 "{title:?} opens that note"
             );
         }
@@ -2480,7 +2491,7 @@ mod tests {
             search.perform_choices(&handle, &mut |_| Ok(())).is_empty(),
             "the row runs"
         );
-        let (provider, resource, action, _) = invoked
+        let (provider, resource, action, told) = invoked
             .borrow_mut()
             .pop()
             .expect("choosing the note opens something");
@@ -2491,7 +2502,16 @@ mod tests {
         );
         assert_eq!(
             (resource.as_str(), action.as_str()),
-            (release.as_str(), "open"),
+            (
+                <notes::Notebook as tilo_resource::Resource>::KIND,
+                tilo_desktop_search::OPEN_ACTION
+            ),
+            "the note opens through the notebook"
+        );
+        assert_eq!(
+            told.get(tilo_desktop_search::OPEN_ANCHOR)
+                .and_then(serde_json::Value::as_str),
+            Some(release.as_str()),
             "choosing it opens that note"
         );
     }

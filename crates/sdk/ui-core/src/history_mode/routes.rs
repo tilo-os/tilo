@@ -1,5 +1,6 @@
 //! Exact installed document routing. No transport, signing or action log lives here.
 use super::HistoryOwner;
+use crate::collaboration::Incoming;
 use crate::{
     collaboration::{AcceptedRoute, RouteSpec},
     widget::Widget,
@@ -48,45 +49,34 @@ impl MergedRemote {
     }
 }
 
-/// Apply a mutation the host has already committed. Bytes from peers reach an app only after the host
-/// admitted them through `tilo_automerge_isolate`, so this applies in the app's own process.
-pub(crate) fn merge_committed(
-    doc: &mut AutoCommit,
+/// `mutation`, as a peer's route delivered it, handed to `apply`: its whole
+/// document loaded here.
+pub(crate) fn with_mutation<T>(
     mutation: &DocumentMutation,
-) -> Result<bool, RemoteApplyError> {
-    ready(doc)?;
-    // Decode into a clone first so malformed incremental data cannot partly
-    // mutate the real owner. Merge preserves actor, causal history and identity.
-    let mut incoming = match mutation {
-        DocumentMutation::Snapshot(bytes) => load(bytes)?,
-        DocumentMutation::Incremental(bytes) => {
-            let mut incoming = doc.clone();
-            load_incremental(&mut incoming, bytes)?;
-            incoming
-        }
-    };
-    let before = super::sorted_heads(doc.base_heads());
-    doc.merge_incoming(&mut incoming)
-        .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?;
-    Ok(before != super::sorted_heads(doc.base_heads()))
+    apply: impl FnOnce(Incoming<'_>) -> Result<T, RemoteApplyError>,
+) -> Result<T, RemoteApplyError> {
+    let _phase = tilo_resource::profiling::Phase::start("committed.load");
+    Incoming::of(mutation, apply)
+        .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?
 }
 
-/// [`merge_committed`] into `candidate`, a copy its caller keeps only when the mutation applied and
-/// validated: the changes load straight into it, with no second copy of the document and no merge of a
-/// whole one.
-pub(crate) fn merge_committed_into_copy(
+/// Apply what the host has already committed to `candidate`: changes whole or not at all, a whole
+/// document by merging only what it adds. Bytes from peers reach an app only after the host admitted
+/// them through `tilo_automerge_isolate`, so this applies in the app's own process.
+pub(crate) fn merge_committed(
     candidate: &mut AutoCommit,
-    mutation: &DocumentMutation,
+    incoming: Incoming<'_>,
 ) -> Result<bool, RemoteApplyError> {
+    let _phase = tilo_resource::profiling::Phase::start("committed.merge");
     ready(candidate)?;
     let before = super::sorted_heads(candidate.base_heads());
-    match mutation {
-        DocumentMutation::Snapshot(bytes) => {
+    match incoming {
+        Incoming::Whole(loaded) => {
             candidate
-                .merge_incoming(&mut load(bytes)?)
+                .take_loaded(loaded)
                 .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?;
         }
-        DocumentMutation::Incremental(bytes) => load_incremental(candidate, bytes)?,
+        Incoming::Changes(bytes) => load_incremental(candidate, bytes)?,
     }
     Ok(before != super::sorted_heads(candidate.base_heads()))
 }
@@ -101,12 +91,9 @@ fn ready(doc: &AutoCommit) -> Result<(), RemoteApplyError> {
     }
 }
 
-fn load(bytes: &[u8]) -> Result<AutoCommit, RemoteApplyError> {
-    AutoCommit::load(bytes).map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))
-}
-
 /// Apply an incremental stream to `doc`, whole or not at all.
 pub(crate) fn load_incremental(doc: &mut AutoCommit, bytes: &[u8]) -> Result<(), RemoteApplyError> {
+    let _phase = tilo_resource::profiling::Phase::start("committed.changes");
     let changes = automerge::Automerge::parse_changes(bytes)
         .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?;
     doc.apply_incoming(changes)
@@ -584,7 +571,7 @@ mod committed_changes_tests {
             let mutation = DocumentMutation::Incremental(delta);
             let mut changed = None;
             let errors = errors_during(|| {
-                changed = Some(merge_committed_into_copy(&mut held, &mutation).unwrap());
+                changed = Some(with_mutation(&mutation, |incoming| merge_committed(&mut held, incoming)).unwrap());
             });
             assert_eq!(errors, "", "a valid delta logged an error");
             assert_eq!(changed, Some(true));
@@ -601,7 +588,7 @@ mod committed_changes_tests {
             let before = held.get_heads();
             for end in 1..delta.len() {
                 let mutation = DocumentMutation::Incremental(delta[..end].to_vec());
-                let refused = merge_committed_into_copy(&mut held, &mutation);
+                let refused = with_mutation(&mutation, |incoming| merge_committed(&mut held, incoming));
                 assert!(
                     matches!(refused, Err(RemoteApplyError::InvalidMutation(_))),
                     "truncated at {end}"
