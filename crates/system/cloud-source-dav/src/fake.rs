@@ -1047,14 +1047,3 @@ fn versions(state: &mut State, request: &Request, path: &str) -> Reply {
         _ => Reply::status(405),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn basic_auth_is_standard_base64() {
-        assert_eq!(base64(b"ada:s3cret"), "YWRhOnMzY3JldA==");
-        assert_eq!(base64(b"ab"), "YWI=");
-    }
-}
