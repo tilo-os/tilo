@@ -17,6 +17,11 @@ use tilo_api::Server;
 /// backend's scale (hundreds) against a whole host.
 const CUSTOMERS: usize = 8;
 
+/// The title one customer's key tries to plant in another's workspace: a
+/// made-up token that stands in no action's or parameter's description, so
+/// that a listing which holds it was written into.
+const PLANTED: &str = "planted-by-cus-a-4f1c9a7e52d0486b93e6";
+
 /// A server key of a new person's on `on_server`, approved on a page of theirs.
 async fn server_key(on_server: &OnServer, name: &str) -> String {
     let (root, _) = tilo_user_identity::UserIdentity::generate(name, 1);
@@ -428,13 +433,25 @@ async fn a_backend_keeps_a_labelled_workspace_and_a_key_per_customer() {
     }
 }
 
+/// Where `word` first stands in `text`, with what is written around it:
+/// short enough to be read whole in a log.
+fn around(text: &str, word: &str) -> String {
+    let Some((before, after)) = text.split_once(word) else {
+        return format!("no {word} in its {} characters", text.chars().count());
+    };
+    let from = before.chars().count().saturating_sub(300);
+    let before: String = before.chars().skip(from).collect();
+    let after: String = after.chars().take(300).collect();
+    format!("…{before}{word}{after}…")
+}
+
 /// What a tool is asked with, naming `other`'s workspace and what is in it:
 /// its page, its file, a path in it.
 fn arguments_against(tool: &str, other: &str, page: &str, content: &str) -> Value {
     let mut arguments = match tool {
         "tilo_ls" => json!({"path": "notes"}),
         "tilo_read" | "tilo_link" | "tilo_watch" => json!({"path": page}),
-        "tilo_do" => json!({"path": format!("{page}#rename"), "args": {"title": "taken"}}),
+        "tilo_do" => json!({"path": format!("{page}#rename"), "args": {"title": PLANTED}}),
         "tilo_find" => json!({"query": "Checklist"}),
         "tilo_get" => json!({"content": content}),
         "tilo_put_begin" => json!({"size": 4}),
@@ -584,7 +601,7 @@ async fn a_workspace_key_reaches_no_other_workspace_through_any_tool_or_route() 
             "runProgram" => json!({"program": "notes"}),
             "invitePerson" => json!({"role": "editor"}),
             "createWebhook" => json!({"url": "https://example.com/hook"}),
-            _ => json!({"title": "taken"}),
+            _ => json!({"title": PLANTED}),
         };
         let (status, answer) = rest(
             &api,
@@ -622,7 +639,22 @@ async fn a_workspace_key_reaches_no_other_workspace_through_any_tool_or_route() 
     let mut b_agent = mcp(&api, &format!("/w/{b}/mcp"), &b_token);
     assert_eq!(b_agent.initialize().await.0, 200);
     let (_, notes) = call(&mut b_agent, "tilo_ls", json!({"path": "notes"})).await;
-    assert!(notes.to_string().contains(secret), "{notes}");
-    assert!(!notes.to_string().contains("taken"), "{notes}");
+    let notes = notes.to_string();
+    assert!(notes.contains(secret), "{notes}");
+    assert!(!notes.contains(PLANTED), "{}", around(&notes, PLANTED));
+    // Note by note: its own page under the title its agent gave it, and
+    // the planted title on none.
+    let pages = listed_by(&mut b_agent, "notes/Notes").await;
+    let pages = pages.as_array().expect("its notes are listed in rows");
+    assert!(
+        pages
+            .iter()
+            .any(|row| row["path"] == b_page.as_str() && row.to_string().contains(secret)),
+        "{pages:?}"
+    );
+    assert!(
+        !pages.iter().any(|row| row.to_string().contains(PLANTED)),
+        "{pages:?}"
+    );
     assert_eq!(listed(&api, &key, "?label[customer_id]=cus_b").await, [b]);
 }
