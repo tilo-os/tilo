@@ -473,6 +473,51 @@ fn the_part_covers_the_screen_at_rest_and_while_its_menu_is_up() {
     assert!(part.control_bounds("Studio").is_none(), "the menu closed");
 }
 
+/// A menu the person opened stands while the layout under it changes: a workspace the session
+/// makes while they are choosing lists itself there, instead of the menu vanishing.
+#[test]
+fn the_workspaces_menu_stands_while_the_layout_changes_under_it() {
+    let (mut part, link) = part();
+    click(&mut part, "Home");
+    assert!(part.control_bounds("Studio").is_some(), "the menu is up");
+    // The session makes another workspace, in front.
+    let mut reading = reading();
+    reading.workspaces.push(LayoutWorkspaceReading {
+        key: "3".to_owned(),
+        name: "Garden".to_owned(),
+        current: true,
+    });
+    for workspace in &mut reading.workspaces {
+        workspace.current = workspace.key == "3";
+    }
+    link.publish_layout(reading);
+    for _ in 0..6 {
+        part.prepare_frame();
+        part.draw();
+    }
+    assert!(
+        part.control_bounds("Studio").is_some(),
+        "the menu stands while the layout changes under it"
+    );
+    assert!(
+        part.control_bounds("Garden").is_some(),
+        "and lists the workspace the session made under it"
+    );
+    // And still chooses: the workspace in front is the one the person presses there.
+    click(&mut part, "Studio");
+    let asked = link.asked.borrow().front().cloned();
+    assert_eq!(
+        asked.map(|ask| (ask.action, ask.arguments)),
+        Some((
+            "switch-workspace".to_owned(),
+            BTreeMap::from([("workspace".to_owned(), "2".into())])
+        )),
+        "{:?} {:?}",
+        part.work(),
+        part.refusals()
+    );
+}
+
 #[test]
 fn choosing_a_workspace_in_the_menu_asks_the_session_to_switch() {
     let (mut part, link) = part();
