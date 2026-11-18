@@ -559,6 +559,8 @@ paths = [
     "crates/runtime/tilo-mcp/src/mcp_tilo.rs",
     "crates/platform/tilolang-tilo/src/task.rs",
 ]
+
+[[allow]]
 reason = "The argument names of Chat's post (its channel) and the library's shelve (a book's subject), which the agent tests call by name."
 words = ["channel", "subject"]
 paths = ["crates/agent/agent-session/tests/host_agents.rs"]
