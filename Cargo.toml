@@ -886,6 +886,9 @@ jiff = { version = "0.2.37", default-features = false, features = ["std", "serde
 # The IANA time-zone database, built in so every device resolves a named zone
 # the same way whatever zoneinfo its host has.
 jiff-tzdb = "0.1"
+# The recurrence expansion's zone database, which the time-zone engine
+# library carries for the apps that expand a rule.
+chrono-tz = "0.10.4"
 qcms = "0.3.0"
 walkdir = "2.5.0"
 # The one in-memory cache: fs, thumbnail and the app mount share it.

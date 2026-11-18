@@ -1,12 +1,18 @@
 //! The IANA time-zone database, as its own library in the runtime bundle
 //! (`libtilo_timezone_engine.so`).
 //!
-//! Like `runtime-dylib` it exports what it provides, which records it
+//! Like `runtime-dylib` it re-exports what it provides, which records it
 //! as provided by this library for the apps' `-C prefer-dynamic` link.
 //! Outside the thin build it is empty.
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
+
+/// The database the recurrence expansion reads its zones from. Re-exported
+/// rather than read in every app that expands a rule, which would each carry
+/// its own copy.
+#[cfg(feature = "thin")]
+pub use chrono_tz;
 
 /// The database's canonical spelling of the zone named `name`, in any letter
 /// case.

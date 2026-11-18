@@ -22502,6 +22502,7 @@ dependencies = [
 name = "tilo-timezone-engine"
 version = "0.1.0"
 dependencies = [
+ "chrono-tz",
  "jiff",
  "jiff-tzdb",
  "runtime-dylib",
