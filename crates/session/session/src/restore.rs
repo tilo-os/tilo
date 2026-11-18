@@ -321,6 +321,11 @@ impl Restore {
             if coming {
                 continue;
             }
+            // A tab that names no app has nothing to start: it stays as it stands, for a kept
+            // window that claims it ([`Self::claim_kept`]).
+            if saved.app.trim().is_empty() {
+                continue;
+            }
             let host = workspace_holding(desktop, saved.tab, |held| held.id().to_string())
                 .and_then(|workspace| awaited(&workspace));
             if let Some(host) = host {
@@ -705,9 +710,10 @@ fn waiting_in(tree: &Layout, wanted: impl Fn(WorkspaceId) -> bool) -> Vec<(Works
             let TileContent::LocalApp { app_id, label, .. } = &tab.tile else {
                 continue;
             };
-            if app_id.trim().is_empty() {
-                continue;
-            }
+            // A window that announced no app id (an X11 client without a class, `vkcube`) is
+            // saved under none: nothing here can start it again, but its window, kept across an
+            // in-place restart, still claims this tab by its id.
+            let unnamed = app_id.trim().is_empty();
             let name = if label.trim().is_empty() {
                 app_id.clone()
             } else {
@@ -719,10 +725,14 @@ fn waiting_in(tree: &Layout, wanted: impl Fn(WorkspaceId) -> bool) -> Vec<(Works
                     tab: tab.id,
                     app: app_id.clone(),
                     name,
-                    start: apps::launch_of(app_id).map(Start::App).or_else(|| {
-                        crate::windows_compat::saved_entry(&workspace.id().to_string(), app_id)
-                            .map(Start::Windows)
-                    }),
+                    start: if unnamed {
+                        None
+                    } else {
+                        apps::launch_of(app_id).map(Start::App).or_else(|| {
+                            crate::windows_compat::saved_entry(&workspace.id().to_string(), app_id)
+                                .map(Start::Windows)
+                        })
+                    },
                     shows: tab.view.clone(),
                 },
             ));
@@ -1035,6 +1045,51 @@ mod tests {
             Some(41),
             "the window takes its own tab"
         );
+    }
+
+    /// A kept app whose window announces no app id (an X11 client without a class, `vkcube`) was
+    /// saved in a tab that names no app. After an in-place restart that window still takes its own
+    /// tab, by the tab its keeper was told, instead of opening a new tab beside an empty one.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_kept_window_that_names_no_app_takes_its_own_tab() {
+        let unnamed = TileContent::LocalApp {
+            app_id: String::new(),
+            label: "vkcube".into(),
+            note: String::new(),
+        };
+        let mut tree = layout(vec![window(44, unnamed), window(43, notes())]);
+        tree.active = tree.workspaces[0].id();
+        let (desktop, _policy) = tilo_shell_surface::desktop(7, 1.0);
+        let mut restore = Restore::default();
+        restore.begin();
+        assert!(restore.start(&Layout::default(), &mut tree));
+        desktop.with_policy(|policy| policy.handle().replace_tree(tree.clone()));
+        let mut cube = kept(&[("w1", Some("44"))]);
+        cube.windows[0].app_id = None;
+        restore.kept = vec![cube];
+        restore.kept_since = Some(std::time::Instant::now());
+        assert_eq!(
+            restore.claim_kept(&desktop),
+            [50],
+            "its tab is laid out: it shows without waiting for every layout"
+        );
+        let waiting: Vec<u64> = restore.waiting.iter().map(|saved| saved.tab).collect();
+        assert_eq!(waiting, [43], "only another app's tab still waits");
+        let tab = desktop.with_policy(|policy| {
+            policy
+                .map(tilo_desktop_policy::Window {
+                    id: 1,
+                    app_id: None,
+                    pid: Some(50),
+                    tag: Some("w1".into()),
+                    ..tilo_desktop_policy::Window::default()
+                })
+                .expect("mapped");
+            policy.tab_of(1)
+        });
+        assert_eq!(tab, Some(44), "the window takes its own tab");
+        assert_eq!(tabs(&desktop), [44, 43], "and no other tab opened");
     }
 
     /// On a real login the keepers answer before the workspaces' layouts are read. Their windows
