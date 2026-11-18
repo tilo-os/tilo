@@ -152,6 +152,9 @@ struct OverviewKey {
     page: Page,
     selected: usize,
     pushed: bool,
+    /// What the window says above its columns, which the overview shows too: a person on the
+    /// overview when a program stops reads it without opening the program.
+    notice: Option<Notice>,
 }
 
 /// Everything the content column shows; it is rebuilt when this changes.
@@ -377,6 +380,13 @@ impl WindowsApp {
     /// fixture provides, with an offline appliance that never runs the owner helper.
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
         let scenario = scenario.unwrap_or("wide");
+        // What the sample service reports for it: a program that ended, one of the appliance, a
+        // name longer than a row holds.
+        {
+            let mut provider = self.provider.borrow_mut();
+            provider.stage(scenario);
+            self.catalogue = provider.catalogue();
+        }
         self.appliance_owner = ApplianceOwnerClient::offline(if scenario == "appliance-setup" {
             ApplianceStatus::unavailable(
                 "The Windows appliance command failed: command process failed: \
@@ -389,8 +399,40 @@ impl WindowsApp {
         self.push_content = false;
         match scenario {
             "detail" | "error-compact" => self.push_content = true,
-            "running" => self.selected = 1,
-            "vm-detail" => {
+            // A program that opened and closed on its own says nothing else: the list says it is
+            // no longer open.
+            "running" | "closed" => {
+                self.selected = 1;
+                self.push_content = true;
+            }
+            // The same line where the overview is a screen of its own, beside the list it is
+            // about.
+            "ended-overview" => {
+                self.selected = 1;
+                self.show_end(false, Some(7), None);
+            }
+            // A program that stopped by itself, and one that never opened.
+            "ended-with-error" => {
+                self.selected = 1;
+                self.push_content = true;
+                self.show_end(false, Some(7), None);
+            }
+            "could-not-open" => {
+                self.selected = 1;
+                self.push_content = true;
+                self.show_end(
+                    false,
+                    None,
+                    Some("The capsule's runner is not installed on this computer."),
+                );
+            }
+            // A program whose name is longer than a row holds.
+            "long-name" => {
+                self.selected = 0;
+                self.push_content = true;
+            }
+            // A program of the Windows appliance, which the manager cannot quit.
+            "vm-running" | "vm-detail" => {
                 self.selected = 2;
                 self.push_content = true;
             }
@@ -408,6 +450,24 @@ impl WindowsApp {
                     .map(|first| first.capsule.clone());
             }
             _ => {}
+        }
+    }
+
+    /// The announcement a saved capture shows of a program that ended, as the service reports it:
+    /// `show_end` stages the manager exactly as the live list leaves it.
+    fn show_end(&mut self, success: bool, exit_code: Option<i32>, error: Option<&str>) {
+        let Some(app) = self.catalogue.apps.get(1) else {
+            return;
+        };
+        let end = compat_service::ProgramEnd {
+            entry_id: app.id.clone(),
+            display_name: app.name.clone(),
+            success,
+            exit_code,
+            error: error.map(str::to_owned),
+        };
+        if let Some(text) = crate::provider::ended_notice(&end) {
+            self.notice = Some(Notice::error(text));
         }
     }
 
@@ -1028,9 +1088,17 @@ impl WindowsApp {
         if let Some(notice) = self.route_notice.borrow_mut().take() {
             self.notice = Some(Notice::error(notice));
         }
-        let provider_notice = self.provider.borrow_mut().take_notice();
-        if let Some(notice) = provider_notice {
-            self.notice = Some(Notice::info(notice));
+        let provider_notice = {
+            let mut provider = self.provider.borrow_mut();
+            let notice = provider.take_notice();
+            notice.map(|text| (text, provider.notice_is_error()))
+        };
+        if let Some((notice, error)) = provider_notice {
+            self.notice = Some(if error {
+                Notice::error(notice)
+            } else {
+                Notice::info(notice)
+            });
         }
         let result = (self.resource_reply.is_some() && !self.resource_waits_for_appliance)
             .then(|| self.provider.borrow_mut().take_operation_result())
@@ -1335,6 +1403,7 @@ impl WindowsApp {
             page: self.page,
             selected: self.selected,
             pushed,
+            notice: self.notice.clone(),
         }
     }
 
@@ -1359,6 +1428,15 @@ impl WindowsApp {
 
     fn overview(&self, pushed: bool) -> Element {
         let mut list = Column::new().with_intrinsic_height();
+        // On a screen of its own the overview is all the person sees: the window's one line
+        // belongs there too, not only on the content screen behind it.
+        if pushed && let Some(notice) = &self.notice {
+            list = list.push(Box::new(if notice.error {
+                Banner::error(&notice.text)
+            } else {
+                Banner::info(&notice.text)
+            }));
+        }
         if let Some(pending) = &self.catalogue.vm_install_confirmation {
             let mut row = ListRow::new("windows-pending-install", &pending.display_name)
                 .secondary(strings::t("windows-pending-secondary"))
