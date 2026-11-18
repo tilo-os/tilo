@@ -332,48 +332,56 @@ impl IssueRows {
             .zip(&rows)
             .take_while(|(was, now)| was == now)
             .count();
-        let (was_head, was_tail) = self.rows.split_at(same_start.min(self.rows.len()));
-        let (now_head, now_tail) = rows.split_at(same_start.min(rows.len()));
-        let same_end = was_tail
+        let same_start = same_start.min(self.rows.len()).min(rows.len());
+        let same_end = self
+            .rows
+            .get(same_start..)
+            .unwrap_or_default()
             .iter()
             .rev()
-            .zip(now_tail.iter().rev())
+            .zip(rows.get(same_start..).unwrap_or_default().iter().rev())
             .take_while(|(was, now)| was == now)
             .count();
-        let removed = was_tail.len().saturating_sub(same_end);
-        let inserted = now_tail.len().saturating_sub(same_end);
+        let removed = self
+            .rows
+            .len()
+            .saturating_sub(same_start)
+            .saturating_sub(same_end);
+        let inserted = rows
+            .len()
+            .saturating_sub(same_start)
+            .saturating_sub(same_end);
         // Rows that stayed but stand under another parent now, or show
         // something new, are drawn again.
         let mut changed: Vec<u64> = touched;
-        let kept = |head: &[u64], tail: &[u64], parents: &[Option<u64>]| {
-            let (head_parents, rest) = parents
-                .split_at_checked(head.len())
-                .unwrap_or((parents, &[]));
-            let tail_parents = rest
-                .get(rest.len().saturating_sub(same_end)..)
-                .unwrap_or_default();
-            let tail_rows = tail
-                .get(tail.len().saturating_sub(same_end)..)
-                .unwrap_or_default();
-            head.iter()
-                .zip(head_parents)
-                .chain(tail_rows.iter().zip(tail_parents))
-                .map(|(key, parent)| (*key, *parent))
-                .collect::<Vec<_>>()
-        };
-        let kept_before = kept(was_head, was_tail, &self.parents);
-        let kept_now = kept(now_head, now_tail, &parents);
+        let moved_under = |was: usize, now: usize| self.parents.get(was) != parents.get(now);
         changed.extend(
-            kept_before
-                .into_iter()
-                .zip(kept_now)
-                .filter(|((_, was), (_, now))| was != now)
-                .map(|(_, (key, _))| key),
+            (0..same_start)
+                .filter(|&row| moved_under(row, row))
+                .filter_map(|row| rows.get(row).copied()),
         );
-        self.rows = rows;
-        self.parents = parents;
+        changed.extend((1..=same_end).filter_map(|back| {
+            let was = self.rows.len().checked_sub(back)?;
+            let now = rows.len().checked_sub(back)?;
+            moved_under(was, now)
+                .then(|| rows.get(now).copied())
+                .flatten()
+        }));
         if removed > 0 || inserted > 0 {
-            self.index_rows();
+            // The rows before the first that moved keep their places.
+            let gone = same_start.saturating_add(removed);
+            for key in self.rows.get(same_start..gone).unwrap_or_default() {
+                self.at.remove(key);
+            }
+            self.rows = rows;
+            self.parents = parents;
+            let at = &mut self.at;
+            for (index, key) in self.rows.iter().enumerate().skip(same_start) {
+                at.insert(*key, index);
+            }
+        } else {
+            self.rows = rows;
+            self.parents = parents;
         }
         if removed > 0 {
             self.changes.push(ListModelChange::RowsRemoved {
@@ -755,6 +763,13 @@ mod tests {
             "{after}: under the parents read whole"
         );
         assert_eq!(model.blocks, blocks, "{after}: in the blocks read whole");
+        let places: std::collections::HashMap<u64, usize> = model
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(index, key)| (*key, index))
+            .collect();
+        assert_eq!(model.at, places, "{after}: each row found where it stands");
     }
 
     #[test]

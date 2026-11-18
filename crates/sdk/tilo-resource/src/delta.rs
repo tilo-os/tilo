@@ -361,15 +361,17 @@ impl Tracker {
         locate: &dyn Fn(&ObjId) -> Option<ObjPath>,
     ) -> Delta {
         let heads = doc.committed_heads();
+        // Unmoved, the usual answer for a document followed every frame: told
+        // before its history is looked into.
+        if self.heads.as_ref() == Some(&heads) {
+            return Delta::nothing();
+        }
         let committed = doc.committed_document();
         // A version this document does not have: it was replaced wholesale.
         let moved_on = self.leads_to(doc);
-        let Some(previous) = self.heads.replace(heads.clone()) else {
+        let Some(previous) = self.heads.replace(heads) else {
             return Delta::everything();
         };
-        if previous == heads {
-            return Delta::nothing();
-        }
         if !moved_on {
             return Delta::everything();
         }

@@ -439,6 +439,9 @@ pub(crate) struct ChainCore {
     waiting: RefCell<BTreeMap<u64, PartArrival>>,
     revision: Cell<u64>,
     part_published: RefCell<PartsPublished>,
+    /// Each held part's document, by its number: named once, not on every
+    /// frame that follows it.
+    part_ids: RefCell<BTreeMap<u64, DocumentId>>,
     /// The items of the parts before the newest, as last gathered ([`EarlierItems`]).
     earlier: RefCell<Option<EarlierItems>>,
     part_search: RefCell<PartsSearched>,
@@ -962,6 +965,7 @@ impl ChainCore {
             waiting: RefCell::default(),
             revision: Cell::new(0),
             part_published: RefCell::default(),
+            part_ids: RefCell::default(),
             earlier: RefCell::new(None),
             part_search: RefCell::default(),
             looked: Cell::new(None),
@@ -975,12 +979,20 @@ impl ChainCore {
     /// arrived on this device. Whether anything moved.
     fn follow_parts(&self) -> bool {
         let mut moved = false;
+        {
+            let parts = self.parts.borrow();
+            let mut ids = self.part_ids.borrow_mut();
+            ids.retain(|index, _| parts.contains_key(index));
+            for index in parts.keys() {
+                ids.entry(*index).or_insert_with(|| self.chain.part(*index));
+            }
+        }
+        let ids = self.part_ids.borrow();
         for (index, part) in self.parts.borrow().iter() {
-            match self
-                .workspace
-                .store
-                .read(&self.chain.part(*index), |doc| part.sync(doc))
-            {
+            let Some(id) = ids.get(index) else {
+                continue;
+            };
+            match self.workspace.store.read(id, |doc| part.sync(doc)) {
                 Some(Ok(true)) => {
                     // Its history arrived, or a first change was made here.
                     self.waiting.borrow_mut().remove(index);
@@ -993,6 +1005,7 @@ impl ChainCore {
             }
             part.take_change();
         }
+        drop(ids);
         // A part opened in the store since (a peer's merged in, one this
         // device asked for and received) is held at once.
         let opened: Vec<u64> = {
