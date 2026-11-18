@@ -618,6 +618,21 @@ pub struct NewServer {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WaitList(pub Map<String, Value>);
 
+/// What the workspace is called from now on, by every list and device of it.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct WorkspaceName {
+    /// 1 to 80 characters.
+    pub name: String,
+}
+
+/// Where a member of the workspace is held from now on.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct MemberRole {
+    /// `viewer`, `commenter`, `editor`, `moderator`, `administrator` or
+    /// `owner`; never more than yours to give.
+    pub role: String,
+}
+
 /// How the key's person goes by in the workspace from now on.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct NewName {
@@ -816,6 +831,8 @@ pub fn schemas(generator: &mut schemars::SchemaGenerator) -> Vec<(&'static str, 
         NewServer,
         Invitation,
         NewName,
+        WorkspaceName,
+        MemberRole,
         Program,
         ProgramAnswer,
         Uploaded,

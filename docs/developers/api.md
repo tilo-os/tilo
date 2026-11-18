@@ -97,6 +97,7 @@ an invocation of its own, named for the key ("Visa backend #3").
 | `POST /v1/workspaces/{workspace}/branches` `{name, labels?}` | `201` a branch of a workspace of the person's own, as a workspace made: a new one of theirs holding every resource of it with its history and the files they name, without its conversations, people's drafts and places, or anyone but the person (MCP: `account/workspaces#branch {workspace, name, labels?, id?}`). Answered once it holds everything; one that could not take a part is deleted again and the call answers `422 branch_incomplete` naming the part. The same `Idempotency-Key` answers the branch it made. A key for one workspace makes none |
 | `PUT /v1/workspaces/{workspace}/unattended` `{on}` | lets the keys made for this workspace alone run commands in its Linux machine (`terminal#run`) without asking the person each time, here and in branches made from it (MCP: `workspace/unattended#set {on}`; `tilo_read workspace/unattended` reads it). `on: true` asks the person on their approving device: `202` pending with an `ask`, the run answering `{"workspace", "unattended": true}` once they allow it and failing if they do not. `on: false` answers `200` at once and asks again from the next command. Only the workspace's owner has it; a key reaching all their workspaces is still asked. Listings say `"unattended": true` while it is on |
 | `GET /v1/workspaces/{workspace}/export` | `{"workspace", "exported_at_ms", "resources": [...], "unread": [...]}`: every resource of every app, read whole and streamed as it reads |
+| `PUT /v1/workspaces/{workspace}/name` `{name}` | the workspace, called that by every list and device of it; its owners and moderators name it |
 | `DELETE /v1/workspaces/{workspace}` | `{"deleted": "…", "revoked_keys": [...]}`: final, with everything in it and every key minted for it |
 | `GET /v1/keys` | `{"keys": [{"grant", "name", "scope", "expires_at_ms", "last_used_at_ms", "created_by"}]}`: this key and the keys it minted, read from the workspace's own document when the key reaches one |
 | `POST /v1/keys` `{workspace, name?, expires_in?}` | `201` a key for one workspace, minted from this one: `{"grant", "token", "mcp_url", "expires_at_ms"}`; the person is not asked |
@@ -234,6 +235,9 @@ folder; a folder past 10,000 goes in as several lists.
 |---|---|
 | `GET /v1/workspaces/{workspace}/members` | the people in it, their roles, and the invitations still open |
 | `POST /v1/workspaces/{workspace}/members/invitations` `{role, email?}` | `201` `{"link"}` that signs them in and lands them there |
+| `POST /v1/workspaces/{workspace}/members` `{person, role, name?}` | holds the person whose user public key is `person` in it at `role` at once |
+| `PUT /v1/workspaces/{workspace}/members/{person}/role` `{role}` | moves a member to another role, as far as yours allows |
+| `DELETE /v1/workspaces/{workspace}/members/{person}` | removes a member and every device of theirs, as the workspace's governance lets you |
 | `POST /v1/workspaces/{workspace}/programs` `{program, confirm?, session?}` | runs a tilolang program as one step: `{"status": "ok"|"preview"|"failed", "output", "changed", "steps", "text", "session"}` |
 
 A program runs in a program session: the `let`s its programs bound, the references its answers

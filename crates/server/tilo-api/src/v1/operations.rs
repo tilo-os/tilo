@@ -153,6 +153,14 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
         .body(Body::Json("UnattendedChange"))
         .answers(Answer::Action),
         op(
+            "renameWorkspace",
+            Method::PUT,
+            "/v1/workspaces/{workspace}/name",
+            "Name the workspace, for every list and device of it; its owners and moderators may",
+        )
+        .body(Body::Json("WorkspaceName"))
+        .json(200, "Workspace"),
+        op(
             "deleteWorkspace",
             Method::DELETE,
             "/v1/workspaces/{workspace}",
@@ -357,6 +365,22 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
             "The name the key's own person goes by in the workspace",
         )
         .body(Body::Json("NewName"))
+        .json(200, "Members"),
+        op(
+            "setMemberRole",
+            Method::PUT,
+            "/v1/workspaces/{workspace}/members/{person}/role",
+            "Move a member, by their user public key, to another role, as far as yours allows",
+        )
+        .body(Body::Json("MemberRole"))
+        .json(200, "Members"),
+        op(
+            "removeMember",
+            Method::DELETE,
+            "/v1/workspaces/{workspace}/members/{person}",
+            "Remove a member, by their user public key, and every device of theirs",
+        )
+        .mutating()
         .json(200, "Members"),
         op(
             "runProgram",

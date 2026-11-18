@@ -425,8 +425,10 @@ impl<'a> Caller<'a> {
 
     async fn handle(self, operation: &Operation) -> Result<Answer, ApiError> {
         match operation.id {
-            "getAccount" | "listWorkspaces" | "createWorkspace" | "deleteWorkspace"
-            | "listKeys" | "mintKey" | "revokeKey" => self.account_operation(operation.id).await,
+            "getAccount" | "listWorkspaces" | "createWorkspace" | "renameWorkspace"
+            | "deleteWorkspace" | "listKeys" | "mintKey" | "revokeKey" => {
+                self.account_operation(operation.id).await
+            }
             "branchWorkspace" => self.branch_workspace().await,
             "setUnattended" => self.set_unattended().await,
             "listResources" | "readResource" | "search" | "getLink" | "viewResource" => {
@@ -486,6 +488,13 @@ impl<'a> Caller<'a> {
                 let made = self.account("account/workspaces#create", args).await?;
                 shaped::<answers::Workspace>(made.get("workspace").cloned().unwrap_or_default())
                     .map(Answer::created)
+            }
+            "renameWorkspace" => {
+                let new: answers::WorkspaceName = self.json_body()?;
+                let args = json!({"workspace": self.workspace(), "name": new.name});
+                let renamed = self.account("account/workspaces#rename", args).await?;
+                shaped::<answers::Workspace>(renamed.get("workspace").cloned().unwrap_or_default())
+                    .map(Answer::ok)
             }
             "deleteWorkspace" => {
                 let args = json!({"workspace": self.workspace()});
@@ -698,6 +707,25 @@ impl<'a> Caller<'a> {
                 let new: answers::NewMember = self.json_body()?;
                 let added = json!({"path": "workspace/members#add", "args": new});
                 let listed = self.call("tilo_do", added).await?;
+                shaped::<answers::Members>(listed.get("result").cloned().unwrap_or_default())
+                    .map(Answer::ok)
+            }
+            "setMemberRole" => {
+                let new: answers::MemberRole = self.json_body()?;
+                let person = self.params.get("person").to_owned();
+                let moved = json!({
+                    "path": "workspace/members#role",
+                    "args": {"person": person, "role": new.role},
+                });
+                let listed = self.call("tilo_do", moved).await?;
+                shaped::<answers::Members>(listed.get("result").cloned().unwrap_or_default())
+                    .map(Answer::ok)
+            }
+            "removeMember" => {
+                let person = self.params.get("person").to_owned();
+                let removed =
+                    json!({"path": "workspace/members#remove", "args": {"person": person}});
+                let listed = self.call("tilo_do", removed).await?;
                 shaped::<answers::Members>(listed.get("result").cloned().unwrap_or_default())
                     .map(Answer::ok)
             }

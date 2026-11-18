@@ -424,6 +424,76 @@ impl Server {
         Ok(())
     }
 
+    /// Name the workspace `workspace` `name` as `connection`: the one name its
+    /// governance keeps, which every device and list of it reads. The server
+    /// decides who may, as it decides for the person's own page: the
+    /// workspace's owners and moderators.
+    ///
+    /// # Errors
+    /// Not a workspace the grant reaches, or the workspace refused (its
+    /// reason, [`Administration::Refused`]) or did not answer.
+    pub async fn rename(
+        &self,
+        connection: &Connection,
+        workspace: &str,
+        name: &str,
+    ) -> Result<Workspace, Administration> {
+        if !connection.key.scope().reaches(workspace)
+            || tilo_server_protocol::WorkspaceId::parse(workspace).is_none()
+        {
+            return Err(Administration::Refused(ServerError::NotFound.to_string()));
+        }
+        let name = name.trim();
+        connection
+            .administer(
+                tilo_server_protocol::workspaces::WorkspacesRequest::Rename {
+                    workspace: workspace.to_owned(),
+                    name: name.to_owned(),
+                },
+            )
+            .await?;
+        // The workspace as the person's list says it now, with its server
+        // and their role.
+        self.workspace(connection, workspace)
+            .await
+            .ok()
+            .flatten()
+            .ok_or_else(|| Administration::Unanswered("the workspace was not listed".into()))
+    }
+
+    /// Remove the member whose user public key is `person` from `workspace`,
+    /// and every device of theirs, as `connection`. The server decides who may,
+    /// as it decides for the person's own page.
+    ///
+    /// # Errors
+    /// Not a workspace the grant reaches, or the workspace refused or did not
+    /// answer.
+    pub async fn remove_member(
+        &self,
+        connection: &Connection,
+        workspace: &str,
+        person: [u8; 32],
+    ) -> Result<(), Administration> {
+        if !connection.key.scope().reaches(workspace)
+            || tilo_server_protocol::WorkspaceId::parse(workspace).is_none()
+        {
+            return Err(Administration::Refused(ServerError::NotFound.to_string()));
+        }
+        let mut request_id = [0; 32];
+        getrandom::fill(&mut request_id)
+            .map_err(|error| Administration::Unanswered(error.to_string()))?;
+        connection
+            .administer(
+                tilo_server_protocol::workspaces::WorkspacesRequest::Remove {
+                    workspace: workspace.to_owned(),
+                    request_id,
+                    user_public_key: person,
+                },
+            )
+            .await
+            .map(drop)
+    }
+
     /// Bring `connection` into `workspace`, one its grant reaches: its id on
     /// the session.
     ///
@@ -498,7 +568,42 @@ impl Drop for Connection {
     }
 }
 
+/// Why the server's workspace administration did not do what was asked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Administration {
+    /// The workspace refused, saying why.
+    Refused(String),
+    /// The server did not answer.
+    Unanswered(String),
+}
+
+/// How long the server's workspace administration has to answer.
+const ADMINISTERING: Duration = Duration::from_secs(20);
+
 impl Connection {
+    /// Ask the server's workspace administration `request` over this session,
+    /// as the person's own page asks it: the server decides it by the
+    /// workspace's governance and the role of the person this key is.
+    async fn administer(
+        &self,
+        request: tilo_server_protocol::workspaces::WorkspacesRequest,
+    ) -> Result<tilo_server_protocol::workspaces::WorkspacesReply, Administration> {
+        use tilo_server_protocol::workspaces::WorkspacesReply;
+        use tilo_session_client::Outbox as _;
+        let receipt =
+            self.device.session().ask_workspaces(request).map_err(|_| {
+                Administration::Unanswered("the session with the server closed".into())
+            })?;
+        match tokio::time::timeout(ADMINISTERING, receipt).await {
+            Ok(Ok(Ok(WorkspacesReply::Refused(why)))) => Err(Administration::Refused(why)),
+            Ok(Ok(Ok(reply))) => Ok(reply),
+            Ok(Ok(Err(why))) => Err(Administration::Unanswered(why)),
+            Ok(Err(_)) | Err(_) => Err(Administration::Unanswered(
+                "the server did not answer".into(),
+            )),
+        }
+    }
+
     /// Have `told` called the next time the server this session is with
     /// does for its key what it does only for a person it lets in: lists a
     /// workspace of theirs, makes one for them, or lets the key into one. A

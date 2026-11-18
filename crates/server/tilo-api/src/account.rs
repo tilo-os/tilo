@@ -5,7 +5,8 @@
 //! It is addressed like any resource, by path, through the same tools:
 //!
 //! - `account/workspaces#list {labels?}`, `#create {name, labels?, host?}`,
-//!   `#branch {workspace, name, labels?, id?}`, `#delete {workspace}`;
+//!   `#branch {workspace, name, labels?, id?}`, `#rename {workspace, name}`,
+//!   `#delete {workspace}`;
 //! - `account/keys#list`, `#create {name, workspace?, expires_in?}`,
 //!   `#mint {workspace, name?, expires_in?}`, `#revoke {grant}`.
 //!
@@ -228,7 +229,7 @@ const fn param(name: &'static str, required: bool, ty: &'static str) -> Param {
 }
 
 /// The account's actions: (resource, action, label, kind, parameters).
-const ACTIONS: [(&str, &str, &str, &str, &[Param]); 8] = [
+const ACTIONS: [(&str, &str, &str, &str, &[Param]); 9] = [
     (
         "workspaces",
         "list",
@@ -257,6 +258,16 @@ const ACTIONS: [(&str, &str, &str, &str, &[Param]); 8] = [
             param("name", true, "Text"),
             param("labels", false, "Object"),
             param("id", false, "Text"),
+        ],
+    ),
+    (
+        "workspaces",
+        "rename",
+        "Name a workspace, for every list and device of it; its owners and moderators may",
+        "outside",
+        &[
+            param("workspace", true, "Text"),
+            param("name", true, "Text"),
         ],
     ),
     (
@@ -593,6 +604,7 @@ impl Server {
             },
             "account/workspaces#create" => self.create_workspace(key, args).await,
             "account/workspaces#branch" => self.branch_workspace(grant, key, args).await,
+            "account/workspaces#rename" => rename_workspace(key, args).await,
             "account/workspaces#delete" => self.delete_workspace(grant, key, args).await,
             "account/keys#list" => self.account_keys(grant, key).await,
             "account/keys#create" => self.create_key(args),
@@ -1002,6 +1014,29 @@ fn field<'a>(args: &'a Value, name: &str) -> Option<&'a str> {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
+}
+
+/// Name the workspace `args` names (`workspace`) `name`, as `key`: the
+/// server decides by the workspace's governance, as for the person's own page.
+async fn rename_workspace(key: &Connection, args: &Value) -> Outcome {
+    let (Some(workspace), Some(name)) = (field(args, "workspace"), field(args, "name")) else {
+        return failed(
+            "invalid_arguments",
+            "`workspace` and `name` are required",
+            "pass args {workspace: \"<id>\", name: \"Acme\"}; account/workspaces#list names them",
+        );
+    };
+    match key.server().rename(key, workspace, name).await {
+        Ok(workspace) => Outcome::Ok(json!({"workspace": workspace})),
+        Err(crate::server::Administration::Refused(why)) => failed(
+            "not_permitted",
+            format!("the workspace refused: {why}"),
+            "its owners and moderators name it",
+        ),
+        Err(crate::server::Administration::Unanswered(why)) => {
+            failed("unavailable", why, "try again shortly")
+        }
+    }
 }
 
 /// The labels `args` names (`labels`, names to text values): none when it
