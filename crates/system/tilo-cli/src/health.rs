@@ -78,13 +78,23 @@ pub fn assess(nodes: &[PathBuf], record: Option<&Value>) -> Value {
                     .filter_map(Value::as_str)
                     .map(str::to_owned),
             );
-            if at(record, "dmabuf_device").is_null()
-                && !problems.iter().any(|p| p.contains("zwp_linux_dmabuf_v1"))
-            {
-                problems.push(
-                    "zwp_linux_dmabuf_v1 is not advertised, so apps cannot present from a GPU"
-                        .to_string(),
-                );
+            // What the session offers as `zwp_linux_dmabuf_v1` says whether apps can present
+            // from a GPU: a version says which offer, and the device whether clients are told
+            // where to allocate.
+            if !problems.iter().any(|p| p.contains("zwp_linux_dmabuf_v1")) {
+                match at(record, "dmabuf_version").as_u64() {
+                    None => problems.push(
+                        "zwp_linux_dmabuf_v1 is not offered, so apps cannot present from a GPU"
+                            .to_string(),
+                    ),
+                    Some(version) if at(record, "dmabuf_device").is_null() => {
+                        problems.push(format!(
+                            "zwp_linux_dmabuf_v1 is offered at version {version}, formats only: \
+                             clients are told no device to allocate on"
+                        ));
+                    }
+                    Some(_) => {}
+                }
             }
             for (package, adapter) in at(record, "app_adapters").as_object().into_iter().flatten() {
                 if adapter
@@ -156,6 +166,14 @@ fn print_human(verdict: &Value) {
     println!("  render node     {} ({})", field("node"), field("driver"));
     println!("  vulkan device   {}", field("vulkan_device"));
     println!("  dmabuf device   {}", field("dmabuf_device"));
+    let offered = match at(session, "dmabuf_version").as_u64() {
+        None => "not offered".to_owned(),
+        Some(version) if at(session, "dmabuf_feedback").as_bool() == Some(true) => {
+            format!("version {version}, default feedback")
+        }
+        Some(version) => format!("version {version}, formats only"),
+    };
+    println!("  dmabuf offer    {offered}");
     for (package, adapter) in at(session, "app_adapters")
         .as_object()
         .into_iter()
@@ -216,6 +234,8 @@ mod tests {
                 "node": "/dev/dri/renderD128",
                 "driver": "msm_dpu",
                 "vulkan_device": "Turnip Adreno (TM) X1-85",
+                "dmabuf_version": 5,
+                "dmabuf_feedback": true,
                 "dmabuf_device": "/dev/dri/renderD128",
                 "problems": [],
                 "app_adapters": {
@@ -226,10 +246,12 @@ mod tests {
             assert_eq!(verdict["status"], "ok", "{verdict}");
         }
 
-        phase a_cpu_adapter_or_a_missing_dmabuf_global_is_degraded;
+        phase a_cpu_adapter_or_a_formats_only_offer_is_degraded;
         {
             let record = json!({
                 "node": "/dev/dri/renderD128",
+                "dmabuf_version": 3,
+                "dmabuf_feedback": false,
                 "dmabuf_device": null,
                 "problems": [],
                 "app_adapters": {
@@ -239,7 +261,10 @@ mod tests {
             let verdict = assess(&nodes(), Some(&record));
             assert_eq!(verdict["status"], "degraded");
             let problems = verdict["problems"].to_string();
-            assert!(problems.contains("zwp_linux_dmabuf_v1"), "{problems}");
+            assert!(
+                problems.contains("zwp_linux_dmabuf_v1 is offered at version 3, formats only"),
+                "{problems}"
+            );
             assert!(
                 problems.contains("so.tilo.notes renders on a CPU adapter"),
                 "{problems}"
@@ -249,6 +274,23 @@ mod tests {
             assert_eq!(
                 verdict["status"], "degraded",
                 "no session record is not health"
+            );
+        }
+
+        phase a_session_that_offers_no_dmabuf_says_so;
+        {
+            let record = json!({
+                "node": "/dev/dri/renderD128",
+                "dmabuf_version": null,
+                "problems": [],
+                "app_adapters": {}
+            });
+            let verdict = assess(&nodes(), Some(&record));
+            assert_eq!(verdict["status"], "degraded");
+            let problems = verdict["problems"].to_string();
+            assert!(
+                problems.contains("zwp_linux_dmabuf_v1 is not offered"),
+                "{problems}"
             );
         }
     }

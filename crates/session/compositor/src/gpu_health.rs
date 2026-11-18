@@ -24,8 +24,13 @@ pub struct GpuHealth {
     pub vulkan_device: Option<String>,
     /// The Vulkan ICD manifest pinned for apps, which the session does not do.
     pub vulkan_icd: Option<String>,
+    /// The version of `zwp_linux_dmabuf_v1` the session offers: 5 with default feedback, 3 with
+    /// formats only. `None` when it offers none.
+    pub dmabuf_version: Option<u32>,
+    /// Whether the offer names the main device clients should allocate on (default feedback).
+    pub dmabuf_feedback: bool,
     /// The node advertised as `zwp_linux_dmabuf_v1` 's main device: where clients allocate. `None`
-    /// while not advertised.
+    /// when the offer names none (version 3, formats only).
     pub dmabuf_device: Option<String>,
     /// Render nodes with no GPU behind them, with the reason, by path.
     pub nodes_without_gpu: BTreeMap<String, String>,
@@ -41,23 +46,33 @@ fn path() -> PathBuf {
         .join(FILE_NAME)
 }
 
-/// Record where clients allocate: `device` is the node the session hands them, or none when no
-/// GPU-backed global went out.
-pub(crate) fn record_dmabuf(device: Option<&Path>) {
-    let record = GpuHealth {
+/// What clients are offered to present their frames from: `device` is the node the session tells
+/// them to allocate on, and `feedback` whether that comes with default feedback.
+fn offered(device: Option<&Path>, feedback: bool) -> GpuHealth {
+    // The two offers smithay's dmabuf state makes: formats only is version 3, and the one with
+    // default feedback version 5.
+    let version = if feedback { 5 } else { 3 };
+    GpuHealth {
         node: device.map(|node| node.display().to_string()),
         driver: device.and_then(driver_of),
+        dmabuf_version: Some(version),
+        dmabuf_feedback: feedback,
         dmabuf_device: device.map(|node| node.display().to_string()),
         problems: match device {
             Some(_) => Vec::new(),
-            None => vec![
-                "zwp_linux_dmabuf_v1 is not advertised, so apps cannot present from a GPU"
-                    .to_owned(),
-            ],
+            None => vec![format!(
+                "zwp_linux_dmabuf_v1 is offered at version {version}, formats only, so \
+                     clients are told no device to allocate on"
+            )],
         },
         ..GpuHealth::default()
-    };
-    write(&record);
+    }
+}
+
+/// Say what clients are offered to present their frames from: `device` is the node the session
+/// tells them to allocate on, and `feedback` whether that comes with default feedback.
+pub(crate) fn record_dmabuf(device: Option<&Path>, feedback: bool) {
+    write(&offered(device, feedback));
 }
 
 /// The kernel driver behind a render node, as sysfs names it.
@@ -94,14 +109,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_session_without_a_gpu_records_why() {
-        let mut record = GpuHealth::default();
-        record.problems.push(
-            "zwp_linux_dmabuf_v1 is not advertised, so apps cannot present from a GPU".to_owned(),
-        );
-        let json = serde_json::to_value(&record).expect("the record serializes");
+    fn a_session_without_a_gpu_says_what_clients_are_offered() {
+        let without = offered(None, false);
+        let json = serde_json::to_value(&without).expect("the health file serializes");
+        assert_eq!(json["dmabuf_version"], 3);
+        assert_eq!(json["dmabuf_feedback"], false);
         assert!(json["dmabuf_device"].is_null(), "{json}");
-        assert!(json["problems"].is_array(), "{json}");
+        assert!(
+            json["problems"][0]
+                .as_str()
+                .is_some_and(|why| why.contains("version 3, formats only")),
+            "{json}"
+        );
         assert!(json["app_adapters"].is_object(), "{json}");
+
+        let on_gpu = offered(Some(Path::new("/dev/dri/renderD128")), true);
+        let json = serde_json::to_value(&on_gpu).expect("the health file serializes");
+        assert_eq!(json["dmabuf_version"], 5);
+        assert_eq!(json["dmabuf_feedback"], true);
+        assert_eq!(json["dmabuf_device"], "/dev/dri/renderD128");
+        assert_eq!(json["problems"], serde_json::json!([]));
     }
 }
