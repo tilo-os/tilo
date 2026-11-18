@@ -41,6 +41,8 @@ mod typing;
 mod window_icons;
 #[path = "headless/window_tags.rs"]
 mod window_tags;
+#[path = "headless/zero_size.rs"]
+mod zero_size;
 
 use crate::harness::{
     HostLog, Seen, Square, TestClient, headless, mapped_client, mapped_client_without_touch, pump,
