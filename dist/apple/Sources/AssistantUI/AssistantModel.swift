@@ -102,6 +102,8 @@ public final class AssistantModel {
     public var drafts: [Chat: Draft] = [:]
     /// Why the last call did not go through, for the person to read. The next call that does clears it.
     public var problem: String?
+    /// The sentence a pairing ended with, while `problem` says it.
+    @ObservationIgnored private var endedSaid: String?
     /// Whether the window asks for a new sub-agent's job.
     public var asksForJob = false
     /// The piece whose words are laid out for the person to mark a part of them: Select text in
@@ -153,6 +155,7 @@ public final class AssistantModel {
         follow(source.session()) { $0.take($1) }
         follow(source.setup()) { $0.setup = $1 }
         follow(source.reach()) { $0.take($1) }
+        follow(source.pairingEnded()) { $0.take(ended: $1) }
         follow(source.subAgents()) { model, agents in
             model.subAgents = agents
             for agent in agents { model.listen(.subAgent(agent.id)) }
@@ -174,6 +177,7 @@ public final class AssistantModel {
         if let stands = await first(source.session()) { take(stands) }
         setup = await first(source.setup()) ?? .unknown
         reach = await first(source.reach()) ?? .unknown
+        if let ended = await first(source.pairingEnded()) { take(ended: ended) }
         subAgents = await first(source.subAgents()) ?? []
         tasks = await first(source.tasks()) ?? []
         automations = await first(source.automations()) ?? []
@@ -185,6 +189,18 @@ public final class AssistantModel {
             conversation.apply(change)
             conversations[chat] = conversation
         }
+    }
+
+    /// Why a pairing ended without letting this device in: the way in says Tilo's own sentence
+    /// under its buttons, until another link is taken or the device is in.
+    private func take(ended why: String?) {
+        if let why {
+            problem = why
+        } else if problem == endedSaid {
+            // Only its own sentence is taken back: what a call said since stays.
+            problem = nil
+        }
+        endedSaid = why
     }
 
     /// Where the device stands now. Whose devices it would join and on which server is kept

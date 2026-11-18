@@ -170,6 +170,10 @@ public final class TiloSource: AssistantSource {
 
     private let sessions = Told<Session>(.signedOut)
     private let reaches = Told<Reach>(.unknown)
+    /// Why the last pairing ended without letting this device in, in the page's own sentence.
+    private let endings = Told<String?>(nil)
+    /// Whether a link was taken here and the device has not got in since.
+    private var pairsNow = false
     /// Whether the page just got in and who the main chat is with is still being found.
     private var finds = false
     /// The calls that wait for the device's way in to end.
@@ -258,14 +262,18 @@ public final class TiloSource: AssistantSource {
 
     public nonisolated func session() -> AsyncStream<Session> { sessions.stream() }
     public nonisolated func reach() -> AsyncStream<Reach> { reaches.stream() }
+    public nonisolated func pairingEnded() -> AsyncStream<String?> { endings.stream() }
 
     public func pair(with link: PairingLink) async throws {
         // A sign-in begins. Whatever key this device still keeps is not the next person's: a
         // new one is made when their server is handed this device's address.
         forgetClosedKey()
+        // Another link is taken: what the last pairing ended with is said no more.
+        endings.set(nil)
         do {
             soughtOwn = false
             try engine.pair(with: link.url)
+            pairsNow = true
         } catch {
             // Of a link it refuses the app says where the link is from, by name and port, and
             // nothing else: what the link carries to pair with is shown, kept and written nowhere.
@@ -317,6 +325,8 @@ public final class TiloSource: AssistantSource {
 
     /// Everything the app keeps and holds of its person and their workspace is forgotten.
     private func forget() {
+        pairsNow = false
+        endings.set(nil)
         address = nil
         handing.settle()
         forgetClosedKey()
@@ -426,12 +436,30 @@ public final class TiloSource: AssistantSource {
         }
     }
 
+    /// A pairing that ends before this device is anybody's puts it back at its way in. What
+    /// the page said of it, a refused link or a page that could not go on, is kept for the way
+    /// in to say, until another link is taken or the device is in. A device that is its
+    /// person's already stands at no way in, and is told nothing here.
+    private func sayEnding(_ state: TiloEngine.State) {
+        switch state {
+        case .open:
+            pairsNow = false
+            endings.set(nil)
+        case .refused(let why), .failed(let why):
+            guard pairsNow, person == nil else { return }
+            endings.set(why.isEmpty ? nil : why)
+        case .away, .arriving, .asking, .pairing, .gone:
+            break
+        }
+    }
+
     private func stood(_ state: TiloEngine.State) async {
         // The workspace this device was let into is gone: the app goes back to its way in by itself.
         if case .gone = state {
             lost()
             return
         }
+        sayEnding(state)
         // The page is in, and her assistant is looked for next. It is said before the word that
         // Tilo answers, so that the window's one sentence stands from its opening until the
         // main chat does, with no moment between the two in which nothing is said.
