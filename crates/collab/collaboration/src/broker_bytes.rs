@@ -244,7 +244,8 @@ pub(super) fn command_bytes(command: &SdkCommand) -> Option<usize> {
         SdkCommand::PrimaryReady(_)
         | SdkCommand::PublicationBarrier(_)
         | SdkCommand::FlushSettings
-        | SdkCommand::FlushLiveActivity => Some(std::mem::size_of::<SdkCommand>()),
+        | SdkCommand::FlushLiveActivity
+        | SdkCommand::ResumeInvocations => Some(std::mem::size_of::<SdkCommand>()),
         #[cfg(test)]
         SdkCommand::KeyScheduleProbe(_) => Some(std::mem::size_of::<SdkCommand>()),
         // The group was allocated by the caller before entering the bridge,
