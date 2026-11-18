@@ -62,6 +62,7 @@ impl Session {
                         None => people.push(here),
                     }
                 }
+                self.shared.activity.set_people(&workspace, &people);
                 app_wire.layout.set_people(&workspace, people);
             }
         }

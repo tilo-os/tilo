@@ -277,7 +277,6 @@ impl WorkspaceActivityPane {
             .hash(&mut hasher);
         self.morning_command_message.hash(&mut hasher);
         self.chosen_morning_sources().hash(&mut hasher);
-        self.feed_coverage.pending_tree.hash(&mut hasher);
         self.workspace_name.hash(&mut hasher);
         self.scope.hash(&mut hasher);
         self.focus
@@ -373,8 +372,8 @@ impl WorkspaceActivityPane {
                     label,
                 })
                 .collect(),
-            pending: self.feed_coverage.pending_tree,
             mutations: self.host.mutations_available(),
+            ..wire::Feed::default()
         }
     }
 
@@ -502,7 +501,7 @@ impl WorkspaceActivityPane {
             sources_available: self.host.morning_sources_available()
                 && self.scope == WorkspaceScope::ThisWorkspace,
             sources,
-            pending: self.feed_coverage.pending_tree,
+            ..wire::Summary::default()
         }
     }
 
@@ -547,7 +546,7 @@ impl WorkspaceActivityPane {
                 .collect(),
             unavailable: self.replay_unavailable,
             note: self.replay_presentation_note.clone(),
-            pending: self.feed_coverage.pending_tree,
+            ..wire::Replay::default()
         }
     }
 

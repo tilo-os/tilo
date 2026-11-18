@@ -281,9 +281,6 @@ impl WorkspaceHistoryQuery {
 /// downloaded; silently omitting it would make the history falsely reassuring.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FeedCoverage {
-    /// The live tree has an unfinished producer transaction. No history read may implicitly commit
-    /// it; observation resumes after producer settlement.
-    pub pending_tree: bool,
     pub referenced_records: usize,
     pub indexed_resources: usize,
     pub unavailable_resources: Vec<DocumentCheckout>,
@@ -293,8 +290,7 @@ pub struct FeedCoverage {
 
 impl FeedCoverage {
     pub fn is_complete(&self) -> bool {
-        !self.pending_tree
-            && self.unavailable_resources.is_empty()
+        self.unavailable_resources.is_empty()
             && self.capped_records == 0
             && self.excluded_apps.is_empty()
     }
@@ -437,15 +433,12 @@ impl WorkspaceHistoryIndex {
         let limit = query.bounded_limit();
         let mut by_id = BTreeMap::new();
         let mut coverage = FeedCoverage {
-            pending_tree: tree.document().pending_ops() > 0,
             referenced_records: records.len(),
             ..Default::default()
         };
         let mut documents = BTreeMap::new();
-        if !coverage.pending_tree {
-            insert_rows(&mut by_id, &HistoryOrigin::Layout, tree_rows.to_vec());
-            documents.insert("workspace-tree".into(), tree.document_mut().get_heads());
-        }
+        insert_rows(&mut by_id, &HistoryOrigin::Layout, tree_rows.to_vec());
+        documents.insert("workspace-tree".into(), tree.document_mut().get_heads());
         let mut ordered = records.iter_mut().collect::<Vec<_>>();
         ordered.compact_sort_by_key(|record| record.origin());
         let mut logs = HashMap::with_capacity(ordered.len().min(MAX_INDEXED_RECORDS));

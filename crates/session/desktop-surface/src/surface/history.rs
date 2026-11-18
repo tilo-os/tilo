@@ -49,8 +49,9 @@ pub trait HistorySource {
     /// application names.
     fn host(&self) -> Rc<dyn ActivityHost>;
 
-    /// Name the authors the host knows before the model reads changes.
-    fn register_authors(&self, _authors: &mut ui::AuthorDirectory) {}
+    /// Name the authors the session knows before the model reads `workspace` 's changes: its
+    /// members, as its governance names them.
+    fn register_authors(&self, _workspace: WorkspaceId, _authors: &mut ui::AuthorDirectory) {}
 
     /// The window showing `target` , focused when the person opens it from the history.
     fn resource_tab(&self, _tree: &Layout, _target: &ui::HistoryResourceTarget) -> Option<TabId> {
@@ -166,7 +167,7 @@ impl WorkspaceActivity {
 
     fn read_resources(&mut self, source: &mut dyn HistorySource, tree: &Layout) {
         let records = source.record_histories(tree, self.workspace);
-        source.register_authors(self.pane.authors_mut());
+        source.register_authors(self.workspace, self.pane.authors_mut());
         self.pane.refresh(&mut self.snapshot);
         self.pane
             .refresh_detached_records(&mut self.snapshot, records);
