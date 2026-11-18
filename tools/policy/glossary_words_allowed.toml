@@ -514,8 +514,3 @@ words = ["host"]
 paths = ["crates/sdk/ui-core/src/headless/part_row.rs"]
 identifiers = ["host_window_parts", "hosts_window_parts"]
 
-
-[[allow]]
-reason = "The name a view kept for a session's undo before it was a session's, read through `UndoSession`'s serde alias and never written."
-words = ["run"]
-paths = ["crates/collab/actions/src/remote/workspace_activity.rs"]

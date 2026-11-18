@@ -515,8 +515,7 @@ pub enum DetailAction {
     Merge,
     ChooseSource,
     UndoEntry,
-    /// Undo the whole agent session. An older view named it `undo-run`.
-    #[serde(alias = "undo-run")]
+    /// Undo the whole agent session.
     UndoSession,
 }
 
