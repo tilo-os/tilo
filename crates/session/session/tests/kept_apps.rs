@@ -690,6 +690,41 @@ fn an_app_that_ended_while_no_desktop_was_there_closes_its_tab_and_says_it_stopp
     second.end(Teardown::Logout);
 }
 
+/// The tab an app that ended while the desktop was away stood in closes for good: the workspace's
+/// saved layout loses it as it does a tab the person closed, so the next login neither shows it
+/// nor starts the app for it.
+#[test]
+fn the_tab_of_an_app_that_ended_while_away_stays_closed_at_the_next_login() {
+    let _settled = ui::motion::testing::settled();
+    let rig = Rig::new(&["Only"]);
+    let tab = ended_while_away(&rig);
+    let [pid] = rig.starts()[..] else {
+        panic!("one start: {:?}", rig.starts());
+    };
+    let mut second = rig.desktop(true);
+    until(&mut second.session, "its tab closes", |session| {
+        !tabs(session).iter().any(|(other, _)| *other == tab)
+    });
+    second.end(Teardown::Logout);
+
+    // A fresh login lays the saved layout out and asks for what it holds within moments: long
+    // enough for a tab that came back to show, or for its app to be started.
+    let mut third = rig.desktop(false);
+    let looked = std::time::Instant::now();
+    while looked.elapsed() < Duration::from_secs(3)
+        && !tabs(&third.session).iter().any(|(other, _)| *other == tab)
+    {
+        third.session.step(Duration::from_millis(5)).expect("step");
+    }
+    assert!(
+        !tabs(&third.session).iter().any(|(other, _)| *other == tab),
+        "the closed tab stays closed at the next login: {:?}",
+        tabs(&third.session)
+    );
+    assert_eq!(rig.starts(), [pid], "and nothing starts the app for it");
+    third.end(Teardown::Logout);
+}
+
 #[test]
 fn a_start_after_a_reboot_opens_the_tab_of_an_app_that_ended_again() {
     let _settled = ui::motion::testing::settled();

@@ -416,9 +416,10 @@ pub(crate) struct Layouts {
     /// The agent run that opened each window an agent opened, by workspace and tab, as each
     /// workspace's layout last said.
     opened_by: RefCell<HashMap<WorkspaceId, BTreeMap<u64, OpenedBy>>>,
-    /// The windows each workspace's layout holds of this device, as it last wrote them: a
-    /// window there that this session no longer holds is one this device closed, and its entry goes
-    /// when the device writes again rather than the fold laying it back into the layout.
+    /// The windows each workspace's layout holds that this session showed, as it last wrote or
+    /// laid them in: a window there that this session no longer holds is one this device closed,
+    /// and its entry goes when the device writes again rather than the fold laying it back into
+    /// the layout.
     written_windows: RefCell<HashMap<WorkspaceId, BTreeSet<u64>>>,
     /// The record each window an arranging action put on a record shows, as this device placed it:
     /// what the place shows from the moment it stands, before the layout's write of it lands.
@@ -847,7 +848,20 @@ impl Layouts {
             closed: &|id| closed.contains(&id),
             writing: false,
         };
-        device::fold(doc, workspace, device, &kept)
+        let changed = device::fold(doc, workspace, device, &kept);
+        // What the layout laid in here, this session shows from now on: one of those windows gone
+        // from it later (the person closed it, or the restore closed the tab of an app that ended
+        // while the desktop was away) is a close this device writes, never a window the next
+        // write lays back from the workspace's layout. Only windows that layout holds count: one
+        // this device opened and has not written yet is not the layout's to take back.
+        let holds = tabs_of(layout);
+        self.written_windows
+            .borrow_mut()
+            .entry(workspace_id)
+            .and_modify(|known| known.retain(|id| holds.contains(id)))
+            .or_default()
+            .extend(windows_of(workspace).intersection(&holds));
+        changed
     }
 
     /// Show every workspace in `tree` as the person here last left it.
