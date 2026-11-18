@@ -230,8 +230,8 @@ impl ChainState {
                         super::super::root::answer_read(
                             doc,
                             &payload,
-                            |_| Err("a version is read".to_owned()),
-                            part.content_at,
+                            &|_| Err("a version is read".to_owned()),
+                            &part.content_at,
                         )
                     }
                     None => (part.content)(&**state, doc, Some(item)),
