@@ -241,6 +241,59 @@ pub(crate) enum Request {
     TakeContent,
 }
 
+impl Request {
+    /// Whether the request leaves what the held document offers as it was: it reads or
+    /// collects, and neither the document, nor what its holder may do, nor the members it
+    /// knows move by it. An action found by its address before such a request is the same
+    /// action after it.
+    pub(crate) const fn moves_nothing(&self) -> bool {
+        matches!(
+            self,
+            Self::TakeMutation
+                | Self::TakeDocumentMutations
+                | Self::Presence
+                | Self::ChangedKeys { .. }
+                | Self::TakeContent
+        )
+    }
+
+    /// What the request asks, as a log line names it.
+    pub(crate) const fn kind(&self) -> &'static str {
+        match self {
+            Self::Close => "close",
+            Self::Open { .. } => "open",
+            Self::Renew { .. } => "renew",
+            Self::Survey => "survey",
+            Self::SurveyRows => "survey-rows",
+            Self::SurveyPage { .. } => "survey-page",
+            Self::ChangedKeys { .. } => "changed-keys",
+            Self::Resolve { .. } => "resolve",
+            Self::Invoke { .. } => "invoke",
+            Self::TakeMutation => "take-mutation",
+            Self::Apply { .. } => "apply",
+            Self::ApplyDocument { .. } => "apply-document",
+            Self::TakeDocumentMutations => "take-document-mutations",
+            Self::Presence => "presence",
+            Self::AskWorkspace => "ask-workspace",
+            Self::Wanted => "wanted",
+            Self::Answered { .. } => "answered",
+            Self::ViewsLoad { .. } => "views-load",
+            Self::Title { .. } => "title",
+            Self::Entries { .. } => "entries",
+            Self::Views { .. } => "views",
+            Self::ReadPrepare { .. } => "read-prepare",
+            Self::ReadPolicy { .. } => "read-policy",
+            Self::ReadOperations => "read-operations",
+            Self::ReadRegisters => "read-registers",
+            Self::ReadInvoke { .. } => "read-invoke",
+            Self::Probe { .. } => "probe",
+            Self::Shrink { .. } => "shrink",
+            Self::PutContent(_) => "put-content",
+            Self::TakeContent => "take-content",
+        }
+    }
+}
+
 /// A worker's replies.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) enum Reply {
