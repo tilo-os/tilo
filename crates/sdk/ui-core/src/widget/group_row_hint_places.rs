@@ -189,14 +189,14 @@ fn bar_room(group: &super::WindowGroup) -> Option<Rect> {
         .fold(bar.x0, f64::max);
     let mut runs: Vec<Rect> = Vec::new();
     let mut run: Option<(f64, f64)> = None;
-    let mut x = past_tabs;
-    while x <= bar.x1 {
+    let steps = std::iter::successors(Some(past_tabs), |x| Some(x + GRAB_STEP))
+        .take_while(|x| *x <= bar.x1);
+    for x in steps {
         if room_ground(group, Point::new(x, y)) {
             run = Some(run.map_or((x, x), |(from, _)| (from, x)));
         } else if let Some((from, to)) = run.take() {
             runs.push(Rect::new(from, bar.y0, to, bar.y1));
         }
-        x += GRAB_STEP;
     }
     if let Some((from, to)) = run {
         runs.push(Rect::new(from, bar.y0, to, bar.y1));
