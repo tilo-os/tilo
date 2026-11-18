@@ -303,9 +303,14 @@ fn a_snapshot_is_restored_into_the_folder_the_person_picks() {
     app.effect(&BackupsEffect::RestoreSnapshot { snapshot_id: id })
         .unwrap();
     let landed = chosen.join("letter.txt");
-    tilo_test_env::wait_until("the restored file", || {
+    let restoring = || {
+        ui::jobs::rows()
+            .into_iter()
+            .find(|job| job.title() == "Restoring")
+    };
+    tilo_test_env::wait_until("the restored file and the job that wrote it", || {
         app.settle();
-        landed.is_file()
+        landed.is_file() && restoring().is_some_and(|job| job.outcome().is_some())
     });
     assert_eq!(std::fs::read(&landed).unwrap(), b"dear backup");
 
@@ -318,10 +323,7 @@ fn a_snapshot_is_restored_into_the_folder_the_person_picks() {
         "the restore asks for a folder: {request:?}"
     );
 
-    let job = ui::jobs::rows()
-        .into_iter()
-        .find(|job| job.title() == "Restoring")
-        .expect("the restore is a job in the registry");
+    let job = restoring().expect("the restore is a job in the registry");
     assert!(
         matches!(job.outcome(), Some(ui::jobs::Outcome::Done(_))),
         "{:?}",
