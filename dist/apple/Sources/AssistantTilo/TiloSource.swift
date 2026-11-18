@@ -1365,7 +1365,6 @@ public final class TiloSource: AssistantSource {
     }
 
     public func send(_ draft: Draft, to chat: Chat) async throws {
-        guard draft.files.isEmpty else { throw SourceProblem.refused("A file cannot be sent from this app yet") }
         let to: ChatRecipient
         switch chat {
         case .main:
@@ -1375,7 +1374,13 @@ public final class TiloSource: AssistantSource {
             guard let id = feeds[chat]?.conversation else { throw SourceProblem.refused("This sub-agent has no conversation yet") }
             to = ChatRecipient(.conversation, id: id, name: agent.value)
         }
-        try await taken { _ = try await self.engine.chatSend(draft.text, to: to) }
+        try await taken {
+            // The picked files go into the person's workspace first, a piece at a time. One
+            // message then carries the words and names each file. A file that did not go in
+            // whole sends nothing.
+            let carried = try await TiloFiles.carried(draft.files, through: self.engine)
+            _ = try await self.engine.chatSend(draft.text, to: to, carrying: carried)
+        }
     }
 
     /// Stop the agent that is at work in a conversation, as the person: Chat's own

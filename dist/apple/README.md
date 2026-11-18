@@ -416,8 +416,21 @@ sends. Attachments and dictation stand under the field, and dictation is the she
 message carries is content its workspace keeps and the message names (Chat's `attachments`):
 `ChatMessage.files` reads them, `TiloFiles` hands them to the views, and a file's tag says its
 name and its size (`Attachment.words`). The app keeps nothing of a file. Tilo's page hands a
-native app no way to a file's content yet, so pressing a file and sending one each say so in a
-sentence: nothing is read from a picked file, and nothing is fetched.
+native app no way to be handed a file's content yet, so pressing a file says so in a
+sentence, and nothing is fetched.
+
+**A file is sent** through Tilo's page. The plus under the message field, or a file dropped on
+it, puts a file under the draft. Send puts each file into the person's workspace a piece at a
+time (`TiloEngine.putBegin`, `putAppend`, `putFinish` ask the page's `put`: 384 KiB a piece,
+read from the file as it goes, never whole in the app or in the page) and then sends ONE
+message with the words, which names every file as Chat does (`send` with `attached`: the name,
+what the workspace keeps the content under, the size). The page refuses a file larger than a
+message may carry by its size alone, before any of it crosses, and the app then says how large
+the file is and how large one may be. A file that is empty, cannot be read or did not go in
+whole sends nothing, and the draft stays in the field. The page of a site whose code is older
+hands no such way: the app says "A file cannot be sent from this app yet" and touches nothing
+of the file. `FileSendingTests` checks this against a page that speaks as Tilo's does, not
+against Tilo's own page and server.
 
 **A secret** is typed into the system's protected field. What is typed lives in that one view
 until Save hands it to `AssistantSource.keep`, and the field is emptied before the call. It is

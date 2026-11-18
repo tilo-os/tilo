@@ -336,6 +336,8 @@ public enum EngineScript {
         JSON.stringify({error: {code: 'unknown_action', reason: `no action addressed by (${provider}, ${action})`}});
       const noDevice = () =>
         JSON.stringify({error: {code: 'unavailable', reason: 'This page hands a native app no way to its person\'s own providers'}});
+      // The steps of putting one file into the workspace this page is in (`put` below).
+      const putSteps = new Set(['offered', 'begin', 'append', 'finish']);
 
       Object.defineProperty(globalThis, '__tiloLive', {value: Object.freeze({
         seen,
@@ -384,6 +386,25 @@ public enum EngineScript {
               .filter(one => typeof one?.app === 'string' && typeof one?.document === 'string')
               .map(one => ({app: one.app, document: one.document}));
             return JSON.stringify({ok: {changed: named, cursor: typeof told?.cursor === 'string' ? told.cursor : ''}});
+          } catch (error) { return JSON.stringify({error: failure(error)}); }
+        },
+        // One of the person's files goes into the workspace this page is in, a piece at a
+        // time, through what the page hands a native app for it (`put`): `begin` with the
+        // file's size, `append` with a piece as base64 text at the offset the piece before it
+        // ended, `finish` for what the workspace keeps the file under. `offered` asks nothing
+        // of anyone: it says whether this page hands such a way at all. Only the app's own
+        // code reaches this, with the engine's pass. What is answered is the page's answer to
+        // the step and nothing of a piece; nothing of one is posted to the engine or kept.
+        async put(given, step, of) {
+          if (!holds(given) || !putSteps.has(step)) return unknown('tilo.content', 'put');
+          if (!device) return noDevice();
+          const put = device.put;
+          if (!put || ![put.begin, put.append, put.finish].every(one => typeof one === 'function')) return unknown('tilo.content', 'put');
+          try {
+            if (step === 'offered') return JSON.stringify({ok: true});
+            if (step === 'begin') return JSON.stringify({ok: {upload: (await put.begin(of?.size))?.upload ?? null}});
+            if (step === 'append') return JSON.stringify({ok: {written: (await put.append(of?.upload, of?.offset, of?.piece))?.written ?? null}});
+            return JSON.stringify({ok: {content: (await put.finish(of?.upload))?.content ?? null}});
           } catch (error) { return JSON.stringify({error: failure(error)}); }
         },
         // The person's answer to what the page asks before it pairs, handed on as a press of
