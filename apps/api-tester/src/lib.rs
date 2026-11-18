@@ -21,7 +21,7 @@ mod dialog;
 mod http;
 mod kv;
 pub mod locales;
-mod model;
+pub use api_tester_model::model;
 mod palette;
 mod request;
 pub mod resource;
@@ -29,7 +29,7 @@ mod response;
 mod seed;
 mod sidebar;
 mod vars;
-mod workspace;
+pub use api_tester_model::workspace;
 
 pub use app::ApiTesterApp;
 pub use resource::{ApiTesterShell, Workspace};

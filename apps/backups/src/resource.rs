@@ -1,39 +1,17 @@
-//! Backups as a resource: the retention policy is document state, each count edited at its
-//! path; where this device backs up from and to is its own setting; backing up, verifying
-//! and restoring are effects, and the catalog is published as live rows.
+//! Backups' window: where this device backs up from and to, the captures it shows, and
+//! what opening a search anchor does. The resource itself is `backups-model`'s.
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use ui::framework::{Fixture, ResourceApp, ViewCx};
 use ui::storage::{Scope, SettingsSchema};
-use ui::tilo_resource::{self, Model, resource};
 use ui::widget::Element;
 
 use crate::actions::BackupsEffect;
-use crate::model::{Catalog, RetentionPolicy};
+use crate::model::Catalog;
 
-/// What the document holds: the retention policy every device follows.
-#[derive(Model, Default, Clone, Debug, PartialEq)]
-pub struct Backups {
-    pub policy: RetentionPolicy,
-}
-
-impl Backups {
-    /// What the resource holds: the retention policy every device follows.
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
-}
-
-#[resource(
-    kind = "backups.workspace",
-    read_content = Backups::read_document
-)]
-impl Backups {}
+pub use backups_model::Backups;
 
 /// The folder this device protects and the location its backups go to. Absolute paths mean
 /// nothing on another device, so they never leave this one.

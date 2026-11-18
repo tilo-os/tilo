@@ -3,13 +3,9 @@
 //! history and the saved graph formulas are in the resource; the expression being
 //! typed, the display and the pan/zoom are window state.
 
-use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use ui::tilo_resource::{self, Collection, Effect, Id, Path};
-
-use crate::model::PlotFn;
-use crate::resource::Calculator;
+use ui::tilo_resource::{self, Effect, Id};
 
 /// What this window shows and recalls; nothing here is in the shared document.
 #[derive(Debug, Clone, PartialEq, Eq, Effect)]
@@ -50,40 +46,7 @@ pub enum CalculatorEffect {
     },
 }
 
-/// The newest entries are at the front; overflow drops from the tail.
-pub const HISTORY_CAP: usize = 64;
-
-/// Which saved-graph list a row is in; both are collections of [`PlotFn`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum GraphKind {
-    Curve2d,
-    Surface3d,
-}
-
-impl GraphKind {
-    pub fn field(self) -> &'static str {
-        match self {
-            GraphKind::Curve2d => "funcs",
-            GraphKind::Surface3d => "surfaces",
-        }
-    }
-
-    pub fn rows(self) -> Path<Calculator, Collection<PlotFn>> {
-        let paths = Calculator::paths();
-        match self {
-            GraphKind::Curve2d => paths.funcs,
-            GraphKind::Surface3d => paths.surfaces,
-        }
-    }
-
-    /// Stable: row ids embed it.
-    fn slug(self) -> &'static str {
-        match self {
-            GraphKind::Curve2d => "curve2d",
-            GraphKind::Surface3d => "surface3d",
-        }
-    }
-}
+pub use calculator_model::{GraphKind, HISTORY_CAP};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 

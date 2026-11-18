@@ -30,6 +30,8 @@ serde_json.workspace = true
 # Whether this build is a page, which runs no agent: an assistant made there works on the
 # workspace's host.
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+# The resource the window draws: its type and verb, shared with the device that applies it.
+assistant-model = { path = "../assistant-model" }
 
 [dev-dependencies]
 # Tests see this package's samples. The key must not be the package name:

@@ -174,11 +174,22 @@ name = "activity"
 version = "0.1.0"
 dependencies = [
  "activity",
+ "activity-model",
  "jiff",
  "runtime-dylib",
  "serde",
  "serde_json",
  "tilo-app",
+ "workspace-hack",
+]
+
+[[package]]
+name = "activity-model"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tilo-actions",
+ "tilo-resource",
  "workspace-hack",
 ]
 
@@ -568,6 +579,7 @@ checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 name = "api-tester"
 version = "0.1.0"
 dependencies = [
+ "api-tester-model",
  "base64 0.22.1",
  "runtime-dylib",
  "serde",
@@ -580,6 +592,18 @@ dependencies = [
  "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
+name = "api-tester-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-resource",
+ "tilo-test-env",
  "uuid",
  "workspace-hack",
 ]
@@ -838,10 +862,20 @@ name = "assistant"
 version = "0.1.0"
 dependencies = [
  "assistant",
+ "assistant-model",
  "runtime-dylib",
  "serde_json",
  "tilo-app",
  "tilo-test-env",
+ "workspace-hack",
+]
+
+[[package]]
+name = "assistant-model"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tilo-resource",
  "workspace-hack",
 ]
 
@@ -1132,6 +1166,7 @@ dependencies = [
 name = "backups"
 version = "0.1.0"
 dependencies = [
+ "backups-model",
  "hex",
  "host-fs",
  "jiff",
@@ -1148,6 +1183,18 @@ dependencies = [
  "tilo-vello",
  "tilo-winit",
  "walkdir",
+ "workspace-hack",
+]
+
+[[package]]
+name = "backups-model"
+version = "0.1.0"
+dependencies = [
+ "jiff",
+ "serde",
+ "serde_json",
+ "tilo-paths",
+ "tilo-resource",
  "workspace-hack",
 ]
 
@@ -1790,6 +1837,7 @@ checksum = "ade8366b8bd5ba243f0a58f036cc0ca8a2f069cff1a2351ef1cac6b083e16fc0"
 name = "calculator"
 version = "0.1.0"
 dependencies = [
+ "calculator-model",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -1799,6 +1847,16 @@ dependencies = [
  "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
+ "workspace-hack",
+]
+
+[[package]]
+name = "calculator-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-resource",
  "workspace-hack",
 ]
 

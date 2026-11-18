@@ -45,16 +45,6 @@ pub fn snapshot_resource_id(snapshot: &Snapshot) -> String {
     format!("backups.snapshot:{}", snapshot.id)
 }
 
-impl Snapshot {
-    fn status_label(&self) -> &'static str {
-        match self.status {
-            crate::model::SnapStatus::Complete => "complete",
-            crate::model::SnapStatus::Verifying => "verifying",
-            crate::model::SnapStatus::Failed => "failed",
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

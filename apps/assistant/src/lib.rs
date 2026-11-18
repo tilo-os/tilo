@@ -19,7 +19,6 @@ mod sample;
 mod sidebar;
 mod sources;
 mod supervision;
-mod window;
 
 use std::rc::Rc;
 
@@ -32,9 +31,9 @@ use ui::tilo_resource::NonBlank;
 use ui::tilo_workspace_agent::{self as workspace_agent, WorkspaceAgents, workspace_agents};
 use ui::widget::ButtonRole;
 
+pub use assistant_model::Window;
 pub use effects::AssistantEffect;
 use sources::{Assistant, Read, Reads};
-pub use window::Window;
 
 /// The resource Chat publishes a workspace's conversations under, and its action that sends
 /// a message to whom it names.

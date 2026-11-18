@@ -1,7 +1,7 @@
 //! Retention policy, sources, snapshots and the sample catalog captures show.
 
 use jiff::civil::{DateTime, Weekday};
-use ui::tilo_resource::{self, Model, Path, Refusal};
+use tilo_resource::{self, Model, Path, Refusal};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SourceKind {
@@ -43,6 +43,10 @@ pub enum Schedule {
 
 impl Schedule {
     /// The next run strictly after `now`, or `None` for an on-demand source.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "civil dates and spans carry no wrapping arithmetic here"
+    )]
     pub fn next_after(self, now: DateTime) -> Option<DateTime> {
         let at = |date: jiff::civil::Date, hour: u32, minute: u32| -> Option<DateTime> {
             let time =
@@ -94,7 +98,7 @@ impl SnapType {
         match self {
             SnapType::Auto => "Automatic",
             SnapType::Manual => "Manual",
-            SnapType::Unknown => "Not recorded",
+            SnapType::Unknown => "Unknown",
         }
     }
 }
@@ -117,7 +121,7 @@ impl Retention {
             Retention::Weekly => "Weekly",
             Retention::Monthly => "Monthly",
             Retention::Keep => "Until removed",
-            Retention::Unknown => "Not recorded",
+            Retention::Unknown => "Unknown",
         }
     }
 }
@@ -228,6 +232,18 @@ fn sample_files(source_id: &str) -> Vec<SnapFile> {
         .collect()
 }
 
+impl Snapshot {
+    /// The state of the snapshot, as a search hit words it.
+    #[must_use]
+    pub fn status_label(&self) -> &'static str {
+        match self.status {
+            SnapStatus::Complete => "complete",
+            SnapStatus::Verifying => "verifying",
+            SnapStatus::Failed => "failed",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Snapshot {
     pub id: String,
@@ -261,6 +277,10 @@ struct SampleSnapshot<'a> {
 }
 
 impl SampleSnapshot<'_> {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "a sample time is an instant minus a duration, never a bound"
+    )]
     fn at(self, now: DateTime) -> Snapshot {
         Snapshot {
             id: self.id.into(),
@@ -293,6 +313,10 @@ pub struct Destination {
 
 impl Destination {
     /// The share of the destination in use, `0..=1`, when its capacity is known.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a share of a drive read to size a bar, where an exact byte count is not needed"
+    )]
     pub fn used_fraction(&self) -> Option<f64> {
         let total = self.total_bytes.filter(|total| *total > 0)?;
         Some((self.used_bytes as f64 / total as f64).clamp(0.0, 1.0))
@@ -394,6 +418,10 @@ impl RetentionPolicy {
     }
 
     /// The most snapshots the policy keeps per source, pins aside.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "four counts the policy reads, each capped at MAX_KEPT"
+    )]
     pub fn total(&self) -> u32 {
         self.hourly + self.daily + self.weekly + self.monthly
     }
@@ -411,85 +439,7 @@ const MB: u64 = 1_000 * KB;
 const GB: u64 = 1_000 * MB;
 const TB: u64 = 1_000 * GB;
 
-fn local_time(unix_seconds: u64) -> Option<DateTime> {
-    let seconds = i64::try_from(unix_seconds).ok()?;
-    let utc = jiff::Timestamp::from_second(seconds).ok()?;
-    Some(utc.to_zoned(jiff::tz::TimeZone::system()).datetime())
-}
-
 impl Catalog {
-    /// Project a real local repository into the dashboard model.
-    pub fn from_local(
-        source: &std::path::Path,
-        destination: &std::path::Path,
-        manifests: &[crate::engine::BackupManifest],
-    ) -> Self {
-        let source_label = source.to_string_lossy().into_owned();
-        let source_name = source.file_name().map_or_else(
-            || source_label.clone(),
-            |name| name.to_string_lossy().into_owned(),
-        );
-        let destination_label = destination.file_name().map_or_else(
-            || destination.to_string_lossy().into_owned(),
-            |name| name.to_string_lossy().into_owned(),
-        );
-        let now = ui::clock::local_now().datetime();
-        let snapshots = manifests
-            .iter()
-            .map(|manifest| Snapshot {
-                id: manifest.id.clone(),
-                source_id: "local-source".into(),
-                dest_id: "local-destination".into(),
-                taken: local_time(manifest.created_unix_seconds).unwrap_or(now),
-                label: None,
-                kind: SnapType::Unknown,
-                retention: Retention::Unknown,
-                size_bytes: manifest.bytes,
-                delta_bytes: manifest.bytes,
-                files_changed: manifest.files.min(u64::from(u32::MAX)) as u32,
-                status: SnapStatus::Complete,
-                failure: None,
-                files: manifest
-                    .entries
-                    .iter()
-                    .map(|entry| SnapFile {
-                        depth: entry.path.components().count().saturating_sub(1),
-                        name: entry
-                            .path
-                            .file_name()
-                            .map(|name| name.to_string_lossy().into_owned())
-                            .unwrap_or_default(),
-                        size: matches!(entry.kind, crate::engine::EntryKind::File)
-                            .then_some(entry.size),
-                        is_dir: matches!(entry.kind, crate::engine::EntryKind::Directory),
-                    })
-                    .collect(),
-            })
-            .collect::<Vec<_>>();
-        let used = manifests.iter().map(|manifest| manifest.bytes).sum::<u64>();
-        Self {
-            sources: vec![Source {
-                id: "local-source".into(),
-                name: source_name,
-                path: source_label,
-                kind: SourceKind::Custom,
-                schedule: Schedule::OnDemand,
-                enabled: true,
-                health: Health::Unknown,
-            }],
-            snapshots,
-            destinations: vec![Destination {
-                id: "local-destination".into(),
-                name: destination_label,
-                kind: DestKind::LocalFolder,
-                used_bytes: used,
-                total_bytes: None,
-                encrypted: false,
-                health: Health::Unknown,
-            }],
-        }
-    }
-
     pub fn empty() -> Self {
         Self {
             sources: Vec::new(),
@@ -893,7 +843,7 @@ mod tests {
     use super::*;
 
     fn capture_now() -> DateTime {
-        let (y, mo, d, h, mi) = ui::clock::CAPTURE_LOCAL_TIME;
+        let (y, mo, d, h, mi) = (2026, 6, 30, 10, 42);
         jiff::civil::Date::new(y, mo, d)
             .ok()
             .map(|date| date.at(h, mi, 0, 0))

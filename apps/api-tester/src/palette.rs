@@ -37,11 +37,4 @@ pub fn status_class(status: u16) -> StatusClass {
     }
 }
 
-/// The path tail of `url`, for compact history labels.
-pub fn short_path(url: &str) -> String {
-    let no_scheme = url.split("://").nth(1).unwrap_or(url);
-    match no_scheme.find('/') {
-        Some(i) => no_scheme.get(i..).unwrap_or(no_scheme).to_string(),
-        None => no_scheme.to_string(),
-    }
-}
+pub use api_tester_model::short_path;

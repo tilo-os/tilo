@@ -2,7 +2,7 @@
 //! the workspace's agents, its thread is a Chat conversation, its work is issues in Tasks
 //! and its progress work is Shortcuts. The window shows those resources and keeps no copy.
 
-use ui::prelude::*;
+use tilo_resource::{self, Model, resource};
 
 /// The Assistant window's resource of the workspace.
 #[derive(Model, Default, Debug, Clone, PartialEq, Eq)]
