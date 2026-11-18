@@ -24,6 +24,7 @@ fn a_mention_in_a_message_is_found_in_the_record_the_workspace_sent() {
     let body = vec![tilo_rich_text::clip_of_content(&paragraph)];
     ada.apply(ChatMessages::POST.with(chat_messages::Post {
         message: NewMessage {
+            id: None,
             channel: id("c_chat"),
             text: message_text.into(),
             parent: None,
@@ -73,6 +74,7 @@ fn a_direct_message_is_news_for_the_person_it_is_addressed_to() {
     ]);
     ada.apply(ChatMessages::POST.with(chat_messages::Post {
         message: NewMessage {
+            id: None,
             channel: to_bo,
             text: "Have a look at this plan".into(),
             parent: None,
@@ -111,6 +113,7 @@ fn a_typed_name_mentions_the_member_the_workspace_calls_that() {
     let message_text = "@Carla can you look";
     ada.apply(ChatMessages::POST.with(chat_messages::Post {
         message: NewMessage {
+            id: None,
             channel: id("c_chat"),
             text: message_text.into(),
             parent: None,
