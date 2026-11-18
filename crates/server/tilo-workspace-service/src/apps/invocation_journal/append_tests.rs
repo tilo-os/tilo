@@ -657,12 +657,10 @@ fn append_journal_size_stays_bounded_over_thousands_of_invokes() {
         barriers.directory > 1,
         "the entries were compacted along the way"
     );
+    let written = u64::try_from(2 * INVOKES + 1).unwrap();
     assert_eq!(
         (barriers.writes, barriers.file),
-        (
-            u64::try_from(2 * INVOKES + 1).unwrap(),
-            u64::try_from(2 * INVOKES + 1).unwrap()
-        ),
+        (written, written),
         "one write and one barrier per admission and per outcome, none for progress"
     );
     let first = key(&journal, 1);
