@@ -82,6 +82,7 @@ mod issue_work;
 mod learned;
 mod mail;
 mod skills;
+mod steps;
 mod sub_agents;
 mod summary;
 mod team;
@@ -257,14 +258,21 @@ impl WorkspaceActionProvider {
     }
 
     fn serve(&self, caller: &Caller, message: RemoteActionMessage) -> Pending<RemoteActionMessage> {
-        self.actions
+        // What a tool call asks of the workspace's action service is counted for its step.
+        let asking = steps::asking(&message);
+        let answer = self
+            .actions
             .serve(self.workspace, caller, message)
             .unwrap_or_else(|| {
                 Pending::ready(RemoteActionMessage::CatalogueResponse {
                     correlation: 0,
                     result: Err(unavailable()),
                 })
-            })
+            });
+        match asking {
+            Some(asking) => asking.answered(answer),
+            None => answer,
+        }
     }
 }
 
@@ -389,11 +397,14 @@ impl ActionProvider for WorkspaceActionProvider {
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
         // What a provider of the turn's own took is no invocation of the workspace's: how it
         // ended is kept here.
-        self.ended
+        let state = self
+            .ended
             .as_ref()
             .and_then(|ended| ended.of(id))
             .or_else(|| self.actions.observe(caller, id))
-            .or_else(|| self.answered.of(caller, id))
+            .or_else(|| self.answered.of(caller, id));
+        steps::looked(id, state.as_ref());
+        state
     }
 
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
@@ -2352,21 +2363,29 @@ async fn run_calls(
     keeping: Option<&learned::Keeping>,
 ) -> Option<Message> {
     let mut results = Vec::new();
-    for call in calls {
+    let of = calls.len();
+    for (nth, call) in calls.into_iter().enumerate() {
         if going.stopped() {
             return None;
         }
+        // What the step costs is said in the log when it ends ([`steps`]).
+        let mut step = steps::Step::begin(&call.name, (nth, of));
         reply.doing(&call.name).await;
+        step.noted();
         // What the turn keeps about its keeper is carried out here; every other
         // tool is the agent tools'.
-        let (content, is_error) = if call.name == ANSWER_WITH_VIEW {
-            Box::pin(reply.view(&call.input)).await
-        } else {
-            match learned::call(keeping, &call.name, &call.input).await {
-                Some(answered) => answered,
-                None => call_tool(server, &call.name, call.input.clone()).await,
+        let (content, is_error) = Box::pin(step.carried_out(async {
+            if call.name == ANSWER_WITH_VIEW {
+                Box::pin(reply.view(&call.input)).await
+            } else {
+                match learned::call(keeping, &call.name, &call.input).await {
+                    Some(answered) => answered,
+                    None => call_tool(server, &call.name, call.input.clone()).await,
+                }
             }
-        };
+        }))
+        .await;
+        step.say(content.len(), is_error);
         if is_error {
             let said: String = content.chars().take(LOGGED_CHARS).collect();
             tracing::info!(tool = %call.name, %said, "a tool of an agent on the workspace's server was refused or failed");
