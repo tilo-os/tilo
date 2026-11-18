@@ -78,10 +78,13 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/assets,ro \
 # ---- Programs ---------------------------------------------------------------
 # Host image ships the server, the authenticated filesystem replica and the enroll
 # program as one composite always-on home peer; the hosted-VM service with its
-# jail helper; the API server; and the boot tools the update log needs.
+# jail helper; the API server, and beside it the program it starts a task's
+# tilolang programs in; and the boot tools the update log needs.
 COPY bin/tilo-server bin/tilo-server-admin bin/tilo-enroll /usr/libexec/tilo/
 COPY bin/fs /usr/bin/fs
 COPY bin/tilo-api /usr/libexec/tilo/tilo-api
+# The API server looks for it beside itself.
+COPY bin/tilolang-process /usr/libexec/tilo/tilolang-process
 COPY bin/tilo-legacy /usr/libexec/tilo/tilo-legacy
 COPY bin/tilo-hosted-jail /usr/libexec/tilo/tilo-hosted-jail
 COPY bin/tilo-esp-write /usr/libexec/tilo-esp-write
@@ -99,6 +102,7 @@ RUN chown 0:10001 /usr/libexec/tilo/tilo-hosted-jail \
     && chmod 0750 /usr/libexec/tilo/tilo-hosted-jail \
     && chmod 0755 /usr/libexec/tilo/tilo-server /usr/libexec/tilo/tilo-server-admin \
         /usr/libexec/tilo/tilo-enroll /usr/libexec/tilo/tilo-api \
+        /usr/libexec/tilo/tilolang-process \
         /usr/libexec/tilo/tilo-legacy /usr/libexec/tilo/tilo-image-trust \
         /usr/libexec/tilo-esp-write /usr/libexec/tilo-image-policy-check \
         /usr/libexec/tilo-board-successor /usr/bin/fs \

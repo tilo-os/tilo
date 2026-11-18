@@ -36,6 +36,7 @@ inside bootc --version >/dev/null || die 'no bootc'
 # The programs, at the paths their units and scripts name.
 for bin in usr/libexec/tilo/tilo-server usr/libexec/tilo/tilo-server-admin \
   usr/libexec/tilo/tilo-enroll usr/bin/fs usr/libexec/tilo/tilo-api \
+  usr/libexec/tilo/tilolang-process \
   usr/libexec/tilo/tilo-legacy usr/libexec/tilo-esp-write \
   usr/libexec/tilo-image-policy-check usr/libexec/tilo-board-successor \
   usr/libexec/tilo-deployment usr/libexec/tilo-verified-update \
@@ -48,6 +49,14 @@ for bin in usr/libexec/tilo/tilo-server usr/libexec/tilo/tilo-server-admin \
   usr/libexec/tilo-esp-mount; do
   [[ -x $root/$bin ]] || die "no executable /$bin"
 done
+# The program the API server starts a task's tilolang programs in lies beside it, where the
+# server looks for it, and starts on this base: handed no api it says so in its own words,
+# which a missing library would not let it.
+if said=$(inside /usr/libexec/tilo/tilolang-process 2>&1); then
+  die 'tilolang-process starts with no api handed to it'
+fi
+grep -q 'tilolang-process: exiting: no api' <<<"$said" \
+  || die "tilolang-process on the server image's base said: $said"
 # Scripts call these bare; the esp writer answers to the UKI editor's name too.
 [[ -x $root/usr/bin/tilo-image-trust ]] || die 'tilo-image-trust is not on PATH for the boot tools'
 [[ $(readlink "$root/usr/libexec/tilo-uki-cmdline") == tilo-esp-write ]] \
