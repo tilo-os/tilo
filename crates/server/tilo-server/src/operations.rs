@@ -385,6 +385,7 @@ async fn status(
     own: &DeviceCert,
 ) -> ServerStatus {
     let (updates, unlock, history) = entry_settings(workspaces, own).await;
+    let unlock = unlock_with_pending(unlock, state_root);
     ServerStatus {
         hostname: hostname(),
         uptime_seconds: uptime_seconds(),
@@ -400,6 +401,20 @@ async fn status(
         holding: holding(workspaces).await,
         hardware: hardware(state_root),
         history,
+    }
+}
+
+/// The planned unlock, naming the sibling unlock while the install key is
+/// still waiting for first boot to spend it on that enrolment. The marker is
+/// the installer's, and first boot removes it with the key.
+fn unlock_with_pending(unlock: String, state_root: &Path) -> String {
+    if !state_root.join("sibling-unlock-pending").is_file() {
+        return unlock;
+    }
+    if unlock.is_empty() {
+        "owner-device (sibling unlock pending)".to_owned()
+    } else {
+        format!("{unlock} (sibling unlock pending)")
     }
 }
 

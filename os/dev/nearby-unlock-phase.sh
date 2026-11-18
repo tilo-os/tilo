@@ -25,6 +25,13 @@
 #  10c2. B re-enrols with --unattended (where it has a TPM), and the next
 #      reboot quotes its accepted PCR 4 + 7 chain so A releases the half with
 #      no prompt: a server after a power loss.
+#  10e. B takes the shape of an installed Tilo Server's first boot: its
+#      identity lives under /var/lib/tilo, the person's device store is the
+#      file an enrollment hands a server, and nobody is signed in. The
+#      installer's kept key is the only authorisation it has; the first-boot
+#      script spends it on the sibling slot, removes that key's own slot and
+#      shreds it. B then reboots with nobody at its console and A's sheet
+#      approves the boot.
 #  10d. A revokes B's device key, and B's boot is refused as removed.
 
 vm_a ssh 'command -v tilo-control >/dev/null' \
@@ -303,6 +310,83 @@ if vm_b ssh 'test -e /dev/tpmrm0'; then
 else
   note "B has no TPM; the unattended case needs one and did not run"
 fi
+
+# --- 10e. a server's first boot enrols its own sibling slot -------------------------
+# The install keeps the throwaway key inside the encrypted root when the plan
+# says another of the person's devices approves the boot. First boot spends it
+# once the machine is enrolled and holds the person's store; until then its
+# status calls the slot pending. This is that path on B, with B made
+# server-shaped: identity under /var/lib/tilo, the store there, no session.
+personal_identity="$(sudo_b "getent passwd $TILO_USER | cut -d: -f6")/.config/tilo/identity"
+sudo_b "/usr/libexec/tilo/tilo-auth sibling remove $b_root_part --key-file /root/unlock-e2e/pass" \
+  > "$out/unlock-server-remove.txt" 2>&1 \
+  || { cat "$out/unlock-server-remove.txt" >&2; die "B could not drop its sibling slot before the server case"; }
+# A throwaway slot stands in for the one the installer would have kept: the
+# sibling enrolment needs an existing passphrase of the volume, and this is it.
+sudo_b "set -eu
+  umask 0077
+  head -c 64 /dev/urandom > /root/unlock-e2e/install.key
+  cryptsetup luksAddKey --batch-mode --key-file /root/unlock-e2e/pass \
+    --new-keyfile /root/unlock-e2e/install.key $b_root_part
+  rm -rf /var/lib/tilo/sibling-enrol /var/lib/tilo-server
+  install -d -m 0755 /var/lib/tilo
+  cp -a $personal_identity/device $personal_identity/device-private \
+    $personal_identity/user-identity /var/lib/tilo/
+  identity_fleet=\$(find $personal_identity/fleets -maxdepth 1 -type f -name '*.json' | head -1)
+  [ -n \"\$identity_fleet\" ]
+  install -d -m 0700 /var/lib/tilo/fleets
+  cp -a \"\$identity_fleet\" /var/lib/tilo/fleets/
+  install -d -m 0700 /var/lib/tilo/sibling-enrol
+  cp /root/unlock-e2e/install.key /var/lib/tilo/sibling-enrol/luks.key
+  chmod 0600 /var/lib/tilo/sibling-enrol/luks.key
+  printf 'luks_uuid=%s\nkey_file=%s\n' \
+    \"\$(cryptsetup luksUUID $b_root_part)\" /var/lib/tilo/sibling-enrol/luks.key \
+    > /var/lib/tilo/sibling-enrol/enrol.conf
+  chmod 0600 /var/lib/tilo/sibling-enrol/enrol.conf
+  install -d -m 0700 /var/lib/tilo-server
+  : > /var/lib/tilo-server/sibling-unlock-pending
+" > "$out/unlock-server-setup.txt" 2>&1 \
+  || { cat "$out/unlock-server-setup.txt" >&2; die "B could not take the server's first-boot shape"; }
+slots_before="$(sudo_b "cryptsetup luksDump $b_root_part" | awk '/^Keyslots:/{k=1;next} /^[^ ]/{k=0} k && $2==\"luks2\"{n++} END{print n+0}')"
+# Nobody is signed in: the enrolment has no session to register through, and
+# asks A over the peer network exactly as a server does.
+sudo_b "loginctl terminate-user $TILO_USER" >/dev/null 2>&1 || true
+sudo_b "test ! -e /run/user/\$(id -u $TILO_USER)/tilo-session/device-unlock.sock" \
+  || note "B still offers a session socket; the first boot may register through it"
+( sudo_b "TILO_IDENTITY_ROOT=/var/lib/tilo /usr/libexec/tilo-server-firstboot sibling-enrol" \
+    > "$out/unlock-server-firstboot.txt" 2>&1 ) &
+firstboot_pid=$!
+enrol_ask="$(await_question network.device-enrol server)"
+note "A shows the server-shaped B's ask to set up its unlock: $enrol_ask"
+answer_a allow "$enrol_ask"
+if ! wait "$firstboot_pid"; then
+  cat "$out/unlock-server-firstboot.txt" >&2
+  die "B's first boot could not enrol its sibling slot"
+fi
+grep -q 'sibling unlock enrolled and the install key removed' "$out/unlock-server-firstboot.txt" \
+  || die "B's first boot did not report a finished enrolment: $(cat "$out/unlock-server-firstboot.txt")"
+sudo_b "cryptsetup luksDump $b_root_part" > "$out/unlock-server-luksdump.txt"
+grep -q 'tilo-sibling-unlock' "$out/unlock-server-luksdump.txt" \
+  || die "the server-shaped enrolment left no sibling token"
+sudo_b "test ! -e /var/lib/tilo/sibling-enrol/luks.key \
+    && test ! -e /var/lib/tilo/sibling-enrol/enrol.conf \
+    && test ! -e /var/lib/tilo-server/sibling-unlock-pending" \
+  || die "the install key, its file or the pending status survived the enrolment"
+slots_after="$(awk '/^Keyslots:/{k=1;next} /^[^ ]/{k=0} k && $2==\"luks2\"{n++} END{print n+0}' "$out/unlock-server-luksdump.txt")"
+[ "$slots_after" -eq "$slots_before" ] \
+  || die "the install key's slot was not replaced one-for-one ($slots_before -> $slots_after)"
+# Reboot with nobody at the console, and approve on A's sheet like any
+# sibling boot.
+reboot_b
+approve_ask="$(await_question network.device-unlock server)"
+note "A shows the server-shaped B's unlock request: $approve_ask"
+answer_a allow "$approve_ask"
+await_ssh_b "after A approved the server-shaped unlock" 120
+sudo_b "journalctl -b --no-pager -o short-monotonic -u 'tilo-unlock-sibling@*'" \
+  > "$out/unlock-server-b-initrd.txt" 2>&1 || true
+grep -q 'unlocked with the consent' "$out/unlock-server-b-initrd.txt" \
+  || die "the server-shaped B came up, but not through the sibling unlock: $(cat "$out/unlock-server-b-initrd.txt")"
+note "a server-shaped first boot enrolled its sibling slot and booted with A's approval"
 
 # --- 10d. B removed from the fleet --------------------------------------------------
 # The person's own device list is where a device is revoked, by its key: the

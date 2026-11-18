@@ -141,6 +141,11 @@ pub struct InstallOptions {
     /// Enrol the secret as a plain strong LUKS passphrase instead of the measured-boot TPM2 PIN
     /// policy; the interactive flow leaves the reviewed target's choice alone.
     pub force_startup_passphrase: bool,
+    /// The plan's unlock choice: `owner-device`, `tpm` or `passphrase`. Empty leaves it to the
+    /// image's own default. A server planned for `owner-device`, or for `tpm` on a machine with
+    /// no usable TPM, keeps its install key inside the encrypted root so first boot can enrol
+    /// the sibling unlock.
+    pub unlock: String,
     /// POSIX locale seeded into `/etc/locale.conf`.
     pub locale: String,
     /// IANA time zone; empty omits the flag.
@@ -210,6 +215,7 @@ impl Default for InstallOptions {
             full_name: String::new(),
             password_is_hash: false,
             force_startup_passphrase: false,
+            unlock: String::new(),
             locale: String::new(),
             timezone: String::new(),
             keymap: "us".to_string(),
@@ -320,6 +326,9 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
     }
     if opts.force_startup_passphrase {
         cmd.arg("--startup-passphrase-only");
+    }
+    if !opts.unlock.is_empty() {
+        cmd.arg("--unlock").arg(&opts.unlock);
     }
     if !opts.locale.trim().is_empty() {
         cmd.arg("--locale").arg(opts.locale.trim());
@@ -1396,6 +1405,31 @@ mod tests {
                 .unwrap();
             assert_eq!(purpose[1], "server");
             assert_eq!(server.get_program(), computer.get_program());
+        }
+
+        phase install_command_carries_the_plans_unlock_choice;
+        {
+            let planned = InstallOptions {
+                unlock: "owner-device".into(),
+                ..InstallOptions::default()
+            };
+            let args: Vec<String> = install_command("/dev/vda", "qq", &planned)
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            let at = args
+                .iter()
+                .position(|a| a == "--unlock")
+                .expect("--unlock");
+            assert_eq!(args[at + 1], "owner-device");
+            let open: Vec<String> = install_command("/dev/vda", "qq", &InstallOptions::default())
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            assert!(
+                !open.iter().any(|a| a == "--unlock"),
+                "an unplanned install leaves the default alone"
+            );
         }
 
         phase install_command_passes_the_codecs_opt_in_only_when_chosen;
