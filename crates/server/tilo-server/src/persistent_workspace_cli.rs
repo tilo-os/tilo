@@ -1078,6 +1078,35 @@ async fn refound_records(
     Ok(())
 }
 
+/// A workspace the operator lists publicly, and governs, is moderated: the
+/// operator, as its own person, grants its moderation bot the reading and
+/// undoable changes in Chat it moderates by. Settled at every start, so a
+/// fresh Lounge has it and a restart changes nothing; a workspace the
+/// operator does not list, or does not govern, is left alone.
+pub(crate) async fn settle_moderation(
+    workspaces: &Workspaces,
+    workspace: &str,
+    persistent: &PersistentArgs,
+) -> anyhow::Result<()> {
+    if persistent.listing_description.is_none() || !workspaces.governs(workspace) {
+        return Ok(());
+    }
+    tilo_server::workspace_bots::enable(workspaces, workspace)
+        .await
+        .map_err(|error| anyhow::anyhow!("enable the workspace's moderation bot: {error}"))?;
+    if !tilo_server::workspace_bots::enabled(workspaces, workspace)
+        .await
+        .map_err(|error| anyhow::anyhow!("read the workspace's moderation grant: {error}"))?
+    {
+        anyhow::bail!("the workspace did not keep the moderation bot's grant");
+    }
+    tracing::info!(
+        workspace,
+        "the moderation bot is enabled for this workspace"
+    );
+    Ok(())
+}
+
 pub(crate) async fn ensure_guest_policy(
     workspaces: &Workspaces,
     workspace: &str,
@@ -1407,6 +1436,7 @@ pub(crate) async fn run(
         .await?;
         settle_strips(&workspaces, &workspace, &host_cert, &persistent.strips).await?;
         ensure_guest_policy(&workspaces, &workspace, &host_cert).await?;
+        settle_moderation(&workspaces, &workspace, &persistent).await?;
         // Members inviting, or not, never lets in anyone the entry does not.
         settled(
             &workspace,
@@ -2324,6 +2354,48 @@ mod tests {
                 .await,
             JoinReply::Admitted { .. }
         )
+    }
+
+    /// A workspace the operator lists publicly gets its moderation bot's grant
+    /// at start, and a restart changes nothing; one it does not list is left
+    /// alone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_public_workspace_is_granted_its_moderation_bot_at_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let (server, workspaces, _, workspace) = plaza(dir.path()).await;
+        let listed = PersistentArgs {
+            listing_description: Some("A plaza".into()),
+            ..PersistentArgs::default()
+        };
+        settle_moderation(&workspaces, &workspace, &listed)
+            .await
+            .unwrap();
+        assert!(
+            tilo_server::workspace_bots::enabled(&workspaces, &workspace)
+                .await
+                .unwrap(),
+            "the Lounge the operator lists has its moderation bot"
+        );
+        let generation = workspaces.summary(&workspace).await.unwrap().generation;
+        settle_moderation(&workspaces, &workspace, &listed)
+            .await
+            .unwrap();
+        assert_eq!(
+            workspaces.summary(&workspace).await.unwrap().generation,
+            generation,
+            "a restart changes nothing"
+        );
+        let quiet = workspaces.create("Quiet").await.unwrap().workspace;
+        settle_moderation(&workspaces, &quiet, &PersistentArgs::default())
+            .await
+            .unwrap();
+        assert!(
+            !tilo_server::workspace_bots::enabled(&workspaces, &quiet)
+                .await
+                .unwrap(),
+            "an unlisted workspace is not moderated"
+        );
+        server.shutdown().await;
     }
 
     /// An owner the operator declares gets in through an entry that takes

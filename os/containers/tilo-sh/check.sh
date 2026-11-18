@@ -314,6 +314,14 @@ echo "the tilo command: $tilo"
 # key (stack.sh keys).
 keys_apart || fail "the stack does not keep people's keys apart from its state"
 
+# The Lounge's moderation bot is the operator's grant, written when the server
+# brings the workspace up: a fresh stack says so in its log, and a restart
+# leaves what it granted. The in-process test of the same start is
+# `a_public_workspace_is_granted_its_moderation_bot_at_start`.
+grep -q 'the moderation bot is enabled for this workspace' "$state/logs/server.log" \
+  || fail "the Lounge has no moderation grant: $(tail -20 "$state/logs/server.log" 2>/dev/null)"
+say 'the Lounge has its moderation grant'
+
 if runs_any 1 2 3 4 5 6 8 9 10 11 12 13 14 15 16 17 18; then
   startup_identity
 fi
