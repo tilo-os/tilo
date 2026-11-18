@@ -1534,6 +1534,11 @@ pub(super) fn view_of(
             })
             .collect(),
         default_model: profile.default_model.clone(),
+        reasoning: profile
+            .reasoning
+            .as_ref()
+            .filter(|kept| kept.param != agent_provider_config::ReasoningParam::Omit)
+            .map(|kept| kept.effort.clone()),
     }
 }
 
