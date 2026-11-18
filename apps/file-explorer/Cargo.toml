@@ -76,6 +76,8 @@ web-features = []
 # Only what both use is declared here; the manager's crates are `desktop`'s.
 [dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+# The records the app draws: their types, verbs and typed action arguments.
+file-explorer-model = { path = "../file-explorer-model" }
 tilo-actions = { path = "../../crates/collab/actions" }
 # File records: the tree a workspace's files are, and the kinds of node in it.
 fs-protocol = { path = "../../crates/system/fs-protocol" }

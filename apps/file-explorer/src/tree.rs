@@ -24,7 +24,7 @@ use ui::i18n::EmbeddedCatalog;
 use ui::icons::Icon;
 use ui::tilo_actions::ActionBinding;
 use ui::tilo_actions::remote::ApplicationLaunch;
-use ui::tilo_resource::{self, Atom, Model, resource};
+use ui::tilo_resource::Atom;
 use ui::widget::controls::ActionControls;
 use ui::widget::{
     ActionEmitter, Button, Column, Decorator, Element, EmptyState, ListRow, Row, Text, Widget as _,
@@ -32,37 +32,7 @@ use ui::widget::{
 
 use crate::i18n::{format_bytes, format_datetime, t};
 
-/// The window's own record: the folder of the workspace's tree it shows, so a
-/// window comes back to where the person left it.
-#[derive(Model, Default, Clone, Debug, PartialEq)]
-pub struct FilesWindow {
-    /// The node of the tree the window shows; empty for the workspace's root.
-    pub folder: Atom,
-}
-
-#[resource(
-    kind = "files.workspace",
-    label = "files-workspace-window",
-    search = FilesWindow::search,
-    read_content = FilesWindow::read_document
-)]
-impl FilesWindow {}
-
-impl FilesWindow {
-    /// What the resource holds: the folder the window shows.
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
-
-    /// Nothing: a workspace's files are found by name and by what their text
-    /// holds in the tree's own search source, not as rows of this resource.
-    fn search(_: &Self) -> Vec<ui::tilo_resource::SearchEntry> {
-        Vec::new()
-    }
-}
+pub use file_explorer_model::window::FilesWindow;
 
 /// Files in a page: the workspace's tree, over the page's session.
 pub struct FilesTreeShell;
