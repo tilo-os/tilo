@@ -1,8 +1,8 @@
 //! A whole turn, through the production session over a stand-in host: the turn's model lists the
-//! workspace's MCP tools, reads and changes through them, and every request it makes reaches the
-//! host as a remote-action message on the agent's own link, which the host decides; the reply
-//! and its steps are recorded on the conversation through Chat's `record-work`, and the turn's
-//! answer ends with the model's words.
+//! workspace's MCP tools and reads and changes through them, each listing and call a step of the
+//! agent's session asked as a remote-action message on the agent's own link; the reply and its
+//! steps are recorded on the conversation through Chat's `record-work`, and the turn's answer ends
+//! with the model's words.
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -11,7 +11,8 @@ use agent_provider_config::protocol::{
     Content, Message, ModelRequest, ModelResponse, Role, StopReason, ToolCall, Usage,
 };
 use serde_json::{Value, json};
-use tilo_actions::remote::{Caller, RemoteActionMessage, TestProvider};
+use tilo_actions::remote::agent_tools as tools;
+use tilo_actions::remote::{Caller, InvokeRequest, RemoteActionMessage, TestProvider};
 use tilo_actions::{ActionContract, ActionOutput, InvocationUpdate};
 use ui::collaboration::{BrokerActionSurface, CatalogueChange, ExportedAction, ExportedInput};
 
@@ -189,6 +190,29 @@ fn asked() -> Asked {
     }
 }
 
+/// What the stand-in answers: the workspace's tools for the agent's session, what each call
+/// of them did, and nothing for the conversation's own steps.
+fn answer_of_session(request: &InvokeRequest) -> ActionOutput {
+    if request.target.provider != tools::PROVIDER {
+        return ActionOutput::default();
+    }
+    let value = if request.target.address.action == tools::LIST {
+        json!({"tools": [
+            {"name": "tilo_ls", "description": "", "input_schema": {"type": "object"}},
+            {"name": "tilo_do", "description": "", "input_schema": {"type": "object"}},
+        ]})
+    } else {
+        let tilo_actions::remote::InvokeArgument::Json(asked) = &request.argument else {
+            panic!("a call names its tool: {request:?}");
+        };
+        json!({"text": format!("{} done", asked["name"].as_str().unwrap_or_default())})
+    };
+    ActionOutput {
+        value: Some(value),
+        resources: Vec::new(),
+    }
+}
+
 /// What the agent invoked through the host, by action.
 fn invoked(provider: &TestProvider) -> Vec<(String, Value)> {
     provider
@@ -206,7 +230,7 @@ fn invoked(provider: &TestProvider) -> Vec<(String, Value)> {
 
 #[test]
 fn a_turn_works_through_the_mcp_tools_and_records_its_reply() {
-    let provider = Arc::new(TestProvider::new().completing(|_| ActionOutput::default()));
+    let provider = Arc::new(TestProvider::new().completing(answer_of_session));
     let (mut session, sent) = session(
         Arc::clone(&provider),
         vec![
@@ -240,15 +264,34 @@ fn a_turn_works_through_the_mcp_tools_and_records_its_reply() {
         }
         other => panic!("the turn did not succeed: {other:?}"),
     }
-    // Every request the turn made went to the host as a remote action on the agent's link.
+    // The tools were the session's: it listed them and took each call, as steps of the agent's
+    // session asked on its link; the agent itself asked no catalogue nor any app's action.
+    let steps: Vec<(String, Value)> = invoked(&provider)
+        .into_iter()
+        .filter(|(action, _)| [tools::LIST, tools::CALL].contains(&action.as_str()))
+        .collect();
+    assert_eq!(
+        steps,
+        [
+            (tools::LIST.to_owned(), json!({})),
+            (
+                tools::CALL.to_owned(),
+                json!({"name": "tilo_ls", "arguments": {}})
+            ),
+            (
+                tools::CALL.to_owned(),
+                json!({"name": "tilo_do", "arguments": {"path": "notes#open"}})
+            ),
+        ]
+    );
     assert!(
-        sent.lock().unwrap().iter().any(|request| matches!(
+        !sent.lock().unwrap().iter().any(|request| matches!(
             request,
             CollabRequest::RemoteAction {
                 message: RemoteActionMessage::CatalogueRequest { .. }
             }
         )),
-        "the tools asked the host's catalogue"
+        "the agent holds no tools of its own to list the workspace with"
     );
     // The reply was told on the conversation: taken, the step that changed something, and the
     // answer last.

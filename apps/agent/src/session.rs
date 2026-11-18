@@ -1,9 +1,8 @@
 //! One agent session: join the workspace and answer the conversations it is asked in.
 //!
 //! A turn the host hands this agent is answered through the workspace's MCP tools
-//! ([`tilo_agent_turn`]): an MCP server over the session's own action API, reached on this
-//! agent's connection to the host, which serves every request the agent makes while it answers
-//! as the turn's ([`turn`]). What the turn does and how it ended is told in the conversation that
+//! ([`tilo_agent_turn`]): the device's session lists them and takes each call on this agent's
+//! connection to it, as the turn's, in the agent's session ([`turn`]). What the turn does and how it ended is told in the conversation that
 //! asked ([`conversation`]).
 
 use std::future::Future;

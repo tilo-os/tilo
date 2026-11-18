@@ -2006,7 +2006,7 @@ struct Answering<'a> {
     at: tokio::sync::Mutex<(&'a mut Turn, &'a mut Reply)>,
 }
 
-impl tilo_agent_turn::Doing<WorkspaceActionProvider> for Answering<'_> {
+impl tilo_agent_turn::Doing<McpServer<WorkspaceActionProvider>> for Answering<'_> {
     fn stopped(&self) -> bool {
         self.going.stopped()
     }
@@ -2042,7 +2042,7 @@ impl tilo_agent_turn::Doing<WorkspaceActionProvider> for Answering<'_> {
     /// say the answer follows below, and the turn goes on as the newest of it, inside that ask.
     async fn went_on(
         &self,
-    ) -> Result<Option<tilo_agent_turn::WentOn<WorkspaceActionProvider>>, String> {
+    ) -> Result<Option<tilo_agent_turn::WentOn<McpServer<WorkspaceActionProvider>>>, String> {
         let came = self.going.take();
         let Some((newest, passed)) = came.split_last() else {
             return Ok(None);
@@ -2067,7 +2067,7 @@ impl tilo_agent_turn::Doing<WorkspaceActionProvider> for Answering<'_> {
             .join("\n\n");
         Ok(Some(tilo_agent_turn::WentOn {
             told,
-            server: Some(server),
+            tools: Some(server),
         }))
     }
 

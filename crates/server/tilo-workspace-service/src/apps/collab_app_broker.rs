@@ -4570,6 +4570,7 @@ impl AppBrokerState {
             .services
             .host_steps
             .iter()
+            .filter(|steps| steps.listed())
             .filter(|steps| steps.for_turns() || (in_session && steps.for_agent_sessions()))
             .map(|steps| {
                 let actions = steps.descriptors().into_iter().collect::<Vec<_>>();

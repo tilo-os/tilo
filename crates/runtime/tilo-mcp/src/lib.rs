@@ -2,6 +2,7 @@
 //! a desktop or another device through. Headless: an agent's bridge, the
 //! `tilo` command and the API serve it without the app toolkit.
 
+pub mod agent_tools;
 pub mod devices;
 mod images;
 pub mod lines;

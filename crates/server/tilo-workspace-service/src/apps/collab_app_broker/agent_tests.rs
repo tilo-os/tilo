@@ -14,6 +14,8 @@ use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 
 #[path = "agent_connection_tests.rs"]
 mod agent_connection;
+#[path = "agent_tools_tests.rs"]
+mod agent_tools;
 #[path = "certified_agent_tests.rs"]
 mod certified_agents;
 #[path = "turns_tests.rs"]

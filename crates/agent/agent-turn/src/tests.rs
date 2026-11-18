@@ -1,12 +1,15 @@
-//! A turn over a provider reached through a carried link: the model's calls go through the MCP
-//! server's tools to the provider, its answer ends the turn, a stop ends it, and a long turn keeps
-//! within its bound.
+//! A turn whose tools the device's session answers over a carried link: the model's calls go to
+//! that session as its agent session's steps, its answer ends the turn, a stop ends it, and a long
+//! turn keeps within its bound.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use agent_provider_config::protocol::Usage;
-use tilo_actions::remote::{Caller, TestProvider};
+use serde_json::json;
+use tilo_actions::ActionOutput;
+use tilo_actions::remote::agent_tools as wire;
+use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, TestProvider};
 
 use super::*;
 
@@ -65,7 +68,10 @@ struct Told {
     stepped: AtomicBool,
 }
 
-impl Doing<tilo_session_actions::SessionActions> for Told {
+/// Where the tests' turns are answered: the session over a carried link.
+type Answering = SessionTools<tilo_session_actions::SessionActions>;
+
+impl Doing<Answering> for Told {
     fn stopped(&self) -> bool {
         self.stop.load(Ordering::SeqCst)
     }
@@ -78,15 +84,13 @@ impl Doing<tilo_session_actions::SessionActions> for Told {
     fn waiting(&self) -> bool {
         self.waiting.load(Ordering::SeqCst)
     }
-    async fn went_on(
-        &self,
-    ) -> Result<Option<WentOn<tilo_session_actions::SessionActions>>, String> {
+    async fn went_on(&self) -> Result<Option<WentOn<Answering>>, String> {
         if !self.stepped.swap(true, Ordering::SeqCst) {
             return Ok(None);
         }
         Ok(self.waiting.swap(false, Ordering::SeqCst).then(|| WentOn {
             told: "And the weather?".to_owned(),
-            server: None,
+            tools: None,
         }))
     }
     async fn own(&self, call: &ToolCall) -> Option<Answer> {
@@ -97,9 +101,48 @@ impl Doing<tilo_session_actions::SessionActions> for Told {
     }
 }
 
-/// A server whose provider is reached through a carried link that a thread of the test carries to
-/// `provider`, as a host would.
-fn served(provider: Arc<TestProvider>) -> McpServer<tilo_session_actions::SessionActions> {
+/// The tools the session lists.
+const LISTED: [&str; 5] = ["tilo_ls", "tilo_read", "tilo_do", "tilo_find", "tilo_view"];
+
+/// What the stand-in session answers each of the agent's steps with: its tools, and each call's
+/// answer naming the tool.
+fn answer_of_session(request: &InvokeRequest) -> ActionOutput {
+    let value = if request.target.address.action == wire::LIST {
+        serde_json::to_value(wire::ToolList {
+            tools: LISTED
+                .iter()
+                .map(|name| wire::Tool {
+                    name: (*name).to_owned(),
+                    description: String::new(),
+                    input_schema: json!({"type": "object"}),
+                })
+                .collect(),
+        })
+    } else {
+        let InvokeArgument::Json(argument) = &request.argument else {
+            panic!("a call carries its tool: {request:?}");
+        };
+        let asked: wire::ToolCall =
+            serde_json::from_value(Value::Object(argument.clone())).unwrap();
+        serde_json::to_value(wire::ToolAnswer {
+            text: format!("{} answered", asked.name),
+            ..wire::ToolAnswer::default()
+        })
+    };
+    ActionOutput {
+        value: Some(value.unwrap()),
+        resources: Vec::new(),
+    }
+}
+
+/// The stand-in session behind the agent's link, answering its steps.
+fn session() -> Arc<TestProvider> {
+    Arc::new(TestProvider::new().completing(answer_of_session))
+}
+
+/// The tools the session answers, reached through a carried link that a thread of the test
+/// carries to `provider`, as the session would.
+fn served(provider: Arc<TestProvider>) -> Answering {
     let workspace = WorkspaceIdOf::new();
     let (actions, carried) = carried(workspace, || {});
     let caller = Caller::local_person("person").in_workspace(workspace.to_string());
@@ -122,14 +165,15 @@ fn served(provider: Arc<TestProvider>) -> McpServer<tilo_session_actions::Sessio
             std::thread::sleep(Duration::from_millis(2));
         }
     });
-    McpServer::new(actions, workspace.to_string(), "person".into())
+    let caller = Caller::local_person("agent-1").in_workspace(workspace.to_string());
+    SessionTools::new(actions, caller)
 }
 
 type WorkspaceIdOf = collab_types::WorkspaceId;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_turn_lists_the_servers_tools_and_runs_each_call_through_them() {
-    let provider = Arc::new(TestProvider::new());
+async fn a_turn_lists_the_sessions_tools_and_calls_each_there() {
+    let provider = session();
     let server = served(Arc::clone(&provider));
     let asked = Arc::new(Mutex::new(Vec::new()));
     let model = Arc::new(Mutex::new(Script {
@@ -158,33 +202,77 @@ async fn a_turn_lists_the_servers_tools_and_runs_each_call_through_them() {
         .iter()
         .map(|tool| tool.name.as_str())
         .collect();
-    for wanted in [
-        "tilo_ls",
-        "tilo_read",
-        "tilo_do",
-        "tilo_find",
-        "tilo_view",
-        "search_web",
-    ] {
-        assert!(tools.contains(&wanted), "{tools:?}");
+    for wanted in LISTED.iter().chain(&["search_web"]) {
+        assert!(tools.contains(wanted), "{tools:?}");
     }
-    // The model read what each call answered: the server's listing, then the caller's own tool.
+    // The model read what each call answered: the session's tool, then the caller's own tool.
     let result = |request: &ModelRequest| match request.messages.last().map(|m| &m.content[0]) {
         Some(Content::ToolResult(result)) => result.clone(),
         other => panic!("no tool result: {other:?}"),
     };
-    assert!(!result(&asked[1]).content.is_empty());
+    assert_eq!(result(&asked[1]).content, "tilo_ls answered");
     assert_eq!(result(&asked[2]).content, "three pages");
+    // The session was asked for its tools, then to take the one workspace call; the caller's own tool
+    // never reached it.
+    let steps: Vec<(String, Value)> = provider
+        .asked()
+        .into_iter()
+        .map(|request| {
+            let argument = match request.argument {
+                InvokeArgument::Json(map) => Value::Object(map),
+                _ => Value::Null,
+            };
+            (request.target.address.action, argument)
+        })
+        .collect();
+    assert_eq!(
+        steps,
+        [
+            (wire::LIST.to_owned(), json!({})),
+            (
+                wire::CALL.to_owned(),
+                json!({"name": "tilo_ls", "arguments": {}})
+            ),
+        ]
+    );
     assert!(
-        !provider.callers().is_empty(),
-        "the listing asked the provider over the carried link"
+        provider
+            .asked()
+            .iter()
+            .all(|request| request.target.provider == wire::PROVIDER),
+        "every step is the agent tools' own"
+    );
+}
+
+/// A call the session refuses or fails reaches the model as a failed answer saying why, and the turn
+/// goes on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_call_the_session_refuses_is_a_failed_answer() {
+    let provider = Arc::new(TestProvider::new().answering(|_, request| {
+        tilo_actions::remote::Pending::ready(Err(tilo_actions::remote::ActionCallError::Refused {
+            reason: format!(
+                "the workspace does not let this agent take {}",
+                request.target.address.action
+            ),
+        }))
+    }));
+    let answering = served(provider);
+    let answer = answering
+        .call("tilo_do", json!({"path": "notes#open"}))
+        .await;
+    assert!(answer.is_error, "{answer:?}");
+    assert!(
+        answer
+            .text
+            .contains("does not let this agent take call-tool"),
+        "{}",
+        answer.text
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_stopped_turn_begins_no_tool() {
-    let provider = Arc::new(TestProvider::new());
-    let server = served(provider);
+    let server = served(session());
     let model = Arc::new(Mutex::new(Script {
         answers: VecDeque::from([calling("1", "tilo_do", json!({"path": "notes#open"}))]),
         asked: Arc::default(),
@@ -200,8 +288,7 @@ async fn a_stopped_turn_begins_no_tool() {
 /// nothing more: an agent working through the night cannot spend past its keeper's limit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_turn_stops_at_its_budget_and_asks_nothing_more() {
-    let provider = Arc::new(TestProvider::new());
-    let server = served(provider);
+    let server = served(session());
     let asked = Arc::new(Mutex::new(Vec::new()));
     let model = Arc::new(Mutex::new(Script {
         // Its one round costs ten (each scripted answer does) and calls a tool, so a second
@@ -232,8 +319,7 @@ async fn a_turn_stops_at_its_budget_and_asks_nothing_more() {
 /// that.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_turn_of_endless_tool_calls_stops_at_its_round_bound_and_says_where_it_got() {
-    let provider = Arc::new(TestProvider::new());
-    let server = served(provider);
+    let server = served(session());
     let asked = Arc::new(Mutex::new(Vec::new()));
     let model = Arc::new(Mutex::new(Script {
         // One round's answer for each round the bound lets it take, then where it got to.
@@ -269,8 +355,7 @@ async fn a_turn_of_endless_tool_calls_stops_at_its_round_bound_and_says_where_it
 /// A turn whose model says nothing once out of rounds tells its person how to let it go on.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_turn_out_of_rounds_that_says_nothing_tells_how_to_go_on() {
-    let provider = Arc::new(TestProvider::new());
-    let server = served(provider);
+    let server = served(session());
     let model = Arc::new(Mutex::new(Script {
         answers: VecDeque::from([calling("1", "tilo_ls", json!({}))]),
         asked: Arc::default(),
@@ -290,8 +375,7 @@ async fn a_turn_out_of_rounds_that_says_nothing_tells_how_to_go_on() {
 /// answer given while more waits is not the turn's answer: the turn goes on with what came.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn what_its_person_wrote_meanwhile_reaches_the_next_step() {
-    let provider = Arc::new(TestProvider::new());
-    let server = served(provider);
+    let server = served(session());
     let asked = Arc::new(Mutex::new(Vec::new()));
     let model = Arc::new(Mutex::new(Script {
         answers: VecDeque::from([
@@ -320,8 +404,7 @@ async fn what_its_person_wrote_meanwhile_reaches_the_next_step() {
 /// words that follow: a person is left with what their agent did, not a blank answer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_answer_with_no_words_is_asked_once_to_say_what_it_did() {
-    let provider = Arc::new(TestProvider::new());
-    let server = served(provider);
+    let server = served(session());
     let asked = Arc::new(Mutex::new(Vec::new()));
     let model = Arc::new(Mutex::new(Script {
         answers: VecDeque::from([
@@ -354,11 +437,10 @@ fn a_long_tool_answer_is_cut_at_a_character_and_says_so() {
     // Three-byte characters behind one ASCII byte, more of them than a model reads: the cut
     // falls where a character would be split if it counted bytes alone.
     let text = format!("x{}", "€".repeat(20_000));
-    let answer = answer_of(&json!({"content": [{"type": "text", "text": text}]}));
-    let kept = answer
-        .text
+    let cut_text = cut(text.clone());
+    let kept = cut_text
         .strip_suffix(notice)
-        .unwrap_or_else(|| panic!("a long answer says it was cut: {}", answer.text));
+        .unwrap_or_else(|| panic!("a long answer says it was cut: {cut_text}"));
     assert!(kept.starts_with('x'), "the answer is kept from its start");
     assert!(
         text.starts_with(kept),
@@ -371,9 +453,11 @@ fn a_long_tool_answer_is_cut_at_a_character_and_says_so() {
         "as much as fits is kept: {} bytes kept",
         kept.len()
     );
-    assert!(!answer.is_error, "a cut answer is not a failed one");
-    let short = answer_of(&json!({"content": [{"type": "text", "text": "It is there."}]}));
-    assert_eq!(short.text, "It is there.", "a short answer is whole");
+    assert_eq!(
+        cut("It is there.".into()),
+        "It is there.",
+        "a short answer is whole"
+    );
 }
 
 #[test]

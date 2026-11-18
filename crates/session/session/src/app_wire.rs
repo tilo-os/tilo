@@ -1004,6 +1004,17 @@ impl tilo_workspace_service::apps::services::WorkspaceGrants for SessionGrants {
     }
 }
 
+/// The steps an agent session takes here: the programs its task writes, and the workspace's tools
+/// an agent in a process of its own calls.
+fn agent_session_steps(
+    programs: std::sync::Arc<crate::task_programs::TaskPrograms>,
+) -> [std::sync::Arc<dyn HostStepServices>; 2] {
+    [
+        programs,
+        std::sync::Arc::new(crate::agent_tools::AgentToolSteps::default()),
+    ]
+}
+
 /// What the apps this session runs reach of it: the resources its services
 /// publish, the launcher that started them, and — when this session runs on a
 /// device fabric — the speaker groups Settings asks that fabric for.
@@ -1363,10 +1374,11 @@ fn broker_services(
                     crate::server_account::ServerAccountApi::session(),
                 ],
                 // An agent's task writes its programs; this session's links runs them as the
-                // steps of the run the task is in.
+                // steps of the run the task is in. An agent whose turn is worked in its own
+                // process calls the workspace's tools here, as steps of its session too.
                 task_programs
-                    .map(|programs| programs as std::sync::Arc<dyn HostStepServices>)
                     .into_iter()
+                    .flat_map(agent_session_steps)
                     .collect(),
                 // The session's own actions, published where every other caller of the
                 // desktop reaches them: the layout, its undo, the windows and the

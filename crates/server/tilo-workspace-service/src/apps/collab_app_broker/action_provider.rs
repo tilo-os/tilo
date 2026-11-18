@@ -1120,7 +1120,13 @@ impl AppBrokerState {
         // Listing must retain the same local ownership as dispatch. A device key
         // alone does not establish that this is a local rather than remote api.
         let host_steps = if super::host_steps::is_local_host_caller(caller, origin) {
-            self.services.host_steps.clone()
+            // A step only this device's own processes ask for is taken, never offered.
+            self.services
+                .host_steps
+                .iter()
+                .filter(|steps| steps.listed())
+                .cloned()
+                .collect()
         } else {
             Vec::new()
         };

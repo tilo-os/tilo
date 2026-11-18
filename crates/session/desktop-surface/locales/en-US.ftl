@@ -1309,6 +1309,11 @@ profile-agent-now = Now
 task-programs-resource = Task programs
 task-programs-run = Run a program
 task-programs-run-detail = Runs a program as a step of the task, and answers what it read or changed.
+agent-tools-resource = Agent tools
+agent-tools-list = List the tools
+agent-tools-list-detail = Lists the tools an agent works through in its session.
+agent-tools-call = Call a tool
+agent-tools-call-detail = Calls one of the agent's tools as a step of its session, and answers what it said.
 
 ## What a grant covers when it covers the whole tree
 workspace-settings-scope-everything = Everything

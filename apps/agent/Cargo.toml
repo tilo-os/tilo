@@ -34,8 +34,8 @@ runtime-collab = { path = "../../crates/runtime/runtime-collab" }
 # windowed app.
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
-# A turn's work: the workspace's MCP tools over the session's action API, asked on this agent's
-# own connection, until the model answers.
+# A turn's work: the workspace's MCP tools, which the device's session lists and takes for this
+# agent on its own connection, until the model answers.
 tilo-agent-turn = { path = "../../crates/agent/agent-turn" }
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 tilo-action-policy = { path = "../../crates/collab/action-policy" }

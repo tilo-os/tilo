@@ -36,6 +36,7 @@ pub use window_actions::{
     activation_requested, link_scheme, open_link_arguments,
 };
 
+pub mod agent_tools;
 mod application;
 pub mod browser;
 mod caller;
