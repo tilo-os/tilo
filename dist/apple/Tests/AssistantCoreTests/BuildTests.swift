@@ -36,6 +36,7 @@ final class BuildTests: XCTestCase {
     case "$what" in
       mac) build_assistant_mac ;;
       iphone) build_assistant_iphone ;;
+      mark) printf '%s\n' "$mark" >&2 ;;
     esac
     """#
 
@@ -322,6 +323,28 @@ final class BuildTests: XCTestCase {
             + "name the profile of the notice extension in TILO_APPLE_NOTICE_PROFILE")
         // Only the widget extension was signed: neither the notice extension nor the app itself.
         XCTAssertEqual(stopped.signed, [BuildTests.phoneSigned[0]])
+    }
+
+    // MARK: The icon
+
+    /// Tilo Assistant is drawn from a drawing of its own, not from Tilo Shell's: on a phone and
+    /// in the Dock the two apps are told apart at a glance, by their ground and by their figure.
+    func testTheAssistantIsDrawnFromADrawingOfItsOwn() throws {
+        let asked = try build("mark", [:])
+        let own = URL(fileURLWithPath: try XCTUnwrap(asked.said.last { !$0.isEmpty }))
+        XCTAssertTrue(own.path.hasSuffix("/dist/apple/AssistantBundle/AppIcon.svg"), own.path)
+        let shell = own.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Bundle/AppIcon.svg")
+        let mine = try String(contentsOf: own, encoding: .utf8)
+        let theirs = try String(contentsOf: shell, encoding: .utf8)
+        XCTAssertTrue(mine.contains("<svg") && theirs.contains("<svg"))
+        // The colour each drawing fills its whole square with: not the same, so not a shade apart.
+        func ground(_ drawing: String) -> String? {
+            guard let before = drawing.range(of: "<rect width=\"1024\" height=\"1024\" fill=\"") else { return nil }
+            return String(drawing[before.upperBound...].prefix(7))
+        }
+        XCTAssertNotNil(ground(mine))
+        XCTAssertNotNil(ground(theirs))
+        XCTAssertNotEqual(ground(mine), ground(theirs))
     }
 }
 #endif

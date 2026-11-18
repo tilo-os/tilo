@@ -100,7 +100,10 @@ made="$out/$app"
 identity="${TILO_APPLE_SIGNING_IDENTITY:--}"
 site="${TILO_SHELL_SITE:-https://tilo.sh}"
 version="${TILO_VERSION:-$(cat "$repo/dist/VERSION")}"
+# Each app is drawn from a drawing of its own, so the two are told apart at a glance: Tilo's
+# mark for the shell, a message on Tilo's blue for the assistant.
 mark="$bundle/AppIcon.svg"
+if [ "$app" = assistant ]; then mark="$here/AssistantBundle/AppIcon.svg"; fi
 
 [[ "$site" =~ ^https://[a-z0-9.-]+(:[0-9]+)?$ \
   || "$site" =~ ^http://(localhost|[a-z0-9.-]+\.localhost|127\.[0-9]+\.[0-9]+\.[0-9]+)(:[0-9]+)?$ ]] \
