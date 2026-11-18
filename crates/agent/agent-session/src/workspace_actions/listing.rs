@@ -155,6 +155,27 @@ impl Worker {
         query: &CatalogueQuery,
         window: (usize, usize),
     ) -> Result<(usize, Vec<tilo_actions::remote::CatalogueRow>), String> {
+        // An app this device has only a package of is listed from the surface
+        // its package carries, paged the way a mounted resource's own listing is.
+        if self.catalogue.get(&route.app_id).is_none() {
+            let rows = self
+                .packaged_descriptors(workspace_id, bounded, route)?
+                .into_iter()
+                .map(|descriptor| {
+                    CatalogueRow::for_action(String::new(), route.app_id.clone(), descriptor)
+                })
+                .filter(|row| query.admits(row));
+            let (skip, take) = window;
+            let mut total = 0_usize;
+            let mut page = Vec::new();
+            for row in rows {
+                if total >= skip && page.len() < take {
+                    page.push(row);
+                }
+                total = total.saturating_add(1);
+            }
+            return Ok((total, page));
+        }
         match bounded {
             Some(who) => self
                 .bounded_page(workspace_id, who, (route, state), query, window)

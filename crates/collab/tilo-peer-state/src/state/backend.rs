@@ -281,6 +281,14 @@ impl StoredDocument {
     pub(super) fn ptr_eq(a: &Self, b: &Self) -> bool {
         Arc::ptr_eq(&a.document, &b.document)
     }
+    /// Whether `a` and `b` are copies of one document state whose durable part
+    /// nothing changed either: what is made of a document's part is made again
+    /// for one that is not.
+    pub(super) fn same(a: &Self, b: &Self) -> bool {
+        Self::ptr_eq(a, b)
+            && Arc::ptr_eq(&a.encoded, &b.encoded)
+            && Arc::ptr_eq(&a.digests, &b.digests)
+    }
     /// Install the sealed history a restore validated for this record, which
     /// the restore holds alone.
     pub(super) fn restore_sealed(&mut self, sealed: SealedLog) -> Result<(), String> {

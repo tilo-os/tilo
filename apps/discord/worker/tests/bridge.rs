@@ -392,6 +392,8 @@ struct Bridge {
     /// The Chat channel Discord's #general is bridged to.
     general: String,
     ada: String,
+    /// The installation the workspace admits as its Discord bridge.
+    bot: String,
     _server: tilo_server::daemon::Server,
     _packet_relay: tilo_test_env::relay::Relay,
     _scratch: tempfile::TempDir,
@@ -467,7 +469,7 @@ impl Bridge {
                 AddMemberRequest {
                     request_id,
                     user_public_key: ADA,
-                    place: MemberPlace::parse("editor").unwrap(),
+                    place: MemberPlace::parse("moderator").unwrap(),
                     name: Some("Ada".into()),
                 },
             )
@@ -489,7 +491,7 @@ impl Bridge {
                 tilo_server::workspaces::AddMemberRequest {
                     request_id: [2; 32],
                     user_public_key: ADA,
-                    place: tilo_server::workspaces::MemberPlace::parse("editor").unwrap(),
+                    place: tilo_server::workspaces::MemberPlace::parse("moderator").unwrap(),
                     name: Some("Ada".into()),
                 },
             )
@@ -597,6 +599,7 @@ impl Bridge {
         )
         .await
         .unwrap();
+        let bot_id = bot.installation.as_str().to_owned();
         let mut runner = BotRunner::new(
             workspace.workspaces.clone(),
             workspace.id.clone(),
@@ -634,6 +637,7 @@ impl Bridge {
             blobs,
             general,
             ada,
+            bot: bot_id,
             _server: server,
             _packet_relay: packet_relay,
             _scratch: scratch,
@@ -830,9 +834,10 @@ async fn a_linked_account_lends_its_picture_and_handle() {
             "",
             {
                 let owner = hex::encode(bridge.workspace.cert.user_public_key);
+                let installation = bridge.bot.clone();
                 move |doc| {
                     let mut replica = Replica::<Guild>::from_doc(std::mem::take(doc))
-                        .as_bot_for("bridge-test", &owner)
+                        .as_bot_for(&installation, &owner)
                         .in_app(APP, "Discord");
                     let applied = replica
                         .apply(Guild::OFFER_LINK.with(guild::OfferLink {

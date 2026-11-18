@@ -68,6 +68,7 @@ class PythonSdkReferenceTests(unittest.TestCase):
             page,
         )
         self.assertIn("The apps, an app's resources, or one resource's children and actions;", page)
+        self.assertIn("`cursor` reads on from where a page ended.", page)
         self.assertIn("#### Event.path\n", page)
         self.assertIn("### Refused\n", page)
         self.assertIn("## App types", page)

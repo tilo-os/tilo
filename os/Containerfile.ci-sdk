@@ -3,16 +3,17 @@
 # TypeScript SDK's packages in its install cache from sdk/typescript/bun.lock. Both are baked
 # in, so the suites run without network.
 #
-# The image is x86_64 only, like the ci-fast image it builds on. The checks that run in it
-# (sdk-python, sdk-typescript) ask for that architecture.
+# The image is x86_64 only, like the builder image it builds on. The checks that run in it
+# (sdk-python, sdk-typescript, the developer docs' examples) ask for that architecture.
 #
 # Built by t's image-ci-sdk check, from a context holding the two SDKs' manifests and lock
 # files. It is not published: the checks that run in
 # it are its consumers, so they always run in an image built from the tree's own locks. Keep
-# the base on the pinned ci-fast image: the toolchain, python3 and the shell tools the checks
-# use come from it.
-ARG CI_FAST_IMAGE=registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89
-FROM ${CI_FAST_IMAGE}
+# the base on the pinned builder image: the toolchain, python3, the shell tools and the
+# desktop's runtime libraries the checks use come from it. The docs' examples serve a real
+# host, whose session binary links that stack.
+ARG BUILDER_IMAGE=registry.tilo.so/tilo/tilo-builder@sha256:5a72b2a985be655cb2cd95ca9b3c7af30faaf8bd589258790ce8594b01a7eacc
+FROM ${BUILDER_IMAGE}
 
 # Release tarballs, pinned by version and checksum. A floating uv or bun would change which
 # tools a suite runs with without a commit saying so, and an upstream release is not a change

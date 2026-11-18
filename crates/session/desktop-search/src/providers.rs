@@ -1586,8 +1586,8 @@ mod tests {
                 "{editor:?}"
             );
 
-            // In a browser beside a node that runs Terminal, the node's
-            // Terminal is what "term" opens.
+            // Terminal runs in a page too, so a browser offers its own and a
+            // node's beside it, both found by "term".
             let browser = apps_on(
                 &["web"],
                 vec![AppEntry {
@@ -1597,8 +1597,8 @@ mod tests {
                 }],
             );
             let term = ranked_ids(&browser, "term");
-            assert_eq!(term.first().map(String::as_str), Some("node-app:3"));
-            assert!(!term.iter().any(|id| id == "so.tilo.terminal"));
+            assert!(term.iter().any(|id| id == "so.tilo.terminal"), "{term:?}");
+            assert!(term.iter().any(|id| id == "node-app:3"), "{term:?}");
         }
 
         phase typing_an_app_name_puts_its_launch_first;

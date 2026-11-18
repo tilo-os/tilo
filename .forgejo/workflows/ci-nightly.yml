@@ -260,10 +260,13 @@ jobs:
       # request.
       - name: Test every workspace example
         if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
+        env:
+          # No example reads the native NTFS images (tools/test-env.sh's step).
+          TILO_TEST_NTFS_FIXTURES: "0"
         run: >-
           bash tools/ci/measure.sh "nightly workspace examples" --
           bash scripts/ci-run.sh "cargo test --workspace --examples" --
-          bash tools/with-test-environment.sh
+          bash tools/test-env.sh
           cargo test --workspace --examples --locked
 
       - name: Save test results

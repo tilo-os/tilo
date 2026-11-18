@@ -167,9 +167,9 @@ async fn a_backends_key_invites_a_reviewer_who_enters_with_a_key_of_their_own() 
     .await;
     assert_eq!(by_rosa["status"], "failed", "{by_rosa}");
 
-    // A key minted for the workspace enters it as Ada, at her role, and
-    // invites nobody either: it is a key of hers, not a person of the
-    // workspace.
+    // A key minted for the workspace enters it as Ada, at her role: a key of
+    // hers for that workspace, so it invites as she does, and is no person of
+    // the workspace itself.
     let minted = backend
         .did("account/keys#mint", json!({"workspace": workspace}))
         .await;
@@ -188,7 +188,7 @@ async fn a_backends_key_invites_a_reviewer_who_enters_with_a_key_of_their_own() 
         json!({"role": "viewer"}),
     )
     .await;
-    assert_eq!(by_agent["status"], "failed", "{by_agent}");
+    assert_eq!(by_agent["status"], "ok", "{by_agent}");
     let after = members(&mut backend, here, "workspace/members#list", json!({})).await;
     let after = after["result"]["members"].as_array().unwrap().clone();
     assert_eq!(

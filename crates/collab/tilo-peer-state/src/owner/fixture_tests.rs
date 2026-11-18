@@ -735,29 +735,32 @@ fn documents(
     }
 }
 
-/// A write's receipt names the workspace's whole durable state by a digest,
-/// and taking it walks the documents the write changed, not every document
-/// the workspace holds: one at 300 documents as at 3,000. The digest is the
-/// one the workspace reopens with, and still changes with every write.
+/// A write costs what it changed, however many documents the workspace
+/// holds: its receipt's digest, the durable encoding it publishes and the
+/// journal entry it appends each take the document the write changed, not
+/// every document, and a commit in a workspace of 3,000 documents costs about
+/// what one in a workspace of 300 does. The digest is the one the workspace
+/// reopens with, and still changes with every write.
 #[tokio::test]
-async fn a_receipt_digests_what_its_write_changed_however_many_documents() {
-    let fixture = fixture();
+async fn a_write_commits_at_what_it_changed_however_many_documents() {
+    const WRITES: usize = 21;
+    const SIZES: [usize; 2] = [300, 3_000];
     let workspace = crate::owner::WorkspaceId::parse(testing::WORKSPACE).unwrap();
-    let path = fixture.directory.path().join("owner.json");
     let digest = |owner: &NativeWorkspaceOwner| {
         owner
             .with_current(workspace, |view| view.peer().durable_hash())
             .unwrap()
     };
-    let mut order = 0_u64;
-    let mut measured = Vec::new();
-    let mut held = 0;
-    for size in [300, 3_000] {
-        documents(&fixture, workspace, held..size, &mut order);
-        held = size;
-        let mut walked = Vec::new();
-        let mut times = Vec::new();
-        for n in 0..5 {
+    let fixtures = SIZES.map(|size| {
+        let fixture = fixture();
+        documents(&fixture, workspace, 0..size, &mut 0);
+        fixture
+    });
+    // The two workspaces take their writes in turns, so whatever else the
+    // machine does meanwhile slows both alike.
+    let mut times = [Vec::new(), Vec::new()];
+    for n in 0..WRITES {
+        for ((fixture, size), times) in fixtures.iter().zip(SIZES).zip(&mut times) {
             let before = digest(&fixture.owner);
             crate::state::DOCUMENTS_WALKED.with(|walked| walked.set(0));
             times.push(write_text(
@@ -768,17 +771,28 @@ async fn a_receipt_digests_what_its_write_changed_however_many_documents() {
                 &format!("r{n}"),
                 &format!("text {n} at {size}"),
             ));
-            walked.push(crate::state::DOCUMENTS_WALKED.with(std::cell::Cell::get));
+            // Its digest's leaf, and its part of the encoding published.
+            let walked = crate::state::DOCUMENTS_WALKED.with(std::cell::Cell::get);
+            assert_eq!(
+                walked, 2,
+                "a write at {size} documents takes {walked} documents again"
+            );
             assert_ne!(digest(&fixture.owner), before, "a write changes the digest");
         }
-        times.sort();
-        measured.push((size, times[2]));
-        assert!(
-            walked.iter().all(|walked| *walked == 1),
-            "each write at {size} documents digests {walked:?} documents again"
-        );
     }
-    println!("a write commits at 300 and 3,000 documents in {measured:?}");
+    // The median of each: what a write costs, without the odd write that
+    // settles what the workspace's admissions hold.
+    let [early, late] = times.map(|mut times| {
+        times.sort();
+        times[WRITES / 2]
+    });
+    println!("a write commits at 300 documents in {early:?}, at 3,000 in {late:?}");
+    assert!(
+        late.as_secs_f64() <= early.as_secs_f64() * 1.5,
+        "a write commits in {late:?} at 3,000 documents, in {early:?} at 300"
+    );
+    let [_, fixture] = fixtures;
+    let path = fixture.directory.path().join("owner.json");
     let before = digest(&fixture.owner);
     drop(fixture.owner);
     let reopened = open_file(&path).unwrap();

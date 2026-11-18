@@ -133,9 +133,15 @@ pub(crate) struct StoredPublication {
     pub(crate) projection: Vec<StoredOutgoing>,
     #[serde(default, deserialize_with = "read_entries")]
     governance: Vec<StoredOutgoing>,
-    /// What the workspace's server host answered to this device's writes, per record.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    answered: Vec<AnsweredDocument>,
+    /// What the workspace's server answered to this device's writes, per document: a map whose
+    /// copies share what neither changed, so an answer journals that document's entry and not
+    /// every document's ([`crate::owner::journal`]).
+    #[serde(
+        default,
+        skip_serializing_if = "Answered::is_empty",
+        with = "answered_list"
+    )]
+    answered: Answered,
     /// Writes behind `entries` the store keeps beside the record, oldest first: they move to
     /// the head as it sends and the host answers what it holds.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -247,14 +253,64 @@ pub(crate) struct SpilledRun {
 }
 /// The server host's answers to this device's writes to one record, kept with the ownership they
 /// left.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct AnsweredDocument {
-    app: String,
-    record: String,
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Answer {
     durable: u64,
     refused: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_order: Option<u64>,
+}
+
+/// The server's answers, by app and document.
+pub(crate) type Answered = crate::ordered::Ordered<(String, String), Answer>;
+
+/// [`Answered`] as the list the workspace's file holds.
+mod answered_list {
+    use super::{Answer, Answered};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Serialize, Deserialize)]
+    struct AnsweredDocument {
+        app: String,
+        record: String,
+        durable: u64,
+        refused: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_order: Option<u64>,
+    }
+
+    pub(super) fn serialize<S: Serializer>(
+        answered: &Answered,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(
+            answered
+                .iter()
+                .map(|((app, document), answer)| AnsweredDocument {
+                    app: app.clone(),
+                    record: document.clone(),
+                    durable: answer.durable,
+                    refused: answer.refused,
+                    last_order: answer.last_order,
+                }),
+        )
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Answered, D::Error> {
+        Ok(Vec::<AnsweredDocument>::deserialize(deserializer)?
+            .into_iter()
+            .map(|held| {
+                let answer = Answer {
+                    durable: held.durable,
+                    refused: held.refused,
+                    last_order: held.last_order,
+                };
+                ((held.app, held.record), answer)
+            })
+            .collect())
+    }
 }
 /// What a workspace's server host answered to one of this device's writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -283,7 +339,7 @@ impl Default for StoredPublication {
             entries: Vec::new(),
             projection: Vec::new(),
             governance: Vec::new(),
-            answered: Vec::new(),
+            answered: Answered::default(),
             spilled: Vec::new(),
             tail: Vec::new(),
             hosted: Vec::new(),
@@ -1534,26 +1590,8 @@ impl StoredPublication {
     }
     /// Count `answer` toward the writes to `app`'s `record`.
     fn answer(&mut self, app: &str, record: &str, answer: HostAnswer) {
-        if !self
-            .answered
-            .iter()
-            .any(|held| held.app == app && held.record == record)
-        {
-            self.answered.push(AnsweredDocument {
-                app: app.to_owned(),
-                record: record.to_owned(),
-                durable: 0,
-                refused: 0,
-                last_order: None,
-            });
-        }
-        let Some(held) = self
-            .answered
-            .iter_mut()
-            .find(|held| held.app == app && held.record == record)
-        else {
-            return;
-        };
+        let key = (app.to_owned(), record.to_owned());
+        let mut held = self.answered.get(&key).copied().unwrap_or_default();
         match answer {
             HostAnswer::Durable(order) => {
                 held.durable = held.durable.saturating_add(1);
@@ -1561,6 +1599,17 @@ impl StoredPublication {
             }
             HostAnswer::Refused => held.refused = held.refused.saturating_add(1),
         }
+        self.answered.insert(key, held);
+    }
+
+    /// The server's answers to this device's writes, by document.
+    pub(crate) fn answered(&self) -> &Answered {
+        &self.answered
+    }
+
+    /// Hold `answered` as the server's answers, by document.
+    pub(crate) fn set_answered(&mut self, answered: Answered) {
+        self.answered = answered;
     }
 }
 pub(crate) fn retire(live: &StatePeer, view: &mut stored::StoredWorkspace) -> Result<bool, String> {
@@ -1849,9 +1898,9 @@ impl NativeWorkspaceOwner {
             let mut writes: BTreeMap<(String, String), DocumentWrites> = publication
                 .answered
                 .iter()
-                .map(|answered| {
+                .map(|(key, answered)| {
                     (
-                        (answered.app.clone(), answered.record.clone()),
+                        key.clone(),
                         DocumentWrites {
                             pending: 0,
                             durable: answered.durable,
