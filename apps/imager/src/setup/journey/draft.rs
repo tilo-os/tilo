@@ -44,6 +44,123 @@ pub(super) struct PublicChoices {
     pub deferred: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<TargetDraft>,
+    #[serde(default, skip_serializing_if = "PlanDraft::is_default")]
+    pub plan: PlanDraft,
+}
+
+/// A plan's choices as a draft keeps them: empty is a choice left open, and
+/// the names are the plan model's own.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PlanDraft {
+    #[serde(default)]
+    pub os: String,
+    #[serde(default)]
+    pub name_open: bool,
+    #[serde(default)]
+    pub disk: String,
+    #[serde(default)]
+    pub network: String,
+    #[serde(default)]
+    pub unlock: String,
+    #[serde(default)]
+    pub updates: String,
+    #[serde(default)]
+    pub hosting: String,
+    #[serde(default)]
+    pub delivery: String,
+}
+
+impl PlanDraft {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    pub(super) fn validate(&self) -> io::Result<()> {
+        let named = |value: &str, allowed: &[&str]| {
+            value.is_empty() || value == "open" || allowed.contains(&value)
+        };
+        if !named(&self.os, &["os", "server"])
+            || !named(&self.disk, &["largest", "empty", "only"])
+            || !named(&self.network, &["dhcp"])
+            || !named(&self.unlock, &["tpm", "owner-device", "passphrase"])
+            || !named(&self.updates, &["stable", "dev"])
+            || !named(&self.hosting, &["none"])
+            || !named(&self.delivery, &["usb", "netboot", "alongside"])
+        {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+}
+
+impl From<&super::machine::Choices> for PlanDraft {
+    fn from(choices: &super::machine::Choices) -> Self {
+        let made = |key: Option<&'static str>| key.map_or_else(|| "open".to_owned(), str::to_owned);
+        Self {
+            os: choices
+                .os
+                .map_or_else(String::new, |os| os.key().to_owned()),
+            name_open: choices.name_open,
+            disk: made(choices.disk.map(super::machine::Disks::key)),
+            network: made(choices.network.map(super::machine::Networks::key)),
+            unlock: made(choices.unlock.map(super::machine::Unlock::key)),
+            updates: made(choices.updates.map(super::machine::Updates::key)),
+            hosting: choices
+                .hosting
+                .map_or_else(|| "open".to_owned(), |hosting| hosting.key().to_owned()),
+            delivery: choices.delivery.key().to_owned(),
+        }
+    }
+}
+
+impl PlanDraft {
+    pub(super) fn choices(&self) -> super::machine::Choices {
+        use super::machine;
+        let defaults = machine::Choices::default();
+        machine::Choices {
+            os: match self.os.as_str() {
+                "os" => Some(machine::Os::TiloOs),
+                "server" => Some(machine::Os::TiloServer),
+                _ => None,
+            },
+            name_open: self.name_open,
+            disk: match self.disk.as_str() {
+                "largest" => Some(machine::Disks::Largest),
+                "empty" => Some(machine::Disks::Empty),
+                "only" => Some(machine::Disks::Only),
+                "open" => None,
+                _ => defaults.disk,
+            },
+            network: match self.network.as_str() {
+                "dhcp" => Some(machine::Networks::Automatic),
+                "open" => None,
+                _ => defaults.network,
+            },
+            unlock: match self.unlock.as_str() {
+                "tpm" => Some(machine::Unlock::Hardware),
+                "owner-device" => Some(machine::Unlock::OwnerDevice),
+                "passphrase" => Some(machine::Unlock::Passphrase),
+                "open" => None,
+                _ => defaults.unlock,
+            },
+            updates: match self.updates.as_str() {
+                "stable" => Some(machine::Updates::Stable),
+                "dev" => Some(machine::Updates::Development),
+                "open" => None,
+                _ => defaults.updates,
+            },
+            hosting: match self.hosting.as_str() {
+                "none" => Some(machine::Hosting::HoldsNone),
+                _ => defaults.hosting,
+            },
+            delivery: match self.delivery.as_str() {
+                "netboot" => machine::Delivery::Netboot,
+                "alongside" => machine::Delivery::Alongside,
+                _ => defaults.delivery,
+            },
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,6 +199,7 @@ impl PublicChoices {
         if !install_profile_model::valid_purpose(&self.purpose) {
             return Err(invalid());
         }
+        self.plan.validate()?;
         if self.excluded_flatpak_apps.len() > 4096
             || self
                 .excluded_flatpak_apps

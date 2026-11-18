@@ -5,7 +5,7 @@ impl InstallerPreview {
         let j = &self.journey;
         let key = if j.page == Page::Storage {
             match j.destination {
-                Some(Destination::Another) => "usb",
+                Some(Destination::Another) => "disk",
                 Some(Destination::Desktop) => "desktop",
                 _ if !self.direct_route_enabled() => "storage-usb-fallback",
                 _ => "storage",
@@ -125,10 +125,16 @@ impl InstallerPreview {
                             self.choice("another", j.destination == Some(Destination::Another)),
                         ));
                 }
+                if j.destination == Some(Destination::Another) {
+                    body = body.push(Box::new(self.plan_os()));
+                }
                 if self.linux {
                     body = body.push(Box::new(
                         self.choice("desktop", j.destination == Some(Destination::Desktop)),
                     ));
+                }
+                if !self.machine.waiting.is_empty() {
+                    body = body.push(Box::new(self.waiting_machines()));
                 }
             }
             Page::Migration => {
@@ -805,7 +811,76 @@ impl InstallerPreview {
                 if destination == Destination::Computer {
                     body = body.push(Box::new(self.storage_content()));
                 } else if destination == Destination::Another {
-                    body = body.push(Box::new(Text::new(&t("installer-preview-storage-another"))));
+                    body = body.push(Box::new(self.disk_choice()));
+                }
+            }
+            Page::Method => {
+                body = body
+                    .with_rhythm(Rhythm::Section)
+                    .push(Box::new(self.plan_section(
+                        "delivery",
+                        &[
+                            ("usb", j.plan.delivery == machine::Delivery::Usb),
+                            ("netboot", j.plan.delivery == machine::Delivery::Netboot),
+                            ("alongside", j.plan.delivery == machine::Delivery::Alongside),
+                        ],
+                    )))
+                    .push(Box::new(
+                        self.plan_section("name", &[("name-open", j.plan.name_open)]),
+                    ))
+                    .push(Box::new(self.plan_section(
+                        "network",
+                        &[
+                            ("network-dhcp", j.plan.network.is_some()),
+                            ("network-open", j.plan.network.is_none()),
+                        ],
+                    )))
+                    .push(Box::new(self.plan_section(
+                        "unlock",
+                        &[
+                            (
+                                "unlock-tpm",
+                                j.plan.unlock == Some(machine::Unlock::Hardware),
+                            ),
+                            (
+                                "unlock-owner-device",
+                                j.plan.unlock == Some(machine::Unlock::OwnerDevice),
+                            ),
+                            (
+                                "unlock-passphrase",
+                                j.plan.unlock == Some(machine::Unlock::Passphrase),
+                            ),
+                            ("unlock-open", j.plan.unlock.is_none()),
+                        ],
+                    )))
+                    .push(Box::new(self.plan_section(
+                        "updates",
+                        &[
+                            (
+                                "updates-stable",
+                                j.plan.updates == Some(machine::Updates::Stable),
+                            ),
+                            (
+                                "updates-dev",
+                                j.plan.updates == Some(machine::Updates::Development),
+                            ),
+                            ("updates-open", j.plan.updates.is_none()),
+                        ],
+                    )));
+                if j.plan.os() == machine::Os::TiloServer {
+                    body = body.push(Box::new(self.plan_section(
+                        "hosting",
+                        &[
+                            (
+                                "hosting-none",
+                                j.plan.hosting == Some(machine::Hosting::HoldsNone),
+                            ),
+                            (
+                                "hosting-open",
+                                j.plan.hosting != Some(machine::Hosting::HoldsNone),
+                            ),
+                        ],
+                    )));
                 }
             }
             Page::Review => {
@@ -868,6 +943,7 @@ impl InstallerPreview {
                         )
                         .icon(Icon::Monitor),
                     ));
+                    setup = setup.push(Box::new(self.plan_review_rows()));
                 }
                 if destination != Destination::Desktop && !j.password.is_empty() {
                     setup = setup.push(Box::new(self.review_selection_row(
@@ -1095,9 +1171,178 @@ impl InstallerPreview {
             }
             Page::Ready => {
                 body = body.push(Box::new(IconWidget::new(Icon::Check).accent()));
+                if self.journey.destination == Some(Destination::Another)
+                    && let Some(created) = &self.machine.created
+                {
+                    let mut plan = page::related().push(Box::new(
+                        Text::new(&t("installer-plan-heading"))
+                            .with_role(TextRole::Subheading)
+                            .with_heading_level(2)
+                            .with_id("installer.plan.heading"),
+                    ));
+                    let token = created.token_file.display().to_string();
+                    plan = plan.push(Box::new(
+                        Text::new(&t_args(
+                            "installer-plan-token",
+                            &[("token", token.as_str().into())],
+                        ))
+                        .with_id("installer.plan.token"),
+                    ));
+                    if let Some(hours) = machine::hours_left(created.plan.token.expires_at_ns) {
+                        let hours = hours.to_string();
+                        plan = plan.push(Box::new(
+                            Text::new(&t_args(
+                                "installer-plan-expiry",
+                                &[("hours", hours.as_str().into())],
+                            ))
+                            .with_id("installer.plan.expiry"),
+                        ));
+                    }
+                    let (label, command) = match self.journey.plan.delivery {
+                        machine::Delivery::Usb => {
+                            ("installer-plan-carry-usb", &created.commands.medium)
+                        }
+                        machine::Delivery::Netboot => {
+                            ("installer-plan-carry-netboot", &created.commands.netboot)
+                        }
+                        machine::Delivery::Alongside => (
+                            "installer-plan-carry-alongside",
+                            &created.commands.alongside,
+                        ),
+                    };
+                    plan = plan
+                        .push(Box::new(
+                            Text::new(&t(label)).with_id("installer.plan.carry"),
+                        ))
+                        .push(Box::new(
+                            Text::new(command).with_id("installer.plan.command"),
+                        ));
+                    let questions = machine::questions(&created.plan, None);
+                    if !questions.is_empty() {
+                        plan = plan.push(Box::new(
+                            Text::new(&t("installer-plan-open-heading"))
+                                .with_role(TextRole::Subheading)
+                                .with_heading_level(2),
+                        ));
+                        for question in questions {
+                            plan = plan.push(Box::new(
+                                Text::new(&question.text)
+                                    .with_id(format!("installer.plan.open.{}", question.choice)),
+                            ));
+                        }
+                    }
+                    body = body.push(Box::new(plan));
+                }
             }
         }
         body
+    }
+
+    /// What the other computer installs: Tilo OS or Tilo Server, two destination
+    /// OSes, never a purpose question.
+    fn plan_os(&self) -> ui::widget::Column {
+        self.plan_section(
+            "plan-os",
+            &[
+                ("os", self.journey.plan.os() == machine::Os::TiloOs),
+                ("server", self.journey.plan.os() == machine::Os::TiloServer),
+            ],
+        )
+    }
+
+    /// Which drive the other computer installs to: a rule, because its real
+    /// drives are only known when it installs.
+    fn disk_choice(&self) -> ui::widget::Column {
+        self.plan_section(
+            "disk",
+            &[
+                (
+                    "disk-largest",
+                    self.journey.plan.disk == Some(machine::Disks::Largest),
+                ),
+                (
+                    "disk-empty",
+                    self.journey.plan.disk == Some(machine::Disks::Empty),
+                ),
+                (
+                    "disk-only",
+                    self.journey.plan.disk == Some(machine::Disks::Only),
+                ),
+                ("disk-open", self.journey.plan.disk.is_none()),
+            ],
+        )
+    }
+
+    /// One of the plan's choices: a heading, then the answers the person picks
+    /// between now or leaves to the computer.
+    fn plan_section(&self, group: &str, options: &[(&str, bool)]) -> ui::widget::Column {
+        let mut section = page::related();
+        if group != "disk" {
+            // The disk page's own heading already asks its question.
+            section = section.push(Box::new(
+                Text::new(&t(&format!("installer-preview-{group}-heading")))
+                    .with_role(TextRole::Subheading)
+                    .with_heading_level(2)
+                    .with_id(format!("installer.plan.{group}")),
+            ));
+        }
+        if group == "name" {
+            section = section.push(Box::new(self.select_named(
+                "name-use",
+                self.journey.device_name.clone(),
+                t("installer-preview-name-use-body"),
+                !self.journey.plan.name_open,
+            )));
+        }
+        for (key, selected) in options {
+            section = section.push(Box::new(self.select(key, *selected)));
+        }
+        section
+    }
+
+    /// The computers this person planned and has not installed, each with what
+    /// it still asks answered against the hardware it reported.
+    fn waiting_machines(&self) -> ui::widget::Column {
+        let mut section = page::related().push(Box::new(
+            Text::new(&t("installer-plan-waiting-heading"))
+                .with_role(TextRole::Subheading)
+                .with_heading_level(2)
+                .with_id("installer.waiting.heading"),
+        ));
+        section = section.push(Box::new(Text::new(&t("installer-plan-waiting-intro"))));
+        for (index, waiting) in self.machine.waiting.iter().enumerate() {
+            let mut machine = page::related().push(Box::new(
+                Text::new(&waiting.title())
+                    .with_role(TextRole::Title)
+                    .with_id(format!("installer.waiting.{index}")),
+            ));
+            let hours = waiting.expires_in_hours.to_string();
+            machine = machine.push(Box::new(Text::new(&t_args(
+                "installer-plan-waiting-summary",
+                &[
+                    ("os", waiting.destination.as_str().into()),
+                    ("hours", hours.as_str().into()),
+                ],
+            ))));
+            for question in &waiting.questions {
+                machine = machine.push(Box::new(
+                    Text::new(&question.text)
+                        .with_id(format!("installer.waiting.{index}.{}", question.choice)),
+                ));
+            }
+            if let Some(answer) = &waiting.disk_answer {
+                machine = machine.push(Box::new(
+                    Text::new(answer).with_id(format!("installer.waiting.{index}.disk-answer")),
+                ));
+            }
+            if waiting.questions.is_empty() {
+                machine = machine.push(Box::new(Text::new(&t(
+                    "installer-plan-waiting-everything-answered",
+                ))));
+            }
+            section = section.push(Box::new(machine));
+        }
+        section
     }
 
     pub(super) fn restart_view(&self) -> Box<dyn Widget> {
@@ -1239,7 +1484,9 @@ impl InstallerPreview {
             && self.live
             && self.journey.page == Page::Review
             && !self.journey.editing_destination()
-            && self.usb_backend_available()
+            && (self.usb_backend_available()
+                || (self.journey.destination == Some(Destination::Another)
+                    && self.journey.plan.delivery != machine::Delivery::Usb))
             && matches!(
                 self.journey.destination,
                 Some(Destination::Computer | Destination::Another)
@@ -1248,7 +1495,15 @@ impl InstallerPreview {
             actions = actions.push(Box::new(
                 self.button(
                     "installer.prepare-usb",
-                    "installer-preview-prepare-usb",
+                    if self.journey.destination == Some(Destination::Another)
+                        && self.journey.plan.delivery != machine::Delivery::Usb
+                    {
+                        "installer-plan-make"
+                    } else if self.journey.destination == Some(Destination::Another) {
+                        "installer-plan-make-and-medium"
+                    } else {
+                        "installer-preview-prepare-usb"
+                    },
                     InstallerPreviewEffect::PrepareUsb,
                 )
                 .role(
@@ -1354,6 +1609,8 @@ impl InstallerPreview {
             && !self.sessions_review
             && !mounted_step
             && !accounts_waiting
+            && !(self.journey.page == Page::Ready
+                && self.journey.destination == Some(Destination::Another))
             && !(self.live && self.journey.page == Page::Review && !self.journey.editing_choices())
         {
             actions = actions.push(Box::new(

@@ -413,7 +413,7 @@ installer-preview-computer-body = Installiere Tilo neben deinem aktuellen System
 installer-preview-computer-usb-body = Die direkte Installation ist in diesem Build nicht aktiviert. Du kannst stattdessen ein USB-Installationsmedium erstellen.
 installer-native-full-os-body = Installiere neben Windows, ohne USB-Laufwerk. Du prüfst die Änderungen am Laufwerk vor der Installation.
 installer-preview-another-title = Auf einem anderen Computer
-installer-preview-another-body = Erstelle ein USB-Installationsmedium für einen anderen Computer. Du brauchst ein USB-Laufwerk, das gelöscht werden darf; der andere Computer muss davon starten können.
+installer-preview-another-body = Erstelle einen Installationsplan und trage ihn zu diesem Computer. Auf diesem Computer wird nichts geschrieben, solange du es nicht dort oder auf deinen Geräten bestätigst.
 installer-preview-target-heading = Auf welchem Computer soll Tilo laufen?
 installer-preview-target-intro = Benenne diesen Computer oder importiere den Hardwarebericht, den er erstellt hat. Das Installationsprogramm auf jenem Computer prüft Laufwerke, Start und Schutz, bevor sich etwas ändert.
 installer-preview-target-identity-heading = Der andere Computer
@@ -700,13 +700,167 @@ installer-preview-bring-things = Meine Daten mitnehmen
 installer-preview-bring-selected = Ausgewählte Daten mitnehmen
 installer-preview-storage-heading = Platz für Tilo wählen
 installer-preview-storage-intro = Behalte dein aktuelles System und installiere Tilo daneben.
-installer-preview-usb-heading = Ein USB-Installationsmedium vorbereiten
-installer-preview-usb-intro = Damit startest du Tilo auf deinem anderen Computer.
 installer-preview-desktop-heading = Tilo als Desktop hinzufügen
 installer-preview-desktop-intro = Behalte dein vorhandenes Linux-System.
 installer-preview-storage-usb-fallback-heading = Tilo von USB installieren
 installer-preview-storage-usb-fallback-intro = Die direkte Installation ist in diesem Build nicht verfügbar. Verwende ein USB-Laufwerk, um Tilo auf diesem Computer zu installieren.
-installer-preview-storage-another = Wähle als Nächstes ein USB-Laufwerk. Sein Inhalt wird gelöscht, wenn du das Schreiben bestätigst.
+
+installer-preview-plan-os-heading = Was wird darauf laufen?
+
+installer-preview-os-title = Tilo OS
+
+installer-preview-os-body = Tilo mit Desktop und Apps. Das Anmeldepasswort wird beim ersten Start auf diesem Computer gesetzt.
+
+installer-preview-server-title = Tilo Server
+
+installer-preview-server-body = Kein Desktop und kein Anmeldepasswort. Er verwahrt deine Arbeitsbereiche und wird von deinen anderen Geräten aus verwaltet.
+
+installer-preview-disk-heading = Auf welche Festplatte wird installiert?
+
+installer-preview-disk-intro = Der Plan nennt eine Regel. Die Laufwerke des Computers entscheiden, worauf sie zutrifft; trifft sie auf keines oder mehrere zu, beantwortest du das auf deinen Geräten.
+
+installer-preview-disk-largest-title = Das größte Laufwerk, das nicht das Startlaufwerk ist
+
+installer-preview-disk-largest-body = Wird bei der Installation gegen die Laufwerke des Computers geprüft.
+
+installer-preview-disk-empty-title = Ein Laufwerk ohne Daten
+
+installer-preview-disk-empty-body = Wird bei der Installation gegen die Laufwerke des Computers geprüft.
+
+installer-preview-disk-only-title = Das einzige Laufwerk, das nicht das Startlaufwerk ist
+
+installer-preview-disk-only-body = Wird bei der Installation gegen die Laufwerke des Computers geprüft.
+
+installer-preview-disk-open-title = Bei der Installation fragen
+
+installer-preview-disk-open-body = Du wählst aus den gemeldeten Laufwerken, bevor etwas geschrieben wird.
+
+installer-preview-method-heading = Wie erreicht der Plan den Computer?
+
+installer-preview-method-intro = Das Medium und die Befehle tragen den Plan und einen einmalig gültigen Code. Der Code läuft nach 24 Stunden ab; der Plan kann sich danach noch ändern.
+
+installer-preview-delivery-heading = Wohin er geht
+
+installer-preview-usb-title = Ein USB-Laufwerk
+
+installer-preview-usb-body = Schreibe den Installer auf ein Laufwerk, das gelöscht werden darf, und starte den Computer davon.
+
+installer-preview-netboot-title = Ein Rettungs- oder Netboot-System
+
+installer-preview-netboot-body = Gib ihm einen Befehl, sobald es läuft; es installiert über das Netzwerk.
+
+installer-preview-alongside-title = Neben seinem Linux
+
+installer-preview-alongside-body = Führe einen Befehl in dem Linux aus, das schon darauf läuft. Dieses System bleibt erhalten und startet zuerst.
+
+installer-preview-name-heading = Sein Name
+
+installer-preview-name-use-body = Der Name, den du auf den Einrichtungsseiten eingegeben hast.
+
+installer-preview-name-open-title = Bei der Installation fragen
+
+installer-preview-name-open-body = Du benennst ihn bei der Installation, auf ihm oder auf deinen Geräten.
+
+installer-preview-network-heading = Netzwerk
+
+installer-preview-network-dhcp-title = Automatisch (DHCP)
+
+installer-preview-network-dhcp-body = Er bezieht seine Adressen aus dem Netzwerk, dem er beitritt.
+
+installer-preview-network-open-title = Bei der Installation fragen
+
+installer-preview-network-open-body = Wird auf dem Computer gesetzt, wenn die automatische Konfiguration nicht funktioniert.
+
+installer-preview-unlock-heading = Entsperren nach einem Neustart
+
+installer-preview-unlock-tpm-title = Sein eigener Hardwareschutz
+
+installer-preview-unlock-tpm-body = Das Laufwerk entsperrt sich über den Schutz des Computers; niemand tippt ein Passwort am Gerät ein.
+
+installer-preview-unlock-owner-device-title = Eines deiner Geräte
+
+installer-preview-unlock-owner-device-body = Er bittet ein freigegebenes Gerät von dir ums Entsperren.
+
+installer-preview-unlock-passphrase-title = Eine Passphrase
+
+installer-preview-unlock-passphrase-body = Jemand am Gerät tippt die Passphrase ein.
+
+installer-preview-unlock-open-title = Bei der Installation fragen
+
+installer-preview-unlock-open-body = Du wählst aus den Methoden, die seine Hardware unterstützt.
+
+installer-preview-updates-heading = Updates, denen er folgt
+
+installer-preview-updates-stable-title = Stabile Versionen
+
+installer-preview-updates-stable-body = Er aktualisiert, wenn eine Version getestet und angekündigt ist.
+
+installer-preview-updates-dev-title = Entwicklungsversionen
+
+installer-preview-updates-dev-body = Er aktualisiert mit den neuesten Änderungen, die Fehler enthalten können.
+
+installer-preview-updates-open-title = Bei der Installation fragen
+
+installer-preview-updates-open-body = Du wählst, bevor er beitritt.
+
+installer-preview-hosting-heading = Arbeitsbereiche, die er verwahrt
+
+installer-preview-hosting-none-title = Vorerst keine
+
+installer-preview-hosting-none-body = Du fügst Arbeitsbereiche aus deinem Server-Eintrag hinzu, sobald er installiert ist.
+
+installer-preview-hosting-open-title = Nach der Installation fragen
+
+installer-preview-hosting-open-body = Du wählst aus deinem Server-Eintrag, welche Arbeitsbereiche er verwahrt und ob er nur verschlüsselte Kopien hält oder ihre Arbeit übernimmt.
+
+
+installer-plan-heading = Der Plan
+
+installer-plan-token = Trage diesen einmalig gültigen Code zum Computer: { $token }
+
+installer-plan-expiry = Der Code gilt noch { $hours } Stunden. Geht das Medium verloren, ist nur dieser Code offengelegt, und er läuft ab.
+
+installer-plan-carry-usb = Schreibe den Installer auf ein Laufwerk, das gelöscht werden darf, und bewahre den Code dabei auf:
+
+installer-plan-carry-netboot = Führe in einem Rettungs- oder Netboot-System auf diesem Computer aus:
+
+installer-plan-carry-alongside = Führe in dem Linux aus, das schon auf diesem Computer läuft:
+
+installer-plan-open-heading = Was der Computer noch fragt
+
+installer-plan-answer-name = Sein Name: wird bei der Installation gefragt.
+
+installer-plan-answer-network = Sein Netzwerk: automatisch oder auf dem Computer gesetzt, wenn das scheitert.
+
+installer-plan-answer-disk = Das Laufwerk, auf das installiert wird: gewählt aus den gemeldeten Laufwerken, bevor etwas geschrieben wird.
+
+installer-plan-answer-disk-drive = Das Laufwerk, auf das installiert wird: { $model }, { $size }.
+
+installer-plan-answer-disk-open = Das Laufwerk bleibt offen: { $reason }
+
+installer-plan-answer-unlock = Entsperren: gewählt aus den Methoden, die seine Hardware unterstützt.
+
+installer-plan-answer-updates = Updates: gewählt, bevor er beitritt.
+
+installer-plan-answer-hosting = Die Arbeitsbereiche, die er verwahrt: gewählt aus deinem Server-Eintrag.
+
+installer-plan-answer-other = Wird bei der Installation beantwortet.
+
+installer-plan-unavailable = Dieser Computer kann keinen Rechner planen. Melde dich mit tilo login auf einem deiner Geräte an und versuche es erneut.
+
+installer-plan-waiting-heading = Computer, die auf die Installation warten
+
+installer-plan-waiting-intro = Diese Pläne haben einen einmalig gültigen Code, der noch nicht verwendet wurde. Jeder öffnet bei der Installation, was er noch fragt.
+
+installer-plan-waiting-summary = { $os }, Code läuft in { $hours } Stunden ab.
+
+installer-plan-waiting-unnamed = Ein Computer ohne Namen
+
+installer-plan-waiting-everything-answered = Jede Wahl ist getroffen; er installiert ohne Nachfragen.
+
+installer-plan-make = Den Plan erstellen
+
+installer-plan-make-and-medium = Den Plan erstellen und ein USB-Laufwerk wählen
 installer-preview-review-heading = Deine Einrichtung prüfen
 installer-preview-review-intro = Wähle einen Eintrag aus, um ihn zu ändern.
 installer-preview-review-migrate = Die ausgewählten Daten von diesem Computer mitnehmen. Deine Originale bleiben unverändert.

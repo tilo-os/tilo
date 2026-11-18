@@ -16,6 +16,7 @@ fn choices() -> PublicChoices {
         purpose: install_profile_model::default_purpose(),
         deferred: false,
         target: None,
+        plan: PlanDraft::default(),
     }
 }
 fn namespace(root: &Path) -> PathBuf {

@@ -1,7 +1,7 @@
 //! The screenshot scenarios of the guided setup: which page each one shows,
 //! and the journey it shows it on.
 
-use super::{Destination, Identity, Journey, Page};
+use super::{Destination, Identity, Journey, Page, machine};
 
 pub const SCENARIOS: &[&str] = &[
     "installer-destination",
@@ -17,7 +17,12 @@ pub const SCENARIOS: &[&str] = &[
     "installer-accounts",
     "installer-belongings-details",
     "installer-storage",
-    "installer-usb",
+    "installer-disk",
+    "installer-method",
+    "installer-plan-os",
+    "installer-plan-waiting",
+    "installer-plan-review",
+    "installer-plan-ready",
     "installer-desktop",
     "installer-review",
     "installer-ready",
@@ -49,9 +54,36 @@ pub(super) fn page(journey: &mut Journey, scenario: &str) -> Page {
         }
         "installer-accounts" => Page::Accounts,
         "installer-storage" => Page::Storage,
-        "installer-usb" => {
+        "installer-disk" => {
             journey.destination = Some(Destination::Another);
+            journey.plan.os = Some(machine::Os::TiloOs);
             Page::Storage
+        }
+        "installer-method" => {
+            journey.destination = Some(Destination::Another);
+            journey.plan.os = Some(machine::Os::TiloServer);
+            journey.plan.hosting = Some(machine::Hosting::HoldsNone);
+            Page::Method
+        }
+        "installer-plan-os" => {
+            journey.destination = Some(Destination::Another);
+            Page::Destination
+        }
+        "installer-plan-waiting" => Page::Destination,
+        "installer-plan-review" => {
+            journey.destination = Some(Destination::Another);
+            journey.plan.os = Some(machine::Os::TiloServer);
+            journey.plan.hosting = Some(machine::Hosting::HoldsNone);
+            journey.plan.name_open = true;
+            journey.device_name = "cupboard".into();
+            journey.plan.disk = None;
+            Page::Review
+        }
+        "installer-plan-ready" => {
+            journey.destination = Some(Destination::Another);
+            journey.plan.os = Some(machine::Os::TiloServer);
+            journey.plan.hosting = Some(machine::Hosting::HoldsNone);
+            Page::Ready
         }
         "installer-desktop" => {
             journey.destination = Some(Destination::Desktop);
