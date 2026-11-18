@@ -121,7 +121,7 @@ fn the_four_shipped_styles_are_listed_and_drawn() {
     // layout, listed by its doc line.
     let styles = crate::common::styles(&session);
     assert!(!styles.is_empty(), "the layout offers styles: {styles:?}");
-    for name in ["strips", "frames", "spaces", "desktop"] {
+    for name in ["strips", "frames", "frameless", "desktop"] {
         let found = styles
             .iter()
             .find(|style| style.style == format!("so.tilo.shell:{name}"))

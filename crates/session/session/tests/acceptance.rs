@@ -65,7 +65,7 @@ fn step_1_the_session_starts_with_the_shell_as_the_whole_screen() {
     // showing the same places.
     let menu = preset_menu(&session).expect("the listing's preset menu");
     press(&mut session, &menu);
-    for preset in ["Strips", "Frames", "Spaces", "Desktop"] {
+    for preset in ["Strips", "Frames", "Frameless", "Desktop"] {
         assert!(
             on_screen(&session, preset).is_some(),
             "the preset switch offers {preset}: {:?}",

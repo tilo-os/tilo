@@ -61,7 +61,7 @@ fn note_ids(session: &Session) -> Vec<String> {
     out
 }
 
-/// Show the style `preset` ("Strips", "Frames", "Spaces", "Desktop") the way a person does: the
+/// Show the style `preset` ("Strips", "Frames", "Frameless", "Desktop") the way a person does: the
 /// shell's own `show_style`, which every row of the style switch and the canvas's person menu runs
 /// (`show_preset`). It waits for the map the style draws, so the style is read by what the shell
 /// shows, never by pixels.
@@ -583,7 +583,7 @@ fn the_bells_press_opens_the_notification_centre_in_every_preset() {
         on_screen(session, BELL).is_some()
     });
     place(&mut session, &notes[0], 100, 120, 480, 360);
-    for preset in ["Strips", "Frames", "Spaces", "Desktop"] {
+    for preset in ["Strips", "Frames", "Frameless", "Desktop"] {
         show_style(&mut session, preset);
         until(
             &mut session,

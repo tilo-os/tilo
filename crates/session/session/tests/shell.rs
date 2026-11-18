@@ -936,7 +936,7 @@ fn the_launcher_opens_from_the_bar_and_searches_windows() {
             "desktop:overlays",
             "close-surface",
             &serde_json::Map::from_iter([(
-                "slot".to_owned(),
+                "part".to_owned(),
                 serde_json::Value::String("launcher".to_owned()),
             )]),
         )
