@@ -87,6 +87,12 @@ public protocol AssistantSource: Sendable {
     /// The person will not sign in to this service now.
     func decline(_ offer: ConnectionOffer.ID) async throws
 
+    /// The person signed in on the page `authenticate` answered, and their browser came back
+    /// to this address. The source finishes the sign-in with it. The address opens the sign-in
+    /// once: it goes to the person's Tilo and nowhere else, not into the conversation, not to
+    /// a model, not into a log.
+    func signedIn(_ offer: ConnectionOffer.ID, at returned: URL) async throws
+
     /// A file that came with a message, as a file on this device.
     func file(of attachment: Attachment.ID) async throws -> URL
 
@@ -165,6 +171,10 @@ extension AssistantSource {
     public func stopAnswering(in chat: Chat) async throws {}
     public func seen(_ item: Item.ID, in chat: Chat) async {}
     public func sinceLeft() -> AsyncStream<SinceLeft?> { AsyncStream { $0.yield(nil) } }
+    /// A source that answers no page for a sign-in has none to finish.
+    public func signedIn(_ offer: ConnectionOffer.ID, at returned: URL) async throws {
+        throw SourceProblem.refused("No sign-in was begun here")
+    }
     public func take(_ offer: Offer.ID, of item: Item.ID, in chat: Chat) async throws {
         throw SourceProblem.refused("Nothing is offered with this here")
     }

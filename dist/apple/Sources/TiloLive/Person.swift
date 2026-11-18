@@ -18,6 +18,8 @@ public enum PersonProvider: String, Sendable, CaseIterable {
     case asking = "tilo.asking"
     /// What the agents their host runs have learned about the person.
     case learned = "tilo.learned"
+    /// The services the person connected by their address, and signing in to one.
+    case connections = "tilo.connections"
 }
 
 /// What a person typed into a protected field, on its way to their host. It says nothing of

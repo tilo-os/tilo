@@ -390,15 +390,22 @@ public struct ConnectionOffer: Identifiable, Equatable, Sendable {
     public var text: String
     /// The service's name.
     public var name: String
-    /// How many commands it offers once the person is signed in, when it says so.
+    /// How many commands it offers, when it says so before anyone signed in.
     public var commands: Int?
+    /// Whether the service wants the person to sign in before it is used.
+    public var needsSignIn: Bool
+    /// The site that sign-in happens at, by name, when the service names it.
+    public var signInAt: String?
     public var state: State
 
-    public init(id: ID, text: String, name: String, commands: Int? = nil, state: State = .waiting) {
+    public init(id: ID, text: String, name: String, commands: Int? = nil, needsSignIn: Bool = true, signInAt: String? = nil,
+                state: State = .waiting) {
         self.id = id
         self.text = text
         self.name = name
         self.commands = commands
+        self.needsSignIn = needsSignIn
+        self.signInAt = signInAt
         self.state = state
     }
 

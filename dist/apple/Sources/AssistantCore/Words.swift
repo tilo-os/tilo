@@ -39,6 +39,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     case keptInVault = "kept-in-vault", save, getFromManager = "get-from-manager", secretFine = "secret-fine"
     case secretField = "secret-field", secretKept = "secret-kept", secretDeclined = "secret-declined"
     case commandsAfter = "commands-after", authenticate, notNow = "not-now", connected, notConnected = "not-connected"
+    case commandsCount = "commands-count", signInAt = "sign-in-at"
     case eventOn = "event-on", eventPaused = "event-paused", scheduledOn = "scheduled-on", scheduledPaused = "scheduled-paused"
     // The Tasks panel.
     case tasks, active, upNext = "up-next", scheduled, resolved
@@ -162,6 +163,8 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .secretKept: "Saved in your vault"
         case .secretDeclined: "Not given"
         case .commandsAfter: "{count} commands after sign-in"
+        case .commandsCount: "{count} commands"
+        case .signInAt: "Sign in at {site}"
         case .authenticate: "Authenticate"
         case .notNow: "Not now"
         case .connected: "Connected"

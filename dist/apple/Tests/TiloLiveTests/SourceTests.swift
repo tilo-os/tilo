@@ -571,7 +571,7 @@ final class TiloSourceTests: XCTestCase {
         try await start()
         try await enter(device: true)
         try await until("the host was asked on the way in") {
-            (try? await self.page("return String(window.hostAsked.length)")) == "10"
+            (try? await self.page("return String(window.hostAsked.length)")) == "11"
         }
         // Ten changes of Chat's records: the conversation follows, and the host is asked nothing.
         for n in 0..<10 {
@@ -584,7 +584,7 @@ final class TiloSourceTests: XCTestCase {
         // so that nothing old is told again. The last four are what came while she was away, then the
         // ask her server is to hold until the log moves. This one answers it at once with nothing,
         // three times in a row, and is asked no more.
-        XCTAssertEqual(asked, #"["tilo.telling list","tilo.models list","tilo.vault list","tilo.learned list","tilo.telling read","tilo.events list","tilo.telling since-you-left","tilo.telling list","tilo.telling list","tilo.telling list"]"#)
+        XCTAssertEqual(asked, #"["tilo.telling list","tilo.models list","tilo.vault list","tilo.learned list","tilo.telling read","tilo.events list","tilo.connections list","tilo.telling since-you-left","tilo.telling list","tilo.telling list","tilo.telling list"]"#)
     }
 
     func testWhatItLearnedAndWhatIsImportantAreThePersonsOwnOnTheirHost() async throws {
@@ -629,8 +629,6 @@ final class TiloSourceTests: XCTestCase {
             ("Tasks cannot be reached from this app yet", { try await self.source.addTask("Renew the passport") }),
             ("Tilo cannot pause an assistant yet", { try await self.source.setAssistantOn(false) }),
             ("No password manager is connected to Tilo yet", { try await self.source.fetchSecret(for: "k1") }),
-            ("Tilo keeps no connections to sign in to yet", { _ = try await self.source.authenticate("c1") }),
-            ("Tilo keeps no connections to sign in to yet", { try await self.source.decline(ConnectionOffer.ID("c1")) }),
             ("A file cannot be fetched into this app yet", { _ = try await self.source.file(of: "f1") }),
         ]
         for (sentence, call) in refused {

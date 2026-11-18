@@ -85,6 +85,8 @@
 "not-now" = "Not now";
 "connected" = "Connected";
 "not-connected" = "Not connected";
+"commands-count" = "{count} commands";
+"sign-in-at" = "Sign in at {site}";
 "event-on" = "Event · on";
 "event-paused" = "Event · paused";
 "scheduled-on" = "Scheduled · on";
