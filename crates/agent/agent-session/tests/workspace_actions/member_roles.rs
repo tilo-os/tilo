@@ -28,6 +28,9 @@ pub(super) struct Membership {
     device: [u8; 32],
     role: Mutex<Option<Role>>,
     revoked: AtomicBool,
+    /// Whether the next ask for the keys of the workspace's agents is answered as the device's
+    /// key service answers while it takes part and holds no keys yet.
+    keys_not_yet: AtomicBool,
     answer: Mutex<Option<ConfirmationReply>>,
     asked: AtomicUsize,
     content: tilo_content::ContentStore,
@@ -56,6 +59,7 @@ impl Membership {
             device: member.cert.device_public_key,
             role: Mutex::new(Some(Role::Viewer)),
             revoked: AtomicBool::new(false),
+            keys_not_yet: AtomicBool::new(false),
             answer: Mutex::new(None),
             asked: AtomicUsize::new(0),
             content: tilo_content::ContentStore::in_dir(content),
@@ -65,6 +69,12 @@ impl Membership {
     /// The member's role from now on; none once the workspace removed them.
     pub(super) fn set_role(&self, role: Option<Role>) {
         *self.role.lock().unwrap() = role;
+    }
+
+    /// Answer the next ask for the keys of the workspace's agents as the device's key service
+    /// does while it takes part and holds no keys yet.
+    fn keys_not_yet_once(&self) {
+        self.keys_not_yet.store(true, Ordering::SeqCst);
     }
 
     fn access(&self, caller: &Caller) -> Option<ui::permissions::MemberAccess> {
@@ -121,6 +131,11 @@ impl WorkspaceDocumentsLink for Membership {
         route: &DocumentRoute,
         create: bool,
     ) -> Option<Result<key_group::ContentKeys, String>> {
+        if route.document == collab_types::workspace_document_id(ui::tilo_workspace_agent::KIND)
+            && self.keys_not_yet.swap(false, Ordering::SeqCst)
+        {
+            return Some(Err("this device holds no keys of the workspace yet".into()));
+        }
         self.member
             .runtime
             .block_on(self.workspaces.own_route_keys(route, create))
@@ -819,3 +834,169 @@ async fn each_member_runs_what_their_access_lets_them_and_nothing_else() {
 // membership, so its tests stand below this fixture.
 #[path = "workspace_documents.rs"]
 mod workspace_documents;
+
+const CHAT: &str = "so.tilo.chat";
+
+/// What a test of the workspace's agents asks through: the action service of the server's
+/// device over a link the test answers for, as the server's own person and as a member who
+/// edits.
+struct Asked {
+    actions: tilo_agent_session::WorkspaceActions,
+    membership: Arc<Membership>,
+    workspace: WorkspaceId,
+    provider: String,
+    owner: Caller,
+    member: Caller,
+    /// The server, its person's page and its state, for as long as the test asks.
+    _kept: Vec<Box<dyn std::any::Any>>,
+}
+
+/// A server whose workspace holds Chat, and the action service asked for its agents.
+async fn agents_asked() -> Asked {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let (guest, _) = tilo_user_identity::UserIdentity::generate("Grace", 1);
+    let device = enrol(&root, "home-server", DeviceCapabilities::member());
+    let page_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let guest_device = enrol(&guest, "guest-browser", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let server = start(&root, &device, state.path()).await;
+    let mut page = Browser::open(&server, &page_device, &device).await;
+    let chat = page.create(CHAT);
+    page.peer.barrier().unwrap().recv().unwrap().unwrap();
+    let membership = Membership::of(
+        &server,
+        &device,
+        &guest_device,
+        state.path().join("member-content"),
+    );
+    membership.set_role(Some(Role::Editor));
+    let actions = tilo_agent_session::WorkspaceActions::new(Arc::new(crate::common::catalogue));
+    actions.attach(membership.clone()).unwrap();
+    let person = |device: &Device| {
+        Caller::authenticated(device.cert.user_public_key, device.cert.device_public_key)
+            .in_workspace(WORKSPACE)
+    };
+    Asked {
+        actions,
+        membership,
+        workspace: page.workspace,
+        provider: format!(
+            "{}:{CHAT}:{}",
+            tilo_actions::remote::RESOURCE_PROVIDER,
+            chat.document
+        ),
+        owner: person(&page_device),
+        member: person(&guest_device),
+        _kept: vec![Box::new(server), Box::new(page), Box::new(state)],
+    }
+}
+
+/// One ask of the workspace's agents, which Chat keeps beside its own document.
+fn of_agents(provider: &str, action: &str, argument: InvokeArgument) -> InvokeRequest {
+    request(
+        provider,
+        ActionAddress::new(ui::tilo_workspace_agent::KIND, action),
+        argument,
+    )
+}
+
+/// The names of the agents `read`, the answer to a read of them, lists.
+fn agent_names(read: &ReceiptStatus) -> Vec<String> {
+    let ReceiptStatus::Completed { output } = read else {
+        panic!("the agents were not read: {read:?}")
+    };
+    output
+        .value
+        .as_ref()
+        .and_then(|value| value.get("agents"))
+        .and_then(serde_json::Value::as_array)
+        .map(|agents| {
+            agents
+                .iter()
+                .filter_map(|agent| agent.get("name")?.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A change the server's own person made whose hand-over to the session failed is not built
+/// on. The key service answers the first ask for the agents' keys as it does while its device
+/// holds none: the write fails as one to be made again. The service kept the copy that had
+/// made the change, so the write made again was a change to a document the session was never
+/// handed, and waited for that document for good, as did every write to it after.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_owners_next_write_is_saved_after_a_hand_over_that_failed() {
+    let asked = agents_asked().await;
+    let create = of_agents(
+        &asked.provider,
+        "create-agent",
+        json(serde_json::json!({"name": "Assistant"})),
+    );
+    asked.membership.keys_not_yet_once();
+    // `invoked` makes again what is answered as to be made again: the first hand-over fails.
+    let made = invoked(&asked.actions, asked.workspace, &asked.owner, &create);
+    assert!(
+        matches!(made, ReceiptStatus::Completed { .. }),
+        "made again after a hand-over that failed, the write is saved: {made:?}"
+    );
+    let read = invoked(
+        &asked.actions,
+        asked.workspace,
+        &asked.owner,
+        &of_agents(&asked.provider, "read", InvokeArgument::None),
+    );
+    assert_eq!(
+        agent_names(&read),
+        ["Assistant"],
+        "the agent of the write that failed is in no copy: the saved one alone is read"
+    );
+}
+
+/// A member's change whose hand-over failed is in no copy the server writes through: what
+/// its own person writes next is saved, and the member reads the workspace's agents. The
+/// member's change was merged into the server's copy before it was handed over, so the next
+/// write made there built on a change no device ever sent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_members_hand_over_that_failed_leaves_nothing_the_owner_writes_on() {
+    let asked = agents_asked().await;
+    let create = |name: &str| {
+        of_agents(
+            &asked.provider,
+            "create-agent",
+            json(serde_json::json!({"name": name})),
+        )
+    };
+    asked.membership.keys_not_yet_once();
+    let first = invoked(
+        &asked.actions,
+        asked.workspace,
+        &asked.member,
+        &create("Assistant"),
+    );
+    assert!(
+        matches!(first, ReceiptStatus::Completed { .. }),
+        "made again after a hand-over that failed, the member's write is saved: {first:?}"
+    );
+    let second = invoked(
+        &asked.actions,
+        asked.workspace,
+        &asked.owner,
+        &create("Second"),
+    );
+    assert!(
+        matches!(second, ReceiptStatus::Completed { .. }),
+        "what the server's own person writes after it is saved: {second:?}"
+    );
+    let mut names = agent_names(&invoked(
+        &asked.actions,
+        asked.workspace,
+        &asked.member,
+        &of_agents(&asked.provider, "read", InvokeArgument::None),
+    ));
+    names.sort();
+    assert_eq!(
+        names,
+        ["Assistant", "Second"],
+        "the member reads the workspace's agents: the two that were saved"
+    );
+}

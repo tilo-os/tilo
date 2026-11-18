@@ -2597,7 +2597,7 @@ impl Worker {
     /// Commit what the owner's action changed, each record on its own
     /// route: a part it started is held beside the record it acted on. The
     /// action is done once the host holds them ([`Self::saving`]). The error
-    /// is why a commit failed.
+    /// is why a commit failed, and the mounted copy is let go with it.
     fn commit_taken(
         &mut self,
         workspace_id: WorkspaceId,
@@ -2609,7 +2609,15 @@ impl Worker {
             if changed != holder {
                 self.beside.insert(changed.clone(), holder.clone());
             }
-            self.commit(workspace_id, &changed, &mutation)?;
+            if let Err(reason) = self.commit(workspace_id, &changed, &mutation) {
+                // The mounted copy made the change and the session was not handed it: the
+                // copy is let go, so the next action mounts what the workspace holds. Kept,
+                // the next change made in it would build on one no device ever sends, and
+                // wait for it for good.
+                self.mounted.remove(&holder);
+                self.beside.retain(|_, kept| *kept != holder);
+                return Err(reason);
+            }
         }
         Ok(())
     }
