@@ -7,6 +7,7 @@
 //! and one it reports removed is dropped from the resource.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use tilo_sort::CompactSort as _;
 
 use serde::{Deserialize, Serialize};
 use tilo_content::{ContentState, ContentStore};
@@ -175,7 +176,7 @@ impl MailCopies {
         if order.len() <= most {
             return;
         }
-        order.sort_by_key(|(_, minutes)| std::cmp::Reverse(*minutes));
+        order.compact_sort_by_key(|(_, minutes)| std::cmp::Reverse(*minutes));
         let dropped: HashSet<Id> = order.into_iter().skip(most).map(|(id, _)| id).collect();
         self.copies.retain(|id, _| !dropped.contains(id));
     }
@@ -347,7 +348,7 @@ impl Copies {
                     .then_some((id, copy))
                 })
                 .collect();
-            missing.sort_by_key(|(_, copy)| std::cmp::Reverse(copy.minutes));
+            missing.compact_sort_by_key(|(_, copy)| std::cmp::Reverse(copy.minutes));
             let room = MAX_ASKED - self.asked.len();
             for (id, copy) in missing.into_iter().take(room) {
                 match self.read(&copy.content, id, copy) {

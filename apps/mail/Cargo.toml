@@ -37,6 +37,7 @@ path = "tests/it.rs"
 # Mail names every Message-ID itself.
 mail-builder = { version = "0.4.4", default-features = false }
 tilo-mime = { path = "../../crates/platform/tilo-mime" }
+tilo-sort = { path = "../../crates/platform/tilo-sort" }
 fnv.workspace = true
 hex.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }

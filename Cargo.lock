@@ -9567,6 +9567,7 @@ dependencies = [
  "tilo-oauth",
  "tilo-rich-text",
  "tilo-seal",
+ "tilo-sort",
  "tilo-test-env",
  "tilo-vello",
  "tilo-winit",

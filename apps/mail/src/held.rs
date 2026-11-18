@@ -14,6 +14,7 @@
 //! words for whoever reads the resource without its content.
 
 use std::fmt::Write as _;
+use tilo_sort::CompactSort as _;
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, ActionCx, Bytes, Id, JsonSchema, Model, Refusal, Set};
@@ -553,7 +554,7 @@ impl MessageStates {
             .iter()
             .filter_map(|(id, held)| Some((id, held, self.message(id.as_str())?)))
             .collect();
-        held.sort_by(|a, b| {
+        held.compact_sort_by(|a, b| {
             b.1.minutes
                 .cmp(&a.1.minutes)
                 .then_with(|| a.0.as_str().cmp(b.0.as_str()))

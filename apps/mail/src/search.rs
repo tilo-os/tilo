@@ -8,6 +8,7 @@
 //! so a query never reaches the IMAP engine: the live server search stays in
 //! Mail's own search field.
 
+use tilo_sort::CompactSort as _;
 use ui::tilo_resource::{SearchEntry, SearchWeight};
 
 use crate::model::{Folder, Mailbox, Message};
@@ -396,7 +397,7 @@ impl MessageQuery {
     ) -> serde_json::Value {
         let mut found: Vec<&Message> = messages.filter(|message| self.finds(message)).collect();
         let total = found.len();
-        found.sort_by(|a, b| {
+        found.compact_sort_by(|a, b| {
             b.timestamp_min
                 .cmp(&a.timestamp_min)
                 .then_with(|| a.id.cmp(&b.id))

@@ -5,6 +5,7 @@
 //! an address, or a word of a name, that starts with what was typed.
 
 use std::collections::HashMap;
+use tilo_sort::CompactSort as _;
 
 use crate::model::{Addr, Folder, Mailbox};
 
@@ -40,7 +41,7 @@ impl AddressBook {
             }
         }
         let mut people: Vec<(Addr, u32)> = seen.into_values().collect();
-        people.sort_by(|(a, a_count), (b, b_count)| {
+        people.compact_sort_by(|(a, a_count), (b, b_count)| {
             b_count
                 .cmp(a_count)
                 .then_with(|| a.display().cmp(&b.display()))
