@@ -187,8 +187,12 @@ pub struct Server {
     /// The keys approved for a poller, by the poll secret's digest.
     approved_keys: Mutex<HashMap<String, keys::Approval>>,
     /// Reaches the site (to see that its sign-in page is served) and the
-    /// URLs webhooks post to.
+    /// servers that keep workspaces: addresses this server was started with.
     http: tilo_net::Client,
+    /// The clients webhooks are posted with, to URLs a key's holder names:
+    /// which it has follows from how this server was started
+    /// ([`v1::webhooks::Posting`]).
+    posting: v1::webhooks::Posting,
     /// What the API keeps besides the store: remembered answers, webhook
     /// deliveries.
     v1: v1::State,
@@ -252,12 +256,14 @@ impl Server {
             .redirects(tilo_net::Redirects::None)
             .build()
             .map_err(io::Error::other)?;
+        let posting = v1::webhooks::Posting::new(here.is_some()).map_err(io::Error::other)?;
         let web_entry = config.web_entry.trim_end_matches('/').to_owned();
         let sign_in_entry = url::Url::parse(&format!("{web_entry}/sign-in"))
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         Ok(Arc::new(Self {
             hosts: Arc::new(Hosts::new(&http, &config.hosts)),
             http,
+            posting,
             config: Config {
                 issuer: config.issuer.trim_end_matches('/').to_owned(),
                 hosts: config

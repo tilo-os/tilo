@@ -16,6 +16,13 @@
 //! after [`RETRIES`], and an event the URL never takes is given up on (and
 //! logged) so the ones after it still go. Revoking the key ends its
 //! webhooks.
+//!
+//! Whoever holds a key names the URL, so an API posts only where its own
+//! machine and network are not: over `https` to the public internet, a name
+//! judged in the connection's own look-up, no redirect followed and no proxy
+//! of its environment taken. An API started inside a Tilo desktop also posts
+//! over plain `http` to that computer's own loopback, for its person's
+//! programs there ([`Posting`], [`refusal`]).
 
 use super::answers::Event;
 use crate::Server;
@@ -23,6 +30,7 @@ use crate::store::Webhook;
 use hmac::{KeyInit as _, Mac as _};
 use sha2::Sha256;
 use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
@@ -57,15 +65,124 @@ pub fn signature(secret: &str, time: u64, body: &[u8]) -> String {
     format!("t={time},v1={}", hex::encode(mac.finalize().into_bytes()))
 }
 
-/// Whether `url` is one a webhook may post to: `https`, or plain `http` to
-/// this machine.
+/// What a hosted API says of a URL it posts no webhook to.
+const PUBLIC_ONLY: &str = "a webhook posts to an https URL on the public internet";
+/// What a desktop's API says of one.
+const PUBLIC_OR_HERE: &str =
+    "a webhook posts to an https URL on the public internet, or over plain http to this computer";
+/// What either says of an address of its own written into a URL.
+const OWN_ADDRESS: &str = "a webhook posts to the public internet, and this URL names an \
+                           address of the API's own machine or network";
+/// This computer's own name.
+const LOCALHOST: &str = "localhost";
+
+/// Why no webhook is posted to `url`, where none is. Every API posts over
+/// `https` to the public internet: an address of its own machine or network
+/// written into the URL is refused here, and a name is judged where the
+/// connection looks it up ([`Posting`]). An API started inside a Tilo desktop
+/// (`desktop`) also posts over plain `http` to that computer's own loopback,
+/// for its person's programs there; a hosted one posts no plain `http` at all.
 #[must_use]
-pub fn deliverable(url: &str) -> bool {
-    url::Url::parse(url).is_ok_and(|url| match url.scheme() {
-        "https" => url.host_str().is_some(),
-        "http" => matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")),
-        _ => false,
+pub fn refusal(url: &str, desktop: bool) -> Option<&'static str> {
+    let unfit = if desktop { PUBLIC_OR_HERE } else { PUBLIC_ONLY };
+    let Ok(url) = url::Url::parse(url) else {
+        return Some(unfit);
+    };
+    let written = tilo_net::address::written_out(&url);
+    match url.scheme() {
+        "https" if written.is_some_and(|address| !tilo_net::address::is_public(address)) => {
+            Some(OWN_ADDRESS)
+        }
+        "https" => None,
+        "http" if desktop && loopback(&url, written) => None,
+        _ => Some(unfit),
+    }
+}
+
+/// Whether `url` names this computer's own loopback: by the address it
+/// writes out (`written`), or by this computer's own name.
+fn loopback(url: &url::Url, written: Option<IpAddr>) -> bool {
+    match written {
+        Some(address) => address.is_loopback(),
+        None => url.domain() == Some(LOCALHOST),
+    }
+}
+
+/// A look-up that answers this computer's own loopback for its own name, and
+/// no other name at all.
+fn this_computer() -> tilo_net::address::Lookup {
+    Arc::new(|name: String| {
+        Box::pin(async move {
+            if name.eq_ignore_ascii_case(LOCALHOST) {
+                Ok(vec![
+                    IpAddr::V4(Ipv4Addr::LOCALHOST),
+                    IpAddr::V6(Ipv6Addr::LOCALHOST),
+                ])
+            } else {
+                Err(std::io::Error::other(format!(
+                    "{name} is not this computer"
+                )))
+            }
+        })
     })
+}
+
+/// The clients a running API posts webhooks with. Which it has is decided
+/// once, by how the API was started ([`Server::new`], or [`Server::here`]
+/// inside a desktop), and by nothing a request, a header or a key says.
+#[derive(Clone)]
+pub struct Posting {
+    /// To the public internet: dialled directly, no redirect followed, and
+    /// connected only where the one judge passed every address the name
+    /// answered with, in the connection's own look-up.
+    public: tilo_net::Client,
+    /// Inside a desktop: plain `http` to that computer's own loopback.
+    here: Option<tilo_net::Client>,
+}
+
+impl Posting {
+    /// The clients of an API started inside a desktop (`desktop`), or of a
+    /// hosted one.
+    ///
+    /// # Errors
+    /// A client could not be built.
+    pub fn new(desktop: bool) -> Result<Self, tilo_net::NetError> {
+        // Whoever holds a key names the URL: no proxy of this API's
+        // environment is taken, which would look the name up itself, behind
+        // the judging.
+        let client = || {
+            tilo_net::Client::builder()
+                .connect_timeout(Duration::from_secs(10))
+                .redirects(tilo_net::Redirects::None)
+                .direct()
+        };
+        let judged = tilo_net::address::public_only(tilo_net::address::system_lookup());
+        Ok(Self {
+            public: client().lookup(judged).build()?,
+            here: desktop
+                .then(|| client().lookup(this_computer()).build())
+                .transpose()?,
+        })
+    }
+
+    /// Why no webhook is posted to `url` by this API, where none is
+    /// ([`refusal`]).
+    #[must_use]
+    pub fn refusal(&self, url: &str) -> Option<&'static str> {
+        refusal(url, self.here.is_some())
+    }
+
+    /// The client `url` is posted with, or why it is posted to by none.
+    fn client(&self, url: &str) -> Result<&tilo_net::Client, &'static str> {
+        if let Some(why) = self.refusal(url) {
+            return Err(why);
+        }
+        let plain = url::Url::parse(url).is_ok_and(|url| url.scheme() == "http");
+        Ok(match &self.here {
+            Some(here) if plain => here,
+            _ => &self.public,
+        })
+    }
 }
 
 /// The webhooks being delivered, by id.
@@ -113,6 +230,13 @@ async fn deliver(server: Weak<Server>, hook: Webhook) {
         else {
             return;
         };
+        if let Some(why) = live.posting.refusal(&hook.url) {
+            // Kept before its URL was judged: nothing is read for it and
+            // nothing is posted, and its holder reads why where their
+            // webhooks are listed.
+            tracing::info!(webhook = %hook.id, why, "a webhook is not delivered");
+            return;
+        }
         if watch.is_none() {
             match live.api_session(&grant).await {
                 Ok(session) => {
@@ -135,7 +259,7 @@ async fn deliver(server: Weak<Server>, hook: Webhook) {
                 }
             }
         }
-        let http = live.http.clone();
+        let posting = live.posting.clone();
         drop(live);
         let Some(reading) = watch.as_mut() else {
             continue;
@@ -151,7 +275,7 @@ async fn deliver(server: Weak<Server>, hook: Webhook) {
         };
         for (index, event) in events.iter().enumerate() {
             if hook.events.is_empty() || hook.events.contains(&event.kind) {
-                post(&http, &hook, event, index).await;
+                post(&posting, &hook, event, index).await;
             }
         }
         if !events.is_empty()
@@ -165,26 +289,15 @@ async fn deliver(server: Weak<Server>, hook: Webhook) {
 
 /// Post `event` (the `index`th of its batch) to `hook`'s URL until it takes
 /// it or the retries run out.
-async fn post(http: &tilo_net::Client, hook: &Webhook, event: &Event, index: usize) {
+async fn post(posting: &Posting, hook: &Webhook, event: &Event, index: usize) {
     let body = serde_json::to_vec(event).unwrap_or_default();
     let delivery = format!("{}-{index}", event.id);
     for wait in std::iter::once(Duration::ZERO).chain(RETRIES) {
         tokio::time::sleep(wait).await;
-        let time = tilo_clock::unix_now_ms() / 1000;
-        let answered = http
-            .post(&hook.url)
-            .header("content-type", "application/json")
-            .header("tilo-webhook-id", hook.id.as_str())
-            .header("tilo-delivery", delivery.as_str())
-            .header("tilo-signature", signature(&hook.secret, time, &body))
-            .body(body.clone())
-            .timeout(ANSWER_WITHIN)
-            .send()
-            .await;
-        match answered {
-            Ok(answer) if answer.status().is_success() => return,
-            Ok(answer) => {
-                tracing::info!(webhook = %hook.id, status = %answer.status(), "a webhook refused a delivery; it is tried again");
+        match attempt(posting, hook, &delivery, &body).await {
+            Ok(status) if (200..300).contains(&status) => return,
+            Ok(status) => {
+                tracing::info!(webhook = %hook.id, status, "a webhook refused a delivery; it is tried again");
             }
             Err(error) => {
                 tracing::info!(webhook = %hook.id, %error, "a webhook was not reached; it is tried again");
@@ -194,9 +307,40 @@ async fn post(http: &tilo_net::Client, hook: &Webhook, event: &Event, index: usi
     tracing::warn!(webhook = %hook.id, delivery, "a webhook never took a delivery; it was given up on");
 }
 
+/// One delivery of `body` to `hook`'s URL, as `delivery`: the status it
+/// answered.
+///
+/// # Errors
+/// The URL is not one this API posts to, a name in it answered with an
+/// address of the API's own machine or network, or it was not reached.
+pub(crate) async fn attempt(
+    posting: &Posting,
+    hook: &Webhook,
+    delivery: &str,
+    body: &[u8],
+) -> Result<u16, tilo_net::NetError> {
+    let http = posting
+        .client(&hook.url)
+        .map_err(|why| tilo_net::NetError::Blocked(why.to_owned()))?;
+    let time = tilo_clock::unix_now_ms() / 1000;
+    let answer = http
+        .post(&hook.url)
+        .header("content-type", "application/json")
+        .header("tilo-webhook-id", hook.id.as_str())
+        .header("tilo-delivery", delivery)
+        .header("tilo-signature", signature(&hook.secret, time, body))
+        .body(body.to_vec())
+        .timeout(ANSWER_WITHIN)
+        .send()
+        .await?;
+    Ok(answer.status().as_u16())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Config, Store};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn the_signature_is_an_hmac_of_the_time_and_body() {
@@ -210,11 +354,375 @@ mod tests {
         assert_ne!(signed, signature("key", 1_700_000_001, b"{}"));
     }
 
+    /// Every form an address of this machine or its network takes in a URL.
+    const OWN: [&str; 14] = [
+        "https://127.0.0.1/hook",
+        "https://127.0.0.1:8443/hook",
+        "https://10.0.0.7/hook",
+        "https://192.168.1.1/hook",
+        "https://100.64.0.1/hook",
+        "https://169.254.169.254/latest/meta-data",
+        "https://168.63.129.16/machine",
+        "https://0.0.0.0/hook",
+        "https://[::1]/hook",
+        "https://[::ffff:127.0.0.1]/hook",
+        "https://[64:ff9b::a00:7]/hook",
+        "https://[2002:a00:7::]/hook",
+        "https://[fd00::7]/hook",
+        "https://[fe80::1]/hook",
+    ];
+
+    /// An API as a site starts it: hosted.
+    fn hosted() -> Arc<Server> {
+        Server::new(
+            &Config {
+                issuer: "https://api.test".into(),
+                web_entry: "https://tilo.test".into(),
+                invite_entry: None,
+                // Nothing here reaches a workspace, so nothing dials one.
+                hosts: Vec::new(),
+            },
+            Store::in_memory(),
+        )
+        .unwrap()
+    }
+
+    /// A desktop that holds no workspace.
+    struct Desktop;
+
+    impl crate::session::Here for Desktop {
+        fn workspaces(&self) -> Vec<crate::session::Workspace> {
+            Vec::new()
+        }
+
+        fn enter(
+            &self,
+            workspace: &str,
+            _session: &str,
+            _label: &str,
+        ) -> Result<Box<dyn crate::session::Answering>, String> {
+            Err(format!("no workspace {workspace} here"))
+        }
+    }
+
+    /// An API as a Tilo desktop starts it, for its person's own programs.
+    fn desktop() -> Arc<Server> {
+        Server::here(Arc::new(Desktop)).unwrap()
+    }
+
+    fn hook(url: &str) -> Webhook {
+        Webhook {
+            id: "wh_1".into(),
+            grant: "grant".into(),
+            workspace: "workspace".into(),
+            url: url.into(),
+            events: Vec::new(),
+            path: None,
+            secret: "secret".into(),
+            cursor: None,
+        }
+    }
+
+    /// A listener on this machine that counts the connections made to it and
+    /// closes each at once, so whoever connected is not kept waiting.
+    struct Listening {
+        port: u16,
+        connections: Arc<AtomicUsize>,
+    }
+
+    impl Listening {
+        async fn start() -> Self {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let connections = Arc::new(AtomicUsize::new(0));
+            let counted = Arc::clone(&connections);
+            tokio::spawn(async move {
+                while let Ok((connection, _)) = listener.accept().await {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    drop(connection);
+                }
+            });
+            Self { port, connections }
+        }
+
+        fn connections(&self) -> usize {
+            self.connections.load(Ordering::SeqCst)
+        }
+    }
+
+    /// What a delivery carried: its headers and its body.
+    type Delivered = (hyper::HeaderMap, Vec<u8>);
+
+    /// A webhook's receiver on this machine, over plain http: its port, and
+    /// what each delivery carried. Its first answer is `first`, every later
+    /// one `200`; with `to`, each answer also redirects there.
+    async fn receiver(
+        first: u16,
+        to: Option<String>,
+    ) -> (u16, tokio::sync::mpsc::UnboundedReceiver<Delivered>) {
+        use http_body_util::BodyExt as _;
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (sender, received) = tokio::sync::mpsc::unbounded_channel();
+        let answered = Arc::new(AtomicUsize::new(0));
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let (sender, answered, to) = (sender.clone(), Arc::clone(&answered), to.clone());
+                tokio::spawn(async move {
+                    let service = hyper::service::service_fn(
+                        move |request: hyper::Request<hyper::body::Incoming>| {
+                            let (sender, answered, to) =
+                                (sender.clone(), Arc::clone(&answered), to.clone());
+                            async move {
+                                let (parts, body) = request.into_parts();
+                                let body = body.collect().await.unwrap().to_bytes().to_vec();
+                                let _ = sender.send((parts.headers, body));
+                                let status = if answered.fetch_add(1, Ordering::SeqCst) == 0 {
+                                    first
+                                } else {
+                                    200
+                                };
+                                let mut answer = hyper::Response::builder().status(status);
+                                if let Some(to) = to {
+                                    answer = answer.header("location", to);
+                                }
+                                Ok::<_, std::convert::Infallible>(
+                                    answer
+                                        .body(http_body_util::Full::new(hyper::body::Bytes::new()))
+                                        .unwrap(),
+                                )
+                            }
+                        },
+                    );
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(hyper_util::rt::TokioIo::new(stream), service)
+                        .await;
+                });
+            }
+        });
+        (port, received)
+    }
+
+    /// Whether `headers` sign `body` with `secret`.
+    fn signed(headers: &hyper::HeaderMap, body: &[u8], secret: &str) -> bool {
+        let said = headers["tilo-signature"].to_str().unwrap();
+        let time: u64 = said
+            .strip_prefix("t=")
+            .and_then(|rest| rest.split(',').next())
+            .and_then(|time| time.parse().ok())
+            .unwrap();
+        said == signature(secret, time, body)
+    }
+
+    /// A hosted API posts over https to the public internet and to nothing
+    /// else: no plain http at all, and no address of its own machine or
+    /// network in any form an address takes.
     #[test]
-    fn a_webhook_posts_over_https_or_to_this_machine() {
-        assert!(deliverable("https://example.com/hook"));
-        assert!(deliverable("http://127.0.0.1:8080/hook"));
-        assert!(!deliverable("http://example.com/hook"));
-        assert!(!deliverable("file:///etc/passwd"));
+    fn a_hosted_api_posts_to_https_on_the_public_internet_and_to_nothing_else() {
+        let api = hosted();
+        let plain = [
+            "http://127.0.0.1:8080/hook",
+            "http://localhost:8080/hook",
+            "http://[::1]:8080/hook",
+            "http://example.com/hook",
+            "file:///etc/passwd",
+            "not a url",
+        ];
+        for own in OWN.iter().chain(&plain) {
+            assert!(
+                api.posting.refusal(own).is_some(),
+                "a hosted API posts a webhook to {own}"
+            );
+        }
+        assert_eq!(api.posting.refusal("https://hooks.example/hook"), None);
+    }
+
+    /// Inside a desktop plain http to that computer's own loopback stays, and
+    /// nothing else of its own machine or network is opened there.
+    #[test]
+    fn a_desktops_api_also_posts_plain_http_to_its_own_loopback_and_opens_nothing_else() {
+        let api = desktop();
+        for kept in [
+            "http://127.0.0.1:8080/hook",
+            "http://localhost:8080/hook",
+            "http://[::1]:8080/hook",
+            "https://hooks.example/hook",
+        ] {
+            assert_eq!(api.posting.refusal(kept), None, "{kept}");
+        }
+        let elsewhere = [
+            "http://10.0.0.7/hook",
+            "http://192.168.1.5:8080/hook",
+            "http://169.254.169.254/latest/meta-data",
+            "http://[::ffff:127.0.0.1]/hook",
+            "http://example.com/hook",
+            "file:///etc/passwd",
+        ];
+        for own in OWN.iter().chain(&elsewhere) {
+            assert!(
+                api.posting.refusal(own).is_some(),
+                "a desktop's API posts a webhook to {own}"
+            );
+        }
+    }
+
+    /// A name is judged where the connection looks it up: a delivery to a
+    /// name that answers with an address of this machine connects to nothing.
+    #[tokio::test]
+    async fn a_delivery_to_a_name_that_answers_with_this_machine_connects_to_nothing() {
+        let here = Listening::start().await;
+        let api = hosted();
+        let named = hook(&format!("https://localhost:{}/hook", here.port));
+
+        let answered = attempt(&api.posting, &named, "d-1", b"{}").await;
+        assert!(
+            matches!(answered, Err(tilo_net::NetError::Blocked(_))),
+            "{answered:?}"
+        );
+        assert_eq!(
+            here.connections(),
+            0,
+            "a delivery to a name that answers with this machine connected to it"
+        );
+    }
+
+    /// A webhook kept before its URL was judged is posted to nowhere by a
+    /// hosted API: not over https to an own address, and not over plain http.
+    #[tokio::test]
+    async fn a_webhook_kept_earlier_that_names_this_machine_is_posted_to_nowhere() {
+        let here = Listening::start().await;
+        let api = hosted();
+        for own in [
+            format!("https://127.0.0.1:{}/hook", here.port),
+            format!("http://127.0.0.1:{}/hook", here.port),
+            format!("http://localhost:{}/hook", here.port),
+        ] {
+            let answered = attempt(&api.posting, &hook(&own), "d-1", b"{}").await;
+            assert!(
+                matches!(answered, Err(tilo_net::NetError::Blocked(_))),
+                "{own}: {answered:?}"
+            );
+        }
+        assert_eq!(
+            here.connections(),
+            0,
+            "a webhook kept earlier that names this machine was posted to"
+        );
+    }
+
+    /// A delivery takes no proxy from the API's environment: such a proxy
+    /// would look the name up itself, behind the look-up a delivery is judged
+    /// by, and so reach what that look-up refuses.
+    #[tokio::test]
+    async fn a_delivery_is_sent_to_no_proxy_the_environment_names() {
+        if !tilo_test_env::in_own_process_here(
+            module_path!(),
+            "a_delivery_is_sent_to_no_proxy_the_environment_names",
+        ) {
+            return;
+        }
+        let proxy = Listening::start().await;
+        let here = Listening::start().await;
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        for name in [
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ] {
+            environment.set(name, format!("http://127.0.0.1:{}", proxy.port));
+        }
+        // Nothing exempts an address from that proxy, and nothing has a name of it ignored.
+        for name in ["NO_PROXY", "no_proxy", "REQUEST_METHOD"] {
+            environment.remove(name);
+        }
+        let api = hosted();
+        let named = hook(&format!("https://localhost:{}/hook", here.port));
+
+        let answered = attempt(&api.posting, &named, "d-1", b"{}").await;
+        assert!(answered.is_err(), "{answered:?}");
+        assert_eq!(
+            proxy.connections(),
+            0,
+            "the proxy this API's environment names was sent a delivery's connection"
+        );
+        assert_eq!(
+            here.connections(),
+            0,
+            "a delivery to a name that answers with this machine connected to it"
+        );
+    }
+
+    /// Inside a desktop a delivery reaches its person's own program on that
+    /// computer's loopback, by address and by name, signed with the webhook's
+    /// secret; and a redirect that program answers is not followed.
+    #[tokio::test]
+    async fn a_desktops_api_delivers_to_its_own_loopback_signed_and_follows_no_redirect() {
+        let api = desktop();
+        let (port, mut deliveries) = receiver(200, None).await;
+        for name in ["127.0.0.1", "localhost"] {
+            let to = hook(&format!("http://{name}:{port}/hook"));
+            let answered = attempt(&api.posting, &to, "d-1", b"{\"type\":\"change\"}").await;
+            assert_eq!(answered, Ok(200), "{name}");
+            let (headers, body) = deliveries.recv().await.unwrap();
+            assert_eq!(body, b"{\"type\":\"change\"}");
+            assert_eq!(headers["tilo-delivery"], "d-1");
+            assert_eq!(headers["tilo-webhook-id"], "wh_1");
+            assert!(signed(&headers, &body, "secret"), "{name}: {headers:?}");
+        }
+
+        let elsewhere = Listening::start().await;
+        let other = format!("http://127.0.0.1:{}/hook", elsewhere.port);
+        let (port, _redirected) = receiver(307, Some(other)).await;
+        let to = hook(&format!("http://127.0.0.1:{port}/hook"));
+        let answered = attempt(&api.posting, &to, "d-2", b"{}").await;
+        assert!(
+            !matches!(answered, Ok(200..=299)),
+            "a redirect is no delivery: {answered:?}"
+        );
+        assert_eq!(elsewhere.connections(), 0, "a redirect was followed");
+    }
+
+    /// A delivery its URL refused is tried again the same: one delivery id,
+    /// one body, signed with the webhook's secret.
+    #[tokio::test]
+    async fn a_delivery_its_url_refused_is_tried_again_the_same() {
+        let api = desktop();
+        let (port, mut deliveries) = receiver(500, None).await;
+        let to = hook(&format!("http://127.0.0.1:{port}/hook"));
+        let event = Event {
+            id: "7".into(),
+            kind: "invocation".into(),
+            workspace: "workspace".into(),
+            data: serde_json::json!({"invocation": "fill-1"}),
+        };
+
+        post(&api.posting, &to, &event, 0).await;
+        let (first_headers, first_body) = deliveries.recv().await.unwrap();
+        let (again_headers, again_body) = deliveries.recv().await.unwrap();
+        assert_eq!(
+            first_headers["tilo-delivery"],
+            again_headers["tilo-delivery"]
+        );
+        assert_eq!(first_body, again_body);
+        assert!(
+            signed(&again_headers, &again_body, "secret"),
+            "the delivery is signed with the webhook's secret"
+        );
+        let delivered: serde_json::Value = serde_json::from_slice(&again_body).unwrap();
+        assert_eq!(
+            (&delivered["type"], &delivered["workspace"]),
+            (
+                &serde_json::json!("invocation"),
+                &serde_json::json!("workspace")
+            ),
+            "{delivered}"
+        );
     }
 }
