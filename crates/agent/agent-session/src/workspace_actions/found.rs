@@ -428,7 +428,55 @@ impl Worker {
         let page = log.page(after);
         // What is said in a direct conversation is told to the people it is between
         // ([`super::direct`]).
-        Ok(self.told(caller, &cluster_id, &state, page))
+        let page = self.told(caller, &cluster_id, &state, page);
+        Ok(self.read_by(workspace_id, caller, &cluster_id, page))
+    }
+
+    /// `page` of the feed as `caller` may read it: without the changes of what the workspace
+    /// does not let them read, by the rule a search is answered by ([`Self::readable`]). A
+    /// document of which they read only the items their permissions name is left out whole: a
+    /// change does not say which item it is of. The page's cursor stands, so whoever follows
+    /// the feed reads on behind what was left out.
+    fn read_by(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        cluster_id: &str,
+        mut page: ChangePage,
+    ) -> ChangePage {
+        let mut read: std::collections::HashMap<DocumentKey, bool> =
+            std::collections::HashMap::new();
+        page.changes.retain(|change| {
+            let key: DocumentKey = (change.app.clone(), change.record.clone());
+            if let Some(reads) = read.get(&key) {
+                return *reads;
+            }
+            let route = DocumentRoute {
+                app_id: key.0.clone(),
+                cluster_id: cluster_id.to_owned(),
+                document: key.1.clone(),
+            };
+            let reads = self.reads_whole(workspace_id, caller, &route);
+            read.insert(key, reads);
+            reads
+        });
+        page
+    }
+
+    /// Whether `caller` may read all of what is kept at `route`, by the rule a search is
+    /// answered by ([`Self::readable`]): what the feed of changes tells them of, and what a
+    /// write must land in to wake their wait for a change.
+    pub(super) fn reads_whole(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        route: &DocumentRoute,
+    ) -> bool {
+        let who = self.bounded(caller);
+        matches!(
+            self.readable(workspace_id, who.as_ref(), route),
+            Some(Readable::Whole)
+        )
     }
 }
 
