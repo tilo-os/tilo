@@ -1708,6 +1708,10 @@ suite = "os/containers/tilo-lounge/test-e2e.sh"
 reason = "the e2e check runs it on main's newest head with spare room (`on = [\"idle\"]`), bisecting a failure to the commit that broke it, and tilo-sh-admits-a-page runs its entry flow there too: with the Lounge check's release builds it needs, about 2 core-hours a head"
 
 [[unrequired]]
+suite = "os/containers/tilo-sh/test-program.sh"
+reason = "needs a whole tilo.sh stack of its own under bwrap, from the built programs, the font catalog and Caddy; the tilo-sh-answers-a-program check brings one up for it, nested, when named"
+
+[[unrequired]]
 suite = "os/containers/tilo-sh/test-vm-host.sh"
 reason = "needs root, KVM, loop devices and the built VM host and hosted guest images; the tilo-sh-vm-host check runs it in a VM of its own on dispatch"
 
