@@ -126,7 +126,7 @@ impl Described for GraphCanvas {
         let content = |node: &mut GraphNodeProps| -> Element {
             node.content
                 .take()
-                .unwrap_or_else(|| Box::new(Spacer::fixed(0.0)))
+                .unwrap_or_else(|| Box::new(Spacer::token(crate::tokens::SpacingStep::S0)))
         };
         let mut canvas = if placed && !props.nodes.is_empty() {
             GraphCanvas::new(

@@ -400,12 +400,6 @@ pub const ALLOWANCES: &[Allowance] = &[
         "the narrowest a formula row fits, measured from its content",
     ),
     allowance(
-        "apps/chat/src/live_share.rs",
-        "MIN_WORKING_HEIGHT",
-        Rule::Breakpoint,
-        "the floor of the share card's height, chosen from the window's own rect each pass",
-    ),
-    allowance(
         "apps/calculator/src/model.rs",
         "for_width",
         Rule::Breakpoint,

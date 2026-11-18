@@ -352,18 +352,14 @@ pub fn bubble_colors(theme: &Theme, role: ConversationRole) -> (Color, Color) {
         }
         ConversationRole::Outgoing => {
             let ink = colors.intent.on_accent;
-            let away = if contrast_ratio(ink, Color::BLACK) >= contrast_ratio(ink, Color::WHITE) {
-                Color::BLACK
-            } else {
-                Color::WHITE
-            };
+            let ground = colors.surfaces.content;
             let own = colors.intent.you;
             let mut fill = own;
             for step in 1..=12_u8 {
                 if contrast_ratio(ink, fill) >= BODY_TEXT_MIN_CONTRAST {
                     break;
                 }
-                fill = mix8(own, away, f32::from(step) / 20.0);
+                fill = mix8(own, ground, f32::from(step) / 20.0);
             }
             (fill, colors.ink_on(fill, ink, BODY_TEXT_MIN_CONTRAST))
         }
