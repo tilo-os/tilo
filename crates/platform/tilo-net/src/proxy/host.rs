@@ -231,7 +231,11 @@ fn public_v4(address: Ipv4Addr) -> bool {
         || (a == 198 && (b == 18 || b == 19))
         || (a == 198 && b == 51 && c == 100)
         || (a == 203 && b == 0 && c == 113)
-        || a >= 224;
+        || a >= 224
+        // The one address Azure answers its own machines on (their metadata
+        // and their agent's own service): public by its range, reached only
+        // from inside a machine there.
+        || address == Ipv4Addr::new(168, 63, 129, 16);
     !reserved
 }
 
@@ -1570,6 +1574,8 @@ mod tests {
                 "198.18.0.1",
                 "224.0.0.1",
                 "255.255.255.255",
+                // The one address Azure answers its own machines on.
+                "168.63.129.16",
                 "::",
                 "::1",
                 "::ffff:127.0.0.1",
