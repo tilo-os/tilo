@@ -159,7 +159,8 @@ fn words(verb: &str) -> String {
 
 /// `json`, a stored value of the type `ty` of `meta`'s package, as a reading holds it: a
 /// collection as the list of its items in their order, each with its id; an enum as its case's
-/// name; a record as its declared fields under their names.
+/// name, with the values the case carries where it carries any ([`case`]); a record as its
+/// declared fields under their names.
 fn normal(meta: &PackageMeta, ty: &str, json: &Json) -> Json {
     let ty = ty.trim();
     if ty == "RichText" {
@@ -184,8 +185,8 @@ fn normal(meta: &PackageMeta, ty: &str, json: &Json) -> Json {
             return Json::Array(items.collect());
         }
     }
-    if ty.starts_with("enum ") {
-        return json.get("$variant").unwrap_or(json).clone();
+    if let Some(name) = ty.strip_prefix("enum ") {
+        return case(meta, name, json);
     }
     let (Some(declared), Json::Object(held)) = (
         meta.types
@@ -203,6 +204,44 @@ fn normal(meta: &PackageMeta, ty: &str, json: &Json) -> Json {
         }
     }
     Json::Object(fields)
+}
+
+/// `json`, a stored value of `meta`'s enum `name`, as a reading holds it: a plain case as its
+/// name. A case that carries values is stored as a map, its name under `$variant` beside its
+/// values (under `0`, `1` where the case numbers them), and is handed on the same way, each
+/// value under the name the package declares for it and as its own type reads.
+fn case(meta: &PackageMeta, name: &str, json: &Json) -> Json {
+    let Some(variant) = json.get("$variant") else {
+        return json.clone();
+    };
+    let carried = meta
+        .enums
+        .iter()
+        .find(|declared| declared.name == name)
+        .and_then(|declared| {
+            declared
+                .variants
+                .iter()
+                .find(|held| Some(held.name.as_str()) == variant.as_str())
+        })
+        .map(|held| held.fields.as_slice())
+        .unwrap_or_default();
+    if carried.is_empty() {
+        return variant.clone();
+    }
+    let mut spelled = Map::new();
+    spelled.insert("$variant".to_owned(), variant.clone());
+    for (index, field) in carried.iter().enumerate() {
+        let key = field.id.rsplit('.').next().unwrap_or(&field.name);
+        let stored = json
+            .get(key)
+            .or_else(|| json.get(&field.name))
+            .or_else(|| json.get(index.to_string()));
+        if let Some(value) = stored {
+            spelled.insert(key.to_owned(), normal(meta, &field.ty, value));
+        }
+    }
+    Json::Object(spelled)
 }
 
 /// The type `wrap<...>` wraps.
