@@ -99,15 +99,14 @@ fn calls_in(request: &ModelRequest) -> Vec<(String, serde_json::Value)> {
         .collect()
 }
 
-/// What the tools answered in `request`, in order: each answer, and whether it refuses or
-/// fails.
-fn answers_in(request: &ModelRequest) -> Vec<(String, bool)> {
+/// What the tools answered in `request`, in the order the calls were made.
+fn answers_in(request: &ModelRequest) -> Vec<String> {
     request
         .messages
         .iter()
         .flat_map(|message| message.content.iter())
         .filter_map(|content| match content {
-            Content::ToolResult(result) => Some((result.content.clone(), result.is_error)),
+            Content::ToolResult(result) => Some(result.content.clone()),
             _ => None,
         })
         .collect()
@@ -246,14 +245,16 @@ fn goes_about_it(request: &ModelRequest) -> ModelResponse {
     };
     let thing = answers
         .get(in_the_app)
-        .and_then(|(listed, _)| thing_listed(listed));
+        .map(String::as_str)
+        .and_then(thing_listed);
     if let Some(thing) = thing {
         let Some(in_the_thing) = looked(Some(thing.as_str())) else {
             return looks(&thing);
         };
         if answers
             .get(in_the_thing)
-            .is_some_and(|(listed, _)| lists_it(listed))
+            .map(String::as_str)
+            .is_some_and(lists_it)
         {
             return signs_in_at(&thing);
         }
@@ -311,13 +312,14 @@ async fn told_at_its_start_a_turn_signs_a_mail_account_in_with_its_first_tool_ca
         serde_json::json!({"address": ADDRESS}),
         "{seen}"
     );
-    // Nothing was refused: the one answer says she is asked in a field her assistant cannot
-    // read, and names both servers that were found.
+    // The one answer says that she is asked first, in a field her assistant cannot read, and
+    // names both servers that were found. The tools carry "your person is asked first" as a
+    // call that did not finish, so the answer says so before its sentences.
     let answers = answers_in(last);
     assert_eq!(answers.len(), 1, "{answers:#?}\n{seen}");
-    let (answer, refused) = &answers[0];
+    let answer = &answers[0];
     assert!(
-        !refused
+        answer.contains("asked_person_first")
             && answer.contains("protected field")
             && answer.contains(READS)
             && answer.contains(SENDS),
