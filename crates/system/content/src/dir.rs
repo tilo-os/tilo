@@ -410,6 +410,7 @@ impl DirBackend {
         &self,
         outcomes: &mut [Option<Result<Stored, ContentError>>],
         received: &[(usize, PathBuf, String, usize)],
+        flush: BatchFlush,
     ) -> Result<(), String> {
         if received.is_empty() {
             return Ok(());
@@ -465,7 +466,9 @@ impl DirBackend {
                     note(outcomes, *at, Err(error.into()));
                     continue;
                 }
-                let _ = self.sync_dir(&self.root);
+                if flush == BatchFlush::Each {
+                    let _ = self.sync_dir(&self.root);
+                }
             }
             if let Err(error) = std::fs::rename(tmp, &path) {
                 let _ = std::fs::remove_file(tmp);
@@ -489,7 +492,19 @@ impl DirBackend {
         }
         drop(root_lock);
         drop(index);
-        self.sync_dirs(shards);
+        if flush == BatchFlush::Each {
+            self.sync_dirs(shards);
+        }
+        Ok(())
+    }
+
+    /// Flush everything this backend wrote under its root in one call: the batch's items, their
+    /// renames and their directories. The platform flushes a filesystem; elsewhere the items are
+    /// flushed one by one instead ([`BatchFlush::Each`]).
+    #[cfg(target_os = "linux")]
+    fn sync_store(&self) -> Result<(), String> {
+        let root = std::fs::File::open(&self.root).map_err(|error| error.to_string())?;
+        rustix::fs::syncfs(&root).map_err(|error| error.to_string())?;
         Ok(())
     }
 
@@ -513,6 +528,19 @@ impl DirBackend {
             }
         });
     }
+}
+
+/// How a batch's items reach the disk.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BatchFlush {
+    /// The platform flushes the whole filesystem once, after the batch is in place: nothing is
+    /// answered for until it returns.
+    Whole,
+    /// Each item is flushed as it is received, and the directories it was renamed into after:
+    /// where the platform has no filesystem-wide flush.
+    Each,
+    /// Every flush is skipped: a store that can regenerate what it keeps.
+    None,
 }
 
 /// Mark item `index`'s outcome of [`DirBackend::admit_received`].
@@ -600,8 +628,18 @@ impl ContentBackend for DirBackend {
         let mut outcomes: Vec<Option<Result<Stored, ContentError>>> =
             (0..items.len()).map(|_| None).collect();
         let mut received: Vec<(usize, PathBuf, String, usize)> = Vec::new();
-        // Each item is received and flushed on its own; a few at a time keeps
-        // a folder of small files from waiting on one flush after another.
+        // Where the platform flushes a filesystem, the batch's items are written whole and
+        // flushed together after they are renamed; elsewhere each item waits on its own flush.
+        let flush = if self.durable {
+            if cfg!(target_os = "linux") {
+                BatchFlush::Whole
+            } else {
+                BatchFlush::Each
+            }
+        } else {
+            BatchFlush::None
+        };
+        // The items are written a few at a time: each waits on the disk.
         let workers = PUT_MANY_WORKERS.min(items.len()).max(1);
         let per = items.len().div_ceil(workers);
         std::thread::scope(|scope| {
@@ -613,7 +651,7 @@ impl ContentBackend for DirBackend {
                     for (offset, (bytes, _mime)) in chunk.iter().enumerate() {
                         let index = start.saturating_add(offset);
                         let entry = self
-                            .receive(&mut &bytes[..], self.durable)
+                            .receive(&mut &bytes[..], flush == BatchFlush::Each)
                             .map_err(|error| (index, error));
                         done.push((index, entry));
                     }
@@ -633,7 +671,15 @@ impl ContentBackend for DirBackend {
             }
         });
         let received_ms = started.elapsed().as_millis();
-        let admitted = self.admit_received(&mut outcomes, &received);
+        let mut admitted = self.admit_received(&mut outcomes, &received, flush);
+        if admitted.is_ok() && flush == BatchFlush::Whole {
+            // Nothing is answered for until the store's filesystem has written the batch: its
+            // items, their renames and their directories.
+            #[cfg(target_os = "linux")]
+            if let Err(why) = self.sync_store() {
+                admitted = Err(why);
+            }
+        }
         tracing::debug!(
             items = items.len(),
             received_ms,
