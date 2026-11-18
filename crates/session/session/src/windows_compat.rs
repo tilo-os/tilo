@@ -183,6 +183,7 @@ impl LaunchDisplays for Display {
                 title: program.display_name.to_owned(),
                 workspace: program.workspace_id.to_owned(),
                 asked: format!("{ASKED_PREFIX}{}", program.entry_id),
+                x11: program.x11,
             },
             kept: Arc::clone(&self.kept),
         })))
@@ -245,6 +246,8 @@ pub(crate) struct Launch {
     pub(crate) workspace: String,
     /// What it is asked as ([`ASKED_PREFIX`]).
     pub(crate) asked: String,
+    /// It shows its windows through X11, on a display its keeper serves.
+    pub(crate) x11: bool,
 }
 
 /// A keeper's display reserved for one program, until the program starts behind it.
@@ -280,6 +283,7 @@ impl KeptDisplay for KeptStart {
                 title: String::new(),
                 workspace: String::new(),
                 asked: String::new(),
+                x11: false,
             },
         );
         let ending = Arc::new(Ending::default());

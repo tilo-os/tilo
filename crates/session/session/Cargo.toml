@@ -460,6 +460,9 @@ tilo-app-package = { path = "../../packaging/tilo-app-package" }
 tilo-network-actor = { path = "../network-actor", features = ["test-support"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
+# A Windows program that shows through X11, as a Proton program does: the stand-in draws its
+# window on the X11 display its keeper serves.
+x11rb = { version = "0.13", default-features = false }
 # A paste killed mid-transfer: the crash test's child process ends on a
 # signal, as a power cut ends a machine.
 libc.workspace = true

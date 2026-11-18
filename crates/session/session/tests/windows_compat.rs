@@ -217,6 +217,9 @@ fn probe_program() {
         .expect("the starts");
     std::io::Write::write_all(&mut started, format!("{}\n", std::process::id()).as_bytes())
         .expect("the start recorded");
+    if std::env::var_os("DISPLAY").is_some() {
+        x11_probe(&dir);
+    }
     let socket = std::env::var("WAYLAND_DISPLAY").expect("a display");
     let mut window = crate::common::window::Client::on(Path::new(&socket), PROGRAM_WINDOW, "Probe");
     loop {
@@ -229,11 +232,85 @@ fn probe_program() {
     }
 }
 
+/// The probe as a program that shows through X11, as Proton's Wine does: it writes the display
+/// its keeper served it to `display`, maps a window of [`PROGRAM_WINDOW`]'s class on it, and holds
+/// that one connection until a code appears in `exit`, then exits with it. A connection lost (the
+/// X server went away with a desktop) ends it with 99.
+#[expect(
+    clippy::exit,
+    reason = "a Windows program ends with its own status, which the test reads"
+)]
+fn x11_probe(dir: &Path) -> ! {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::{
+        AtomEnum, ConnectionExt as _, CreateWindowAux, PropMode, WindowClass,
+    };
+    use x11rb::wrapper::ConnectionExt as _;
+
+    let display = std::env::var("DISPLAY").expect("an X11 display");
+    fs::write(dir.join("display"), &display).expect("the display written");
+    let (x11, screen) = x11rb::rust_connection::RustConnection::connect(None)
+        .expect("the program reaches its X11 display with the cookie it was handed");
+    let root = x11.setup().roots[screen].root;
+    let window = x11.generate_id().expect("an id");
+    x11.create_window(
+        x11rb::COPY_DEPTH_FROM_PARENT,
+        window,
+        root,
+        0,
+        0,
+        200,
+        150,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        x11rb::COPY_FROM_PARENT,
+        &CreateWindowAux::new().background_pixel(0x0000_00ff),
+    )
+    .expect("a window");
+    x11.change_property8(
+        PropMode::REPLACE,
+        window,
+        AtomEnum::WM_CLASS,
+        AtomEnum::STRING,
+        format!("probe\0{PROGRAM_WINDOW}\0").as_bytes(),
+    )
+    .expect("its class");
+    x11.map_window(window).expect("mapped");
+    x11.flush().expect("sent");
+    loop {
+        if x11
+            .get_input_focus()
+            .ok()
+            .and_then(|asked| asked.reply().ok())
+            .is_none()
+        {
+            std::process::exit(99);
+        }
+        if let Ok(code) = fs::read_to_string(dir.join("exit")) {
+            let _ = fs::remove_file(dir.join("exit"));
+            std::process::exit(code.trim().parse().expect("an exit code"));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 /// The catalogue routing `probe.exe` to Wine, and a capsule holding it, set up under the login's
 /// data directory; the manager's entry for it.
 fn set_up_probe(data: &Path) -> (Catalogue, String) {
+    set_up_probe_on(
+        data,
+        r#"{"layer": "wine", "runner": {"family": "wine", "version": "system"}}"#,
+    )
+}
+
+/// The catalogue routing `probe.exe` to the runtime `runtime` names (its layer and runner, and
+/// any Proton recipe), and a capsule holding it; the manager's entry for it.
+fn set_up_probe_on(data: &Path, runtime: &str) -> (Catalogue, String) {
+    let mut recipe: Value = serde_json::from_str(runtime).expect("a runtime");
+    recipe["settings"] = json!({});
+    recipe["security_profile"] = json!("windows-app");
     let catalogue = Catalogue::from_json(
-        r#"{
+        &json!({
           "schema_version": 1,
           "records": [{
             "id": "probe",
@@ -241,14 +318,10 @@ fn set_up_probe(data: &Path) -> (Catalogue, String) {
             "provenance": "built_in",
             "signed": true,
             "matches": [{"executable": "probe.exe"}],
-            "recipe": {
-              "layer": "wine",
-              "runner": {"family": "wine", "version": "system"},
-              "settings": {},
-              "security_profile": "windows-app"
-            }
+            "recipe": recipe
           }]
-        }"#,
+        })
+        .to_string(),
     )
     .expect("a catalogue");
     let query = ApplicationQuery::executable("probe.exe");
@@ -525,8 +598,13 @@ impl KeptDesktop {
 
 impl KeptRig {
     fn new() -> Self {
+        Self::on(r#"{"layer": "wine", "runner": {"family": "wine", "version": "system"}}"#)
+    }
+
+    /// A rig whose program is routed to the runtime `runtime` names ([`set_up_probe_on`]).
+    fn on(runtime: &str) -> Self {
         let mut home = tilo_test_env::TestHome::new().expect("a home");
-        let (catalogue, entry) = set_up_probe(home.data());
+        let (catalogue, entry) = set_up_probe_on(home.data(), runtime);
         let state = crate::common::device_in(&mut home);
         let probe = home.home().join("probe");
         fs::create_dir_all(&probe).unwrap();
@@ -737,4 +815,56 @@ fn a_windows_program_stays_open_through_an_in_place_restart() {
         tilo_app_launch::kept::testing::described(&rig.root).is_empty(),
         "no keeper is left"
     );
+}
+
+/// Whether the X server a keeper serves an X11 display with is installed here.
+fn x_servers() -> Result<(), String> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    for program in ["xwayland-satellite", "Xwayland"] {
+        if !std::env::split_paths(&path).any(|dir| dir.join(program).is_file()) {
+            return Err(format!("{program} is not on PATH"));
+        }
+    }
+    Ok(())
+}
+
+/// A Proton program shows through X11 (the pinned Proton has no Wayland driver): its launch asks
+/// its keeper for an X11 display, the program's window on it reaches the desktop, and program, X
+/// server and connection stay through an in-place restart.
+#[test]
+fn a_proton_program_shows_through_its_keepers_x11_display_and_stays_open() {
+    tilo_test_env::require_capability!(XServer, x_servers(), "the keeper's X server");
+    let rig = KeptRig::on(
+        r#"{"layer": "proton", "runner": {"family": "umu-proton", "version": "UMU-Proton-10.0-4"},
+            "proton_recipe": "umu-probe"}"#,
+    );
+    let mut first = rig.start(false);
+    let answers = first.manage(&rig, "first", &["launch"]);
+    assert_eq!(answers[0]["result"], "launched", "{answers:?}");
+    assert!(
+        tilo_app_launch::kept::testing::launcher_handed(&rig.home.home().join("tilo-launcher"))
+            .contains(&"--x11".to_owned()),
+        "the launch asks its keeper for an X11 display"
+    );
+    first.shown();
+    let [pid] = rig.starts()[..] else {
+        panic!("one start: {:?}", rig.starts());
+    };
+    assert!(
+        fs::read_to_string(rig.probe.join("display")).is_ok_and(|display| display.starts_with(':')),
+        "the program was served an X11 display"
+    );
+
+    first.end(tilo_app_launch::Teardown::InPlaceRestart);
+    let mut second = rig.start(true);
+    second.shown();
+    assert_eq!(rig.starts(), [pid], "the same program, not a new one");
+    assert!(alive(pid), "on the same X11 connection");
+    let answers = second.manage(&rig, "second", &["list", "stop", "ended"]);
+    assert_eq!(
+        answers[0]["applications"][0]["running"], true,
+        "{answers:?}"
+    );
+    assert_eq!(answers[2]["ended"][0]["entry_id"], rig.entry, "{answers:?}");
+    second.end(tilo_app_launch::Teardown::Logout);
 }

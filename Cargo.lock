@@ -22073,6 +22073,7 @@ dependencies = [
  "wayland-protocols-wlr",
  "wire-frame",
  "workspace-hack",
+ "x11rb",
  "xkeysym",
  "zbus",
  "zeroize",
