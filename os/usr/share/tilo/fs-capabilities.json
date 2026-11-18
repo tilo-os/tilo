@@ -12,7 +12,7 @@
       "effect": "Grant",
       "access": "Write",
       "id": "local-session-workspace",
-      "expiry": "Never"
+      "lifetime": "until_revoked"
     }
   ]
 }

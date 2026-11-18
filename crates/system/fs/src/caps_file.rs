@@ -24,7 +24,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use collab_types::CapOverride;
-use tilo_action_policy::MemberId;
+use serde::Deserialize;
+use tilo_action_policy::{Lifetime, MemberId};
 
 use crate::acl::{AclHandle, IdentityKey, WorkspaceAcl};
 use crate::file_watch::FileChanges;
@@ -198,6 +199,100 @@ fn build(identity: IdentityKey, caps: &[CapOverride], members: &[MemberId]) -> W
     WorkspaceAcl::from_capabilities(identity, caps, members, None)
 }
 
+/// The file as the governor writes it now, or as an image before the rename
+/// from `expiry` to `lifetime` seeded it.
+///
+/// tmpfiles' `C` never overwrites, so a machine keeps the capability list of
+/// the image it was installed with across every update. The field that says
+/// how long a capability stands was renamed (`expiry`, a seconds clock, to
+/// `lifetime`, a millisecond one) and `CapOverride` refuses fields it does
+/// not name; without this, every machine installed before the rename would
+/// start fs.service on a list it cannot parse and never mount
+/// `/var/workspace`. Both spellings therefore read, the old one converted.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum CapabilityList {
+    Current(collab_types::FsAuthority),
+    Renamed(ExpiryList),
+}
+
+/// A capability list as an image before the rename seeded it.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExpiryList {
+    capabilities: Vec<ExpiryOverride>,
+}
+
+/// One capability as that image wrote it, with the field the rename replaced.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExpiryOverride {
+    grantee: tilo_action_policy::Grantee,
+    #[serde(default)]
+    app: Option<tilo_app_id::AppId>,
+    scope: collab_types::Scope,
+    effect: collab_types::Effect,
+    access: collab_types::Access,
+    id: String,
+    expiry: Expiry,
+    #[serde(default)]
+    granted_by: Option<MemberId>,
+}
+
+/// How long a capability stood, as that image wrote it: seconds since the epoch.
+#[derive(Deserialize)]
+enum Expiry {
+    /// Until someone revokes it, across restarts.
+    Never,
+    /// At that wall-clock instant, in seconds since the epoch.
+    AtUnix(u64),
+    /// When the granting session ends. Never written down.
+    EndOfSession,
+    /// As soon as the request that asked for it completes. Never written down.
+    AfterUse,
+}
+
+impl From<Expiry> for Lifetime {
+    fn from(expiry: Expiry) -> Self {
+        // The old clock was seconds; every lifetime is milliseconds now.
+        match expiry {
+            Expiry::Never => Self::UntilRevoked,
+            Expiry::AtUnix(seconds) => Self::Until(seconds.saturating_mul(1000)),
+            Expiry::EndOfSession => Self::Session,
+            Expiry::AfterUse => Self::Once,
+        }
+    }
+}
+
+impl From<ExpiryOverride> for CapOverride {
+    fn from(capability: ExpiryOverride) -> Self {
+        Self {
+            grantee: capability.grantee,
+            app: capability.app,
+            scope: capability.scope,
+            effect: capability.effect,
+            access: capability.access,
+            id: capability.id,
+            lifetime: capability.expiry.into(),
+            granted_by: capability.granted_by,
+        }
+    }
+}
+
+impl CapabilityList {
+    /// The capabilities in force, whichever spelling the file used.
+    fn into_capabilities(self) -> Vec<CapOverride> {
+        match self {
+            Self::Current(authority) => authority.capabilities,
+            Self::Renamed(list) => list
+                .capabilities
+                .into_iter()
+                .map(CapOverride::from)
+                .collect(),
+        }
+    }
+}
+
 fn read_capabilities(path: &Path) -> Result<(Vec<CapOverride>, Stamp), CapsError> {
     let file = std::fs::File::open(path).map_err(|source| CapsError::Read {
         path: path.to_path_buf(),
@@ -208,14 +303,14 @@ fn read_capabilities(path: &Path) -> Result<(Vec<CapOverride>, Stamp), CapsError
         path: path.to_path_buf(),
         source,
     })?);
-    let authority: collab_types::FsAuthority =
+    let list: CapabilityList =
         serde_json::from_reader(std::io::BufReader::new(file)).map_err(|source| {
             CapsError::Parse {
                 path: path.to_path_buf(),
                 source,
             }
         })?;
-    Ok((authority.capabilities, stamp))
+    Ok((list.into_capabilities(), stamp))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -412,6 +507,69 @@ mod tests {
                 assert!(!file.handle().permits(&ALICE, "/", Access::Read));
             }
         }
+    }
+
+    /// An image before the rename wrote the field as `expiry`, in seconds; a machine
+    /// installed with one keeps it across every update and must still mount.
+    #[test]
+    fn a_capability_list_before_the_rename_still_loads_with_its_grant_exactly_as_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("caps.json");
+        let alice_member = MemberId::person("alice");
+        let granted_to_alice = |id: &str| {
+            CapOverride::new(
+                Grantee::person("alice"),
+                Scope::FsPath("/w/docs".into()),
+                Effect::Grant,
+                CapAccess::Read,
+            )
+            .with_id(id)
+        };
+
+        std::fs::write(
+            &path,
+            br#"{"capabilities":[{"grantee":{"member":{"person":"alice"}},"scope":{"FsPath":"/w/docs"},"effect":"Grant","access":"Read","id":"a","expiry":"Never"}]}"#,
+        )
+        .unwrap();
+        let never = CapabilityFile::load(&path, ALICE, vec![alice_member.clone()]).expect("loads");
+        assert_eq!(
+            read_capabilities(&path).expect("loads").0,
+            vec![granted_to_alice("a")],
+            "`Never` stood until revoked, so it reads as such"
+        );
+        assert!(never.handle().permits(&ALICE, "/w/docs/a.md", Access::Read));
+
+        std::fs::write(
+            &path,
+            br#"{"capabilities":[{"grantee":{"member":{"person":"alice"}},"scope":{"FsPath":"/w/docs"},"effect":"Grant","access":"Read","id":"b","expiry":{"AtUnix":4000000000}}]}"#,
+        )
+        .unwrap();
+        let until = CapabilityFile::load(&path, ALICE, vec![alice_member.clone()]).expect("loads");
+        assert_eq!(
+            read_capabilities(&path).expect("loads").0,
+            vec![
+                granted_to_alice("b")
+                    .lasting(tilo_action_policy::Lifetime::Until(4_000_000_000_000))
+            ],
+            "`AtUnix` counted seconds; the lifetime it becomes counts milliseconds"
+        );
+        assert!(
+            until.handle().permits(&ALICE, "/w/docs/a.md", Access::Read),
+            "an instant still ahead must permit"
+        );
+
+        std::fs::write(
+            &path,
+            br#"{"capabilities":[{"grantee":{"member":{"person":"alice"}},"scope":{"FsPath":"/w/docs"},"effect":"Grant","access":"Read","id":"c","expiry":{"AtUnix":1}}]}"#,
+        )
+        .unwrap();
+        let lapsed = CapabilityFile::load(&path, ALICE, vec![alice_member]).expect("loads");
+        assert!(
+            !lapsed
+                .handle()
+                .permits(&ALICE, "/w/docs/a.md", Access::Read),
+            "an instant past must not permit"
+        );
     }
 
     /// Waits until `holds` is true, which only the file watch can make so.
