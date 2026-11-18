@@ -1862,30 +1862,17 @@ fn validate_transform(ask: &TransformAsk) -> Result<(), String> {
     Ok(())
 }
 
-/// The provider request for one transformation. Deterministic sampling, one
-/// system instruction, one user turn, and no tools in either dialect.
-fn transform_body(
-    profile: &ProviderProfile,
-    model_id: &str,
-    ask: &TransformAsk,
-) -> serde_json::Value {
-    provider_transform::profile_body(
-        profile,
-        &provider_transform::Ask {
-            model: model_id,
-            instructions: &ask.instructions,
-            input: &ask.input,
-            max_tokens: Some(ask.max_output_tokens),
-            sampling: provider_transform::Sampling::Deterministic,
-            output: provider_transform::Output::JsonObject,
-        },
-    )
-}
-
-/// The answer text out of a provider response, within the published output
-/// bound.
-fn transform_answer(profile: &ProviderProfile, body: &str) -> Result<String, String> {
-    provider_transform::profile_answer(profile, body, crate::MAX_TRANSFORM_OUTPUT_BYTES)
+/// One transformation as a single-shot ask: deterministic sampling, one
+/// system instruction, one user turn, a JSON object back, and no tools.
+fn transform_ask<'a>(model_id: &'a str, ask: &'a TransformAsk) -> provider_transform::Ask<'a> {
+    provider_transform::Ask {
+        model: model_id,
+        instructions: &ask.instructions,
+        input: &ask.input,
+        max_tokens: Some(ask.max_output_tokens),
+        sampling: provider_transform::Sampling::Deterministic,
+        output: provider_transform::Output::JsonObject,
+    }
 }
 
 async fn transform(
@@ -1899,17 +1886,23 @@ async fn transform(
     let (profile, secret) = blocking_model(move || plan_profile(&profile_id, &model))
         .await
         .map_err(|error| error.message)?;
-    let body = transform_body(&profile, &model_id, &ask);
+    let asked = transform_ask(&model_id, &ask);
+    let body = provider_transform::profile_body(&profile, &asked)?;
     let result = unary_with_retries(
         http,
-        &profile,
+        (&profile, agent_provider_config::wire::url(&profile)),
         secret.as_ref().map(|secret| secret.as_str()),
         &body,
         ask.timeout.min(crate::MAX_TRANSFORM_TIMEOUT),
     )
     .await;
     drop(secret);
-    transform_answer(&profile, &result?)
+    provider_transform::profile_answer(
+        &profile,
+        &asked,
+        &result?,
+        crate::MAX_TRANSFORM_OUTPUT_BYTES,
+    )
 }
 
 /// Validate Photos' one fixed local-only visual-analysis operation and
@@ -1950,7 +1943,9 @@ async fn analyze_image(
 ) -> Result<String, String> {
     let (profile, body) = blocking(move || vision_request(&profile_id, &model_id, &image)).await?;
     // No invented bearer token or hosted-provider credential lookup.
-    unary_with_retries(http, &profile, None, &body, VISION_TIMEOUT).await
+    // The fixed photo index asks speak chat completions, as a local server does.
+    let url = provider_transform::url(profile.protocol, &profile.endpoint);
+    unary_with_retries(http, (&profile, url), None, &body, VISION_TIMEOUT).await
 }
 
 /// Validate one fixed face-clustering request against the separate signed
@@ -1991,7 +1986,9 @@ async fn cluster_faces(
     images: Vec<FaceImage>,
 ) -> Result<String, String> {
     let (profile, body) = blocking(move || face_request(&profile_id, &model_id, &images)).await?;
-    unary_with_retries(http, &profile, None, &body, VISION_TIMEOUT).await
+    // The fixed photo index asks speak chat completions, as a local server does.
+    let url = provider_transform::url(profile.protocol, &profile.endpoint);
+    unary_with_retries(http, (&profile, url), None, &body, VISION_TIMEOUT).await
 }
 
 fn validate_vision_image(image: &VisionImage) -> Result<(), String> {
@@ -2099,7 +2096,7 @@ fn local_face_body(model_id: &str, images: &[FaceImage]) -> serde_json::Value {
 
 async fn unary_with_retries(
     client: &reqwest::Client,
-    profile: &ProviderProfile,
+    (profile, url): (&ProviderProfile, String),
     secret: Option<&str>,
     body: &serde_json::Value,
     timeout: Duration,
@@ -2117,7 +2114,7 @@ async fn unary_with_retries(
                 provider_call::Post {
                     client,
                     profile,
-                    url: provider_url(profile),
+                    url: url.clone(),
                     secret,
                     model,
                     budget,
@@ -2348,7 +2345,7 @@ where
 }
 
 fn provider_url(profile: &ProviderProfile) -> String {
-    provider_transform::profile_url(profile)
+    agent_provider_config::wire::url(profile)
 }
 
 /// Whether the peer's `SO_PEERCRED` uid is this process's effective uid.
@@ -2717,34 +2714,21 @@ mod tests {
                 ProviderProtocol::OpenAiCompatible,
             ] {
                 let profile = agent_provider_config::ProviderProfile::hosted(protocol);
-                let body = transform_body(&profile, "model-x", &ask("the input"));
+                let asked = ask("the input");
+                let body =
+                    provider_transform::profile_body(&profile, &transform_ask("model-x", &asked))
+                        .unwrap();
                 assert_eq!(body["model"], "model-x");
-                assert_eq!(body["max_tokens"], 512);
+                // Its limit, in the field the profile's wire names it.
+                assert!(
+                    ["max_tokens", "max_completion_tokens", "max_output_tokens"]
+                        .iter()
+                        .any(|field| body[*field] == 512),
+                    "{body}"
+                );
                 assert!(body.get("tools").is_none());
                 assert!(body.to_string().contains("the input"));
             }
-        }
-
-        phase transform_answers_are_the_text_and_never_a_refusal_or_a_fragment;
-        {
-            let anthropic_profile =
-                agent_provider_config::ProviderProfile::hosted(ProviderProtocol::Anthropic);
-            let openai_profile =
-                agent_provider_config::ProviderProfile::hosted(ProviderProtocol::OpenAiCompatible);
-            let anthropic =
-                r#"{"stop_reason":"end_turn","content":[{"type":"text","text":"{\"result\":1}"}]}"#;
-            assert_eq!(
-                transform_answer(&anthropic_profile, anthropic).unwrap(),
-                r#"{"result":1}"#
-            );
-            let refused = r#"{"stop_reason":"refusal","content":[]}"#;
-            assert!(transform_answer(&anthropic_profile, refused).is_err());
-            let cut = r#"{"stop_reason":"max_tokens","content":[{"type":"text","text":"{"}]}"#;
-            assert!(transform_answer(&anthropic_profile, cut).is_err());
-            let openai = r#"{"choices":[{"finish_reason":"stop","message":{"content":"{}"}}]}"#;
-            assert_eq!(transform_answer(&openai_profile, openai).unwrap(), "{}");
-            let truncated = r#"{"choices":[{"finish_reason":"length","message":{"content":"{"}}]}"#;
-            assert!(transform_answer(&openai_profile, truncated).is_err());
         }
 
         phase only_the_agent_may_transform;

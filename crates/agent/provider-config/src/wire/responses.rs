@@ -26,10 +26,6 @@ const DEFAULT_INSTRUCTIONS: &str = "You are a helpful assistant.";
 /// The `include` entry asking for a turn's reasoning as ciphertext.
 const CIPHERTEXT: &str = "reasoning.encrypted_content";
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "each role's items in turn, read top to bottom"
-)]
 pub(super) fn body(request: &ModelRequest, api: Api) -> Result<Map<String, Value>, ModelError> {
     let mut instructions: Vec<&str> = Vec::new();
     let mut input = Vec::new();
