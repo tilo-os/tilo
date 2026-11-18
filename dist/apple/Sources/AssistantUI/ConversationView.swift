@@ -42,6 +42,13 @@ public struct ConversationView: View {
                             RowView(row: row, chat: chat, picturedSecret: picturedSecret).id(row.id)
                         }
                         if let since, sinceRow == nil, conversation.isLoaded { SinceLeftCard(since: since) }
+                        // Her message stands and no turn has taken it up for a while: one quiet line
+                        // says so under it. Where a step of the first start is shown, that step says why.
+                        if model.isNotTakenUp(chat), !setsUp {
+                            Fine(words: AssistantWords.notTakenUp.said)
+                                .frame(maxWidth: .infinity, alignment: .trailing)
+                                .padding(.trailing, 14)
+                        }
                         // What stands between the person and a first answer is said where that answer would stand.
                         if chat == .main { SetupStep() }
                         if conversation.isAnswering {
