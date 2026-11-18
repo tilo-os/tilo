@@ -182,7 +182,7 @@ fn property(field: &str, value: &str) -> ui::Node {
     let mut node = node("ui.Property", &format!("{KEY}{field}"));
     node.props.insert(
         "label".to_owned(),
-        ui::Value::text(&crate::runtime::platform::sentence(field)),
+        ui::Value::text(crate::runtime::platform::sentence(field)),
     );
     node.props
         .insert("value".to_owned(), ui::Value::text(value));
