@@ -189,6 +189,7 @@ members = [
     "apps/publisher",
     "apps/publisher-model",
     "apps/remote",
+    "apps/remote-model",
     "apps/scratchpad",
     "apps/scratchpad-model",
     "apps/speed-test",
