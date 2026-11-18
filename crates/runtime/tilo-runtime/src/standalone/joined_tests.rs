@@ -838,6 +838,58 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
         })
         .await;
     receipt.expect("a member's write commits to the joined workspace");
+    // A write this device signed before the owner's turn, under a sequence the
+    // document has already passed, is signed again above it. What answers is
+    // the write the owner took, and its receipt binds that one: the request as
+    // it was asked no longer says what the owner committed.
+    let mut stale = AutoCommit::load(&chat).unwrap();
+    let heads = stale.get_heads();
+    stale
+        .put(ROOT, "restated", "a writer behind the turn")
+        .unwrap();
+    stale.commit_edit("fixture", "restated");
+    let message = joined
+        .owner
+        .with_current(workspace, |view| {
+            view.peer().clone().publication_mut().publish_incremental(
+                "so.tilo.chat",
+                "",
+                stale.save_after(&heads),
+                &device_key,
+                SystemTime::now(),
+            )
+        })
+        .unwrap();
+    let NeighbourMsg::AppDocument { mut envelope, .. } = message else {
+        panic!("a signed document write")
+    };
+    envelope.seq = 1;
+    let asked = OwnerCommitRequest {
+        workspace: workspace.to_string(),
+        operation: CommitOperation::Document {
+            app: "so.tilo.chat".into(),
+            document: String::new(),
+            envelope,
+            own: None,
+        },
+    };
+    let asked_seq = document_seq(&asked);
+    let (committed, receipt) = joined
+        .commit_local_document(asked.clone(), None)
+        .await
+        .expect("a write behind the owner's turn is taken under a sequence above it");
+    let committed_seq = document_seq(&committed);
+    assert!(
+        committed_seq > asked_seq,
+        "the write was not signed again above the document's own sequence"
+    );
+    receipt
+        .validate_for(&committed)
+        .expect("the receipt binds the write the owner took");
+    assert!(
+        receipt.validate_for(&asked).is_err(),
+        "the receipt cannot bind the request before the owner signed it again"
+    );
     tilo_test_env::within("the write at the host's link", async {
         loop {
             if let Ok(heard) = heard.recv().await
@@ -1502,6 +1554,16 @@ fn signed_write(
             own: None,
         },
     }
+}
+
+/// The sequence a document write carries, whatever else the request names.
+fn document_seq(request: &tilo_peer_state::owner_commit::OwnerCommitRequest) -> u64 {
+    let tilo_peer_state::owner_commit::CommitOperation::Document { envelope, .. } =
+        &request.operation
+    else {
+        panic!("a document write, not {:?}", request.operation);
+    };
+    envelope.seq
 }
 
 /// The profile's workspace is placed on the workspace host the profile runs and held
