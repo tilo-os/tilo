@@ -27,6 +27,16 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 use tilo_api::Server;
 
+/// The most one action may take, at the smallest size measured: an
+/// in-process action is tens of milliseconds optimized and some hundreds
+/// unoptimized, so this is far above noise and far below the seconds a wait
+/// on a view or on a timeout adds.
+const SINGLE_CEILING_MS: f64 = if cfg!(debug_assertions) {
+    2000.0
+} else {
+    300.0
+};
+
 /// A key's calls of the API.
 struct Agent<'a> {
     api: &'a Arc<Server>,
@@ -678,9 +688,28 @@ async fn a_workspace_takes_records_and_files_at_the_same_speed_however_full() {
         std::fs::write(&out, serde_json::to_vec_pretty(&table).unwrap()).unwrap();
     }
 
+    // Whatever else is asked: one action in a workspace holding nothing is
+    // local work and one round trip, never a wait. An action that waited on
+    // a view, or on anything that times out, takes seconds here.
+    let smallest = table.iter().map(|row| row.size).min().unwrap_or(0);
+    let slow: Vec<String> = table
+        .iter()
+        .filter(|row| !row.kind.starts_with("upload") && row.size == smallest)
+        .filter(|row| row.single_p50_ms > SINGLE_CEILING_MS)
+        .map(|row| {
+            format!(
+                "{} at {}: single p50 {:.1} ms",
+                row.kind, row.size, row.single_p50_ms
+            )
+        })
+        .collect();
+    assert!(
+        slow.is_empty(),
+        "one action takes over {SINGLE_CEILING_MS} ms:\n{}",
+        slow.join("\n")
+    );
     if std::env::var("TILO_THROUGHPUT_ASSERT").is_ok_and(|value| value == "1") {
         let mut failed = String::new();
-        let smallest = table.iter().map(|row| row.size).min().unwrap_or(0);
         for row in &table {
             if row.kind.starts_with("upload") {
                 continue;

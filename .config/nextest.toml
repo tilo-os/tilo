@@ -374,3 +374,11 @@ priority = 50
 filter = 'package(tilo-quick-settings) and binary(session) and test(=the_lock_tile_locks_the_screens)'
 threads-required = "num-cpus"
 priority = 50
+
+# How fast a workspace takes actions and files, printed on a pass too, so a
+# drift shows in every log before it crosses a ceiling. Seeding a workspace
+# and timing each kind takes minutes on a busy machine.
+[[profile.default.overrides]]
+filter = 'package(tilo-agent-session) and binary(it) and test(=workspace_actions::throughput::a_workspace_takes_records_and_files_at_the_same_speed_however_full)'
+success-output = "final"
+slow-timeout = { period = "60s", terminate-after = 10 }
