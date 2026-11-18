@@ -16,8 +16,9 @@
 //!   desktop connection named for the keeper's process (so its windows trace back to the launch),
 //!   and asks it to describe itself. Only a keeper that answered is one this run may leave running.
 //! - **In-place restart.** The run that ends leaves each such launch as it is: no signal, no cgroup
-//!   kill ([`crate::spawner::Teardown`]). Everything else ends as at a logout, and a logout ends
-//!   kept apps too.
+//!   kill ([`crate::spawner::Teardown`]). Only a keeper this session met whose process is still there
+//!   and whose socket still takes a connection is left; a keeper that is gone ends with the desktop
+//!   ([`Kept::answers`]). Everything else ends as at a logout, and a logout ends kept apps too.
 //! - **Adoption.** The run that follows a restart describes each keeper again, checks that the
 //!   app's process is the one the keeper started (pid and start time against `/proc`), and takes
 //!   the launch back into its spawner: tiers, the memory watch, the end report and ending it at
@@ -42,7 +43,7 @@ use std::io::{self, Read as _, Write as _};
 use std::os::fd::{AsFd as _, AsRawFd as _, FromRawFd as _, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -59,13 +60,9 @@ pub use tilo_app_keeper::wire::Window;
 pub mod testing;
 
 /// How long a keeper may take to answer a session that greets it: one in the middle of a restart
-/// answers in milliseconds.
+/// answers in milliseconds, and a machine busy applying the update gets this long before the
+/// keeper is not taken.
 pub(crate) const ANSWER: Duration = Duration::from_secs(5);
-
-/// How long a keeper may take to answer when the desktop ends for an in-place restart: one that
-/// does not answer by then is not trusted to hold its app until the next run, so the app ends with
-/// this one. Short, as the person waits for the desktop to come back.
-const ANSWER_AT_RESTART: Duration = Duration::from_millis(500);
 
 /// A connection to the desktop for the process `pid`: what a keeper is attached with.
 pub type Desktop = Arc<dyn Fn(u32) -> io::Result<UnixStream> + Send + Sync>;
@@ -155,9 +152,9 @@ pub(crate) struct Kept {
     /// The keeper speaks another version ([`Outdated`]): this session shows nothing of it, and
     /// only ends it.
     outdated: bool,
-    /// When an outdated keeper started, as read when it was met: what it is checked against
-    /// before it is signalled.
-    keeper_started: Option<u64>,
+    /// When the keeper this session greeted started, as `/proc` read it: what its pid is checked
+    /// against before it is trusted with its app again (0: not known).
+    keeper_started: AtomicU64,
 }
 
 impl Kept {
@@ -173,7 +170,7 @@ impl Kept {
             placed: Mutex::new(std::collections::HashMap::new()),
             x11: Mutex::new(None),
             outdated: false,
-            keeper_started: None,
+            keeper_started: AtomicU64::new(0),
         })
     }
 
@@ -191,7 +188,7 @@ impl Kept {
             placed: Mutex::new(std::collections::HashMap::new()),
             x11: Mutex::new(None),
             outdated: true,
-            keeper_started: outdated.keeper_started,
+            keeper_started: AtomicU64::new(outdated.keeper_started.unwrap_or(0)),
         })
     }
 
@@ -203,21 +200,50 @@ impl Kept {
     /// End an outdated keeper's app as Restart asks ([`end_outdated`]).
     pub(crate) fn end_outdated(&self) {
         if self.outdated {
-            end_outdated(&self.dir, self.keeper(), self.keeper_started);
+            end_outdated(&self.dir, self.keeper(), self.keeper_started());
         }
     }
 
-    /// Whether this run may leave the launch running through an in-place restart: its keeper
-    /// answered in this run, and answers now. A keeper that stopped answering since (stopped,
-    /// hung) would hold the app with nobody to take it back, so it ends instead.
+    /// Whether this session may leave the launch through an in-place restart.
+    ///
+    /// What counts is what this session knows, not how fast the keeper answers now. It met the
+    /// keeper — it answered, or said it speaks another version — so the launch stays when its
+    /// keeper's process is still the one met and its control socket still takes a connection. The
+    /// session that follows greets it again and takes it back; one that cannot answer even then is
+    /// left to end its own app once no desktop comes back ([`tilo_app_keeper::DESKTOP_GONE`]).
+    ///
+    /// Nothing here waits for a reply. An in-place restart applies an update, and the machine may
+    /// be busy doing it: a second round trip asked inside the teardown would turn a delay in
+    /// scheduling a healthy keeper into an app — with whatever unsaved work it holds — ended for
+    /// nothing. Only a keeper that is gone ends with this session: its process is not the one greeted
+    /// (stopped long enough to be reaped, or replaced by another process holding its pid), or its
+    /// socket refuses, and no later session could take it back either way.
     pub(crate) fn answers(&self) -> bool {
         // An outdated keeper is never described; the next session meets it as this one did.
-        if self.outdated {
-            return tilo_files::native::socket::connect(&self.dir.join("control")).is_ok();
+        let answered = self.outdated || self.described.load(Ordering::Acquire);
+        answered
+            && (self.outdated || self.control.lock_recover().is_some())
+            && self.keeper_alive()
+            && tilo_files::native::socket::connect(&self.dir.join("control")).is_ok()
+    }
+
+    /// Whether the keeper process is still the one this session met: the pid names a process that
+    /// started when the keeper did, so a pid the kernel handed to someone else is never taken for
+    /// it.
+    fn keeper_alive(&self) -> bool {
+        let keeper = self.keeper();
+        keeper != 0
+            && self
+                .keeper_started()
+                .is_some_and(|at| start_time(keeper) == Some(at))
+    }
+
+    /// When the keeper started, as read when it was greeted (or met, for an outdated one).
+    fn keeper_started(&self) -> Option<u64> {
+        match self.keeper_started.load(Ordering::Acquire) {
+            0 => None,
+            started => Some(started),
         }
-        self.described.load(Ordering::Acquire)
-            && self.control.lock_recover().is_some()
-            && greet(&self.dir, ANSWER_AT_RESTART).is_ok()
     }
 
     /// The keeper's process, once connected (0 before).
@@ -547,6 +573,8 @@ impl Kept {
     pub(crate) fn greeted(&self, control: &UnixStream, keeper: u32) -> io::Result<()> {
         *self.control.lock_recover() = Some(control.try_clone()?);
         self.keeper.store(keeper, Ordering::Release);
+        self.keeper_started
+            .store(start_time(keeper).unwrap_or(0), Ordering::Release);
         self.described.store(true, Ordering::Release);
         Ok(())
     }
