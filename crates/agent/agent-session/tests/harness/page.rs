@@ -476,7 +476,9 @@ impl Page {
         .map(|output| output.value.unwrap_or_default())
     }
 
-    /// Run one action on the record `provider` serves.
+    /// Run one action on the record `provider` serves, followed to its end: a
+    /// session answers a page accepted while what the action changes is still
+    /// landing, as it does for a person's own click.
     pub async fn invoke_on(
         &mut self,
         provider: &str,
@@ -498,7 +500,9 @@ impl Page {
             wait_ms: None,
             appearance: None,
         }));
-        match self.receipt(invocation).await.status {
+        let answered = self.receipt(invocation).await;
+        let receipt = self.settle(answered).await;
+        match receipt.status {
             ReceiptStatus::Completed { output } => Ok(output),
             other => Err(format!("{other:?}")),
         }
