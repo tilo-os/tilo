@@ -213,9 +213,6 @@ landlock = "strict"
 # Collaboration and the filesystem, at the version the runtime serves its session services.
 collab = "optional@{services}"
 tilo-fs = "optional@{services}"
-# The shell's side of the window: where it is shown (the workspace's appearance), and whether
-# its workspace has synced, which every empty state says until it has.
-shell-ui = "optional@{shell_ui}"
 
 [entrypoint]
 runtime = {tilolang}
@@ -241,7 +238,6 @@ ext = []
         .join(", "),
         bin = toml_string(RUNTIME_BIN),
         invokes = invokes,
-        shell_ui = ui::floating_surface::FLOATING_SURFACE_PROTOCOL_VERSION,
         services = runtime_portal::RUNTIME_INTERFACE_VERSION,
         capabilities = capabilities,
         namespaces = namespaces,

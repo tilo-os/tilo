@@ -74,8 +74,6 @@ open-uri = "via-host"
 # Required application runtime; the launcher passes its connected descriptor as
 # `TILO_SVC_USH_FD`.
 ush    = "required@31"
-# Authenticated permission prompt for the device shell.
-shell-ui   = "optional@34"
 collab = "optional@31"
 tilo-fs = "optional@31"
 

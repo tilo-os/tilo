@@ -10,7 +10,7 @@ pub use runtime_portal::process_binding::ExecutingPeer;
 
 use std::collections::BTreeMap;
 use std::io::Write;
-use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
@@ -64,6 +64,8 @@ const BLOB_CHILD_FD: i32 = 30;
 const IDENTITY_CHILD_FD: i32 = 31;
 /// Slot of the automatic chooser service.
 const CHOOSER_CHILD_FD: i32 = 32;
+/// Where the shell-UI connection every window gets lands in the sandbox.
+const SHELL_UI_CHILD_FD: i32 = 35;
 /// Slot of the automatic render broker connection (`tilo_render_protocol::broker`).
 const RENDER_CHILD_FD: i32 = 34;
 /// Slots bwrap reads its two seccomp programs from (`--add-seccomp-fd`).
@@ -79,6 +81,7 @@ pub(crate) const RESERVED_CHILD_FDS: &[i32] = &[
     BLOB_CHILD_FD,
     IDENTITY_CHILD_FD,
     CHOOSER_CHILD_FD,
+    SHELL_UI_CHILD_FD,
     RENDER_CHILD_FD,
     CLONE3_COMPAT_SECCOMP_CHILD_FD,
     BASELINE_SECCOMP_CHILD_FD,
@@ -231,43 +234,48 @@ pub fn identity_socket() -> PathBuf {
     socket_for(IDENTITY_SERVICE)
 }
 
-/// Authenticate the optional shell-UI channel before the child enters its sandbox.
-pub fn authenticate_shell_ui_bind(
-    resolved: &[ResolvedService],
-    app_id: &str,
-    egress: &crate::egress_proxy::EgressDecision,
-) -> Result<(), ServiceError> {
-    let Some(service) = resolved
-        .iter()
-        .find(|service| service.name == SHELL_UI_SERVICE)
-    else {
-        return Ok(());
-    };
-    let path = socket_for(SHELL_UI_SERVICE);
-    // Duplicate only for a temporary writer; the original descriptor remains owned by
-    // `ResolvedService` for the child handoff.
-    let borrowed = unsafe { BorrowedFd::borrow_raw(service.host_fd()) };
-    let owned = borrowed
-        .try_clone_to_owned()
-        .map_err(|source| ServiceError::OpenFailed {
-            path: path.clone(),
-            source,
-        })?;
-    let mut stream = UnixStream::from(owned);
-    let mut frame = serde_json::to_vec(&serde_json::json!({
+/// The first line on a shell-UI connection: the app it speaks for, and whether its launch may know
+/// the network's state.
+pub fn shell_ui_handshake(app_id: &str, network_status_allowed: bool) -> Vec<u8> {
+    let mut frame = serde_json::json!({
         "protocol": SHELL_UI_LAUNCH_PROTOCOL,
         "app_id": app_id,
-        "network_status_allowed": !matches!(egress, crate::egress_proxy::EgressDecision::Blocked),
-    }))
-    .map_err(|error| ServiceError::OpenFailed {
-        path: path.clone(),
-        source: std::io::Error::new(std::io::ErrorKind::InvalidData, error),
-    })?;
+        "network_status_allowed": network_status_allowed,
+    })
+    .to_string()
+    .into_bytes();
     frame.push(b'\n');
+    frame
+}
+
+/// Connect a window to the session shell, naming its app before the app can write: every window
+/// describes its controls, bar and cards there, so people and agents reach them in any app.
+pub fn resolve_shell_ui_bind(
+    app_id: &str,
+    egress: &crate::egress_proxy::EgressDecision,
+    no_services: bool,
+) -> Result<Option<ResolvedService>, ServiceError> {
+    let path = socket_for(SHELL_UI_SERVICE);
+    if no_services || !path.exists() {
+        return Ok(None);
+    }
+    let mut stream = match UnixStream::connect(&path) {
+        Ok(stream) => stream,
+        Err(error) => {
+            tracing::warn!(%error, path = %path.display(), "shell-ui service refused connection");
+            return Ok(None);
+        }
+    };
+    let allowed = !matches!(egress, crate::egress_proxy::EgressDecision::Blocked);
     stream
-        .write_all(&frame)
+        .write_all(&shell_ui_handshake(app_id, allowed))
         .and_then(|()| stream.flush())
-        .map_err(|source| ServiceError::OpenFailed { path, source })
+        .map_err(|source| ServiceError::OpenFailed { path, source })?;
+    Ok(Some(ResolvedService {
+        name: SHELL_UI_SERVICE.to_string(),
+        host: OwnedFd::from(stream),
+        child_fd: SHELL_UI_CHILD_FD,
+    }))
 }
 
 /// Connect the per-session identity broker and authenticate the launch context before the sandboxed app
@@ -746,7 +754,7 @@ fn resolve_service_binds_inner(
     let mut out = Vec::with_capacity(services.len());
 
     for (name, req) in services {
-        if name == SYSTEM_SERVICE || name == IDENTITY_SERVICE {
+        if name == SYSTEM_SERVICE || name == IDENTITY_SERVICE || name == SHELL_UI_SERVICE {
             continue;
         }
         let path = socket_for(name);
@@ -1367,41 +1375,6 @@ mod tests {
                 assert_eq!(handoff["protocol"], COLLAB_LAUNCH_PROTOCOL_VERSION);
                 assert_eq!(handoff["app_id"], "so.tilo.notes");
                 assert_eq!(handoff["workspace_id"], "workspace-7");
-            }
-            {
-                use std::io::{BufRead, BufReader};
-
-                let dir = tempfile::tempdir().unwrap();
-                let _env = runtime_dir_env(dir.path());
-                let root = ensure_services_root().unwrap();
-                let listener =
-                    std::os::unix::net::UnixListener::bind(root.join("shell-ui.sock")).unwrap();
-                let mut services = BTreeMap::new();
-                services.insert(
-                    SHELL_UI_SERVICE.to_string(),
-                    crate::manifest::service_req("optional@1"),
-                );
-                for (mode, hosts, allowed) in [
-                    ("off", Vec::new(), false),
-                    ("host", Vec::new(), true),
-                    ("allowlist", vec!["example.com".to_owned()], true),
-                    ("allowlist", Vec::new(), false),
-                ] {
-                    let egress = crate::egress_proxy::EgressDecision::resolve(mode, &hosts, &[]);
-                    let resolved = resolve_service_binds(&services, false).unwrap();
-                    authenticate_shell_ui_bind(&resolved, "so.tilo.chat", &egress).unwrap();
-
-                    let (stream, _) = listener.accept().unwrap();
-                    let mut line = String::new();
-                    BufReader::new(stream).read_line(&mut line).unwrap();
-                    let handshake: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-                    assert_eq!(handshake["protocol"], SHELL_UI_LAUNCH_PROTOCOL);
-                    assert_eq!(handshake["app_id"], "so.tilo.chat");
-                    assert_eq!(
-                        handshake["network_status_allowed"], allowed,
-                        "{mode}: {hosts:?}"
-                    );
-                }
             }
         }
 

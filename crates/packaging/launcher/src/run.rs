@@ -19,7 +19,8 @@ use crate::sandbox::{DBusBindPlan, build_bwrap_argv};
 use crate::seccomp::compile_app_baseline;
 use crate::services::{
     ACCOUNT_CHILD_FD, EXIT_REQUIRED_SERVICE_MISSING, ServiceError, ServiceLaunchContext,
-    resolve_blob_bind, resolve_chooser_bind, resolve_service_binds_for_launch, to_service_binds,
+    resolve_blob_bind, resolve_chooser_bind, resolve_service_binds_for_launch,
+    resolve_shell_ui_bind, to_service_binds,
 };
 use entrypoint_runtime::preflight_entrypoint_runtime;
 use seccomp_fds::SeccompFds;
@@ -1429,6 +1430,12 @@ pub enum LaunchMode {
         /// Desktop-file id of the entry, e.g. `com.spotify.Client`.
         desktop_id: String,
     },
+}
+
+/// Whether a launch opens a window, which gets the shell-UI connection: a command, a headless service
+/// or an origin connector has no window to describe.
+fn opens_window(mode: &LaunchMode, connector: Option<&str>) -> bool {
+    matches!(mode, LaunchMode::Gui) && connector.is_none()
 }
 
 /// Env override that turns the egress proxy off, downgrading a host-scoped grant to unrestricted access.
@@ -3173,7 +3180,11 @@ pub(crate) fn run_with_context(
                 workspace_id: opts.workspace_id.as_deref(),
             },
         )?;
-        crate::services::authenticate_shell_ui_bind(&resolved, package_id, &egress)?;
+        if opens_window(&opts.mode, opts.tilolang_connector.as_deref())
+            && let Some(shell_ui) = resolve_shell_ui_bind(package_id, &egress, opts.no_services)?
+        {
+            resolved.push(shell_ui);
+        }
         if let Some(identity) = crate::services::resolve_identity_bind_for_contract(
             package_id,
             opts.workspace_id.as_deref(),
@@ -3961,7 +3972,11 @@ fn run_with_capture_spawn<T>(
             workspace_id: opts.workspace_id.as_deref(),
         },
     )?;
-    crate::services::authenticate_shell_ui_bind(&resolved, package_id, &egress)?;
+    if opens_window(&opts.mode, opts.tilolang_connector.as_deref())
+        && let Some(shell_ui) = resolve_shell_ui_bind(package_id, &egress, opts.no_services)?
+    {
+        resolved.push(shell_ui);
+    }
     if let Some(identity) = crate::services::resolve_identity_bind_for_contract(
         package_id,
         opts.workspace_id.as_deref(),
@@ -5610,6 +5625,9 @@ mod render_service_launch_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod shell_ui_tests;
 
 #[cfg(test)]
 mod gui_argv_tests {

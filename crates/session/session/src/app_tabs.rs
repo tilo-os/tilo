@@ -101,16 +101,9 @@ impl ServiceLinks {
             let mut stream = tilo_files::native::socket::connect(&launcher::services::socket_for(
                 SHELL_UI_SERVICE,
             ))?;
-            let mut frame = serde_json::to_vec(&serde_json::json!({
-                "protocol": SHELL_UI_LAUNCH_PROTOCOL,
-                "app_id": app,
-                // What the app may know of the network was decided for its launch; the window does
-                // not widen it.
-                "network_status_allowed": false,
-            }))
-            .map_err(std::io::Error::other)?;
-            frame.push(b'\n');
-            stream.write_all(&frame)?;
+            // What the app may know of the network was decided for its launch; the window does not
+            // widen it.
+            stream.write_all(&launcher::services::shell_ui_handshake(app, false))?;
             stream.flush()?;
             Ok::<_, std::io::Error>(stream)
         })();
@@ -1890,14 +1883,7 @@ mod tests {
 
     /// What the launcher writes before an app's sandbox starts.
     fn handshake(app: &str) -> Vec<u8> {
-        let mut frame = serde_json::to_vec(&serde_json::json!({
-            "protocol": SHELL_UI_LAUNCH_PROTOCOL,
-            "app_id": app,
-            "network_status_allowed": false,
-        }))
-        .unwrap();
-        frame.push(b'\n');
-        frame
+        launcher::services::shell_ui_handshake(app, false)
     }
 
     /// A socket on a path of the test's own, with the channel its asks land on and a wake that does
