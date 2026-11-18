@@ -57,7 +57,10 @@ describe("a bulk call", () => {
       { title: "Child", parent: made(0) },
     ]);
 
-    const call = groupCalls(api)[0];
+    const calls = groupCalls(api);
+    expect(calls).toHaveLength(1);
+    const [call] = calls;
+    if (call === undefined) throw new Error("the bulk call sent no group");
     const members = (JSON.parse(call.body) as {
       actions: { args: Record<string, unknown> }[];
     }).actions;
