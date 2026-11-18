@@ -79,6 +79,9 @@ pub(crate) mod fake_caldav;
 /// What a turn this server carries out reads of them.
 pub(in crate::workspaces) mod turn;
 
+/// A calendar connected by a turn's telling: asked for, and carried out.
+pub(in crate::workspaces) mod connect;
+
 /// The resource of [`tilo_actions::remote::person_accounts::PROVIDER`] a
 /// person's calendars are asked under.
 pub const RESOURCE: &str = "calendars";
@@ -100,6 +103,8 @@ pub const FREE: &str = "free";
 pub const ADD_INVITATION: &str = "add-invitation";
 /// File an entry under categories, in its server's own field.
 pub const SET_CATEGORIES: &str = "set-categories";
+/// Connect an account by a turn's telling, for reading only ([`connect`]).
+pub const CONNECT: &str = "connect";
 
 /// What an agent its person named for a calendar account may ask.
 const ASSISTANT_MAY: [&str; 6] = [LIST, SYNC, ENTRIES, FREE, ADD_INVITATION, SET_CATEGORIES];

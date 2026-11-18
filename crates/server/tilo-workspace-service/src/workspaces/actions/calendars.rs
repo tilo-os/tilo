@@ -6,8 +6,9 @@
 //! entry under categories and puts an invitation in. None of it sends
 //! anything to anybody. Adding and removing accounts stay the person's.
 
+use tilo_actions::contract::Audience;
 use tilo_actions::remote::{CatalogueRow, person_accounts};
-use tilo_actions::{ActionKind, ActionParam, ParamType};
+use tilo_actions::{ActionContract, ActionKind, ActionParam, ParamType};
 
 use super::{Publisher, Verb};
 use crate::workspaces::person_settings::calendars as held;
@@ -187,4 +188,59 @@ impl super::super::Workspaces {
             .map(|verb| verb.row(CALENDARS, held::RESOURCE, "Calendars"))
             .collect()
     }
+
+    /// The row a turn this holder carries out for its agent's keeper is
+    /// offered for connecting a calendar its person tells it of
+    /// ([`held::connect`]). It is for agents alone: a person connects by
+    /// saying so, and types nothing but the password, where no agent reads
+    /// it. What it says of itself is all a model needs to use it.
+    pub(in crate::workspaces) fn calendar_connect_row() -> CatalogueRow {
+        let mut row = verb(
+            held::CONNECT,
+            "Connect calendar for reading",
+            ActionKind::Outside,
+            connect_params,
+        )
+        .row(CALENDARS, held::RESOURCE, "Calendars");
+        if let Some(action) = &mut row.action {
+            // It signs in somewhere outside the workspace, once its person typed the password.
+            let mut contract = ActionContract {
+                kind: ActionKind::Outside,
+                ..ActionContract::default()
+            };
+            contract.set_audience(Audience::Agents);
+            action.contract = contract;
+            action.description = Some(CONNECT_ABOUT.to_owned());
+        }
+        row
+    }
+}
+
+/// What connecting a calendar says of itself to whoever lists it.
+const CONNECT_ABOUT: &str = "Connect a calendar account of your person's on a calendar server \
+     (CalDAV) at an https address, for reading only. Pass what they told you: the server's \
+     address, their user name there and a name for the account. Never ask for the password \
+     and never take one: this server asks your person for it in a protected field of your \
+     conversation with them, which you cannot read. The call ends at once, told that they \
+     are asked: tell them to type the password there, and do not make the call again. Once \
+     they typed it the account is connected, you are named for it and you are told which \
+     calendars it has. Nothing is ever written to that calendar server.";
+
+fn connect_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required(
+            "serverUrl",
+            ParamType::Text,
+            "The calendar server's https address, as your person said it.",
+        ),
+        ActionParam::required(
+            "username",
+            ParamType::Text,
+            "The name their account signs in with there.",
+        ),
+        text(
+            "name",
+            "What they call the account; the user name when left out.",
+        ),
+    ]
 }

@@ -29,7 +29,7 @@ use super::mail::narrowing;
 use super::turn_provider::{Ending, Rows};
 use super::{Reply, Turn, TurnProvider, WorkspaceId};
 use crate::workspaces::Workspaces;
-use crate::workspaces::hosted_use::{CALENDAR_ENTRIES, CALENDARS, HostedTurn};
+use crate::workspaces::hosted_use::{CALENDAR_CONNECT, CALENDAR_ENTRIES, CALENDARS, HostedTurn};
 
 /// What one turn reads of its person's calendars. A turn's caller changes when its person
 /// writes again while it works, so each request is taken as the caller of the tool call that
@@ -120,9 +120,12 @@ impl TurnProvider for TurnCalendars {
     }
 
     /// Whatever is asked of a person's calendars is the server's entry's to answer, also where
-    /// it refuses it: a turn's request to change one reaches nothing else.
+    /// it refuses it: a turn's request to change one reaches nothing else. Connecting one its
+    /// person tells it of is another provider's ([`super::calendar_connect`]).
     fn takes(&self, target: &RemoteActionTarget) -> bool {
-        target.provider == person_accounts::PROVIDER && target.address.resource == CALENDARS
+        target.provider == person_accounts::PROVIDER
+            && target.address.resource == CALENDARS
+            && target.address.action != CALENDAR_CONNECT
     }
 
     /// What the calendars' entries say is whoever made them's to have written.

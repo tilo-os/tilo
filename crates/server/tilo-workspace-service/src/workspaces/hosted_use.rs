@@ -94,6 +94,14 @@ pub use super::person_settings::turn_mail::{AskedSend, SEND_CARRIER, TurnMail};
 #[cfg(feature = "agents")]
 pub use super::person_settings::calendars::{ENTRIES as CALENDAR_ENTRIES, RESOURCE as CALENDARS};
 
+/// A person's calendar as such a turn connects it, by their telling
+/// ([`Workspaces::connect_calendar_for_turn`]): the action, what is kept while its person is
+/// asked for the password, and what comes of their answer.
+#[cfg(feature = "agents")]
+pub use super::person_settings::calendars::CONNECT as CALENDAR_CONNECT;
+#[cfg(feature = "agents")]
+pub use super::person_settings::calendars::connect::{ConnectAsk, Connected, TurnConnect};
+
 /// Where a person's asks are kept, under their own root.
 const ASKS_DIR: &str = "vault-asks";
 /// The most asks that wait for one person at a time: an agent that goes on
@@ -235,6 +243,10 @@ pub(super) struct Uses {
     /// spent or too old. Kept in memory alone: after a restart they are asked
     /// again.
     once: Mutex<Vec<OnceLeave>>,
+    /// The calendars turns asked to connect that wait for their person's
+    /// password, read from the server's disk once.
+    #[cfg(feature = "agents")]
+    pub(super) connects: Mutex<Option<Vec<ConnectAsk>>>,
 }
 
 /// A person's "allow" for one fill: `agent` may fill what `item` keeps into
@@ -331,6 +343,8 @@ impl Default for Uses {
             )),
             asks: Mutex::default(),
             once: Mutex::default(),
+            #[cfg(feature = "agents")]
+            connects: Mutex::default(),
         }
     }
 }
