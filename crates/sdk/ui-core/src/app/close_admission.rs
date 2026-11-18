@@ -139,11 +139,17 @@ impl App {
                     };
                 }
                 Leaving::Stopping => {
-                    if !manager.invocations_stopped() {
+                    // One it was handed may not be done yet: a job it accepted, or an effect
+                    // whose edits the broker still admits. The window waits on the passes that
+                    // finish it, and its answer goes with the others.
+                    if !manager.invocations_stopped()
+                        || !self.actions.acting_for.is_empty()
+                        || !self.actions.directed_invocations.is_empty()
+                    {
                         return false;
                     }
-                    // Every invocation it was handed ran on the passes that took it: their
-                    // answers go now, as they would as the window closed.
+                    // Every invocation it was handed ran: their answers go now, as they would
+                    // as the window closed.
                     self.send_held_answers(true);
                     self.close_admission.leaving = match self
                         .collaboration
@@ -718,10 +724,11 @@ mod tests {
     }
 
     /// The broker's end of a window's invocations: once asked to stop, it hands over the last
-    /// one it holds when the test says so.
+    /// one it holds when the test says so. It keeps the wire id of each answer it was sent.
     struct Invocations {
         stopping: std::sync::Arc<std::sync::atomic::AtomicBool>,
         handed_over: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        answered: std::sync::Arc<std::sync::Mutex<Vec<u64>>>,
     }
 
     impl crate::collaboration::CollabTransport for Invocations {
@@ -730,8 +737,14 @@ mod tests {
         }
         fn submit(
             &mut self,
-            _: crate::collaboration::TransportCommand,
+            command: crate::collaboration::TransportCommand,
         ) -> Result<(), crate::collaboration::TransportError> {
+            if let crate::collaboration::TransportCommand::Primary(
+                crate::collaboration::CollabRequest::UpdateInvocation { id, .. },
+            ) = command
+            {
+                self.answered.lock().unwrap().push(id);
+            }
             Ok(())
         }
         fn drain(&mut self, _: &mut Vec<crate::collaboration::CollabEvent>) {}
@@ -755,12 +768,17 @@ mod tests {
         }
     }
 
-    /// A closing window first takes no more invocations and answers what it was handed; only
-    /// then does it save, once, and that save only starts the store's commits, so the window's
-    /// loop never waits on the disk.
-    #[test]
-    fn a_closing_window_stops_its_invocations_before_it_saves_without_waiting() {
-        use std::sync::atomic::Ordering::SeqCst;
+    /// The broker's end of the closing window's invocations, as [`Invocations`]: whether
+    /// it was asked to stop, the switch that hands over the last one, and the answers sent.
+    type Ends = (
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        std::sync::Arc<std::sync::Mutex<Vec<u64>>>,
+    );
+
+    /// A window whose root keeps each save it is asked for, on a connection whose
+    /// invocations end as the test says ([`Invocations`]).
+    fn closing_window() -> (App, std::rc::Rc<std::cell::RefCell<Vec<bool>>>, Ends) {
         let saves = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let root = OwnedRoot {
             text: crate::widget::Text::new("body"),
@@ -770,16 +788,24 @@ mod tests {
             save_allowed: false,
         };
         let mut app = App::new_with_controlled_inputs(crate::State::new(), Box::new(root));
-        let (stopping, handed_over) = (
-            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        );
+        let ends: Ends = Default::default();
         app.collaboration.manager =
             crate::collaboration::CollaborationManager::with_transport(Box::new(Invocations {
-                stopping: stopping.clone(),
-                handed_over: handed_over.clone(),
+                stopping: ends.0.clone(),
+                handed_over: ends.1.clone(),
+                answered: ends.2.clone(),
             }));
         assert!(app.collaboration.manager.is_connected());
+        (app, saves, ends)
+    }
+
+    /// A closing window first takes no more invocations and answers what it was handed; only
+    /// then does it save, once, and that save only starts the store's commits, so the window's
+    /// loop never waits on the disk.
+    #[test]
+    fn a_closing_window_stops_its_invocations_before_it_saves_without_waiting() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let (mut app, saves, (stopping, handed_over, _)) = closing_window();
 
         assert!(!app.admit_native_close_request());
         assert!(
@@ -884,6 +910,64 @@ mod tests {
                 Some("kept")
             );
         }
+    }
+
+    /// An invocation the window took before it began to close may not be done as the broker
+    /// ends its stream: here an effect whose edit the broker is still admitting. The window
+    /// waits for it, answers it, and only then goes. Before, it went with the effect
+    /// unanswered, and whoever asked was told its outcome was unknown.
+    #[test]
+    fn a_closing_window_answers_an_invocation_still_running_before_it_goes() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let (mut app, _, (_, handed_over, answered)) = closing_window();
+        let running = tilo_actions::InvocationId::new();
+        let actor = tilo_actions::Actor::Member(tilo_actions::MemberId::person("asker"));
+        app.actions.follow_ups.insert(5, running);
+        app.actions.acting_for.insert(
+            running,
+            crate::invocation_scope::Continuation {
+                invoker: tilo_actions::ActionInvoker::delivered(&actor, None),
+                context: None,
+                admitted: tilo_actions::ActionKind::Undoable,
+                refused: None,
+                outstanding: std::collections::HashSet::from([5]),
+                deferred: Some((
+                    21,
+                    tilo_actions::InvocationUpdate::Succeeded {
+                        invocation: running,
+                        output: tilo_actions::ActionOutput::default(),
+                    },
+                )),
+            },
+        );
+
+        assert!(!app.admit_native_close_request());
+        handed_over.store(true, SeqCst);
+        app.service_close_admission();
+        assert!(
+            !app.finish_close_if_ready(),
+            "the window stays while the effect it was handed is not done"
+        );
+        assert!(answered.lock().unwrap().is_empty());
+
+        // The broker admitted the effect's edit: the effect is done.
+        assert!(app.settle_follow_up(
+            5,
+            &Ok((
+                tilo_actions::InvocationId::new(),
+                tilo_actions::InvocationUpdate::Succeeded {
+                    invocation: running,
+                    output: tilo_actions::ActionOutput::default(),
+                },
+            )),
+        ));
+        app.service_close_admission();
+        assert!(app.finish_close_if_ready());
+        assert_eq!(
+            *answered.lock().unwrap(),
+            [21],
+            "its answer went before the window"
+        );
     }
 
     fn close_choice(app: &mut App, choice: Choice) {

@@ -3905,6 +3905,12 @@ impl AppBrokerState {
         self.surface_changes.send_modify(|_| {});
     }
 
+    /// `peer_id`'s invocation stream while it takes invocations: opened, not
+    /// ended by its app, and still read.
+    fn invocation_stream(&self, peer_id: u64) -> Option<mpsc::UnboundedSender<InvocationEnvelope>> {
+        open_stream(&*self.invocation_subscribers.lock().ok()?, peer_id).cloned()
+    }
+
     /// A receiver that sees every later surface or invocation-stream change;
     /// what exists so far counts as seen, so check readiness after taking it.
     pub(crate) fn publisher_changes(&self) -> tokio::sync::watch::Receiver<u64> {
@@ -5243,16 +5249,7 @@ impl AppBrokerState {
         }
         // A stream the app has dropped takes nothing: refuse before the
         // journal admits what could never be delivered.
-        let sender = self
-            .invocation_subscribers
-            .lock()
-            .ok()
-            .and_then(|subscribers| {
-                subscribers
-                    .get(&peer_id)
-                    .filter(|sender| !sender.is_closed())
-                    .cloned()
-            });
+        let sender = self.invocation_stream(peer_id);
         if local_report.is_none() && sender.is_none() {
             return Err("the application has no invocation stream".into());
         }
@@ -6223,24 +6220,26 @@ impl AppBrokerState {
             checkouts.remove(&peer_id);
         }
         self.refresh_action_directory_root_snapshot();
-        if let Ok(mut capabilities) = self.stable_invocation_subscribers.lock() {
-            capabilities.remove(&peer_id);
-        }
-        if let Ok(mut subscribers) = self.invocation_subscribers.lock()
-            && subscribers.remove(&peer_id).is_some()
-        {
-            drop(subscribers);
-            self.invocation_streams_changed();
-        }
         self.turns.forget(peer_id);
-        self.fail_pending_invocations_of(peer_id);
+        self.end_invocations(peer_id);
         self.catalogue_changed();
     }
 
-    /// Fail every invocation still pending on `peer_id`, which went away
-    /// before completing it: an unjournaled one fails, a journaled one's
-    /// outcome is unknown.
-    fn fail_pending_invocations_of(&self, peer_id: u64) {
+    /// `peer_id` went away: its invocation stream ends, and each invocation
+    /// still pending on it fails, or its outcome is unknown where it was
+    /// journaled.
+    fn end_invocations(&self, peer_id: u64) {
+        if let Ok(mut capabilities) = self.stable_invocation_subscribers.lock() {
+            capabilities.remove(&peer_id);
+        }
+        // Gone already when its app ended the stream as it closed.
+        let ended_by_app = !self
+            .invocation_subscribers
+            .lock()
+            .is_ok_and(|mut subscribers| subscribers.remove(&peer_id).is_some());
+        if !ended_by_app {
+            self.invocation_streams_changed();
+        }
         let unfinished: Vec<(u64, PendingInvocation)> = {
             let Ok(mut pending) = self.pending_invocations.lock() else {
                 return;
@@ -6256,6 +6255,13 @@ impl AppBrokerState {
                 .collect()
         };
         for (id, invocation) in unfinished {
+            tracing::warn!(
+                peer_id,
+                id,
+                ended_by_app,
+                update = ?invocation.update,
+                "collaboration broker: an application went away holding an invocation it never answered"
+            );
             self.answer_unfinished(
                 id,
                 &invocation,
@@ -8764,6 +8770,17 @@ pub(crate) fn unread_invocations(peer: u64) -> usize {
         .try_lock()
         .unwrap_or_else(|_| panic!("a read of peer {peer}'s invocations is outstanding"));
     queue.len()
+}
+
+/// `peer_id`'s stream among `subscribers` while it takes invocations: one its
+/// app ended is gone from them, and one nobody reads any more is closed.
+fn open_stream(
+    subscribers: &HashMap<u64, mpsc::UnboundedSender<InvocationEnvelope>>,
+    peer_id: u64,
+) -> Option<&mpsc::UnboundedSender<InvocationEnvelope>> {
+    subscribers
+        .get(&peer_id)
+        .filter(|sender| !sender.is_closed())
 }
 
 struct InvocationStreamServer {

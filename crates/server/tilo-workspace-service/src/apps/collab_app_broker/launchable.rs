@@ -553,6 +553,22 @@ mod tests {
         open
     }
 
+    /// `up` connects: it publishes its surface and opens its invocation
+    /// stream, whose reading end this is.
+    fn serve(
+        state: &AppBrokerState,
+        up: PublishedSurface,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<InvocationEnvelope> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        (state.invocation_subscribers.lock().expect("subscribers")).insert(up.peer_id, tx);
+        state
+            .surfaces
+            .lock()
+            .expect("surfaces")
+            .insert(up.peer_id, up);
+        rx
+    }
+
     /// `surface(7, workspace)` for the record `record`.
     fn surface_of(workspace: &str, record: &str) -> PublishedSurface {
         let mut surface = surface(7, workspace);
@@ -839,19 +855,14 @@ mod tests {
                     .expect("places")
                     .push((record.map(str::to_owned), place.clone()));
                 let state = weak.upgrade().ok_or("the broker is gone")?;
-                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-                state
-                    .invocation_subscribers
-                    .lock()
-                    .expect("subscribers")
-                    .insert(peer_id, tx);
                 let mut up = surface(peer_id, &workspace.id().to_string());
                 up.actions.extend(also.iter().cloned());
                 if let Some(record) = record {
                     up.route.document_id = record.to_owned();
                 }
-                state.surfaces.lock().expect("surfaces").insert(peer_id, up);
-                streams.send(rx).map_err(|error| error.to_string())
+                streams
+                    .send(serve(&state, up))
+                    .map_err(|error| error.to_string())
             }),
             tilo_test_env::hang_bound(),
         );
@@ -1651,17 +1662,7 @@ mod tests {
         {
             let (state, workspace) = broker(&workspace());
             let (streams, launches, places) = app_comes_up_placed(&state, 8);
-            let (elsewhere_tx, mut elsewhere) = tokio::sync::mpsc::unbounded_channel();
-            state
-                .invocation_subscribers
-                .lock()
-                .expect("subscribers")
-                .insert(7, elsewhere_tx);
-            state
-                .surfaces
-                .lock()
-                .expect("surfaces")
-                .insert(7, surface_of(&workspace, "uuid:other"));
+            let mut elsewhere = serve(&state, surface_of(&workspace, "uuid:other"));
             let target = tilo_actions::remote::application_resource_target(
                 &workspace,
                 APP,
@@ -1753,7 +1754,6 @@ mod tests {
         // run without a window for it.
         {
             let (state, workspace) = broker(&workspace());
-            let (tx, _windowless) = tokio::sync::mpsc::unbounded_channel();
             let mut up = surface(9, &workspace);
             let mut page = action("show-page", tilo_actions::ConfirmationPolicy::None);
             page.operation_kind = tilo_actions::OperationKind::View;
@@ -1764,12 +1764,7 @@ mod tests {
                 .lock()
                 .expect("windowless")
                 .insert(9);
-            state
-                .invocation_subscribers
-                .lock()
-                .expect("subscribers")
-                .insert(9, tx);
-            state.surfaces.lock().expect("surfaces").insert(9, up);
+            let _windowless = serve(&state, up);
             let shows = tilo_actions::ActionAddress::new("files.app", "show-page");
             assert!(state.action_shows(APP, &workspace, &shows));
             assert_eq!(state.ready_peer(APP, &workspace, None, &shows), None);
@@ -1884,17 +1879,12 @@ mod tests {
                 Arc::new(move |app_id, workspace, _, _| {
                     recorded.lock().expect("launches").push(app_id.to_string());
                     let state = weak.upgrade().ok_or("the broker is gone")?;
-                    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-                    state
-                        .invocation_subscribers
-                        .lock()
-                        .expect("subscribers")
-                        .insert(8, tx);
                     let mut up = surface(8, &workspace.id().to_string());
                     up.actions
                         .push(action(open, tilo_actions::ConfirmationPolicy::None));
-                    state.surfaces.lock().expect("surfaces").insert(8, up);
-                    stream.send(rx).map_err(|error| error.to_string())
+                    stream
+                        .send(serve(&state, up))
+                        .map_err(|error| error.to_string())
                 }),
                 tilo_test_env::hang_bound(),
             );
@@ -1924,6 +1914,8 @@ mod tests {
             );
         }
     }
+
+    mod stream_end;
 
     /// What the windowless instance of `APP` is handed, and each app and workspace the host was
     /// asked to run without a window.

@@ -147,10 +147,7 @@ impl AppBrokerState {
                 .stable_invocation_subscribers
                 .lock()
                 .is_ok_and(|streams| streams.contains(&peer))
-            && self
-                .invocation_subscribers
-                .lock()
-                .is_ok_and(|streams| streams.get(&peer).is_some_and(|stream| !stream.is_closed()))
+            && self.invocation_stream(peer).is_some()
             && self.action_directory_roots.lock().is_ok_and(|roots| {
                 roots.get(&peer).is_some_and(|root| {
                     root.app_id == publisher.route.app_id

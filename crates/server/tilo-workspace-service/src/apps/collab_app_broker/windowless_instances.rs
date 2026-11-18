@@ -62,7 +62,7 @@ impl AppBrokerState {
                     && self.shows(surface.peer_id, action)
                     && surface.app_id == app_id
                     && surface.route.cluster_id == workspace
-                    && subscribers.contains_key(&surface.peer_id)
+                    && super::open_stream(&subscribers, surface.peer_id).is_some()
                     && !surface.actions.is_empty()
             })
             .map(|surface| surface.peer_id)
