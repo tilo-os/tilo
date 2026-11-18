@@ -60,7 +60,9 @@ public struct Token: ShapeStyle, Sendable, Equatable {
     /// The two layers of `--shadow`, and the field's own.
     public static let shadowNear = Token(light: 0x13161b, dark: 0x000000, lightOpacity: 0.06, darkOpacity: 0.3)
     public static let shadowFar = Token(light: 0x13161b, dark: 0x000000, lightOpacity: 0.1, darkOpacity: 0.35)
-    public static let fieldShadow = Token(light: 0x13161b, dark: 0x000000, lightOpacity: 0.07, darkOpacity: 0.3)
+    /// The drawing's shadow under the message field: seven per cent of its dark ink in both themes.
+    /// On a dark ground a shadow darker than the ground is a ring about the field, not a shadow.
+    public static let fieldShadow = Token(light: 0x13161b, dark: 0x13161b, lightOpacity: 0.07, darkOpacity: 0.07)
     /// Nothing: a row that is not chosen, a button that is not on.
     public static let clear = Token(light: 0xffffff, dark: 0x000000, lightOpacity: 0, darkOpacity: 0)
     /// White on the person's colour and on a switch.
