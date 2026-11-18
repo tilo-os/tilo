@@ -108,6 +108,7 @@ final class Probe {
                  "workspace": .string(workspace), "s": seconds])
             Task { await look(after: "getting in") }
         case .refused(let why): say(["state": "refused", "why": .string(why), "s": seconds])
+        case .gone(let why): say(["state": "gone", "why": .string(why), "s": seconds])
         case .failed(let why): say(["state": "failed", "why": .string(why), "s": seconds])
         }
     }

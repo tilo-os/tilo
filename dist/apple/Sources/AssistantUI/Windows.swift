@@ -134,7 +134,7 @@ public struct MacWindow: View {
             switch model.session {
             case .none:
                 Rectangle().fill(Token.content)
-            case .signedOut, .asked, .pairing, .confirming:
+            case .signedOut, .reset, .asked, .pairing, .confirming:
                 WayIn()
             case .signedIn:
                 frame
@@ -237,7 +237,7 @@ public struct PhoneRoot: View {
             switch model.session {
             case .none:
                 Rectangle().fill(Token.content).ignoresSafeArea()
-            case .signedOut, .asked, .pairing, .confirming:
+            case .signedOut, .reset, .asked, .pairing, .confirming:
                 WayIn()
             case .signedIn:
                 NavigationStack(path: $path) {

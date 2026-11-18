@@ -88,6 +88,9 @@ enum Screens {
         var out = MemorySource.Content()
         out.session = .signedOut
         await add("phone-way-in", out)
+        var reset = MemorySource.Content()
+        reset.session = .reset
+        await add("phone-way-in-reset", reset)
         await add("phone-empty", empty)
         let live = await model(empty)
         screens.append(Screen(name: "phone-live-activities", size: .zero, view: rooted(live, scheme) { LiveBoard() }))
@@ -130,6 +133,9 @@ enum Screens {
         var out = MemorySource.Content()
         out.session = .signedOut
         screens.append(Screen(name: "way-in", size: window, view: rooted(await model(out), scheme) { MacWindow() }))
+        var reset = MemorySource.Content()
+        reset.session = .reset
+        screens.append(Screen(name: "way-in-reset", size: window, view: rooted(await model(reset), scheme) { MacWindow() }))
         // The first run: what Tilo asks before it pairs, and the provider step in the main chat.
         var asked = MemorySource.Content()
         asked.session = .asked(Drawing.pairingAsk)

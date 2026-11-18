@@ -102,6 +102,11 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         reachNow.set(reach)
     }
 
+    /// As if the person's Tilo had said where this device stands.
+    public func set(_ session: Session) {
+        sessionNow.set(session)
+    }
+
     public func set(_ agent: SubAgent) {
         agents.change { list in
             if let index = list.firstIndex(where: { $0.id == agent.id }) { list[index] = agent }
