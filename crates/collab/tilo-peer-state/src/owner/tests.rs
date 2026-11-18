@@ -577,15 +577,24 @@ async fn a_write_another_local_writer_passed_is_sequenced_in_the_owners_turn() {
     let earlier = unordered_edit(&joined, "signed first");
     let later = unordered_edit(&joined, "signed second");
     assert!(envelope(&earlier).seq < envelope(&later).seq);
-    let (taken, _) = joined
+    let (taken_later, _) = joined
         .owner
         .commit_local_document(later.clone(), &key, joined.now)
         .await
         .unwrap();
+    let heads = joined
+        .owner
+        .with_current(joined.workspace, |view| {
+            Ok(view.peer().governance().heads())
+        })
+        .unwrap();
+    let heads: Vec<[u8; 4]> = heads.iter().map(collab_types::governance_head).collect();
+    let (taken_op, later_op) = (envelope(&taken_later), envelope(&later));
     assert_eq!(
-        envelope(&taken),
-        envelope(&later),
-        "a write past the floor is taken as it is"
+        (taken_op.seq, &taken_op.payload, &taken_op.governance),
+        (later_op.seq, &later_op.payload, &heads),
+        "a write past the floor is taken under its own number, naming the governance it is \
+         taken under"
     );
     assert_eq!(
         joined
@@ -616,7 +625,7 @@ async fn a_write_another_local_writer_passed_is_sequenced_in_the_owners_turn() {
     joined
         .owner
         .with_current(joined.workspace, |view| {
-            for write in [&later, &taken] {
+            for write in [&taken_later, &taken] {
                 assert!(
                     view.peer()
                         .lookup_exact_local_document(APP, "", &envelope(write), joined.now)
@@ -1484,4 +1493,97 @@ async fn a_draft_under_a_write_its_device_sent_meanwhile_is_saved() {
             })
             .unwrap();
     }
+}
+
+/// An app's write, signed by the identity service before the owner's turn and
+/// naming no governance, is admitted naming the governance its owner admitted
+/// it under: a peer that has not heard of the role it was written under yet
+/// holds it rather than refusing it, and takes it in once the role arrives.
+#[tokio::test]
+async fn an_apps_write_names_the_governance_its_owner_admitted_it_under() {
+    let (fixture, mut governor_peer, governor_key) =
+        crate::owner::testing::governed_fixture_at(tilo_clock::wall());
+    let joined = enrolled_with(fixture);
+    let (owner, workspace, now) = (&joined.owner, joined.workspace, joined.now);
+    let person = SigningKey::from_bytes(&[64; 32]);
+    let device = crate::owner::testing::certificate(&person, &member(), "Member");
+    let governor = governor_key.verifying_key().to_bytes();
+
+    // The member is made a reader, which is all the receiver hears of, then an editor again.
+    let mut set_role = |role| {
+        assert!(
+            governor_peer
+                .governance_mut()
+                .set_member_role(person.verifying_key().to_bytes(), role, &governor_key, now)
+                .unwrap()
+        );
+        governor_peer.clone()
+    };
+    let mut receiver = set_role(crate::join::Role::Viewer);
+    let governor_peer = set_role(crate::join::Role::Editor);
+    owner
+        .receive(
+            workspace,
+            TransportOrigin::ServerDelta(governor),
+            governor_peer.workspace_message(),
+            now,
+        )
+        .unwrap();
+
+    let mut request = edit_with(owner, workspace, now, "written by an app");
+    let CommitOperation::Document { envelope, .. } = &mut request.operation else {
+        panic!("the edit is a document write")
+    };
+    envelope.governance = Vec::new();
+    collab_types::sign_op(envelope, &member()).unwrap();
+    let (committed, _) = owner
+        .commit_local_document(request, &member(), now)
+        .await
+        .unwrap();
+    let CommitOperation::Document { envelope, .. } = committed.operation else {
+        panic!("the commit is a document write")
+    };
+    let heads = owner
+        .with_current(workspace, |view| Ok(view.peer().governance().heads()))
+        .unwrap();
+    assert!(!heads.is_empty());
+    let heads: Vec<[u8; 4]> = heads.iter().map(collab_types::governance_head).collect();
+    assert_eq!(
+        envelope.governance, heads,
+        "it names its owner's governance"
+    );
+    collab_types::verify_op(&envelope).expect("signed for what it names");
+
+    let topic = |peer: &crate::StatePeer| {
+        AutoCommit::load(&peer.document(APP, "").unwrap())
+            .unwrap()
+            .get_all(ROOT, "topic")
+            .unwrap()
+            .iter()
+            .any(|(value, _)| value.as_str() == Some("written by an app"))
+    };
+    let write = NeighbourMsg::AppDocument {
+        peer: crate::peer_handle(&device.device_public_key),
+        app_id: APP.into(),
+        cluster_id: WORKSPACE.into(),
+        document_id: String::new(),
+        envelope,
+        own: None,
+    };
+    receiver
+        .receive_from(
+            TransportOrigin::ServerDelta(device.device_public_key),
+            write,
+            now,
+        )
+        .expect("held, not refused");
+    assert!(!topic(&receiver), "nothing of it is taken in yet");
+    receiver
+        .receive_from(
+            TransportOrigin::ServerDelta(governor),
+            governor_peer.workspace_message(),
+            now,
+        )
+        .unwrap();
+    assert!(topic(&receiver), "taken in once the role arrived");
 }

@@ -97,7 +97,7 @@ impl PeerGovernance<'_> {
     /// The governance's heads now.
     #[must_use]
     pub fn heads(self) -> Vec<[u8; 32]> {
-        self.peer.governance_heads()
+        self.peer.governance_heads().unwrap_or_default()
     }
     /// Whether the governance carries a device's removal without its cut
     /// ([`crate::removals`]): one recorded before cuts were kept. Until the

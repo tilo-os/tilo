@@ -751,12 +751,18 @@ impl SignedOp {
     /// none, and is decided at once as before.
     #[must_use]
     pub fn with_governance(mut self, heads: &[[u8; 32]]) -> Self {
+        self.name_governance(heads);
+        self
+    }
+
+    /// Name `heads` as the governance this op was written under, as
+    /// [`Self::with_governance`] does.
+    pub fn name_governance(&mut self, heads: &[[u8; 32]]) {
         self.governance = if heads.len() > MAX_GOVERNANCE_HEADS {
             Vec::new()
         } else {
             heads.iter().map(governance_head).collect()
         };
-        self
     }
 
     /// Whether this op is the whole record rather than a change to it: a
