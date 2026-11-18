@@ -80,6 +80,7 @@ async fn recv_delta_into(session: &ServerCoeditSession, doc: &mut AutoCommit) {
             | Inbound::DocumentOpened { .. }
             | Inbound::Committed { .. }
             | Inbound::CommitRefused { .. }
+            | Inbound::ChangeRefused { .. }
             | Inbound::Voice(_) => {}
         }
     }
@@ -346,6 +347,7 @@ async fn catch_up_first_connection(
             | Inbound::DocumentOpened { .. }
             | Inbound::Committed { .. }
             | Inbound::CommitRefused { .. }
+            | Inbound::ChangeRefused { .. }
             | Inbound::Voice(_)) => {
                 panic!("unexpected inbound {other:?}")
             }
