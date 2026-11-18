@@ -331,15 +331,12 @@ impl Workspaces {
     ) {
         let (mut changed, mut again) = (false, false);
         for retained in retained {
-            // What the server's device wrote is retained under its key, the
-            // governor's own commits and its sessions' writes alike: the
-            // first are the governor's copy already, the second it took in
-            // as they came (`absorb`). Neither is replayed into it.
-            if retained.author == self.inner.host.cert.device_public_key {
-                continue;
-            }
+            let own = retained.author == self.inner.host.cert.device_public_key;
             let message: neighbour_wire::NeighbourMsg = match postcard::from_bytes(&retained.body) {
                 Ok(message) => message,
+                // Not all the server's device retains under its key is a
+                // write to a document.
+                Err(_) if own => continue,
                 Err(error) => {
                     tracing::warn!(
                         author = %hex::encode(retained.author),
@@ -349,6 +346,20 @@ impl Workspaces {
                     continue;
                 }
             };
+            // What the server's device wrote is retained under its key, the
+            // governor's own commits and its sessions' writes alike. The
+            // first are the governor's copy already, each written through
+            // as it was made. The second (the actions the server carries
+            // out for members, its agents' answers) the governor took in as
+            // they came, in memory, and writes through within
+            // `KEEP_FOLLOWED`: a server killed inside that time starts
+            // without them, and nobody sends them again. An agent's answer
+            // that had ended then read as only taken, and its turn was owed
+            // again after every answer. So those are replayed like a
+            // member's.
+            if own && !written_by_a_session(&message) {
+                continue;
+            }
             let followed = workspace.follow(retained.author, message.clone());
             // The link keeps what the workspace holds from before a device
             // joins it, this start's replay included: a device that joins now
@@ -383,4 +394,15 @@ impl Workspaces {
             self.replay_soon(workspace.workspace().to_owned());
         }
     }
+}
+
+/// Whether `message`, which the server's device wrote, is a write one of its
+/// sessions made: a change to a document. A whole document under that key is
+/// the governor's own commit, and its copy already.
+fn written_by_a_session(message: &neighbour_wire::NeighbourMsg) -> bool {
+    matches!(
+        message,
+        neighbour_wire::NeighbourMsg::AppDocument { envelope, .. }
+            if !envelope.is_whole_resource()
+    )
 }
