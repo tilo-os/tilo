@@ -193,6 +193,7 @@
 "add-connection-draft" = "Connect this service: ";
 "way-in-title" = "Your assistant, on this device";
 "way-in-lead" = "Pair this device with your Tilo. Your assistant, its tasks and everything it set up come with you.";
+"way-in-reset" = "Your Tilo was reset since this device was paired, so it has to be paired again.";
 "scan-code" = "Scan code";
 "paste-link" = "Paste link";
 "way-in-help" = "Both come from “Pair a new device” on a device where you are signed in.";

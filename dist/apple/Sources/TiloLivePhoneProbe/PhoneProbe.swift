@@ -115,6 +115,7 @@ final class PhoneProbe: ObservableObject {
             PhoneProbe.say(["state": "open", "workspace": .string(workspace), "s": seconds])
             await look(after: "getting in")
         case .refused(let why): PhoneProbe.say(["state": "refused", "why": .string(why), "s": seconds])
+        case .gone(let why): PhoneProbe.say(["state": "gone", "why": .string(why), "s": seconds])
         case .failed(let why):
             PhoneProbe.say(["state": "failed", "why": .string(why), "s": seconds])
             await details()

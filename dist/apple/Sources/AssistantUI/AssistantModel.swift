@@ -175,6 +175,13 @@ public final class AssistantModel {
         switch stands {
         case .asked(let ask): pairingSaid = Array(ask.said.prefix(2))
         case .signedOut, .signedIn: pairingSaid = []
+        case .reset:
+            // What the window showed of the workspace that is gone is put away with it. What
+            // the person wrote and did not send stays in its field for when they are back.
+            pairingSaid = []
+            place = .chat(.main)
+            keyStep = nil
+            openReplies = [:]
         case .pairing, .confirming: break
         }
         session = stands

@@ -482,6 +482,21 @@ which is when the system keeps a picture of the window.
 While a device where the person is signed in asks about a code, the window shows that code
 large (`Session.confirming`), so the two are compared before anyone approves.
 
+**A workspace that is gone.** A device goes back to its way in by itself when Tilo's page says
+that the workspace it was let into is no longer there: the site's server was set up again
+since, or the workspace was deleted. The engine reads the page's own name for the case
+(`data-failure` `gone` or `deleted` from its failure screen) and, for a device that kept another
+server's certificate, the one sentence today's page has for it (`TiloEngine.resetSaid`, which a
+test holds against `web/peer.mjs`). It then is `gone` and loads nothing again. A page whose
+server turns its open session away (`data-refusal`) still shows what it showed: the engine
+loads it again, as a page that stopped, and its entry says which of these it is. `TiloSource`
+puts away what the app held, as at a sign-out, asks nothing of a server that holds none of it,
+and says `Session.reset`: the way in with one sentence that says why, at every start until the
+device is paired again. What the person typed and did not send stays in its field. A refusal
+that names no such case (a person taken out of a workspace, a device removed from its
+person's) changes nothing: the app stands as it did. `WorkspaceGoneTests` checks this against a
+page that speaks as Tilo's does, `WayInAfterResetTests` in the window.
+
 **Read out.** The Mac's window is read in three named parts in the order a person reads it:
 the sidebar, the conversation with its field, the Tasks panel. Every control is named by
 what it does, the drawing's dots between facts are pauses and not words, the person's own
