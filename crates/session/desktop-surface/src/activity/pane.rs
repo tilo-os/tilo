@@ -2641,8 +2641,13 @@ fn describe_workspace_changes(
                     .unwrap_or_default()
                     .with_change(ui::tilo_actions::ChangeKind::Housekeeping),
             );
-        } else if entry.context.is_none() {
-            // The workspace's own storage keys are not words anyone should read.
+        } else if entry
+            .context
+            .as_ref()
+            .is_none_or(|context| context.what.is_none())
+        {
+            // The workspace's own storage keys are not words anyone should read, and a change
+            // that names only who made it says nothing of its own about what it did.
             entry.summary = t("activity-event-updated");
         }
     }

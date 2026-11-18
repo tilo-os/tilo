@@ -136,8 +136,9 @@ impl StatePeer {
             if workspace::media::parse(held).map_err(err)?.is_some() {
                 workspace::media::refresh_authorization(held, &mut doc).map_err(err)?;
             }
-            // Only what the change wrote can differ from what is held.
-            let written = doc.get_changes(before);
+            // Only what the change wrote can differ from what is held: the rows of the change
+            // committed above, not the operations still open here, which reading the document's
+            // changes would close without a stamp.
             let rows = crate::workspace::changed_rows_by(held, &doc, &written, false);
             // Every governance write a test makes checks the narrowed
             // reading against the whole one.
