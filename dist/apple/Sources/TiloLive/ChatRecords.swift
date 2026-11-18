@@ -64,11 +64,14 @@ public struct ChatMessage: Sendable, Equatable, Identifiable {
     public let fields: JSON
 
     /// What a read of a conversation asks of each message: all that a client draws.
-    static let drawn = ["channel", "author", "ts", "text", "question", "share", "attachments", "work", "parent", "stopped", "cause", "view"]
-    /// What a read of a conversation names: `drawn`, and whom a message's author acted for.
-    static let wanted = drawn + ["acting"]
+    static let drawn = ["channel", "author", "ts", "text", "question", "share", "attachments", "work", "parent", "stopped", "cause", "view", "quoted"]
+    /// What a read of a conversation names: `drawn`, whom a message's author acted for, and the
+    /// message it answers.
+    static let wanted = drawn + ["acting", "answers"]
     /// The fields of `wanted` that a page's Chat may keep on no message yet.
-    static let newer = ["acting", "view"]
+    static let newer = ["acting", "view", "answers"]
+    /// Chat's own name for the field that says which conversation a message is in.
+    static let place = drawn[0]
 
     public init?(id: String, fields: JSON) {
         guard let conversation = fields["channel"]?.string, let author = ChatMember(fields["author"]),
@@ -148,7 +151,32 @@ extension TiloEngine {
         // A page whose read takes `where` and `fields` reads one conversation whole in one ask.
         let takes = Set((read["params"]?.array ?? []).compactMap { $0["name"]?.string })
         found["chat.messages.narrows"] = takes.isSuperset(of: ["where", "fields"]) ? "yes" : "no"
+        // A Chat that keeps which message a message answers says so in what its post takes.
+        let post = listed.first { $0["resource_kind"]?.string == "chat.messages" && $0["address"]?["action"]?.string == "post" }
+        let given = Set((post?["params"]?.array ?? []).compactMap { $0["name"]?.string })
+        found["chat.post.answers"] = given.contains("answers") ? "yes" : "no"
         return resource
+    }
+
+    /// Whether the page's Chat keeps which message a message answers: its post takes `answers`.
+    /// False while the page has not published Chat's messages.
+    public func chatKeepsAnswers() async throws -> Bool {
+        _ = try await chatMessagesResource()
+        return found["chat.post.answers"] == "yes"
+    }
+
+    /// Chat's own post, as the person, into a conversation that is there: the words answer the
+    /// message `answered` of that conversation, named as Chat's actions name a message, whole or
+    /// the part of its words that `quoted` says (`text`, and where it stands as `start` and
+    /// `end`). `attached` is what the message carries, as `chatSend` takes it. Only a Chat that
+    /// keeps which message a message answers takes this (`chatKeepsAnswers`).
+    public func chatPost(_ text: String, in conversation: String, answering answered: String, quoted: JSON? = nil,
+                         carrying attached: [JSON] = []) async throws {
+        guard let resource = try await chatMessagesResource() else { throw Problem.notOpen }
+        var message: [String: JSON] = [ChatMessage.place: .string(conversation), "text": .string(text), "answers": .string(answered)]
+        if let quoted { message["quoted"] = quoted }
+        if !attached.isEmpty { message["attachments"] = .array(attached) }
+        try await invoke("post", on: resource, message)
     }
 
     /// The newest messages' items, oldest first, at most `count` (Chat answers 200 at most).

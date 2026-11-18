@@ -28,6 +28,11 @@ public struct Composer: View {
         let files = model.drafts[chat]?.files ?? []
         let isEmpty = (model.drafts[chat] ?? Draft(text: "")).isEmpty
         VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 10) {
+            if let answered = model.drafts[chat]?.answers {
+                // What is answered stands above the words, with a cross that drops it.
+                AnsweredLine(answered: answered, drop: { model.drafts[chat]?.answers = nil })
+            }
             HStack(alignment: .top, spacing: 12) {
                 ZStack(alignment: .topLeading) {
                     if text.wrappedValue.isEmpty {
@@ -54,6 +59,7 @@ public struct Composer: View {
                 .foregroundStyle(isEmpty && !stops ? Token.ink3 : Token.ink)
                 .disabled(isEmpty && !stops)
                 .accessibilityLabel((stops ? AssistantWords.stop : AssistantWords.send).said)
+            }
             }
             .padding(16)
             .background {

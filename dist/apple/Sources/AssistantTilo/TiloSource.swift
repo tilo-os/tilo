@@ -1256,9 +1256,11 @@ public final class TiloSource: AssistantSource {
         var waiting: [Item.ID: String] = [:]
         var offered: [Item.ID: ToldThing] = [:]
         var shown: [String: Item.ID] = [:]
+        // The messages held, by the name another message answers one by.
+        let held = Dictionary(read.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
         let made = read.compactMap { message -> Item? in
             guard causes[message.name] == nil else { return nil }
-            var item = piece(of: message, in: chat, isFirst: message.id == read.first?.id)
+            var item = piece(of: message, in: chat, isFirst: message.id == read.first?.id, among: held)
             let cause = message.fields["parent"]?.string.flatMap { causes[$0] == nil ? nil : $0 }
             if let cause, let label = causes[cause], !label.isEmpty { item.task = TaskLine(task: .init(cause), title: label) }
             // A thing told names the message itself, or the cause's message it is the answer to.
@@ -1423,7 +1425,7 @@ public final class TiloSource: AssistantSource {
         await saySeen(told.id, by: wanted.id)
     }
 
-    private func piece(of message: ChatMessage, in chat: Chat, isFirst: Bool) -> Item {
+    private func piece(of message: ChatMessage, in chat: Chat, isFirst: Bool, among held: [String: ChatMessage] = [:]) -> Item {
         let id = Item.ID(message.id)
         cards.see(message, as: id)
         let fields = message.fields
@@ -1482,7 +1484,34 @@ public final class TiloSource: AssistantSource {
         return Item(id: id, at: message.at,
                     .message(Message(author, message.text, attachments: TiloFiles.attachments(of: message), live: live,
                                      keyFault: author == .assistant ? TiloSource.keyFault(of: fields["work"]) : nil,
-                                     turn: author == .assistant ? turn(of: message) : nil)))
+                                     turn: author == .assistant ? turn(of: message) : nil,
+                                     answers: TiloSource.answered(by: message, among: held))))
+    }
+
+    /// What a message answers, as Chat keeps it (`answers`, and `quoted` for a part of that
+    /// message's words): the piece, and its words where this device holds the message.
+    static func answered(by message: ChatMessage, among held: [String: ChatMessage]) -> Answered? {
+        guard let name = message.fields["answers"]?.string, !name.isEmpty else { return nil }
+        let piece = held[name]?.id ?? (message.id.split(separator: "/").dropLast().map(String.init) + [name]).joined(separator: "/")
+        if let part = message.fields["quoted"]?["text"]?.string, !part.isEmpty {
+            return Answered(Item.ID(piece), words: part, isPart: true)
+        }
+        return Answered(Item.ID(piece), words: held[name]?.text ?? "")
+    }
+
+    /// The name Chat's actions take for a piece's message: the last part of its item.
+    static func name(of piece: Item.ID) -> String {
+        piece.value.split(separator: "/").last.map(String.init) ?? piece.value
+    }
+
+    /// The person's words with what they answer above them as a quote, every line of it marked:
+    /// one line of a message that is answered whole, a marked part whole.
+    static func quoting(_ answered: Answered, above text: String) -> String {
+        let lines = Markdown.copied(answered.words).split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        let quoted = answered.isPart ? lines : Array(lines.prefix(1))
+        guard !quoted.isEmpty else { return text }
+        return quoted.map { "> \($0)" }.joined(separator: "\n") + "\n\n" + text
     }
 
     /// What the turn at work on a reply does, as this device saw it.
@@ -1539,12 +1568,25 @@ public final class TiloSource: AssistantSource {
             guard let id = feeds[chat]?.conversation else { throw SourceProblem.refused("This sub-agent has no conversation yet") }
             to = ChatRecipient(.conversation, id: id, name: agent.value)
         }
+        // The conversation a reply is posted into: the one the answered message stands in.
+        let conversation = feeds[chat]?.conversation ?? (to.kind == .conversation ? to.id : nil)
         try await taken {
             // The picked files go into the person's workspace first, a piece at a time. One
             // message then carries the words and names each file. A file that did not go in
             // whole sends nothing.
             let carried = try await TiloFiles.carried(draft.files, through: self.engine)
-            _ = try await self.engine.chatSend(draft.text, to: to, carrying: carried)
+            guard let answered = draft.answers, let conversation else {
+                _ = try await self.engine.chatSend(draft.text, to: to, carrying: carried)
+                return
+            }
+            // A Chat that keeps which message a message answers is told by its own post. One that
+            // does not yet is sent the answered line as a quote above the person's words: their
+            // assistant is told what is answered either way, and nothing is kept in the app.
+            if try await self.engine.chatKeepsAnswers() {
+                try await self.engine.chatPost(draft.text, in: conversation, answering: TiloSource.name(of: answered.piece), carrying: carried)
+            } else {
+                _ = try await self.engine.chatSend(TiloSource.quoting(answered, above: draft.text), to: to, carrying: carried)
+            }
         }
     }
 

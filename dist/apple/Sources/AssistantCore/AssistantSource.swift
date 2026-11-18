@@ -223,10 +223,14 @@ public struct Draft: Equatable, Sendable {
     /// Markdown, as typed.
     public var text: String
     public var files: [File]
+    /// The message of the conversation these words answer, where the person chose one. It is
+    /// kept here and nowhere else until the words are sent.
+    public var answers: Answered?
 
-    public init(text: String, files: [File] = []) {
+    public init(text: String, files: [File] = [], answers: Answered? = nil) {
         self.text = text
         self.files = files
+        self.answers = answers
     }
 
     public var isEmpty: Bool {
