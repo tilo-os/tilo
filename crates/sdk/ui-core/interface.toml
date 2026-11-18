@@ -5,7 +5,7 @@
 # App ↔ shell: what an app and the session shell say on the shell-ui
 # connection the launcher hands the app.
 name = "shell-ui"
-version = 34
+version = 35
 version_const = "crates/sdk/ui-core/src/floating_surface.rs:FLOATING_SURFACE_PROTOCOL_VERSION"
 encoding = "json"
 served_to_apps = true
@@ -19,7 +19,6 @@ sources = [
     "crates/sdk/ui-core/src/window_share.rs",
     "crates/sdk/ui-core/src/widget/toast.rs",
     "crates/sdk/ui-core/src/widget/find_bar.rs",
-    "crates/sdk/ui-core/src/window_link.rs",
     "crates/sdk/ui-core/src/search/request.rs",
     "crates/sdk/ui-core/src/action_locus.rs",
     "crates/sdk/ui-core/src/shared_selection.rs",
@@ -40,7 +39,7 @@ sources = [
     "crates/collab/actions/src/outcome.rs",
     "crates/collab/collab-types/src/presence/hue.rs",
 ]
-roots = ["FloatingSurfaceClientMessage", "FloatingSurfaceHostMessage", "WindowRequest"]
+roots = ["FloatingSurfaceClientMessage", "FloatingSurfaceHostMessage"]
 
 [opaque]
 Value = "serde_json::Value: any JSON value"
@@ -750,12 +749,6 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "WindowOffer.find" = "FindAbilities optional"
 "WindowOffer.history" = "Option<HistoryOffer> optional"
 "WindowOffer.search" = "SearchOffer optional"
-"WindowRequest" = "struct"
-"WindowRequest.collaboration" = "bool optional"
-"WindowRequest.instance" = "u64"
-"WindowRequest.open" = "Option<String> optional"
-"WindowRequest.reveal" = "Option<String> optional"
-"WindowRequest.shell_ui" = "bool optional"
 "WindowTarget" = "struct"
 "WindowTarget.actions" = "Vec<TargetAction>"
 "WindowTarget.identity" = "Option<String> optional"

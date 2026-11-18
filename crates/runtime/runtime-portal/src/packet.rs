@@ -83,6 +83,7 @@ pub trait Packet: Serialize + DeserializeOwned {
     }
 }
 
+#[cfg(unix)]
 fn invalid(what: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what)
 }
@@ -95,7 +96,11 @@ fn unsupported() -> io::Error {
     )
 }
 
-fn send<T: Packet + ?Sized>(socket: &Descriptor, message: &T) -> io::Result<()> {
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "off Unix a descriptor has no values, and its callers hold a reference to one"
+)]
+fn send<T: Packet>(socket: &Descriptor, message: &T) -> io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::fd::{AsFd as _, BorrowedFd};
@@ -106,7 +111,11 @@ fn send<T: Packet + ?Sized>(socket: &Descriptor, message: &T) -> io::Result<()> 
             .unwrap_or_default();
         let encoded =
             encoded.map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-        if encoded.is_empty() || encoded.len() > MAX_PACKET || raw.len() > crate::message::MAX_FDS {
+        // An empty packet with no descriptors is how the socket reads its end.
+        if (encoded.is_empty() && raw.is_empty())
+            || encoded.len() > MAX_PACKET
+            || raw.len() > crate::message::MAX_FDS
+        {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         // SAFETY: every descriptor was read from a field of `message`, which stays
@@ -124,6 +133,10 @@ fn send<T: Packet + ?Sized>(socket: &Descriptor, message: &T) -> io::Result<()> 
     }
 }
 
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "off Unix a descriptor has no values, and its callers hold a reference to one"
+)]
 fn receive<T: Packet>(socket: &Descriptor, wait: bool) -> io::Result<Option<T>> {
     #[cfg(unix)]
     {
@@ -144,6 +157,7 @@ fn receive<T: Packet>(socket: &Descriptor, wait: bool) -> io::Result<Option<T>> 
 }
 
 /// The message `bytes` hold, with the descriptors `fds` in the fields that name them.
+#[cfg(unix)]
 fn decode<T: Packet>(bytes: &[u8], fds: Vec<Descriptor>) -> io::Result<T> {
     INCOMING.with(|incoming| *incoming.borrow_mut() = Some(fds.into()));
     let decoded = postcard::take_from_bytes::<T>(bytes);
@@ -193,8 +207,9 @@ pub mod fd {
         }
         #[cfg(not(unix))]
         {
-            let _ = serializer;
-            match *fd {}
+            use serde::ser::Error as _;
+            let _ = (fd, serializer);
+            Err(S::Error::custom("there are no descriptors here"))
         }
     }
 

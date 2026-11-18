@@ -18,10 +18,10 @@ use super::{ApiAsk, SessionServices, WAIT};
 fn installed_apps(
     kept: &BTreeSet<String>,
 ) -> (
-    Vec<runtime_portal::tilolang_process::App>,
+    Vec<runtime_portal::process_link::App>,
     BTreeMap<String, String>,
 ) {
-    use runtime_portal::tilolang_process::App;
+    use runtime_portal::process_link::App;
     let mut apps = Vec::new();
     let mut documents_under = BTreeMap::new();
     let mut named: BTreeSet<String> = kept.clone();

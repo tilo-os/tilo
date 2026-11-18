@@ -22,9 +22,6 @@ pub const STORAGE_MOUNT: &str = "/run/tilolang-process/storage";
 /// The zone database and the device's zone, which the host's clock reads the person's day by.
 pub const ZONE_PATHS: [&str; 2] = ["/usr/share/zoneinfo", "/etc/localtime"];
 
-/// The descriptor the process finds its socket at.
-pub const SOCKET_CHILD_FD: RawFd = 3;
-
 /// The seccomp filters' descriptors in the sandbox's setup.
 const CLONE3_COMPAT_FD: RawFd = crate::services::CLONE3_COMPAT_SECCOMP_CHILD_FD;
 const BASELINE_FD: RawFd = crate::services::BASELINE_SECCOMP_CHILD_FD;
@@ -69,11 +66,11 @@ pub fn bwrap_argv(
     for (name, value) in [
         ("PATH", crate::sandbox::SANDBOX_PATH.to_owned()),
         (
-            runtime_portal::tilolang_process::SOCKET_FD_ENV,
-            SOCKET_CHILD_FD.to_string(),
+            runtime_portal::process_link::FD_ENV,
+            runtime_portal::process_link::CHILD_FD.to_string(),
         ),
         (
-            runtime_portal::tilolang_process::STORAGE_ENV,
+            runtime_portal::process_link::STORAGE_ENV,
             STORAGE_MOUNT.to_owned(),
         ),
     ] {
@@ -122,7 +119,7 @@ pub fn bwrap_argv(
         STORAGE_MOUNT.to_owned(),
         "--net-restricted".to_owned(),
         "--keep-fd".to_owned(),
-        SOCKET_CHILD_FD.to_string(),
+        runtime_portal::process_link::CHILD_FD.to_string(),
         "--".to_owned(),
         runtime_mount.join(BIN).display().to_string(),
     ]);
@@ -140,7 +137,7 @@ pub struct VerifiedInstance {
     /// The identity of the publisher whose key signed the package: the author whose host runs it.
     pub publisher: [u8; 32],
     /// Its module, from the verified payload.
-    pub module: runtime_portal::tilolang_process::Module,
+    pub module: runtime_portal::process_link::Module,
 }
 
 impl VerifiedInstance {
@@ -172,7 +169,7 @@ pub fn verified_instance(
         .filter(|runtime| is_tilolang(runtime))
         .ok_or_else(not_tilolang)?;
     let app_runtime = manifest.runtime.clone().ok_or_else(not_tilolang)?;
-    let module = runtime_portal::tilolang_process::Module::read(payload_root)?;
+    let module = runtime_portal::process_link::Module::read(payload_root)?;
     Ok(VerifiedInstance {
         runtime,
         app_runtime,
@@ -254,7 +251,7 @@ pub fn run_tilolang_process(
         .env_clear()
         .stdin(std::process::Stdio::null());
     let placed = [
-        (socket.as_raw_fd(), SOCKET_CHILD_FD),
+        (socket.as_raw_fd(), runtime_portal::process_link::CHILD_FD),
         (clone3.as_raw_fd(), CLONE3_COMPAT_FD),
         (baseline.as_raw_fd(), BASELINE_FD),
     ];
@@ -315,7 +312,7 @@ mod tests {
                 runtime: "tilolang/0.1.0+tilolang".to_owned(),
                 app_runtime: app_runtime.to_owned(),
                 publisher: [0; 32],
-                module: runtime_portal::tilolang_process::Module::default(),
+                module: runtime_portal::process_link::Module::default(),
             };
             assert!(instance(&format!("tilo-runtime/{baked}")).runs_here());
             assert!(
@@ -387,12 +384,12 @@ mod tests {
                 "the zone the person chose for the session: {env:?}"
             );
             assert!(env.contains(&(
-                runtime_portal::tilolang_process::SOCKET_FD_ENV.to_owned(),
-                "3".to_owned()
+                runtime_portal::process_link::FD_ENV.to_owned(),
+                runtime_portal::process_link::CHILD_FD.to_string()
             )));
             assert!(
                 !env.iter().any(|(name, _)| name.starts_with("TILO_SVC_")
-                    && name != runtime_portal::tilolang_process::SOCKET_FD_ENV
+                    && name != runtime_portal::process_link::FD_ENV
                     || name == "WAYLAND_DISPLAY"
                     || name == "TILO_WORKSPACE_ID"),
                 "no service, display or app identity: {env:?}"
@@ -408,7 +405,7 @@ mod tests {
                     .filter(|w| w[0] == "--keep-fd")
                     .map(|w| w[1].clone())
                     .collect::<Vec<_>>(),
-                ["3"],
+                [runtime_portal::process_link::CHILD_FD.to_string()],
                 "only the socket is kept"
             );
             assert_eq!(

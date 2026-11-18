@@ -2515,7 +2515,7 @@ enum Applying {
     /// The change has not arrived on its connection yet.
     Awaiting(Vec<u8>),
     /// It arrived; it runs once what the document publishes is built.
-    Arrived(Box<runtime_portal::tilolang_process::Change>),
+    Arrived(Box<runtime_portal::process_link::Change>),
     /// It ran: its answer, sent once the workspace was handed what it wrote.
     Ran(serde_json::Value),
     /// The answer was sent.
@@ -2683,7 +2683,7 @@ impl Applier {
     fn read_change(
         &self,
         read: &mut Vec<u8>,
-    ) -> Result<Option<runtime_portal::tilolang_process::Change>, String> {
+    ) -> Result<Option<runtime_portal::process_link::Change>, String> {
         use std::io::Read as _;
         let mut chunk = [0_u8; 4096];
         loop {
@@ -2709,10 +2709,7 @@ impl Applier {
     /// whether or not any window ever made it. A package may declare several roots
     /// (`root viewing: Viewing`, `root Shell`); the change names which. It is applied as the
     /// change's invoker's step, before the change. Whether it made it.
-    fn make_root(
-        &mut self,
-        change: &runtime_portal::tilolang_process::Change,
-    ) -> Result<bool, String> {
+    fn make_root(&mut self, change: &runtime_portal::process_link::Change) -> Result<bool, String> {
         let prefix = tilolang_tilo::publish::resource_id(&self.spec.app, "");
         // The resource's document: an item's path starts with it.
         let Some(doc) = change
@@ -2767,7 +2764,7 @@ impl Applier {
     }
 
     /// Run `change` against the document as it is now and apply what it wrote: its answer.
-    fn apply(&mut self, change: &runtime_portal::tilolang_process::Change) -> serde_json::Value {
+    fn apply(&mut self, change: &runtime_portal::process_link::Change) -> serde_json::Value {
         let invoker: ActionInvoker = match serde_json::from_value(change.invoker.clone()) {
             Ok(invoker) => invoker,
             Err(error) => {

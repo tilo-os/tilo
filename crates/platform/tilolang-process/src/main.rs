@@ -1,7 +1,7 @@
 //! `tilolang-process`: the process the session starts as a tilolang host, for one workspace and author.
 //!
-//! It holds its api (`TILO_SVC_TILOLANG_HOST_FD`) and its storage
-//! (`TILO_TILOLANG_HOST_STORAGE`) and nothing else. It waits on the API, its instances' windows,
+//! It holds its api (its process link, `TILO_SVC_PROCESS_FD`) and its storage
+//! (`TILO_TILOLANG_PROCESS_STORAGE`) and nothing else. It waits on the API, its instances' windows,
 //! its own wake and a stop (`stop`), and runs a frame of every instance when one of them has
 //! something for it. It ends when the session closes its api and its last window is gone, or
 //! when it is asked to stop: both drop the instances, and every index they keep closes with them
@@ -12,14 +12,12 @@
 //! read by its instance's frame, and an opening window is waited on only for closing. An idle
 //! host's wait does not end.
 //!
-//! Whatever ends it, the host says why on its api last ([`send_exiting`]), and on its log.
+//! Whatever ends it, the host says why on its api last (`FromProcess::Exiting`), and on its log.
 
 use std::os::fd::AsFd as _;
 use std::sync::{Arc, OnceLock};
 
-use runtime_portal::tilolang_process::{
-    Descriptor, Handed, STORAGE_ENV, receive, send_ended, send_exiting, take_socket,
-};
+use runtime_portal::process_link::{Descriptor, FromProcess, Packet as _, STORAGE_ENV, ToProcess};
 use tilolang_process::TilolangProcess;
 use tilolang_process::stop::Stop;
 use tilolang_process::wait::{Wake, wait};
@@ -35,7 +33,7 @@ fn main() -> std::process::ExitCode {
         ))
         .with_writer(std::io::stderr)
         .init();
-    let Some(api) = take_socket() else {
+    let Some(api) = runtime_portal::process_link::take() else {
         // No api to say it on: the session's log of the host's stderr is all there is.
         eprintln!("tilolang-process: exiting: no api: the session starts the tilolang host");
         return std::process::ExitCode::from(2);
@@ -46,7 +44,7 @@ fn main() -> std::process::ExitCode {
     std::panic::set_hook(Box::new(move |info| {
         previous(info);
         if let Some(api) = API.get() {
-            let _ = send_exiting(api, &format!("the host panicked: {info}"));
+            let _ = FromProcess::exiting(&format!("the host panicked: {info}")).send(api);
         }
     }));
     let (exit, api) = run(api);
@@ -56,7 +54,7 @@ fn main() -> std::process::ExitCode {
         tracing::info!(reason = exit.reason, "tilolang host exiting");
     }
     if let Some(api) = api
-        && let Err(error) = send_exiting(&api, &exit.reason)
+        && let Err(error) = FromProcess::exiting(&exit.reason).send(&api)
     {
         tracing::warn!(%error, "the session was not told why the host exits");
     }
@@ -154,7 +152,7 @@ fn run(api: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
         // The session stops the host once its last instance ended.
         for instance in host.take_ended() {
             if let Some(open) = api.as_ref()
-                && let Err(error) = send_ended(open, instance)
+                && let Err(error) = FromProcess::Ended(instance).send(open)
             {
                 tracing::warn!(%error, instance, "the session was not told an instance ended");
             }
@@ -198,41 +196,8 @@ fn run(api: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
         if ready.api
             && let Some(open) = api.as_ref()
         {
-            match receive(open) {
-                Ok(Some(Handed::Instance(request, fds))) => {
-                    let (app, instance) = (request.app.clone(), request.instance);
-                    if let Err(error) = host.admit(*request, fds) {
-                        tracing::error!(app, %error, "an instance did not start");
-                        if let Err(error) = send_ended(open, instance) {
-                            tracing::warn!(%error, instance, "the session was not told an instance ended");
-                        }
-                    }
-                }
-                Ok(Some(Handed::Locale(locale))) => {
-                    // The person set another clock, date style or language: every instance
-                    // writes its times and its words again, and its window shows them.
-                    if host.set_locale(&locale) {
-                        tracing::info!("the person's formats or language changed");
-                    }
-                }
-                Ok(Some(Handed::Access(access))) => {
-                    // A role was given or taken back: the app's windows offer what the person
-                    // may do now.
-                    if host.set_access(&access.app, access.access.as_ref()) {
-                        tracing::info!(app = access.app, "what the person may do changed");
-                    }
-                }
-                Ok(Some(Handed::Build(build, module))) => {
-                    // A development session took a later build of the app: its windows show it.
-                    if let Err(error) = host.take_build(&build, &module) {
-                        tracing::error!(app = build.app, %error, "a later build was not taken");
-                    }
-                }
-                Ok(Some(Handed::Task(request, fds))) => {
-                    if let Err(error) = host.begin_task(&request, fds) {
-                        tracing::error!(task = request.task, %error, "a task did not start");
-                    }
-                }
+            match ToProcess::receive(open) {
+                Ok(Some(message)) => take(&mut host, open, message),
                 Ok(None) => api = None,
                 // The packet was taken: the API carries the next one.
                 Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
@@ -246,6 +211,53 @@ fn run(api: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
                     api = None;
                 }
             }
+        }
+    }
+}
+
+/// Take one message of the session's: an instance or task to run, or what changed for those
+/// running.
+fn take(host: &mut TilolangProcess, open: &Descriptor, message: ToProcess) {
+    match message {
+        ToProcess::Instance { request, fds } => {
+            let (app, instance) = (request.app.clone(), request.instance);
+            if let Err(error) = host.admit(*request, fds) {
+                tracing::error!(app, %error, "an instance did not start");
+                if let Err(error) = FromProcess::Ended(instance).send(open) {
+                    tracing::warn!(%error, instance, "the session was not told an instance ended");
+                }
+            }
+        }
+        ToProcess::Locale(locale) => {
+            // The person set another clock, date style or language: every instance
+            // writes its times and its words again, and its window shows them.
+            if host.set_locale(&locale) {
+                tracing::info!("the person's formats or language changed");
+            }
+        }
+        ToProcess::Access(access) => {
+            // A role was given or taken back: the app's windows offer what the person
+            // may do now.
+            if host.set_access(&access.app, access.access.as_ref()) {
+                tracing::info!(app = access.app, "what the person may do changed");
+            }
+        }
+        ToProcess::Build { build, module } => {
+            // A development session took a later build of the app: its windows show it.
+            if let Err(error) = host.take_build(&build, &module) {
+                tracing::error!(app = build.app, %error, "a later build was not taken");
+            }
+        }
+        ToProcess::Task { request, fds } => {
+            if let Err(error) = host.begin_task(&request, fds) {
+                tracing::error!(task = request.task, %error, "a task did not start");
+            }
+        }
+        other @ (ToProcess::Window { .. } | ToProcess::Patch { .. }) => {
+            tracing::error!(
+                ?other,
+                "the API asked for a window, which a tilolang process has none of"
+            );
         }
     }
 }

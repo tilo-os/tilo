@@ -134,7 +134,7 @@ enum Cmd {
         #[arg(long, conflicts_with = "open")]
         open_uri: Option<String>,
         /// Open `--open-uri` in a window that browses as a visitor, without the person's sign-ins: the
-        /// app is handed `runtime_portal::windows::VISITOR_WINDOW_FLAG` after the address.
+        /// app is handed `runtime_portal::process_link::VISITOR_WINDOW_FLAG` after the address.
         #[arg(long, requires = "open_uri")]
         open_as_visitor: bool,
         /// Standard console in a private namespace for this shell instance.
@@ -435,10 +435,13 @@ fn dispatch_command(
 
 /// Run the tilolang host the session started, on the socket it handed over at descriptor 3.
 fn tilolang_process(runtime: String, app_runtime: String, storage: PathBuf) -> ExitCode {
-    use launcher::run::tilolang_process::{ProcessLaunch, SOCKET_CHILD_FD, run_tilolang_process};
+    use launcher::run::tilolang_process::{ProcessLaunch, run_tilolang_process};
     // SAFETY: the session hands the socket at this descriptor and nothing else owns it in this process.
-    let socket =
-        unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(SOCKET_CHILD_FD) };
+    let socket = unsafe {
+        <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(
+            runtime_portal::process_link::CHILD_FD,
+        )
+    };
     let launch = ProcessLaunch {
         runtime,
         app_runtime,

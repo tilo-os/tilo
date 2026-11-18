@@ -13,9 +13,9 @@ use std::io;
 use std::os::fd::OwnedFd;
 use std::sync::{Arc, Mutex};
 
-use runtime_portal::tilolang_process::App;
+use runtime_portal::process_link::App;
 #[cfg(target_os = "linux")]
-use runtime_portal::tilolang_process::{TaskFds, TaskRequest, encode_apps, send_task};
+use runtime_portal::process_link::{Packet as _, TaskFds, TaskRequest, ToProcess, encode_apps};
 use tilo_lock::MutexRecover as _;
 
 /// What a task's programs may name in one workspace: the apps it compiles against, and what the
@@ -86,14 +86,14 @@ impl crate::TaskHosts for TaskHosts {
             changed_at_document: catalogue.changed_at_document,
         };
         let api = start_program()?;
-        send_task(
-            &api,
-            &request,
-            &TaskFds {
+        ToProcess::Task {
+            request,
+            fds: TaskFds {
                 program: host_end.into(),
                 apps,
             },
-        )?;
+        }
+        .send(&api)?;
         // The host ends when the server closes the program connection, with the client that
         // started it: it needs its api for nothing more.
         Ok(server_end.into())
@@ -127,15 +127,12 @@ fn program() -> io::Result<std::path::PathBuf> {
 fn start_program() -> io::Result<OwnedFd> {
     use std::os::fd::{AsRawFd as _, BorrowedFd};
     use std::os::unix::process::CommandExt as _;
-    let (ours, theirs) = runtime_portal::tilolang_process::pair()?;
+    let (ours, theirs) = runtime_portal::process_link::pair()?;
     let raw = theirs.as_raw_fd();
     let mut command = std::process::Command::new(program()?);
     command
-        .env(
-            runtime_portal::tilolang_process::SOCKET_FD_ENV,
-            raw.to_string(),
-        )
-        .env_remove(runtime_portal::tilolang_process::STORAGE_ENV)
+        .env(runtime_portal::process_link::FD_ENV, raw.to_string())
+        .env_remove(runtime_portal::process_link::STORAGE_ENV)
         .stdin(std::process::Stdio::null())
         // This process's own output may be a protocol (`tilo mcp` speaks on it).
         .stdout(std::process::Stdio::null());

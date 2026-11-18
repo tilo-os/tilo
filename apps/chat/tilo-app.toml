@@ -69,7 +69,7 @@ screencast = "via-host"
 [sandbox.services]
 collab = "optional@31"
 tilo-fs = "optional@31"
-shell-ui   = "optional@34"
+shell-ui   = "optional@35"
 # Conversation inference uses the launcher-authenticated gateway, never provider keys.
 model-gateway = "optional@31"
 

@@ -35,7 +35,7 @@ use std::os::unix::net::UnixStream;
 use std::rc::Rc;
 
 use base64::Engine as _;
-use runtime_portal::tilolang_process::{App, TaskFds, TaskRequest, decode_apps};
+use runtime_portal::process_link::{App, TaskFds, TaskRequest, decode_apps};
 use serde_json::{Value as Json, json};
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::catalogue::NativeSurface;

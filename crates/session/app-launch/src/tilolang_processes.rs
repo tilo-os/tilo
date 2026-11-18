@@ -7,7 +7,7 @@
 //! workspace and author ([`Processes::hand_over`]):
 //!
 //! - the process's end of the window's patch connection, whose other end the window took on its
-//!   window socket (`runtime_portal::windows::PATCH_VERB`);
+//!   link (`runtime_portal::process_link::ToProcess::Patch`);
 //! - the instance's collaboration connection, attested as that window of the app's launch, exactly
 //!   as a later window's own connection is: the broker attributes it from the session's record,
 //!   never from the process;
@@ -44,9 +44,23 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use launcher::run::tilolang_process::VerifiedInstance;
-use runtime_portal::tilolang_process::{
-    AppBuild, FromHost, InstanceFds, InstanceRequest, receive_from_host,
+use runtime_portal::process_link::{
+    AppBuild, FromProcess, InstanceFds, InstanceRequest, Packet as _, ToProcess,
 };
+
+/// Hand the process behind `socket` the instance `request` with its connections, keeping them
+/// to hand to another process should this one have ended.
+fn send_instance(
+    socket: &OwnedFd,
+    request: &InstanceRequest,
+    fds: &InstanceFds,
+) -> std::io::Result<()> {
+    ToProcess::Instance {
+        request: Box::new(request.clone()),
+        fds: fds.try_clone()?,
+    }
+    .send(socket)
+}
 
 /// The launcher's flag for a window whose instance a tilolang process runs.
 pub const PROCESS_ARG: &str = "--tilolang-process";
@@ -76,7 +90,7 @@ pub fn runs_in_process(app: &str) -> bool {
 /// one.
 pub struct TaskPackage {
     pub app: String,
-    pub module: runtime_portal::tilolang_process::Module,
+    pub module: runtime_portal::process_link::Module,
     pub documents_under: Option<String>,
 }
 
@@ -319,14 +333,12 @@ impl Processes {
     /// week's first day, their date and clock styles), and their windows read their words in the
     /// language, where they stand. A process started later is handed them with its first instance.
     pub fn locale_changed(&self) {
-        let locale = runtime_portal::tilolang_process::Locale {
+        let locale = runtime_portal::process_link::Locale {
             formats: ui::format::region::current(),
             language: ui::i18n::preferred_language().unwrap_or_default(),
         };
         for (key, process) in self.running().iter() {
-            if let Err(error) =
-                runtime_portal::tilolang_process::send_locale(&process.socket, &locale)
-            {
+            if let Err(error) = ToProcess::Locale(locale.clone()).send(&process.socket) {
                 // Its follow thread reads the end of the socket and forgets it: the next instance
                 // starts another.
                 tracing::warn!(
@@ -350,13 +362,11 @@ impl Processes {
             }
             let apps: BTreeSet<&String> = process.instances.values().collect();
             for app in apps {
-                let access = runtime_portal::tilolang_process::AppAccess {
+                let access = runtime_portal::process_link::AppAccess {
                     app: app.clone(),
                     access: crate::authority::access(workspace, app),
                 };
-                if let Err(error) =
-                    runtime_portal::tilolang_process::send_access(&process.socket, &access)
-                {
+                if let Err(error) = ToProcess::Access(access).send(&process.socket) {
                     // Its follow thread reads the end of the socket and forgets it: the next
                     // instance starts another.
                     tracing::warn!(
@@ -445,7 +455,7 @@ impl Processes {
             // The person's language, as this session resolved it: their windows read every word in
             // it, so the process that draws them must not read its own process's language instead.
             language: ui::i18n::preferred_language().unwrap_or_default(),
-            record: instance.opens.record,
+            document: instance.opens.record,
             reveal: instance.opens.reveal,
             installed: if uses_packages {
                 installed_apps()
@@ -479,9 +489,9 @@ impl Processes {
     fn module_for(
         &self,
         app: &str,
-        mut module: runtime_portal::tilolang_process::Module,
+        mut module: runtime_portal::process_link::Module,
         key: &HostKey,
-    ) -> runtime_portal::tilolang_process::Module {
+    ) -> runtime_portal::process_link::Module {
         if app != PERSON_VIEWS_APP {
             return module;
         }
@@ -567,7 +577,11 @@ impl Processes {
             module_len: module.len() as u64,
         };
         let module = tilo_render_protocol::shm::sealed_blob("tilolang-module", &module)?;
-        runtime_portal::tilolang_process::send_build(socket, &later, &module)?;
+        ToProcess::Build {
+            build: later,
+            module,
+        }
+        .send(socket)?;
         build.module = hashed;
         Ok(true)
     }
@@ -635,7 +649,7 @@ impl Processes {
     ) -> std::io::Result<bool> {
         let mut processes = self.running();
         if let Some(process) = processes.get_mut(key) {
-            match runtime_portal::tilolang_process::send_instance(&process.socket, request, fds) {
+            match send_instance(&process.socket, request, fds) {
                 Ok(()) => {
                     process
                         .instances
@@ -652,7 +666,7 @@ impl Processes {
             }
         }
         let mut process = self.start(key)?;
-        runtime_portal::tilolang_process::send_instance(&process.socket, request, fds)?;
+        send_instance(&process.socket, request, fds)?;
         process
             .instances
             .insert(request.instance, request.app.clone());
@@ -679,14 +693,14 @@ impl Processes {
     fn start(self: &Arc<Self>, key: &HostKey) -> std::io::Result<Host> {
         use std::os::unix::process::CommandExt as _;
         let storage = self.storage(key)?;
-        let (ours, theirs) = runtime_portal::tilolang_process::pair()?;
+        let (ours, theirs) = runtime_portal::process_link::pair()?;
         let mut command = (self.starts)(&key.runtime, &key.app_runtime, &storage);
         command
             .stdin(std::process::Stdio::null())
             // Read here: what it said last is why it ended when it could not say so itself.
             .stderr(std::process::Stdio::piped());
         let socket = theirs.as_raw_fd();
-        let slot = launcher::run::tilolang_process::SOCKET_CHILD_FD;
+        let slot = runtime_portal::process_link::CHILD_FD;
         // SAFETY: only async-signal-safe calls between fork and exec: the socket is placed at its
         // slot without close-on-exec.
         unsafe {
@@ -743,9 +757,10 @@ impl Processes {
         // Why the process says it exits; none when it ended without saying (killed, crashed).
         let mut reason: Option<String> = None;
         loop {
-            match receive_from_host(followed) {
-                Ok(Some(FromHost::Ended(instance))) => self.ended(key, generation, instance),
-                Ok(Some(FromHost::Exiting(why))) => reason = Some(why),
+            match FromProcess::receive(followed) {
+                Ok(Some(FromProcess::Ended(instance))) => self.ended(key, generation, instance),
+                Ok(Some(FromProcess::Exiting(why))) => reason = Some(why),
+                Ok(Some(FromProcess::Serves)) => {}
                 Ok(None) => break,
                 // The packet was taken: the socket carries the next one.
                 Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
@@ -978,8 +993,8 @@ mod tests {
     /// runs write their weeks and times again; a process that is not running hears nothing.
     #[test]
     fn a_formats_change_is_said_on_the_socket_of_every_host_running() {
-        let (ours, theirs) = runtime_portal::tilolang_process::pair().unwrap();
-        let (idle_ours, idle_theirs) = runtime_portal::tilolang_process::pair().unwrap();
+        let (ours, theirs) = runtime_portal::process_link::pair().unwrap();
+        let (idle_ours, idle_theirs) = runtime_portal::process_link::pair().unwrap();
         let processes = running(vec![("7a110d00-0000-4000-8000-0000000000f1", ours)]);
 
         let before = ui::format::region::current();
@@ -989,9 +1004,9 @@ mod tests {
         };
         ui::format::region::install(sunday);
         processes.locale_changed();
-        let handed = runtime_portal::tilolang_process::receive(&theirs).unwrap();
+        let handed = ToProcess::receive(&theirs).unwrap();
         ui::format::region::install(before);
-        let Some(runtime_portal::tilolang_process::Handed::Locale(locale)) = handed else {
+        let Some(ToProcess::Locale(locale)) = handed else {
             panic!("a runtime process's socket carries the formats as formats: {handed:?}");
         };
         assert_eq!(
@@ -1002,9 +1017,7 @@ mod tests {
         // process would hear.
         drop(idle_ours);
         assert!(
-            runtime_portal::tilolang_process::receive(&idle_theirs)
-                .unwrap()
-                .is_none(),
+            ToProcess::receive(&idle_theirs).unwrap().is_none(),
             "a process that is not running is not told"
         );
     }
@@ -1015,8 +1028,8 @@ mod tests {
     #[test]
     fn a_policy_change_is_said_for_each_app_on_the_sockets_of_the_workspaces_hosts() {
         const WORKSPACE: &str = "7a110d00-0000-4000-8000-0000000000f2";
-        let (ours, theirs) = runtime_portal::tilolang_process::pair().unwrap();
-        let (other_ours, other_theirs) = runtime_portal::tilolang_process::pair().unwrap();
+        let (ours, theirs) = runtime_portal::process_link::pair().unwrap();
+        let (other_ours, other_theirs) = runtime_portal::process_link::pair().unwrap();
         let processes = running(vec![
             (WORKSPACE, ours),
             ("7a110d00-0000-4000-8000-0000000000f3", other_ours),
@@ -1032,8 +1045,8 @@ mod tests {
             ..crate::workspace::Workspace::new(WORKSPACE, std::env::temp_dir())
         };
         processes.policy_changed(&workspace);
-        let handed = runtime_portal::tilolang_process::receive(&theirs).unwrap();
-        let Some(runtime_portal::tilolang_process::Handed::Access(said)) = handed else {
+        let handed = ToProcess::receive(&theirs).unwrap();
+        let Some(ToProcess::Access(said)) = handed else {
             panic!("the workspace's process is told the person's access: {handed:?}");
         };
         assert_eq!(said.app, NOTES);
@@ -1043,15 +1056,11 @@ mod tests {
         assert_eq!(said.access, Some(expected));
         drop(processes);
         assert!(
-            runtime_portal::tilolang_process::receive(&theirs)
-                .unwrap()
-                .is_none(),
+            ToProcess::receive(&theirs).unwrap().is_none(),
             "said once for the app, however many of its windows are open"
         );
         assert!(
-            runtime_portal::tilolang_process::receive(&other_theirs)
-                .unwrap()
-                .is_none(),
+            ToProcess::receive(&other_theirs).unwrap().is_none(),
             "a process of another workspace is not told"
         );
     }
@@ -1060,7 +1069,7 @@ mod tests {
     /// as the module that verified; a reinstall that does not verify reaches it not at all.
     #[test]
     fn a_verified_later_build_is_handed_once_to_the_host_running_the_app() {
-        use runtime_portal::tilolang_process::{Handed, Module};
+        use runtime_portal::process_link::Module;
         let module = |wasm: &[u8]| Module {
             wasm: wasm.to_vec(),
             ..Module::default()
@@ -1080,7 +1089,7 @@ mod tests {
                 })
             }),
         );
-        let (ours, theirs) = runtime_portal::tilolang_process::pair().unwrap();
+        let (ours, theirs) = runtime_portal::process_link::pair().unwrap();
         let key = HostKey {
             workspace: "7a110d00-0000-4000-8000-0000000000f4".to_owned(),
             author: Author::Publisher([7; 32]).key(),
@@ -1111,8 +1120,12 @@ mod tests {
         *installed.lock().unwrap() = None;
         processes.reinstalled();
 
-        let handed = runtime_portal::tilolang_process::receive(&theirs).unwrap();
-        let Some(Handed::Build(later, fd)) = handed else {
+        let handed = ToProcess::receive(&theirs).unwrap();
+        let Some(ToProcess::Build {
+            build: later,
+            module: fd,
+        }) = handed
+        else {
             panic!("the process is handed the later build: {handed:?}");
         };
         assert_eq!(later.app, NOTES);
@@ -1121,7 +1134,7 @@ mod tests {
         let handed = Module::decode(mapping.get(0, len).unwrap()).unwrap();
         assert_eq!(handed, module(b"new"), "the module that verified");
         drop(processes);
-        let after = runtime_portal::tilolang_process::receive(&theirs).unwrap();
+        let after = ToProcess::receive(&theirs).unwrap();
         assert!(
             after.is_none(),
             "handed once, and a build that does not verify not at all"

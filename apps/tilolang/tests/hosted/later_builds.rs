@@ -105,7 +105,7 @@ fn a_later_build_that_changes_a_field_type_starts_over_on_the_same_data() {
 impl Session {
     /// Hand the host `bundle` on its api, as a development session hands a reinstall over.
     fn take_build_over_the_api(&mut self, bundle: &tilolang_tilo::bundle::Bundle) {
-        let module = runtime_portal::tilolang_process::Module {
+        let module = runtime_portal::process_link::Module {
             wasm: bundle.wasm.clone(),
             ids: bundle.ids.clone(),
             imports: bundle
@@ -115,7 +115,7 @@ impl Session {
                 .collect(),
         }
         .encode();
-        let build = runtime_portal::tilolang_process::AppBuild {
+        let build = runtime_portal::process_link::AppBuild {
             app: bundle.meta.app.clone(),
             module_len: module.len() as u64,
         };

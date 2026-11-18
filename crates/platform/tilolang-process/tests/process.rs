@@ -2080,7 +2080,7 @@ fn increment() -> (tilo_actions::ActionAddress, automerge::AutoCommit) {
 fn apply(
     applier: &mut tilolang_process::hosted::Applier,
     connection: &std::os::unix::net::UnixStream,
-    change: &runtime_portal::tilolang_process::Change,
+    change: &runtime_portal::process_link::Change,
 ) -> serde_json::Value {
     use std::io::{BufRead as _, Write as _};
     let mut line = serde_json::to_vec(change).unwrap();
@@ -2121,7 +2121,7 @@ tilo_test_env::scenario! {
         let answer = apply(
             &mut applier,
             &connection,
-            &runtime_portal::tilolang_process::Change {
+            &runtime_portal::process_link::Change {
                 resource: address.resource,
                 action: address.action,
                 arguments: serde_json::Map::new(),
@@ -2149,7 +2149,7 @@ tilo_test_env::scenario! {
         let answer = apply(
             &mut applier,
             &connection,
-            &runtime_portal::tilolang_process::Change {
+            &runtime_portal::process_link::Change {
                 resource: address.resource,
                 action: address.action,
                 arguments: serde_json::Map::new(),
@@ -2168,7 +2168,7 @@ tilo_test_env::scenario! {
         let answer = apply(
             &mut applier,
             &connection,
-            &runtime_portal::tilolang_process::Change {
+            &runtime_portal::process_link::Change {
                 resource: "tl:so.tilo.lang.counter".to_owned(),
                 action: "no-such-action".to_owned(),
                 arguments: serde_json::Map::new(),
@@ -2194,7 +2194,7 @@ fn a_change_of_the_root_no_window_made_yet_makes_it_first() {
     let answer = apply(
         &mut applier,
         &connection,
-        &runtime_portal::tilolang_process::Change {
+        &runtime_portal::process_link::Change {
             resource: address.resource,
             action: address.action,
             arguments: serde_json::Map::new(),
@@ -2251,7 +2251,7 @@ fn a_change_of_any_root_no_window_made_yet_makes_that_root_first() {
     let answer = apply(
         &mut applier,
         &connection,
-        &runtime_portal::tilolang_process::Change {
+        &runtime_portal::process_link::Change {
             resource: tilolang_tilo::publish::resource_id(&app, &format!("root-{shell}")),
             action: hide.to_owned(),
             arguments: serde_json::Map::new(),
@@ -2290,7 +2290,7 @@ fn a_change_the_workspace_refuses_is_never_kept() {
             let answer = apply(
                 &mut applier,
                 &connection,
-                &runtime_portal::tilolang_process::Change {
+                &runtime_portal::process_link::Change {
                     resource: address.resource,
                     action: address.action,
                     arguments: serde_json::Map::new(),
@@ -2540,17 +2540,18 @@ tilo_test_env::scenario! {
 
         // Sunday in Settings, said on the host's api as the session says it: the same day stands in
         // the week that began the Sunday before it, and the window shows that week.
-        let (session, api) = runtime_portal::tilolang_process::pair().expect("an API");
-        runtime_portal::tilolang_process::send_locale(
-            &session,
-            &runtime_portal::tilolang_process::Locale {
+        let (session, api) = runtime_portal::process_link::pair().expect("an API");
+        runtime_portal::process_link::Packet::send(
+            &runtime_portal::process_link::ToProcess::Locale(runtime_portal::process_link::Locale {
                 formats: with_first_day(tilo_formats::FirstDayOfWeek::Sunday),
                 language: String::new(),
-            },
+            }),
+            &session,
         )
         .expect("the formats cross the API");
-        let Some(runtime_portal::tilolang_process::Handed::Locale(locale)) =
-            runtime_portal::tilolang_process::receive(&api).expect("the API carries them")
+        let Some(runtime_portal::process_link::ToProcess::Locale(locale)) =
+            <runtime_portal::process_link::ToProcess as runtime_portal::process_link::Packet>::receive(&api)
+                .expect("the API carries them")
         else {
             panic!("the API carries the person's formats as formats");
         };
