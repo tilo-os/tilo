@@ -1,7 +1,7 @@
 //! Paths a sandboxed app can reach, checked by reading them or observing the access
 //! failure.
 //!
-//! These tests start the app under `bwrap`, through the same `run_with_captured` path
+//! These tests start the app under `bwrap`, through the same `launch_with_captured` path
 //! the launcher uses, and assert on what a syscall answered inside the sandbox.
 
 #![allow(
@@ -13,14 +13,14 @@ use std::path::PathBuf;
 
 use launcher::appdir;
 use launcher::manifest::ManifestView;
-use launcher::run::{RunOptions, run_with_captured};
+use launcher::run::{LaunchOptions, launch_with_captured};
 
 use crate::support::{bwrap, isolated_options, manifest, workspacetest_payload};
 
 const PACKAGE: &str = "so.tilo.workspacetest";
 
 /// Run the fixture in `workspace` with `argv`, returning its stdout.
-fn run_in_workspace(data: &DataHome, workspace: Option<&str>, argv: &[&str]) -> String {
+fn launch_in_workspace(data: &DataHome, workspace: Option<&str>, argv: &[&str]) -> String {
     run_in_workspace_with_landlock(data, workspace, argv, false)
 }
 
@@ -30,7 +30,7 @@ fn run_in_workspace_with_landlock(
     argv: &[&str],
     landlock_enforce: bool,
 ) -> String {
-    let opts = RunOptions {
+    let opts = LaunchOptions {
         no_services: true,
         bwrap_bin: Some(bwrap()),
         landlock_enforce,
@@ -42,7 +42,7 @@ fn run_in_workspace_with_landlock(
         },
         ..isolated_options(&data.path)
     };
-    let (status, out) = run_with_captured(
+    let (status, out) = launch_with_captured(
         &manifest(PACKAGE, "bin/workspacetest", "off"),
         workspacetest_payload(),
         &opts,
@@ -96,7 +96,7 @@ fn fedora_nss_trust_module_resolves_inside_the_app_sandbox() {
 
 /// Launch the fixture with `grants` written as the compositor's capability file, Landlock enforced, and
 /// return its stdout.
-fn run_with_grants(
+fn launch_with_grants(
     data: &DataHome,
     grants: &[(String, collab_types::caps::Access)],
     argv: &[&str],
@@ -121,7 +121,7 @@ fn run_with_grants(
         serde_json::to_vec(&grants).expect("encode grants"),
     )
     .expect("write capability file");
-    let opts = RunOptions {
+    let opts = LaunchOptions {
         no_services: true,
         bwrap_bin: Some(bwrap()),
         landlock_enforce: true,
@@ -133,7 +133,7 @@ fn run_with_grants(
         },
         ..isolated_options(&data.path)
     };
-    let (status, out) = run_with_captured(
+    let (status, out) = launch_with_captured(
         &manifest(PACKAGE, "bin/workspacetest", "off"),
         workspacetest_payload(),
         &opts,
@@ -182,7 +182,7 @@ fn a_home_grant_never_reaches_tilos_private_configuration() {
     {
         let data = DataHome::new();
         let grant = [(home_dir, Access::Write)];
-        let run = |argv: &[&str]| run_with_grants(&data, &grant, argv);
+        let run = |argv: &[&str]| launch_with_grants(&data, &grant, argv);
 
         // The grant itself works: the person's files read and write.
         assert_eq!(
@@ -251,9 +251,9 @@ fn a_home_grant_never_reaches_tilos_private_configuration() {
     {
         let data = DataHome::new();
         let grant = [(path(home.config()), Access::Read)];
-        let line = run_with_grants(&data, &grant, &["read", &path(&secret)]);
+        let line = launch_with_grants(&data, &grant, &["read", &path(&secret)]);
         assert!(line.starts_with("ERR "), "{line}");
-        let listing = run_with_grants(&data, &grant, &["readdir", &path(home.config())]);
+        let listing = launch_with_grants(&data, &grant, &["readdir", &path(home.config())]);
         assert!(
             listing.starts_with("OK ") && listing.contains("tilo"),
             "the grant still lists ~/.config: {listing}"
@@ -263,7 +263,7 @@ fn a_home_grant_never_reaches_tilos_private_configuration() {
         let data = DataHome::new();
         for granted in [path(&store), path(&store.join("identity"))] {
             let grant = [(granted.clone(), Access::Write)];
-            let line = run_with_grants(&data, &grant, &["read", &path(&secret)]);
+            let line = launch_with_grants(&data, &grant, &["read", &path(&secret)]);
             assert!(
                 line.starts_with("ERR "),
                 "a grant on {granted} must bind nothing: {line}"
@@ -275,10 +275,10 @@ fn a_home_grant_never_reaches_tilos_private_configuration() {
         let documents = path(note.parent().expect("documents"));
         let grant = [(documents, Access::Write)];
         assert_eq!(
-            run_with_grants(&data, &grant, &["read", &path(&note)]),
+            launch_with_grants(&data, &grant, &["read", &path(&note)]),
             format!("OK {} my note", path(&note))
         );
-        let line = run_with_grants(&data, &grant, &["read", &path(&secret)]);
+        let line = launch_with_grants(&data, &grant, &["read", &path(&secret)]);
         assert!(line.starts_with("ERR "), "{line}");
     }
     drop(home);
@@ -291,7 +291,7 @@ fn run_as_settings(data: &DataHome, argv: &[&str]) -> String {
         package_id: "so.tilo.settings".to_string(),
         ..manifest(PACKAGE, "bin/workspacetest", "off")
     };
-    let opts = RunOptions {
+    let opts = LaunchOptions {
         no_services: true,
         bwrap_bin: Some(bwrap()),
         landlock_enforce: true,
@@ -303,7 +303,7 @@ fn run_as_settings(data: &DataHome, argv: &[&str]) -> String {
         ..isolated_options(&data.path)
     };
     let (status, out) =
-        run_with_captured(&manifest, workspacetest_payload(), &opts).expect("launch");
+        launch_with_captured(&manifest, workspacetest_payload(), &opts).expect("launch");
     let text = String::from_utf8_lossy(&out).trim().to_string();
     assert!(
         status.success(),
@@ -458,7 +458,7 @@ tilo_test_env::scenario! {
         {
             let data = DataHome::new();
 
-            let wrote = run_in_workspace(
+            let wrote = launch_in_workspace(
                 &data,
                 Some("workspace-a"),
                 &["write", "record.txt", "workspace-A-secret"],
@@ -480,7 +480,7 @@ tilo_test_env::scenario! {
                 host_file.display()
             );
 
-            let from_b = run_in_workspace(
+            let from_b = launch_in_workspace(
                 &data,
                 Some("workspace-b"),
                 &["read", "/run/tilo/app/record.txt"],
@@ -491,7 +491,7 @@ tilo_test_env::scenario! {
             );
 
             // Nor by naming workspace A's host path — the sandbox has no such path.
-            let by_host_path = run_in_workspace(
+            let by_host_path = launch_in_workspace(
                 &data,
                 Some("workspace-b"),
                 &["read", &host_file.display().to_string()],
@@ -503,13 +503,13 @@ tilo_test_env::scenario! {
 
             // The workspace-B directory is genuinely empty of the record, rather than holding a copy the
             // app happened not to open.
-            let listing = run_in_workspace(&data, Some("workspace-b"), &["readdir", "/run/tilo/app"]);
+            let listing = launch_in_workspace(&data, Some("workspace-b"), &["readdir", "/run/tilo/app"]);
             assert!(
                 !listing.contains("record.txt"),
                 "workspace B's directory must not contain workspace A's record: {listing}"
             );
 
-            let from_a = run_in_workspace(
+            let from_a = launch_in_workspace(
                 &data,
                 Some("workspace-a"),
                 &["read", "/run/tilo/app/record.txt"],
@@ -523,8 +523,8 @@ tilo_test_env::scenario! {
         {
             let data = DataHome::new();
 
-            run_in_workspace(&data, None, &["write", "diary.txt", "personal"]);
-            let from_workspace = run_in_workspace(
+            launch_in_workspace(&data, None, &["write", "diary.txt", "personal"]);
+            let from_workspace = launch_in_workspace(
                 &data,
                 Some("some-workspace"),
                 &["read", "/run/tilo/app/diary.txt"],
@@ -551,7 +551,7 @@ tilo_test_env::scenario! {
                 "/run/tilo/app/../so.tilo.totp/seeds.bin".to_string(),
                 "/run/tilo/../tilo/app/../so.tilo.totp/seeds.bin".to_string(),
             ] {
-                let line = run_in_workspace(&data, Some("workspace-a"), &["read", &attempt]);
+                let line = launch_in_workspace(&data, Some("workspace-a"), &["read", &attempt]);
                 assert!(
                     line.starts_with("ERR "),
                     "another package's state must be unreachable via {attempt}: {line}"
@@ -576,7 +576,7 @@ tilo_test_env::scenario! {
                 "XDG_CACHE_HOME",
                 "TILO_APP_DIR",
             ] {
-                let line = run_in_workspace(&data, Some("workspace-a"), &["env", var]);
+                let line = launch_in_workspace(&data, Some("workspace-a"), &["env", var]);
                 let value = line.split_once('=').expect("ENV k=v").1;
                 assert!(
                     value.starts_with(appdir::SANDBOX_APP_DIR),
@@ -586,7 +586,7 @@ tilo_test_env::scenario! {
             }
 
             // `cli::standalone_state_dir` is `$XDG_DATA_HOME/<package id>`.
-            let wrote = run_in_workspace(
+            let wrote = launch_in_workspace(
                 &data,
                 Some("workspace-a"),
                 &[
@@ -628,7 +628,7 @@ tilo_test_env::scenario! {
             ]
             .into();
             for outside in &outside_the_profile {
-                let line = run_in_workspace(&data, Some("workspace-a"), &["read", outside]);
+                let line = launch_in_workspace(&data, Some("workspace-a"), &["read", outside]);
                 assert!(
                     line.starts_with("ERR "),
                     "{outside} must not be readable without a capability: {line}"
@@ -644,12 +644,12 @@ tilo_test_env::scenario! {
             let expected_account = format!(
                 "OK /etc/passwd app:x:{uid}:{gid}:Sandbox application:/run/tilo/app:/sbin/nologin"
             );
-            let account = run_in_workspace(&data, Some("workspace-a"), &["read", "/etc/passwd"]);
+            let account = launch_in_workspace(&data, Some("workspace-a"), &["read", "/etc/passwd"]);
             assert_eq!(
                 account, expected_account,
                 "only the synthetic account is visible"
             );
-            let write = run_in_workspace(
+            let write = launch_in_workspace(
                 &data,
                 Some("workspace-a"),
                 &["writeabs", "/etc/passwd", "owned"],
@@ -659,7 +659,7 @@ tilo_test_env::scenario! {
                 "the synthetic account is read-only: {write}"
             );
             assert_eq!(
-                run_in_workspace(&data, Some("workspace-a"), &["read", "/etc/passwd"]),
+                launch_in_workspace(&data, Some("workspace-a"), &["read", "/etc/passwd"]),
                 expected_account,
                 "the denied write must not change sandbox account bytes"
             );
@@ -670,7 +670,7 @@ tilo_test_env::scenario! {
             );
 
             // Inside the profile: readable.
-            let read = run_in_workspace(&data, Some("workspace-a"), &["readdir", "/usr/share/fonts"]);
+            let read = launch_in_workspace(&data, Some("workspace-a"), &["readdir", "/usr/share/fonts"]);
             assert!(
                 read.starts_with("OK "),
                 "the profile must actually deliver fonts: {read}"
@@ -684,7 +684,7 @@ tilo_test_env::scenario! {
                 "/etc/ld.so.cache",
                 "/usr/lib64/tilo-confinement-probe.so",
             ] {
-                let line = run_in_workspace(&data, Some("workspace-a"), &["writeabs", target, "owned"]);
+                let line = launch_in_workspace(&data, Some("workspace-a"), &["writeabs", target, "owned"]);
                 assert!(
                     line.starts_with("ERR "),
                     "{target} must not be writable: {line}"
@@ -699,7 +699,7 @@ tilo_test_env::scenario! {
 
             // The app's own directory is writable, so the failures above are the read-only mount, not a
             // fixture that can't write at all.
-            let ok = run_in_workspace(
+            let ok = launch_in_workspace(
                 &data,
                 Some("workspace-a"),
                 &["writeabs", "/run/tilo/app/probe", "owned"],
@@ -717,7 +717,7 @@ tilo_test_env::scenario! {
     // directory, and no other cgroupfs can be mounted to reach it.
     {
         let data = DataHome::new();
-        let run = |argv: &[&str]| run_in_workspace(&data, Some("workspace-a"), argv);
+        let run = |argv: &[&str]| launch_in_workspace(&data, Some("workspace-a"), argv);
         assert_eq!(
             run(&["read", "/proc/self/cgroup"]),
             "OK /proc/self/cgroup 0::/",

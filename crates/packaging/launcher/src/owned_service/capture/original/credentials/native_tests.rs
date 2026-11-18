@@ -262,7 +262,7 @@ fn outer() {
     let run = CString::new("/run").unwrap();
     let tmpfs = CString::new("tmpfs").unwrap();
     mount(&tmpfs, &run, Some(&tmpfs), libc::MS_NOSUID | libc::MS_NODEV);
-    let private_run = Mounted(run);
+    let private_launch = Mounted(run);
     owned(Path::new("/run"), 0, 0, 0o755);
     let temporary = tempfile::tempdir_in("/run").unwrap();
     let approved = temporary.path().join("approved");
@@ -362,7 +362,7 @@ fn outer() {
     std::fs::remove_dir_all(source_path).unwrap();
     drop(approved_mount);
     drop(temporary);
-    drop(private_run);
+    drop(private_launch);
     std::fs::write(std::env::var_os(MARKER).unwrap(), COMPLETE).unwrap();
 }
 fn reduce_capabilities() {
@@ -539,7 +539,7 @@ fn actual_private_home_final_observation_restores_root_before_sealing_mounted_re
         let run = CString::new("/run").unwrap();
         let tmpfs = CString::new("tmpfs").unwrap();
         mount(&tmpfs, &run, Some(&tmpfs), libc::MS_NOSUID | libc::MS_NODEV);
-        let private_run = Mounted(run);
+        let private_launch = Mounted(run);
         owned(Path::new("/run"), 0, 0, 0o755);
         let source_path = Path::new(crate::owned_service::capture::SOURCE_PATH);
         std::fs::create_dir_all(source_path.join("mounted")).unwrap();
@@ -618,7 +618,7 @@ fn actual_private_home_final_observation_restores_root_before_sealing_mounted_re
         );
         apply_filesystem_ids(0, 0, &[]).unwrap();
         // The private mount namespace owns all fixture paths; retire its /run overlay.
-        drop(private_run);
+        drop(private_launch);
         std::fs::write(marker, COMPLETE).unwrap();
         return;
     }

@@ -3,25 +3,25 @@
 //! the sandboxed loader looks for them.
 use std::path::{Path, PathBuf};
 
-use super::{ManifestView, RunError, RunOptions, launch_entry_bin};
+use super::{LaunchError, LaunchOptions, ManifestView, launch_entry_bin};
 
 /// [`preflight_runtime_libraries`] for an entrypoint that executes a binary of its runtime bundle: the
 /// binary must find its libraries in that bundle, the app's runtime or the system, exactly as the
 /// sandboxed loader looks.
 pub(super) fn preflight_entrypoint_runtime(
     manifest: &ManifestView,
-    opts: &RunOptions,
+    opts: &LaunchOptions,
     runtime: Option<(&Path, &str)>,
     bundles: &[(PathBuf, String)],
-) -> Result<(), RunError> {
+) -> Result<(), LaunchError> {
     let Some(raw) = manifest.entrypoint.runtime.as_deref() else {
         return Ok(());
     };
     let Some((_, entry_version)) = raw.split_once('/') else {
-        return Err(RunError::RuntimeReferenceMalformed(raw.to_owned()));
+        return Err(LaunchError::RuntimeReferenceMalformed(raw.to_owned()));
     };
     let Some((entry_root, _)) = bundles.iter().find(|(_, version)| version == entry_version) else {
-        return Err(RunError::RequiredRuntimeMissing {
+        return Err(LaunchError::RequiredRuntimeMissing {
             package: manifest.package_id.clone(),
             runtime: raw.to_owned(),
             searched: Vec::new(),
@@ -57,7 +57,7 @@ pub(super) fn preflight_entrypoint_runtime(
             needed_by = %missing.needed_by.display(),
             "the entrypoint runtime's binary links against a library nothing provides"
         );
-        RunError::RuntimeLibraryMissing {
+        LaunchError::RuntimeLibraryMissing {
             package: manifest.package_id.clone(),
             runtime: raw.to_owned(),
             library: missing.library,

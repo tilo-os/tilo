@@ -411,7 +411,7 @@ impl ManagedRuntime {
     #[cfg(target_os = "linux")]
     pub fn from_launch_options(
         manifest: &ManifestView,
-        options: &crate::run::RunOptions,
+        options: &crate::run::LaunchOptions,
         sandbox_shim: PathBuf,
         bwrap: PathBuf,
     ) -> Result<Self, String> {
@@ -1105,7 +1105,7 @@ pub(crate) trait EnrolledProcessObserver {
 #[cfg(target_os = "linux")]
 pub(crate) fn verify_runtime(
     manifest: &ManifestView,
-    opts: &crate::run::RunOptions,
+    opts: &crate::run::LaunchOptions,
 ) -> Result<(PathBuf, String), String> {
     let root = opts
         .runtime_root
@@ -1251,7 +1251,7 @@ impl LaunchObserver {
     /// Revalidate, spawn and supervise the agent on this worker; a failure becomes a launch event.
     fn run(
         self,
-        opts: &crate::run::RunOptions,
+        opts: &crate::run::LaunchOptions,
         services: &mut crate::services::EnrolledServiceContext,
     ) {
         let result = (|| {
@@ -1324,7 +1324,7 @@ impl ManagedLauncher {
         if attempt.cancelled.load(std::sync::atomic::Ordering::Acquire) {
             return Err("managed launch stopped".into());
         }
-        let opts = crate::run::RunOptions {
+        let opts = crate::run::LaunchOptions {
             runtime_root: Some(self.owner.runtime.bundle_root.clone()),
             require_runtime_publisher: Some(self.owner.runtime.runtime_publisher.clone()),
             sandbox_shim_bin: Some(self.owner.runtime.sandbox_shim.clone()),

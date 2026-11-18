@@ -2,7 +2,7 @@
 //! finished. Ordinary bwrap leader exit is deliberately not this proof.
 use crate::{
     managed::EnrolledProcessObserver,
-    run::{RunError, RunOptions},
+    run::{LaunchError, LaunchOptions},
 };
 use std::{
     fs::File,
@@ -129,9 +129,9 @@ pub use capture::{
     OUTPUT_PATH as CAPTURE_OUTPUT_PATH, OriginalFlatpakBinding, OriginalFlatpakProjection,
     OriginalMountedBinding, OriginalMountedIdentity, OriginalMountedInput, OriginalOutputAdmission,
     OriginalOutputBinding, OriginalOutputFiles, OriginalOutputOwnership,
-    SOURCE_PATH as CAPTURE_SOURCE_PATH, VerifiedOriginalMountedRoots,
-    original_mounted_table_sha256, run_capture, run_capture_connected,
-    run_capture_connected_observed, verify_original_mounted_roots,
+    SOURCE_PATH as CAPTURE_SOURCE_PATH, VerifiedOriginalMountedRoots, launch_capture_connected,
+    original_mounted_table_sha256, run_capture, run_capture_connected_observed,
+    verify_original_mounted_roots,
 };
 
 /// Original host admission/ownership, checked before spawn and while running.
@@ -247,15 +247,15 @@ impl ConfirmedShutdown {
         Arc::ptr_eq(&self.key.0, &key.0) && self.data_home == data_home && self.package == package
     }
 }
-pub struct SupervisedRun {
-    pub result: Result<QuiescentExit, RunError>,
+pub struct SupervisedLaunch {
+    pub result: Result<QuiescentExit, LaunchError>,
     pub shutdown: Option<ConfirmedShutdown>,
 }
 /// The installed package selected by the native host, never by an app request.
 pub struct ServiceLaunch {
     pub manifest: PathBuf,
     pub payload: PathBuf,
-    pub options: RunOptions,
+    pub options: LaunchOptions,
 }
 /// Use the normal signed sandbox pipeline, with the actual provider as PID 1.
 pub fn run(
@@ -263,7 +263,7 @@ pub fn run(
     authority: Arc<dyn ServiceAuthority>,
     cancellation: ServiceCancellation,
     key: ServiceLeaseKey,
-) -> Result<QuiescentExit, RunError> {
+) -> Result<QuiescentExit, LaunchError> {
     run_connected(launch, authority, cancellation, key, None)
 }
 
@@ -274,7 +274,7 @@ pub fn run_connected(
     cancellation: ServiceCancellation,
     key: ServiceLeaseKey,
     connected: Option<ConnectedService>,
-) -> Result<QuiescentExit, RunError> {
+) -> Result<QuiescentExit, LaunchError> {
     run_admitted(launch, authority, cancellation, key, connected, None)
 }
 
@@ -285,7 +285,7 @@ pub fn run_retained_io_connected(
     cancellation: ServiceCancellation,
     key: ServiceLeaseKey,
     connected: Option<ConnectedService>,
-) -> SupervisedRun {
+) -> SupervisedLaunch {
     struct Authority(Arc<dyn RetainedIoAuthority>);
     impl ServiceAuthority for Authority {
         fn check(&self) -> io::Result<()> {
@@ -308,7 +308,7 @@ pub fn run_retained_io_connected(
         Some(RetainedService::Source(Box::new(admission))),
         Some(&mut shutdown),
     );
-    SupervisedRun { result, shutdown }
+    SupervisedLaunch { result, shutdown }
 }
 
 /// Run the fixed signed target-FUSE worker through canonical native ownership.
@@ -318,7 +318,7 @@ pub fn run_target_projection_connected(
     cancellation: ServiceCancellation,
     key: ServiceLeaseKey,
     connected: ConnectedTargetProjection,
-) -> SupervisedRun {
+) -> SupervisedLaunch {
     struct Authority(Arc<dyn TargetProjectionAuthority>);
     impl ServiceAuthority for Authority {
         fn check(&self) -> io::Result<()> {
@@ -341,7 +341,7 @@ pub fn run_target_projection_connected(
         Some(RetainedService::Target(Box::new(admission), connected)),
         Some(&mut shutdown),
     );
-    SupervisedRun { result, shutdown }
+    SupervisedLaunch { result, shutdown }
 }
 
 fn run_admitted(
@@ -351,7 +351,7 @@ fn run_admitted(
     key: ServiceLeaseKey,
     connected: Option<ConnectedService>,
     capture: Option<CaptureAdmission>,
-) -> Result<QuiescentExit, RunError> {
+) -> Result<QuiescentExit, LaunchError> {
     run_admitted_inner(
         launch,
         authority,
@@ -370,7 +370,7 @@ fn run_admitted_observed(
     key: ServiceLeaseKey,
     connected: Option<ConnectedService>,
     capture: Option<CaptureAdmission>,
-) -> SupervisedRun {
+) -> SupervisedLaunch {
     let mut shutdown = None;
     let result = run_admitted_inner(
         launch,
@@ -382,16 +382,16 @@ fn run_admitted_observed(
         None,
         Some(&mut shutdown),
     );
-    SupervisedRun { result, shutdown }
+    SupervisedLaunch { result, shutdown }
 }
 fn configure_service_options(
-    options: &mut RunOptions,
+    options: &mut LaunchOptions,
     payload: &Path,
     manifest: &Path,
     capture: Option<&CaptureAdmission>,
     retained_io: Option<&RetainedIoAdmission>,
     target_projection: Option<&TargetProjectionAdmission>,
-) -> Result<(), RunError> {
+) -> Result<(), LaunchError> {
     crate::run::validate_owned_service_options(options)?;
     if options.bwrap_bin.is_some()
         || options.sandbox_shim_bin.is_some()
@@ -403,7 +403,7 @@ fn configure_service_options(
         || options.wayland_socket.is_some()
         || options.render_node.is_some()
     {
-        return Err(RunError::InvalidServiceLaunch(
+        return Err(LaunchError::InvalidServiceLaunch(
             "service ownership options changed".into(),
         ));
     }
@@ -428,7 +428,7 @@ fn configure_service_options(
             || options.browser_continuity_host_path.is_some()
             || options.action_authority_host_path.is_some()
         {
-            return Err(RunError::InvalidServiceLaunch(
+            return Err(LaunchError::InvalidServiceLaunch(
                 "Retained I/O options differ".into(),
             ));
         }
@@ -456,7 +456,7 @@ fn configure_service_options(
             || options.browser_continuity_host_path.is_some()
             || options.action_authority_host_path.is_some()
         {
-            return Err(RunError::InvalidServiceLaunch(
+            return Err(LaunchError::InvalidServiceLaunch(
                 "Target projection options differ".into(),
             ));
         }
@@ -466,7 +466,7 @@ fn configure_service_options(
     Ok(())
 }
 
-fn check_service_exit_authority(owner: &NamespaceOwner) -> Result<(), RunError> {
+fn check_service_exit_authority(owner: &NamespaceOwner) -> Result<(), LaunchError> {
     if let Some(io) = &owner.retained_io {
         io.check()?;
     }
@@ -487,17 +487,17 @@ fn check_service_exit_authority(owner: &NamespaceOwner) -> Result<(), RunError> 
 }
 
 fn validate_service_manifest(
-    options: &RunOptions,
+    options: &LaunchOptions,
     manifest: &crate::manifest::ManifestView,
     retained: bool,
-) -> Result<(), RunError> {
+) -> Result<(), LaunchError> {
     if options.app_id.as_deref() != Some(manifest.package_id.as_str()) {
-        return Err(RunError::InvalidServiceLaunch(
+        return Err(LaunchError::InvalidServiceLaunch(
             "owned service identity changed".into(),
         ));
     }
     if manifest.sandbox.net.mode != "off" || !manifest.sandbox.net.hosts.is_empty() {
-        return Err(RunError::InvalidServiceLaunch(
+        return Err(LaunchError::InvalidServiceLaunch(
             "owned service egress requires protected native review".into(),
         ));
     }
@@ -508,7 +508,7 @@ fn validate_service_manifest(
             || !manifest.sandbox.portals.is_empty()
             || !manifest.sandbox.services.is_empty())
     {
-        return Err(RunError::InvalidServiceLaunch(
+        return Err(LaunchError::InvalidServiceLaunch(
             "Retained I/O manifest authority differs".into(),
         ));
     }
@@ -525,7 +525,7 @@ fn run_admitted_inner(
     capture: Option<CaptureAdmission>,
     retained: Option<RetainedService>,
     observed_shutdown: Option<&mut Option<ConfirmedShutdown>>,
-) -> Result<QuiescentExit, RunError> {
+) -> Result<QuiescentExit, LaunchError> {
     let (retained_io, target_projection, target_connected) = match retained {
         Some(RetainedService::Source(io)) => (Some(*io), None, None),
         Some(RetainedService::Target(target, callback)) => (None, Some(*target), Some(callback)),
@@ -543,7 +543,7 @@ fn run_admitted_inner(
     let expected = options
         .expected_package_hash
         .as_deref()
-        .ok_or_else(|| RunError::InvalidServiceLaunch("original installation missing".into()))?;
+        .ok_or_else(|| LaunchError::InvalidServiceLaunch("original installation missing".into()))?;
     let manifest = match capture
         .as_ref()
         .and_then(|capture| capture.original_manifest(&launch.manifest, &launch.payload, expected))
@@ -579,7 +579,7 @@ fn run_admitted_inner(
     let data_home = options
         .data_home
         .clone()
-        .ok_or_else(|| RunError::InvalidServiceLaunch("private working lease missing".into()))?;
+        .ok_or_else(|| LaunchError::InvalidServiceLaunch("private working lease missing".into()))?;
     if let Some(capture) = &capture {
         capture.prepare_original_workspace(&data_home)?;
     }
@@ -605,7 +605,7 @@ fn run_admitted_inner(
     owner.target_projection = target_projection;
     owner.target_connected = Mutex::new(target_connected);
     let status =
-        crate::run::run_with_context(&manifest, &launch.payload, &options, None, Some(&owner));
+        crate::run::launch_with_context(&manifest, &launch.payload, &options, None, Some(&owner));
     // Even errors return only after canonical ServiceChild teardown.
     if owner.shutdown.load(Ordering::Acquire)
         && let Some(observed) = observed_shutdown
@@ -615,7 +615,7 @@ fn run_admitted_inner(
     let status = status?;
     check_service_exit_authority(&owner)?;
     if !status.success() || !owner.quiescent.load(Ordering::Acquire) {
-        return Err(RunError::InvalidServiceLaunch(
+        return Err(LaunchError::InvalidServiceLaunch(
             "provider exit was not a clean checkpoint".into(),
         ));
     }

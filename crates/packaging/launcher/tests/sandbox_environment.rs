@@ -13,7 +13,7 @@
 use std::path::PathBuf;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use launcher::run::{RunOptions, run_with_captured};
+use launcher::run::{LaunchOptions, launch_with_captured};
 use tilo_test_env::ScopedEnv;
 
 use crate::support::{bwrap, isolated_options, manifest, workspacetest_payload};
@@ -47,7 +47,7 @@ fn parent_env(vars: &[(&str, &str)]) -> ScopedEnv {
 
 fn run(argv: &[&str]) -> String {
     let data = tempfile::tempdir().unwrap();
-    let opts = RunOptions {
+    let opts = LaunchOptions {
         no_services: true,
         bwrap_bin: Some(bwrap()),
         landlock_enforce: false,
@@ -57,7 +57,7 @@ fn run(argv: &[&str]) -> String {
         },
         ..isolated_options(data.path())
     };
-    let (status, out) = run_with_captured(
+    let (status, out) = launch_with_captured(
         &manifest(PACKAGE, "bin/workspacetest", "off"),
         workspacetest_payload(),
         &opts,
@@ -354,7 +354,7 @@ fn relocated_gstreamer_discovers_and_decodes_in_the_confined_process() {
         let mut manifest = manifest(PACKAGE, "bin/workspacetest", "off");
         manifest.runtime = Some("tilo-runtime/gst-relocation-fixture".into());
         manifest.entrypoint.bin = format!("bin/{bin}");
-        let opts = RunOptions {
+        let opts = LaunchOptions {
             no_services: true,
             bwrap_bin: Some(bwrap()),
             sandbox_shim_bin: Some(tilo_test_env::package_binary!("tilo-launcher")),
@@ -368,7 +368,7 @@ fn relocated_gstreamer_discovers_and_decodes_in_the_confined_process() {
         };
         assert!(opts.landlock_enforce);
         assert!(!opts.allow_missing_runtime && !opts.allow_unsigned_runtime);
-        let (status, output) = run_with_captured(&manifest, &payload, &opts)
+        let (status, output) = launch_with_captured(&manifest, &payload, &opts)
             .expect("launch the native probe with the verified relocated runtime");
         let output = String::from_utf8_lossy(&output).into_owned();
         assert!(status.success(), "{bin} failed: {status:?} {output}");

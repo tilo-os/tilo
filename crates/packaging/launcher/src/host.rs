@@ -375,7 +375,7 @@ fn configure_host_launch_session(cmd: &mut Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::run::{LaunchMode, RunError, RunOptions};
+    use crate::run::{LaunchError, LaunchMode, LaunchOptions};
     use tilo_test_env::SpawnUnderEnvLock as _;
 
     /// A perfectly valid package manifest — the refusal being tested has to come from the launch
@@ -394,16 +394,16 @@ mod tests {
         {
             {
                 let manifest = example_manifest();
-                let opts = RunOptions {
+                let opts = LaunchOptions {
                     mode: LaunchMode::Host {
                         desktop_id: "com.spotify.Client".into(),
                     },
                     ..Default::default()
                 };
-                let err = crate::run::run_with(&manifest, std::path::Path::new("/nonexistent"), &opts)
+                let err = crate::run::launch_with(&manifest, std::path::Path::new("/nonexistent"), &opts)
                     .expect_err("a host application is not a package");
                 match err {
-                    RunError::HostAppNotAPackage { desktop_id } => {
+                    LaunchError::HostAppNotAPackage { desktop_id } => {
                         assert_eq!(desktop_id, "com.spotify.Client");
                     }
                     other => panic!("expected HostAppNotAPackage, got {other:?}"),
@@ -411,19 +411,19 @@ mod tests {
             }
             {
                 let manifest = example_manifest();
-                let opts = RunOptions {
+                let opts = LaunchOptions {
                     mode: LaunchMode::Host {
                         desktop_id: "org.gnome.TextEditor".into(),
                     },
                     ..Default::default()
                 };
-                let err = crate::run::run_with_captured(
+                let err = crate::run::launch_with_captured(
                     &manifest,
                     std::path::Path::new("/nonexistent"),
                     &opts,
                 )
                 .expect_err("the second way into the sandbox builder is closed too");
-                assert!(matches!(err, RunError::HostAppNotAPackage { .. }));
+                assert!(matches!(err, LaunchError::HostAppNotAPackage { .. }));
             }
             {
                 let err = run_host(

@@ -355,7 +355,7 @@ impl Planned {
         if let Some(origin) = context.connector {
             // The app's connector for `origin`, not a window: the process runs the origin's
             // connector in the sandbox the manifest declares for it
-            // (`launcher::run::RunOptions::tilolang_connector`).
+            // (`launcher::run::LaunchOptions::tilolang_connector`).
             args.push("--tilolang-connector".to_owned());
             args.push(origin.to_owned());
         }

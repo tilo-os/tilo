@@ -880,7 +880,7 @@ fn launched(
         command: command.to_owned(),
         passthrough_argv: argv.iter().map(|arg| (*arg).to_owned()).collect(),
     };
-    let (status, out) = launch::run_with_captured(manifest, payload, &opts).expect("launch");
+    let (status, out) = launch::launch_with_captured(manifest, payload, &opts).expect("launch");
     let out = String::from_utf8_lossy(&out).trim().to_owned();
     assert!(status.success(), "the app exited {status:?}: {out}");
     out

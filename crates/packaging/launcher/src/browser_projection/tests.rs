@@ -94,9 +94,9 @@ tilo_test_env::scenario! {
         let fixture = Fixture::new();
         let mut environment = tilo_test_env::ScopedEnv::new();
         environment.set("HOME", &fixture.home);
-        let opts = RunOptions {
+        let opts = LaunchOptions {
             browser_continuity_host_path: Some(fixture.projection.clone()),
-            ..RunOptions::default()
+            ..LaunchOptions::default()
         };
         let mut argv = vec!["bwrap".into(), "/app/browser".into()];
         let guard = splice(&mut argv, &manifest("so.tilo.browser"), &opts)
@@ -121,7 +121,7 @@ tilo_test_env::scenario! {
         fs::write(fixture.profile.join("Bookmarks"), b"later original change").unwrap();
         assert_eq!(fs::read(&copy).unwrap(), b"actual selected bookmarks");
         let before =
-            crate::run::resolve_capabilities(&manifest("so.tilo.browser"), &RunOptions::default());
+            crate::run::resolve_capabilities(&manifest("so.tilo.browser"), &LaunchOptions::default());
         let after = crate::run::resolve_capabilities(&manifest("so.tilo.browser"), &opts);
         assert_eq!(before.ro_paths, after.ro_paths);
         assert_eq!(before.rw_paths, after.rw_paths);
@@ -132,9 +132,9 @@ tilo_test_env::scenario! {
 
     phase other_apps_and_browser_helpers_never_receive_profile_or_home_access;
     {
-        let opts = RunOptions {
+        let opts = LaunchOptions {
             browser_continuity_host_path: Some("/not/accessible".into()),
-            ..RunOptions::default()
+            ..LaunchOptions::default()
         };
         for id in [
             "so.tilo.file-explorer",
@@ -157,7 +157,7 @@ tilo_test_env::scenario! {
                 passthrough_argv: Vec::new(),
             },
         ] {
-            let helper = RunOptions {
+            let helper = LaunchOptions {
                 mode,
                 ..opts.clone()
             };

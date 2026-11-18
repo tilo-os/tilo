@@ -10,9 +10,9 @@ use crate::retained_source::{
 use launcher::{
     owned_service::{
         self, RetainedIoAdmission, RetainedIoAuthority, RetainedIoCredentials, RetainedNativeOwner,
-        ServiceAuthority, ServiceCancellation, ServiceLaunch, ServiceLeaseKey, SupervisedRun,
+        ServiceAuthority, ServiceCancellation, ServiceLaunch, ServiceLeaseKey, SupervisedLaunch,
     },
-    run::{LaunchMode, RunOptions},
+    run::{LaunchMode, LaunchOptions},
 };
 use std::{
     ffi::OsStr,
@@ -85,7 +85,7 @@ impl RetainedIoAuthority for Authority {
 /// Dropping cancels and joins; a timeout cannot release the protected source.
 pub(super) struct RetainedSourceWorker {
     cancellation: ServiceCancellation,
-    job: Option<JoinHandle<SupervisedRun>>,
+    job: Option<JoinHandle<SupervisedLaunch>>,
     key: ServiceLeaseKey,
     parent: Option<File>,
     working: Option<tempfile::TempDir>,
@@ -158,7 +158,7 @@ impl RetainedSourceWorker {
         let launch = ServiceLaunch {
             manifest: service.manifest.clone(),
             payload: service.payload.clone(),
-            options: RunOptions {
+            options: LaunchOptions {
                 no_services: true,
                 expected_package_hash: Some(service.package_hash.clone()),
                 app_id: Some(owned_service::RETAINED_IO_PACKAGE_ID.into()),
@@ -173,7 +173,7 @@ impl RetainedSourceWorker {
                         .into(),
                     ],
                 },
-                ..RunOptions::default()
+                ..LaunchOptions::default()
             },
         };
         let child_cancel = cancellation.clone();
@@ -332,8 +332,8 @@ mod retirement_tests {
             .unwrap();
         let job = std::thread::spawn(move || {
             assert!(!panic, "controlled source supervisor panic");
-            SupervisedRun {
-                result: Err(launcher::run::RunError::Io(io::Error::other(
+            SupervisedLaunch {
+                result: Err(launcher::run::LaunchError::Io(io::Error::other(
                     "no kernel stop observation",
                 ))),
                 shutdown: None,

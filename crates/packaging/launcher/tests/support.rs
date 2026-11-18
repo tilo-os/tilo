@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 use launcher::manifest::{Entrypoint, ManifestView, Net, Sandbox};
-use launcher::run::RunOptions;
+use launcher::run::LaunchOptions;
 
 /// A payload root holding `bin/hello`, the in-tree `hello` fixture.
 pub fn hello_payload() -> &'static Path {
@@ -91,10 +91,10 @@ pub fn manifest(package_id: &str, bin: &str, net: &str) -> ManifestView {
 
 /// Launch options that touch nothing of the invoking user's: the per-workspace app directories
 /// live under `data_home`.
-pub fn isolated_options(data_home: &Path) -> RunOptions {
-    RunOptions {
+pub fn isolated_options(data_home: &Path) -> LaunchOptions {
+    LaunchOptions {
         data_home: Some(data_home.to_path_buf()),
-        ..RunOptions::default()
+        ..LaunchOptions::default()
     }
 }
 

@@ -9,7 +9,7 @@ use advisory_lock::FileLock;
 use runtime_bundle::gc::BundleRoot;
 
 use crate::manifest::ManifestView;
-use crate::run::{RunError, RunOptions};
+use crate::run::{LaunchError, LaunchOptions};
 
 /// Where `LaunchLeases::take_observed` has got to, for a test that interleaves an update with a launch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,8 +49,8 @@ impl LaunchLeases {
     pub fn take(
         manifest: &ManifestView,
         payload_root: &Path,
-        opts: &RunOptions,
-    ) -> Result<Self, RunError> {
+        opts: &LaunchOptions,
+    ) -> Result<Self, LaunchError> {
         Self::take_observed(manifest, payload_root, opts, &mut |_| {})
     }
 
@@ -58,13 +58,13 @@ impl LaunchLeases {
     pub(crate) fn take_observed(
         manifest: &ManifestView,
         payload_root: &Path,
-        opts: &RunOptions,
+        opts: &LaunchOptions,
         observe: &mut dyn FnMut(Stage),
-    ) -> Result<Self, RunError> {
+    ) -> Result<Self, LaunchError> {
         let payload = hold_payload(payload_root)?;
         let mut held = Vec::new();
         if !payload_root.is_dir() {
-            return Err(RunError::PackageChanged {
+            return Err(LaunchError::PackageChanged {
                 package: manifest.package_id.clone(),
                 path: payload_root.to_path_buf(),
             });
@@ -75,7 +75,7 @@ impl LaunchLeases {
                 let lease =
                     bundles
                         .hold_launch(&version)
-                        .map_err(|source| RunError::LaunchLease {
+                        .map_err(|source| LaunchError::LaunchLease {
                             path: bundles.bundle(&version),
                             source,
                         })?;
@@ -94,8 +94,8 @@ impl LaunchLeases {
 
 /// Hold the payload tree at `payload_root` when it is one of the user's store; see
 /// [`package_store::lease::hold_payload`].
-pub fn hold_payload(payload_root: &Path) -> Result<Option<FileLock>, RunError> {
-    package_store::lease::hold_payload(payload_root).map_err(|source| RunError::LaunchLease {
+pub fn hold_payload(payload_root: &Path) -> Result<Option<FileLock>, LaunchError> {
+    package_store::lease::hold_payload(payload_root).map_err(|source| LaunchError::LaunchLease {
         path: payload_root.to_path_buf(),
         source,
     })
@@ -136,7 +136,7 @@ fn per_user_bundles() -> Option<BundleRoot> {
 
 /// The runtime versions a launch of `manifest` may mount from `root`: an explicit runtime directory
 /// there, else the manifest's runtime, and its required runtimes.
-fn runtime_versions(manifest: &ManifestView, opts: &RunOptions, root: &Path) -> Vec<String> {
+fn runtime_versions(manifest: &ManifestView, opts: &LaunchOptions, root: &Path) -> Vec<String> {
     let version_of = |raw: &str| {
         raw.split_once('/')
             .map(|(_, version)| version.to_string())
@@ -200,7 +200,7 @@ mod tests {
         _env: tilo_test_env::ScopedEnv,
         store: package_store::PackageStore,
         v2: Vec<u8>,
-        opts: RunOptions,
+        opts: LaunchOptions,
         publisher: String,
     }
 
@@ -330,7 +330,7 @@ type = "gui"
             )
             .unwrap();
         let v2 = app(&work, "2.0.0", NEW_RUNTIME, 20);
-        let opts = RunOptions {
+        let opts = LaunchOptions {
             require_runtime_publisher: Some(identity.public_key_hex()),
             ..Default::default()
         };
@@ -370,7 +370,7 @@ type = "gui"
             &fx.opts,
             &mut |stage| update_at(At::Lease(stage)),
         ) {
-            Err(RunError::PackageChanged { .. }) => return Opened::Changed,
+            Err(LaunchError::PackageChanged { .. }) => return Opened::Changed,
             other => other.unwrap(),
         };
         let (bundle, version) = crate::run::resolve_runtime(&manifest, &fx.opts)
@@ -547,7 +547,7 @@ type = "gui"
         let gone = fx.store.layout().packages().join("0".repeat(64));
         assert!(matches!(
             LaunchLeases::take(&manifest, &gone, &fx.opts),
-            Err(RunError::PackageChanged { .. })
+            Err(LaunchError::PackageChanged { .. })
         ));
     }
 }

@@ -84,14 +84,14 @@ fn installed_launch() -> Result<ServiceLaunch, SendError> {
     Ok(ServiceLaunch {
         manifest: installed.manifest_path,
         payload: installed.payload_root,
-        options: launcher::run::RunOptions {
+        options: launcher::run::LaunchOptions {
             app_id: Some(working_profile::SERVICE_PACKAGE.into()),
             expected_package_hash: Some(installed.package_id_hex),
             mode: launcher::run::LaunchMode::Service {
                 passthrough_argv: vec![],
             },
             no_services: true,
-            ..launcher::run::RunOptions::default()
+            ..launcher::run::LaunchOptions::default()
         },
     })
 }

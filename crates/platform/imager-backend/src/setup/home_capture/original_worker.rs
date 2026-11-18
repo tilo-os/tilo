@@ -29,8 +29,8 @@ use crate::setup::home_capture::{
     worker,
 };
 use launcher::{
-    owned_service::{self, ServiceLaunch, ServiceLeaseKey, SupervisedRun},
-    run::{LaunchMode, RunOptions},
+    owned_service::{self, ServiceLaunch, ServiceLeaseKey, SupervisedLaunch},
+    run::{LaunchMode, LaunchOptions},
 };
 use std::{
     os::unix::fs::PermissionsExt,
@@ -48,7 +48,7 @@ pub(in crate::setup::home_capture) fn retirement_pending() -> bool {
 /// Keeps working ancestry and cleanup evidence alive even when exchange fails.
 /// No response alone represents verified ciphertext or completed installation.
 pub(in crate::setup::home_capture) struct OriginalWorkerRun<O: OriginalWorkerOwner> {
-    pub(in crate::setup::home_capture) supervised: SupervisedRun,
+    pub(in crate::setup::home_capture) supervised: SupervisedLaunch,
     pub(in crate::setup::home_capture) response: io::Result<worker::Response>,
     pub(in crate::setup::home_capture) key: ServiceLeaseKey,
     working: Option<tempfile::TempDir>,
@@ -225,7 +225,7 @@ pub(in crate::setup::home_capture) fn launch<O: OriginalWorkerOwner>(
         ServiceLaunch {
             manifest: service.manifest.clone(),
             payload: service.payload.clone(),
-            options: RunOptions {
+            options: LaunchOptions {
                 no_services: true,
                 expected_package_hash: Some(service.package_hash.clone()),
                 app_id: Some(PACKAGE.into()),
@@ -233,7 +233,7 @@ pub(in crate::setup::home_capture) fn launch<O: OriginalWorkerOwner>(
                 mode: LaunchMode::Service {
                     passthrough_argv: Vec::new(),
                 },
-                ..RunOptions::default()
+                ..LaunchOptions::default()
             },
         },
         admission,
@@ -295,7 +295,7 @@ mod tests {
             .unwrap();
         let path = working.path().to_path_buf();
         let run: OriginalWorkerRun<OfflineOutputTransaction> = OriginalWorkerRun {
-            supervised: SupervisedRun {
+            supervised: SupervisedLaunch {
                 result: Err(io::Error::from(io::ErrorKind::Interrupted).into()),
                 shutdown: None,
             },
