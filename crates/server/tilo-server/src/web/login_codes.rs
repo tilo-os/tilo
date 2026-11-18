@@ -302,6 +302,11 @@ pub(super) struct LoginCodes {
     /// This host's own origin as pages reach it, which a code's link must
     /// name; `None` when the host knows no origin to check against.
     host_origin: Option<String>,
+    /// The other origins whoever keeps this server says it is reached under
+    /// (a front that publishes it under a second name): a code's link may
+    /// name one of them as it may name the first. They are told at the
+    /// start and never read from a request.
+    also_origins: Vec<String>,
     /// Where the codes are kept across restarts; `None` keeps them in memory.
     path: Option<PathBuf>,
 }
@@ -319,6 +324,7 @@ impl LoginCodes {
             state: std::sync::Mutex::default(),
             key: rand::random(),
             host_origin,
+            also_origins: Vec::new(),
             path: None,
         }
     }
@@ -334,11 +340,28 @@ impl LoginCodes {
             state: std::sync::Mutex::new(state),
             key,
             host_origin,
+            also_origins: Vec::new(),
             path: Some(path),
         };
         // The key is on disk before any offer made under it.
         codes.save(&codes.lock());
         codes
+    }
+
+    /// These codes, for a server that is also reached under `origins`: a
+    /// code's link may name one of them as it may name the first origin.
+    pub(super) fn reached_also_at(mut self, origins: Vec<String>) -> Self {
+        self.also_origins = origins;
+        self
+    }
+
+    /// The origins a code's link may name: the server's own first, then the
+    /// others it was told it is reached under.
+    fn own_origins(&self) -> impl Iterator<Item = &str> {
+        self.host_origin
+            .iter()
+            .chain(&self.also_origins)
+            .map(String::as_str)
     }
 
     /// Keep `state`'s codes on disk, readable by this host's user only: they
@@ -413,7 +436,7 @@ impl LoginCodes {
     /// as the code is on it.
     pub(super) fn create(&self, link: Option<&str>, now_ms: u64) -> Result<Created, Refusal> {
         if let Some(link) = link {
-            pairing_link(link, self.host_origin.as_deref()).map_err(Refusal::Malformed)?;
+            pairing_link(link, self.own_origins()).map_err(Refusal::Malformed)?;
         }
         let code = code_from(rand::random::<[u8; CODE_LETTERS]>());
         let expires_at_ms = now_ms.saturating_add(CODE_LIFETIME_MS);
@@ -449,7 +472,7 @@ impl LoginCodes {
         let pair = offer
             .link
             .as_deref()
-            .map(|link| pairing_link(link, self.host_origin.as_deref()))
+            .map(|link| pairing_link(link, self.own_origins()))
             .transpose()
             .map_err(Refusal::Malformed)?;
         if !state
@@ -741,12 +764,15 @@ fn record(resolved: &mut Resolution, step: Step) {
 
 /// Check `link` is a Tilo pairing link for this host: a web address whose
 /// route carries `?pair=` with a person's root and an invite, and which names
-/// this host (or is written on it). `tilo login` reads it with the full
-/// grammar; this only keeps the host from naming anything else. Answers the
-/// person and the invite it names.
-pub(super) fn pairing_link(
+/// this host (or is written on it) by one of `ours`, the origins the server
+/// is reached under: its own, and those named at its start by whoever keeps
+/// it. With none of them there is no origin to check against. What a request
+/// says of itself (the name in its headers) is never one of them.
+/// `tilo login` reads the link with the full grammar; this only keeps the
+/// host from naming anything else. Answers the person and the invite it names.
+pub(super) fn pairing_link<'a>(
     link: &str,
-    host_origin: Option<&str>,
+    ours: impl IntoIterator<Item = &'a str>,
 ) -> Result<([u8; 32], [u8; 16]), &'static str> {
     if link.chars().count() > MAX_LINK_CHARS {
         return Err("a pairing link is at most 2048 characters");
@@ -785,11 +811,8 @@ pub(super) fn pairing_link(
     if !path.split('/').any(|segment| segment == "w") {
         return Err("a pairing link opens a workspace");
     }
-    if let Some(origin) = host_origin {
-        let ours = origin
-            .split_once("://")
-            .map_or(origin, |(_, authority)| authority)
-            .trim_end_matches('/');
+    let mut ours = ours.into_iter().peekable();
+    if ours.peek().is_some() {
         // A loopback host is written with its scheme (`@https:127.0.0.1:9781`),
         // as the link grammar writes one: the authority is what follows it.
         let theirs = named_host.unwrap_or(site_authority);
@@ -797,7 +820,7 @@ pub(super) fn pairing_link(
             .strip_prefix("https:")
             .or_else(|| theirs.strip_prefix("http:"))
             .unwrap_or(theirs);
-        if !theirs.eq_ignore_ascii_case(ours) {
+        if !ours.any(|origin| theirs.eq_ignore_ascii_case(authority(origin))) {
             return Err("a pairing link names another host");
         }
     }
@@ -807,6 +830,14 @@ pub(super) fn pairing_link(
         .and_then(|()| hex::decode_to_slice(invite_hex, &mut invite))
         .map_err(|_| "a pairing link names a person's root and a one-time invite")?;
     Ok((user, invite))
+}
+
+/// The authority (`name[:port]`) of `origin`, as a link names a host.
+fn authority(origin: &str) -> &str {
+    origin
+        .split_once("://")
+        .map_or(origin, |(_, authority)| authority)
+        .trim_end_matches('/')
 }
 
 #[cfg(test)]
@@ -1128,6 +1159,58 @@ mod tests {
             let long = format!("{}&x={}", link(), "a".repeat(MAX_LINK_CHARS));
             assert!(pairing_link(&long, None).is_err());
         }
+    }
+
+    /// A server a front publishes under a second name, told that name at its
+    /// start, makes the setup code for a page that came by it, and the code
+    /// is that name's: the link its computer resolves names it. A name the
+    /// server was not told stays another server.
+    #[test]
+    fn a_server_told_its_second_name_makes_the_setup_code_for_it_and_for_no_other() {
+        let at = |site: &str, named: &str| {
+            link().replace("tilo.sh/#/@eu1.tilo.sh/", &format!("{site}/#/@{named}/"))
+        };
+        let first = at("tilo.localhost:24520", "http:127.0.0.1:24500");
+        let second = at("tilo.wifi.example:24520", "tilo.wifi.example:24500");
+        let third = at("tilo.wifi.example:24520", "elsewhere.example:24500");
+
+        // Told its one origin only, a server takes its second name for another.
+        let one = LoginCodes::new(Some("http://127.0.0.1:24500".into()));
+        assert!(one.create(Some(&first), NOW).is_ok());
+        let refused = one.create(Some(&second), NOW).map(|_| ());
+        assert!(matches!(refused, Err(Refusal::Malformed(_))), "{refused:?}");
+
+        let codes = LoginCodes::new(Some("http://127.0.0.1:24500".into()))
+            .reached_also_at(vec!["https://tilo.wifi.example:24500/".into()]);
+        let created = kept(&codes, Some(second.clone()), NOW);
+        let resolved = codes.resolve(&created.code, None, NOW + 1).unwrap();
+        assert_eq!(
+            resolved.link,
+            Some(second.clone()),
+            "the code is for the name the page came by"
+        );
+        // Its first name makes a code as before, and a third name is refused
+        // as the second was before the server was told it.
+        assert!(codes.create(Some(&first), NOW).is_ok());
+        assert_eq!(codes.create(Some(&third), NOW).map(|_| ()), refused);
+        // Nor is an offer for a third name kept, wherever it was made.
+        let elsewhere = LoginCodes::new(None);
+        let offered = elsewhere.create(Some(&third), NOW).unwrap();
+        assert!(matches!(
+            codes.follow(
+                &offered.follow,
+                Some(&offer_of(&offered, Some(third.clone()))),
+                None,
+                NOW
+            ),
+            Err(Refusal::Unknown | Refusal::Malformed(_))
+        ));
+
+        let both = ["http://127.0.0.1:24500", "https://tilo.wifi.example:24500"];
+        let named = Ok(([0xab; 32], [0x7f; 16]));
+        assert_eq!(pairing_link(&first, both), named);
+        assert_eq!(pairing_link(&second, both), named);
+        assert!(pairing_link(&third, both).is_err());
     }
 
     /// Thousands of visitors who are shown a code and do nothing leave nothing on the host, and

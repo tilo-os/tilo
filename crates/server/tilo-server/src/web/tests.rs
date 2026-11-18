@@ -1142,13 +1142,24 @@ async fn call_json(
     body: &serde_json::Value,
     forwarded_for: Option<&str>,
 ) -> (u16, String, serde_json::Value) {
+    call_json_named(addr, "localhost", path, body, forwarded_for).await
+}
+
+/// [`call_json`] by a request that names `named` as the one it reached.
+async fn call_json_named(
+    addr: SocketAddr,
+    named: &str,
+    path: &str,
+    body: &serde_json::Value,
+    forwarded_for: Option<&str>,
+) -> (u16, String, serde_json::Value) {
     let body = serde_json::to_vec(body).unwrap();
     let forwarded = forwarded_for
         .map(|client| format!("X-Forwarded-For: {client}\r\n"))
         .unwrap_or_default();
     let mut socket = tokio::net::TcpStream::connect(addr).await.unwrap();
     let header = format!(
-        "POST {API_PREFIX}{path} HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\
+        "POST {API_PREFIX}{path} HTTP/1.0\r\nHost: {named}\r\nConnection: close\r\n\
          Content-Type: application/json\r\n{forwarded}Content-Length: {}\r\n\r\n",
         body.len()
     );
@@ -2111,4 +2122,122 @@ fn the_host_address_follows_the_endpoint_relay() {
         "a lost relay stays named"
     );
     assert_eq!(address.endpoint_addr, relayed);
+}
+
+/// A server a front publishes under a second name. Told that name at its
+/// start, it makes the setup code a page that came by it asks for, and the
+/// code is that name's. A name it was not told stays another server,
+/// whatever name a request gives the one it reached.
+#[tokio::test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the server serves the routes until it shuts down at the end"
+)]
+async fn a_server_told_its_second_name_makes_the_setup_code_whatever_a_request_calls_it() {
+    use tilo_server_protocol::login_code as wire;
+    let root = SigningKey::from_bytes(&[143; 32]);
+    let keeper = host(&root, 144, DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let server = server_at(&state, keeper.identity(), ServerConfig::default()).await;
+    let mut web = web_of(&server, &keeper);
+    web.login_codes = Arc::new(
+        login_codes::LoginCodes::new(Some("http://127.0.0.1:24500".into()))
+            .reached_also_at(vec!["https://tilo.wifi.example:24500".into()]),
+    );
+    let (addr, serving) = serve_web(Arc::new(web)).await;
+
+    let pair = format!("{}{}", hex::encode([0xab; 32]), hex::encode([0x7f; 16]));
+    let naming = |named: &str| {
+        format!(
+            "https://tilo.wifi.example:24520/#/@{named}/w/6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71?pair={pair}"
+        )
+    };
+    // A page that came by the second name; its front hands the request on
+    // under the first.
+    let second = naming("tilo.wifi.example:24500");
+    let (code, _, created) = call_json_named(
+        addr,
+        "127.0.0.1:24500",
+        wire::CREATE_ROUTE,
+        &serde_json::json!({ "link": second }),
+        None,
+    )
+    .await;
+    assert_eq!(code, 200, "{created}");
+    let created: wire::Created = serde_json::from_value(created).unwrap();
+    let polled = keep_code(addr, &created, Some(second.as_str())).await;
+    assert!(!polled.resolved && !polled.expired);
+    let (code, _, resolved) = call_json(
+        addr,
+        wire::RESOLVE_ROUTE,
+        &serde_json::json!({ "code": created.code }),
+        None,
+    )
+    .await;
+    assert_eq!(code, 200, "{resolved}");
+    assert_eq!(
+        resolved["link"], second,
+        "the code is for the name the page came by"
+    );
+    // A name the server was not told: refused, also to a request that calls
+    // it by that very name.
+    let third = naming("elsewhere.example:24500");
+    for named in [
+        "elsewhere.example:24500",
+        "tilo.wifi.example:24500",
+        "127.0.0.1:24500",
+    ] {
+        let (code, _, refused) = call_json_named(
+            addr,
+            named,
+            wire::CREATE_ROUTE,
+            &serde_json::json!({ "link": third }),
+            None,
+        )
+        .await;
+        assert_eq!(code, 400, "{refused}");
+        assert!(
+            refused["error"]
+                .as_str()
+                .is_some_and(|said| said.contains("names another")),
+            "{refused}"
+        );
+    }
+    stop(server, serving).await;
+}
+
+/// The other origins a server is told it is reached under are origins as its
+/// public one is, and stand beside one: anything else stops the start.
+#[test]
+fn another_origin_a_server_is_reached_under_is_an_origin_beside_its_public_one() {
+    let config = |public_origin: Option<&str>| WebConfig {
+        listen: "127.0.0.1:0".parse().unwrap(),
+        tls: TlsSource::Development {
+            hosts: vec!["localhost".into()],
+            store: None,
+        },
+        allowed_origins: Vec::new(),
+        plain_listen: Some("127.0.0.1:0".parse().unwrap()),
+        public_origin: public_origin.map(str::to_owned),
+        fetch_proxy: None,
+        wait_list: None,
+        link: None,
+        site: None,
+    };
+    let also = |origin: &str| vec![origin.to_owned()];
+    let published = config(Some("http://127.0.0.1:24500"));
+    assert!(checked_origins(&published, &[]).is_ok());
+    assert!(checked_origins(&published, &also("https://tilo.wifi.example:24500")).is_ok());
+    assert!(
+        checked_origins(&published, &also("http://tilo.wifi.example:24500")).is_err(),
+        "plain http beyond this machine"
+    );
+    assert!(
+        checked_origins(&published, &also("tilo.wifi.example:24500")).is_err(),
+        "a name alone is no origin"
+    );
+    assert!(
+        checked_origins(&config(None), &also("https://tilo.wifi.example:24500")).is_err(),
+        "no second name without a first"
+    );
 }
