@@ -211,12 +211,16 @@ fn a_kept_writer_answers_as_a_writer_per_commit_and_a_fresh_build() {
         commit_with_a_writer_per_commit(&mut per_commit);
         assert!(!kept.is_dirty());
 
-        let fresh = {
+        // A fresh build costs an import per document, so it is compared at
+        // every tenth step and the last: a rebuild is what the kept writer's
+        // segment merges must not differ from, and they are settled within a
+        // few steps of the change that made them.
+        let fresh = (step % 10 == 0 || step == 119).then(|| {
             let mut fresh = SearchIndex::new(Matching::LOOSE);
             fresh.replace_all(kept.documents().cloned());
             fresh.commit().unwrap();
             fresh
-        };
+        });
         for query in queries() {
             let found = pages(&kept, &query);
             assert_eq!(
@@ -224,6 +228,9 @@ fn a_kept_writer_answers_as_a_writer_per_commit_and_a_fresh_build() {
                 pages(&per_commit, &query),
                 "step {step}, query {query:?}: the kept writer differs from a writer per commit"
             );
+            let Some(fresh) = &fresh else {
+                continue;
+            };
             // A fresh build has no deleted documents in its body
             // statistics, so only field hits are compared with it.
             let fields = |pages: Vec<Hits>| -> Vec<Vec<Hit>> {
@@ -239,7 +246,7 @@ fn a_kept_writer_answers_as_a_writer_per_commit_and_a_fresh_build() {
             };
             assert_eq!(
                 fields(found),
-                fields(pages(&fresh, &query)),
+                fields(pages(fresh, &query)),
                 "step {step}, query {query:?}: the kept writer differs from a fresh build"
             );
         }

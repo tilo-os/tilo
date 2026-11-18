@@ -107,11 +107,12 @@ fn a_rolled_back_letter_does_not_make_the_next_remote_letter_search() {
     );
 }
 
-/// What empty commits by an actor that has not written renumbered, and
-/// whether they left the document and the actor as they were, into a text
-/// two members wrote in `changes` scattered changes (so that the ops' actor
-/// column changes every few ops).
-fn empty_commits(changes: usize) -> (u64, bool, bool) {
+/// What empty commits by an actor that has not written renumbered, whether
+/// they left the document and the actor as they were, and what the count
+/// makes of a write by that actor taken back (which does open a
+/// transaction), into a text two members wrote in `changes` scattered
+/// changes (so that the ops' actor column changes every few ops).
+fn empty_commits(changes: usize) -> (u64, bool, bool, u64) {
     let mut rng = Rng(0x2545_f491_4f6c_dd1d);
     let (mut doc, _) = scattered(changes, &mut rng);
     let actor = ActorId::from(vec![0x01; 16]);
@@ -124,10 +125,18 @@ fn empty_commits(changes: usize) -> (u64, bool, bool) {
         assert_eq!(reader.commit(), None);
     }
     let renumbered = automerge::work().renumbered_objects - before;
+    // A write by an actor that has not written opens a transaction, which
+    // adds it and renumbers: what an empty commit used to do, and what the
+    // count above would see.
+    let before = automerge::work().renumbered_objects;
+    reader.put(ROOT, "probe", 1).unwrap();
+    reader.rollback();
+    let opened = automerge::work().renumbered_objects - before;
     (
         renumbered,
         reader.save() == saved,
         reader.get_actor() == &actor,
+        opened,
     )
 }
 
@@ -136,7 +145,7 @@ fn an_empty_commit_does_not_renumber_the_document() {
     // Renumbering is the document's objects, not its ops, so two sizes
     // prove it costs a document nothing.
     for changes in [250, 1_000] {
-        let (renumbered, unchanged, same_actor) = empty_commits(changes);
+        let (renumbered, unchanged, same_actor, opened) = empty_commits(changes);
         assert_eq!(
             renumbered, 0,
             "an empty commit opened a transaction, which adds its actor and \
@@ -147,6 +156,10 @@ fn an_empty_commit_does_not_renumber_the_document() {
             "an empty commit leaves the document as it was, after {changes} changes"
         );
         assert!(same_actor, "an empty commit takes on no actor");
+        assert!(
+            opened > 0,
+            "a write by an actor that has not written renumbers, and the count must see it"
+        );
     }
 }
 
