@@ -149,6 +149,7 @@ members = [
     "apps/maps",
     "apps/model-providers",
     "apps/monitor",
+    "apps/monitor-model",
     "apps/music",
     "apps/notes",
     "apps/osk",

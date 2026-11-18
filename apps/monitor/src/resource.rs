@@ -4,41 +4,17 @@
 
 use ui::framework::{Fixture, ResourceApp, RunMode, ViewCx};
 use ui::i18n::EmbeddedCatalog;
-use ui::tilo_resource::{self, Effect, Invoke, Model, resource};
+use ui::tilo_resource::{self, Effect, Invoke};
 use ui::widget::Element;
 
-use crate::app::{MonitorApp, SortKey};
+use crate::app::MonitorApp;
 use crate::model::MonitorModel;
 
 ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
 
-/// The process table's layout, shared with everyone who sees it. The tab, the
-/// filter and the selection are each window's own.
-#[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct Monitor {
-    /// Sort column
-    pub sort: SortKey,
-    /// Ascending
-    pub ascending: bool,
-    /// Flat list
-    pub flat: bool,
-}
-
-impl Monitor {
-    /// What the resource holds: the shared table layout.
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
-}
-
-#[resource(
-    kind = "monitor.processes",
-    read_content = Monitor::read_document
-)]
-impl Monitor {}
+/// The shared table layout and the columns it sorts by: their type lives in
+/// `monitor-model`.
+pub use monitor_model::{Monitor, SortKey};
 
 /// What Monitor does on this machine: work with no document delta, from its own
 /// controls, the palette, an agent or a script. A `process` names one process

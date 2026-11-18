@@ -10161,6 +10161,7 @@ dependencies = [
 name = "monitor"
 version = "0.1.0"
 dependencies = [
+ "monitor-model",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -10173,6 +10174,16 @@ dependencies = [
  "tilo-vello",
  "tilo-winit",
  "tracing",
+ "workspace-hack",
+]
+
+[[package]]
+name = "monitor-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-resource",
  "workspace-hack",
 ]
 
