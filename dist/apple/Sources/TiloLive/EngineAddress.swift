@@ -49,8 +49,13 @@ public enum EngineAddress {
     /// A pairing link as the engine opens it: the same site, the same workspace and the same
     /// secret, on the page that shows Chat alone. Nil for a link into another site, or one that
     /// carries nothing to pair with.
+    ///
+    /// A link the site's own computer made under a name only it can use is read as this site's,
+    /// as the shell reads it (`SitePolicy.inSite`): the code and the link a person's page shows
+    /// on that computer are the ones a phone scans or is handed. The link is judged whole, by
+    /// where it leads: an address written inside it adds no name.
     public static func pairing(_ link: URL, of settings: ShellSettings) -> URL? {
-        guard SitePolicy.origin(of: link) == settings.origin,
+        guard let link = SitePolicy(settings: settings).inSite(link),
               ["", "/", "/app/"].contains(link.path(percentEncoded: true)),
               let fragment = link.fragment(percentEncoded: true)
         else { return nil }

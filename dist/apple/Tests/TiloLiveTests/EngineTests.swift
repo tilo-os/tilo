@@ -954,6 +954,50 @@ final class EngineAddressTests: XCTestCase {
         }
     }
 
+    func testAPairingLinkTheSitesOwnComputerMadeIsOpenedUnderTheNameTheAppReachesItBy() throws {
+        // The page a person has open on the computer that serves the site writes its code and
+        // its link under a name only that computer can use. A phone's app reaches the same site
+        // by the name other devices use, and reads the link as that site's.
+        let phone = try ShellSettings(site: "https://tilo.wifi.example:24520")
+        let made = URL(string: "http://tilo.localhost:24520/#/@127.0.0.1:24500/w/1f0e?pair=\(secret)")!
+        XCTAssertEqual(EngineAddress.pairing(made, of: phone)?.absoluteString,
+                       "https://tilo.wifi.example:24520/app/#/@tilo.wifi.example:24500/w/1f0e/so.tilo.chat?pair=\(secret)")
+        let own = URL(string: "http://localhost:24520/#/me?pair=\(secret)")!
+        XCTAssertEqual(EngineAddress.pairing(own, of: phone)?.absoluteString,
+                       "https://tilo.wifi.example:24520/app/#/me/so.tilo.chat?pair=\(secret)")
+        // Another port is some other program on someone's computer, and another site stays another site.
+        for text in ["http://tilo.localhost:24120/#/w/1f0e?pair=\(secret)", "http://tilo.localhost/#/w/1f0e?pair=\(secret)",
+                     "https://other.example:24520/#/w/1f0e?pair=\(secret)"] {
+            XCTAssertNil(EngineAddress.pairing(URL(string: text)!, of: phone), text)
+        }
+    }
+
+    func testNothingALinkSaysMakesAnotherSiteThisOne() throws {
+        // The site's policy knows the one site the build was given, and the names that site's own
+        // computer has for itself on the site's port. A link is judged whole, by where it leads:
+        // what it carries inside (a name in its route, a second address, a sign-in before its
+        // name) adds no name.
+        let phone = try ShellSettings(site: "https://tilo.wifi.example:24520")
+        let inside = "https://tilo.wifi.example:24520/#/w/1f0e?pair=\(secret)"
+        let own = "http://tilo.localhost:24520/#/w/1f0e?pair=\(secret)"
+        for text in ["https://other.example:24520/#/@tilo.wifi.example:24500/w/1f0e?pair=\(secret)",
+                     "https://other.example/?next=\(inside)", "HTTPS://other.example/?next=\(inside)",
+                     "HTTPS://other.example/?next=\(own)",
+                     "tilo-assistant://open?link=\(inside)", "tilo-assistant://open?link=\(own)",
+                     "http://tilo.localhost.other.example:24520/#/w/1f0e?pair=\(secret)",
+                     "https://tilo.wifi.example:24520@other.example/#/w/1f0e?pair=\(secret)",
+                     "http://other.example@tilo.localhost:24520/#/w/1f0e?pair=\(secret)",
+                     "https://tilo.wifi.example.other.example:24520/#/w/1f0e?pair=\(secret)"] {
+            let link = try XCTUnwrap(URL(string: text), text)
+            XCTAssertNil(EngineAddress.pairing(link, of: phone), text)
+        }
+        // On the site's own computer nothing changes: its own name is its site, another site is not.
+        let mac = try ShellSettings(site: "http://tilo.localhost:24520")
+        XCTAssertEqual(EngineAddress.pairing(URL(string: own)!, of: mac)?.absoluteString,
+                       "http://tilo.localhost:24520/app/#/w/1f0e/so.tilo.chat?pair=\(secret)")
+        XCTAssertNil(EngineAddress.pairing(URL(string: inside)!, of: mac), inside)
+    }
+
     func testAPageStandsElsewhereOnlyInAnotherWorkspace() {
         XCTAssertFalse(EngineAddress.isElsewhere("/@h.example/w/ws-1/so.tilo.chat", than: "/@h.example/w/ws-1"))
         // The same workspace under another name of its host.

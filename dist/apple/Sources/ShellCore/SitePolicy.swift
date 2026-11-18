@@ -77,10 +77,18 @@ public struct SitePolicy: Equatable, Sendable {
             // an underline may end an invitation's key, and stays.
             while let last = written.last, ".,;:!?)]}>\"'”’»".contains(last) { written.removeLast() }
             guard let url = URL(string: written) else { continue }
-            if SitePolicy.origin(of: url) == origin { return url }
-            if let own = asOwn(url) { return own }
+            if let inside = inSite(url) { return inside }
         }
         return nil
+    }
+
+    /// `url` as an address in this site: itself when its origin is the site's, read as the
+    /// site's when the computer that serves the site wrote it for itself (`asOwn`), and `nil`
+    /// for anything else. The address is judged whole, by where it leads: what it carries in
+    /// its path, in its query or after its `#` adds no name.
+    public func inSite(_ url: URL) -> URL? {
+        if SitePolicy.origin(of: url) == origin { return url }
+        return asOwn(url)
     }
 
     /// `url` as a link of this site, when it is written the way the computer that serves the
