@@ -290,10 +290,9 @@ const CASES: &[Case] = &[
 /// One member changes `Data` while the other writes formulas through the typed actions,
 /// each way round: the change in the running app and the writes on another replica, then the
 /// change on the replica and the writes in the app.
-#[test]
-fn a_formula_written_while_rows_or_columns_change_reads_what_its_writer_pointed_at() {
+fn every_case_reads_its_writers_cells(share: usize, shares: usize) {
     let mut wrong = Vec::new();
-    for case in CASES {
+    for case in CASES.iter().skip(share).step_by(shares) {
         for changed_in_app in [true, false] {
             let mut app = book();
             let mut other = Replica::<Workbook>::from_doc(app.peer_document());
@@ -335,6 +334,24 @@ fn a_formula_written_while_rows_or_columns_change_reads_what_its_writer_pointed_
         wrong.len(),
         wrong.join("\n")
     );
+}
+
+// The cases do not share a workbook, so they are walked in three shares that go beside each
+// other; together they cover every case, each way round.
+
+#[test]
+fn a_formula_written_while_rows_or_columns_change_reads_its_writers_cells_share_0() {
+    every_case_reads_its_writers_cells(0, 3);
+}
+
+#[test]
+fn a_formula_written_while_rows_or_columns_change_reads_its_writers_cells_share_1() {
+    every_case_reads_its_writers_cells(1, 3);
+}
+
+#[test]
+fn a_formula_written_while_rows_or_columns_change_reads_its_writers_cells_share_2() {
+    every_case_reads_its_writers_cells(2, 3);
 }
 
 /// A person types a formula into the grid while an agent, on another replica, inserts a row
