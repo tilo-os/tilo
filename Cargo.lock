@@ -116,7 +116,7 @@ dependencies = [
  "cloud-source-gdrive",
  "cloud-source-icloud",
  "cloud-source-onedrive",
- "reqwest 0.13.4",
+ "reqwest",
  "rustix 1.1.6",
  "serde",
  "serde_json",
@@ -623,7 +623,7 @@ dependencies = [
  "launcher",
  "package-store",
  "registry-types",
- "reqwest 0.13.4",
+ "reqwest",
  "runtime-bundle",
  "rustix 1.1.6",
  "serde",
@@ -701,7 +701,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "registry-types",
- "reqwest 0.13.4",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",
@@ -1571,7 +1571,7 @@ dependencies = [
  "hex",
  "host-info",
  "jiff",
- "reqwest 0.13.4",
+ "reqwest",
  "ring",
  "runtime-dylib",
  "rusqlite",
@@ -2456,7 +2456,7 @@ dependencies = [
  "cloud-source",
  "cloud-source-dropbox",
  "hex",
- "reqwest 0.13.4",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -2476,7 +2476,7 @@ dependencies = [
  "cloud-source-gdrive",
  "hex",
  "md-5",
- "reqwest 0.13.4",
+ "reqwest",
  "serde",
  "serde_json",
  "sha1 0.11.0",
@@ -2497,7 +2497,7 @@ dependencies = [
  "base64 0.22.1",
  "cloud-source",
  "cloud-source-icloud",
- "reqwest 0.13.4",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -2522,7 +2522,7 @@ dependencies = [
  "cloud-source-onedrive",
  "hex",
  "percent-encoding",
- "reqwest 0.13.4",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -5841,7 +5841,7 @@ dependencies = [
  "hex",
  "jiff",
  "rcgen",
- "reqwest 0.13.4",
+ "reqwest",
  "runtime-dylib",
  "russh",
  "rustls",
@@ -7515,7 +7515,7 @@ dependencies = [
  "launcher",
  "libc",
  "migration-sources",
- "reqwest 0.13.4",
+ "reqwest",
  "runtime-dylib",
  "runtime-identity",
  "rusqlite",
@@ -7598,7 +7598,7 @@ dependencies = [
  "mime_guess",
  "os-actions",
  "package-store",
- "reqwest 0.13.4",
+ "reqwest",
  "runtime-bundle",
  "runtime-collab",
  "runtime-fs",
@@ -7936,7 +7936,7 @@ dependencies = [
  "portable-atomic",
  "portmapper",
  "rand 0.10.3",
- "reqwest 0.13.4",
+ "reqwest",
  "rustc-hash 2.1.3",
  "rustls",
  "rustls-native-certs",
@@ -8061,7 +8061,7 @@ dependencies = [
  "itoa",
  "n0-error",
  "portable-atomic",
- "reqwest 0.13.4",
+ "reqwest",
  "rustls",
  "rustls-platform-verifier",
  "ryu",
@@ -8114,7 +8114,7 @@ dependencies = [
  "rand 0.10.3",
  "rcgen",
  "reloadable-state",
- "reqwest 0.13.4",
+ "reqwest",
  "rustls",
  "rustls-cert-file-reader",
  "rustls-cert-reloadable-resolver",
@@ -9111,32 +9111,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "librespot"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "030c5e98cc06f20283b5948ae23bdac1de0dec58dee2c5ec4c8dafc7aaa796ab"
-dependencies = [
- "data-encoding",
- "env_logger",
- "futures-util",
- "getopts",
- "librespot-audio",
- "librespot-connect",
- "librespot-core",
- "librespot-discovery",
- "librespot-metadata",
- "librespot-oauth",
- "librespot-playback",
- "librespot-protocol",
- "log",
- "sha1 0.10.6",
- "sysinfo",
- "thiserror 2.0.21",
- "tokio",
- "url",
-]
-
-[[package]]
 name = "librespot-audio"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9154,26 +9128,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
-]
-
-[[package]]
-name = "librespot-connect"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b2a21e9e19b906c6676b1a515fc5529d5414f69049f5a167dfb2ea3206e5a27"
-dependencies = [
- "futures-util",
- "librespot-core",
- "librespot-playback",
- "librespot-protocol",
- "log",
- "protobuf",
- "rand 0.9.2",
- "serde_json",
- "thiserror 2.0.21",
- "tokio",
- "tokio-stream",
- "uuid",
 ]
 
 [[package]]
@@ -9198,7 +9152,6 @@ dependencies = [
  "hyper-proxy2",
  "hyper-rustls",
  "hyper-util",
- "librespot-oauth",
  "librespot-protocol",
  "log",
  "nonzero_ext",
@@ -9232,33 +9185,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "librespot-discovery"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19be30e529532de833cad024d27ad9462f3acb02a3cf1953fbc314527691e0f5"
-dependencies = [
- "aes 0.8.4",
- "base64 0.22.1",
- "bytes",
- "ctr 0.9.2",
- "form_urlencoded",
- "futures-core",
- "futures-util",
- "hmac 0.12.1",
- "http-body-util",
- "hyper",
- "hyper-util",
- "librespot-core",
- "log",
- "rand 0.9.2",
- "serde_json",
- "serde_repr",
- "sha1 0.10.6",
- "thiserror 2.0.21",
- "tokio",
-]
-
-[[package]]
 name = "librespot-metadata"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9274,20 +9200,6 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "uuid",
-]
-
-[[package]]
-name = "librespot-oauth"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d686417d49c9d2c363392ffe28d6e469daca20a82dc414740930e078f5829661"
-dependencies = [
- "log",
- "oauth2",
- "open",
- "reqwest 0.12.28",
- "thiserror 2.0.21",
- "url",
 ]
 
 [[package]]
@@ -9468,7 +9380,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "libc",
- "reqwest 0.13.4",
+ "reqwest",
  "runtime-portal",
  "rustix 1.1.6",
  "serde",
@@ -9871,7 +9783,7 @@ dependencies = [
  "libc",
  "mail-parser",
  "pim-lines",
- "reqwest 0.13.4",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_json",
@@ -10111,7 +10023,7 @@ dependencies = [
  "gstreamer",
  "hex",
  "image",
- "reqwest 0.13.4",
+ "reqwest",
  "rquickjs",
  "runtime-dylib",
  "rustypipe",
@@ -10893,26 +10805,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c7398b9c8b70908f6371f47ed36737907c87c52af34c268fed0bf0ceb92ead9"
 dependencies = [
  "libc",
-]
-
-[[package]]
-name = "oauth2"
-version = "5.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51e219e79014df21a225b1860a479e2dcd7cbd9130f4defd4bd0e191ea31d67d"
-dependencies = [
- "base64 0.22.1",
- "chrono",
- "getrandom 0.2.17",
- "http",
- "rand 0.8.8",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "serde_path_to_error",
- "sha2 0.10.9",
- "thiserror 1.0.69",
- "url",
 ]
 
 [[package]]
@@ -13789,7 +13681,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "registry-types",
- "reqwest 0.13.4",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",
@@ -13896,47 +13788,6 @@ name = "renderdoc-sys"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
-
-[[package]]
-name = "reqwest"
-version = "0.12.28"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
-dependencies = [
- "base64 0.22.1",
- "bytes",
- "futures-channel",
- "futures-core",
- "futures-util",
- "http",
- "http-body",
- "http-body-util",
- "hyper",
- "hyper-rustls",
- "hyper-util",
- "js-sys",
- "log",
- "percent-encoding",
- "pin-project-lite",
- "quinn",
- "rustls",
- "rustls-native-certs",
- "rustls-pki-types",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "sync_wrapper",
- "tokio",
- "tokio-rustls",
- "tower",
- "tower-http",
- "tower-service",
- "url",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
- "webpki-roots",
-]
 
 [[package]]
 name = "reqwest"
@@ -14861,7 +14712,7 @@ dependencies = [
  "phf 0.11.3",
  "rand 0.9.2",
  "regex",
- "reqwest 0.13.4",
+ "reqwest",
  "ress",
  "rquickjs",
  "serde",
@@ -16299,7 +16150,7 @@ dependencies = [
  "hex",
  "lru 0.18.3",
  "package-store",
- "reqwest 0.13.4",
+ "reqwest",
  "runtime-bundle",
  "runtime-dylib",
  "serde",
@@ -18717,7 +18568,7 @@ dependencies = [
  "account-credentials",
  "accounts",
  "quick-xml 0.41.0",
- "reqwest 0.13.4",
+ "reqwest",
  "roxmltree 0.21.1",
  "serde_json",
  "tempfile",
@@ -19246,7 +19097,7 @@ version = "0.1.0"
 dependencies = [
  "hex",
  "libc",
- "reqwest 0.13.4",
+ "reqwest",
  "rustix 1.1.6",
  "serde_json",
  "sha2 0.11.0",
@@ -20063,7 +19914,7 @@ dependencies = [
  "futures-util",
  "jiff",
  "messages",
- "reqwest 0.13.4",
+ "reqwest",
  "rustls",
  "rustls-native-certs",
  "serde",
@@ -20172,7 +20023,7 @@ dependencies = [
  "image",
  "libc",
  "local-model-service",
- "reqwest 0.13.4",
+ "reqwest",
  "rig-core",
  "rustix 1.1.6",
  "serde",
@@ -20203,7 +20054,7 @@ version = "0.1.0"
 dependencies = [
  "agent-provider-config",
  "moderation-model",
- "reqwest 0.13.4",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",
@@ -20271,7 +20122,7 @@ dependencies = [
  "iroh-relay",
  "js-sys",
  "rcgen",
- "reqwest 0.13.4",
+ "reqwest",
  "rustls",
  "rustls-native-certs",
  "rustls-platform-verifier",
@@ -20547,7 +20398,7 @@ dependencies = [
  "base64 0.22.1",
  "getrandom 0.4.3",
  "hex",
- "reqwest 0.13.4",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -20567,7 +20418,7 @@ dependencies = [
  "anyhow",
  "flate2",
  "hex",
- "reqwest 0.13.4",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -22236,7 +22087,8 @@ dependencies = [
  "accounts",
  "gstreamer",
  "gstreamer-app",
- "librespot",
+ "librespot-core",
+ "librespot-playback",
  "tilo-clock",
  "tilo-media",
  "tilo-rt",
@@ -23327,7 +23179,7 @@ dependencies = [
  "rcgen",
  "registry-server",
  "registry-types",
- "reqwest 0.13.4",
+ "reqwest",
  "runtime-collab",
  "runtime-identity",
  "runtime-portal",
@@ -23936,7 +23788,7 @@ dependencies = [
  "pem",
  "proc-macro2",
  "rcgen",
- "reqwest 0.13.4",
+ "reqwest",
  "ring",
  "rustls",
  "serde",
@@ -27109,7 +26961,7 @@ dependencies = [
  "launcher",
  "libc",
  "rand 0.10.3",
- "reqwest 0.13.4",
+ "reqwest",
  "rustix 1.1.6",
  "serde",
  "serde_json",
@@ -27608,7 +27460,7 @@ dependencies = [
  "regex",
  "regex-automata",
  "regex-syntax",
- "reqwest 0.13.4",
+ "reqwest",
  "resvg",
  "ring",
  "rqrr",
@@ -28355,13 +28207,9 @@ dependencies = [
  "libloading 0.8.9",
  "libloading 0.9.0",
  "libm",
- "librespot",
  "librespot-audio",
- "librespot-connect",
  "librespot-core",
- "librespot-discovery",
  "librespot-metadata",
- "librespot-oauth",
  "librespot-playback",
  "librespot-protocol",
  "libseat",
@@ -28476,7 +28324,6 @@ dependencies = [
  "num_enum",
  "num_enum_derive",
  "num_threads",
- "oauth2",
  "object 0.37.3",
  "object 0.39.1",
  "object 0.40.0",
@@ -28680,8 +28527,7 @@ dependencies = [
  "reloadable-state",
  "remote",
  "renderdoc-sys",
- "reqwest 0.12.28",
- "reqwest 0.13.4",
+ "reqwest",
  "resolv-conf",
  "ress",
  "resvg",

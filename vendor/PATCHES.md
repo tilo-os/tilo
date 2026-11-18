@@ -82,7 +82,11 @@ No machine trust setting or persistent access grant changes. See its
 
 `librespot-core` 0.8.0 and `hyper-proxy2` 0.1.0 are checksum-verified MIT
 registry releases. The former moves to quick-xml 0.41 and invalidates a
-non-Premium session without exiting Music. The latter reuses the workspace's
+non-Premium session without exiting Music. It also drops its
+`librespot-oauth` dependency (the interactive OAuth login Music never uses,
+which brought in a second reqwest and oauth2); Music depends on
+`librespot-core` and `librespot-playback` directly instead of the `librespot`
+umbrella crate for the same reason. `hyper-proxy2` reuses the workspace's
 current Rustls/ring dependencies and Tilo's fixed-path native-root loader,
 removing the old certificate-validation and OpenSSL-probing chain. Their
 upstream TLS defaults remain untouched; Music explicitly selects Rustls.

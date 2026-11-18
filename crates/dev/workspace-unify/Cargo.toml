@@ -304,8 +304,6 @@ doc = false
 "enum-ordinalize-4_4_1" = { package = "enum-ordinalize", version = "^4.4.1", default-features = false, features = ["default", "derive", "traits"] }
 "enumflags2-0_7_12" = { package = "enumflags2", version = "^0.7.12", default-features = false, features = ["serde"] }
 "env-tools" = { path = "../../../crates/runtime/env-tools", default-features = false, features = [] }
-"env_filter-2_0_0" = { package = "env_filter", version = "^2.0.0", default-features = false, features = ["std"] }
-"env_logger-0_11_11" = { package = "env_logger", version = "^0.11.11", default-features = false, features = ["auto-color", "color", "humantime"] }
 "equivalent-1_0_2" = { package = "equivalent", version = "^1.0.2", default-features = false, features = [] }
 "erased-serde-0_4_11" = { package = "erased-serde", version = "^0.4.11", default-features = false, features = ["alloc"] }
 "errno-0_3_14" = { package = "errno", version = "^0.3.14", default-features = false, features = ["default", "std"] }
@@ -395,7 +393,6 @@ doc = false
 "generic-array-0_14_7" = { package = "generic-array", version = "^0.14.7", default-features = false, features = ["more_lengths", "zeroize"] }
 "generic-array-1_4_5" = { package = "generic-array", version = "^1.4.5", default-features = false, features = [] }
 "gethostname-1_1_0" = { package = "gethostname", version = "^1.1.0", default-features = false, features = [] }
-"getopts-0_2_24" = { package = "getopts", version = "^0.2.24", default-features = false, features = ["default", "unicode"] }
 "getrandom-0_2_17" = { package = "getrandom", version = "^0.2.17", default-features = false, features = ["std"] }
 "getrandom-0_3_4" = { package = "getrandom", version = "^0.3.4", default-features = false, features = ["std"] }
 "getrandom-0_4_3" = { package = "getrandom", version = "^0.4.3", default-features = false, features = ["std", "sys_rng", "wasm_js"] }
@@ -600,13 +597,9 @@ doc = false
 "libloading-0_8_9" = { package = "libloading", version = "^0.8.9", default-features = false, features = [] }
 "libloading-0_9_0" = { package = "libloading", version = "^0.9.0", default-features = false, features = ["default", "std"] }
 "libm-0_2_16" = { package = "libm", version = "^0.2.16", default-features = false, features = ["arch", "default"] }
-"librespot-0_8_0" = { package = "librespot", version = "^0.8.0", default-features = false, features = ["rustls-tls-native-roots"] }
 "librespot-audio-0_8_0" = { package = "librespot-audio", version = "^0.8.0", default-features = false, features = [] }
-"librespot-connect-0_8_0" = { package = "librespot-connect", version = "^0.8.0", default-features = false, features = [] }
 "librespot-core-0_8_0" = { package = "librespot-core", path = "../../../vendor/librespot-core", default-features = false, features = ["__rustls", "hyper-rustls", "rustls-tls-native-roots"] }
-"librespot-discovery-0_8_0" = { package = "librespot-discovery", version = "^0.8.0", default-features = false, features = [] }
 "librespot-metadata-0_8_0" = { package = "librespot-metadata", version = "^0.8.0", default-features = false, features = [] }
-"librespot-oauth-0_8_0" = { package = "librespot-oauth", version = "^0.8.0", default-features = false, features = ["__rustls", "rustls-tls-native-roots"] }
 "librespot-playback-0_8_0" = { package = "librespot-playback", version = "^0.8.0", default-features = false, features = [] }
 "librespot-protocol-0_8_0" = { package = "librespot-protocol", version = "^0.8.0", default-features = false, features = [] }
 "libseat-0_2_4" = { package = "libseat", version = "^0.2.4", default-features = false, features = [] }
@@ -713,7 +706,6 @@ doc = false
 "num_cpus-1_17_0" = { package = "num_cpus", version = "^1.17.0", default-features = false, features = [] }
 "num_enum-0_7_5" = { package = "num_enum", version = "^0.7.5", default-features = false, features = ["default", "std"] }
 "num_threads-0_1_7" = { package = "num_threads", version = "^0.1.7", default-features = false, features = [] }
-"oauth2-5_0_0" = { package = "oauth2", version = "^5.0.0", default-features = false, features = ["reqwest", "reqwest-blocking", "rustls-tls"] }
 "object-0_37_3" = { package = "object", version = "^0.37.3", default-features = false, features = ["archive", "coff", "elf", "macho", "pe", "read_core", "unaligned", "xcoff"] }
 "object-0_39_1" = { package = "object", version = "^0.39.1", default-features = false, features = ["archive", "coff", "elf", "macho", "pe", "read", "read_core", "std", "unaligned", "xcoff"] }
 "object-0_40_0" = { package = "object", version = "^0.40.0", default-features = false, features = ["coff", "elf", "macho", "pe", "read_core", "std", "unaligned", "write", "write_core", "write_std", "xcoff"] }
@@ -887,7 +879,6 @@ doc = false
 "reloadable-state-0_1_0" = { package = "reloadable-state", version = "^0.1.0", default-features = false, features = [] }
 "remote" = { path = "../../../apps/remote", default-features = false, features = ["samples"] }
 "renderdoc-sys-1_1_0" = { package = "renderdoc-sys", version = "^1.1.0", default-features = false, features = [] }
-"reqwest-0_12_28" = { package = "reqwest", version = "^0.12.28", default-features = false, features = ["__rustls", "__rustls-ring", "__tls", "blocking", "rustls-tls", "rustls-tls-native-roots", "rustls-tls-native-roots-no-provider", "rustls-tls-webpki-roots", "rustls-tls-webpki-roots-no-provider", "system-proxy"] }
 "reqwest-0_13_4" = { package = "reqwest", version = "^0.13.4", default-features = false, features = ["__rustls", "__tls", "blocking", "brotli", "form", "gzip", "json", "rustls-no-provider", "stream"] }
 "resolv-conf-0_7_6" = { package = "resolv-conf", version = "^0.7.6", default-features = false, features = ["system"] }
 "ress-0_11_7" = { package = "ress", version = "^0.11.7", default-features = false, features = ["default"] }
@@ -3210,13 +3201,9 @@ doc = false
 "libloading-0_8_9" = { package = "libloading", version = "^0.8.9", default-features = false, features = [] }
 "libloading-0_9_0" = { package = "libloading", version = "^0.9.0", default-features = false, features = ["default", "std"] }
 "libm-0_2_16" = { package = "libm", version = "^0.2.16", default-features = false, features = ["arch", "default"] }
-"librespot-0_8_0" = { package = "librespot", version = "^0.8.0", default-features = false, features = ["rustls-tls-native-roots"] }
 "librespot-audio-0_8_0" = { package = "librespot-audio", version = "^0.8.0", default-features = false, features = [] }
-"librespot-connect-0_8_0" = { package = "librespot-connect", version = "^0.8.0", default-features = false, features = [] }
 "librespot-core-0_8_0" = { package = "librespot-core", path = "../../../vendor/librespot-core", default-features = false, features = ["__rustls", "hyper-rustls", "rustls-tls-native-roots"] }
-"librespot-discovery-0_8_0" = { package = "librespot-discovery", version = "^0.8.0", default-features = false, features = [] }
 "librespot-metadata-0_8_0" = { package = "librespot-metadata", version = "^0.8.0", default-features = false, features = [] }
-"librespot-oauth-0_8_0" = { package = "librespot-oauth", version = "^0.8.0", default-features = false, features = ["__rustls", "rustls-tls-native-roots"] }
 "librespot-playback-0_8_0" = { package = "librespot-playback", version = "^0.8.0", default-features = false, features = [] }
 "librespot-protocol-0_8_0" = { package = "librespot-protocol", version = "^0.8.0", default-features = false, features = [] }
 "libseat-0_2_4" = { package = "libseat", version = "^0.2.4", default-features = false, features = [] }
@@ -3323,7 +3310,6 @@ doc = false
 "num_cpus-1_17_0" = { package = "num_cpus", version = "^1.17.0", default-features = false, features = [] }
 "num_enum-0_7_5" = { package = "num_enum", version = "^0.7.5", default-features = false, features = ["default", "std"] }
 "num_threads-0_1_7" = { package = "num_threads", version = "^0.1.7", default-features = false, features = [] }
-"oauth2-5_0_0" = { package = "oauth2", version = "^5.0.0", default-features = false, features = ["reqwest", "reqwest-blocking", "rustls-tls"] }
 "object-0_37_3" = { package = "object", version = "^0.37.3", default-features = false, features = ["archive", "coff", "elf", "macho", "pe", "read_core", "unaligned", "xcoff"] }
 "object-0_39_1" = { package = "object", version = "^0.39.1", default-features = false, features = ["archive", "coff", "elf", "macho", "pe", "read", "read_core", "std", "unaligned", "xcoff"] }
 "object-0_40_0" = { package = "object", version = "^0.40.0", default-features = false, features = ["coff", "elf", "macho", "pe", "read_core", "std", "unaligned", "write", "write_core", "write_std", "xcoff"] }
@@ -3497,7 +3483,6 @@ doc = false
 "reloadable-state-0_1_0" = { package = "reloadable-state", version = "^0.1.0", default-features = false, features = [] }
 "remote" = { path = "../../../apps/remote", default-features = false, features = ["samples"] }
 "renderdoc-sys-1_1_0" = { package = "renderdoc-sys", version = "^1.1.0", default-features = false, features = [] }
-"reqwest-0_12_28" = { package = "reqwest", version = "^0.12.28", default-features = false, features = ["__rustls", "__rustls-ring", "__tls", "blocking", "rustls-tls", "rustls-tls-native-roots", "rustls-tls-native-roots-no-provider", "rustls-tls-webpki-roots", "rustls-tls-webpki-roots-no-provider", "system-proxy"] }
 "reqwest-0_13_4" = { package = "reqwest", version = "^0.13.4", default-features = false, features = ["__rustls", "__tls", "blocking", "brotli", "form", "gzip", "json", "rustls-no-provider", "stream"] }
 "resolv-conf-0_7_6" = { package = "resolv-conf", version = "^0.7.6", default-features = false, features = ["system"] }
 "ress-0_11_7" = { package = "ress", version = "^0.11.7", default-features = false, features = ["default"] }
