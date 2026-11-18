@@ -5,6 +5,10 @@
 use super::*;
 use crate::workspace_actions::hosted_secret_use::logged;
 
+/// What the log keeps of a call, of its refusal and of its answer.
+#[path = "hosted_logged_calls.rs"]
+mod logged_calls;
+
 /// A word only the turn's search asks for.
 const SOUGHT: &str = "zanzibar-quince";
 /// A word only the paragraph the turn writes holds.
