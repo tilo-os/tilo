@@ -695,7 +695,7 @@ fn the_persons_own_words_are_spelled_right_in_every_window() {
         settings_store::HostDocument::new(serde_json::Map::new(), |_| Ok(())),
     );
     let mut app = TestApp::<WordProcessorApp>::for_person(&"01".repeat(32)).unwrap();
-    let mut host = ui::personal_dictionary::TestHost::new(source, "so.tilo.word-processor");
+    let mut host = ui::personal_dictionary::TestSettings::new(source, "so.tilo.word-processor");
     let bias_reader = ui::personal_dictionary::reader();
     let flagged = app.with_surface(|editor: &mut WordProcessorWidget| {
         !editor.state().is_spelled_right("qwordz")
