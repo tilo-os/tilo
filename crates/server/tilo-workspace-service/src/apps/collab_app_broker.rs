@@ -1186,6 +1186,7 @@ mod remaining_workspace_actions;
 mod turns;
 pub use agent_connection::AgentConnection;
 mod approval;
+mod person_answer;
 mod window_provider;
 mod windowless_instances;
 use approval::requires_store_approval;
@@ -5809,7 +5810,7 @@ impl AppBrokerState {
                     && binding.resource == offered.resource
                     && binding.action == offered.action
                     && binding.argument_digest == argument_digest(argument)
-                    && (self.take_approval(token, binding) || Self::host_approved(token, binding))
+                    && (self.take_approval(token, binding) || person_answer::taken(token, binding))
             }
             _ => false,
         };
@@ -5910,28 +5911,6 @@ impl AppBrokerState {
 
     /// Spend the person's answer `token` names, when it was given for this
     /// very invocation.
-    /// Whether `token` is the answer of the host that certified this device,
-    /// for exactly `binding`: this device's own person let `binding`'s
-    /// invocation of this action, with these arguments, run. Only the key
-    /// that issued this device's certificate answers for it; another host's
-    /// word, like a changed action, is no answer at all.
-    fn host_approved(token: &str, binding: &ApprovalBinding) -> bool {
-        let Some(approval) = tilo_user_identity::HostApproval::decode(token) else {
-            return false;
-        };
-        let Ok((_, cert)) = tilo_identity::broker::trusted_current_device(&binding.workspace)
-        else {
-            return false;
-        };
-        let argument = binding.argument_digest;
-        approval.stands_for(&cert, tilo_clock::unix_now_ns())
-            && approval.invocation == *binding.invocation.0.as_bytes()
-            && approval.provider == binding.provider
-            && approval.resource == binding.resource
-            && approval.action == binding.action
-            && approval.argument == argument
-    }
-
     fn take_approval(&self, token: &str, binding: &ApprovalBinding) -> bool {
         let Ok(mut approved) = self.approved_confirmations.lock() else {
             return false;
