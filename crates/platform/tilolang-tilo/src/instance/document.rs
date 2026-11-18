@@ -1836,7 +1836,7 @@ impl InstanceDocument {
                     };
                     let before = self.heads_of(chunk);
                     let Some(applied) =
-                        self.write_chunk(chunk, |doc| read.take_into(doc, load_mutation))
+                        self.write_chunk(chunk, |doc| read.take_into(doc).map(usize::from))
                     else {
                         if read.was_refused() && read.is_whole() {
                             // The workspace's copy of the document cannot be read
@@ -2073,7 +2073,7 @@ impl ReadDocument {
                 let &(_, chunk) = routes.iter().find(|(held, _)| held == route)?;
                 let applied = self
                     .chunks
-                    .write_chunk(chunk, |doc| read.take_into(doc, load_mutation))
+                    .write_chunk(chunk, |doc| read.take_into(doc).map(usize::from))
                     .0
                     .unwrap_or(0);
                 (chunk, applied)

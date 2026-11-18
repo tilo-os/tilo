@@ -154,7 +154,6 @@ pub fn open_with_committed_read(
     mut store: DocStore,
     read: &crate::CommittedDocument,
 ) -> Result<(AutoCommit, DocWriter), String> {
-    use tilo_automerge::ApplyIncoming as _;
     let stored = store.load_complete().map_err(|e| e.to_string())?;
     let had_stored = stored.is_some();
     let mut doc = stored.unwrap_or_else(|| {
@@ -170,15 +169,11 @@ pub fn open_with_committed_read(
     if had_stored {
         writer.seed(&doc);
     }
-    read.with_mutation(|mutation| {
-        let collab_types::DocumentMutation::Snapshot(bytes) = mutation else {
-            return Err("native initial snapshot missing".to_string());
-        };
-        let mut actual = AutoCommit::load(bytes).map_err(|e| e.to_string())?;
-        doc.merge_incoming(&mut actual).map_err(|e| e.to_string())?;
-        Ok::<_, String>(())
-    })??;
+    if !read.is_whole() {
+        return Err("native initial snapshot missing".to_string());
+    }
+    read.take_into(&mut doc)
+        .ok_or_else(|| "the workspace's copy of the document could not be read".to_string())?;
     writer.request(&doc);
-    read.applied();
     Ok((doc, writer))
 }

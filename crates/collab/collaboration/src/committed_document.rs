@@ -593,20 +593,19 @@ impl CommittedDocument {
         self.merge_wake.notify_one();
     }
     /// Take this capture into `document`, the owner's copy of the route's
-    /// record, through `merge`, the owner's own receive path, which merges
-    /// it with whatever the owner made meanwhile: acknowledged once merged
-    /// ([`Self::applied`]), so the reader confirms it and the route opens
-    /// again. Changes the owner holds no base of, or cannot read, are
-    /// refused ([`Self::refuse`]) and said why: the reader reads the
-    /// document whole instead. A whole document it cannot read is refused
-    /// the same way, and the reader says so once and moves on: the owner
-    /// keeps its own document and the route goes on publishing it. `None`
-    /// when nothing was merged.
-    pub fn take_into<D: automerge::ReadDoc, T, E: std::fmt::Display>(
-        &self,
-        document: &mut D,
-        merge: impl FnOnce(&mut D, &collab_types::DocumentMutation) -> Result<T, E>,
-    ) -> Option<T> {
+    /// document, merged with whatever the owner made meanwhile: acknowledged
+    /// once merged ([`Self::applied`]), so the reader confirms it and the
+    /// route opens again. A whole document was loaded as it arrived, off the
+    /// owner's thread ([`Captured::whole`]), so the owner does work only for
+    /// what it adds; changes since a revision are what is new already.
+    /// Changes the owner holds no base of, or cannot read, are refused
+    /// ([`Self::refuse`]) and said why: the reader reads the document whole
+    /// instead. A whole document that could not be read is refused the same
+    /// way, and the reader says so once and moves on: the owner keeps its own
+    /// document and the route goes on publishing it. `None` when nothing was
+    /// merged, else whether the document gained anything.
+    pub fn take_into(&self, document: &mut automerge::AutoCommit) -> Option<bool> {
+        use tilo_automerge::ApplyIncoming as _;
         if !self.is_current() {
             return None;
         }
@@ -615,20 +614,33 @@ impl CommittedDocument {
             self.refuse();
             return None;
         }
-        match self.with_mutation(|mutation| merge(document, mutation)) {
-            Ok(Ok(merged)) => {
+        let merged = if self.is_whole() {
+            // Taken once: the same capture delivered again after it merged
+            // brings nothing new.
+            let Some(whole) = self.data.whole.lock_recover().take() else {
+                return None;
+            };
+            whole.and_then(|loaded| {
+                document
+                    .take_loaded(loaded)
+                    .map_err(|error| error.to_string())
+            })
+        } else {
+            document
+                .load_incoming(&self.data.bytes.lock_recover())
+                .map(|applied| applied > 0)
+                .map_err(|error| error.to_string())
+        };
+        match merged {
+            Ok(gained) => {
                 self.applied();
-                Some(merged)
+                Some(gained)
             }
-            Ok(Err(error)) => {
+            Err(error) => {
                 tracing::warn!(%error, whole = self.is_whole(), "committed history refused: the owner cannot read it");
                 self.refuse();
                 None
             }
-            Err(_) => tilo_failure::ignored!(
-                "the route's read was replaced, and its reader no longer waits on this one",
-                None
-            ),
         }
     }
     /// A current capture of `bytes`: the changes since `base`, or the whole
@@ -644,10 +656,11 @@ impl CommittedDocument {
         let budget = ByteBudget::new();
         let length = bytes.len().max(1);
         Self {
-            data: Arc::new(Captured {
-                bytes: std::sync::Mutex::new(bytes),
-                _reservation: budget.reserve(length, length).unwrap(),
-            }),
+            data: Arc::new(Captured::load(
+                bytes,
+                base.is_none(),
+                budget.reserve(length, length).unwrap(),
+            )),
             merged: Arc::new(AtomicBool::new(false)),
             merge_wake: Arc::new(tokio::sync::Notify::new()),
             valid: Arc::new(AtomicBool::new(true)),
@@ -662,7 +675,26 @@ impl CommittedDocument {
 }
 struct Captured {
     bytes: std::sync::Mutex<Vec<u8>>,
+    /// A whole document's bytes, loaded as they arrived, off the owner's
+    /// thread ([`Captured::load`]): what [`CommittedDocument::take_into`]
+    /// takes, or why they could not be read. `None` for changes since a
+    /// revision, and once taken.
+    whole: std::sync::Mutex<Option<Result<automerge::AutoCommit, String>>>,
     _reservation: ByteReservation,
+}
+impl Captured {
+    /// The capture of `bytes`, a whole document when `whole`, loaded here
+    /// (Automerge's strict load: every chunk parses and every hash checks)
+    /// so that its owner does not.
+    fn load(bytes: Vec<u8>, whole: bool, reservation: ByteReservation) -> Self {
+        let loaded =
+            whole.then(|| automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string()));
+        Self {
+            bytes: std::sync::Mutex::new(bytes),
+            whole: std::sync::Mutex::new(loaded),
+            _reservation: reservation,
+        }
+    }
 }
 struct Assembly {
     id: u64,
@@ -1537,12 +1569,19 @@ async fn capture_using(
     if acknowledgement != Reply::Cancelled {
         return Err("committed read acknowledgement invalid".into());
     }
+    // Loading a whole document takes as long as its history is long: on a
+    // thread of its own, never the owner's, which shows the document, nor
+    // the one moving every route's traffic.
+    let whole = assembly.base.is_none();
+    let data =
+        tokio::task::spawn_blocking(move || Captured::load(assembly.bytes, whole, reservation))
+            .await
+            .map_err(|error| {
+                CaptureFailure::from(format!("committed read load failed: {error}"))
+            })?;
     Ok((
         CommittedDocument {
-            data: Arc::new(Captured {
-                bytes: std::sync::Mutex::new(assembly.bytes),
-                _reservation: reservation,
-            }),
+            data: Arc::new(data),
             merged: Arc::new(AtomicBool::new(false)),
             merge_wake: Arc::new(tokio::sync::Notify::new()),
             valid: Arc::new(AtomicBool::new(true)),

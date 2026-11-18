@@ -242,11 +242,7 @@ mod portable_committed {
         pub fn was_refused(&self) -> bool {
             match self.never {}
         }
-        pub fn take_into<D, T, E>(
-            &self,
-            _document: &mut D,
-            _merge: impl FnOnce(&mut D, &collab_types::DocumentMutation) -> Result<T, E>,
-        ) -> Option<T> {
+        pub fn take_into(&self, _document: &mut automerge::AutoCommit) -> Option<bool> {
             match self.never {}
         }
     }

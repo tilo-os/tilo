@@ -248,15 +248,7 @@ fn a_whole_capture_the_owner_cannot_read_leaves_the_route_going() {
         "a delivered capture withholds readiness while its owner has it"
     );
     let mut owner = reader.graph.clone();
-    let merged = read.take_into(
-        &mut owner,
-        |_document: &mut automerge::AutoCommit, mutation| {
-            let collab_types::DocumentMutation::Snapshot(bytes) = mutation else {
-                return Err("changes where the whole document was expected".to_string());
-            };
-            automerge::AutoCommit::load(bytes).map_err(|error| error.to_string())
-        },
-    );
+    let merged = read.take_into(&mut owner);
     assert!(
         merged.is_none(),
         "a copy of a version this app does not read is not taken in"
@@ -300,15 +292,7 @@ fn a_whole_capture_the_owner_cannot_read_leaves_the_route_going() {
         "the change bases on the record the owner holds"
     );
     assert!(
-        later
-            .take_into(&mut owner, |document, mutation| {
-                let collab_types::DocumentMutation::Incremental(bytes) = mutation else {
-                    return Err("the whole document where changes were expected".to_string());
-                };
-                tilo_automerge::ApplyIncoming::load_incoming(document, bytes)
-                    .map_err(|error| error.to_string())
-            })
-            .is_some(),
+        later.take_into(&mut owner).is_some(),
         "a change it can place still lands"
     );
     reader.wait_ready("the reader to confirm the taken change");
