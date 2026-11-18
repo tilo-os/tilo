@@ -1062,7 +1062,7 @@ mod tests {
             // While it works, one line counts the dispatched operations, and opens them.
             let running = AgentWork::new(AgentWorkState::Taken, 42).with_trace(steps.clone());
             let shown = AgentWorkPresentation::of(&running, false, false).unwrap();
-            assert_eq!(shown.summary.as_deref(), Some("Working · 3 steps"));
+            assert_eq!(shown.summary.as_deref(), Some("Working (3 steps)"));
             assert_eq!(shown.did, None);
             assert!(shown.steps.is_empty() && shown.opens);
             assert_eq!(
@@ -1098,7 +1098,7 @@ mod tests {
             let closed = AgentWorkPresentation::of(&at_work, false, false).unwrap();
             assert_eq!(
                 closed.summary.as_deref(),
-                Some("Append paragraph: word-processor · 58 steps"),
+                Some("Append paragraph: word-processor (58 steps)"),
                 "one line says the step the turn is at and how many it has taken"
             );
             assert_eq!(closed.did, None);
