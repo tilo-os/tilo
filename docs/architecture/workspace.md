@@ -283,19 +283,30 @@ certificate:
 
 A person's servers are configured in their admin workspace: an ordinary
 workspace whose only member is the person, in which each server, being one of
-their devices, takes part. Its id follows from the person's root, so every
-server finds the same one; a server enrolled into the person's identity makes
-it where it holds none and enters itself on its first start. One document of
-kind `tilo.servers` holds each server's desired configuration: its name, which
-workspaces it holds and as what (store or key holder), what it offers
-(storage, compute, machines), the updates it follows and daily maintenance window,
-how it unlocks after a boot, and whether it was retired. Every change is a
-typed action on that document, so it has history and an author, and a server
-applies what its entry says: no setting of a server lives in a file of its
-own. A device of the person that governs a workspace hands it to the servers
-the entry names and names them among its hosts, so choosing a holder is one
-action on that document, and an entry that stops naming a workspace lets it
-go.
+their devices, takes part, and which every one of their other devices holds
+like any other workspace of theirs. Its id follows from the person's root, so
+its devices find the same one; a server enrolled into the person's identity
+makes it where it holds none and enters itself on its first start, and a
+device of theirs that is not a server asks a server that holds it to take it
+in. One document of kind `tilo.servers` holds each server's desired
+configuration: its name, which workspaces it holds and as what (store or key
+holder), what it offers (storage, compute, machines), the updates it follows
+and daily maintenance window, how it unlocks after a boot, and whether it was
+retired. Every change is a typed action on that document, so it has history
+and an author, and a device, an agent or a script change it the same way, and
+a server applies what its entry says: no setting of a server lives in a file
+of its own. A device of the person that governs a workspace hands it to the
+servers the entry names and names them among its hosts, so choosing a holder
+is one action on that document, and an entry that stops naming a workspace
+lets it go.
+What the person asks of a server is the same document and the same actions:
+each entry keeps the operation asked of it (its health, a service's journal,
+a restart, a reboot, an update, pausing or resuming updates, a rollback or a
+drain) and what it answered. The server the entry names carries the request
+out and keeps the result; the action that asked answers with it, so an
+agent's `tilo_do` and a script reach a headless server the way they reach
+anything else, and another person's device and agent reach none of it.
+Neither an ssh session nor a second protocol has any part in it.
 A server applies its own entry's offer to what it answers devices that offer
 it work, and writes the updates it follows and its maintenance window for a
 root-run helper to apply. A retired server lets go of everything it holds and takes no

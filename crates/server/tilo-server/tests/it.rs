@@ -86,6 +86,8 @@ mod server_cost;
 mod server_daemon;
 #[path = "servers_document.rs"]
 mod servers_document;
+#[path = "servers_operations.rs"]
+mod servers_operations;
 #[path = "store_and_forward.rs"]
 mod store_and_forward;
 #[path = "surface_content.rs"]

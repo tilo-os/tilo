@@ -23467,6 +23467,7 @@ dependencies = [
  "hex",
  "hyper",
  "hyper-util",
+ "install-profile-model",
  "iroh",
  "iroh-base",
  "key-group",

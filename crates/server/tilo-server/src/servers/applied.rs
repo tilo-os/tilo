@@ -16,19 +16,30 @@
 //!   ([`super::device`]), reports what the root helper said it applied in
 //!   the entry's own status, and, once retired, lets go of every workspace it
 //!   holds.
+//! - Each server carries out what the person asked of it: every operation its
+//!   own entry carries out without an answer ([`super::Asked`]) goes through
+//!   [`crate::operations`], and its result is written back to that entry, where
+//!   every device reads it.
 //!
 //! [`follow`] applies the document as it stands, and again after each change to
 //! it. Nothing here remembers a setting of its own: what a server is is what
 //! its entry says.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use iroh_base::EndpointAddr;
 use tilo_peer_state::CopyRole;
 use tilo_workspace_service::workspaces::{Offer, ResourceWrite, Workspaces};
 
 use super::{SERVERS, admin_workspace_id, device, device_id, policy, read};
+use tilo_lock::MutexRecover as _;
+
+/// How often this device looks for an operation asked of it, besides the
+/// changes its write watch hears.
+const PENDING_TICK: std::time::Duration = std::time::Duration::from_secs(2);
+
 
 /// Where a server writes what its entry asks of the machine, for the root
 /// helpers to apply.
@@ -252,8 +263,9 @@ fn endpoint(server: &super::Server) -> Option<EndpointAddr> {
 
 /// Apply the document now, and again after each change to it and to the
 /// admin workspace's holders, for as long as `workspaces` lives, writing the
-/// requests to what `requests` names. A change another holder wrote reaches
-/// this one as its copy takes it in; one this device wrote, as it is
+/// requests to what `requests` names, and running this server's own
+/// operations with its state at `state_root`. A change another holder wrote
+/// reaches this one as its copy takes it in; one this device wrote, as it is
 /// committed. A server handed the workspace after it started applies it as
 /// the hand-over lands.
 ///
@@ -261,17 +273,23 @@ fn endpoint(server: &super::Server) -> Option<EndpointAddr> {
 /// one this device is reached at, the network change is confirmed once this
 /// device is reached again ([`device::confirm`]); without a
 /// confirmation the root helper puts the previous network back.
+#[must_use]
 pub fn follow(
     workspaces: &Workspaces,
     requests: Requests,
     endpoint: Option<iroh::Endpoint>,
+    state_root: PathBuf,
 ) -> tokio::task::JoinHandle<()> {
     let workspaces = workspaces.clone();
     let admin = admin_workspace_id(&workspaces.serving_certificate().user_public_key);
     let mut writes = workspaces.document_writes();
     let mut governance = workspaces.governance_changes();
+    // The requests one task here is running at a time: a write while it runs
+    // applies the document again, and must not run the same one twice.
+    let running = Arc::new(Mutex::new(HashSet::new()));
     tokio::spawn(async move {
         apply_now(&workspaces, &requests, endpoint.as_ref()).await;
+        answer_now(&workspaces, &state_root, &running).await;
         loop {
             let ours = tokio::select! {
                 write = writes.recv() => match write {
@@ -282,6 +300,9 @@ pub fn follow(
                     Err(error) => Err(error),
                 },
                 change = governance.recv() => change.map(|workspace| workspace == admin),
+                // What is asked of this server may land in a copy the write
+                // watch does not hear, so it is looked for now and then too.
+                () = tokio::time::sleep(PENDING_TICK) => Ok(false),
             };
             match ours {
                 Ok(true) => apply_now(&workspaces, &requests, endpoint.as_ref()).await,
@@ -293,8 +314,83 @@ pub fn follow(
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
+            // An ask reaches this copy through a holder's, which the write
+            // watch does not always hear: what is asked of this server is
+            // carried out as it is found.
+            answer_now(&workspaces, &state_root, &running).await;
         }
     })
+}
+
+/// Carry out the operations this device's own entry holds without an
+/// answer, each in a task of its own so a slow one holds up no change to the
+/// document.
+async fn answer_now(
+    workspaces: &Workspaces,
+    state_root: &Path,
+    running: &Arc<Mutex<HashSet<String>>>,
+) {
+    let cert = workspaces.serving_certificate().clone();
+    let Ok(servers) = read(workspaces).await else {
+        return;
+    };
+    let Some(entry) = servers.servers.get(&device_id(&cert.device_public_key)) else {
+        return;
+    };
+    if entry.retired {
+        return;
+    }
+    let pending: Vec<(String, super::Asked)> = entry
+        .pending()
+        .map(|(id, asked)| (id.as_str().to_owned(), asked.clone()))
+        .collect();
+    for (request, asked) in pending {
+        if !running.lock_recover().insert(request.clone()) {
+            continue;
+        }
+        let workspaces = workspaces.clone();
+        let cert = cert.clone();
+        let state_root = state_root.to_path_buf();
+        let running = Arc::clone(running);
+        tokio::spawn(async move {
+            let result = match asked.operation() {
+                Some(operation) => {
+                    crate::operations::operate(&state_root, Some(&workspaces), &cert, operation)
+                        .await
+                }
+                None => Err("no such operation".to_owned()),
+            };
+            let answer = match result {
+                Ok(result) => serde_json::to_string(&result),
+                // What it could not do is its answer too: the person reads
+                // why in the entry, as they read what it did.
+                Err(error) => {
+                    serde_json::to_string(&tilo_server_protocol::transport::ServerOperationResult {
+                        operation: asked.operation.clone(),
+                        done: false,
+                        summary: error,
+                        answer: tilo_server_protocol::transport::ServerAnswer::Nothing,
+                    })
+                }
+            };
+            let action = match answer {
+                Ok(answer) => super::Servers::ANSWER_OPERATION.with((
+                    device_id(&cert.device_public_key),
+                    request.clone(),
+                    answer,
+                )),
+                Err(error) => {
+                    tracing::warn!(%error, "an operation's answer does not write");
+                    running.lock_recover().remove(&request);
+                    return;
+                }
+            };
+            if let Err(error) = super::apply(&workspaces, action).await {
+                tracing::warn!(%error, %request, "an operation's answer was not recorded");
+            }
+            running.lock_recover().remove(&request);
+        });
+    }
 }
 
 /// [`reconcile_into`], with what it did in the log rather than in an answer,

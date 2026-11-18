@@ -7,8 +7,25 @@
 [[allow]]
 reason = "The dialer's name for the network host it reaches, which the glossary keeps as a network host name."
 words = ["host"]
-identifiers = ["Host", "host"]
+identifiers = ["Host", "host", "connect_to_pinned_host"]
 paths = ["crates/system/tilo-cli/src/server.rs"]
+
+[[allow]]
+reason = "The workspace service's own names for the device a test runs workspaces on: its fixture (`Hosted`) and that fixture's `host` field, the signed holder address's `host` field, and the pinned-dial call that reaches it."
+words = ["host"]
+identifiers = ["Hosted", "host", "connect_to_pinned_host"]
+paths = [
+    "crates/server/tilo-server/tests/servers_operations.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/servers.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/servers/tests.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/servers/tests/asked.rs",
+]
+
+[[allow]]
+reason = "The published-write envelope's own `record` field, the id of the document a write is of, which this device now also sends for its own writes."
+words = ["record"]
+identifiers = ["record"]
+paths = ["crates/server/tilo-workspace-service/src/workspaces.rs"]
 
 [[allow]]
 reason = "systemd's runtime directory, its own name."

@@ -1,3 +1,23 @@
+tilo-servers-ask-operation = Ask a server to do something
+tilo-servers-set-floor-key = Set its rollback floor key
+tilo-servers-answer-operation = Keep what a server answered
+
+## Actions
+
+tilo-servers = Servers
+tilo-servers-enroll-server = Add server
+tilo-servers-plan-machine = Plan a machine that is not installed yet
+tilo-servers-begin-install = Its machine enrolled and is installing
+tilo-servers-answer-machine-choice = Answer a question its machine asked
+tilo-servers-finish-install = Its machine finished installing
+tilo-servers-rename-server = Rename server
+tilo-servers-hold-workspace = Hold workspace
+tilo-servers-release-workspace = Release workspace
+tilo-servers-set-appetite = Set what it offers
+tilo-servers-set-updates = Set the updates a server follows
+tilo-servers-set-maintenance-window = Set maintenance window
+tilo-servers-set-unlock-policy = Set how it unlocks
+tilo-servers-retire-server = Retire server
 # The name a person's own workspace gets when they do not name it, read in
 # their language when they found it.
 workspace-default-name = My workspace

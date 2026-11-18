@@ -87,15 +87,21 @@ pub enum HomePeerManagementRequest {
         /// Where the asking server is dialled.
         endpoint: iroh_base::EndpointAddr,
     },
-    /// Do one thing an owner does to their server from another of their
-    /// devices.
-    Operate(ServerOperation),
+    /// No longer sent: operations are actions on the person's Servers
+    /// workspace. Kept so the variants after it keep their place in the bytes.
+    RetiredOperate(ServerOperation),
+    /// Hand the asking device, another of the person's, their Servers
+    /// workspace: it holds that workspace from then on like any other of
+    /// theirs, and no device that is not a server ever makes one.
+    HoldAdmin {
+        /// Where the asking device is dialled.
+        endpoint: iroh_base::EndpointAddr,
+    },
 }
 
 /// One thing the person who owns a server asks it to do from another of their
-/// devices. Every one of these is an ordinary management request: only the
-/// server's own person reaches the route, and each answers with what it found
-/// or did.
+/// devices. Each is an action on their Servers workspace, which the server the
+/// entry names carries out and answers in that entry.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ServerOperation {
     /// What it serves and how its copies stand, how it unlocks, whether it
@@ -126,6 +132,82 @@ pub enum ServerOperation {
     Rollback,
     /// Suspend its workspaces' Linux machines and hand their work off.
     Drain,
+}
+
+impl ServerOperation {
+    /// The operation in one word: what the action that asks it is named, and
+    /// what a server's entry keeps as asked.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::Status => "status",
+            Self::Logs { .. } => "logs",
+            Self::Restart { .. } => "restart",
+            Self::Reboot => "reboot",
+            Self::Update => "update",
+            Self::PauseUpdates => "pause-updates",
+            Self::ResumeUpdates => "resume-updates",
+            Self::Rollback => "rollback",
+            Self::Drain => "drain",
+        }
+    }
+
+    /// The operations a person asks of a server, in the order their actions
+    /// are listed.
+    pub const NAMES: [&'static str; 9] = [
+        "status",
+        "logs",
+        "restart",
+        "reboot",
+        "update",
+        "pause-updates",
+        "resume-updates",
+        "rollback",
+        "drain",
+    ];
+
+    /// The operation `name` is, with the unit a `restart` or `logs` names and
+    /// the lines a `logs` reads: `None` for a name no operation goes by.
+    #[must_use]
+    pub fn named(name: &str, service: &str, lines: u32) -> Option<Self> {
+        Some(match name {
+            "status" => Self::Status,
+            "logs" => Self::Logs {
+                service: service.to_owned(),
+                lines,
+            },
+            "restart" => Self::Restart {
+                service: service.to_owned(),
+            },
+            "reboot" => Self::Reboot,
+            "update" => Self::Update,
+            "pause-updates" => Self::PauseUpdates,
+            "resume-updates" => Self::ResumeUpdates,
+            "rollback" => Self::Rollback,
+            "drain" => Self::Drain,
+            _ => return None,
+        })
+    }
+
+    /// The unit a `restart` or `logs` names, or `""` for an operation that
+    /// names none.
+    #[must_use]
+    pub fn service(&self) -> &str {
+        match self {
+            Self::Logs { service, .. } | Self::Restart { service } => service,
+            _ => "",
+        }
+    }
+
+    /// How many journal lines a `logs` reads, `0` for an operation that reads
+    /// none.
+    #[must_use]
+    pub const fn lines(&self) -> u32 {
+        match self {
+            Self::Logs { lines, .. } => *lines,
+            _ => 0,
+        }
+    }
 }
 
 /// What a server answers an operation with.
@@ -270,9 +352,6 @@ pub struct HomePeerManagementResponse {
     pub services: crate::mesh::ServiceCapabilities,
     /// Whether this response completed permanent decommissioning.
     pub decommissioned: bool,
-    /// What an [`HomePeerManagementRequest::Operate`] found or did; nothing
-    /// for the other requests.
-    pub operation: ServerOperationResult,
 }
 
 /// A client must name the server workspace it is resolving. The host never exposes

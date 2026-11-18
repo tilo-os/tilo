@@ -148,6 +148,7 @@ pub use sealed_documents::fixtures as sealed_fixtures;
 mod desktop_document;
 #[cfg(test)]
 mod naming_tests;
+pub mod servers;
 mod shares;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -1700,6 +1701,20 @@ impl Workspaces {
     #[must_use]
     pub fn document_writes(&self) -> tokio::sync::broadcast::Receiver<ResourceWrite> {
         self.inner.document_writes.subscribe()
+    }
+
+    /// Tell whoever follows the workspace's documents that this device wrote
+    /// the record `record` of `app` in `workspace` itself, as a member's write
+    /// tells them ([`ResourceWrite`]): a follower that keeps the record
+    /// current hears its own changes too.
+    pub(crate) fn note_document_write(&self, workspace: &str, app: &str, record: &str) {
+        let _ = self.inner.document_writes.send(ResourceWrite {
+            workspace: workspace.to_owned(),
+            app: app.to_owned(),
+            record: record.to_owned(),
+            #[cfg(feature = "agents")]
+            carried: Default::default(),
+        });
     }
 
     /// The governor's copy of record `record` (`""` for the primary) of

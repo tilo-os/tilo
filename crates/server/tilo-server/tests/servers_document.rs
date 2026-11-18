@@ -348,6 +348,7 @@ async fn servers_enrolled_one_after_another_share_one_admin_workspace() {
         hosts.push(serve_on(&alice, device, WorkSetting::own_person()).await);
     }
     let policy = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
     let _following = hosts
         .iter()
         .enumerate()
@@ -356,6 +357,7 @@ async fn servers_enrolled_one_after_another_share_one_admin_workspace() {
                 hosted.host.workspaces(),
                 applied::Requests::at(policy.path().join(format!("{at}.request"))),
                 None,
+                state.path().join(format!("state{at}")),
             )
         })
         .collect::<Vec<_>>();

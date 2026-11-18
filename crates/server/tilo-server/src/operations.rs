@@ -16,11 +16,11 @@
 //! ([`super::policy`]). The helper answers at [`CONTROL_RESULT`]. Nothing the
 //! daemon writes is passed to a shell, and the helper checks it again.
 //!
-//! Each operation is kept in a small history beside the state
-//! ([`HISTORY`]), so the answer to a later `Status` says what was asked of
-//! this server and what it answered.
+//! The server's entry in its person's Servers workspace keeps what was
+//! asked of it and what it answered ([`super::Asked`]), so the answer to a
+//! later `Status` says what was asked of this server and what it answered.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use tilo_server_protocol::transport::{
@@ -37,10 +37,6 @@ use crate::workspaces::Workspaces;
 pub const CONTROL_REQUEST: &str = "control.request";
 /// The file the root helper answers the request at.
 pub const CONTROL_RESULT: &str = "control.result";
-/// The operations a server was asked to do, newest last.
-pub const HISTORY: &str = "operations.jsonl";
-/// How many operations the history keeps.
-const HISTORY_KEPT: usize = 50;
 /// How long a mutating operation waits for the root helper to answer.
 pub const CONTROL_WAIT: Duration = Duration::from_secs(60);
 /// How often the helper's answer is looked for.
@@ -110,9 +106,7 @@ pub async fn operate_within(
     operation: ServerOperation,
     wait: Duration,
 ) -> Result<ServerOperationResult, String> {
-    let result = carry_out(state_root, workspaces, own, operation, wait).await?;
-    keep(state_root, &result);
-    Ok(result)
+    carry_out(state_root, workspaces, own, operation, wait).await
 }
 
 #[allow(
@@ -390,7 +384,7 @@ async fn status(
     workspaces: Option<&Workspaces>,
     own: &DeviceCert,
 ) -> ServerStatus {
-    let (updates, unlock) = entry_settings(workspaces, own).await;
+    let (updates, unlock, history) = entry_settings(workspaces, own).await;
     ServerStatus {
         hostname: hostname(),
         uptime_seconds: uptime_seconds(),
@@ -405,7 +399,7 @@ async fn status(
         unlocked: opening(),
         holding: holding(workspaces).await,
         hardware: hardware(state_root),
-        history: history(state_root),
+        history,
     }
 }
 
@@ -420,19 +414,27 @@ fn opening_at(path: &Path) -> Option<Opening> {
     Opening::decode(&std::fs::read(path).ok()?)
 }
 
-/// The updates the server's entry says it follows and how it unlocks; both
-/// empty when it has no entry here.
-async fn entry_settings(workspaces: Option<&Workspaces>, own: &DeviceCert) -> (String, String) {
+/// The updates the server's entry says it follows, how it unlocks, and what
+/// was asked of it recently; all empty when it has no entry here.
+async fn entry_settings(
+    workspaces: Option<&Workspaces>,
+    own: &DeviceCert,
+) -> (String, String, Vec<OperationEntry>) {
+    let none = (String::new(), String::new(), Vec::new());
     let Some(workspaces) = workspaces else {
-        return (String::new(), String::new());
+        return none;
     };
     let Ok(servers) = crate::servers::read(workspaces).await else {
-        return (String::new(), String::new());
+        return none;
     };
     servers
         .active(&own.device_public_key)
-        .map_or((String::new(), String::new()), |server| {
-            (server.updates.clone(), server.unlock.clone())
+        .map_or(none, |server| {
+            (
+                server.updates.clone(),
+                server.unlock.clone(),
+                server.history(),
+            )
         })
 }
 
@@ -602,57 +604,6 @@ fn memory_mb() -> u64 {
             rest.split_whitespace().next()?.parse::<u64>().ok()
         })
         .map_or(0, |kilobytes| kilobytes / 1024)
-}
-
-/// What was asked of this server recently, newest first.
-fn history(state_root: &Path) -> Vec<OperationEntry> {
-    let Ok(text) = std::fs::read_to_string(state_root.join(HISTORY)) else {
-        return Vec::new();
-    };
-    text.lines()
-        .filter_map(|line| serde_json::from_str::<OperationEntry>(line).ok())
-        .rev()
-        .collect()
-}
-
-/// Keep `result` in the history beside the state root.
-fn keep(state_root: &Path, result: &ServerOperationResult) {
-    use std::io::Write as _;
-    let entry = OperationEntry {
-        at_ns: tilo_clock::unix_now_ns(),
-        operation: result.operation.clone(),
-        summary: result.summary.clone(),
-        done: result.done,
-    };
-    let Ok(line) = serde_json::to_string(&entry) else {
-        return;
-    };
-    let path: PathBuf = state_root.join(HISTORY);
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
-        let _ = writeln!(file, "{line}");
-    }
-    // Trim to the newest HISTORY_KEPT so the file stays small.
-    if let Ok(text) = std::fs::read_to_string(&path) {
-        let lines = text.lines().count();
-        if lines > HISTORY_KEPT
-            && let Ok(kept) = std::fs::read_to_string(&path)
-        {
-            let newest = kept
-                .lines()
-                .skip(lines.saturating_sub(HISTORY_KEPT))
-                .collect::<Vec<_>>()
-                .join("\n");
-            let _ = tilo_files::native::atomic::write_with_mode(
-                &path,
-                format!("{newest}\n").as_bytes(),
-                0o600,
-            );
-        }
-    }
 }
 
 #[cfg(test)]
