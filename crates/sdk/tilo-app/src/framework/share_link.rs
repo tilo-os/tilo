@@ -73,6 +73,9 @@ struct Pending {
 /// API, and the mintings waiting on it.
 pub(crate) struct ShareLinks {
     remote: RemoteActions,
+    /// Keeps `remote` the client every part of the window asks over, while the root lives: the app
+    /// carries the one connection, and a part that asks later is heard on it too.
+    _carried: ui_core::remote_actions::CarriedGuard,
     pending: Vec<Pending>,
     /// Resources a view asked to copy a link to, in the order asked, each
     /// with the clipboard its click claimed: a browser copies only inside
@@ -82,8 +85,10 @@ pub(crate) struct ShareLinks {
 
 impl Default for ShareLinks {
     fn default() -> Self {
+        let remote = RemoteActions::current();
         Self {
-            remote: RemoteActions::current(),
+            _carried: RemoteActions::carrying(remote.clone()),
+            remote,
             pending: Vec::new(),
             copy_requested: Vec::new(),
         }
