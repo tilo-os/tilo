@@ -747,33 +747,43 @@ impl Staged {
     }
 
     fn settle(&mut self) -> Result<(), String> {
-        // A widget that took a layout switch after its parts were placed asks for the frame that
-        // lays them out again, as a live window draws it.
-        if self.harness.root_widget_mut().is_layout_dirty() {
-            self.harness.relayout();
+        for _ in 0..EXCHANGES {
+            // A widget that took a layout switch after its parts were placed asks for the frame
+            // that lays them out again, as a live window draws it.
+            if self.harness.root_widget_mut().is_layout_dirty() {
+                self.harness.relayout();
+            }
+            if !self.harness.frame_schedule().needs_animation_frame
+                || self.harness.settle_for_capture(SETTLE_BOUND)
+            {
+                return Ok(());
+            }
+            // A live window sends the app what its frames asked for on every frame: a list laid
+            // out where it stands asks for the rows it shows there. Answer it, then settle again.
+            let owing =
+                self.window().is_some_and(|window| window.owes()) || self.instance.pending();
+            if !owing {
+                break;
+            }
+            self.exchange();
         }
-        if self.harness.frame_schedule().needs_animation_frame
-            && !self.harness.settle_for_capture(SETTLE_BOUND)
-        {
-            // A frame a widget asks for is named by the widget; one a motion asks for is named
-            // where the motion was started; and what else the window is owed — a frame at rest, an
-            // image on its way, work whose answer replaces a placeholder — is named, since none of
-            // those is a motion that never ends.
-            let now = ui::time::now();
-            return Err(format!(
-                "the window still moves after {} frames: {:?} asked, {:?} started motions, \
-                 {:?} waiting on an answer, the frame held until {:?}, \
-                 the schedule {:?} with {} images on their way",
-                ui::headless::capture_frames(SETTLE_BOUND),
-                self.harness.frame_requesters(),
-                ui::motion::frames_wanted_by(now),
-                self.harness.pending_visual_work(),
-                self.harness.root_widget().holds_frame_until(now),
-                self.harness.frame_schedule(),
-                ui::image_store::loads_in_flight(),
-            ));
-        }
-        Ok(())
+        // A frame a widget asks for is named by the widget; one a motion asks for is named
+        // where the motion was started; and what else the window is owed — a frame at rest, an
+        // image on its way, work whose answer replaces a placeholder — is named, since none of
+        // those is a motion that never ends.
+        let now = ui::time::now();
+        Err(format!(
+            "the window still moves after {} frames: {:?} asked, {:?} started motions, \
+             {:?} waiting on an answer, the frame held until {:?}, \
+             the schedule {:?} with {} images on their way",
+            ui::headless::capture_frames(SETTLE_BOUND),
+            self.harness.frame_requesters(),
+            ui::motion::frames_wanted_by(now),
+            self.harness.pending_visual_work(),
+            self.harness.root_widget().holds_frame_until(now),
+            self.harness.frame_schedule(),
+            ui::image_store::loads_in_flight(),
+        ))
     }
 
     /// Show `resource` with the view `view` (an id) in the window's detail
