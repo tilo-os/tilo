@@ -811,6 +811,18 @@ impl ProviderProfile {
         }
     }
 
+    /// Whether this profile speaks to Google's own Gemini endpoint
+    /// ([`presets::GEMINI_ENDPOINT`]), whatever path it names there.
+    #[must_use]
+    pub fn is_googles_endpoint(&self) -> bool {
+        let googles = url::Url::parse(presets::GEMINI_ENDPOINT).ok();
+        url::Url::parse(self.endpoint.trim()).is_ok_and(|url| {
+            url.scheme() == "https"
+                && url.domain().is_some()
+                && url.domain() == googles.as_ref().and_then(url::Url::domain)
+        })
+    }
+
     /// Whether this profile signs in with Google instead of using a key.
     pub fn signs_in_with_google(&self) -> bool {
         self.sign_in_issuer() == Some(SignInIssuer::Google)

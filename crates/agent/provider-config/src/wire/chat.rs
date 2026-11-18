@@ -17,6 +17,8 @@ const FIELD: &str = "chat_field";
 /// they are read.
 const REASONING_FIELDS: [&str; 3] = ["reasoning_content", "reasoning", "reasoning_text"];
 
+mod thought;
+
 pub(super) fn body(request: &ModelRequest) -> Result<Map<String, Value>, ModelError> {
     let mut messages = Vec::new();
     for message in &request.messages {
@@ -148,7 +150,7 @@ fn messages_of(message: &Message, out: &mut Vec<Value>) -> Result<(), ModelError
 )]
 /// The first choice of a chat-completions answer. An unknown finish reason,
 /// or a tool call without an id, a name or object arguments, is malformed.
-pub(super) fn response(value: &Value) -> Result<ModelResponse, ModelError> {
+pub(super) fn response(value: &Value, google: bool) -> Result<ModelResponse, ModelError> {
     let invalid = |why: &str| ModelError::invalid(format!("the provider's answer {why}"));
     let message = value
         .pointer("/choices/0/message")
@@ -173,11 +175,32 @@ pub(super) fn response(value: &Value) -> Result<ModelResponse, ModelError> {
         .get("refusal")
         .and_then(Value::as_str)
         .is_some_and(|refusal| !refusal.is_empty());
+    // A message its provider marks as a thought is all thought.
+    let all_thought = thought::marked(message);
+    let said = |text: &str, thinking: bool| {
+        if thinking {
+            Content::Reasoning {
+                text: text.into(),
+                extra_content: None,
+            }
+        } else {
+            Content::Text { text: text.into() }
+        }
+    };
     match message.get("content") {
         None | Some(Value::Null) => {}
         Some(Value::String(text)) => {
-            if !text.is_empty() {
-                content.push(Content::Text { text: text.clone() });
+            // At Google's endpoint a thought may stand between tags at the content's head.
+            let (thinking, answer) = if google && !all_thought {
+                thought::split(text)
+            } else {
+                (None, text.as_str())
+            };
+            if let Some(thinking) = thinking.filter(|thinking| !thinking.is_empty()) {
+                content.push(said(thinking, true));
+            }
+            if !answer.is_empty() {
+                content.push(said(answer, all_thought));
             }
         }
         Some(Value::Array(parts)) => {
@@ -185,7 +208,7 @@ pub(super) fn response(value: &Value) -> Result<ModelResponse, ModelError> {
                 match part.get("type").and_then(Value::as_str) {
                     Some("text") => {
                         if let Some(text) = part.get("text").and_then(Value::as_str) {
-                            content.push(Content::Text { text: text.into() });
+                            content.push(said(text, all_thought || thought::part(part)));
                         }
                     }
                     Some("refusal") => refused = true,
@@ -266,6 +289,12 @@ pub(super) fn response(value: &Value) -> Result<ModelResponse, ModelError> {
 /// A streamed chat answer folded into the whole answer it stands for.
 #[derive(Default)]
 pub(super) struct Fold {
+    /// Whether the answer comes from Google's endpoint, whose thought may stand between tags
+    /// at the head of its content ([`thought`]).
+    google: bool,
+    thoughts: thought::Thoughts,
+    /// The thought its content carried, apart from the answer.
+    thought: String,
     content: String,
     refusal: String,
     reasoning: Vec<(&'static str, String)>,
@@ -284,6 +313,33 @@ struct Call {
 }
 
 impl Fold {
+    /// A fold of an answer from Google's endpoint when `google`.
+    pub(super) fn new(google: bool) -> Self {
+        Self {
+            google,
+            ..Self::default()
+        }
+    }
+
+    /// Whether the answer comes from Google's endpoint.
+    pub(super) const fn google(&self) -> bool {
+        self.google
+    }
+
+    /// `text` of the content, a thought's when `thinking`.
+    fn said(&mut self, text: &str, thinking: bool, out: &mut Vec<Delta>) {
+        if text.is_empty() {
+            return;
+        }
+        if thinking {
+            self.thought.push_str(text);
+            out.push(Delta::Reasoning(text.into()));
+        } else {
+            self.content.push_str(text);
+            out.push(Delta::Text(text.into()));
+        }
+    }
+
     /// One chunk. A chunk carrying an `error` is the provider failing.
     pub(super) fn chunk(&mut self, chunk: &Value, out: &mut Vec<Delta>) -> Result<(), String> {
         if chunk.get("error").is_some() {
@@ -322,11 +378,23 @@ impl Fold {
                 break;
             }
         }
-        if let Some(text) = delta.get("content").and_then(Value::as_str)
-            && !text.is_empty()
-        {
-            self.content.push_str(text);
-            out.push(Delta::Text(text.into()));
+        let all_thought = thought::marked(delta);
+        match delta.get("content") {
+            Some(Value::String(text)) if all_thought => self.said(text, true, out),
+            Some(Value::String(text)) if self.google => {
+                for (thinking, piece) in self.thoughts.take(text) {
+                    self.said(&piece, thinking, out);
+                }
+            }
+            Some(Value::String(text)) => self.said(text, false, out),
+            Some(Value::Array(parts)) => {
+                for part in parts {
+                    if let Some(text) = part.get("text").and_then(Value::as_str) {
+                        self.said(text, all_thought || thought::part(part), out);
+                    }
+                }
+            }
+            _ => {}
         }
         if let Some(text) = delta.get("refusal").and_then(Value::as_str) {
             self.refusal.push_str(text);
@@ -407,11 +475,24 @@ impl Fold {
     }
 
     /// The whole answer, and each call closed.
-    pub(super) fn answer(self, out: &mut Vec<Delta>) -> Value {
-        let mut message = json!({
-            "role": "assistant",
-            "content": (!self.content.is_empty()).then_some(self.content),
-        });
+    pub(super) fn answer(mut self, out: &mut Vec<Delta>) -> Value {
+        if let Some((thinking, held)) = self.thoughts.end() {
+            self.said(&held, thinking, out);
+        }
+        // A thought goes in a part marked as one, which the whole answer reads apart.
+        let content = match (self.thought.is_empty(), self.content.is_empty()) {
+            (true, true) => Value::Null,
+            (true, false) => Value::String(self.content),
+            (false, answered) => {
+                let mut parts =
+                    vec![json!({"type": "text", "text": self.thought, "thought": true})];
+                if !answered {
+                    parts.push(json!({"type": "text", "text": self.content}));
+                }
+                Value::Array(parts)
+            }
+        };
+        let mut message = json!({"role": "assistant", "content": content});
         if !self.refusal.is_empty() {
             put(&mut message, "refusal", Value::String(self.refusal));
         }
