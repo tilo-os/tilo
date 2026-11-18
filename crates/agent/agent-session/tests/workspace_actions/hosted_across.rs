@@ -554,3 +554,7 @@ async fn what_a_read_by_an_agent_kept_elsewhere_leaves_for_the_members_to_see() 
 /// What a person's own assistant is told of their other workspaces.
 #[path = "hosted_across_list.rs"]
 mod list;
+
+/// An app named as a model writes it reaches nothing more.
+#[path = "hosted_across_spelled.rs"]
+mod spelled;

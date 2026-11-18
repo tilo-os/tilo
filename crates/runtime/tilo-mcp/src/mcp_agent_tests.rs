@@ -118,6 +118,11 @@ enum Installed {
     /// Notes, and Sheets listed by a name of its own, as Files lists
     /// `file-explorer`.
     SheetsNamedSpreadsheets,
+    /// Notes, and the word processor for this agent to open: an app whose id holds a hyphen
+    /// and whose name is two words.
+    WithWriter,
+    /// Notes to open; the word processor named only, this agent may not open it.
+    WriterClosedToAgent,
     /// None at all.
     Nothing,
     /// It cannot be read.
@@ -529,6 +534,15 @@ impl Notes {
                 }
                 Installed::SheetsNamedSpreadsheets => {
                     vec![open(APP, "Notes"), open("so.tilo.sheets", "Spreadsheets")]
+                }
+                Installed::WithWriter => vec![
+                    open(APP, "Notes"),
+                    open("so.tilo.word-processor", "Word Processor"),
+                ],
+                Installed::WriterClosedToAgent => {
+                    let mut writer = open("so.tilo.word-processor", "Word Processor");
+                    writer.action = None;
+                    vec![open(APP, "Notes"), writer]
                 }
                 Installed::Nothing | Installed::Unreadable => Vec::new(),
             };
@@ -2905,6 +2919,8 @@ pub(super) async fn answer<H: ActionProvider + Send + Sync + 'static>(
 mod flux;
 #[path = "mcp_agent_level_tests.rs"]
 mod levels;
+#[path = "mcp_agent_names_tests.rs"]
+mod naming;
 #[path = "mcp_agent_narrowed_tests.rs"]
 mod narrowed;
 #[path = "mcp_agent_open_tests.rs"]
