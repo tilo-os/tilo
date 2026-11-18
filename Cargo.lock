@@ -5173,6 +5173,7 @@ version = "0.1.0"
 dependencies = [
  "bounded-command",
  "firewall",
+ "firewall-model",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -5185,6 +5186,18 @@ dependencies = [
  "tilo-vello",
  "tilo-winit",
  "tracing",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
+name = "firewall-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-resource",
+ "tilo-test-env",
  "uuid",
  "workspace-hack",
 ]
