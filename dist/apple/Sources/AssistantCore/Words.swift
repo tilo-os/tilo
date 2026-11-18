@@ -54,6 +54,9 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     case tasks, active, upNext = "up-next", scheduled, resolved
     case readyForReview = "ready-for-review", needsInput = "needs-input", inProgress = "in-progress", events
     case tagThreshold = "tag-threshold", tagNote = "tag-note", tagActsAlone = "tag-acts-alone"
+    case noteStyle = "note-style", noteStyleFromOne = "note-style-from-one", noteStyleFromMany = "note-style-from-many"
+    case noteAcceptedOne = "note-accepted-one", noteAcceptedMany = "note-accepted-many"
+    case noteGuidance = "note-guidance", noteKept = "note-kept"
     case addTask = "add-task", addTaskField = "add-task-field", add, close
     case nothingActive = "nothing-active", nothingUpNext = "nothing-up-next"
     case nothingScheduled = "nothing-scheduled", nothingResolved = "nothing-resolved"
@@ -223,6 +226,13 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .tagThreshold: "Threshold: {count}"
         case .tagNote: "Note: {note}"
         case .tagActsAlone: "Acts alone"
+        case .noteStyle: "your style"
+        case .noteStyleFromOne: "your style, from 1 answer you accepted"
+        case .noteStyleFromMany: "your style, from {count} answers you accepted"
+        case .noteAcceptedOne: "1 answer you accepted"
+        case .noteAcceptedMany: "{count} answers you accepted"
+        case .noteGuidance: "what you care about"
+        case .noteKept: "what it saw last"
         case .addTask: "Add a task"
         case .addTaskField: "What should it do?"
         case .add: "Add"

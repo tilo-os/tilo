@@ -77,10 +77,30 @@ struct EventCards {
             summary: scheduled ? when : event["instruction"]?.string ?? when,
             next: event["nextAtMs"]?.number.map { Date(timeIntervalSince1970: $0 / 1000) },
             once: when.lowercased().hasPrefix("once"), filter: event["onlyIf"]?.string,
-            threshold: event["every"]?.number.map { Int($0) }, note: nil,
+            threshold: event["every"]?.number.map { Int($0) }, note: EventCards.noteTag(event["note"]),
             actsAlone: !permits.isEmpty, isOn: event["on"]?.bool ?? true)
         return Kept(automation: automation, setUp: event["setUpAtMs"]?.number.map { Date(timeIntervalSince1970: $0 / 1000) },
                     told: event["instruction"]?.string ?? "", note: event["note"], permits: permits)
+    }
+
+    /// What an event's note keeps, in a few words for its tag: the person's style, and from
+    /// how many answers they accepted where it keeps such; else the answers alone, what the
+    /// person cares about, or what its last time left for the next. Nil for a note that keeps
+    /// nothing. Never a number the server does not keep.
+    static func noteTag(_ note: JSON?) -> String? {
+        guard let note, !note.isNull else { return nil }
+        func has(_ part: String) -> Bool {
+            !(note[part]?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        let accepted = (note["accepted"]?.array ?? []).count
+        if has("style") {
+            return accepted == 0 ? AssistantWords.noteStyle.said
+                : AssistantWords.counted(accepted, one: .noteStyleFromOne, many: .noteStyleFromMany)
+        }
+        if accepted > 0 { return AssistantWords.counted(accepted, one: .noteAcceptedOne, many: .noteAcceptedMany) }
+        if has("guidance") { return AssistantWords.noteGuidance.said }
+        if let kept = note["kept"], !kept.isNull { return AssistantWords.noteKept.said }
+        return nil
     }
 
     /// The question an event's card answers under.
