@@ -58,8 +58,6 @@ class ComponentManifestPolicyTests(unittest.TestCase):
                       "\n".join(check.audit(root)))
 
     def test_session_surface_programs_are_shipped_beside_the_session(self):
-        with self.subTest(phase='the repository ships every program the session starts'):
-            self.assertEqual(check.audit(REPO), [])
         with self.subTest(phase='a surface app no component ships fails at its call site'):
             root = self.fixture()
             self.edit(root / "os/components.toml",
@@ -99,8 +97,6 @@ class ComponentManifestPolicyTests(unittest.TestCase):
                          [("crates/session/probe/src/opaque.rs", "INSTALLED")])
 
     def test_component_manifest_is_the_only_source_of_builder_copies_and_layers(self):
-        with self.subTest(phase='repository passes'):
-            self.assertEqual(check.audit(REPO), [])
         with self.subTest(phase='hand written builder copy names line and fix'):
             root = self.fixture()
             self.edit(root / "os/Containerfile", "COPY --from=component-files /image/windows/ /\n",

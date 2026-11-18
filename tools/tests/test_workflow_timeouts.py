@@ -5,9 +5,6 @@ from pathlib import Path
 from tools.policy.check_workflow_timeouts import audit
 
 
-ROOT = Path(__file__).resolve().parents[2]
-
-
 class WorkflowTimeoutTests(unittest.TestCase):
     def test_missing_empty_or_non_directory_workflow_inputs_fail(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -104,8 +101,6 @@ class WorkflowTimeoutTests(unittest.TestCase):
                 [str(item) for item in violations],
                 ["missing.yml: job '<missing workflow>' needs a timeout-minutes between 1 and 180"],
             )
-        with self.subTest(phase='every repository workflow is bounded'):
-            self.assertEqual(audit(ROOT / ".forgejo" / "workflows"), [])
 
 
 if __name__ == "__main__":

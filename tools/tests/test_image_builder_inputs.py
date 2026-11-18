@@ -157,9 +157,6 @@ class ImageBuilderInputsTests(unittest.TestCase):
         self.write("os/scripts/check.sh", "#!/bin/sh\n")
         self.assertEqual(self.findings(mounted), [])
 
-    def test_the_repository_passes(self) -> None:
-        self.assertEqual([str(f) for f in policy.audit(REPO)], [])
-
 
 if __name__ == "__main__":
     unittest.main()

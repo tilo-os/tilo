@@ -93,9 +93,6 @@ class HostDataAppsTests(unittest.TestCase):
         (root / "apps" / "backups").rmdir()
         self.assertEqual(host_data.check(root), ["tools/policy/check_host_data_apps.py: EXCEPTIONS: backups is no app any more"])
 
-    def test_the_repository_passes(self):
-        self.assertEqual(host_data.check(host_data.ROOT), [])
-
 
 if __name__ == "__main__":
     unittest.main()

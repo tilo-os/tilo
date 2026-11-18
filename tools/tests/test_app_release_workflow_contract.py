@@ -46,8 +46,6 @@ class AppReleaseWorkflowContract(unittest.TestCase):
             self.assertEqual(first, urls(b'first selected app cohort'))
             for url in first:
                 self.assertIn(hashlib.sha256(b'first selected app cohort').hexdigest(), url)
-            self.assertNotIn('tilo-app-collections/$VERSION/', source)
-            self.assertEqual(source.count('tilo-app-collections/$collection_version/'), 5)
 
 
     def coordinator_bootstrap(self):

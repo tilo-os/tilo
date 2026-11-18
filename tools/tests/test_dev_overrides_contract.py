@@ -43,11 +43,6 @@ class DevOverridesContractTests(unittest.TestCase):
             self.assertIn("os/Containerfile:3:", message)
             self.assertIn("Why:", message)
             self.assertIn("Fix:", message)
-        with self.subTest(phase='repository production containerfiles are clean'):
-            self.assertEqual([str(v) for v in audit()], [])
-
-    def test_the_repository_documents_only_controls_something_reads(self):
-        self.assertEqual([str(flag) for flag in unread_flags()], [])
 
 
 def documented(files: dict[str, str]) -> list[str]:

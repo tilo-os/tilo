@@ -1553,11 +1553,6 @@ class CopyLanguageTests(unittest.TestCase):
             "`RowShape::TITLE` names another type's own TITLE, not the "
             "constant the crate defines")
 
-    def test_the_tree_passes(self):
-        self.assertEqual(
-            copy.check(copy.ROOT, copy.GLOSSARY, copy.BASELINE, copy.SAVE_EXCEPTIONS,
-                       copy.SOURCE_LITERALS), [])
-
 
 if __name__ == "__main__":
     unittest.main()

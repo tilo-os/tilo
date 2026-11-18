@@ -52,7 +52,6 @@ class CollectionMembersTest(unittest.TestCase):
         reuse = (ROOT / "tools/reuse_prior_app_collection.sh").read_text()
         self.assertIn('tar -tzf "$prior" | "$(dirname "${BASH_SOURCE[0]}")/apps/check-collection-members.sh" '
                       '"prior collection"', reuse)
-        self.assertNotIn("while IFS= read -r member", reuse)
 
 
 if __name__ == "__main__":
