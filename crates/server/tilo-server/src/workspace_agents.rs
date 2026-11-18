@@ -2041,8 +2041,20 @@ async fn work(
         };
         messages.push(results);
     }
-    // Out of steps, it may well have finished: it is asked once more, with no tools, to say
-    // what it did, rather than the person being told only that it stopped.
+    ask_what_it_did(&turns, going, turn, messages, tools, &key, cost).await
+}
+
+/// Out of steps, it may well have finished: it is asked once more, with no tools, to say what
+/// it did, rather than the person being told only that it stopped.
+async fn ask_what_it_did(
+    turns: &Arc<Mutex<Box<dyn PlanTurns>>>,
+    going: &going::Going,
+    turn: &Turn,
+    mut messages: Vec<Message>,
+    tools: Vec<ToolDefinition>,
+    key: &str,
+    mut cost: u64,
+) -> (Outcome, u64) {
     if going.stopped() {
         return (Outcome::Cancelled, cost);
     }
@@ -2053,7 +2065,7 @@ async fn work(
         tool_choice: ToolChoice::None,
         max_output_tokens: ANSWER_TOKENS,
     };
-    let said = match ask_model(&turns, request, format!("{key}:last")).await {
+    let said = match ask_model(turns, request, format!("{key}:last")).await {
         Ok(response) => {
             cost = cost.saturating_add(response.cost_micros);
             words_of(&response)
