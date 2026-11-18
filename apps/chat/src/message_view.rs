@@ -52,7 +52,10 @@ an eye on. Answer in words alone when the answer is one fact that will not move.
 one `view` declaration and the functions it calls, and nothing else: no types, no actions, no \
 `use`. It names an app by the last part of its id (`tasks` for `so.tilo.tasks`) and reads what \
 that app keeps for the workspace, by the names reading the app shows: `view projects() { for a \
-in tasks.tracker.areas { text(a.name) } }`. A control invokes one of the app's own actions, \
+in tasks.tracker.areas { text(a.name) } }`. One document among several an app keeps (a text of \
+the word processor) is named by its own id, the last part of the link the tool that wrote it \
+answered with: `text(@word_processor.Document:uuid:0f2b1c00-0000-4000-8000-000000000001\
+.body.text)`. A control invokes one of the app's own actions, \
 named as the app names it with `_` for `-`: `button(\"Delete\", on: \
 tasks.delete_area(tasks.tracker, a.id))`; in your view a press only suggests, and the reader \
 allows that one thing or not. Numbers that are compared are a chart, given readings and what \
