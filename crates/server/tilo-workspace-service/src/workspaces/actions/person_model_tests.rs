@@ -7,18 +7,22 @@
     reason = "the server and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives"
 )]
 
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use agent_provider_config::protocol::{Content, Message, ModelRequest, Role, ToolChoice};
 use serde_json::{Value, json};
+use test_http::Responder;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider as _, Caller, ReceiptStatus, person_models,
+    ActionCallError, ActionProvider as _, Caller, ReceiptStatus, RemoteActionTarget, person_models,
+    person_vault,
 };
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
 use super::ServiceWorkspaceActions;
 use super::tests::{admit, ask_own, governed, request, settled};
+use crate::workspaces::Workspaces;
 use crate::workspaces::person_model::scripted::{Reply, ScriptedProvider};
 use crate::workspaces::person_model::{Interaction, ModelRefusal};
 use crate::workspaces::tests::{governor, test_host};
@@ -39,6 +43,163 @@ fn soon() -> tilo_clock::time::Instant {
     tilo_clock::now()
         .checked_add(tilo_test_env::hang_bound())
         .unwrap()
+}
+
+/// The lines a subscriber wrote.
+#[derive(Clone, Default)]
+struct Lines(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for Lines {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Lines {
+    type Writer = Self;
+    fn make_writer(&'a self) -> Self {
+        self.clone()
+    }
+}
+
+impl Lines {
+    /// Everything this thread logs while the answer is held is written here.
+    fn listening(&self) -> tracing::subscriber::DefaultGuard {
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_ansi(false)
+            .with_writer(self.clone())
+            .finish();
+        tracing::subscriber::set_default(subscriber)
+    }
+
+    fn written(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+    }
+}
+
+/// A server keeping its state under `dir`, with one workspace, the
+/// workspace's actions and the device of one person in it. The first value
+/// keeps the server up for as long as it is held.
+async fn served(
+    dir: &Path,
+) -> (
+    impl Sized,
+    Workspaces,
+    WorkspaceId,
+    ServiceWorkspaceActions,
+    DeviceCert,
+) {
+    let (key, owner) = governor();
+    let server = test_host(dir, &key, &owner).await;
+    let workspaces = server.workspaces().clone();
+    let (workspace, workspace_id, service) = governed(&workspaces).await;
+    let ada = admit(&workspaces, &workspace, &owner, 1).await;
+    (server, workspaces, workspace_id, service, ada)
+}
+
+/// The one model the stand-in provider lists.
+const LISTED: &str = "stand-in-model";
+/// A key the stand-in provider gives no answer to.
+const UNANSWERED_KEY: &str = "sk-made-up-and-given-no-answer";
+
+/// A provider on this machine that lists its one model to whoever shows a
+/// key of `taken`, gives [`UNANSWERED_KEY`] no answer at all and turns every
+/// other key away: the provider, and the endpoint a person adds it at.
+fn stand_in(taken: &'static [&'static str]) -> (Responder, String) {
+    let provider = Responder::handle(move |request| {
+        let shown = request
+            .header("authorization")
+            .unwrap_or_default()
+            .trim_start_matches("Bearer ");
+        if shown == UNANSWERED_KEY {
+            return None;
+        }
+        if !taken.contains(&shown) {
+            return Some(test_http::Reply::status(401).body(r#"{"error":"that key is unknown"}"#));
+        }
+        Some(
+            test_http::Reply::status(200)
+                .header("Content-Type", "application/json")
+                .body(format!(r#"{{"data":[{{"id":"{LISTED}"}}]}}"#)),
+        )
+    });
+    let endpoint = format!("{}/v1", provider.url());
+    (provider, endpoint)
+}
+
+/// One request of `device`'s own person at `target`.
+async fn ask_at(
+    service: &ServiceWorkspaceActions,
+    workspace_id: WorkspaceId,
+    device: &DeviceCert,
+    target: RemoteActionTarget,
+    argument: Value,
+) -> Result<Value, ActionCallError> {
+    let mut asking = request("", "", argument);
+    asking.target = target;
+    let person = Caller::authenticated(device.user_public_key, device.device_public_key);
+    let receipt = settled(
+        service
+            .in_workspace_as(workspace_id, device)
+            .invoke(&person, asking),
+    )
+    .await?;
+    match receipt.status {
+        ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(Value::Null)),
+        other => panic!("a person's own store answers at once: {other:?}"),
+    }
+}
+
+/// The key `person`'s model is asked with now: one call of their own model,
+/// which `scripted` answers.
+async fn asked_with(
+    workspaces: &Workspaces,
+    person: &DeviceCert,
+    scripted: &ScriptedProvider,
+) -> Option<String> {
+    scripted.then(Reply::text("an answer"));
+    workspaces
+        .person_model(person.user_public_key, Interaction::Request)
+        .answer(&asking("Hello?"), soon(), &mut |_| {})
+        .await
+        .expect("the person's model answers");
+    scripted.asked().last().and_then(|asked| asked.key.clone())
+}
+
+/// A person at a server that reaches the stand-in provider, their provider
+/// linked there with `kept` and its one model chosen: the provider's id.
+async fn linked_at_stand_in(
+    workspaces: &Workspaces,
+    (service, workspace_id, person): (&ServiceWorkspaceActions, WorkspaceId, &DeviceCert),
+    (endpoint, kept): (&str, &str),
+) -> String {
+    workspaces.call_private_model_addresses(true);
+    let provider = link(service, workspace_id, person, ("Stand-in", endpoint, kept)).await;
+    let listed = ask_own(
+        service,
+        workspace_id,
+        person,
+        person_models::REFRESH_MODELS,
+        json!({"provider": provider}),
+    )
+    .await
+    .expect("the provider is asked for its models");
+    assert!(listed.get("problem").is_none(), "{listed}");
+    ask_own(
+        service,
+        workspace_id,
+        person,
+        person_models::SET_DEFAULT,
+        json!({"provider": provider, "model": LISTED}),
+    )
+    .await
+    .expect("the provider's model is chosen");
+    provider
 }
 
 /// `device`'s person adds a provider and keeps its key, through the actions
@@ -280,46 +441,16 @@ async fn no_agent_reads_or_changes_a_persons_key() {
 /// a call fails holds no key.
 #[tokio::test]
 async fn no_log_line_carries_a_key() {
-    /// The lines a subscriber wrote.
-    #[derive(Clone, Default)]
-    struct Lines(Arc<Mutex<Vec<u8>>>);
-    impl std::io::Write for Lines {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Lines {
-        type Writer = Self;
-        fn make_writer(&'a self) -> Self {
-            self.clone()
-        }
-    }
-
     let lines = Lines::default();
-    let subscriber = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
-        .with_ansi(false)
-        .with_writer(lines.clone())
-        .finish();
-    let _logged = tracing::subscriber::set_default(subscriber);
+    let _logged = lines.listening();
 
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
-    let server = test_host(dir.path(), &key, &owner).await;
-    let workspaces = server.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
-    let ada = admit(workspaces, &workspace, &owner, 1).await;
-    let provider = link(
-        &host,
-        workspace_id,
-        &ada,
-        ("Google", "https://models.example.com/v1", ADA_KEY),
-    )
-    .await;
+    let (_server, workspaces, workspace_id, host, ada) = served(dir.path()).await;
+    // A provider that takes both keys: a kept key gives way only to one its
+    // provider takes.
+    workspaces.call_private_model_addresses(true);
+    let (_stand_in, endpoint) = stand_in(&[ADA_KEY, BO_KEY]);
+    let provider = link(&host, workspace_id, &ada, ("Google", &endpoint, ADA_KEY)).await;
     workspaces
         .offer_models_for(&ada.user_public_key, &provider, &["gemini-main"])
         .unwrap();
@@ -364,12 +495,256 @@ async fn no_log_line_carries_a_key() {
     .await
     .unwrap();
 
-    let written = String::from_utf8_lossy(&lines.0.lock().unwrap()).into_owned();
+    let written = lines.written();
     assert!(
         written.contains("a person's model did not answer"),
         "the log was read: {written}"
     );
     for secret in [ADA_KEY, BO_KEY] {
         assert!(!written.contains(secret), "a key was logged: {written}");
+    }
+}
+
+/// None of `keys` stands in an answer of `said` or in what was `written` to
+/// the log.
+fn carried_nowhere(keys: &[&str], said: &[String], written: &str) {
+    for key in keys {
+        assert!(
+            !said.iter().any(|answer| answer.contains(key)),
+            "an answer carries a key: {said:?}"
+        );
+        assert!(!written.contains(key), "a key was logged: {written}");
+    }
+}
+
+/// A person whose provider keeps a key types another one. A key the
+/// provider turns away, a key no request can carry and a key the provider
+/// gives no answer about are not kept: the key kept before stays the one
+/// their model and their provider's list are asked with, and they are told
+/// so. No answer and no log line carries any of the keys.
+#[tokio::test]
+async fn a_key_the_provider_does_not_take_leaves_the_kept_key_in_use() {
+    const KEPT_KEY: &str = "sk-made-up-and-kept-first";
+    const UNKNOWN_KEY: &str = "sk-made-up-and-unknown-there";
+    const UNCARRIED_KEY: &str = "sk-made-up\u{1}and-carried-by-no-request";
+
+    let lines = Lines::default();
+    let _logged = lines.listening();
+    let dir = tempfile::tempdir().unwrap();
+    let (_server, workspaces, workspace_id, service, ada) = served(dir.path()).await;
+    let scripted = ScriptedProvider::answering([]);
+    workspaces.answer_models_with(scripted.clone());
+    let (stand_in, endpoint) = stand_in(&[KEPT_KEY]);
+    let provider = linked_at_stand_in(
+        &workspaces,
+        (&service, workspace_id, &ada),
+        (&endpoint, KEPT_KEY),
+    )
+    .await;
+    assert_eq!(
+        asked_with(&workspaces, &ada, &scripted).await.as_deref(),
+        Some(KEPT_KEY)
+    );
+    let mut said = Vec::new();
+
+    for (typed, which, why) in [
+        (
+            UNKNOWN_KEY,
+            "a key the provider turns away",
+            "did not accept this key",
+        ),
+        (
+            UNCARRIED_KEY,
+            "a key no request can carry",
+            "did not accept this key",
+        ),
+        (
+            UNANSWERED_KEY,
+            "a key the provider gives no answer about",
+            "could not be asked about this key now",
+        ),
+    ] {
+        let answered = ask_own(
+            &service,
+            workspace_id,
+            &ada,
+            person_models::SET_KEY,
+            json!({"provider": provider, "key": typed}),
+        )
+        .await;
+        let Err(ActionCallError::Refused { reason }) = &answered else {
+            panic!("{which} was kept: {answered:?}");
+        };
+        assert_eq!(
+            reason,
+            &format!("Stand-in {why}. The key kept before is still in use."),
+            "{which}"
+        );
+        said.push(reason.clone());
+        let hers = ask_own(&service, workspace_id, &ada, person_models::LIST, json!({}))
+            .await
+            .unwrap();
+        assert_eq!(hers["providers"][0]["configured"], json!(true), "{hers}");
+        said.push(hers.to_string());
+        assert_eq!(
+            asked_with(&workspaces, &ada, &scripted).await.as_deref(),
+            Some(KEPT_KEY),
+            "after {which}"
+        );
+    }
+
+    // The provider's own list is asked with the kept key still.
+    stand_in.drain_requests();
+    let listed = ask_own(
+        &service,
+        workspace_id,
+        &ada,
+        person_models::REFRESH_MODELS,
+        json!({"provider": provider}),
+    )
+    .await
+    .expect("the provider is asked for its models");
+    assert!(listed.get("problem").is_none(), "{listed}");
+    said.push(listed.to_string());
+    let shown = stand_in.drain_requests();
+    assert_eq!(shown.len(), 1, "the list is asked for once");
+    assert_eq!(
+        shown[0].header("authorization"),
+        Some(format!("Bearer {KEPT_KEY}").as_str())
+    );
+    carried_nowhere(
+        &[
+            KEPT_KEY,
+            UNKNOWN_KEY,
+            UNANSWERED_KEY,
+            "and-carried-by-no-request",
+        ],
+        &said,
+        &lines.written(),
+    );
+}
+
+/// A key the provider takes is asked about once, and then it is the key
+/// their model is asked with. The kept key typed again replaces nothing,
+/// and nobody is asked about it. Neither answer carries a key.
+#[tokio::test]
+async fn a_key_the_provider_takes_is_asked_about_once_and_replaces_the_kept_key() {
+    const KEPT_KEY: &str = "sk-made-up-and-kept-first";
+    const NEXT_KEY: &str = "sk-made-up-and-taken-next";
+
+    let dir = tempfile::tempdir().unwrap();
+    let (_server, workspaces, workspace_id, service, ada) = served(dir.path()).await;
+    let scripted = ScriptedProvider::answering([]);
+    workspaces.answer_models_with(scripted.clone());
+    let (stand_in, endpoint) = stand_in(&[KEPT_KEY, NEXT_KEY]);
+    let provider = linked_at_stand_in(
+        &workspaces,
+        (&service, workspace_id, &ada),
+        (&endpoint, KEPT_KEY),
+    )
+    .await;
+    let keeping = || {
+        ask_own(
+            &service,
+            workspace_id,
+            &ada,
+            person_models::SET_KEY,
+            json!({"provider": provider, "key": NEXT_KEY}),
+        )
+    };
+    stand_in.drain_requests();
+
+    let replaced = keeping().await.expect("a key the provider takes is kept");
+    assert_eq!(replaced["configured"], json!(true), "{replaced}");
+    let shown = stand_in.drain_requests();
+    assert_eq!(shown.len(), 1, "the provider is asked about a new key once");
+    assert_eq!(
+        shown[0].header("authorization"),
+        Some(format!("Bearer {NEXT_KEY}").as_str())
+    );
+    assert_eq!(
+        asked_with(&workspaces, &ada, &scripted).await.as_deref(),
+        Some(NEXT_KEY)
+    );
+
+    let again = keeping().await.expect("the kept key typed again stays");
+    assert!(
+        stand_in.drain_requests().is_empty(),
+        "nobody is asked about the kept key"
+    );
+    carried_nowhere(
+        &[KEPT_KEY, NEXT_KEY],
+        &[replaced.to_string(), again.to_string()],
+        "",
+    );
+}
+
+/// The same holds for a key kept in the vault and named by reference: an
+/// item whose key the provider turns away does not take the kept key's
+/// place, and an item whose key the provider takes does. Neither answer
+/// carries a key.
+#[tokio::test]
+async fn a_vault_items_key_the_provider_does_not_take_leaves_the_kept_key_in_use() {
+    const KEPT_KEY: &str = "sk-made-up-and-kept-first";
+    const ITEM_KEY: &str = "sk-made-up-and-kept-as-an-item";
+    const UNKNOWN_KEY: &str = "sk-made-up-and-unknown-there";
+
+    let dir = tempfile::tempdir().unwrap();
+    let (_server, workspaces, workspace_id, service, ada) = served(dir.path()).await;
+    let scripted = ScriptedProvider::answering([]);
+    workspaces.answer_models_with(scripted.clone());
+    let (stand_in, endpoint) = stand_in(&[KEPT_KEY, ITEM_KEY]);
+    let provider = linked_at_stand_in(
+        &workspaces,
+        (&service, workspace_id, &ada),
+        (&endpoint, KEPT_KEY),
+    )
+    .await;
+    let mut items = Vec::new();
+    for secret in [UNKNOWN_KEY, ITEM_KEY] {
+        let kept = ask_at(
+            &service,
+            workspace_id,
+            &ada,
+            person_vault::target(person_vault::ADD),
+            json!({"kind": "key", "belongsTo": [stand_in.url()], "secret": secret}),
+        )
+        .await
+        .expect("a key is kept in the person's vault");
+        items.push(kept["reference"].clone());
+    }
+    let keeping = |item: &Value| {
+        ask_at(
+            &service,
+            workspace_id,
+            &ada,
+            person_models::target(person_models::SET_KEY_FROM_ITEM),
+            json!({"provider": provider, "key": item}),
+        )
+    };
+
+    let answered = keeping(&items[0]).await;
+    let Err(ActionCallError::Refused { reason }) = &answered else {
+        panic!("an item's key the provider turns away was kept: {answered:?}");
+    };
+    assert_eq!(
+        reason,
+        "Stand-in did not accept this key. The key kept before is still in use."
+    );
+    assert_eq!(
+        asked_with(&workspaces, &ada, &scripted).await.as_deref(),
+        Some(KEPT_KEY)
+    );
+
+    let view = keeping(&items[1])
+        .await
+        .expect("an item's key the provider takes is kept");
+    assert_eq!(view["configured"], json!(true), "{view}");
+    assert_eq!(
+        asked_with(&workspaces, &ada, &scripted).await.as_deref(),
+        Some(ITEM_KEY)
+    );
+    for key in [KEPT_KEY, ITEM_KEY, UNKNOWN_KEY] {
+        assert!(!reason.contains(key) && !view.to_string().contains(key));
     }
 }

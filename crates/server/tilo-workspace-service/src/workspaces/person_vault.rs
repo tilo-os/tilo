@@ -156,7 +156,7 @@ impl Workspaces {
                     request,
                     "a key to keep names its provider and the vault item that is the key",
                 )?;
-                said(key_from_item(&root, &setting, &by, purpose))
+                said(key_from_item(&root, &setting, &by, purpose, &self.model_reach()).await)
             }
             _ => Err(ActionCallError::UnknownAction),
         }
@@ -387,34 +387,37 @@ pub(super) async fn mail_with_item(
 /// Keep the key the vault item `setting` names as its provider's API key.
 /// The item must be a key that belongs to the provider's endpoint, as the
 /// person set it: a key is never kept for an endpoint it does not belong to.
-pub(super) fn key_from_item(
+/// Where the provider keeps a key already, the item's key takes its place
+/// only once the provider took it ([`super::person_models::take_key`]).
+pub(super) async fn key_from_item(
     root: &Path,
     setting: &SetKeyFromItem,
     by: &str,
     purpose: UsedFor<'_>,
+    reach: &super::person_models::Reach,
 ) -> Result<ProviderView, String> {
-    let config = super::person_settings::provider_config(root);
-    let profile = config
-        .profiles
-        .iter()
-        .find(|profile| profile.id == setting.provider)
-        .ok_or_else(|| "That provider is not kept here".to_owned())?;
-    let endpoint = Place::parse(&profile.endpoint).map_err(|error| error.to_string())?;
-    let key = released_for(
-        root,
-        &setting.key,
-        vault_items::ItemKind::Key,
-        std::slice::from_ref(&endpoint),
-        by,
-        purpose,
-    )?;
-    super::person_settings::set_key(
-        root,
+    let keeping = {
+        let config = super::person_settings::provider_config(root);
+        let profile = config
+            .profiles
+            .iter()
+            .find(|profile| profile.id == setting.provider)
+            .ok_or_else(|| "That provider is not kept here".to_owned())?;
+        let endpoint = Place::parse(&profile.endpoint).map_err(|error| error.to_string())?;
+        let key = released_for(
+            root,
+            &setting.key,
+            vault_items::ItemKind::Key,
+            std::slice::from_ref(&endpoint),
+            by,
+            purpose,
+        )?;
         SetKey {
             provider: setting.provider.clone(),
             key: key.secret.to_string(),
-        },
-    )
+        }
+    };
+    super::person_models::take_key(root, keeping, reach).await
 }
 
 #[cfg(test)]
