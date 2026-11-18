@@ -155,6 +155,7 @@ members = [
     "apps/pdf-viewer",
     "apps/photos",
     "apps/print-centre",
+    "apps/print-centre-model",
     "apps/publisher",
     "apps/publisher-model",
     "apps/remote",
