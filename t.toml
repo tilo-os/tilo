@@ -2415,7 +2415,11 @@ default = false
 
 [[check]]
 name = "image-ci-fast"
-# Fetches from mirrors, registries and release hosts no fixed list names.
+# Fetches from mirrors, registries and release hosts no fixed list names. Not `pinned`: its two
+# FROMs are named by digest, but the `dnf install`s in os/Containerfile.ci-fast name packages, not
+# bytes, and a mirror may answer with another build of one. It can be served again once the build
+# installs those from a snapshot named by digest and this line declares that egress `pinned`, as
+# the OS image does with registry.tilo.so/tilo/rpms.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "SOURCE_DATE_EPOCH=$(cat /target/source-date/ci-fast)\nexport SOURCE_DATE_EPOCH\nmkdir -p $TMPDIR/empty\nbash tools/ci/publish/oci-build.sh $TMPDIR/empty os/Containerfile.ci-fast /target/publish/ci-fast\n"
 needs = ["source-date-ci-fast"]
@@ -2613,8 +2617,8 @@ on = ["dispatch", "idle"]
 
 [[check]]
 name = "image-ci-fast-smoke"
-# Fetches from mirrors, registries and release hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Reads nothing of the network: it runs the image it needs and asks its tools their versions.
+# What it reaches is refused and told instead of quietly making every run the network's.
 run = "bash os/tests/ci_fast_images.sh /target/publish/ci-fast/image.oci.tar"
 needs = ["image-ci-fast"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
