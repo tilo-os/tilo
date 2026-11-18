@@ -187,3 +187,63 @@ tilo_test_env::scenario! {
         assert_eq!(state.deletes.pending().count(), 0, "no server holds it");
     }
 }
+
+/// An event's guests are kept under their ids, in no order of their own: read back from the
+/// document they stand in the order of their ids, whatever order the entry named them in.
+/// What a server holds of an event is told by a fingerprint, which must not change with that.
+#[test]
+fn an_adopted_event_is_owed_no_upload_whatever_order_its_guests_stand_in() {
+    let accounts = AccountStore::sample();
+    let (_, held) = accounts.all_calendars().next().expect("a sample calendar");
+    let guest = |id: u128, name: &str, email: &str| crate::model::Attendee {
+        id: uuid::Uuid::from_u128(id),
+        name: name.into(),
+        email: email.into(),
+        status: crate::model::InviteStatus::NeedsAction,
+    };
+    for against_their_ids in [false, true] {
+        let mut event = crate::resource::event_at(
+            "Dinner",
+            crate::resource::at(jiff::civil::Date::new(2026, 9, 8).unwrap(), 19, 0),
+        );
+        event.calendar_id = Some(held.id.clone());
+        let mut guests = vec![
+            guest(1, "Ada", "ada@example.test"),
+            guest(2, "Bo", "bo@example.test"),
+        ];
+        if against_their_ids {
+            guests.reverse();
+        }
+        event.organizer = Some(uuid::Uuid::from_u128(1));
+        event.attendees = guests.into();
+        let mut replica = Replica::<Calendar>::new();
+        apply(
+            &mut replica,
+            Calendar::ADOPT_REMOTE_EVENT.with(calendar::AdoptRemoteEvent {
+                event: EventData::from_event(&event),
+                at: RemoteAt {
+                    calendar: held.id.clone(),
+                    href: "/dav/dinner.ics".into(),
+                    etag: Some("\"1\"".into()),
+                },
+            }),
+        );
+        assert_eq!(replica.state().unwrap().uploads.pending().count(), 0);
+        // Any other change of the calendar reads the event back from the document.
+        apply(
+            &mut replica,
+            Calendar::PULLED.with(calendar::Pulled {
+                calendar: held.id.clone(),
+                token: "token-1".into(),
+            }),
+        );
+        let state = replica.state().unwrap();
+        assert_eq!(
+            state.uploads.pending().count(),
+            0,
+            "nobody changed the event, so nothing is owed its server (guests named against \
+             the order of their ids: {against_their_ids})"
+        );
+        assert!(uploads(&state, &accounts).is_empty());
+    }
+}
