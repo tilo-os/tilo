@@ -1884,22 +1884,22 @@ impl ChainState {
             return Ok(Write::Arriving);
         }
         let base = (self.base)();
-        let held = self.parts();
-        let parts = (part.typed)(&held);
+        let kept = self.parts();
+        let parts = (part.typed)(&kept);
         let action =
             (part.prepare)(action, &*base, &*parts, invoker).map_err(ActionError::Refused)?;
-        let (place, placed) = (part.route)(&*action, &*base, &*parts);
+        let (place, by_app) = (part.route)(&*action, &*base, &*parts);
         drop(base);
         if let Some(shares) = self
-            .shares(&*action, &*parts, &held)
+            .shares(&*action, &*parts, &kept)
             .map_err(ActionError::Refused)?
         {
             drop(parts);
             return self.write_shares(shares, invoker, place.as_deref());
         }
-        let placed = placed.or_else(|| self.listed_part(&*action, &held).map(Ok));
+        let by_app = by_app.or_else(|| self.listed_part(&*action, &kept).map(Ok));
         let index = self
-            .place(&*action, placed, &held)
+            .place(&*action, by_app, &kept)
             .map_err(ActionError::Refused)?;
         drop(parts);
         self.may(&*action)?;
@@ -1974,20 +1974,20 @@ impl ChainState {
         }
         let part = self.part();
         let base = (self.base)();
-        let held = self.parts();
-        let parts = (part.typed)(&held);
+        let kept = self.parts();
+        let parts = (part.typed)(&kept);
         let mut prepared = Vec::with_capacity(group.len());
         let mut places = Vec::with_capacity(group.len());
         let mut indices = Vec::with_capacity(group.len());
         for action in group {
             let action = (part.prepare)(&**action, &*base, &*parts, invoker)
                 .map_err(ActionError::Refused)?;
-            let (place, placed) = (part.route)(&*action, &*base, &*parts);
-            let placed = placed.or_else(|| self.listed_part(&*action, &held).map(Ok));
+            let (place, by_app) = (part.route)(&*action, &*base, &*parts);
+            let by_app = by_app.or_else(|| self.listed_part(&*action, &kept).map(Ok));
             places.push(place);
             self.may(&*action)?;
             indices.push(
-                self.place(&*action, placed, &held)
+                self.place(&*action, by_app, &kept)
                     .map_err(ActionError::Refused)?,
             );
             prepared.push(action);
