@@ -406,3 +406,245 @@ fn a_server_keeps_the_address_it_enrolled() {
     assert_eq!(server.endpoint, moved);
     assert_eq!(server.label, "Attic");
 }
+
+const PLAN: &str = "0123456789abcdef0123456789abcdef";
+const NONCE: &str = "00112233445566778899aabbccddeeff";
+
+/// A machine planned to install to `disk`, leaving exactly `open` open, as the
+/// plan document both sides read.
+fn planned(disk: &str, open: &str) -> Replica<Servers> {
+    use install_profile_model::plan::{DiskRule, Network, Plan, SCHEMA, Token};
+    let open: Vec<String> = open
+        .split(',')
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let left_open = |name: &str| open.iter().any(|choice| choice == name);
+    let deliver = |name: &str, made: &str| {
+        if left_open(name) {
+            String::new()
+        } else {
+            made.to_owned()
+        }
+    };
+    let plan = Plan {
+        schema: SCHEMA,
+        plan: PLAN.to_owned(),
+        revision: 1,
+        destination: deliver("destination", "tilo-server"),
+        name: deliver("name", "cupboard"),
+        network: if left_open("network") {
+            Network::default()
+        } else {
+            Network {
+                addressing: "dhcp".into(),
+                ..Network::default()
+            }
+        },
+        disk: if left_open("disk") {
+            DiskRule::default()
+        } else {
+            DiskRule::decode(disk).unwrap()
+        },
+        unlock: deliver("unlock", "tpm"),
+        updates: deliver("updates", "stable"),
+        hosting: Vec::new(),
+        open: open.clone(),
+        token: Token {
+            nonce: NONCE.to_owned(),
+            expires_at_ns: 1_700_000_000_000_000_000,
+        },
+    };
+    let plan: Plan = serde_json::from_value(serde_json::to_value(&plan).unwrap()).unwrap();
+    let mut servers = Replica::<Servers>::new();
+    servers
+        .apply(
+            Servers::PLAN_MACHINE
+                .with((serde_json::to_string(&plan).unwrap(), "cupboard".to_owned())),
+        )
+        .unwrap();
+    servers
+}
+
+/// Two drives the machine reported: a rule that picks neither has to ask.
+fn two_drives() -> String {
+    serde_json::json!([
+        {"model": "QEMU HARDDISK", "identity": "serial-a", "bytes": 40_000_000_000_u64,
+         "holds_data": false, "boots": false},
+        {"model": "QEMU HARDDISK", "identity": "serial-b", "bytes": 40_000_000_000_u64,
+         "holds_data": true, "boots": true},
+    ])
+    .to_string()
+}
+
+/// The machine's drive rule matched two drives, so it enrolled and asked; the
+/// person's device answers with one of the drives the machine reported, never
+/// one it did not, and only then may the installation finish.
+#[test]
+fn a_machine_asks_the_drive_it_could_not_settle_and_takes_the_answer() {
+    let mut servers = planned("empty", "");
+    let machine = device_id(&[9; 32]);
+    let ask = serde_json::json!({
+        "disk": "empty matched 2 drives on this machine, not a drive without data"
+    })
+    .to_string();
+    servers
+        .apply(Servers::BEGIN_INSTALL.with((
+            machine.as_str().to_owned(),
+            NONCE.to_owned(),
+            two_drives(),
+            ask,
+        )))
+        .unwrap();
+    let entry = servers
+        .state()
+        .unwrap()
+        .servers
+        .get(&machine)
+        .cloned()
+        .unwrap();
+    assert_eq!(entry.plan.status, plan::INSTALLING);
+    assert_eq!(
+        entry.plan.drives.len(),
+        2,
+        "the drives it reported are kept"
+    );
+    assert!(
+        entry
+            .plan
+            .question("disk")
+            .is_some_and(|asked| asked.reason.contains("2 drives")),
+        "the question carries the reason: {entry:?}"
+    );
+
+    assert!(
+        servers
+            .apply(Servers::FINISH_INSTALL.with(machine.clone()))
+            .is_err(),
+        "a machine still waiting for an answer did not finish"
+    );
+    assert!(
+        servers
+            .apply(Servers::ANSWER_MACHINE_CHOICE.with((
+                machine.clone(),
+                "disk".into(),
+                "serial:serial-z".into(),
+            )))
+            .is_err(),
+        "an answer names a drive the machine reported"
+    );
+    assert!(
+        servers
+            .apply(Servers::ANSWER_MACHINE_CHOICE.with((
+                machine.clone(),
+                "disk".into(),
+                "empty".into(),
+            )))
+            .is_err(),
+        "an answered drive names its serial or WWN, not another rule"
+    );
+
+    servers
+        .apply(Servers::ANSWER_MACHINE_CHOICE.with((
+            machine.clone(),
+            "disk".into(),
+            "serial:serial-a".into(),
+        )))
+        .unwrap();
+    let entry = servers
+        .state()
+        .unwrap()
+        .servers
+        .get(&machine)
+        .cloned()
+        .unwrap();
+    assert_eq!(entry.plan.disk, "serial:serial-a");
+    assert!(entry.plan.ask.is_empty(), "the question is answered");
+    servers
+        .apply(Servers::FINISH_INSTALL.with(machine.clone()))
+        .unwrap();
+    let entry = servers
+        .state()
+        .unwrap()
+        .servers
+        .get(&machine)
+        .cloned()
+        .unwrap();
+    assert_eq!(entry.plan.status, plan::INSTALLED);
+}
+
+/// A plan's other choices are answered the same way; the machine's network and
+/// the workspaces it holds are set on its entry, not guessed from an answer.
+#[test]
+fn the_other_open_choices_are_answered_on_the_persons_devices() {
+    let mut servers = planned("largest", "name,unlock,updates");
+    let machine = device_id(&[9; 32]);
+    servers
+        .apply(Servers::BEGIN_INSTALL.with((
+            machine.as_str().to_owned(),
+            NONCE.to_owned(),
+            two_drives(),
+            String::new(),
+        )))
+        .unwrap();
+    for (choice, value) in [
+        ("name", "attic"),
+        ("unlock", "owner-device"),
+        ("updates", "dev"),
+    ] {
+        servers
+            .apply(Servers::ANSWER_MACHINE_CHOICE.with((
+                machine.clone(),
+                choice.into(),
+                value.into(),
+            )))
+            .unwrap();
+    }
+    let entry = servers
+        .state()
+        .unwrap()
+        .servers
+        .get(&machine)
+        .cloned()
+        .unwrap();
+    assert_eq!(entry.label, "attic");
+    assert_eq!(entry.plan.unlock, "owner-device");
+    assert_eq!(entry.plan.updates, "dev");
+    assert!(entry.plan.open_choices().is_empty(), "{entry:?}");
+
+    for (choice, value) in [
+        ("destination", "tilo-desktop"),
+        ("unlock", "pin"),
+        ("updates", "nightly"),
+        ("network", "dhcp"),
+        ("hosting", "store"),
+        ("purpose", "server"),
+    ] {
+        assert!(
+            servers
+                .apply(Servers::ANSWER_MACHINE_CHOICE.with((
+                    machine.clone(),
+                    choice.into(),
+                    value.into(),
+                )))
+                .is_err(),
+            "answering {choice} with {value:?} is refused"
+        );
+    }
+}
+
+/// A machine whose token no plan answers is not taken in.
+#[test]
+fn a_machine_with_an_unknown_token_is_refused() {
+    let mut servers = planned("empty", "");
+    assert!(
+        servers
+            .apply(Servers::BEGIN_INSTALL.with((
+                device_id(&[9; 32]).as_str().to_owned(),
+                "ffffffffffffffffffffffffffffffff".into(),
+                two_drives(),
+                String::new(),
+            )))
+            .is_err()
+    );
+}

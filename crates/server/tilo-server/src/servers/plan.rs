@@ -9,8 +9,15 @@
 //!
 //! The plan is secret-free: the nonce identifies the single-use token and the
 //! token itself is never kept here, in a log or in an answer.
+//!
+//! A choice the plan left open, or a disk rule that matched no drive or
+//! several on the machine, is never guessed by the machine. It enrolls with
+//! the machine's real drives ([`super::Servers::begin_install`]) and the
+//! question it cannot settle ([`Asked`]); one of the person's devices answers
+//! it here ([`super::Servers::answer_machine_choice`]) and the machine reads
+//! its entry back.
 
-use tilo_resource::Model;
+use tilo_resource::{Collection, Model};
 
 /// A machine whose installation is planned, and no disk was written yet.
 pub const PLANNED: &str = "planned";
@@ -39,6 +46,11 @@ pub struct Pending {
     pub expires_at_ns: u64,
     /// The OS it installs (`tilo-os` or `tilo-server`).
     pub destination: String,
+    /// How it unlocks after a boot (`owner-device`, `tpm` or `passphrase`);
+    /// empty when open.
+    pub unlock: String,
+    /// The updates it follows (`stable` or `dev`); empty when open.
+    pub updates: String,
     /// The disk rule (`empty`, `serial:<serial>`, `wwid:<wwn>`, `largest`,
     /// `only`).
     pub disk: String,
@@ -47,6 +59,36 @@ pub struct Pending {
     pub open: String,
     /// How many times the plan changed after a medium was made from it.
     pub revision: u64,
+    /// The drives the machine reported when it enrolled, by their identity:
+    /// what an answer to its disk question may name, and nothing else.
+    pub drives: Collection<ReportedDrive>,
+    /// The questions the machine asked and no device answered yet, by the
+    /// choice each settles, with the reason the machine could not settle it.
+    pub ask: Collection<Asked>,
+}
+
+/// A drive a machine that enrolled really has, as it reported it.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct ReportedDrive {
+    /// The drive's model, for the person to recognise it by.
+    pub model: String,
+    /// Its serial or WWN: what an answer names it by.
+    pub identity: String,
+    /// Its size in bytes.
+    pub bytes: u64,
+    /// Whether it already holds files.
+    pub holds_data: bool,
+    /// Whether it holds the system the machine booted from.
+    pub boots: bool,
+}
+
+/// A choice a machine asked the person's devices to settle, and why.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Asked {
+    /// Why the machine could not settle the choice itself, for the person to
+    /// read: the rule that matched no drive or several, or a choice the plan
+    /// left open.
+    pub reason: String,
 }
 
 impl Pending {
@@ -64,5 +106,17 @@ impl Pending {
             .map(str::trim)
             .filter(|name| !name.is_empty())
             .collect()
+    }
+
+    /// The drive the machine reported as `identity`, when it reported one.
+    #[must_use]
+    pub fn drive(&self, identity: &str) -> Option<&ReportedDrive> {
+        self.drives.get(&tilo_resource::Id::from_raw(identity))
+    }
+
+    /// The question the machine asked about `choice`, when it is unanswered.
+    #[must_use]
+    pub fn question(&self, choice: &str) -> Option<&Asked> {
+        self.ask.get(&tilo_resource::Id::from_raw(choice))
     }
 }

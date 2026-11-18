@@ -30,6 +30,7 @@
 //! it answers devices, its update policy to what it follows, and a retired
 //! server lets go of everything it holds.
 
+use serde::Deserialize;
 use tilo_resource::{Collection, Id, Invoke, Model, Refusal, Replica, resource};
 use tilo_user_identity::DeviceCert;
 
@@ -162,35 +163,34 @@ impl Server {
 
 #[resource(kind = "tilo.servers", read_content = Servers::read_document)]
 impl Servers {
-    /// Plan a machine that is not installed yet: enter it under the plan's id
-    /// ([`plan`]) with the nonce of the single-use token its medium or rescue
-    /// command carries, so the machine is recognised when it enrolls and the
-    /// person's devices see it waiting. A plan already there keeps what it
-    /// holds and takes the new choices and revision.
+    /// Plan a machine that is not installed yet: enter the secret-free plan
+    /// document `plan` under its own id ([`plan`]), with the nonce of the
+    /// single-use token its medium or rescue command carries, so the machine is
+    /// recognised when it enrolls and the person's devices see it waiting. It
+    /// is one document, checked by the same rules the machine checks it with.
+    /// A plan already there keeps what it holds and takes the new document and
+    /// revision.
     #[action(external)]
-    pub fn plan_machine(
-        &mut self,
-        plan: String,
-        label: String,
-        nonce: String,
-        expires_at_ns: u64,
-        destination: String,
-        disk: String,
-        open: String,
-    ) -> Result<(), Refusal> {
-        let plan = validate_hex32(&plan, "a plan is named by its 16-byte id")?;
+    pub fn plan_machine(&mut self, plan: String, label: String) -> Result<(), Refusal> {
+        let document: install_profile_model::plan::Plan = serde_json::from_str(&plan)
+            .map_err(|_| Refusal::new("a machine's plan is the document it installs from"))?;
         let label = validate_label(&label)?;
-        let nonce = validate_hex32(&nonce, "a token is named by its 16-byte nonce")?;
-        if !install_profile_model::plan::DESTINATIONS.contains(&destination.as_str()) {
-            return Err(Refusal::new("a plan installs Tilo OS or Tilo Server"));
-        }
-        install_profile_model::plan::DiskRule::decode(&disk).map_err(Refusal::new)?;
-        let open = validate_open_choices(&open)?;
-        let id = Id::from_raw(plan.clone());
+        let id = Id::from_raw(document.plan.clone());
+        let PendingPlan {
+            nonce,
+            expires_at_ns,
+            destination,
+            unlock,
+            updates,
+            disk,
+            open,
+        } = PendingPlan::of(&document);
         match self.servers.get_mut(&id) {
             Some(server) => {
                 server.label = label;
                 server.plan.destination = destination;
+                server.plan.unlock = unlock;
+                server.plan.updates = updates;
                 server.plan.disk = disk;
                 server.plan.open = open;
                 server.plan.revision = server.plan.revision.saturating_add(1);
@@ -205,13 +205,16 @@ impl Servers {
                         label,
                         plan: plan::Pending {
                             status: plan::PLANNED.to_owned(),
-                            plan,
+                            plan: document.plan,
                             nonce,
                             expires_at_ns,
                             destination,
+                            unlock,
+                            updates,
                             disk,
                             open,
                             revision: 1,
+                            ..plan::Pending::default()
                         },
                         ..Server::default()
                     },
@@ -224,11 +227,25 @@ impl Servers {
     /// The machine that enrolled with the token `nonce` is installing: its
     /// plan becomes its entry, under its device key, keeping the name and the
     /// machine configuration the plan was written with.
+    ///
+    /// It brings the drives it really has, so an answer can only name one of
+    /// them, and the questions it cannot settle on its own: a choice the plan
+    /// left open, or a disk rule that matched no drive or several. Nothing is
+    /// guessed here; one of the person's devices answers
+    /// ([`Self::answer_machine_choice`]).
     #[action(external)]
-    pub fn begin_install(&mut self, device: String, nonce: String) -> Result<(), Refusal> {
+    pub fn begin_install(
+        &mut self,
+        device: String,
+        nonce: String,
+        drives: String,
+        ask: String,
+    ) -> Result<(), Refusal> {
         let device = Id::from_raw(device);
         validate_device(&device)?;
         let nonce = validate_hex32(&nonce, "a token is named by its 16-byte nonce")?;
+        let drives = validated_drives(&drives)?;
+        let ask = validated_questions(&ask)?;
         let plan = self
             .planned_by_nonce(&nonce)
             .map(|(id, _)| id.clone())
@@ -241,7 +258,88 @@ impl Servers {
             .remove(&plan)
             .ok_or_else(|| Refusal::new("no planned machine answers that token"))?;
         plan::INSTALLING.clone_into(&mut entry.plan.status);
+        entry.plan.drives = drives;
+        entry.plan.ask = ask;
         self.servers.push(device, entry);
+        Ok(())
+    }
+
+    /// Answer the question a machine asked about `choice` with `value`, on one
+    /// of the person's devices. The answer is checked against the machine's
+    /// real report: a disk answer names a drive the machine reported, never
+    /// one it did not.
+    ///
+    /// A choice the machine did not ask about, or one another answer settles
+    /// (a network is set up on its entry, the workspaces it holds are), is
+    /// refused with what answers it instead.
+    #[action(external)]
+    pub fn answer_machine_choice(
+        &mut self,
+        device: Id,
+        choice: String,
+        value: String,
+    ) -> Result<(), Refusal> {
+        let choice = choice.trim().to_owned();
+        if !install_profile_model::plan::OPEN_CHOICES.contains(&choice.as_str()) {
+            return Err(Refusal::new("a plan answers one of its own choices"));
+        }
+        let server = self.server(&device)?;
+        if server.plan.status != plan::INSTALLING {
+            return Err(Refusal::new("that machine is not installing"));
+        }
+        let value = value.trim().to_owned();
+        match choice.as_str() {
+            "disk" => {
+                let rule =
+                    install_profile_model::plan::DiskRule::decode(&value).map_err(Refusal::new)?;
+                if !install_profile_model::plan::IDENTIFIED_RULES.contains(&rule.kind.as_str()) {
+                    return Err(Refusal::new(
+                        "an answered disk names the drive by its serial or WWN",
+                    ));
+                }
+                if server.plan.drive(&rule.identity).is_none() {
+                    return Err(Refusal::new(
+                        "that drive is not one the machine reported; answer with one it did",
+                    ));
+                }
+                server.plan.disk = rule.encode();
+            }
+            "name" => server.label = validate_label(&value)?,
+            "destination" => {
+                if !install_profile_model::plan::DESTINATIONS.contains(&value.as_str()) {
+                    return Err(Refusal::new("a plan installs Tilo OS or Tilo Server"));
+                }
+                server.plan.destination = value;
+            }
+            "unlock" => {
+                if !install_profile_model::plan::UNLOCK.contains(&value.as_str()) {
+                    return Err(Refusal::new("a machine unlocks by one of its three ways"));
+                }
+                server.plan.unlock = value;
+            }
+            "updates" => {
+                if !install_profile_model::plan::UPDATES.contains(&value.as_str()) {
+                    return Err(Refusal::new("a machine follows stable or dev updates"));
+                }
+                server.plan.updates = value;
+            }
+            "network" => {
+                return Err(Refusal::new(
+                    "a machine's network is set up on its entry, not answered here",
+                ));
+            }
+            _ => {
+                return Err(Refusal::new(
+                    "the workspaces a machine holds are set on its entry, not answered here",
+                ));
+            }
+        }
+        server.plan.open = without_choice(&server.plan.open, &choice);
+        server
+            .plan
+            .ask
+            .remove(&Id::from_raw(choice.as_str().to_owned()));
+        server.plan.revision = server.plan.revision.saturating_add(1);
         Ok(())
     }
 
@@ -252,6 +350,11 @@ impl Servers {
         let server = self.server(&device)?;
         if server.plan.status != plan::INSTALLING {
             return Err(Refusal::new("that server is not installing"));
+        }
+        if !server.plan.ask.is_empty() {
+            return Err(Refusal::new(
+                "the machine is still waiting for an answer on one of the person's devices",
+            ));
         }
         plan::INSTALLED.clone_into(&mut server.plan.status);
         Ok(())
@@ -606,24 +709,121 @@ fn validate_hex32(text: &str, wrong: &'static str) -> Result<String, Refusal> {
     .ok_or_else(|| Refusal::new(wrong))
 }
 
-/// The open choices `text` lists, comma separated and trimmed, or why it is
-/// not a list of choices a plan may leave open.
-fn validate_open_choices(text: &str) -> Result<String, Refusal> {
-    let mut names = Vec::new();
-    for name in text
-        .split(',')
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-    {
-        if !install_profile_model::plan::OPEN_CHOICES.contains(&name) {
-            return Err(Refusal::new("a plan leaves open one of its own choices"));
+/// The choices a plan document makes, as the person's servers keep them for a
+/// machine that does not exist yet.
+struct PendingPlan {
+    nonce: String,
+    expires_at_ns: u64,
+    destination: String,
+    unlock: String,
+    updates: String,
+    disk: String,
+    open: String,
+}
+
+impl PendingPlan {
+    fn of(document: &install_profile_model::plan::Plan) -> Self {
+        Self {
+            nonce: document.token.nonce.clone(),
+            expires_at_ns: document.token.expires_at_ns,
+            destination: document.destination.clone(),
+            unlock: document.unlock.clone(),
+            updates: document.updates.clone(),
+            disk: document.disk.encode(),
+            open: document.open_choices().join(","),
         }
-        if names.contains(&name) {
-            return Err(Refusal::new("a plan lists each open choice once"));
-        }
-        names.push(name);
     }
-    Ok(names.join(","))
+}
+
+/// `text` without the choice `name`, comma separated as the entry keeps the
+/// list.
+fn without_choice(text: &str, name: &str) -> String {
+    text.split(',')
+        .map(str::trim)
+        .filter(|choice| !choice.is_empty() && *choice != name)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// The drives a machine reported, as its entry keeps them: each named by its
+/// identity, bounded and cleaned, so an answer can only name one of them.
+fn validated_drives(text: &str) -> Result<Collection<plan::ReportedDrive>, Refusal> {
+    let wrong = || Refusal::new("a machine's drives are the ones it reported");
+    if text.len() > 64 * 1024 {
+        return Err(wrong());
+    }
+    let reported: Vec<RawDrive> = serde_json::from_str(text).map_err(|_| wrong())?;
+    if reported.len() > 64 {
+        return Err(wrong());
+    }
+    let mut drives = Collection::default();
+    for drive in reported {
+        if drive.identity.is_empty()
+            || drive.identity.len() > 128
+            || !drive
+                .identity
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-._:".contains(&byte))
+            || drive.model.len() > 128
+            || drive.model.chars().any(char::is_control)
+            || drive.bytes == 0
+            || drives.contains(&Id::from_raw(drive.identity.clone()))
+        {
+            return Err(wrong());
+        }
+        drives.push(
+            Id::from_raw(drive.identity.clone()),
+            plan::ReportedDrive {
+                model: drive.model,
+                identity: drive.identity,
+                bytes: drive.bytes,
+                holds_data: drive.holds_data,
+                boots: drive.boots,
+            },
+        );
+    }
+    Ok(drives)
+}
+
+/// A drive as the machine reports it on enrollment.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawDrive {
+    #[serde(default)]
+    model: String,
+    identity: String,
+    bytes: u64,
+    #[serde(default)]
+    holds_data: bool,
+    #[serde(default)]
+    boots: bool,
+}
+
+/// The questions a machine asked, as its entry keeps them, by the choice each
+/// settles: a JSON object of choice to the reason the machine could not
+/// settle it.
+fn validated_questions(text: &str) -> Result<Collection<plan::Asked>, Refusal> {
+    let wrong = || Refusal::new("a machine asks about one of its plan's own choices");
+    if text.trim().is_empty() {
+        return Ok(Collection::default());
+    }
+    if text.len() > 16 * 1024 {
+        return Err(wrong());
+    }
+    let asked: std::collections::BTreeMap<String, String> =
+        serde_json::from_str(text).map_err(|_| wrong())?;
+    let mut questions = Collection::default();
+    for (choice, reason) in asked {
+        if !install_profile_model::plan::OPEN_CHOICES.contains(&choice.as_str())
+            || reason.trim().is_empty()
+            || reason.len() > 512
+            || reason.chars().any(char::is_control)
+        {
+            return Err(wrong());
+        }
+        questions.push(Id::from_raw(choice), plan::Asked { reason });
+    }
+    Ok(questions)
 }
 
 /// `endpoint` as a server's address, spelled as its own endpoint advertises
