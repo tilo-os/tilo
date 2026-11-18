@@ -20,8 +20,9 @@ pub(crate) struct Folders {
     /// computer learns of it.
     #[serde(default = "yes")]
     pub(crate) auto_own: bool,
-    /// Whether a workspace the person joined gets one too.
-    #[serde(default)]
+    /// Whether a workspace the person joined gets one too: on unless turned
+    /// off, since a workspace added on one of their devices is on all of them.
+    #[serde(default = "yes")]
     pub(crate) auto_joined: bool,
     /// By workspace id.
     #[serde(default)]
@@ -32,7 +33,7 @@ impl Default for Folders {
     fn default() -> Self {
         Self {
             auto_own: true,
-            auto_joined: false,
+            auto_joined: true,
             workspaces: BTreeMap::new(),
         }
     }
@@ -239,7 +240,8 @@ mod tests {
         assert!(folders.offer("w1", "Acme", true, home.path()));
         assert_eq!(folders.workspaces["w1"].path, home.path().join("Acme"));
         assert!(!folders.offer("w1", "Acme", true, home.path()), "once");
-        // Joined: only when the person asked for it.
+        // Joined: as well, unless the person turned it off.
+        folders.auto_joined = false;
         assert!(!folders.offer("w2", "Club", false, home.path()));
         folders.auto_joined = true;
         assert!(folders.offer("w2", "Club", false, home.path()));
