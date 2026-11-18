@@ -47,6 +47,18 @@ impl Choice {
     }
 }
 
+/// How far a closing window has let go of the invocations the broker hands it.
+pub(crate) enum Leaving {
+    /// It takes invocations.
+    Staying,
+    /// It asked for no more; the ones already addressed to it are still coming.
+    Stopping,
+    /// Every one it was handed is answered; the answers are on their way to the broker.
+    Settling(crate::collaboration::DocumentPublicationReceipt),
+    /// None it was handed is left unanswered.
+    Left,
+}
+
 pub(crate) struct Admission {
     pub dialog: Option<Box<ModalDialog<Column>>>,
     pub reviewed: Vec<UnsavedDocument>,
@@ -59,6 +71,7 @@ pub(crate) struct Admission {
     pub save_poll_at: crate::time::Instant,
     pub save_waiting: bool,
     pub save_result: Option<Result<(), String>>,
+    pub leaving: Leaving,
     session: uuid::Uuid,
     choices: Vec<Choice>,
 }
@@ -76,6 +89,7 @@ impl Default for Admission {
             save_poll_at: crate::time::now(),
             save_waiting: false,
             save_result: None,
+            leaving: Leaving::Staying,
             session: uuid::Uuid::new_v4(),
             choices: Vec::new(),
         }

@@ -53,6 +53,7 @@ impl<'a, 'b> ProcessWindows<'a, 'b> {
         // The launch's window declared its bar before the loop ran it: it keeps that bar.
         let bar = crate::hosted_window::HostedWindow::new();
         bar.declare(crate::window_toolbar::declared());
+        crate::window_link::shows_windows(1);
         Self {
             windows: vec![first],
             bars: vec![bar],
@@ -96,6 +97,7 @@ impl<'a, 'b> ProcessWindows<'a, 'b> {
                 return;
             }
             let mut closed = self.windows.remove(index);
+            crate::window_link::shows_windows(self.windows.len());
             let bar = self.bars.remove(index);
             let _bar = crate::window_toolbar::enter(Some(&bar));
             closed.exiting(event_loop);
@@ -123,6 +125,7 @@ impl<'a, 'b> ProcessWindows<'a, 'b> {
         handler.resumed(event_loop);
         drop(scope);
         self.windows.push(handler);
+        crate::window_link::shows_windows(self.windows.len());
         self.bars.push(bar);
         // The app ran with no window until now: the window serves what it
         // served, so it goes, and the process is a windowed one from here.

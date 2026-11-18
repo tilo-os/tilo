@@ -553,6 +553,7 @@ impl ChannelHandle {
             .map_err(failure)?;
         Ok(Feed(Arc::new(FeedInner {
             channel: Arc::clone(&self.channel),
+            finish: Box::new(subscription.finisher()),
             subscription: tokio::sync::Mutex::new(subscription),
         })))
     }
@@ -1286,6 +1287,8 @@ impl ChannelHandle {
 struct FeedInner {
     /// Keeps the channel open while its stream is read.
     channel: Arc<Channel>,
+    /// Asks the broker to end the subscription once it handed over what it holds.
+    finish: Box<dyn Fn() + Send + Sync>,
     subscription: tokio::sync::Mutex<Subscription>,
 }
 
@@ -1365,6 +1368,13 @@ impl ActionCatalogueStream {
 pub struct InvocationStream(Feed);
 
 impl InvocationStream {
+    /// Take no more invocations: the broker hands over the ones it already
+    /// addressed to this stream and then ends it, so a reader that reads on
+    /// until [`Self::read`] fails has every invocation it was ever handed.
+    pub fn finish(&self) {
+        (self.0.0.finish)();
+    }
+
     /// The next invocation.
     pub async fn read(&self) -> Result<Invocation, NotAvailable> {
         match self.0.event().await? {

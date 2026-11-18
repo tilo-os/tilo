@@ -8680,6 +8680,41 @@ struct InvocationStreamServer {
     delivered: Option<Box<dyn Fn()>>,
 }
 
+/// What ends one invocation stream once its app asks for no more: the broker
+/// stops addressing invocations to it, and the stream hands over the ones it
+/// already holds before it ends.
+struct InvocationFeedEnd {
+    state: Arc<AppBrokerState>,
+    peer_id: u64,
+    sender: mpsc::WeakUnboundedSender<InvocationEnvelope>,
+}
+
+impl InvocationFeedEnd {
+    /// Stop addressing invocations to this stream, unless a later stream of
+    /// the app has replaced it already.
+    fn finish(self) {
+        let Some(sender) = self.sender.upgrade() else {
+            return;
+        };
+        let removed = self
+            .state
+            .invocation_subscribers
+            .lock()
+            .ok()
+            .and_then(|mut subscribers| {
+                subscribers
+                    .get(&self.peer_id)
+                    .is_some_and(|current| current.same_channel(&sender))
+                    .then(|| subscribers.remove(&self.peer_id))
+            })
+            .is_some();
+        drop(sender);
+        if removed {
+            self.state.invocation_streams_changed();
+        }
+    }
+}
+
 struct ActionCatalogueStreamServer {
     follower: Arc<CatalogueFollower>,
 }

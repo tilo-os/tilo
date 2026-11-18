@@ -371,8 +371,20 @@ impl Links {
         app: &str,
         workspace: &str,
     ) -> Result<Option<Reservation>, String> {
-        if self.links().contains_key(&key(app, workspace)) {
-            return Ok(None);
+        let gone = {
+            let mut links = self.links();
+            let key = key(app, workspace);
+            match links.get(&key) {
+                Some(link) if !runtime_portal::process_link::hung_up(&link.ours) => {
+                    return Ok(None);
+                }
+                // The process stopped taking work as it goes: the work starts another.
+                Some(_) => links.remove(&key),
+                None => None,
+            }
+        };
+        if let Some(gone) = gone {
+            start_alone(gone.queued);
         }
         self.reserve(app, workspace)
             .map(Some)
@@ -789,6 +801,36 @@ mod tests {
             let (links, _) = links();
             drop(links.reserve(APP, WORKSPACE).expect("reserved"));
             assert!(!has_channel(&links, APP, WORKSPACE));
+        }
+
+        phase a_process_that_stopped_taking_work_leaves_the_next_to_another;
+        // An app's process going away with its last window closes its end of the link first:
+        // what is asked of the app from then on starts a process of its own, rather than
+        // waiting on one that is about to exit.
+        {
+            const WORKSPACE: &str = "7a110d00-0000-4000-8000-000000000004";
+            let (links, _) = links();
+            links.reserve_for_test(APP, WORKSPACE);
+            let mut held = links.hold(APP, WORKSPACE).expect("held");
+            let theirs = held.serve(4242).expect("the launcher's end");
+            assert!(
+                links
+                    .reserve_unless_running(APP, WORKSPACE)
+                    .expect("asked")
+                    .is_none(),
+                "the running process serves the workspace"
+            );
+            runtime_portal::process_link::close(&theirs).expect("closed");
+            let reserved = links
+                .reserve_unless_running(APP, WORKSPACE)
+                .expect("asked")
+                .expect("a process of its own");
+            reserved.launched();
+            drop(held);
+            assert!(
+                links.links().contains_key(&key(APP, WORKSPACE)),
+                "the going process leaves the new one's link"
+            );
         }
 
         phase a_launch_that_names_what_it_opens_reserves_a_channel_and_starts;

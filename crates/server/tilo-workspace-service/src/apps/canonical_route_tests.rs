@@ -41,14 +41,14 @@ fn canonical_caller(workspace: &signed_worker::OriginalWorkspace) -> tilo_action
 
 /// The workspace's own certified api, and the caller `workspace`'s device
 /// asks through it.
-fn canonical_host(
+fn canonical_api(
     workspace: &signed_worker::OriginalWorkspace,
 ) -> (
     tilo_actions::remote::Caller,
     Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
 ) {
     let caller = canonical_caller(workspace);
-    let host = workspace
+    let api = workspace
         .state
         .certified_local_action_provider(
             &caller,
@@ -59,7 +59,7 @@ fn canonical_host(
             ),
         )
         .unwrap();
-    (caller, host)
+    (caller, api)
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -89,9 +89,9 @@ async fn canonical_route_rechecks_registration_certificate_and_stream_after_reso
                     ))
                     .await
                     .unwrap();
-                let (caller, host) = canonical_host(&workspace);
+                let (caller, api) = canonical_api(&workspace);
                 let page =
-                    canonical_pending(&workspace, host.query(&caller, canonical_query(&workspace)))
+                    canonical_pending(&workspace, api.query(&caller, canonical_query(&workspace)))
                         .await
                         .unwrap();
                 let request = InvokeRequest {
@@ -108,7 +108,7 @@ async fn canonical_route_rechecks_registration_certificate_and_stream_after_reso
                     wait_ms: None,
                     appearance: None,
                 };
-                let pending = host.invoke(&caller, request);
+                let pending = api.invoke(&caller, request);
                 workspace.state.take_turn(&workspace.directories);
                 assert_eq!(entered_rx.recv().await, Some("resolve"));
                 let replacement_stream = if change == "stream" {
@@ -170,9 +170,9 @@ async fn canonical_route_promotes_retired_publisher_without_retargeting_admitted
                     .await
                     .unwrap();
             }
-            let (caller, host) = canonical_host(&workspace);
+            let (caller, api) = canonical_api(&workspace);
             let initial =
-                canonical_pending(&workspace, host.query(&caller, canonical_query(&workspace)))
+                canonical_pending(&workspace, api.query(&caller, canonical_query(&workspace)))
                     .await
                     .unwrap();
             let request = InvokeRequest {
@@ -189,7 +189,7 @@ async fn canonical_route_promotes_retired_publisher_without_retargeting_admitted
                 wait_ms: None,
                 appearance: None,
             };
-            let receipt = canonical_pending(&workspace, host.invoke(&caller, request.clone()))
+            let receipt = canonical_pending(&workspace, api.invoke(&caller, request.clone()))
                 .await
                 .unwrap();
             assert_eq!(receipt.invocation, request.invocation);
@@ -205,7 +205,7 @@ async fn canonical_route_promotes_retired_publisher_without_retargeting_admitted
                 tokio::task::yield_now().await;
             }
             let promoted =
-                canonical_pending(&workspace, host.query(&caller, canonical_query(&workspace)))
+                canonical_pending(&workspace, api.query(&caller, canonical_query(&workspace)))
                     .await
                     .unwrap();
             assert_eq!(
@@ -216,21 +216,21 @@ async fn canonical_route_promotes_retired_publisher_without_retargeting_admitted
                     .peer_id,
                 12
             );
-            let retry = canonical_pending(&workspace, host.invoke(&caller, request.clone()))
+            let retry = canonical_pending(&workspace, api.invoke(&caller, request.clone()))
                 .await
                 .unwrap();
             assert_eq!(retry.invocation, receipt.invocation);
             let mut changed = request.clone();
             changed.argument = InvokeArgument::Text("different intent".into());
             assert!(
-                canonical_pending(&workspace, host.invoke(&caller, changed))
+                canonical_pending(&workspace, api.invoke(&caller, changed))
                     .await
                     .is_err()
             );
             let mut stale = request.clone();
             stale.invocation = tilo_actions::InvocationId::new();
             assert!(
-                canonical_pending(&workspace, host.invoke(&caller, stale))
+                canonical_pending(&workspace, api.invoke(&caller, stale))
                     .await
                     .is_err(),
                 "a fresh UUID cannot use retired publisher ownership"
@@ -238,7 +238,7 @@ async fn canonical_route_promotes_retired_publisher_without_retargeting_admitted
             let mut fresh = request;
             fresh.invocation = tilo_actions::InvocationId::new();
             fresh.target.provider = promoted.providers[0].provider.clone();
-            canonical_pending(&workspace, host.invoke(&caller, fresh.clone()))
+            canonical_pending(&workspace, api.invoke(&caller, fresh.clone()))
                 .await
                 .unwrap();
             assert_eq!(
@@ -277,9 +277,9 @@ async fn canonical_route_uses_signed_directory_admission_order_and_fences_replac
                 .publish_action_directory(signed_worker::directory_server(&other_directory))
                 .await
                 .unwrap();
-            let (caller, host) = canonical_host(&workspace);
+            let (caller, api) = canonical_api(&workspace);
             let page =
-                canonical_pending(&workspace, host.query(&caller, canonical_query(&workspace)))
+                canonical_pending(&workspace, api.query(&caller, canonical_query(&workspace)))
                     .await
                     .unwrap();
             assert_eq!(page.providers.len(), 1);
@@ -296,7 +296,7 @@ async fn canonical_route_uses_signed_directory_admission_order_and_fences_replac
                 provider: Some(token.clone()),
                 ..Default::default()
             };
-            let rows = canonical_pending(&workspace, host.query(&caller, query.clone()))
+            let rows = canonical_pending(&workspace, api.query(&caller, query.clone()))
                 .await
                 .unwrap();
             assert_eq!(rows.revision, "first-r1");
@@ -310,13 +310,13 @@ async fn canonical_route_uses_signed_directory_admission_order_and_fences_replac
                 .await
                 .unwrap();
             assert!(
-                canonical_pending(&workspace, host.query(&caller, query))
+                canonical_pending(&workspace, api.query(&caller, query))
                     .await
                     .is_err(),
                 "same revision does not rescue an old registration token"
             );
             let replacement =
-                canonical_pending(&workspace, host.query(&caller, canonical_query(&workspace)))
+                canonical_pending(&workspace, api.query(&caller, canonical_query(&workspace)))
                     .await
                     .unwrap();
             assert_ne!(replacement.providers[0].provider, *token);
@@ -350,19 +350,19 @@ async fn canonical_route_refuses_cross_workspace_forged_tokens_and_filtered_look
                 ))
                 .await
                 .unwrap();
-            let (caller, host) = canonical_host(&workspace);
+            let (caller, api) = canonical_api(&workspace);
             let mut wrong_workspace = canonical_query(&workspace);
             wrong_workspace.canonical_route.as_mut().unwrap().workspace =
                 uuid::Uuid::new_v4().to_string();
             assert!(
-                canonical_pending(&workspace, host.query(&caller, wrong_workspace))
+                canonical_pending(&workspace, api.query(&caller, wrong_workspace))
                     .await
                     .is_err()
             );
             let mut filtered = canonical_query(&workspace);
             filtered.provider = Some("21".into());
             assert!(
-                canonical_pending(&workspace, host.query(&caller, filtered))
+                canonical_pending(&workspace, api.query(&caller, filtered))
                     .await
                     .is_err()
             );
@@ -371,14 +371,14 @@ async fn canonical_route_refuses_cross_workspace_forged_tokens_and_filtered_look
                 ..Default::default()
             };
             assert!(
-                canonical_pending(&workspace, host.query(&caller, forged))
+                canonical_pending(&workspace, api.query(&caller, forged))
                     .await
                     .is_err()
             );
             let mut other_document = canonical_query(&workspace);
             other_document.canonical_route.as_mut().unwrap().document_id = "other-record".into();
             assert!(
-                canonical_pending(&workspace, host.query(&caller, other_document))
+                canonical_pending(&workspace, api.query(&caller, other_document))
                     .await
                     .unwrap()
                     .providers
@@ -386,7 +386,7 @@ async fn canonical_route_refuses_cross_workspace_forged_tokens_and_filtered_look
             );
             *workspace.authority.certificate.lock().unwrap() = None;
             assert!(
-                canonical_pending(&workspace, host.query(&caller, canonical_query(&workspace)))
+                canonical_pending(&workspace, api.query(&caller, canonical_query(&workspace)))
                     .await
                     .is_err()
             );
@@ -416,9 +416,9 @@ async fn a_canonical_provider_answers_another_apps_query_without_asking_its_dire
                 .publish_action_directory(signed_worker::directory_server(&directory))
                 .await
                 .unwrap();
-            let (caller, host) = canonical_host(&workspace);
+            let (caller, api) = canonical_api(&workspace);
             let announced =
-                canonical_pending(&workspace, host.query(&caller, canonical_query(&workspace)))
+                canonical_pending(&workspace, api.query(&caller, canonical_query(&workspace)))
                     .await
                     .unwrap();
             let token = announced.providers[0].provider.clone();
@@ -429,7 +429,7 @@ async fn a_canonical_provider_answers_another_apps_query_without_asking_its_dire
                 ..Default::default()
             };
             let ask =
-                |query: &tilo_actions::remote::CatalogueQuery| host.query(&caller, query.clone());
+                |query: &tilo_actions::remote::CatalogueQuery| api.query(&caller, query.clone());
 
             let page = canonical_pending(&workspace, ask(&query(Some("so.tilo.notes"))))
                 .await
@@ -506,6 +506,74 @@ async fn a_canonical_provider_answers_another_apps_query_without_asking_its_dire
             .unwrap();
             assert_eq!(directory.borrow().resolve_count, 1);
             assert_eq!(page.rows.len(), 1);
+        })
+        .await;
+}
+
+/// An app that is closing asks for no more invocations: the one the broker
+/// addressed to it just before is still handed over, the stream then ends,
+/// and the next invocation is not addressed to it at all. Before, the stream
+/// was cut where it stood, and an invocation addressed to a closing app was
+/// left with an outcome nobody knew.
+#[tokio::test(flavor = "current_thread")]
+async fn a_finished_invocation_stream_hands_over_what_it_holds_and_takes_no_more() {
+    use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let storage = tempfile::tempdir().unwrap();
+            let workspace = signed_worker::OriginalWorkspace::new(
+                tilo_user_identity::DeviceCapabilities::primary(),
+                None,
+                Some(storage.path().join("workspace.json")),
+            );
+            let (worker, _) = workspace.join_worker(91).await;
+            let stream = worker.handle.subscribe_stable_invocations().await.unwrap();
+            worker
+                .handle
+                .publish_action_directory(signed_worker::directory_server(
+                    &signed_worker::directory_state("r1"),
+                ))
+                .await
+                .unwrap();
+            let (caller, api) = canonical_api(&workspace);
+            let offered =
+                canonical_pending(&workspace, api.query(&caller, canonical_query(&workspace)))
+                    .await
+                    .unwrap();
+            let request = InvokeRequest {
+                invocation: tilo_actions::InvocationId::new(),
+                target: RemoteActionTarget {
+                    provider: offered.providers[0].provider.clone(),
+                    address: tilo_actions::ActionAddress::new("workspace:atlas", "open"),
+                },
+                argument: InvokeArgument::None,
+                context: None,
+                confirmation: None,
+                revision: Some("r1".into()),
+                on_behalf_of: None,
+                wait_ms: None,
+                appearance: None,
+            };
+            canonical_pending(&workspace, api.invoke(&caller, request.clone()))
+                .await
+                .unwrap();
+            // The app closes before it read the invocation addressed to it.
+            stream.finish();
+            let handed = stream.read().await.unwrap();
+            assert_eq!(handed.invocation_uuid, *request.invocation.0.as_bytes());
+            assert!(
+                stream.read().await.is_err(),
+                "the stream ends once it handed over what it held"
+            );
+            let mut later = request;
+            later.invocation = tilo_actions::InvocationId::new();
+            assert!(
+                canonical_pending(&workspace, api.invoke(&caller, later))
+                    .await
+                    .is_err(),
+                "nothing is addressed to an app that takes no more invocations"
+            );
+            drop(worker);
         })
         .await;
 }

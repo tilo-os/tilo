@@ -1335,6 +1335,31 @@ impl CollaborationManager {
         .map_err(|error| Uncertain(error.to_string()))
     }
 
+    /// Take no more invocations: the broker hands over the ones it already
+    /// addressed to this connection, then ends its streams, which
+    /// [`Self::invocations_stopped`] reports once every one handed over was
+    /// taken. What an app asks before it closes, so it answers every
+    /// invocation it was handed.
+    ///
+    /// # Errors
+    ///
+    /// The transport cannot stop its invocations, or is closed.
+    pub fn stop_invocations(&mut self) -> Result<(), TransportError> {
+        match &mut self.backend {
+            Backend::Disabled(_) => Err(TransportError::Closed),
+            Backend::Transport(transport) => transport.stop_invocations(),
+        }
+    }
+
+    /// Whether the invocations stopped after [`Self::stop_invocations`]:
+    /// every one handed over has been taken.
+    pub fn invocations_stopped(&self) -> bool {
+        match &self.backend {
+            Backend::Disabled(_) => true,
+            Backend::Transport(transport) => transport.invocations_stopped(),
+        }
+    }
+
     /// Ask the transport for a completion receipt covering every document
     /// mutation submitted before this call. The receipt reports that the
     /// transport finished publishing them, not that peers applied them.

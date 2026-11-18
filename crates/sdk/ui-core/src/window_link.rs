@@ -21,6 +21,27 @@ pub fn announce() {
     }
 }
 
+/// How many windows this process shows: a process going away with its last one stops
+/// taking windows first ([`stop_serving_with_last_window`]).
+#[cfg(feature = "local-daemons")]
+static WINDOWS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+
+/// The process shows `count` windows now.
+#[cfg(feature = "native")]
+pub(crate) fn shows_windows(count: usize) {
+    WINDOWS.store(count, std::sync::atomic::Ordering::Release);
+}
+
+/// Take no more windows when the window closing now is the process's last: the process goes
+/// with it, so the shell starts its next window, and the work it was asked for, in a process
+/// of its own rather than in this one.
+pub(crate) fn stop_serving_with_last_window() {
+    #[cfg(feature = "local-daemons")]
+    if WINDOWS.load(std::sync::atomic::Ordering::Acquire) <= 1 {
+        transport::stop_serving();
+    }
+}
+
 /// Build the window the shell asked for (`pending`), as the process's first window was
 /// built from its launch (`spec`, `args`), but with the window's own instance and
 /// connections, opening what the request names (a file opened with the running app) and

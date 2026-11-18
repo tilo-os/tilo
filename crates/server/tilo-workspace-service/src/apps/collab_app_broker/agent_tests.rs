@@ -558,7 +558,7 @@ async fn notes_target(f: &Fixture) -> (runtime_collab::ChannelHandle, Invocation
     let handle = Rc::new(f.app_handle(200, "so.tilo.notes", false));
     let target = wire_channel_rc(Rc::clone(&handle));
     target.publish_actions(&[notes_append()]).await.unwrap();
-    let stream = handle.invocation_feed(true).unwrap();
+    let (stream, _end) = handle.invocation_feed(true).unwrap();
     (target, stream)
 }
 fn grant_notes(f: &Fixture) {

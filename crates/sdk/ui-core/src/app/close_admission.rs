@@ -75,10 +75,63 @@ impl App {
             self.invalidate_close_presentation();
             return false;
         }
+        if !self.left_invocations() {
+            return false;
+        }
         self.close_admission.dialog = None;
         self.invalidate_close_presentation();
         self.close_admission.ready = true;
         true
+    }
+
+    /// Whether the window has let go of the invocations the broker hands it, so it may close:
+    /// it takes no more, it answered every one it was handed, and the answers reached the
+    /// broker. One left unanswered as the window goes has an outcome nobody knows, and the
+    /// broker never starts it again, so whoever asked is told it may or may not have happened.
+    /// Each pass the close waits on it takes it a step further ([`Self::service_close_admission`]).
+    fn left_invocations(&mut self) -> bool {
+        use crate::close_admission::Leaving;
+        loop {
+            let manager = &mut self.collaboration.manager;
+            // Without a connection nothing more reaches this window, nor leaves it.
+            if !manager.is_connected() {
+                self.close_admission.leaving = Leaving::Left;
+            }
+            match &self.close_admission.leaving {
+                Leaving::Staying => {
+                    // The process goes with its last window: work that comes from now on goes
+                    // to a process of its own, not to this one.
+                    crate::window_link::stop_serving_with_last_window();
+                    self.close_admission.leaving = match manager.stop_invocations() {
+                        Ok(()) => Leaving::Stopping,
+                        Err(_) => Leaving::Left,
+                    };
+                }
+                Leaving::Stopping => {
+                    if !manager.invocations_stopped() {
+                        return false;
+                    }
+                    // Every invocation it was handed ran on the passes that took it: their
+                    // answers go now, as they would as the window closed.
+                    self.send_held_answers(true);
+                    self.close_admission.leaving = match self
+                        .collaboration
+                        .manager
+                        .begin_document_publication_barrier()
+                    {
+                        Ok(receipt) => Leaving::Settling(receipt),
+                        Err(_) => Leaving::Left,
+                    };
+                }
+                Leaving::Settling(receipt) => {
+                    if matches!(receipt.try_complete(), Ok(None)) {
+                        return false;
+                    }
+                    self.close_admission.leaving = Leaving::Left;
+                }
+                Leaving::Left => return true,
+            }
+        }
     }
 
     #[cfg(feature = "native")]
@@ -272,6 +325,17 @@ impl App {
     }
 
     pub(super) fn service_close_admission(&mut self) {
+        // A close that waits only on letting go of its invocations goes on once it has.
+        if !self.close_admission.ready
+            && !self.close_admission.admitted
+            && !matches!(
+                self.close_admission.leaving,
+                crate::close_admission::Leaving::Staying
+            )
+            && self.left_invocations()
+        {
+            self.close_admission.ready = true;
+        }
         while let Some(intent) =
             self.close_admission.dialog.as_mut().and_then(|dialog| {
                 crate::widget::controls::take_control_invocation(dialog.as_mut())

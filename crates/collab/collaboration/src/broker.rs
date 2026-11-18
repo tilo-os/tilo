@@ -411,6 +411,9 @@ pub(super) struct BrokerTransport {
     pending_primary: Option<mpsc::Receiver<Result<RouteSpec, String>>>,
     /// The shovel dropped a primary-route reply unanswered: it has exited.
     worker_stopped: bool,
+    /// Every invocation stream ended after [`CollabTransport::stop_invocations`],
+    /// and the owner has taken every invocation they handed over.
+    invocations_stopped: bool,
     /// Durable commands the bounded queue had no room for, in submission
     /// order. They wait here for the shovel to catch up instead of
     /// disabling collaboration; see [`Self::enqueue`].
@@ -704,6 +707,10 @@ impl CollabTransport for BrokerTransport {
         self.invocation_owners.clear();
         self.state.begin_poll();
         self.flush_spill();
+        // Asked before the events are taken: a stream counts as ended only
+        // after the last invocation it handed over is queued, so every one
+        // of them is among the events taken below.
+        let stopped = self.state.invocation_feeds.lock_recover().stopped();
         while let Ok(mut evt) = self.inbound_rx.try_recv() {
             match evt._turn.take() {
                 Some(EventTurn::Invocation(turns, owner)) => {
@@ -717,6 +724,21 @@ impl CollabTransport for BrokerTransport {
             }
             out.push(evt.event);
         }
+        self.invocations_stopped |= stopped;
+    }
+
+    fn stop_invocations(&mut self) -> Result<(), TransportError> {
+        if !self.state.is_healthy() {
+            return Err(TransportError::Closed);
+        }
+        self.state.invocation_feeds.lock_recover().stop();
+        // Streams that ended already leave nothing to wait for: the next drain says so.
+        self.state.notify_events();
+        Ok(())
+    }
+
+    fn invocations_stopped(&self) -> bool {
+        self.invocations_stopped
     }
 
     fn set_document_owner_routes(&mut self, routes: Vec<RouteSpec>, document_generation: u64) {
@@ -1129,6 +1151,9 @@ pub(crate) struct BridgeState {
     /// pending. Written by the shovel, read by the owner through
     /// [`CollabTransport::join_hold`].
     join_hold: Arc<std::sync::Mutex<Option<super::JoinHold>>>,
+    /// The invocation streams of this connection's routes, and whether the
+    /// owner asked for no more invocations.
+    invocation_feeds: Arc<std::sync::Mutex<InvocationFeeds>>,
     /// How often a queued document mutation found its route not yet
     /// publishable and waited again.
     #[cfg(test)]
@@ -1327,6 +1352,7 @@ impl BridgeState {
             wake_pending: Arc::new(AtomicBool::new(false)),
             connect: Arc::new(std::sync::Mutex::new(ConnectPhase::Connecting)),
             join_hold: Arc::default(),
+            invocation_feeds: Arc::default(),
             #[cfg(test)]
             publication_hold_waits: Arc::default(),
             #[cfg(all(test, unix))]
@@ -3248,6 +3274,7 @@ impl CollaborationManager {
             action_directory_tx,
             pending_primary: None,
             worker_stopped: false,
+            invocations_stopped: false,
             spill: std::collections::VecDeque::new(),
             barrier_slot: None,
             queued_barrier: std::sync::Weak::new(),
@@ -4117,6 +4144,8 @@ async fn drive_shovel(
                         Err(DocumentPublicationError::Failed(reason))
                     })
                 }));
+                // An owner waiting on the receipt hears it now, not at its next input.
+                inbound_tx.state.notify_events();
             }
             SdkCommand::InstallEncryption { spec, group, reply } => {
                 let result =
@@ -5138,6 +5167,70 @@ async fn fail_undelivered_invocation(
     clippy::future_not_send,
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
+/// The invocation streams of one connection's routes, read until the broker
+/// ends them.
+#[derive(Default)]
+struct InvocationFeeds {
+    /// Each stream still read, by the number it was opened under.
+    open: std::collections::HashMap<u64, runtime_collab::InvocationStream>,
+    next: u64,
+    /// The owner asked for no more invocations: every stream is finished,
+    /// a stream opened later included.
+    stopping: bool,
+}
+
+impl InvocationFeeds {
+    /// Ask the broker to end every stream once it has handed over what it
+    /// holds, and every stream opened from now on as soon as it opens.
+    fn stop(&mut self) {
+        self.stopping = true;
+        for stream in self.open.values() {
+            stream.finish();
+        }
+    }
+
+    /// Whether every stream ended after the owner asked for no more.
+    fn stopped(&self) -> bool {
+        self.stopping && self.open.is_empty()
+    }
+}
+
+/// One invocation stream being read; it stops counting as open when dropped,
+/// after its reader queued the last invocation it handed over.
+struct OpenInvocationFeed {
+    state: BridgeState,
+    number: u64,
+}
+
+impl OpenInvocationFeed {
+    fn open(state: &BridgeState, stream: &runtime_collab::InvocationStream) -> Self {
+        let mut held = state.invocation_feeds.lock_recover();
+        let number = held.next;
+        held.next += 1;
+        if held.stopping {
+            stream.finish();
+        }
+        held.open.insert(number, stream.clone());
+        drop(held);
+        Self {
+            state: state.clone(),
+            number,
+        }
+    }
+}
+
+impl Drop for OpenInvocationFeed {
+    fn drop(&mut self) {
+        let mut feeds = self.state.invocation_feeds.lock_recover();
+        feeds.open.remove(&self.number);
+        let stopped = feeds.stopped();
+        drop(feeds);
+        if stopped {
+            self.state.notify_events();
+        }
+    }
+}
+
 async fn spawn_invocation_stream(
     channel: &runtime_collab::ChannelHandle,
     spec: &RouteSpec,
@@ -5147,7 +5240,10 @@ async fn spawn_invocation_stream(
         let tx = inbound_tx.clone();
         let cancellation_channel = channel.clone();
         let key = spec.channel_id();
+        let open = OpenInvocationFeed::open(&inbound_tx.state, &stream);
         tokio::task::spawn_local(async move {
+            // Counted as open until the last invocation it handed over is queued.
+            let _open = open;
             while let Ok(invocation) = stream.read().await {
                 // Bound to the document current on arrival: if the App
                 // replaces it before dispatch, the job is refused, never run

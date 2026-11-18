@@ -491,6 +491,31 @@ pub fn close(link: &Descriptor) -> io::Result<()> {
     }
 }
 
+/// Whether the process behind `link` let go of it: it closed its end as it stopped taking
+/// windows ([`close`]), or it is gone. Never waits.
+#[must_use]
+pub fn hung_up(link: &Descriptor) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        use rustix::event::{PollFd, PollFlags, Timespec, poll};
+        let mut polled = [PollFd::new(link, PollFlags::RDHUP)];
+        let now = Timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        poll(&mut polled, Some(&now)).is_ok_and(|_| {
+            polled[0]
+                .revents()
+                .intersects(PollFlags::RDHUP | PollFlags::HUP | PollFlags::ERR)
+        })
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = link;
+        false
+    }
+}
+
 /// Whether the process behind `link` said it serves windows: every message waiting is read, and
 /// none blocks.
 ///
