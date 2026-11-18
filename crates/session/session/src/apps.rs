@@ -2344,6 +2344,12 @@ fn installed(app: &str) -> Option<app_catalogue::apps::InstalledApp> {
     })
 }
 
+/// Whether `app`'s installed package declares `service` (`[sandbox.services]`): what its launches
+/// are handed, and so what it may ask the session about.
+pub(crate) fn declares_service(app: &str, service: &str) -> bool {
+    installed(app).is_some_and(|package| package.manifest.sandbox.services.contains_key(service))
+}
+
 /// Whether a window of `app` runs only on the device that opened it, as the app's installed
 /// package says of its windows (`[entrypoint] window = "device"`): what it shows lives in its
 /// process here, so the workspace's other devices hold it as this device's window and open no

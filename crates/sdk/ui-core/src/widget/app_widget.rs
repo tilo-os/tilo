@@ -236,7 +236,7 @@ mod component_adapter {
     use crate::widget::DrawChild;
     use crate::widget::{
         ActionDirectoryResourcePage, Affine, AppKind, AudiencePresentationProvider,
-        AudiencePresentationWidgetExt, AutoCommit, CaptureMode, CompleteContentProvider,
+        AudiencePresentationWidgetExt, AutoCommit, CompleteContentProvider,
         CompleteContentWidgetExt, Continuable, ControlBindingMetadata, FloatingSurfaceProvider,
         FloatingSurfaceWidgetExt, FullscreenProvider, FullscreenWidgetExt, HashMap, HashSet,
         Instant, NodeId, ObjId, PermissionScope, PresenceCtx, PresenceKey, ResourceOperationStart,
@@ -699,9 +699,9 @@ mod component_adapter {
                 .flatten()
         }
 
-        fn take_capture_studio_request(&mut self) -> Option<CaptureMode> {
-            self.in_root_mut(|root| root.take_capture_studio_request())
-                .flatten()
+        fn take_pip_area_request(&mut self) -> bool {
+            self.in_root_mut(|root| root.take_pip_area_request())
+                .unwrap_or(false)
         }
 
         fn take_floating_surface_source_updates(&mut self) -> Vec<(String, vello::kurbo::Rect)> {

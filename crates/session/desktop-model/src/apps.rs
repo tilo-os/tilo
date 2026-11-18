@@ -21,6 +21,15 @@ pub fn canonical_app_id(tile: &TileContent) -> Option<AppId> {
     }
 }
 
+/// Whether the app a window announces is the app a request named: the id
+/// itself, or the short name it ends with (`so.tilo.notes` is `notes`).
+#[must_use]
+pub fn app_ids_match(announced: &str, asked: &str) -> bool {
+    let announced = announced.to_ascii_lowercase();
+    let asked = asked.to_ascii_lowercase();
+    announced == asked || asked.rsplit('.').next() == Some(announced.as_str())
+}
+
 /// Every window in a workspace document's layout that names the record it
 /// shows, as the raw record id string. Parsing it is the reader's business.
 pub fn document_routes(doc: &AutoCommit) -> BTreeMap<TabId, String> {

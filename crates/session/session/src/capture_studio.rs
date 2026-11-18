@@ -307,8 +307,8 @@ impl CaptureStudio {
 
     /// Open the studio on what an app asked for, as the person's own shortcut opens it: the bar
     /// comes up choosing that kind of capture.
-    pub(crate) fn open_asked(&self, mode: ui::floating_surface::CaptureStudioProtocolMode) {
-        self.state.link().open_on(mode.into());
+    pub(crate) fn open_asked(&self, mode: ui::widget::CaptureMode) {
+        self.state.link().open_on(mode);
         self.presentation().open(false);
     }
 

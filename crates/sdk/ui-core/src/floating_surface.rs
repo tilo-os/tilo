@@ -124,7 +124,7 @@ pub fn paint_material(
 /// Geometry is encoded as plain logical-pixel arrays rather than renderer
 /// types so sandbox services, Wayland protocol shims, and test transports
 /// can all carry the same messages.
-pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 34;
+pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 35;
 pub const FLOATING_SURFACE_SERVICE: &str = "shell-ui";
 
 mod wire;
@@ -1386,9 +1386,7 @@ mod tests {
                 );
 
                 for message in [
-                    FloatingSurfaceClientMessage::OpenCaptureStudio {
-                        mode: CaptureStudioProtocolMode::PictureInPicture,
-                    },
+                    FloatingSurfaceClientMessage::PickPictureInPictureArea,
                     FloatingSurfaceClientMessage::SourceCleared { id: "call".into() },
                     FloatingSurfaceClientMessage::DestinationPresented { id: "call".into() },
                     FloatingSurfaceClientMessage::Suspend {

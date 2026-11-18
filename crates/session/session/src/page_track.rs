@@ -197,8 +197,8 @@ impl PageTracks {
     /// package goes by, said it draws its windows' pages.
     pub(crate) fn draws_pages(&self, app: &str) -> bool {
         self.engines.iter().any(|said| {
-            tilo_desktop_policy::app_ids_match(app, said)
-                || tilo_desktop_policy::app_ids_match(said, app)
+            tilo_desktop_model::apps::app_ids_match(app, said)
+                || tilo_desktop_model::apps::app_ids_match(said, app)
         })
     }
 

@@ -672,7 +672,7 @@ pub struct BrowserWidget {
     active_pip_refresh_probe: Option<u64>,
     next_pip_refresh_at: Option<ui::time::Instant>,
     pip_feedback: Option<PipFeedback>,
-    pending_capture_studio: Option<ui::widget::CaptureMode>,
+    pending_pip_area: bool,
     cursor: Point,
     compact_chrome: bool,
     compact_breakpoint: f32,
@@ -1539,7 +1539,7 @@ impl BrowserWidget {
             active_pip_refresh_probe: None,
             next_pip_refresh_at: None,
             pip_feedback: None,
-            pending_capture_studio: None,
+            pending_pip_area: false,
             cursor: Point::ZERO,
             review_stage: None,
             compact_chrome: false,
@@ -2302,7 +2302,7 @@ impl BrowserWidget {
             match choice {
                 PipChoice::FloatPage => self.float_current_page(),
                 PipChoice::SelectArea => {
-                    self.pending_capture_studio = Some(ui::widget::CaptureMode::Pip);
+                    self.pending_pip_area = true;
                     self.pip_feedback = None;
                 }
             }
@@ -4078,8 +4078,8 @@ impl FloatingSurfaceProvider for BrowserWidget {
         self.pending_pip.take()
     }
 
-    fn take_capture_studio_request(&mut self) -> Option<ui::widget::CaptureMode> {
-        self.pending_capture_studio.take()
+    fn take_pip_area_request(&mut self) -> bool {
+        std::mem::take(&mut self.pending_pip_area)
     }
 
     fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {

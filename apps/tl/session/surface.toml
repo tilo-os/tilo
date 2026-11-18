@@ -226,7 +226,11 @@ type = "text"
 [[resources.verbs]]
 id = "reopen-closed"
 kind = "outside"
-params = []
+
+[[resources.verbs.params]]
+name = "app"
+required = false
+type = "text"
 
 [[resources.verbs]]
 id = "share-window"

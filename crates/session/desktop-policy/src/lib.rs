@@ -17,6 +17,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
+use tilo_desktop_model::apps::app_ids_match;
 use tilo_desktop_model::commands::move_tab_to_workspace;
 use tilo_desktop_model::{
     Display, GroupId, IdMinter, Layout, Tab, TabId, TileContent, Workspace, WorkspaceId,
@@ -998,10 +999,14 @@ impl DesktopPolicy {
         self.handle.dispatch(command).is_ok()
     }
 
-    /// Put the shown workspace's most recently closed tab back where it was,
-    /// as an app's reopen asks.
-    pub fn reopen_closed(&mut self) -> bool {
-        self.handle.dispatch(ChromeEffect::ReopenClosed).is_ok()
+    /// Put `app`'s most recently closed tab in the shown workspace back where
+    /// it was, as the app's reopen asks: an app reopens only its own windows.
+    pub fn reopen_closed_of(&mut self, app: &str) -> bool {
+        self.handle
+            .dispatch(ChromeEffect::ReopenClosed {
+                app: Some(app.to_owned()),
+            })
+            .is_ok()
     }
 
     /// Step the group in front on by one tab, as an app's own tab chord asks
@@ -1927,15 +1932,6 @@ fn tab_mut(tree: &mut Layout, window: u64) -> Option<&mut Tab> {
 fn comes(tab: &Tab, held: &BTreeMap<String, Vec<HeldTab>>) -> bool {
     matches!(tab.tile, TileContent::Foreign { .. })
         || held.values().flatten().any(|held| held.tab == Some(tab.id))
-}
-
-/// Whether the app a window announces is the app a request named: the id
-/// itself, or the short name it ends with (`so.tilo.notes` is `notes`).
-#[must_use]
-pub fn app_ids_match(announced: &str, asked: &str) -> bool {
-    let announced = announced.to_ascii_lowercase();
-    let asked = asked.to_ascii_lowercase();
-    announced == asked || asked.rsplit('.').next() == Some(announced.as_str())
 }
 
 /// Where `tab` sits, for the command naming it.

@@ -3529,10 +3529,10 @@ impl FloatingSurfaceProvider for GroupRow {
             .find_map(FloatingSurfaceProvider::take_floating_surface_request)
     }
 
-    fn take_capture_studio_request(&mut self) -> Option<super::CaptureMode> {
+    fn take_pip_area_request(&mut self) -> bool {
         self.groups
             .iter_mut()
-            .find_map(FloatingSurfaceProvider::take_capture_studio_request)
+            .any(FloatingSurfaceProvider::take_pip_area_request)
     }
 
     fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {

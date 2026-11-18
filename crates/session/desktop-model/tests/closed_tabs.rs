@@ -146,7 +146,7 @@ tilo_test_env::scenario! {
         assert!(tree.close_tab(32).is_some());
         assert_eq!(ids(&tree, 20), [30]);
 
-        let reopened = tree.reopen_closed(WorkspaceId::from_u128(1)).unwrap();
+        let reopened = tree.reopen_closed(WorkspaceId::from_u128(1), None).unwrap();
         assert_eq!(
             (reopened.strip, reopened.group, reopened.tab),
             (StripId(10), 20, 32)
@@ -154,15 +154,25 @@ tilo_test_env::scenario! {
         assert_eq!(ids(&tree, 20), [30, 32], "back at the index it closed from");
         assert_eq!(tree.active_group_for(StripId(10)), Some(20), "and focused");
 
-        let reopened = tree.reopen_closed(WorkspaceId::from_u128(1)).unwrap();
+        let reopened = tree.reopen_closed(WorkspaceId::from_u128(1), None).unwrap();
         assert_eq!(reopened.tab, 31);
         assert_eq!(ids(&tree, 20), [30, 31, 32]);
+
         assert_eq!(
             tree.active_workspace().unwrap().strips[0].window_groups[0].active_tab,
             31,
             "the window that came back is in front of its group"
         );
         assert_eq!(closes(&tree), 0);
+        // An app's reopen takes back only its own window, whatever closed after it, and leaves
+        // the others' closes for whoever reopens them.
+        assert!(tree.close_tab(31).is_some());
+        assert!(tree.close_tab(32).is_some());
+        assert!(tree.reopen_closed(WorkspaceId::from_u128(1), Some("so.tilo.mail")).is_none());
+        let reopened = tree.reopen_closed(WorkspaceId::from_u128(1), Some("so.tilo.chat")).unwrap();
+        assert_eq!(reopened.tab, 31, "the chat window, not the newer files one");
+        assert_eq!(closes(&tree), 1, "the files close is still there");
+        assert_eq!(tree.reopen_closed(WorkspaceId::from_u128(1), None).unwrap().tab, 32);
     }
 
     phase a_window_is_remembered_as_the_app_that_opens_it_again;
@@ -176,7 +186,7 @@ tilo_test_env::scenario! {
         tree.close_tab(31).unwrap();
         assert_eq!(closes(&tree), 1);
 
-        let reopened = tree.reopen_closed(WorkspaceId::from_u128(1)).unwrap();
+        let reopened = tree.reopen_closed(WorkspaceId::from_u128(1), None).unwrap();
         let tab = tree
             .active_workspace()
             .unwrap()
@@ -208,7 +218,7 @@ tilo_test_env::scenario! {
         tree.close_tab(40).unwrap();
         assert_eq!(groups(&tree, StripId(10)), [20]);
 
-        let reopened = tree.reopen_closed(WorkspaceId::from_u128(1)).unwrap();
+        let reopened = tree.reopen_closed(WorkspaceId::from_u128(1), None).unwrap();
         assert_eq!(reopened.group, 21);
         assert_eq!(groups(&tree, StripId(10)), [20, 21], "its old place back");
         let made = &tree.active_workspace().unwrap().strips[0].window_groups[1];
@@ -224,7 +234,7 @@ tilo_test_env::scenario! {
         tree.close_tab(50).unwrap();
         tree.workspaces[0].strips.remove(1);
         assert_eq!(
-            tree.reopen_closed(WorkspaceId::from_u128(1)).unwrap().strip,
+            tree.reopen_closed(WorkspaceId::from_u128(1), None).unwrap().strip,
             StripId(10)
         );
         assert_eq!(groups(&tree, StripId(10)), [22, 20, 21]);
@@ -249,7 +259,7 @@ tilo_test_env::scenario! {
         assert_eq!(closes(&tree), CLOSED_TABS_PER_WORKSPACE);
 
         let mut reopened = Vec::new();
-        while let Some(back) = tree.reopen_closed(WorkspaceId::from_u128(1)) {
+        while let Some(back) = tree.reopen_closed(WorkspaceId::from_u128(1), None) {
             reopened.push(back.tab);
         }
         assert_eq!(reopened.len(), CLOSED_TABS_PER_WORKSPACE);
@@ -264,7 +274,7 @@ tilo_test_env::scenario! {
             "the newest first, the ten oldest forgotten"
         );
         assert!(
-            tree.reopen_closed(WorkspaceId::from_u128(1)).is_none(),
+            tree.reopen_closed(WorkspaceId::from_u128(1), None).is_none(),
             "undone once"
         );
     }
@@ -291,8 +301,8 @@ tilo_test_env::scenario! {
         tree.workspaces
             .retain(|workspace| workspace.id() != WorkspaceId::from_u128(1));
 
-        assert!(tree.reopen_closed(WorkspaceId::from_u128(1)).is_none());
-        assert_eq!(tree.reopen_closed(WorkspaceId::from_u128(2)).unwrap().tab, 60);
+        assert!(tree.reopen_closed(WorkspaceId::from_u128(1), None).is_none());
+        assert_eq!(tree.reopen_closed(WorkspaceId::from_u128(2), None).unwrap().tab, 60);
     }
 
     phase a_window_that_is_back_is_not_reopened_again;
@@ -305,7 +315,7 @@ tilo_test_env::scenario! {
         tree.workspaces[0].strips[0].window_groups[0]
             .tabs
             .push(window);
-        assert!(tree.reopen_closed(WorkspaceId::from_u128(1)).is_none());
+        assert!(tree.reopen_closed(WorkspaceId::from_u128(1), None).is_none());
         assert_eq!(closes(&tree), 0);
         assert_eq!(ids(&tree, 20), [30, 32, 31], "no second window under it");
     }
@@ -371,7 +381,7 @@ fn a_window_reopens_on_the_display_it_closed_on() {
     tree.outputs.reconcile(&tree.workspaces, &displays);
     tree.outputs.set_focused(0);
 
-    let reopened = tree.reopen_closed(WorkspaceId::from_u128(1)).unwrap();
+    let reopened = tree.reopen_closed(WorkspaceId::from_u128(1), None).unwrap();
     assert_eq!(reopened.group, 21);
     tree.outputs.place_unhomed(&tree.workspaces);
     assert_eq!(

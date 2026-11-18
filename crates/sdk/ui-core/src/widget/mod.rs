@@ -1240,8 +1240,8 @@ pub trait FloatingSurfaceProvider {
         None
     }
 
-    fn take_capture_studio_request(&mut self) -> Option<CaptureMode> {
-        None
+    fn take_pip_area_request(&mut self) -> bool {
+        false
     }
 
     fn take_floating_surface_source_updates(&mut self) -> Vec<(String, vello::kurbo::Rect)> {
@@ -1602,7 +1602,8 @@ pub trait FloatingSurfaceWidgetExt {
     fn take_floating_surface_request(
         &mut self,
     ) -> Option<crate::floating_surface::FloatingSurfaceRequest>;
-    fn take_capture_studio_request(&mut self) -> Option<CaptureMode>;
+    /// Whether the person asked to pick an area of the screen to float. Consumed.
+    fn take_pip_area_request(&mut self) -> bool;
     fn take_floating_surface_source_updates(&mut self) -> Vec<(String, vello::kurbo::Rect)>;
     fn draw_floating_surfaces(
         &mut self,
@@ -1693,9 +1694,9 @@ impl<T: Widget + ?Sized> FloatingSurfaceWidgetExt for T {
             .and_then(FloatingSurfaceProvider::take_floating_surface_request)
     }
 
-    fn take_capture_studio_request(&mut self) -> Option<CaptureMode> {
+    fn take_pip_area_request(&mut self) -> bool {
         capability::capability_mut::<dyn FloatingSurfaceProvider>(self)
-            .and_then(FloatingSurfaceProvider::take_capture_studio_request)
+            .is_some_and(FloatingSurfaceProvider::take_pip_area_request)
     }
 
     fn take_floating_surface_source_updates(&mut self) -> Vec<(String, vello::kurbo::Rect)> {

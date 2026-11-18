@@ -27,7 +27,7 @@ use tilo_app_launch::{Connects, Launch, Open};
 use tilo_compositor::{Compositor, ReadableWatch};
 
 use tilo_desktop::launchpad::LaunchpadAction;
-use tilo_desktop_policy::{DesktopPolicy, app_ids_match};
+use tilo_desktop_model::apps::app_ids_match;
 use ui::Theme;
 use ui::WindowAppearance;
 use ui::floating_surface::{
@@ -987,7 +987,8 @@ impl Answers<'_> {
                 self.desktop.with_policy(|policy| policy.close_tab_of(&app));
             }
             FloatingSurfaceClientMessage::ReopenClosedTab => {
-                self.desktop.with_policy(DesktopPolicy::reopen_closed);
+                self.desktop
+                    .with_policy(|policy| policy.reopen_closed_of(&app));
             }
             FloatingSurfaceClientMessage::CycleTab { forward, .. } => {
                 self.desktop
@@ -1047,11 +1048,16 @@ impl Answers<'_> {
             },
             FloatingSurfaceClientMessage::AllowHostShell => {
                 // The person allows the device's own shell, and the runtime (`ush`) records their
-                // answer; the app hears it here.
-                host_shell.ask(self.services, &app, connection, Arc::clone(&reply));
+                // answer; the app hears it here. Only an app whose launches are handed `ush` has a
+                // use for it, so no other app puts the question in front of the person.
+                if !host_shell.ask(self.services, &app, connection, Arc::clone(&reply)) {
+                    refuse(&reply, &app, &name, NO_USH);
+                }
             }
-            FloatingSurfaceClientMessage::OpenCaptureStudio { mode } => match self.studio {
-                Some(studio) => studio.open_asked(mode),
+            // The person picks the area in the session's own studio, so the app opens a chooser
+            // and is given nothing it did not pick.
+            FloatingSurfaceClientMessage::PickPictureInPictureArea => match self.studio {
+                Some(studio) => studio.open_asked(ui::widget::CaptureMode::Pip),
                 None => refuse(&reply, &app, &name, NO_CAPTURE),
             },
             // A window paints its own action markers, at the control an agent would press, so
@@ -1373,6 +1379,9 @@ const OTHER_WINDOW: &str = "this connection offered another window's page";
 
 /// An app asked for the capture studio where the session has none.
 const NO_CAPTURE: &str = "this session has no capture studio";
+
+/// An app that is handed no `ush` asked for the device's own shell.
+const NO_USH: &str = "only an app handed the device's shell (`ush`) asks for it";
 
 /// An app asked to float a surface over the desktop, which this session has
 /// no layer for.
@@ -2003,10 +2012,8 @@ mod tests {
                 "allow_host_shell"
             );
             assert_eq!(
-                name_of(&FloatingSurfaceClientMessage::OpenCaptureStudio {
-                    mode: ui::floating_surface::CaptureStudioProtocolMode::PictureInPicture,
-                }),
-                "open_capture_studio"
+                name_of(&FloatingSurfaceClientMessage::PickPictureInPictureArea),
+                "pick_picture_in_picture_area"
             );
         }
 

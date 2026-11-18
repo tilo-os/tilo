@@ -2569,9 +2569,9 @@ impl FloatingSurfaceProvider for WindowGroup {
         })
     }
 
-    fn take_capture_studio_request(&mut self) -> Option<super::CaptureMode> {
+    fn take_pip_area_request(&mut self) -> bool {
         self.active_host_mut()
-            .and_then(FloatingSurfaceProvider::take_capture_studio_request)
+            .is_some_and(FloatingSurfaceProvider::take_pip_area_request)
     }
 
     fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {

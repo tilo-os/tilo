@@ -1925,11 +1925,8 @@ fn pip_floats_the_video_or_falls_back_to_shell_selection() {
                 .is_some()
             );
             w.sync(&state, &root);
-            assert_eq!(
-                w.take_capture_studio_request(),
-                Some(ui::widget::CaptureMode::Pip)
-            );
-            assert!(w.take_capture_studio_request().is_none());
+            assert!(w.take_pip_area_request());
+            assert!(!w.take_pip_area_request());
             assert!(w.take_floating_surface_request().is_none());
             assert!(w.pip_feedback.is_none());
         }

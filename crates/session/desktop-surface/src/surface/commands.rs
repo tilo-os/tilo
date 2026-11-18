@@ -142,8 +142,9 @@ impl DesktopSurface {
                     // The window comes back where it was, its app launched again if that is what it
                     // takes: the row takes it in as it takes a window a peer added, and the strip
                     // comes to it as it does to a launched one.
-                    Admitted::Reopen(workspace) => {
-                        let Some(reopened) = shared.tree.reopen_closed(workspace) else {
+                    Admitted::Reopen(workspace, app) => {
+                        let Some(reopened) = shared.tree.reopen_closed(workspace, app.as_deref())
+                        else {
                             continue;
                         };
                         self.reveal = Some((reopened.strip, reopened.group));

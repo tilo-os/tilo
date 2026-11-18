@@ -2080,7 +2080,7 @@ impl DesktopChrome {
                 | ChromeEffect::Fullscreen { .. }
                 | ChromeEffect::Float { .. }
                 | ChromeEffect::Rename { .. }
-                | ChromeEffect::ReopenClosed
+                | ChromeEffect::ReopenClosed { .. }
                 | ChromeEffect::ShareWindow { .. }
                 | ChromeEffect::StopDesktopControl { .. }
                 | ChromeEffect::SwitchWorkspace {

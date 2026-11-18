@@ -394,8 +394,8 @@ impl Restore {
                     .into_iter()
                     .partition(|saved| {
                         ids.iter().any(|id| {
-                            tilo_desktop_policy::app_ids_match(id, &saved.app)
-                                || tilo_desktop_policy::app_ids_match(&saved.app, id)
+                            tilo_desktop_model::apps::app_ids_match(id, &saved.app)
+                                || tilo_desktop_model::apps::app_ids_match(&saved.app, id)
                         })
                     });
             self.waiting = rest;
@@ -426,8 +426,8 @@ impl Restore {
     /// Whether `app` is one of the apps kept across the restart this run follows.
     fn kept_by_app(&self, app: &str) -> bool {
         self.kept_apps.iter().any(|kept| {
-            tilo_desktop_policy::app_ids_match(kept, app)
-                || tilo_desktop_policy::app_ids_match(app, kept)
+            tilo_desktop_model::apps::app_ids_match(kept, app)
+                || tilo_desktop_model::apps::app_ids_match(app, kept)
         })
     }
 

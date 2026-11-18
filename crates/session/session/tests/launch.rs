@@ -28,7 +28,7 @@ use tilo_actions::ResourceSpec;
 use tilo_app_launch::Connects as _;
 use tilo_desktop::verbs::{CHROME_RESOURCE, SEARCH_RESOURCE, SHELL_RESOURCE, WINDOW_KIND};
 use tilo_desktop_model::TileContent;
-use tilo_desktop_policy::{DesktopPolicy, Window};
+use tilo_desktop_policy::Window;
 use tilo_desktop_search::providers::host_apps::HostAppEntry;
 use tilo_session::app_tabs::ServiceLinks;
 use tilo_session::apps::{Apps, LaunchState};
@@ -1748,20 +1748,69 @@ fn an_apps_own_slots_stand_in_its_windows_bar_in_a_running_session() {
     );
     capture_to(&mut session, "app-slots-in-the-bar");
 
-    // The session serves no question about the device's own shell here, so the app is told the
-    // target stays closed on the connection it asked on.
+    // The session serves no question about the device's own shell here, so even an app handed
+    // it is told the target stays closed on the connection it asked on.
+    probe_declares_ush(&home);
+    device_shell_stays_closed(&mut session, &launches, pid, tab);
+}
+
+/// Ask, for [`PROBE`]'s window, for the device's own shell: the app is told the target stays
+/// closed on the connection it asked on. What it was told, as the test reads it.
+fn device_shell_stays_closed(
+    session: &mut Session,
+    launches: &Arc<Launches>,
+    pid: u32,
+    tab: u64,
+) -> String {
     let mut asking = ask(
-        &launches,
+        launches,
         PROBE,
         pid,
         tab,
         &FloatingSurfaceClientMessage::AllowHostShell,
     );
     let closed = FloatingSurfaceHostMessage::HostShellAllowed { allowed: false };
-    let told = host_frames(&mut session, &mut asking, |told| told.contains(&closed));
+    let told = host_frames(session, &mut asking, |told| told.contains(&closed));
     assert!(
         told.contains(&closed),
         "the app is told the target stays closed: {told:?}"
+    );
+    format!("{told:?}")
+}
+
+/// Make [`PROBE`]'s package declare the runtime (`ush`), as Terminal's does: only such an app asks
+/// for the device's own shell.
+fn probe_declares_ush(home: &tilo_test_env::TestHome) {
+    let manifest = home
+        .data()
+        .join("tilo-apps")
+        .join("payload")
+        .join(PROBE)
+        .join("manifest.toml");
+    let mut source = fs::read_to_string(&manifest).unwrap();
+    source.push_str("\n[sandbox.services]\nush = \"required@31\"\n");
+    fs::write(&manifest, source).unwrap();
+}
+
+/// An app not handed the device's shell never puts the question in front of the person: it is told
+/// the target stays closed, and why.
+#[test]
+fn only_an_app_handed_the_device_shell_asks_for_it() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let started = home.home().join("starts");
+    let bus = tilo_test_env::PrivateBus::start();
+    let (mut session, apps, launches, _launcher) =
+        probe_session_with_services(&mut home, &started, &bus);
+    let (pid, _, tab) = probe_showing(&mut session, &apps, &started);
+
+    let told = device_shell_stays_closed(&mut session, &launches, pid, tab);
+    assert!(told.contains("only an app handed"), "and why: {told}");
+    assert!(
+        session
+            .portal()
+            .is_none_or(|portal| portal.dialog().is_none()),
+        "the person is asked nothing"
     );
 }
 
@@ -1791,6 +1840,7 @@ fn the_answer_to_the_device_shell_question_reaches_the_app() {
     let (mut session, apps, launches, _launcher) =
         probe_session_with_services(&mut home, &started, &bus);
     let (pid, _, tab) = probe_showing(&mut session, &apps, &started);
+    probe_declares_ush(&home);
 
     // The runtime's supervisor stands where the session dials it, and records the allow it is
     // handed.
@@ -1913,7 +1963,9 @@ fn reopening_a_closed_window_starts_its_app_again() {
     // Reopen puts the tab back and asks the app for its window: the class alone names that app
     // through the entry claiming it.
     assert!(
-        session.desktop().with_policy(DesktopPolicy::reopen_closed),
+        session
+            .desktop()
+            .with_policy(|policy| policy.reopen_closed_of(X11_CLASS)),
         "the reopen is taken"
     );
     until(&mut session, "the app is asked again", |_| records.exists());
@@ -1971,7 +2023,22 @@ fn an_app_closes_only_its_own_tab() {
         "the other app's tab stays"
     );
 
-    // Its own reopen brings back what it closed.
+    // The person closes the other app's window after it: an app's reopen brings back what it
+    // closed, never another app's window that closed later.
+    session
+        .desktop()
+        .with_policy(|policy| policy.map(window(13, "org.example.Third")).unwrap());
+    until(&mut session, "the third app shows", |session| {
+        groups(session).len() == 2
+    });
+    assert!(
+        session
+            .desktop()
+            .with_policy(|policy| policy.close_tab_of("org.example.Other"))
+    );
+    until(&mut session, "the other app's tab is closed", |session| {
+        groups(session).len() == 1
+    });
     let _connection = ask(
         &launches,
         PROBE,
@@ -1985,6 +2052,14 @@ fn an_app_closes_only_its_own_tab() {
             .flatten()
             .any(|title| title == PROBE_NAME)
     });
+    assert!(
+        !groups(&session)
+            .iter()
+            .flatten()
+            .any(|title| title == "Other"),
+        "the other app's window stays closed: {:?}",
+        groups(&session)
+    );
 }
 
 #[test]

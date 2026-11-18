@@ -1443,7 +1443,9 @@ fn closing_the_tab_leaves_the_window_that_closing_it_ends() {
         "the window and its tab are gone"
     );
     assert!(handle.snapshot("g", vec![]).entries.is_empty());
-    handle.dispatch(ChromeEffect::ReopenClosed).unwrap();
+    handle
+        .dispatch(ChromeEffect::ReopenClosed { app: None })
+        .unwrap();
     settle(&mut frame);
     assert_eq!(
         handle.read(|tree| tree.workspaces[0].strips[0].window_groups.len()),
