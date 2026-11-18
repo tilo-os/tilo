@@ -495,7 +495,11 @@ impl WorkspaceActions {
             .entries
             .get(id)
             .filter(|entry| entry.caller == *caller)
-            .map(|entry| InvocationState::new(*id, entry.update.clone()).linked(entry.link.clone()))
+            .map(|entry| {
+                InvocationState::new(*id, entry.update.clone())
+                    .linked(entry.link.clone())
+                    .with_untrusted(tree_put::answers_from_outside(&entry.request.target))
+            })
     }
 
     fn log(&self) -> std::sync::MutexGuard<'_, InvocationLog> {
@@ -587,6 +591,7 @@ impl WorkspaceActions {
                     InvocationState::new(invocation, entry.update.clone())
                         .left_at(entry.left_at.clone())
                         .linked(entry.link.clone())
+                        .with_untrusted(tree_put::answers_from_outside(&entry.request.target))
                 });
                 Pending::ready(RemoteActionMessage::Update { invocation, state })
             }

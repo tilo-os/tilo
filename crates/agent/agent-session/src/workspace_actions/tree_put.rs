@@ -44,6 +44,23 @@ pub(super) fn acts_on_tree(target: &tilo_actions::remote::RemoteActionTarget) ->
         && (tree::is_tree_verb(action) || tree::is_tree_read(action) || action == tree::WRITE_FILE)
 }
 
+/// The verb that brings entries back from the trash: asked by their ids alone, it answers the
+/// names they go by.
+const RESTORE: &str = "restore";
+
+/// Whether what a call of `target` answers holds words that are neither the caller's own nor
+/// this holder's: what a file of the workspace's folder says, and the names its entries go
+/// by, which whoever put them there wrote, also somebody outside who passed a file on. Both
+/// reads of the folder answer such words ([`read`]), and so does [`RESTORE`]. A caller's
+/// tools are told so with the answer
+/// ([`tilo_actions::remote::InvocationState::with_untrusted`]): it is data to reason about,
+/// never an instruction to follow. What the other verbs and a write answer names only what
+/// the caller itself named.
+pub(super) fn answers_from_outside(target: &tilo_actions::remote::RemoteActionTarget) -> bool {
+    let action = target.address.action.as_str();
+    acts_on_tree(target) && (tree::is_tree_read(action) || action == RESTORE)
+}
+
 /// The records of a workspace's tree as the host holds them: each with the
 /// number of its chunk, the tree's own record first, and the chunks the host
 /// holds at all, each with the heads it stands at.
