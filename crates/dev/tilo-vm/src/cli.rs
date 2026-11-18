@@ -867,7 +867,7 @@ pub enum VmCommand {
     },
     /// Copy the VM's own tilo-vm out and execute it with these arguments: the client whose protocol its tilo-vmd speaks.
     #[command(
-        after_help = "A dev disk keeps the tilo-vmd it was built with, so a VM from another commit speaks another protocol than this checkout's tilo-vm; the image ships the matching client. `vm client` copies it out once and executes it, so the tool you were using keeps working on that VM:\n  tilo-vm vm client dev -- swap tilo-session\n  tilo-vm vm client dev -- vm status\n  tilo-vm vm client dev                 # just fetch it and print where it is\nWithout arguments it only fetches and names the image the VM boots, its daemon's protocol and the copied client."
+        after_help = "Examples:\n  tilo-vm vm client dev -- swap tilo-session\n  tilo-vm vm client dev -- vm status\n  tilo-vm vm client dev                 # just fetch it and print where it is\n\nA dev disk keeps the tilo-vmd it was built with, so a VM from another commit speaks another protocol than this checkout's tilo-vm; the image ships the matching client. `vm client` copies it out once and executes it, so the tool you were using keeps working on that VM. Without arguments it only fetches and names the image the VM boots, its daemon's protocol and the copied client."
     )]
     Client {
         /// The VM (default: the one this worktree uses).
