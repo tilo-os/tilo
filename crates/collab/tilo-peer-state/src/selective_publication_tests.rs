@@ -179,6 +179,25 @@ fn selective_publication_covers_foreign_metadata_only_admission_and_new_records(
     );
 }
 
+/// The change `device` makes to the document `app` keeps under `named`,
+/// adding `value`, as an incremental over it as `peer` holds it.
+fn written_by(
+    peer: &StatePeer,
+    app: &str,
+    named: &str,
+    device: &SigningKey,
+    value: &str,
+) -> Vec<u8> {
+    let mut doc = AutoCommit::load(&peer.document(app, named).unwrap()).unwrap();
+    doc.set_actor(automerge::ActorId::from(
+        device.verifying_key().to_bytes().to_vec(),
+    ));
+    let heads = doc.get_heads();
+    doc.put(ROOT, value, true).unwrap();
+    doc.commit_edit("fixture", value);
+    doc.save_after(&heads)
+}
+
 tilo_test_env::scenario! {
     fn selective_publication_publishes_only_what_its_basis_allows;
 
@@ -302,5 +321,72 @@ tilo_test_env::scenario! {
             .publication_mut()
             .publish_document("so.tilo.notes", "", bytes, &a, now)
             .expect("an application id publishes");
+    }
+
+    phase a_routes_document_keeps_the_receipt_of_the_device_its_coverage_names;
+    // Two devices of the person's each write the same document. Only the
+    // device the route's coverage row names writes its receipt: the other's
+    // receipt would carry its own commit's generation, and each holder's
+    // receipt then reads as the other's regression, so neither copy takes the
+    // other's change.
+    {
+        let (mut first, a, b, _, now) = seeded();
+        let app = "test.app";
+        let named = "tab:1";
+        let bytes = first.document(app, named).unwrap();
+        first
+            .publication_mut()
+            .publish_document(app, named, bytes, &a, now)
+            .unwrap();
+        first
+            .publication_mut()
+            .durable_bootstrap_messages(&a, now, 2)
+            .unwrap();
+        let covered = first.durable_coverage(app, named).unwrap().unwrap();
+        assert_eq!(covered.coverage.author, a.verifying_key().to_bytes());
+
+        // The other of the owner's devices writes the document, and publishes
+        // its change at its own commit's generation.
+        let before = first.clone();
+        let second = written_by(&first, app, named, &b, "second");
+        first
+            .publication_mut()
+            .publish_incremental(app, named, second, &b, now)
+            .unwrap();
+        let published = first
+            .publication_mut()
+            .durable_mutation_messages(&before, &b, now, 3)
+            .unwrap();
+        assert!(!published.is_empty(), "the second device publishes its write");
+        assert_eq!(
+            first.durable_coverage(app, named).unwrap().unwrap(),
+            covered,
+            "the second device writes its write, not a receipt of its own"
+        );
+        // A bootstrap rewrites no other device's receipt either.
+        first
+            .publication_mut()
+            .durable_bootstrap_messages(&b, now, 3)
+            .unwrap();
+        assert_eq!(
+            first.durable_coverage(app, named).unwrap().unwrap(),
+            covered,
+            "a bootstrap at another device keeps the covering device's receipt"
+        );
+        // The covering device's own receipt advances with its coverage.
+        let before = first.clone();
+        let third = written_by(&first, app, named, &b, "third");
+        first
+            .publication_mut()
+            .publish_incremental(app, named, third, &b, now)
+            .unwrap();
+        first
+            .publication_mut()
+            .durable_mutation_messages(&before, &a, now, 4)
+            .unwrap();
+        let advanced = first.durable_coverage(app, named).unwrap().unwrap();
+        assert_eq!(advanced.coverage.author, a.verifying_key().to_bytes());
+        assert!(advanced.coverage.sequence > covered.coverage.sequence);
+        assert!(advanced.generation > covered.generation);
     }
 }

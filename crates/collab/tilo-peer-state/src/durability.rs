@@ -206,7 +206,9 @@ pub fn monotonic(before: Option<&AutoCommit>, after: &AutoCommit) -> Result<(), 
             })
             || (next.generation == prior.generation && next != &prior)
         {
-            return Err("durable receipt regression".into());
+            return Err(format!(
+                "durable receipt regression on {key}: {prior:?} became {next:?}"
+            ));
         }
     }
     Ok(())

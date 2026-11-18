@@ -283,6 +283,15 @@ impl StatePeer {
                 }
             }
         }
+        let existing = match receipts_at {
+            Some(_) => crate::durability::entries(
+                self.core
+                    .workspace_doc
+                    .as_deref()
+                    .ok_or("missing workspace governance")?,
+            )?,
+            None => BTreeMap::new(),
+        };
         let workspace = self
             .core
             .workspace_doc
@@ -291,9 +300,15 @@ impl StatePeer {
         match receipts_at {
             Some(generation) => {
                 crate::coverage::put_all_with_receipts(workspace, coverages, |rows| {
-                    let mut receipts = sealed_receipts;
+                    // A bootstrap rewrites the receipts of the routes this
+                    // device covers; another holder's routes keep the receipt
+                    // that holder issued, which this device's own generation
+                    // would order as a receipt of its own.
+                    let mut receipts = existing;
+                    receipts.extend(sealed_receipts);
                     for (route, coverage) in rows {
-                        if !sealed.contains_key(route) {
+                        if !sealed.contains_key(route) && coverage.author == key.device_public_key()
+                        {
                             receipts.insert(
                                 route.clone(),
                                 crate::durability::DurableReceipt::new(
