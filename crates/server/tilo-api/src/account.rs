@@ -65,12 +65,33 @@ pub fn addresses(tool: &str, arguments: &Value) -> bool {
     }
 }
 
+/// Whether a key for one workspace answers `tool`'s account call from its
+/// workspace's own governance: the keys the workspace admitted, which it
+/// lists and revokes for whoever holds them.
+fn answers_from_its_workspace(tool: &str, arguments: &Value) -> bool {
+    let path = arguments.get("path").and_then(Value::as_str).unwrap_or("");
+    matches!(
+        (tool, path),
+        ("tilo_read", "account/keys") | ("tilo_do", "account/keys#list" | "account/keys#revoke")
+    )
+}
+
+/// Whether a tool call with `arguments` acts on the account rather than in a
+/// workspace: a path under the account's, which names no workspace. `tilo_ls`
+/// with no path lists a workspace.
+#[must_use]
+pub(crate) fn on_account(tool: &str, arguments: &Value) -> bool {
+    let path = arguments.get("path").and_then(Value::as_str).unwrap_or("");
+    !path.is_empty() && addresses(tool, arguments)
+}
+
 /// The answer to a call of a key for one workspace that addresses the
 /// account: it reaches none, and is told so rather than that the workspace
-/// runs no app called `account`. `None` for a call in its workspace.
+/// runs no app called `account`. `None` for a call in its workspace, and for
+/// the keys of its own.
 pub(crate) fn beyond_workspace(tool: &str, arguments: &Value, structured: bool) -> Option<Value> {
     let path = arguments.get("path").and_then(Value::as_str).unwrap_or("");
-    (!path.is_empty() && addresses(tool, arguments)).then(|| {
+    (on_account(tool, arguments) && !answers_from_its_workspace(tool, arguments)).then(|| {
         answer(
             structured,
             path,
