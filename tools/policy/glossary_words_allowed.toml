@@ -500,10 +500,13 @@ identifiers = ["Record"]
 paths = ["sdk/typescript/**"]
 
 [[allow]]
-reason = "The server fixture's own device, as the shared API fixture names its field (`OnServer::host`)."
+reason = "The server fixture's own device and its certificate, as the shared fixtures name them (`OnServer::host`, `HostEndpoint::host_cert`)."
 words = ["host"]
-identifiers = ["host"]
-paths = ["crates/agent/agent-session/tests/workspace_actions/key_writes.rs"]
+identifiers = ["host", "host_cert"]
+paths = [
+    "crates/agent/agent-session/tests/workspace_actions/key_writes.rs",
+    "crates/agent/agent-session/tests/workspace_actions/member_roles.rs",
+]
 
 [[allow]]
 reason = "The frame's own API for the row of an app's window parts, whose name the toolkit keeps."

@@ -67,6 +67,28 @@ impl Membership {
         *self.role.lock().unwrap() = role;
     }
 
+    /// The member's role from now on, in the workspace's governance too:
+    /// what every device deciding their changes reads, given by the
+    /// workspace owner's server device.
+    pub(super) async fn becomes(&self, role: Role) {
+        *self.role.lock().unwrap() = Some(role);
+        self.workspaces
+            .set_member_role(
+                WORKSPACE,
+                &self.member.endpoint.host_cert,
+                tilo_server::workspaces::SetMemberRoleRequest {
+                    request_id: *blake3::hash(
+                        format!("{role:?} {}", tilo_clock::unix_now_ns()).as_bytes(),
+                    )
+                    .as_bytes(),
+                    user_public_key: self.person,
+                    role,
+                },
+            )
+            .await
+            .unwrap();
+    }
+
     fn access(&self, caller: &Caller) -> Option<ui::permissions::MemberAccess> {
         let role = (*self.role.lock().unwrap())?;
         (!self.revoked.load(Ordering::SeqCst)
@@ -357,18 +379,18 @@ fn note_titles(browser: &mut Browser, notes: &DocumentRoute) -> Vec<String> {
         if !browser.documents.contains_key(&part) {
             break;
         }
+        // A part is not the app's own document, so it is read as it came.
+        let mut doc = automerge::AutoCommit::new();
+        for (_, change) in browser.documents.get(&part).cloned().unwrap_or_default() {
+            tilo_automerge::ApplyIncoming::load_incoming(&mut doc, &change).unwrap();
+        }
         titles.extend(
-            browser
-                .mount(&part)
-                .read(|doc| {
-                    <::notes::NoteList as ui::tilo_resource::Resource>::read(doc)
-                        .map(|held| {
-                            held.pages
-                                .iter()
-                                .map(|(_, page)| page.title.clone())
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default()
+            <::notes::NoteList as ui::tilo_resource::Resource>::read(&doc)
+                .map(|held| {
+                    held.pages
+                        .iter()
+                        .map(|(_, page)| page.title.clone())
+                        .collect::<Vec<_>>()
                 })
                 .unwrap_or_default(),
         );
@@ -453,6 +475,16 @@ async fn each_member_runs_what_their_access_lets_them_and_nothing_else() {
     );
     let actions = tilo_agent_session::WorkspaceActions::new(Arc::new(crate::common::catalogue));
     actions.attach(membership.clone()).unwrap();
+    // The guest is a member of the workspace, a viewer until they are made
+    // more: the role every device deciding their changes reads.
+    super::resource_support::admit_person(
+        &hosted,
+        &host,
+        WORKSPACE,
+        &guest_device,
+        tilo_peer_state::join::Role::Viewer,
+    )
+    .await;
     let workspace = browser.workspace;
     let member = Caller::authenticated(
         guest_device.cert.user_public_key,
@@ -517,7 +549,7 @@ async fn each_member_runs_what_their_access_lets_them_and_nothing_else() {
     );
 
     // A commenter: commenting is theirs, an edit of the body is not.
-    *membership.role.lock().unwrap() = Some(Role::Commenter);
+    membership.becomes(Role::Commenter).await;
     let comment = listed(&actions, workspace, &member, &tasks_provider)
         .into_iter()
         .find(|action| {
@@ -547,7 +579,7 @@ async fn each_member_runs_what_their_access_lets_them_and_nothing_else() {
     );
 
     // An editor: the body edit is saved, by them.
-    *membership.role.lock().unwrap() = Some(Role::Editor);
+    membership.becomes(Role::Editor).await;
     let edited = invoked(&actions, workspace, &member, &new_note("By the editor"));
     assert!(
         matches!(edited, ReceiptStatus::Completed { .. }),
@@ -585,7 +617,7 @@ async fn each_member_runs_what_their_access_lets_them_and_nothing_else() {
         got(&actions, workspace, &agent, &by_editor).unwrap(),
         b"%PDF-1.7 editor"
     );
-    *membership.role.lock().unwrap() = Some(Role::Viewer);
+    membership.becomes(Role::Viewer).await;
     assert_eq!(
         got(&actions, workspace, &member, &by_agent).unwrap(),
         b"%PDF-1.7 agent",
@@ -617,7 +649,7 @@ async fn each_member_runs_what_their_access_lets_them_and_nothing_else() {
         Err(ActionCallError::NotPermitted),
         "someone the workspace no longer admits gets nothing"
     );
-    *membership.role.lock().unwrap() = Some(Role::Editor);
+    membership.becomes(Role::Editor).await;
     // An agent is listed nothing people alone are offered, and runs only what
     // it is listed. The apps here offer no such action now that Tasks' plan is
     // everyone's, so this is the guard against one being listed later.
@@ -748,7 +780,7 @@ async fn each_member_runs_what_their_access_lets_them_and_nothing_else() {
             error: ActionCallError::NotPermitted
         }
     );
-    *membership.role.lock().unwrap() = Some(Role::Editor);
+    membership.becomes(Role::Editor).await;
     membership.revoked.store(true, Ordering::SeqCst);
     assert_eq!(
         invoked(&actions, workspace, &member, &new_note("By the revoked")),
@@ -785,19 +817,30 @@ async fn each_member_runs_what_their_access_lets_them_and_nothing_else() {
         assert!(!titles.iter().any(|title| title == refused), "{titles:?}");
     }
     // The editor's note is theirs, the agent's the agent's for them.
+    // Notes are kept in the parts beside the notebook: who made a note is in
+    // the part it went into.
     browser.pump();
-    let changes = browser.documents.get(&notes).cloned().unwrap_or_default();
-    let mut doc = automerge::AutoCommit::new();
-    for (_, bytes) in &changes {
-        let _ = tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes);
-    }
-    let invokers: Vec<tilo_actions::ActionInvoker> = doc
-        .get_changes(&[])
-        .iter()
-        .filter_map(|change| change.message())
-        .filter_map(tilo_actions::ActionContext::from_change_message)
-        .filter_map(|context| context.invoker)
+    let mut invokers: Vec<tilo_actions::ActionInvoker> = Vec::new();
+    let held: Vec<DocumentRoute> = browser
+        .documents
+        .keys()
+        .filter(|route| route.app_id == notes.app_id)
+        .cloned()
         .collect();
+    for route in held {
+        let changes = browser.documents.get(&route).cloned().unwrap_or_default();
+        let mut doc = automerge::AutoCommit::new();
+        for (_, bytes) in &changes {
+            let _ = tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes);
+        }
+        invokers.extend(
+            doc.get_changes(&[])
+                .iter()
+                .filter_map(|change| change.message())
+                .filter_map(tilo_actions::ActionContext::from_change_message)
+                .filter_map(|context| context.invoker),
+        );
+    }
     let person = hex::encode(guest_device.cert.user_public_key);
     assert!(
         invokers
