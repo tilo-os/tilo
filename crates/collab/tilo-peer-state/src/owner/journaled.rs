@@ -432,7 +432,7 @@ mod tests {
             enrollment: None,
             vouched: None,
             host_hint: None,
-            peer: peer.to_vec().into(),
+            peer: crate::owner::stored::DurablePeer::read(peer),
             generation: 0,
             continuity: 0,
             publication: None,

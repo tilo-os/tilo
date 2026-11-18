@@ -647,7 +647,7 @@ impl NativeWorkspaceOwner {
         workspace: WorkspaceId,
         written: &mut journal::Written,
     ) -> bool {
-        self.with_current(workspace, |view| view.peer().durable_parts())
+        self.with_current(workspace, |view| view.peer().durable_layout())
             .is_ok_and(|parts| written.resume(parts))
     }
 
@@ -692,7 +692,7 @@ impl NativeWorkspaceOwner {
         let durable = {
             let live = view.live();
             publication::refresh_governance_checkpoint(&live, &mut record)?;
-            stored::DurablePeer::from(live.durable_parts()?)
+            stored::DurablePeer::from(live.durable_layout()?)
         };
         if durable == record.peer && record.publication == previous {
             return Ok(());
@@ -822,7 +822,7 @@ impl NativeWorkspaceOwner {
             publication::settle(&mut record, self.0.store.as_ref())?;
             publication::retire_member_changes(&live, &mut record, &governed)?;
             publication::refresh_governance_checkpoint(&live, &mut record)?;
-            let durable = stored::DurablePeer::from(live.durable_parts()?);
+            let durable = stored::DurablePeer::from(live.durable_layout()?);
             // Authentication and causal admission still run for every replay.
             // Reuse the actual committed barrier only when both durable peer
             // state and outgoing ownership are byte-for-byte unchanged. In
@@ -963,7 +963,7 @@ impl NativeWorkspaceOwner {
             let live = replica.lock();
             publication::settle(&mut record, self.0.store.as_ref())?;
             publication::refresh_governance_checkpoint(&live, &mut record)?;
-            record.peer = live.durable_parts()?.into();
+            record.peer = live.durable_layout()?.into();
             Self::snapshot(&live, &mut record)?
         };
         self.install_snapshot(workspace, replica, record, snapshot, enrollment)

@@ -1,21 +1,26 @@
-//! The documents a replica holds, with a digest of all of them that a write
-//! updates where it wrote.
+//! The documents a replica holds, with what is made of all of them kept up
+//! to date where a write wrote.
 //!
 //! A commit's receipt names the replica's durable state by a digest
-//! ([`super::StatePeer::durable_hash`]). Folding every document into it on
-//! every commit made each write cost the size of the workspace, so the
-//! documents are folded into a Merkle tree instead: a document's leaf is the
-//! digest of its part of the durable encoding, and a change to a document
-//! rehashes its leaf and the few nodes above it. The tree's shape depends
-//! only on which documents are held, never on the order they changed in, so
-//! one state has one digest on every device and after every restart.
+//! ([`super::StatePeer::durable_hash`]), and its publication stores the
+//! replica's durable encoding in parts ([`super::StatePeer::durable_layout`]).
+//! Making either from every document on every commit made each write cost
+//! the size of the workspace. So the documents are held in an [`Ordered`]
+//! map, whose copies share what neither changed, and both are made again
+//! only for the documents that changed since they were last made: the digest
+//! folds the documents into a Merkle tree, a document's leaf the digest of
+//! its part of the durable encoding, and a change rehashes its leaf and the
+//! few nodes above it. The tree's shape depends only on which documents are
+//! held, never on the order they changed in, so one state has one digest on
+//! every device and after every restart.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use super::Route;
 use super::backend::StoredDocument;
-use crate::shared::Shared;
+use super::durable::DocumentParts;
+use crate::ordered::Ordered;
 
 /// Children of a branch of the tree.
 const FANOUT: usize = 16;
@@ -24,115 +29,113 @@ const FANOUT: usize = 16;
 /// million.
 const DEPTH: usize = 3;
 
-/// The documents a replica holds, by route. Reads see the map; every change
-/// goes through a method here, which names the document changed for the next
-/// digest.
+/// The documents a replica holds, by route.
 #[derive(Default)]
 pub(super) struct Documents {
-    map: Shared<BTreeMap<Route, StoredDocument>>,
-    digest: parking_lot::Mutex<Folded>,
+    map: Ordered<Route, StoredDocument>,
+    made: parking_lot::Mutex<Made>,
 }
 
-/// The tree as of the last digest, and the documents changed since; the
-/// documents holding sealed history, and the documents changed since they were
-/// last counted.
+/// What was made of the documents, each with the documents it was made of.
 #[derive(Clone, Default)]
-struct Folded {
+struct Made {
+    tree_of: Ordered<Route, StoredDocument>,
     tree: Option<Node>,
-    changed: BTreeSet<Route>,
-    sealed: BTreeSet<Route>,
-    sealed_changed: BTreeSet<Route>,
-}
-
-impl Folded {
-    fn changed(&mut self, route: &Route) {
-        self.changed.insert(route.clone());
-        self.sealed_changed.insert(route.clone());
-    }
+    sealed_of: Ordered<Route, StoredDocument>,
+    sealed: Ordered<Route, ()>,
+    parts_of: Ordered<Route, StoredDocument>,
+    parts: Ordered<Route, DocumentParts>,
 }
 
 impl Clone for Documents {
     fn clone(&self) -> Self {
         Self {
             map: self.map.clone(),
-            digest: parking_lot::Mutex::new(self.digest.lock().clone()),
+            made: parking_lot::Mutex::new(self.made.lock().clone()),
         }
     }
 }
 
 impl std::ops::Deref for Documents {
-    type Target = BTreeMap<Route, StoredDocument>;
+    type Target = Ordered<Route, StoredDocument>;
     fn deref(&self) -> &Self::Target {
         &self.map
     }
 }
 
-impl<'a> IntoIterator for &'a Documents {
-    type Item = (&'a Route, &'a StoredDocument);
-    type IntoIter = std::collections::btree_map::Iter<'a, Route, StoredDocument>;
-    fn into_iter(self) -> Self::IntoIter {
-        self.map.iter()
+impl std::ops::DerefMut for Documents {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.map
     }
 }
 
-impl Documents {
-    /// Hold `document` as `route`'s document.
-    pub(super) fn insert(
-        &mut self,
-        route: Route,
-        document: StoredDocument,
-    ) -> Option<StoredDocument> {
-        self.digest.get_mut().changed(&route);
-        self.map.insert(route, document)
+impl<'a> IntoIterator for &'a Documents {
+    type Item = (&'a Route, &'a StoredDocument);
+    type IntoIter = Box<dyn DoubleEndedIterator<Item = (&'a Route, &'a StoredDocument)> + 'a>;
+    fn into_iter(self) -> Self::IntoIter {
+        Box::new(self.map.iter())
     }
+}
 
-    /// `route`'s document, to change.
-    pub(super) fn get_mut(&mut self, route: &Route) -> Option<&mut StoredDocument> {
-        if !self.map.contains_key(route) {
-            return None;
-        }
-        self.digest.get_mut().changed(route);
-        self.map.get_mut(route)
-    }
-
-    /// Hold no documents.
+/// Counts a document taken again, for the tests that assert a write takes
+/// only the documents it changed.
+fn walked() {
     #[cfg(test)]
-    pub(super) fn clear(&mut self) {
-        let folded = self.digest.get_mut();
-        for route in self.map.keys() {
-            folded.changed(route);
-        }
-        self.map.clear();
-    }
+    super::DOCUMENTS_WALKED.with(|walked| walked.set(walked.get().saturating_add(1)));
+}
 
+impl Documents {
     /// Whether `a` and `b` are copies of one map of documents no copy changed.
     #[cfg(test)]
     pub(super) fn ptr_eq(a: &Self, b: &Self) -> bool {
-        Shared::ptr_eq(&a.map, &b.map)
+        Ordered::ptr_eq(&a.map, &b.map)
     }
 
-    /// The documents that hold sealed history, in route order.
-    pub(super) fn sealed(&self) -> Vec<(&Route, &StoredDocument)> {
-        let mut guard = self.digest.lock();
-        let folded = &mut *guard;
-        for route in std::mem::take(&mut folded.sealed_changed) {
-            if self
-                .map
-                .get(&route)
+    /// How many documents hold sealed history.
+    pub(super) fn sealed_count(&self) -> usize {
+        let mut guard = self.made.lock();
+        let made = &mut *guard;
+        for change in Ordered::changes(&made.sealed_of, &self.map, StoredDocument::same) {
+            if change
+                .after
                 .is_some_and(|document| !document.sealed.is_empty())
             {
-                folded.sealed.insert(route);
+                made.sealed.insert(change.key.clone(), ());
             } else {
-                folded.sealed.remove(&route);
+                made.sealed.remove(change.key);
             }
         }
-        let sealed = folded
-            .sealed
-            .iter()
-            .filter_map(|route| self.map.get_key_value(route))
-            .collect();
+        made.sealed_of = self.map.clone();
+        let count = made.sealed.len();
         drop(guard);
-        sealed
+        count
+    }
+
+    /// Each document's part of the durable encoding, as `encode` makes it:
+    /// only the documents changed since the parts were last made are
+    /// encoded again.
+    pub(super) fn parts(
+        &self,
+        mut encode: impl FnMut(&Route, &StoredDocument) -> Result<DocumentParts, String>,
+    ) -> Result<Ordered<Route, DocumentParts>, String> {
+        let mut guard = self.made.lock();
+        let made = &mut *guard;
+        let mut parts = made.parts.clone();
+        for change in Ordered::changes(&made.parts_of, &self.map, StoredDocument::same) {
+            match change.after {
+                Some(document) => {
+                    walked();
+                    parts.insert(change.key.clone(), encode(change.key, document)?);
+                }
+                None => {
+                    parts.remove(change.key);
+                }
+            }
+        }
+        made.parts_of = self.map.clone();
+        made.parts = parts.clone();
+        drop(guard);
+        Ok(parts)
     }
 
     /// The root of the documents' tree, each held document's leaf as `leaf`
@@ -142,26 +145,24 @@ impl Documents {
         &self,
         mut leaf: impl FnMut(&Route, &StoredDocument) -> Result<[u8; 32], String>,
     ) -> Result<[u8; 32], String> {
-        let mut folded = self.digest.lock();
-        let changed = std::mem::take(&mut folded.changed);
-        for route in &changed {
-            let key = key_of(route)?;
-            let value = match self.map.get(route) {
+        let mut guard = self.made.lock();
+        let made = &mut *guard;
+        let mut tree = made.tree.clone();
+        for change in Ordered::changes(&made.tree_of, &self.map, StoredDocument::same) {
+            let value = match change.after {
                 Some(document) => {
-                    #[cfg(test)]
-                    super::DOCUMENTS_WALKED
-                        .with(|walked| walked.set(walked.get().saturating_add(1)));
-                    Some(leaf(route, document)?)
+                    walked();
+                    Some(leaf(change.key, document)?)
                 }
                 None => None,
             };
-            if let Err(error) = set(&mut folded.tree, &key, 0, value) {
-                // Nothing of the tree is kept that the next root would miss.
-                folded.changed = changed;
-                return Err(error);
-            }
+            set(&mut tree, &key_of(change.key)?, 0, value)?;
         }
-        Ok(folded.tree.as_ref().map_or([0; 32], Node::digest))
+        let root = tree.as_ref().map_or([0; 32], Node::digest);
+        made.tree_of = self.map.clone();
+        made.tree = tree;
+        drop(guard);
+        Ok(root)
     }
 }
 
