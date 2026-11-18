@@ -32,6 +32,11 @@
 # home host's own (https://<host>/directory) unless one is named:
 #   TILO_WEB_DIRECTORY  the directory's https:// address, http:// on this
 #                       machine (unset: the home's)
+# The `tilo` command on a computer logged in with this site asks its API server
+# for the keys it makes (`tilo keys create`, `tilo keys export`):
+#   TILO_WEB_API        the API server's https:// address, http:// on this
+#                       machine (unset: none named; such a computer is told to
+#                       name one)
 # The desktop's About sheet offers these links; an unset one is not offered:
 #   TILO_WEB_ABOUT_NOTIFY     where to sign up to hear when Tilo comes out
 #   TILO_WEB_ABOUT_SOURCE     the source code
@@ -147,6 +152,15 @@ elif [ -n "$host" ]; then
   directory="$scheme://$host/directory"
 fi
 [ -z "$directory" ] || fields="$fields${fields:+,}\"directory\":\"$directory\""
+api=${TILO_WEB_API:-}
+if [ -n "$api" ]; then
+  case "$api" in
+    https://*) ;;
+    *) here "$api" || { echo "TILO_WEB_API must be an https:// address (http:// on this machine): $api" >&2; exit 2; } ;;
+  esac
+  case "$api" in *[!A-Za-z0-9._~:/?#@!\$\&\'\(\)*+,\;=%-]*) echo "TILO_WEB_API must be a plain URL: $api" >&2; exit 2 ;; esac
+  fields="$fields${fields:+,}\"api\":\"$api\""
+fi
 about=
 for link in notify:${TILO_WEB_ABOUT_NOTIFY:-} source:${TILO_WEB_ABOUT_SOURCE:-} community:${TILO_WEB_ABOUT_COMMUNITY:-}; do
   key=${link%%:*}
