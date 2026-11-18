@@ -12,7 +12,6 @@ agent-plan-words-no-model = No model is set up to plan this run, so its steps ar
 agent-plan-no-action = No published action carries the words of the request.
 agent-plan-no-model = I can't work on this yet: no model is set up. Choose one in Settings, under Agent models.
 agent-plan-models-off = Models are turned off for this agent, so nothing can plan this run. Start it again with a model turned on.
-agent-plan-model-failed = The model didn't answer, so this run couldn't be planned. Try again in a moment.
 
 ## How a run ended
 

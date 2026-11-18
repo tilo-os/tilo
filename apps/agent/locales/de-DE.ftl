@@ -14,7 +14,6 @@ agent-plan-words-no-model = Für diesen Lauf ist kein Modell eingerichtet, desha
 agent-plan-no-action = Keine veröffentlichte Aktion passt zu den Wörtern der Anfrage.
 agent-plan-no-model = So kann ich noch nicht arbeiten: Es ist kein Modell eingerichtet. Wähle eines in den Einstellungen unter „Agentenmodelle“.
 agent-plan-models-off = Für diesen Agenten sind Modelle abgeschaltet, deshalb kann nichts diesen Lauf planen. Starte ihn erneut mit einem eingeschalteten Modell.
-agent-plan-model-failed = Das Modell hat nicht geantwortet, deshalb ließ sich dieser Lauf nicht planen. Versuche es gleich noch einmal.
 
 ## Wie ein Lauf geendet hat
 

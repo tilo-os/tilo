@@ -72,18 +72,12 @@ pub(super) fn finished(plan: &Planner, actions: usize) -> Option<String> {
 }
 
 /// Why a run that asked for a model has none, with the step that fixes it.
-///
-/// A run whose model call failed says the model didn't answer, in the words a
-/// person reads; the transport's own error is the resource kept beside it.
 pub(super) fn no_model(reason: &crate::model::Route) -> crate::session::Failure {
     use crate::model::{Fallback, Route};
     match reason {
         Route::Keywords(Fallback::NoKey) => crate::session::Failure::said(t("agent-plan-no-model")),
         Route::Keywords(Fallback::Disabled) => {
             crate::session::Failure::said(t("agent-plan-models-off"))
-        }
-        Route::Keywords(Fallback::Failed(error)) => {
-            crate::session::Failure::spoken(&t("agent-plan-model-failed"), error)
         }
     }
 }

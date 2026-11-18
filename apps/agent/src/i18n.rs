@@ -140,7 +140,6 @@ mod tests {
             "agent-plan-words-no-model",
             "agent-plan-no-action",
             "agent-plan-no-model",
-            "agent-plan-model-failed",
             "agent-done-words-no-model",
             "agent-match-nothing",
             "agent-match-several",
