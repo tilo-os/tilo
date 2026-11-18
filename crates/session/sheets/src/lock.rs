@@ -1214,6 +1214,18 @@ fn power_id(effect: &LockEffect) -> &'static str {
     }
 }
 
+/// Whether `event` is the person reaching for the screen besides a click: a key pressed, or a
+/// finger put down on it. A quiet screen comes back for any of them.
+fn reaching(event: &WindowEvent) -> bool {
+    match event {
+        WindowEvent::KeyboardInput { event: key, .. } => {
+            key.state == ui::winit::event::ElementState::Pressed
+        }
+        WindowEvent::Touch(touch) => touch.phase == ui::winit::event::TouchPhase::Started,
+        _ => false,
+    }
+}
+
 /// The screen itself: the ground, the arrival, the refusal's shake, the quiet
 /// after a while, and a keyboard that always goes where it should.
 struct Stage {
@@ -1493,12 +1505,7 @@ impl ui::widget::Decorator for Stage {
                 ..
             }
         );
-        let touched = typed.is_some()
-            || matches!(
-                event,
-                WindowEvent::KeyboardInput { event: key, .. } if key.state == ElementState::Pressed
-            )
-            || press;
+        let touched = press || reaching(event);
         if touched {
             self.last_input = now;
         }

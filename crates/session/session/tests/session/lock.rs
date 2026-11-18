@@ -1646,3 +1646,46 @@ fn a_lock_that_came_up_under_a_moving_pointer_and_a_drag_still_unlocks() {
         !session.compositor().locked()
     });
 }
+
+/// A finger reaches the session's own view of the lock, which stands over everything while it
+/// shows, as a click does: a press on its ground brings up the keyboard it draws for a finger.
+#[test]
+fn a_finger_reaches_the_sessions_own_view_of_the_lock() {
+    const DISPLAY: &str = "HEADLESS-1";
+    let _settled = ui::motion::testing::settled();
+    let _clock = tilo_test_env::held_wall_clock();
+    let home = private_home();
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new(DISPLAY, WIDTH, HEIGHT)],
+        Options {
+            user: "ada".to_owned(),
+            verifier: std::sync::Arc::new(Sesame),
+            collab: false,
+            app_socket: AppSocket::At(home.path().join("collab.sock")),
+            surfaces: Vec::new(),
+            ..Options::default()
+        },
+    );
+    let _client = mapped(&mut session, "org.example.Terminal");
+    let shots = pictures(&mut session, &[DISPLAY]);
+    invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
+    pump(&mut session, &mut [], |session, _| {
+        session.compositor().locked()
+    });
+    until_drawn(&mut session, &[DISPLAY], &shots);
+    let before = pictures(&mut session, &[DISPLAY]);
+
+    // A finger on the screen's ground, above the prompt.
+    let ground = (f64::from(WIDTH) / 2.0, f64::from(HEIGHT) / 8.0);
+    super::keyboard::finger(&mut session, ground);
+    left_alone(&mut session, Duration::from_millis(300));
+    let after = pictures(&mut session, &[DISPLAY]);
+    assert!(
+        apart(&after[0], &before[0]) > CLOSE,
+        "the finger brings up the lock's own keyboard"
+    );
+    type_and_enter(&mut session, "sesame");
+    pump(&mut session, &mut [], |session, _| {
+        !session.compositor().locked()
+    });
+}
