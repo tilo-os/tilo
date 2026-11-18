@@ -128,9 +128,9 @@ fn a_note_renders_as_its_own_elements() {
     }
 }
 
-/// On a phone a page hosts the window's bar itself: its buttons are faces
-/// of their own (icons, not pictures of their paint), its title is words,
-/// and a notice comes and goes over the note without moving it.
+/// On a phone the page's bar is the app's own header row: its buttons are faces of their own
+/// (icons, not pictures of their paint), and a notice comes and goes over the note without
+/// moving it.
 #[test]
 fn the_bar_is_html_and_its_notice_does_not_move_the_note() {
     let mut app = notes();
@@ -161,27 +161,21 @@ fn the_bar_is_html_and_its_notice_does_not_move_the_note() {
     );
 
     let composition = app.harness().composition();
-    let bar = composition
-        .layers
-        .iter()
-        .chain(std::iter::once(&composition.root))
-        .flat_map(|layer| find(layer, "WindowParts"))
-        .next()
-        .expect("the window's bar");
-    assert!(bar.own.is_none(), "the bar is not a picture of its paint");
-    let notice = find(bar, "WindowNotice");
-    let Some(Own::Face(face)) = notice.first().and_then(|notice| notice.own.as_ref()) else {
-        panic!("the notice says itself: {bar:#?}");
-    };
-    assert_eq!(
-        face.label.as_ref().map(|label| label.text.as_str()),
-        Some("Imported Trip to Lisbon")
-    );
-    let buttons: Vec<_> = find(bar, "WindowPart")
+    // The bar is the shell's own header row, composed as elements: its buttons show their
+    // faces.
+    let bar = find(&composition.root, "NavShell")
         .into_iter()
-        .filter(|slot| slot.tag == Some("button"))
+        .next()
+        .expect("the page's bar");
+    assert!(bar.own.is_none(), "the bar is not a picture of its paint");
+    let buttons: Vec<_> = find(bar, "Button")
+        .into_iter()
+        .filter(|button| button.rect[1] + button.rect[3] <= 56.0)
         .collect();
-    assert!(!buttons.is_empty());
+    assert!(
+        !buttons.is_empty(),
+        "the bar's own buttons stand in its row"
+    );
     for button in buttons {
         assert!(
             matches!(&button.own, Some(Own::Face(face)) if face.icon.is_some() || face.label.is_some()),
@@ -190,11 +184,31 @@ fn the_bar_is_html_and_its_notice_does_not_move_the_note() {
             button.own
         );
     }
+
+    // The notice stands on a card over the note, naming itself.
+    let card = find(&composition.root, "WindowNoticeStrip")
+        .into_iter()
+        .chain(
+            composition
+                .layers
+                .iter()
+                .flat_map(|layer| find(layer, "WindowNoticeStrip")),
+        )
+        .next()
+        .expect("the notice's card");
+    let notice = find(card, "WindowNotice");
+    let Some(Own::Face(face)) = notice.first().and_then(|notice| notice.own.as_ref()) else {
+        panic!("the notice says itself: {card:#?}");
+    };
+    assert_eq!(
+        face.label.as_ref().map(|label| label.text.as_str()),
+        Some("Imported Trip to Lisbon")
+    );
 }
 
-/// On a wide window the notice does not take the title's place: the bar
-/// keeps the note's location, and the notice comes on a card of its own at
-/// the window's foot, no wider than a line read at a glance.
+/// On a wide window the notice does not take the title's place: the bar keeps the notebook's
+/// name and the note keeps its title, and the notice comes on a card of its own at the window's
+/// foot, no wider than a line read at a glance.
 #[test]
 fn a_wide_windows_notice_is_a_card_and_the_title_stays() {
     let mut app = notes();
@@ -211,27 +225,30 @@ fn a_wide_windows_notice_is_a_card_and_the_title_stays() {
     let _ = app.harness().poll_frame();
 
     let composition = app.harness().composition();
-    let bar = composition
-        .layers
-        .iter()
-        .chain(std::iter::once(&composition.root))
-        .flat_map(|layer| find(layer, "WindowParts"))
-        .next()
-        .expect("the window's bar");
     let words = |node: &Composed| match &node.own {
         Some(Own::Face(face)) => face.label.as_ref().map(|label| label.text.clone()),
         Some(Own::Text(look)) => Some(look.text.clone()),
         _ => None,
     };
-    let location = find(bar, "WindowLocation");
-    let location = location.first().expect("the bar keeps its location");
-    let title = words(location).unwrap_or_default();
-    assert!(
-        !title.is_empty() && !title.contains("Imported"),
-        "the title stays: {title:?}"
-    );
-    let card = find(bar, "WindowNoticeStrip");
-    let card = card.first().expect("the notice's card");
+    let title = find(&composition.root, "NavShellTitle")
+        .into_iter()
+        .find(|title| words(title).is_some_and(|words| !words.is_empty()))
+        .expect("the bar keeps its title");
+    assert_eq!(words(title).as_deref(), Some("Notes"), "the title stays");
+    let note = find(&composition.root, "TextInput")
+        .into_iter()
+        .next()
+        .expect("the note keeps its title");
+    let Some(Own::Field { value, .. }) = &note.own else {
+        panic!("the note's title is a field: {note:?}");
+    };
+    assert_eq!(value, "Trip to Lisbon", "the notice takes no title's place");
+    let card = composition
+        .layers
+        .iter()
+        .flat_map(|layer| find(layer, "WindowNoticeStrip"))
+        .next()
+        .expect("the notice's card");
     assert!(card.rect[2] <= 520.0, "a card, not a band: {:?}", card.rect);
     assert!(
         card.rect[1] > 600.0,

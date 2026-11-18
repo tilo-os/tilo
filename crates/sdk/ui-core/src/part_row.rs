@@ -1,7 +1,8 @@
 //! The app's window-bar parts in a row of the window's own, outside a Tilo session. An
 //! app declares its toolbar once, as parts in the window's bar
 //! ([`crate::window_toolbar`]); in a Tilo session the shell draws them in the one bar
-//! per window.
+//! per window. A window whose own header row is its bar keeps its parts there, and the
+//! row holds only the notice's card over the app.
 
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
@@ -119,6 +120,9 @@ pub(crate) struct PartRow {
     window_controls: bool,
     window_actions: Vec<WindowAction>,
     last_ground_press: Option<crate::time::Instant>,
+    /// The row shows only the window's notice, on a card over the app: no band and no
+    /// parts, for a window whose own header row is its bar.
+    notice_card: bool,
 }
 
 /// The widest a notice's card stands, logical pixels: a line a person reads at a glance,
@@ -148,7 +152,22 @@ impl PartRow {
             window_controls: false,
             window_actions: Vec::new(),
             last_ground_press: None,
+            notice_card: false,
         }
+    }
+
+    /// The row of a window whose own header row is its bar: the window's notice stands on a
+    /// card over the app at the window's foot, and the row draws no band and no parts.
+    pub(crate) fn notice_card() -> Self {
+        let mut row = Self::new();
+        row.notice_card = true;
+        row.row.set_compact(true);
+        row
+    }
+
+    /// Whether this row is only the notice's card ([`Self::notice_card`]).
+    pub(crate) fn is_notice_card(&self) -> bool {
+        self.notice_card
     }
 
     /// The window's own controls stand in this row, at its trailing end, and its empty
@@ -217,7 +236,15 @@ impl PartRow {
             }
             return 0.0;
         };
-        let toolbar = with_history(crate::window_toolbar::shown().unwrap_or_default(), history);
+        let shown = crate::window_toolbar::shown().unwrap_or_default();
+        let toolbar = if self.notice_card {
+            WindowToolbar {
+                notice: shown.notice,
+                ..WindowToolbar::default()
+            }
+        } else {
+            with_history(shown, history)
+        };
         let (width, window_height) = place.window;
         let inset = f64::from(theme.tokens.spacing.s2);
         let rect = Rect::new(
@@ -236,9 +263,13 @@ impl PartRow {
             );
             self.row
                 .set_popup_area(Rect::new(0.0, 0.0, width, window_height));
-            let spare = self.place_controls(rect);
-            self.row.lay_out(spare);
-            self.place_search(rect, spare);
+            if self.notice_card {
+                self.controls = WindowControls::default();
+            } else {
+                let spare = self.place_controls(rect);
+                self.row.lay_out(spare);
+                self.place_search(rect, spare);
+            }
             self.shown = Some((toolbar, rect));
             self.repaint = true;
         }
@@ -254,8 +285,14 @@ impl PartRow {
             Rect::ZERO
         });
         self.search.set_app_name(place.app_name);
-        self.repaint |= self.row.measure_views(theme);
-        TOOLBAR_ROW_HEIGHT
+        if !self.notice_card {
+            self.repaint |= self.row.measure_views(theme);
+        }
+        if self.notice_card {
+            0.0
+        } else {
+            TOOLBAR_ROW_HEIGHT
+        }
     }
 
     fn place_controls(&mut self, rect: Rect) -> Rect {
@@ -412,6 +449,12 @@ impl PartRow {
         theme: &crate::theme::Theme,
         window: Rect,
     ) -> Rect {
+        if self.notice_card {
+            let Some(card) = self.strip_card(theme) else {
+                return Rect::ZERO;
+            };
+            return card.inflate(4.0, 4.0).intersect(window);
+        }
         if self.row.popup_open()
             || self.row.is_editing()
             || self.search.is_open()
@@ -440,14 +483,16 @@ impl PartRow {
         if self.shown.is_none() {
             return;
         }
-        let band = self.band(left, theme);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.content,
-            None,
-            &band,
-        );
+        if !self.notice_card {
+            let band = self.band(left, theme);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.content,
+                None,
+                &band,
+            );
+        }
         if let Some(card) = self.strip_card(theme) {
             let card =
                 vello::kurbo::RoundedRect::from_rect(card, f64::from(theme.tokens.radii.control));
@@ -510,14 +555,17 @@ impl PartRow {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.pointer = Point::new(position.x / input.scale, position.y / input.scale);
         }
-        let over = rect.contains(self.pointer) || self.row.strip_rect().contains(self.pointer);
+        let over = self.row.strip_rect().contains(self.pointer)
+            || (!self.notice_card && rect.contains(self.pointer));
         let mut handled = false;
         let mut focus = None;
-        if let Some(opening) = crate::widget::window_search::search_chord(
-            event,
-            input.modifiers.state(),
-            input.platform,
-        ) && !self.search.has_keyboard()
+        if !self.notice_card
+            && let Some(opening) = crate::widget::window_search::search_chord(
+                event,
+                input.modifiers.state(),
+                input.platform,
+            )
+            && !self.search.has_keyboard()
             && host.takes_search(opening)
         {
             self.open_search(host, MotionSource::Keyboard, opening);
