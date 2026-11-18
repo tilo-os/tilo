@@ -371,6 +371,21 @@ public enum EngineScript {
             return JSON.stringify({ok: {id: own?.id ?? null, name: own?.name ?? null, origin: own?.origin ?? null}});
           } catch (error) { return JSON.stringify({error: failure(error)}); }
         },
+        // Which of the documents the app follows changed in the workspace, as the entry of this
+        // device says it (its `changed`): their names and where to ask on from,
+        // never what one of them holds. The page holds the ask, ten seconds at most.
+        async followed(given, of, after, waitMs) {
+          if (!holds(given)) return unknown('tilo.device', 'changed');
+          if (!device) return noDevice();
+          if (typeof device.changed !== 'function') return unknown('tilo.device', 'changed');
+          try {
+            const told = await device.changed({of, after: typeof after === 'string' && after ? after : null, waitMs: Number(waitMs) || 0});
+            const named = (Array.isArray(told?.changed) ? told.changed : []).slice(0, 256)
+              .filter(one => typeof one?.app === 'string' && typeof one?.document === 'string')
+              .map(one => ({app: one.app, document: one.document}));
+            return JSON.stringify({ok: {changed: named, cursor: typeof told?.cursor === 'string' ? told.cursor : ''}});
+          } catch (error) { return JSON.stringify({error: failure(error)}); }
+        },
         // The person's answer to what the page asks before it pairs, handed on as a press of
         // the page's own button. Only the app's own code reaches this, with the engine's
         // pass, and the app calls it only from its person's press.
