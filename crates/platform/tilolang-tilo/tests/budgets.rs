@@ -3,14 +3,16 @@
 //!
 //! The check holds the work each scenario does, in counts that do not depend on the machine or
 //! its load ([`Work`]), as docs/measurements/performance.md has pull requests check: what a
-//! window shows, and what a change re-renders, patches and reads, is the same in a workspace of 10k
-//! items as in one of 1k. Opening over the index a workspace kept reads no more of it at 10k than at
-//! 1k: the pages of the rows it shows, and nothing of the workspace's document.
+//! window shows, and what a change re-renders, patches and reads, is the same in a workspace of 4k
+//! items as in one of 1k — the flat-in-N claim the index's own checks hold at 1k and 4k too.
+//! Opening over the index a workspace kept reads no more of it at 4k than at 1k: the pages of the
+//! rows it shows, and nothing of the workspace's document. These are counts, not times, so each
+//! scenario is measured twice: the first change, which a writer new to the workspace makes, and
+//! one steady change the check reads.
 //!
-//! The budgets in time and memory depend on the machine and what else runs on it, so no test
-//! asserts them: the bench checks and records them on the machine they are for,
-//! `cargo run --release -p tilolang-tilo --example bench -- apps/tl/<app> --sizes 1000,10000
-//! --budgets`.
+//! The budgets in time and memory depend on the machine and what else is busy on it, so no test
+//! asserts them: the bench checks and measures them on the machine they are for, at whatever
+//! sizes it is asked for, with `--sizes 1000,4000,10000 --budgets` on its example.
 //!
 //! Its own test target: the allocation counts are those of this work alone (they are counted per
 //! thread, so the apps' tests may run side by side). The runs do the work the check counts and
@@ -40,9 +42,14 @@ const NOTES: &str = "so.tilo.lang.notes";
 #[global_allocator]
 static ALLOCATOR: CountingAlloc = CountingAlloc;
 
-/// The sizes the check compares: a scenario does at 10k what it does at 1k.
-const SMALL: usize = 1000;
-const LARGE: usize = 10_000;
+/// The sizes the check compares: a scenario does at 4k what it does at 1k.
+const SMALL: usize = 1_000;
+const LARGE: usize = 4_000;
+
+/// A measurement's name for a size.
+fn at(n: usize) -> String {
+    tilolang_tilo::bench::size_name(n)
+}
 
 /// The scenarios of a workspace that change it after it opened.
 const CHANGES: &[&str] = &[
@@ -62,7 +69,9 @@ fn apps() -> PathBuf {
 }
 
 fn bench(app: &str) -> Vec<Record> {
-    bench_at(app, vec![SMALL, LARGE], 3)
+    // Two changes: the first apart, which brings a writer the workspace did not hold, and one
+    // steady change. They are counted, so a second steady change would count the same.
+    bench_at(app, vec![SMALL, LARGE], 2)
 }
 
 /// The bench of `app` over workspaces of `sizes` items, `samples` changes each.
@@ -90,7 +99,7 @@ fn bench_at(app: &str, sizes: Vec<usize>, samples: usize) -> Vec<Record> {
     run(&config, &mut |_| {}).unwrap_or_else(|e| panic!("{app}: {e}"))
 }
 
-/// The document of `scenario` at the size `size` names (`10k`).
+/// The document of `scenario` at the size `size` names (`4k`).
 fn find<'a>(records: &'a [Record], scenario: &str, size: &str) -> Option<&'a Record> {
     let prefix = format!("tilolang.{scenario}.");
     let suffix = format!(".{size}");
@@ -123,7 +132,7 @@ fn loaded(work: Work) -> [(&'static str, u64); 2] {
     [("entries", work.entries), ("evaluated", work.evaluated)]
 }
 
-/// The work `of` reads off the document of `scenario`, at 1k and at 10k.
+/// The work `of` reads off the document of `scenario`, at 1k and at the large size.
 fn both(
     records: &[Record],
     scenario: &str,
@@ -133,7 +142,7 @@ fn both(
         let record = find(records, scenario, size)?;
         Some(of(record).unwrap_or_else(|| panic!("{} counts no work", record.kpi)))
     };
-    Some((work("1k")?, work("10k")?))
+    Some((work(&at(SMALL))?, work(&at(LARGE))?))
 }
 
 /// How many more, or fewer, of `name` a frame may read at one size than at the other: a page
@@ -145,19 +154,21 @@ fn slack(name: &str) -> u64 {
     u64::from(name == "pages")
 }
 
-/// What `scenario` shows and changes is the same at 10k as at 1k, count for count.
+/// What `scenario` shows and changes is the same at 4k as at 1k, count for count.
 fn same_shown(app: &str, label: &str, (small, large): (Work, Work), misses: &mut Vec<String>) {
+    let (little, many) = (at(SMALL), at(LARGE));
     for ((name, at_large), (_, at_small)) in shown(large).into_iter().zip(shown(small)) {
         if at_large.abs_diff(at_small) > slack(name) {
             misses.push(format!(
-                "{app} {label}: {name} {at_large} at 10k, {at_small} at 1k"
+                "{app} {label}: {name} {at_large} at {many}, {at_small} at {little}"
             ));
         }
     }
 }
 
 fn check(app: &str, records: &[Record], misses: &mut Vec<String>) {
-    // Opening over the workspace's index shows the same at 10k as at 1k and reads the same: of the
+    let (little, many) = (at(SMALL), at(LARGE));
+    // Opening over the workspace's index shows the same at 4k as at 1k and reads the same: of the
     // index, the directories and pages of what it shows; of the document, nothing that grows.
     for scenario in ["open", "thread_open"] {
         let Some((small, large)) = both(records, scenario, Work::of_record) else {
@@ -167,19 +178,19 @@ fn check(app: &str, records: &[Record], misses: &mut Vec<String>) {
         for ((name, at_large), (_, at_small)) in loaded(large).into_iter().zip(loaded(small)) {
             if at_large != at_small {
                 misses.push(format!(
-                    "{app} {scenario}: {name} {at_large} at 10k, {at_small} at 1k: opening reads the workspace"
+                    "{app} {scenario}: {name} {at_large} at {many}, {at_small} at {little}: opening reads the workspace"
                 ));
             }
         }
     }
-    // Choosing a filter: its query's first page reads the same at 10k as at 1k, from the
+    // Choosing a filter: its query's first page reads the same at 4k as at 1k, from the
     // index's columns; no item is checked one by one.
     if let Some((small, large)) = both(records, "filter", Work::of_record) {
         same_shown(app, "filter", (small, large), misses);
         for ((name, at_large), (_, at_small)) in loaded(large).into_iter().zip(loaded(small)) {
             if at_large != at_small {
                 misses.push(format!(
-                    "{app} filter: {name} {at_large} at 10k, {at_small} at 1k: a filter reads the workspace"
+                    "{app} filter: {name} {at_large} at {many}, {at_small} at {little}: a filter reads the workspace"
                 ));
             }
         }
@@ -190,11 +201,11 @@ fn check(app: &str, records: &[Record], misses: &mut Vec<String>) {
         misses.push(format!("{app}: no filter was chosen"));
     }
     let nodes = |size: &str| find(records, "open", size).and_then(|r| r.meta.get("nodes"));
-    if nodes("1k") != nodes("10k") {
+    if nodes(&little) != nodes(&many) {
         misses.push(format!(
-            "{app} open: {:?} nodes at 10k, {:?} at 1k",
-            nodes("10k"),
-            nodes("1k")
+            "{app} open: {:?} nodes at {many}, {:?} at {little}",
+            nodes(&many),
+            nodes(&little)
         ));
     }
 
@@ -206,7 +217,7 @@ fn check(app: &str, records: &[Record], misses: &mut Vec<String>) {
             for ((name, at_large), (_, at_small)) in loaded(large).into_iter().zip(loaded(small)) {
                 if at_large != at_small {
                     misses.push(format!(
-                        "{app} {scenario}: {name} {at_large} at 10k, {at_small} at 1k: a change loads the workspace again"
+                        "{app} {scenario}: {name} {at_large} at {many}, {at_small} at {little}: a change loads the workspace again"
                     ));
                 }
             }
@@ -218,7 +229,7 @@ fn check(app: &str, records: &[Record], misses: &mut Vec<String>) {
                 .saturating_add(64);
             if large.allocations > limit {
                 misses.push(format!(
-                    "{app} {scenario}: allocations {} at 10k, {} at 1k",
+                    "{app} {scenario}: allocations {} at {many}, {} at {little}",
                     large.allocations, small.allocations
                 ));
             }
@@ -231,7 +242,7 @@ fn check(app: &str, records: &[Record], misses: &mut Vec<String>) {
             continue;
         }
         let first = |size: &str| find(records, scenario, size).map(Work::first_of_record);
-        match (first("1k"), first("10k")) {
+        match (first(&little), first(&many)) {
             (Some(Some(small)), Some(Some(large))) => {
                 same_shown(app, &format!("first {scenario}"), (small, large), misses);
             }
@@ -257,8 +268,8 @@ fn notes_does_the_work_of_what_it_shows() {
     the_runtime_does_the_work_of_what_it_shows("notes");
 }
 
-/// Typing in a notebook runs the views that read what was typed, and no others: a key costs
-/// the same from the first note to ten thousand.
+/// Typing in a notebook re-renders the views that read what was typed, and no others: a key
+/// costs the same from the first note to four thousand.
 #[test]
 fn a_key_reruns_the_same_views_whatever_the_notebook_holds() {
     let records = bench_at("notes", vec![1, 200, LARGE], 2);
@@ -267,20 +278,23 @@ fn a_key_reruns_the_same_views_whatever_the_notebook_holds() {
             .unwrap_or_else(|| panic!("the keystroke at {size} counts work"));
         Work::of_record(record).unwrap_or_else(|| panic!("the keystroke at {size} counts work"))
     };
-    let (one, some, many) = (work("1"), work("200"), work("10k"));
+    let many_notes = at(LARGE);
+    let (one, some, many) = (work("1"), work("200"), work(&many_notes));
     let mut misses = Vec::new();
-    let at = |work: Work| shown(work);
-    for ((name, many), (_, some), (_, one)) in at(many)
+    let counts = |work: Work| shown(work);
+    for ((name, many), (_, some), (_, one)) in counts(many)
         .into_iter()
-        .zip(at(some))
-        .zip(at(one))
+        .zip(counts(some))
+        .zip(counts(one))
         .map(|((a, b), c)| (a, b, c))
     {
         // The views' work, and what they read. Index reads are the store deriving a change
         // into its columns, held below from 200 up: an only note is a shape of its own.
         if name == "index_fields" {
             if some != many {
-                misses.push(format!("{name}: {some} at 200 notes, {many} at 10k"));
+                misses.push(format!(
+                    "{name}: {some} at 200 notes, {many} at {many_notes}"
+                ));
             }
             continue;
         }
@@ -289,14 +303,14 @@ fn a_key_reruns_the_same_views_whatever_the_notebook_holds() {
         if name == "items" {
             if some != many || one > some {
                 misses.push(format!(
-                    "{name}: {one} at 1 note, {some} at 200, {many} at 10k"
+                    "{name}: {one} at 1 note, {some} at 200, {many} at {many_notes}"
                 ));
             }
             continue;
         }
         if one != some || one != many {
             misses.push(format!(
-                "{name}: {one} at 1 note, {some} at 200, {many} at 10k"
+                "{name}: {one} at 1 note, {some} at 200, {many} at {many_notes}"
             ));
         }
     }
@@ -339,7 +353,11 @@ fn mail_does_the_work_of_what_it_shows() {
 /// 200 notes and at 2k ([`a_key_reruns_the_same_views_whatever_the_notebook_holds`]).
 #[test]
 fn a_keystroke_is_one_cheap_change() {
-    let records = bench_at("notes", vec![SMALL / 5, LARGE / 5], 3);
+    // A small notebook and a large one of this test's own, which is about a letter's cost, not
+    // about the flat-in-N sizes above.
+    const FEW: usize = 200;
+    const MANY: usize = 2_000;
+    let records = bench_at("notes", vec![FEW, MANY], 2);
     let work = |size: &str| {
         let record = find(&records, "keystroke", size)
             .unwrap_or_else(|| panic!("the keystroke at {size} counts work"));
@@ -351,9 +369,10 @@ fn a_keystroke_is_one_cheap_change() {
         Work::first_of_record(record)
             .unwrap_or_else(|| panic!("the keystroke at {size} counts work"))
     };
-    let (small, large) = (work("200"), work("2k"));
+    let (few, many) = (at(FEW), at(MANY));
+    let (small, large) = (work(&few), work(&many));
     let mut misses = Vec::new();
-    for (size, at, first) in [("200", small, first("200")), ("2k", large, first("2k"))] {
+    for (size, at, first) in [(&few, small, first(&few)), (&many, large, first(&many))] {
         // One letter is one change of the document, never one per thing it touched, and never
         // none: a letter the document does not hold is a letter the person lost.
         for (which, at) in [("a steady keystroke", at), ("the first", first)] {
@@ -519,12 +538,12 @@ fn exporting_a_notebook_costs_its_notes() {
     assert!(misses.is_empty(), "{}", misses.join("\n"));
 }
 
-/// One action that adds every item of a workspace at once, as an import of ten thousand tasks
+/// One action that adds every item of a workspace at once, as an import of four thousand tasks
 /// does: past a few hundred items it is more than a change documents whole, and keeps its large
 /// parts as content. Opening such a workspace builds its index in what its items cost, and an
 /// item's history says the import created it, when the import says it did.
 #[test]
-fn an_import_of_ten_thousand_items_reads_as_what_it_made() {
+fn an_import_of_four_thousand_items_reads_as_what_it_made() {
     use tilolang_runtime::store::{Store as _, VersionKind};
     const TASKS: &str = "so.tilo.lang.tasks";
     let packages = compile(&apps().join("tasks")).unwrap_or_else(|e| panic!("tasks: {e}"));
@@ -603,7 +622,7 @@ fn an_import_of_ten_thousand_items_reads_as_what_it_made() {
             "at {n}, the import is all it holds: {versions:?}"
         );
     }
-    // Ten times the items cost about ten times as much, never their square.
+    // Four times the items cost far from their square.
     assert!(
         large < small.saturating_mul(20),
         "the index of {LARGE} imported tasks took {large:?}, of {SMALL} {small:?}"
