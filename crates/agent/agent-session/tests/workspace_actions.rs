@@ -137,6 +137,9 @@ mod invocations_read;
 #[path = "workspace_actions/joining.rs"]
 mod joining;
 #[cfg(test)]
+#[path = "workspace_actions/key_writes.rs"]
+mod key_writes;
+#[cfg(test)]
 #[path = "workspace_actions/mcp_note_create.rs"]
 mod mcp_note_create;
 #[cfg(test)]

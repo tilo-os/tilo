@@ -355,7 +355,7 @@ impl StatePeer {
             .workspace_policy(&self.core.workspace)
             .clone();
         let (person, foreign, delegate) = self.member_of(&source, now)?;
-        Ok(access_of(policy, person, foreign, delegate))
+        Ok(access_of(policy, person, foreign, delegate).granted(self.approved_keys(now)))
     }
     /// The access of the device `source` under `policy`, the workspace's
     /// own: [`Self::permissions`]'s access, sharing the policy every
@@ -367,7 +367,7 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<MemberAccess, MembershipError> {
         let (person, foreign, delegate) = self.member_of(&source, now)?;
-        Ok(access_of(policy, person, foreign, delegate))
+        Ok(access_of(policy, person, foreign, delegate).granted(self.approved_keys(now)))
     }
     /// Who the device `source` is at `now`, apart from the workspace's policy:
     /// its person, whether its device is foreign, and the delegation it holds.
@@ -411,7 +411,8 @@ impl StatePeer {
             hex::encode(cert.user_public_key),
             backend::member::foreign(cert, &self.core.origin),
             delegate,
-        ))
+        )
+        .granted(self.approved_keys(now)))
     }
     /// How `write`, a write to `document` of `app`, is decided at `now`: what
     /// its author may do, and whether the write is history of a device its
@@ -764,6 +765,52 @@ impl StatePeer {
         let installation = identity.delegate?.installation?;
         (installation.appearance == crate::installation::AppearancePolicy::Personas)
             .then(|| collab_types::MemberId::bot(installation.id))
+    }
+
+    /// What the keys their people approved for this workspace may do at
+    /// `now`, as grants naming each key's agent
+    /// ([`collab_types::workspace_grant::key_agent_id`]): what an agent of its
+    /// person may ([`tilo_action_policy::Acting::handed_preset`]). A key is
+    /// approved where the workspace holds its certificate, which its person's
+    /// root signed, live and unrevoked, as an agent's grant reaching this
+    /// workspace, and lists no revocation of its grant. That certificate is
+    /// the grant its person signed when they approved the key, so
+    /// whoever carries the key's calls out and signs what they change decides
+    /// nothing about it: every device that holds the workspace reads the
+    /// same grants, and the person and the signer still bound the agent.
+    pub(crate) fn approved_keys(&self, now: SystemTime) -> Vec<tilo_action_policy::Grant> {
+        let workspace = &self.core.workspace;
+        let grants = self.governance().workspace_grants();
+        let now_ms = now_ns(now) / 1_000_000;
+        // The workspace lists the grant once a server admitted the key to it;
+        // the person revoking it there ends it, whatever its certificate says.
+        let ended = |device: &[u8; 32]| {
+            let id = collab_types::workspace_grant::WorkspaceGrant::id_of(device);
+            grants.iter().any(|grant| {
+                grant.id == id
+                    && (grant.revoked_ms.is_some()
+                        || grant.expires_ms.is_some_and(|expiry| now_ms >= expiry))
+            })
+        };
+        self.core
+            .certificates
+            .keys()
+            .filter(|device| !ended(device))
+            .filter_map(|device| {
+                let cert = self.certificate(device, now).ok()?;
+                cert.capabilities
+                    .agent
+                    .filter(|scope| scope.reaches(workspace))?;
+                Some(
+                    tilo_action_policy::Acting::handed_agent(
+                        collab_types::workspace_grant::key_agent_id(device),
+                        hex::encode(cert.user_public_key),
+                    )
+                    .handed_preset(workspace),
+                )
+            })
+            .flatten()
+            .collect()
     }
 
     /// The authority of `source` for the change `envelope` makes on `record`

@@ -44,6 +44,26 @@ pub struct WorkspaceGrant {
     pub revoked_ms: Option<u64>,
 }
 
+/// The agent member a key the person approved acts as wherever it is
+/// admitted: `grant-` and its device key, hex. History names its changes by
+/// it, and receivers find the key's certificate by it
+/// ([`key_of_agent`]).
+#[must_use]
+pub fn key_agent_id(device_public_key: &[u8; 32]) -> String {
+    format!("{KEY_AGENT_PREFIX}{}", hex::encode(device_public_key))
+}
+
+/// The device key of the key whose agent `agent` is ([`key_agent_id`]);
+/// `None` for any other agent.
+#[must_use]
+pub fn key_of_agent(agent: &str) -> Option<[u8; 32]> {
+    let hex = agent.strip_prefix(KEY_AGENT_PREFIX)?;
+    hex::decode(hex).ok()?.try_into().ok()
+}
+
+/// What [`key_agent_id`] starts with.
+const KEY_AGENT_PREFIX: &str = "grant-";
+
 impl WorkspaceGrant {
     /// The id a key's grant is known by wherever it is read: its device key's
     /// digest, so every API server and every holder derive the same grant
