@@ -6,9 +6,10 @@
 //! the approver's Finalized. Only the way they are carried differs.
 
 use anyhow::{Context, bail};
-use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
-use tilo_user_identity::DeviceCert;
+use tilo_user_identity::canonical::signing_digest;
+use tilo_user_identity::{DeviceCert, StatementSigner};
 
 use crate::root::RootSigner;
 
@@ -23,7 +24,11 @@ pub const NEARBY_PORT: u16 = 23_831;
 /// The largest datagram one enrollment carries on the local network.
 pub const MAX_PACKET: usize = 60 * 1024;
 /// The domain a response's signature is over, before the payload.
-pub const RESPONSE_DOMAIN: &[u8] = b"tilo-host-enrollment-response-v1\0";
+pub const RESPONSE_DOMAIN: &[u8] = b"tilo-enrollment-response-v2\0";
+/// The domain an acknowledgement's signature is over, before the payload.
+pub const ACK_DOMAIN: &[u8] = b"tilo-enrollment-ack-v1\0";
+/// The domain a Finalized's signature is over, before the payload.
+pub const FINALIZED_DOMAIN: &[u8] = b"tilo-enrollment-finalized-v1\0";
 /// The domain a nearby pair offer is sealed under.
 pub const PAIR_DOMAIN: &[u8] = b"tilo-nearby-home-peer-offer-v1\0";
 /// Solicitation magic: the device reads HPKE pair offers.
@@ -124,15 +129,16 @@ pub enum Approver<'a> {
 }
 
 impl Approver<'_> {
-    /// Sign `message` as this side of the pairing.
+    /// Sign `digest`, a statement's domain-separated digest, as this side of
+    /// the pairing.
     ///
     /// # Errors
     ///
     /// The identity's key refuses, or cannot sign.
-    pub fn sign(&self, message: &[u8]) -> anyhow::Result<Vec<u8>> {
+    pub fn sign(&self, digest: &[u8; 32]) -> anyhow::Result<Vec<u8>> {
         Ok(match self {
-            Self::Root(root) => root.sign_message(message)?.to_vec(),
-            Self::Introducer { device, .. } => device.sign(message).to_bytes().to_vec(),
+            Self::Root(root) => root.sign_digest(digest)?.to_vec(),
+            Self::Introducer { device, .. } => device.sign_digest(digest)?.to_vec(),
         })
     }
 }
@@ -346,6 +352,14 @@ fn response_digest(bytes: &[u8]) -> [u8; 32] {
     *blake3::hash(bytes).as_bytes()
 }
 
+fn ack_digest(payload: &AckPayload) -> anyhow::Result<[u8; 32]> {
+    signing_digest(ACK_DOMAIN, payload).map_err(|error| anyhow::anyhow!("{error}"))
+}
+
+fn finalized_digest(payload: &FinalizedPayload) -> anyhow::Result<[u8; 32]> {
+    signing_digest(FINALIZED_DOMAIN, payload).map_err(|error| anyhow::anyhow!("{error}"))
+}
+
 /// The machine's acknowledgement of its signed configuration.
 pub fn make_ack(
     response_bytes: &[u8],
@@ -357,10 +371,9 @@ pub fn make_ack(
         device_public_key: device.verifying_key().to_bytes(),
         response_digest: response_digest(response_bytes),
     };
-    let encoded = postcard::to_stdvec(&payload)?;
     let ack = Ack {
+        signature: device.sign_digest(&ack_digest(&payload)?)?.to_vec(),
         payload,
-        signature: device.sign(&encoded).to_bytes().to_vec(),
     };
     Ok(postcard::to_stdvec(&ack)?)
 }
@@ -385,7 +398,7 @@ pub fn verify_ack(
         .try_into()
         .map_err(|_| anyhow::anyhow!("acknowledgement signature has the wrong length"))?;
     VerifyingKey::from_bytes(&device_public_key)?.verify(
-        &postcard::to_stdvec(&ack.payload)?,
+        &ack_digest(&ack.payload)?,
         &Signature::from_bytes(&signature),
     )?;
     Ok(())
@@ -404,11 +417,8 @@ pub fn make_finalized(
         device_public_key,
         response_digest: response_digest(response_bytes),
     };
-    let encoded = postcard::to_stdvec(&payload)?;
-    Ok(postcard::to_stdvec(&Finalized {
-        payload,
-        signature: approver.sign(&encoded)?,
-    })?)
+    let signature = approver.sign(&finalized_digest(&payload)?)?;
+    Ok(postcard::to_stdvec(&Finalized { payload, signature })?)
 }
 
 /// Check the approver's Finalized matches this exchange and its signature.
@@ -428,7 +438,7 @@ pub fn verify_finalized(
     }
     crate::verify_signature(
         approver_public_key,
-        &postcard::to_stdvec(&finalized.payload)?,
+        &finalized_digest(&finalized.payload)?,
         &finalized.signature,
     )
 }

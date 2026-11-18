@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use ed25519_dalek::SigningKey;
+use tilo_device_identity::IdentityPaths;
 use tilo_enrollment::approval::ApprovalOptions;
 use tilo_enrollment::protocol::{
     EnrollmentKind, Request, decrypt_response, encrypt_request, make_ack, verify_finalized,
@@ -28,7 +29,7 @@ use tilo_enrollment::transport::{
 use tilo_enrollment::{now_ns, verify_response};
 use tilo_peer_state::{PeerPersonal, PersonalStore, PersonalSync};
 use tilo_user_identity::{
-    DeviceCapabilities, DeviceCert, Dial, IdentityPaths, decode_enrollment_token, sign_device_cert,
+    DeviceCapabilities, DeviceCert, Dial, decode_enrollment_token, sign_device_cert,
     verify_device_cert,
 };
 
@@ -67,16 +68,16 @@ impl Keeper {
         paths.ensure_directories().unwrap();
         let root_key = SigningKey::from_bytes(&[seed; 32]);
         let device = SigningKey::from_bytes(&[seed.wrapping_add(100); 32]);
-        tilo_user_identity::persist::write_signing_key(&paths.user_privkey, &root_key).unwrap();
-        tilo_user_identity::persist::write_public_key(
+        tilo_device_identity::persist::write_signing_key(&paths.user_privkey, &root_key).unwrap();
+        tilo_device_identity::persist::write_public_key(
             &paths.user_pubkey,
             &root_key.verifying_key().to_bytes(),
         )
         .unwrap();
-        tilo_user_identity::persist::write_device_key(&paths.device_privkey, &device).unwrap();
+        tilo_device_identity::persist::write_device_key(&paths.device_privkey, &device).unwrap();
         let cert = certificate(&root_key, &device, "Trusted laptop");
-        tilo_user_identity::persist::write_device_cert(&paths.device_cert, &cert).unwrap();
-        tilo_user_identity::persist::write_device_cert(
+        tilo_device_identity::persist::write_device_cert(&paths.device_cert, &cert).unwrap();
+        tilo_device_identity::persist::write_device_cert(
             &paths.device_cert_for_user(&root_key.verifying_key().to_bytes()),
             &cert,
         )

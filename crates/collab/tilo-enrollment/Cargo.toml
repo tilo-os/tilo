@@ -26,6 +26,7 @@ runtime-identity = { path = "../../runtime/runtime-identity" }
 serde.workspace = true
 serde_json.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-device-identity = { path = "../tilo-device-identity" }
 fs = { package = "tilo-fs", path = "../../system/fs" }
 tilo-identity = { path = "../../runtime/tilo-identity" }
 tilo-server-protocol = { path = "../../server/tilo-server-protocol" }

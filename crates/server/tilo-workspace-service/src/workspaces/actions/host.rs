@@ -564,10 +564,6 @@ impl Workspaces {
     /// certificate the server's handshake verified for it, asked in the
     /// workspace `workspace_id` carries: an agent's call as its grants there
     /// answer ([`agents`]).
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one dispatch table for the host's operations, each a line or two"
-    )]
     pub(super) async fn account_invoke(
         &self,
         workspace_id: Option<WorkspaceId>,

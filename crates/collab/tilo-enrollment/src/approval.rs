@@ -11,10 +11,11 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
+use tilo_device_identity::IdentityPaths;
 use tilo_identity::enrollment::{Certifier, NonceStore, Redemption};
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{
-    DeviceCert, IdentityPaths, decode_enrollment_token, verify_device_cert, verify_enrollment_token,
+    DeviceCert, decode_enrollment_token, verify_device_cert, verify_enrollment_token,
 };
 
 use crate::protocol::{
@@ -245,12 +246,12 @@ fn approval_projection(
                 capabilities,
                 false,
                 identity.user_public_key,
-                |payload| {
-                    identity
+                |digest| {
+                    Ok(identity
                         .root
                         .as_ref()
                         .context("this device holds no identity root")?
-                        .sign_message(payload)
+                        .sign_digest(digest)?)
                 },
             )?;
             let mut server_workspace_ids = identity.server_workspace_ids.clone();
@@ -360,11 +361,14 @@ fn redeem_pending(
         .identity_dir
         .map(|identity_dir| fleet_store(options.identity_root, identity_dir, options.person_uid));
     let sign_here = |digest: &[u8]| {
+        let digest: &[u8; 32] = digest
+            .try_into()
+            .map_err(|_| std::io::Error::other("a certificate digest is 32 bytes"))?;
         identity
             .root
             .as_ref()
             .ok_or_else(|| std::io::Error::other("this device holds no identity root"))?
-            .sign_message(digest)
+            .sign_digest(digest)
             .map_err(|error| std::io::Error::other(error.to_string()))
     };
     tilo_identity::enrollment::redeem(

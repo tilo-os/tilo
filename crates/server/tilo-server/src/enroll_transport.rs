@@ -6,7 +6,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use iroh::RelayMap;
-use tilo_user_identity::{Dial, IdentityPaths};
+use tilo_device_identity::IdentityPaths;
+use tilo_user_identity::Dial;
 
 use anyhow::{Context, bail};
 

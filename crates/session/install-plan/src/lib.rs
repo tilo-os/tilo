@@ -429,7 +429,9 @@ mod tests {
     /// endpoint: a machine dials what answers enrollments.
     #[test]
     fn a_token_names_the_enrollment_endpoint_of_the_device_that_made_it() {
-        use tilo_user_identity::persist::{write_device_cert, write_public_key, write_signing_key};
+        use tilo_device_identity::persist::{
+            write_device_cert, write_public_key, write_signing_key,
+        };
         let root = tempfile::tempdir().unwrap();
         let paths = IdentityPaths::under(root.path());
         paths.ensure_directories().unwrap();

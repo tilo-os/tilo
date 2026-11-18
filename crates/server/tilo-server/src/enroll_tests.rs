@@ -1,6 +1,5 @@
 use super::*;
 
-use ed25519_dalek::Signer;
 use tilo_enrollment::approval::{ApprovalOptions, register_home_peer};
 use tilo_enrollment::protocol::{
     Approver, Response, ResponseRoute, decrypt_pair_offer, decrypt_request, encrypt_response,
@@ -8,7 +7,7 @@ use tilo_enrollment::protocol::{
 };
 
 use tilo_enrollment::ISSUANCE_CLOCK_ALLOWANCE_NS;
-use tilo_enrollment::response_preimage;
+use tilo_enrollment::response_statement_digest;
 use tilo_enrollment::sign_response;
 use tilo_identity::certification_ceremony::pairing_code;
 use tilo_server::HomePeerRegistration;

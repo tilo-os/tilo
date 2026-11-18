@@ -20,9 +20,11 @@ pub mod waiting;
 
 use anyhow::{Context, bail};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use tilo_device_identity::IdentityPaths;
 use tilo_identity::device_fleet::DeviceFleetStore;
 use tilo_server_protocol::HomePeerRegistration;
-use tilo_user_identity::{DeviceCert, IdentityPaths};
+use tilo_user_identity::DeviceCert;
+use tilo_user_identity::canonical::signing_digest;
 
 pub use protocol::{
     Ack, AckPayload, Approver, EnrollmentKind, Finalized, FinalizedPayload, IntroducedResponse,
@@ -249,11 +251,9 @@ pub fn read_bounded_json<T: serde::de::DeserializeOwned>(
         .transpose()
 }
 
-/// The preimage of a response's signature: the domain tag then the payload.
-pub fn response_preimage(payload: &ResponsePayload) -> anyhow::Result<Vec<u8>> {
-    let mut preimage = protocol::RESPONSE_DOMAIN.to_vec();
-    preimage.extend(postcard::to_stdvec(payload)?);
-    Ok(preimage)
+/// A response's signature digest: the domain tag then the payload.
+pub fn response_statement_digest(payload: &ResponsePayload) -> anyhow::Result<[u8; 32]> {
+    signing_digest(protocol::RESPONSE_DOMAIN, payload).map_err(|error| anyhow::anyhow!("{error}"))
 }
 
 /// Sign a device certificate using the authenticated person root.
@@ -271,7 +271,7 @@ pub fn sign_response(
     payload: ResponsePayload,
     approver: Approver<'_>,
 ) -> anyhow::Result<zeroize::Zeroizing<Vec<u8>>> {
-    let signature = approver.sign(&response_preimage(&payload)?)?;
+    let signature = approver.sign(&response_statement_digest(&payload)?)?;
     Ok(zeroize::Zeroizing::new(match approver {
         Approver::Root(_) => postcard::to_stdvec(&Response { payload, signature })?,
         Approver::Introducer { issuer, .. } => postcard::to_stdvec(&IntroducedResponse {
@@ -305,7 +305,7 @@ pub fn verify_response(
     if let Ok(response) = postcard::from_bytes::<Response>(bytes)
         && verify_signature(
             token.user_public_key,
-            &response_preimage(&response.payload)?,
+            &response_statement_digest(&response.payload)?,
             &response.signature,
         )
         .is_ok()
@@ -323,7 +323,7 @@ pub fn verify_response(
         .context("the approving device is not certified by the identity")?;
     verify_signature(
         issuer.device_public_key,
-        &response_preimage(&response.payload)?,
+        &response_statement_digest(&response.payload)?,
         &response.signature,
     )
     .context("enrollment response was changed in transit")?;

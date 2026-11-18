@@ -19,11 +19,12 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use rand::Rng as _;
 use serde::{Deserialize, Serialize};
 use socket2::{Domain, Protocol, Socket, Type};
+use tilo_device_identity::IdentityPaths;
 use tilo_identity::certification_ceremony::pairing_code;
 use tilo_identity::device_fleet::DeviceFleet;
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{
-    DeviceCapabilities, DeviceCert, IdentityPaths, decode_enrollment_token, verify_device_cert_at,
+    DeviceCapabilities, DeviceCert, decode_enrollment_token, verify_device_cert_at,
     verify_enrollment_token,
 };
 
@@ -719,7 +720,7 @@ fn commit_staged_personal_enrollment(
     // The public key and certificates are public, whatever the umask this
     // commit runs under: the session reads them to verify the device, and
     // reaches the per-identity ones through a directory shared like its parent.
-    let public = tilo_user_identity::persist::PUBLIC_FILE_MODE;
+    let public = tilo_device_identity::persist::PUBLIC_FILE_MODE;
     tilo_files::native::atomic::write_with_mode(
         &paths.user_pubkey,
         &marker.user_public_key,
@@ -1036,7 +1037,7 @@ fn prepare_join(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result<Pr
             |_| validate_requester(requester_lease),
         )?;
     }
-    let (device, _) = tilo_user_identity::persist::load_or_create_device_key(&paths)?;
+    let (device, _) = tilo_device_identity::persist::load_or_create_device_key(&paths)?;
     let request = Request {
         token: token_text.to_owned(),
         device_public_key: device.verifying_key().to_bytes(),
@@ -1173,7 +1174,7 @@ fn install_answer(
     } else {
         // The home-peer path has no multi-file member projection, but still waits
         // for Finalized before changing its active identity binding.
-        tilo_user_identity::persist::write_public_key(
+        tilo_device_identity::persist::write_public_key(
             &paths.user_pubkey,
             &payload.cert.user_public_key,
         )?;
@@ -1190,8 +1191,8 @@ fn install_answer(
                 .parent()
                 .context("per-user certificate has no directory")?,
         )?;
-        tilo_user_identity::persist::write_device_cert(&per_user_cert, &payload.cert)?;
-        tilo_user_identity::persist::write_device_cert(&paths.device_cert, &payload.cert)?;
+        tilo_device_identity::persist::write_device_cert(&per_user_cert, &payload.cert)?;
+        tilo_device_identity::persist::write_device_cert(&paths.device_cert, &payload.cert)?;
     }
     // The identity directories themselves are image layout and keep their owner
     // and group; only what this enrollment created below them takes its
@@ -1338,7 +1339,7 @@ fn pair(options: JoinOptions<'_>, status_file: Option<&std::path::Path>) -> anyh
     validate_requester(requester_lease)?;
     let paths = IdentityPaths::under(identity_root);
     paths.ensure_directories()?;
-    let (device, _) = tilo_user_identity::persist::load_or_create_device_key(&paths)?;
+    let (device, _) = tilo_device_identity::persist::load_or_create_device_key(&paths)?;
     let server_node_id = tilo_server::daemon::server_node_id(&device);
     let label: String = label.chars().take(80).collect();
     if !tilo_server::valid_home_peer_label(&label) {
@@ -1634,7 +1635,7 @@ fn approve(options: &ApprovalOptions<'_>) -> anyhow::Result<()> {
 
 fn device_key(identity_root: &std::path::Path) -> anyhow::Result<()> {
     let paths = IdentityPaths::under(identity_root);
-    let (device, _) = tilo_user_identity::persist::load_or_create_device_key(&paths)?;
+    let (device, _) = tilo_device_identity::persist::load_or_create_device_key(&paths)?;
     println!(
         "{}",
         serde_json::json!({
@@ -1691,7 +1692,7 @@ fn certify(options: &CertifyOptions<'_>) -> anyhow::Result<()> {
     } = *options;
     let root: Box<dyn RootSigner> = match root_key {
         Some(path) => Box::new(
-            tilo_user_identity::persist::read_owned_signing_key(path)
+            tilo_device_identity::persist::read_owned_signing_key(path)
                 .with_context(|| format!("read {}", path.display()))?,
         ),
         None => load_root(identity_root, identity_dir)?,
@@ -1726,7 +1727,7 @@ fn certify(options: &CertifyOptions<'_>) -> anyhow::Result<()> {
         fleet_store(identity_root, identity_dir, PERSON_UID.get().copied())
             .remember_certificate(&hex::encode(cert.user_public_key), cert.clone())?;
     }
-    tilo_user_identity::persist::write_device_cert(out, &cert)?;
+    tilo_device_identity::persist::write_device_cert(out, &cert)?;
     Ok(())
 }
 
@@ -1750,7 +1751,7 @@ fn revoke(options: &RevokeArgs) -> anyhow::Result<()> {
         .ok()
         .and_then(|bytes| bytes.try_into().ok())
         .context("--device must be a 32-byte hex public key")?;
-    let root = tilo_user_identity::persist::read_owned_signing_key(root_key)
+    let root = tilo_device_identity::persist::read_owned_signing_key(root_key)
         .with_context(|| format!("read {}", root_key.display()))?;
     let (entry, changed) = tilo_server::root_signer::revoke_device(state, &root, device, reason)?;
     let device = hex::encode(entry.revoked_device_public_key);
@@ -1771,16 +1772,16 @@ fn install_cert(
     identity_dir: &std::path::Path,
     cert_path: &std::path::Path,
 ) -> anyhow::Result<()> {
-    let cert = tilo_user_identity::persist::read_device_cert(cert_path)
+    let cert = tilo_device_identity::persist::read_device_cert(cert_path)
         .with_context(|| format!("read {}", cert_path.display()))?;
     verify_device_cert_at(&cert, now_ns()?).context("the certificate does not verify")?;
     let paths = IdentityPaths::under(identity_root);
-    let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
+    let device = tilo_device_identity::persist::read_device_key(&paths.device_privkey)
         .context("this device has no key; run device-key first")?;
     if device.verifying_key().to_bytes() != cert.device_public_key {
         bail!("the certificate names another device");
     }
-    if let Ok(user) = tilo_user_identity::persist::read_public_key(&paths.user_pubkey)
+    if let Ok(user) = tilo_device_identity::persist::read_public_key(&paths.user_pubkey)
         && user != cert.user_public_key
     {
         bail!("this device already belongs to another identity");
@@ -2019,7 +2020,7 @@ fn run() -> anyhow::Result<()> {
                 port: NEARBY_PORT,
                 ready: None,
                 approved: approved_cert
-                    .map(|path| tilo_user_identity::persist::read_device_cert(&path))
+                    .map(|path| tilo_device_identity::persist::read_device_cert(&path))
                     .transpose()
                     .context("read the approved certificate")?
                     .as_ref(),

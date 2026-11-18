@@ -4,13 +4,14 @@
 
 use crate::JoinOptions;
 use crate::join_transport::{self, qr};
+use tilo_device_identity::IdentityPaths;
 use tilo_enrollment::approval::ApprovalOptions;
 use tilo_enrollment::protocol::EnrollmentKind;
 use tilo_enrollment::transport;
 use tilo_enrollment::{Decision, Person, WaitingMachine, fleet_store, now_ns};
 use tilo_identity::certification_ceremony::pairing_code;
 use tilo_user_identity::{
-    DeviceCapabilities, DeviceCert, Dial, IdentityPaths, sign_device_cert, verify_device_cert,
+    DeviceCapabilities, DeviceCert, Dial, sign_device_cert, verify_device_cert,
 };
 
 fn runtime() -> tokio::runtime::Runtime {
@@ -72,13 +73,13 @@ impl Approver {
         paths.ensure_directories().unwrap();
         let root_key = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
         let device = ed25519_dalek::SigningKey::from_bytes(&[32; 32]);
-        tilo_user_identity::persist::write_signing_key(&paths.user_privkey, &root_key).unwrap();
-        tilo_user_identity::persist::write_public_key(
+        tilo_device_identity::persist::write_signing_key(&paths.user_privkey, &root_key).unwrap();
+        tilo_device_identity::persist::write_public_key(
             &paths.user_pubkey,
             &root_key.verifying_key().to_bytes(),
         )
         .unwrap();
-        tilo_user_identity::persist::write_device_key(&paths.device_privkey, &device).unwrap();
+        tilo_device_identity::persist::write_device_key(&paths.device_privkey, &device).unwrap();
         let mut cert = DeviceCert {
             user_public_key: root_key.verifying_key().to_bytes(),
             device_public_key: device.verifying_key().to_bytes(),
@@ -90,8 +91,8 @@ impl Approver {
             issuer: None,
         };
         sign_device_cert(&mut cert, &root_key).unwrap();
-        tilo_user_identity::persist::write_device_cert(&paths.device_cert, &cert).unwrap();
-        tilo_user_identity::persist::write_device_cert(
+        tilo_device_identity::persist::write_device_cert(&paths.device_cert, &cert).unwrap();
+        tilo_device_identity::persist::write_device_cert(
             &paths.device_cert_for_user(&root_key.verifying_key().to_bytes()),
             &cert,
         )
@@ -138,7 +139,7 @@ impl Machine {
         let paths = IdentityPaths::under(root.path());
         paths.ensure_directories().unwrap();
         let device = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
-        tilo_user_identity::persist::write_device_key(&paths.device_privkey, &device).unwrap();
+        tilo_device_identity::persist::write_device_key(&paths.device_privkey, &device).unwrap();
         Self {
             root,
             identities,
@@ -161,7 +162,7 @@ impl Machine {
 
     fn enrolled(&self) -> DeviceCert {
         let paths = IdentityPaths::under(self.root.path());
-        let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert).unwrap();
+        let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert).unwrap();
         verify_device_cert(&cert).expect("the certificate chains to the identity");
         cert
     }
