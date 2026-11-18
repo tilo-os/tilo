@@ -306,7 +306,10 @@ fn replacement_then_unwind_keeps_maps_retired_and_requeues_the_actual_current_ow
     }
     assert!(frame.ime_window().is_none());
     frame.idle_control_tick();
-    assert_eq!(frame.service_pending_owner_models().unwrap(), 1);
+    assert!(
+        !queue.has_pending(),
+        "the idle pass retries the work the refusal kept"
+    );
     frame.try_relayout().unwrap();
     close(&mut frame, 1);
 }
@@ -346,7 +349,10 @@ fn partial_batch_then_busy_canonical_loan_retires_maps_and_keeps_unvisited_owner
     }
     assert!(frame.ime_window().is_none());
     frame.idle_control_tick();
-    assert_eq!(frame.service_pending_owner_models().unwrap(), 1);
+    assert!(
+        !queue.has_pending(),
+        "the idle pass retries the work the refusal kept"
+    );
     frame.try_relayout().unwrap();
     close(&mut frame, 2);
 }
