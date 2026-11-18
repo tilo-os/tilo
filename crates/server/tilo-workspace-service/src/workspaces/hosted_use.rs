@@ -1153,11 +1153,43 @@ impl Workspaces {
         workspace: WorkspaceId,
         person: [u8; 32],
     ) -> Option<[u8; 32]> {
+        self.device_beside(workspace, person, None).await
+    }
+
+    /// The device of `person`'s own that something read for them alone acts as in `workspace`:
+    /// the one it certified most recently and admits now that is neither this server's own
+    /// device nor one this server placed.
+    ///
+    /// This server's own device is a member of every workspace it governs, and on a person's
+    /// own server it is certified in that person's name: [`Self::person_device`] answers it
+    /// where it is their newest, and a turn in that workspace acts as it. A read for a person
+    /// in another workspace of theirs never does, or it would read with the server's own
+    /// membership there. `None` for a workspace not governed here, or a person it admits on
+    /// no other device.
+    pub async fn persons_own_device(
+        &self,
+        workspace: WorkspaceId,
+        person: [u8; 32],
+    ) -> Option<[u8; 32]> {
+        let never = self.governor().device_public_key;
+        self.device_beside(workspace, person, Some(never)).await
+    }
+
+    /// [`GovernedWorkspace::person_device`] in `workspace`, where neither a device this server
+    /// placed nor `never` is the one.
+    async fn device_beside(
+        &self,
+        workspace: WorkspaceId,
+        person: [u8; 32],
+        never: Option<[u8; 32]>,
+    ) -> Option<[u8; 32]> {
         let governed = self.held(workspace).await?;
         let runtime = governed.lock().await;
         let placed = &self.inner.host.environments;
         let now_ns = tilo_clock::unix_now_ns();
-        runtime.person_device(&person, |device| placed.of(device, now_ns).is_some())
+        runtime.person_device(&person, |device| {
+            never.as_ref() == Some(device) || placed.of(device, now_ns).is_some()
+        })
     }
 }
 
