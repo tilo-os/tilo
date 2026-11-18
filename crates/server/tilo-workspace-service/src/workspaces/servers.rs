@@ -49,6 +49,7 @@ use tilo_user_identity::DeviceCert;
 use super::Workspaces;
 
 pub mod device;
+pub mod machine;
 pub mod plan;
 
 /// The Servers workspace's document of the person's servers.
@@ -203,6 +204,14 @@ impl Servers {
             .filter(|server| !server.retired)
             .ok_or_else(|| Refusal::new("no such server"))
     }
+
+    /// The machines still to install, by the plan's id: the person's devices
+    /// read what each waits for, and the machine reads its own plan.
+    pub fn waiting(&self) -> impl Iterator<Item = (&Id, &Server)> {
+        self.servers
+            .iter()
+            .filter(|(_, server)| server.plan.planned())
+    }
 }
 
 impl Server {
@@ -220,6 +229,30 @@ impl Server {
         self.asked
             .iter()
             .filter(|(_, asked)| asked.answer.is_empty())
+    }
+
+    /// The plan this entry keeps, as the document the machine installs from:
+    /// its name, everything it was planned with, what its person's devices
+    /// answered since, and what it still asks. The entry is the plan's only
+    /// home, so this is the same document for the person and for the machine.
+    ///
+    /// It is `Err` when the entry does not read back as a plan, which only a
+    /// value kept outside the plan's own rules makes.
+    ///
+    /// # Errors
+    /// The entry does not read back as a plan.
+    pub fn install_plan(&self) -> Result<install_profile_model::plan::Plan, String> {
+        let hosting = self
+            .holds
+            .iter()
+            .map(
+                |(workspace, holding)| install_profile_model::plan::Holding {
+                    workspace: workspace.as_str().to_owned(),
+                    mode: holding.mode.clone(),
+                },
+            )
+            .collect();
+        self.plan.document(&self.label, hosting)
     }
 
     /// What was asked of it and answered, newest first.
@@ -262,15 +295,18 @@ impl Servers {
             nonce,
             expires_at_ns,
             destination,
+            network,
             unlock,
             updates,
             disk,
             open,
+            hosting,
         } = PendingPlan::of(&document);
         match self.servers.get_mut(&id) {
             Some(server) => {
                 server.label = label;
                 server.plan.destination = destination;
+                server.plan.network = network;
                 server.plan.unlock = unlock;
                 server.plan.updates = updates;
                 server.plan.disk = disk;
@@ -278,6 +314,7 @@ impl Servers {
                 server.plan.revision = server.plan.revision.saturating_add(1);
                 server.plan.nonce = nonce;
                 server.plan.expires_at_ns = expires_at_ns;
+                server.holds = hosting;
                 plan::PLANNED.clone_into(&mut server.plan.status);
             }
             None => {
@@ -291,6 +328,7 @@ impl Servers {
                             nonce,
                             expires_at_ns,
                             destination,
+                            network,
                             unlock,
                             updates,
                             disk,
@@ -298,6 +336,7 @@ impl Servers {
                             revision: 1,
                             ..plan::Pending::default()
                         },
+                        holds: hosting,
                         ..Server::default()
                     },
                 );
@@ -864,10 +903,12 @@ struct PendingPlan {
     nonce: String,
     expires_at_ns: u64,
     destination: String,
+    network: plan::AddressBy,
     unlock: String,
     updates: String,
     disk: String,
     open: String,
+    hosting: Collection<Holding>,
 }
 
 impl PendingPlan {
@@ -876,10 +917,23 @@ impl PendingPlan {
             nonce: document.token.nonce.clone(),
             expires_at_ns: document.token.expires_at_ns,
             destination: document.destination.clone(),
+            network: plan::AddressBy::of(&document.network),
             unlock: document.unlock.clone(),
             updates: document.updates.clone(),
             disk: document.disk.encode(),
             open: document.open_choices().join(","),
+            hosting: document
+                .hosting
+                .iter()
+                .map(|held| {
+                    (
+                        Id::from_raw(held.workspace.clone()),
+                        Holding {
+                            mode: held.mode.clone(),
+                        },
+                    )
+                })
+                .collect(),
         }
     }
 }
