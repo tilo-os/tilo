@@ -565,7 +565,7 @@ impl CameraApp {
                 &[("app", ui::i18n::ArgValue::Text(label.to_owned()))],
             ),
         );
-        ui::framework::LiveRow::new(format!("{app_id}.app"), "applications.app", label)
+        ui::framework::LiveRow::typed::<ui::framework::Application>(format!("{app_id}.app"), label)
             .operation(spec)
     }
 
@@ -595,8 +595,7 @@ impl CameraApp {
         // affordance. The action payload itself delegates to Photos, but the
         // host can still re-resolve this address against the current Camera
         // resource surface before permitting the launch.
-        let row = ui::framework::LiveRow::new(
-            "camera.capture",
+        let row = ui::framework::LiveRow::typed::<crate::row_types::Capture>(
             "camera.capture",
             crate::CATALOG.t("camera-resource-capture"),
         )
