@@ -1,4 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
+#![allow(
+    clippy::items_after_statements,
+    reason = "a step brings the names it uses where it uses them"
+)]
 
 //! Reading back through a chain's parts on a device that joined late: it
 //! holds the head only, and a view opens earlier parts one at a time as its

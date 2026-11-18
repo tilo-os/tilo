@@ -521,7 +521,7 @@ mod tests {
             let agent = MemberId::agent("planner");
             let people = People::new(Some(&me));
             let mut presence = PresenceCtx::default();
-            presence.set_self_member(me.clone(), "Ada");
+            presence.set_self_member(me, "Ada");
             presence.set_display_name(agent.clone(), "Planner");
             assert!(people.follow(&presence));
             assert_eq!(

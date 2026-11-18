@@ -354,6 +354,10 @@ mod tests {
     /// signed before the workspace knew a name for them: the card reads a
     /// person, never "someone".
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one invitation followed from the key that asks for it to the card that opens it"
+    )]
     async fn an_owner_invitation_a_persons_key_asks_for_names_them() {
         let dir = tempfile::tempdir().unwrap();
         let holder = governor();

@@ -844,50 +844,6 @@ impl Worker {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn route(document: &str) -> DocumentRoute {
-        DocumentRoute {
-            app_id: "so.tilo.notes".into(),
-            cluster_id: "workspace".into(),
-            document: document.into(),
-        }
-    }
-
-    /// A chain's part is searched as the chain's document: its items are
-    /// published by the chain, under `chain:` and its id, and are asked for
-    /// there first.
-    #[test]
-    fn a_chain_parts_item_is_asked_for_under_the_chain_first() {
-        let part = route("derived:part.0@derived:pages@derived:default@tab:0000000000000000");
-        assert_eq!(
-            naming_parents(&part, "notes.pages/pages/note"),
-            [
-                Some("chain:derived:pages@derived:default@tab:0000000000000000".to_owned()),
-                Some("notes.pages/pages".to_owned()),
-                Some("notes.pages".to_owned()),
-                None,
-            ]
-        );
-    }
-
-    /// A document of its own lists its items under themselves, as it always has.
-    #[test]
-    fn a_documents_own_item_is_asked_for_under_its_collection() {
-        let document = route("derived:messages@derived:default@tab:0000000000000000");
-        assert_eq!(
-            naming_parents(&document, "chat.messages/messages/m1"),
-            [
-                Some("chat.messages/messages".to_owned()),
-                Some("chat.messages".to_owned()),
-                None,
-            ]
-        );
-    }
-}
-
 /// How long a read of one document waits on the service's thread for its answer.
 const DOCUMENT_READ_WAIT: Duration = Duration::from_secs(30);
 
@@ -944,5 +900,49 @@ impl tilo_actions::remote::ResourceReads for WorkspaceActions {
         read: tilo_actions::remote::ResourceReadRequest,
     ) -> Pending<RemoteActionMessage> {
         tilo_actions::remote::answer_read(self, caller, correlation, read)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn route(document: &str) -> DocumentRoute {
+        DocumentRoute {
+            app_id: "so.tilo.notes".into(),
+            cluster_id: "workspace".into(),
+            document: document.into(),
+        }
+    }
+
+    /// A chain's part is searched as the chain's document: its items are
+    /// published by the chain, under `chain:` and its id, and are asked for
+    /// there first.
+    #[test]
+    fn a_chain_parts_item_is_asked_for_under_the_chain_first() {
+        let part = route("derived:part.0@derived:pages@derived:default@tab:0000000000000000");
+        assert_eq!(
+            naming_parents(&part, "notes.pages/pages/note"),
+            [
+                Some("chain:derived:pages@derived:default@tab:0000000000000000".to_owned()),
+                Some("notes.pages/pages".to_owned()),
+                Some("notes.pages".to_owned()),
+                None,
+            ]
+        );
+    }
+
+    /// A document of its own lists its items under themselves, as it always has.
+    #[test]
+    fn a_documents_own_item_is_asked_for_under_its_collection() {
+        let document = route("derived:messages@derived:default@tab:0000000000000000");
+        assert_eq!(
+            naming_parents(&document, "chat.messages/messages/m1"),
+            [
+                Some("chat.messages/messages".to_owned()),
+                Some("chat.messages".to_owned()),
+                None,
+            ]
+        );
     }
 }
