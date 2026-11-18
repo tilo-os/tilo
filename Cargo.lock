@@ -2279,6 +2279,7 @@ name = "chat"
 version = "0.1.0"
 dependencies = [
  "chat",
+ "chat-model",
  "durable-store",
  "emoji",
  "fnv",
@@ -2310,6 +2311,22 @@ dependencies = [
  "tilo-view-macros",
  "tilo-winit",
  "uuid",
+ "workspace-hack",
+]
+
+[[package]]
+name = "chat-model"
+version = "0.1.0"
+dependencies = [
+ "moderation-model",
+ "serde",
+ "serde_json",
+ "tilo-actions",
+ "tilo-app-id",
+ "tilo-document",
+ "tilo-feedback",
+ "tilo-reference",
+ "tilo-resource",
  "workspace-hack",
 ]
 

@@ -14,6 +14,7 @@
 //! projection + an input router, in keeping with the toolkit's
 //! "state lives in the CRDT" contract.
 
+use crate::projection::ChatProjection as _;
 use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{Receiver, SyncSender};
 use ui::widget::TaffyTreeExt;

@@ -2,6 +2,7 @@
 //! conversation shows, the composers' reload, the people the workspace announces,
 //! and the read the person has reached.
 
+use crate::projection::ChatProjection as _;
 use std::collections::{HashMap, HashSet};
 
 use automerge::AutoCommit;

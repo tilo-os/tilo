@@ -2,8 +2,6 @@
 //! channels and messages in the shapes [`crate::model`] draws, and the
 //! composers' drafts, which are rich text in the document.
 
-use std::collections::HashMap;
-
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use tilo_actions::policy::MemberId;
 use ui::tilo_resource::{Id, Identified, Resource};
@@ -12,7 +10,7 @@ use crate::chat::{Chat, Conversation};
 use crate::model::{AgentStep, AgentWork, Category, Channel, EditEntry, Message, User};
 
 /// What the workspace's member list calls each of its people and agents.
-pub type PeopleNames = HashMap<MemberId, String>;
+pub use chat_model::chat::PeopleNames;
 
 /// The published id of the item `id` of the resource's `field`
 /// (`channels`, `messages`, …): what a caller addresses its actions to.
@@ -27,10 +25,37 @@ pub fn read(doc: &AutoCommit) -> Chat {
     Chat::read(doc).unwrap_or_default()
 }
 
-impl Chat {
+/// The chat resource's rows as the window and the agents read them: the shapes
+/// [`crate::model`] draws, derived from the resource every render.
+///
+/// The resource itself is [`chat_model`]'s; its rows are the app's, because they
+/// are what the window shows.
+pub trait ChatProjection {
+    fn category_rows(&self) -> Vec<Category>;
+    fn channel_rows(&self) -> Vec<Channel>;
+    fn conversation_rows(
+        &self,
+        me: &MemberId,
+        messages: &crate::messages::Messages,
+        people: &PeopleNames,
+    ) -> Vec<Channel>;
+    fn rows_from_parts(
+        &self,
+        parts: &[(u64, std::rc::Rc<Vec<Message>>)],
+        messages: &crate::messages::Messages,
+        channel: &str,
+    ) -> Vec<Message>;
+    fn message_rows(&self, messages: &crate::messages::Messages, channel: &str) -> Vec<Message>;
+    fn feedback_messages(&self) -> std::vec::IntoIter<(Id, crate::chat::Message)>;
+    fn message_row(&self, messages: &crate::messages::Messages, id: &str) -> Option<Message>;
+    fn read_mark(&self, channel: &str, user: &MemberId) -> crate::parts::ReadMark;
+    fn unread(&self, messages: &crate::messages::Messages, channel: &str, user: &MemberId) -> u32;
+    fn is_direct_conversation(&self, channel: &str) -> bool;
+}
+
+impl ChatProjection for Chat {
     /// The categories, in sidebar order.
-    #[must_use]
-    pub fn category_rows(&self) -> Vec<Category> {
+    fn category_rows(&self) -> Vec<Category> {
         self.categories
             .iter()
             .enumerate()
@@ -45,8 +70,7 @@ impl Chat {
 
     /// The workspace's channels, in sidebar order; unread counts are the
     /// reader's own.
-    #[must_use]
-    pub fn channel_rows(&self) -> Vec<Channel> {
+    fn channel_rows(&self) -> Vec<Channel> {
         let rows: Vec<Channel> = self
             .channels
             .iter()
@@ -81,8 +105,7 @@ impl Chat {
     ///
     /// A conversation is named by what the workspace's member list calls its people and agents
     /// (`people`), whether or not they ever opened Chat.
-    #[must_use]
-    pub fn conversation_rows(
+    fn conversation_rows(
         &self,
         me: &MemberId,
         messages: &crate::messages::Messages,
@@ -154,102 +177,54 @@ impl Chat {
         rows
     }
 
-    /// What the conversation is called: its own name when it has one, and
-    /// else the names of the people it is with, `me`'s left out when they
-    /// are one of them and someone else is. A person the workspace has no
-    /// name for goes by their tag, never blank.
-    ///
-    /// The one place a conversation is named, for the window and for whatever
-    /// else names it (an agent's run on a turn in it).
-    ///
-    /// A member is named by what the member list calls them (`people`).
-    #[must_use]
-    pub fn display_names(&self, id: &Id, me: Option<&MemberId>, people: &PeopleNames) -> String {
-        if let Some(conversation) = self.channels.get(id)
-            && !conversation.members.is_empty()
-            && !conversation.name.trim().is_empty()
-        {
-            return conversation.name.trim().to_owned();
-        }
-        let members = self.conversation_members(id);
-        let named: Vec<String> = members
-            .iter()
-            .map(|member| {
-                people
-                    .get(member)
-                    .map(|name| name.trim().to_owned())
-                    .filter(|name| !name.is_empty())
-                    .or_else(|| ui::tilo_resource::members::name_of(member))
-                    .unwrap_or_else(|| crate::identity::unnamed_label(member))
-            })
-            .collect();
-        let others: Vec<String> = members
-            .iter()
-            .zip(named.iter())
-            .filter(|(member, _)| Some(*member) != me)
-            .map(|(_, name)| name.clone())
-            .collect();
-        let shown = if others.is_empty() { named } else { others };
-        shown.join(", ")
-    }
-
     /// The rows of `channel`, read from the parts' rows already read (`parts`,
     /// oldest first) instead of from the chain: the open channel's messages,
     /// with the feedback filed in it where it was filed and what is being sent
     /// after them. A reload reads the parts that changed and no others, and
     /// the rows of those stand here as they were read.
-    #[must_use]
-    pub fn rows_from_parts(
+    fn rows_from_parts(
         &self,
         parts: &[(u64, std::rc::Rc<Vec<Message>>)],
         messages: &crate::messages::Messages,
         channel: &str,
     ) -> Vec<Message> {
-        rows_from_parts(&self.feedback_rows(channel), parts, messages, channel)
+        rows_from_parts(&feedback_rows(self, channel), parts, messages, channel)
     }
 
     /// The messages of `channel` held in `messages`, oldest first, with the
     /// feedback filed in it among them where it was filed, and the messages
     /// being sent to it after them.
-    #[must_use]
-    pub fn message_rows(
-        &self,
-        messages: &crate::messages::Messages,
-        channel: &str,
-    ) -> Vec<Message> {
+    fn message_rows(&self, messages: &crate::messages::Messages, channel: &str) -> Vec<Message> {
         let rows = messages
             .iter()
             .filter(|(_, message)| message.channel.as_str() == channel)
             .map(|(id, message)| message_row(id, message))
             .collect();
-        with_filed_and_sending(rows, &self.feedback_rows(channel), messages, channel)
+        with_filed_and_sending(rows, &feedback_rows(self, channel), messages, channel)
     }
 
     /// The feedback filed in `channel`, as the timeline shows it: a message
     /// by whoever filed it, saying what they reported
     /// ([`crate::feedback::message`]).
-    fn feedback_rows(&self, channel: &str) -> Vec<Message> {
-        self.feedback_messages()
-            .filter(|(_, message)| message.channel.as_str() == channel)
-            .map(|(id, message)| message_row(&id, &message))
-            .collect()
-    }
 
     /// Every filed report as the message its channel shows, under its
     /// message id ([`crate::feedback::message_id`]).
-    pub fn feedback_messages(&self) -> impl Iterator<Item = (Id, crate::chat::Message)> + '_ {
-        self.feedback.iter().filter_map(|(id, report)| {
-            Some((
-                Id::from_raw(crate::feedback::message_id(id.as_str())),
-                crate::feedback::message::message(report)?,
-            ))
-        })
+    fn feedback_messages(&self) -> std::vec::IntoIter<(Id, crate::chat::Message)> {
+        self.feedback
+            .iter()
+            .filter_map(|(id, report)| {
+                Some((
+                    Id::from_raw(crate::feedback::message_id(id.as_str())),
+                    crate::feedback::message::message(report)?,
+                ))
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
     }
 
     /// The message `id` held in `messages`, in whichever channel it is, or
     /// the feedback report it shows.
-    #[must_use]
-    pub fn message_row(&self, messages: &crate::messages::Messages, id: &str) -> Option<Message> {
+    fn message_row(&self, messages: &crate::messages::Messages, id: &str) -> Option<Message> {
         let key = Id::from_raw(id);
         messages
             .get(&key)
@@ -258,7 +233,7 @@ impl Chat {
                 self.feedback.iter().find_map(|(report, filed)| {
                     let submission = filed.submission.as_ref()?;
                     (crate::feedback::message_id(report.as_str()) == id)
-                        .then(|| self.feedback_rows(&submission.destination.channel))?
+                        .then(|| feedback_rows(self, &submission.destination.channel))?
                         .into_iter()
                         .find(|row| row.id == id)
                 })
@@ -266,10 +241,9 @@ impl Chat {
     }
 
     /// How far `user` read `channel`.
-    #[must_use]
-    pub fn read_mark(&self, channel: &str, user: &MemberId) -> crate::parts::ReadMark {
+    fn read_mark(&self, channel: &str, user: &MemberId) -> crate::parts::ReadMark {
         self.read
-            .get(crate::chat::member_slot(user).as_str())
+            .get(crate::chat::member_marks(user).as_str())
             .and_then(|marks| marks.get(channel))
             .copied()
             .unwrap_or_default()
@@ -278,13 +252,7 @@ impl Chat {
     /// The top-level messages of `channel` held in `messages` that `user`
     /// has not seen. In a direct conversation, what they wrote themselves is
     /// never unread for them.
-    #[must_use]
-    pub fn unread(
-        &self,
-        messages: &crate::messages::Messages,
-        channel: &str,
-        user: &MemberId,
-    ) -> u32 {
+    fn unread(&self, messages: &crate::messages::Messages, channel: &str, user: &MemberId) -> u32 {
         let mark = self.read_mark(channel, user);
         let unread = if self.is_direct_conversation(channel) {
             messages.unread_by_others(&Id::from_raw(channel), mark, user)
@@ -296,8 +264,7 @@ impl Chat {
 
     /// Whether `channel` is a conversation some people have rather than one
     /// of the workspace's channels.
-    #[must_use]
-    pub fn is_direct_conversation(&self, channel: &str) -> bool {
+    fn is_direct_conversation(&self, channel: &str) -> bool {
         let id = Id::from_raw(channel);
         Chat::is_direct(&id)
             || self
@@ -305,6 +272,14 @@ impl Chat {
                 .get(&id)
                 .is_some_and(|conversation| !conversation.is_channel())
     }
+}
+
+/// The feedback filed in `channel`, as the timeline shows it.
+fn feedback_rows(chat: &Chat, channel: &str) -> Vec<Message> {
+    chat.feedback_messages()
+        .filter(|(_, message)| message.channel.as_str() == channel)
+        .map(|(id, message)| message_row(&id, &message))
+        .collect()
 }
 
 /// One message as the timeline's row for it.

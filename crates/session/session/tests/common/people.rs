@@ -2148,7 +2148,7 @@ impl HeldChat {
         let me = tilo_actions::policy::MemberId::person(self.me.clone());
         let them = tilo_actions::policy::MemberId::person(peer);
         let slot = |member: &tilo_actions::policy::MemberId| {
-            chat::chat::member_slot(member).as_str().to_owned()
+            chat::chat::member_marks(member).as_str().to_owned()
         };
         if peer == self.me {
             return Err(format!("Chat knows no person {peer}"));
