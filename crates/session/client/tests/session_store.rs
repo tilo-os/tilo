@@ -36,14 +36,14 @@ fn new_key() -> SigningKey {
 /// A device of `name` entering `workspace` through its entry, its session over `store`.
 async fn arrive(
     host: ServerAddress,
-    host_cert: &tilo_user_identity::DeviceCert,
+    server_cert: &tilo_user_identity::DeviceCert,
     workspace: &str,
     name: &str,
     store: Arc<MemoryPeerStore>,
 ) -> Link {
     let (root, key) = (new_key(), new_key());
     let (cert, entry) = entry_request(
-        host_cert,
+        server_cert,
         workspace,
         &key,
         Entering {
@@ -56,7 +56,7 @@ async fn arrive(
     )
     .await
     .unwrap();
-    enter_page(host, cert, host_cert.clone(), key, store, entry)
+    enter_page(host, cert, server_cert.clone(), key, store, entry)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

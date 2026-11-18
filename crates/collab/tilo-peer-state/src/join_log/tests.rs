@@ -54,10 +54,10 @@ fn a_join_through_the_log_admits_once_and_replays_its_answer() {
     let (peer, authority_key, _, _, now) = seeded();
     let now_ns = ns(now);
     let messages = || Ok(vec![b"governance".to_vec()]);
-    let host_cert = peer.owner_certificates()[0].clone();
+    let server_cert = peer.owner_certificates()[0].clone();
     let workspace = Governed {
         peer: (&peer).into(),
-        host: &host_cert,
+        host: &server_cert,
         workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
         generation: 1,
         governance_messages: Some(&messages),
@@ -148,10 +148,10 @@ fn a_join_through_the_log_admits_once_and_replays_its_answer() {
         "Calm Owl",
         "the workspace names the guest as they named themself, not by their device"
     );
-    let host_cert = candidate.owner_certificates()[0].clone();
+    let server_cert = candidate.owner_certificates()[0].clone();
     let committed = Governed {
         peer: (&candidate).into(),
-        host: &host_cert,
+        host: &server_cert,
         workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
         generation: 2,
         governance_messages: Some(&messages),
@@ -190,7 +190,7 @@ fn a_join_through_the_log_admits_once_and_replays_its_answer() {
     let later = || Ok(vec![b"later governance".to_vec()]);
     let moved = Governed {
         peer: (&candidate).into(),
-        host: &host_cert,
+        host: &server_cert,
         workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
         generation: 3,
         governance_messages: Some(&later),
@@ -288,10 +288,10 @@ fn a_key_made_to_act_for_a_person_never_names_them() {
     let (peer, authority_key, _, _, now) = seeded();
     let now_ns = ns(now);
     let messages = || Ok(Vec::<Vec<u8>>::new());
-    let host_cert = peer.owner_certificates()[0].clone();
+    let server_cert = peer.owner_certificates()[0].clone();
     let workspace = Governed {
         peer: (&peer).into(),
-        host: &host_cert,
+        host: &server_cert,
         workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
         generation: 1,
         governance_messages: Some(&messages),
@@ -348,7 +348,7 @@ fn a_key_made_to_act_for_a_person_never_names_them() {
     sign_device_cert(&mut backend, &root).unwrap();
     let again = Governed {
         peer: (&joined_ada).into(),
-        host: &host_cert,
+        host: &server_cert,
         workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
         generation: 2,
         governance_messages: Some(&messages),
@@ -413,10 +413,10 @@ fn a_cancelled_invitation_is_not_redeemable_and_cancelling_again_changes_nothing
     let (peer, authority_key, _, _, now) = seeded();
     let now_ns = ns(now);
     let messages = || Ok(Vec::<Vec<u8>>::new());
-    let host_cert = peer.owner_certificates()[0].clone();
+    let server_cert = peer.owner_certificates()[0].clone();
     let workspace = Governed {
         peer: (&peer).into(),
-        host: &host_cert,
+        host: &server_cert,
         workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
         generation: 1,
         governance_messages: Some(&messages),
@@ -478,10 +478,10 @@ fn an_administration_request_is_answered_once_and_refused_for_another_operation(
 fn a_join_receipt_keeps_none_of_the_workspaces_state_and_replays_while_it_is_unchanged() {
     let (peer, _, _, _, _) = seeded();
     let messages = || Ok(vec![b"governance".to_vec()]);
-    let host_cert = peer.owner_certificates()[0].clone();
+    let server_cert = peer.owner_certificates()[0].clone();
     let workspace = Governed {
         peer: (&peer).into(),
-        host: &host_cert,
+        host: &server_cert,
         workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
         generation: 1,
         governance_messages: Some(&messages),

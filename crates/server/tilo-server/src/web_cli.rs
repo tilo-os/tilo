@@ -755,7 +755,7 @@ pub async fn page_host(args: PageHostArgs) -> anyhow::Result<()> {
         .build()
         .context("an HTTPS client")?;
     let host = tilo_server_client::https::Origin::new(&client, &args.origin);
-    let info = tilo_server_client::https::host_info(&host)
+    let info = tilo_server_client::https::server_info(&host)
         .await
         .with_context(|| format!("ask {} who it is", args.origin))?;
     anyhow::ensure!(
@@ -1014,7 +1014,7 @@ pub async fn dev(
     std::fs::create_dir_all(&state).with_context(|| format!("create {}", state.display()))?;
     let [root, host, approver_key] = dev_identity(&state)?;
     let user = root.verifying_key().to_bytes();
-    let host_cert = enrol(&root, &host, "dev host", DeviceCapabilities::member())?;
+    let server_cert = enrol(&root, &host, "dev host", DeviceCapabilities::member())?;
     let approver_cert = enrol(
         &root,
         &approver_key,
@@ -1031,7 +1031,7 @@ pub async fn dev(
         ServerIdentity {
             user_public_key: user,
             device_signing_key: host,
-            device_cert: host_cert,
+            device_cert: server_cert,
             revocations: RevocationList::new(),
         },
         &args.web,
@@ -1378,7 +1378,7 @@ pub async fn workspace(
     let operator = operator_lines()?;
     let [root, host, approver_key] = dev_identity(&state)?;
     let user = root.verifying_key().to_bytes();
-    let host_cert = enrol(&root, &host, "workspace host", DeviceCapabilities::member())?;
+    let server_cert = enrol(&root, &host, "workspace host", DeviceCapabilities::member())?;
     let approver_cert = enrol(
         &root,
         &approver_key,
@@ -1395,7 +1395,7 @@ pub async fn workspace(
         ServerIdentity {
             user_public_key: user,
             device_signing_key: host,
-            device_cert: host_cert,
+            device_cert: server_cert,
             revocations: RevocationList::new(),
         },
         &args.web,
@@ -1588,7 +1588,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let [root, host, approver_key] = [key(), key(), key()];
         let user = root.verifying_key().to_bytes();
-        let host_cert = enrol(&root, &host, "dev host", DeviceCapabilities::member()).unwrap();
+        let server_cert = enrol(&root, &host, "dev host", DeviceCapabilities::member()).unwrap();
         let approver_cert = enrol(
             &root,
             &approver_key,
@@ -1605,7 +1605,7 @@ mod tests {
             ServerIdentity {
                 user_public_key: user,
                 device_signing_key: host,
-                device_cert: host_cert,
+                device_cert: server_cert,
                 revocations: RevocationList::new(),
             },
             test_server::relay_mode(),
@@ -1771,7 +1771,7 @@ mod tests {
         iroh::endpoint::Endpoint,
     ) {
         let [root, host, approver_key] = [key(), key(), key()];
-        let host_cert =
+        let server_cert =
             enrol(&root, &host, "workspace host", DeviceCapabilities::member()).unwrap();
         let approver_cert = enrol(
             &root,
@@ -1789,7 +1789,7 @@ mod tests {
             ServerIdentity {
                 user_public_key: root.verifying_key().to_bytes(),
                 device_signing_key: host,
-                device_cert: host_cert,
+                device_cert: server_cert,
                 revocations: RevocationList::new(),
             },
             test_server::relay_mode(),

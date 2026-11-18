@@ -59,7 +59,7 @@ pub enum CertificationOutcome {
     Issued {
         cert: DeviceCert,
         /// The server's certificate, to pin for later sessions.
-        host_cert: DeviceCert,
+        server_cert: DeviceCert,
         /// The name the server gave the device: its own, or the next numbered
         /// one when another device of the person reads by that name already.
         label: String,
@@ -132,9 +132,9 @@ pub async fn certify(
     match outcome? {
         CertificationOutcome::Issued {
             cert,
-            host_cert,
+            server_cert,
             label,
-        } => Ok((cert, host_cert, label)),
+        } => Ok((cert, server_cert, label)),
         CertificationOutcome::Denied(reason) => Err(CertifyError::Denied(reason)),
         CertificationOutcome::Expired => Err(CertifyError::Expired),
     }
@@ -232,7 +232,7 @@ async fn request_over(
     match reply {
         CertifyReply::Issued {
             cert,
-            host_cert,
+            server_cert,
             label,
         } => {
             let now = tilo_clock::unix_now_ns();
@@ -247,14 +247,14 @@ async fn request_over(
             // A member pairs through any device of a workspace they share, so
             // it may be another person's: it must be a person's device, not
             // necessarily this root's.
-            verify_device_cert_at(&host_cert, now)
+            verify_device_cert_at(&server_cert, now)
                 .map_err(|error| codec(&format!("server certificate refused: {error}")))?;
-            if !host_cert.capabilities.can_own_workspaces {
+            if !server_cert.capabilities.can_own_workspaces {
                 return Err(codec(&"the certificate is not a person's device"));
             }
             Ok(CertificationOutcome::Issued {
                 cert,
-                host_cert,
+                server_cert,
                 label,
             })
         }

@@ -37,7 +37,7 @@ fn session() -> (Task, Link, tokio::sync::mpsc::UnboundedReceiver<Command>) {
             None,
         ),
         cert: bootstrap.device_cert,
-        host_cert: host,
+        server_cert: host,
         revocations: RevocationList::new(),
         entering: None,
     };

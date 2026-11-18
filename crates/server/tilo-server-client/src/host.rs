@@ -117,7 +117,7 @@ impl ServerAddress {
 
     /// The server where it says it is reached (`/server`).
     #[must_use]
-    pub fn published(address: &tilo_server_protocol::web::HostAddress) -> Self {
+    pub fn published(address: &tilo_server_protocol::web::ServerAddress) -> Self {
         let relay = address
             .relay_url
             .as_deref()
@@ -225,7 +225,7 @@ mod tests {
 
     use super::{Carrier, ServerAddress};
     use iroh_base::{EndpointAddr, RelayUrl, SecretKey};
-    use tilo_server_protocol::web::HostAddress;
+    use tilo_server_protocol::web::ServerAddress as WebServerAddress;
 
     #[test]
     fn a_host_is_dialled_through_the_relay_its_address_names() {
@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn a_published_host_is_dialled_through_the_relay_it_publishes() {
         let key = SecretKey::from_bytes(&[7; 32]).public();
-        let published = ServerAddress::published(&HostAddress {
+        let published = ServerAddress::published(&WebServerAddress {
             endpoint_addr: EndpointAddr::new(key),
             relay_url: Some("https://relay.example".into()),
             web: None,

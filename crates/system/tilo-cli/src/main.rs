@@ -2075,7 +2075,7 @@ mod tests {
             agent: "Claude Code".into(),
             label: "Claude Code on build-box".into(),
             cert: "00".into(),
-            host_cert: "00".into(),
+            server_cert: "00".into(),
             server_address: None,
         };
         crate::login::store(dir.path(), &key, &device).unwrap();

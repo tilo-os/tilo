@@ -110,7 +110,7 @@ pub struct PeerConfig {
     /// This device's certificate.
     pub cert: DeviceCert,
     /// The host certificate pinned at certification.
-    pub host_cert: DeviceCert,
+    pub server_cert: DeviceCert,
     /// Root-signed revocations this device knows about.
     pub revocations: RevocationList,
     /// The workspace this device enters through its entry on its first
@@ -121,13 +121,13 @@ pub struct PeerConfig {
 
 impl PeerConfig {
     /// A member device's session with `host`, whose certificate is
-    /// `host_cert`: no revocations of its own to announce, no entry to ask for.
+    /// `server_cert`: no revocations of its own to announce, no entry to ask for.
     #[must_use]
-    pub fn member(host: ServerAddress, cert: DeviceCert, host_cert: DeviceCert) -> Self {
+    pub fn member(host: ServerAddress, cert: DeviceCert, server_cert: DeviceCert) -> Self {
         Self {
             host,
             cert,
-            host_cert,
+            server_cert,
             revocations: RevocationList::new(),
             entering: None,
         }
@@ -966,16 +966,16 @@ impl Task {
             .is_some_and(|saved| !same_identity(saved, &self.config.cert))
             || self
                 .record
-                .host_cert
+                .server_cert
                 .as_ref()
-                .is_some_and(|saved| !same_identity(saved, &self.config.host_cert))
+                .is_some_and(|saved| !same_identity(saved, &self.config.server_cert))
         {
             return Err("The saved peer identity or host does not match this session.");
         }
         // A read-only invited page may never publish. Keep its certificate
         // and host pin before the first connection, as well as its outbox.
         self.record.cert = Some(self.config.cert.clone());
-        self.record.host_cert = Some(self.config.host_cert.clone());
+        self.record.server_cert = Some(self.config.server_cert.clone());
         self.persist();
         Ok(())
     }
@@ -1438,7 +1438,7 @@ impl Task {
         };
         // The host's own operations, which no workspace decides, go to it on the session itself.
         if workspace_id == HOST_ITSELF {
-            if to != self.config.host_cert.device_public_key {
+            if to != self.config.server_cert.device_public_key {
                 self.reports.emit(&Event::Remote(Heard::Undeliverable {
                     workspace_id,
                     to,
@@ -1796,7 +1796,7 @@ impl Task {
         if self.workspaces.contains(&workspace_id) {
             return true;
         }
-        if !places_workspaces(&self.config.cert, &self.config.host_cert) {
+        if !places_workspaces(&self.config.cert, &self.config.server_cert) {
             return self.join(workspace_id, client);
         }
         self.reports.change(|status| {

@@ -544,7 +544,7 @@ fn wait_at_host(local: &DeviceId, origin: &str, person: [u8; 32]) -> Result<(), 
     runtime.block_on(async {
         let client = tilo_workspace_directory::client()
             .map_err(|error| tilo_sheets::directory::said(&error))?;
-        let info = tilo_server_client::https::host_info(&tilo_server_client::https::Origin::new(
+        let info = tilo_server_client::https::server_info(&tilo_server_client::https::Origin::new(
             &client, origin,
         ))
         .await
@@ -1537,7 +1537,7 @@ mod tests {
     ) -> (tilo_server::daemon::Server, tilo_server::web::WebHandle) {
         let person = root.person();
         let host_key = ed25519_dalek::SigningKey::from_bytes(&[0x61; 32]);
-        let mut host_cert = DeviceCert {
+        let mut server_cert = DeviceCert {
             user_public_key: person,
             device_public_key: host_key.verifying_key().to_bytes(),
             device_label: "Home".into(),
@@ -1551,7 +1551,7 @@ mod tests {
             key: Arc::clone(root),
             revoked: false,
         }));
-        tilo_user_identity::sign_device_cert_async(&mut host_cert, &root_signer)
+        tilo_user_identity::sign_device_cert_async(&mut server_cert, &root_signer)
             .await
             .unwrap();
         let server = tilo_server::daemon::Server::start_with_relay_mode(
@@ -1562,7 +1562,7 @@ mod tests {
             tilo_server::daemon::ServerIdentity {
                 user_public_key: person,
                 device_signing_key: host_key,
-                device_cert: host_cert,
+                device_cert: server_cert,
                 revocations: tilo_user_identity::RevocationList::new(),
             },
             test_server::relay_mode(),

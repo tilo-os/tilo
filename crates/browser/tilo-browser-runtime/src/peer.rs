@@ -448,7 +448,7 @@ type ReplicaStore = (Rc<durable_store::MemoryStore>, crate::replication::Kept);
 #[serde(rename_all = "camelCase")]
 struct ConnectConfig {
     cert: DeviceCert,
-    host_cert: DeviceCert,
+    server_cert: DeviceCert,
     /// Where the host's iroh endpoint is dialled: the session and its live sessions
     /// reach it there.
     address: PageHostAddress,
@@ -483,7 +483,7 @@ fn install_identity(cert: &DeviceCert, display_name: String) {
 #[serde(rename_all = "camelCase")]
 struct Certified<'a> {
     cert: &'a DeviceCert,
-    host_cert: &'a DeviceCert,
+    server_cert: &'a DeviceCert,
     /// The name the host gave the device, which the page shows for it.
     label: &'a str,
 }
@@ -514,8 +514,8 @@ fn dialled(address: PageHostAddress) -> ServerAddress {
 /// What the host publishes before certification: its certificate. Resolves
 /// to JSON.
 #[wasm_bindgen(js_name = hostInfo)]
-pub async fn host_info(post: Function) -> Result<String, JsError> {
-    let info: tilo_server_protocol::web::HostInfo =
+pub async fn server_info(post: Function) -> Result<String, JsError> {
+    let info: tilo_server_protocol::web::ServerInfo =
         post_decoded(&PageHttp(post), "/host", Vec::new()).await?;
     serde_json::to_string(&PageHost::from(info)).map_err(js_error)
 }
@@ -560,7 +560,7 @@ pub async fn certify_device(
         None => [0; 16],
     };
     let host = server_at(&address)?;
-    let (cert, host_cert, label) =
+    let (cert, server_cert, label) =
         tilo_server_client::certify(&host, user, &label, invite, &signer, |code| {
             let _ = on_pairing_code.call1(&JsValue::NULL, &code.into());
         })
@@ -568,7 +568,7 @@ pub async fn certify_device(
         .map_err(js_error)?;
     serde_json::to_string(&Certified {
         cert: &cert,
-        host_cert: &host_cert,
+        server_cert: &server_cert,
         label: &label,
     })
     .map_err(js_error)
@@ -786,11 +786,11 @@ pub async fn inspect_invitation(post: Function, invitation: Vec<u8>) -> Result<S
 pub fn reconnect_certificate(
     kept: Option<String>,
     admitted: Option<String>,
-    host_cert: &str,
+    server_cert: &str,
     with_root: bool,
 ) -> Result<String, JsError> {
     use tilo_session_client::device::{Held, reconnecting};
-    let host: DeviceCert = serde_json::from_str(host_cert).map_err(js_error)?;
+    let host: DeviceCert = serde_json::from_str(server_cert).map_err(js_error)?;
     let kept: Option<Held> = kept.and_then(|text| serde_json::from_str(&text).ok());
     let admitted: Option<Held> = admitted
         .map(|text| serde_json::from_str(&text))
@@ -839,7 +839,7 @@ struct Accepting {
 /// `not_admitted` for an invitation that names no workspace.
 #[wasm_bindgen(js_name = invitationEntry)]
 pub async fn invitation_entry(
-    host_cert: String,
+    server_cert: String,
     invitation: Vec<u8>,
     device_key: JsValue,
     root: JsValue,
@@ -853,7 +853,7 @@ pub async fn invitation_entry(
         .map(serde_json::from_str)
         .transpose()
         .map_err(js_error)?;
-    let host_cert: DeviceCert = serde_json::from_str(&host_cert).map_err(js_error)?;
+    let server_cert: DeviceCert = serde_json::from_str(&server_cert).map_err(js_error)?;
     let device = PageSigner::from_js(&device_key)?;
     let root = if root.is_undefined() || root.is_null() {
         None
@@ -861,7 +861,7 @@ pub async fn invitation_entry(
         Some(PageSigner::from_js(&root)?)
     };
     let (cert, entering) = tilo_session_client::device::invitation_entry(
-        &host_cert,
+        &server_cert,
         &invitation,
         &device,
         Entering {
@@ -875,7 +875,7 @@ pub async fn invitation_entry(
     .await
     .map_err(|refusal| refusal_error(&refusal))?;
     Ok(serde_json::json!({
-        "certificate": {"cert": cert, "hostCert": host_cert},
+        "certificate": {"cert": cert, "hostCert": server_cert},
         "entering": entering,
     })
     .to_string())
@@ -894,7 +894,7 @@ pub async fn invitation_entry(
 /// Rejects with an `Error` named `DeviceRefusal` whose `code` is `no_certificate`.
 #[wasm_bindgen(js_name = entryRequest)]
 pub async fn entry_request(
-    host_cert: String,
+    server_cert: String,
     workspace: String,
     device_key: JsValue,
     root: JsValue,
@@ -908,7 +908,7 @@ pub async fn entry_request(
         .map(serde_json::from_str)
         .transpose()
         .map_err(js_error)?;
-    let host_cert: DeviceCert = serde_json::from_str(&host_cert).map_err(js_error)?;
+    let server_cert: DeviceCert = serde_json::from_str(&server_cert).map_err(js_error)?;
     let device = PageSigner::from_js(&device_key)?;
     let root = if root.is_undefined() || root.is_null() {
         None
@@ -916,7 +916,7 @@ pub async fn entry_request(
         Some(PageSigner::from_js(&root)?)
     };
     let (cert, entering) = tilo_session_client::device::entry_request(
-        &host_cert,
+        &server_cert,
         &workspace,
         &device,
         Entering {
@@ -930,7 +930,7 @@ pub async fn entry_request(
     .await
     .map_err(|refusal| refusal_error(&refusal))?;
     Ok(serde_json::json!({
-        "certificate": {"cert": cert, "hostCert": host_cert},
+        "certificate": {"cert": cert, "hostCert": server_cert},
         "entering": entering,
     })
     .to_string())
@@ -956,13 +956,13 @@ pub async fn certify_with_root(
 ) -> Result<String, JsError> {
     let root = PageSigner::from_js(&root)?;
     let signer = PageSigner::from_js(&device_key)?;
-    let (cert, host_cert) =
+    let (cert, server_cert) =
         tilo_server_client::certify_with_root(&PageHttp(post), &root, &signer, &label)
             .await
             .map_err(js_error)?;
     serde_json::to_string(&Certified {
         cert: &cert,
-        host_cert: &host_cert,
+        server_cert: &server_cert,
         label: &label,
     })
     .map_err(js_error)
@@ -1890,14 +1890,14 @@ impl WasmPeer {
         )?;
         let device_key = config.cert.device_public_key;
         let reporter_cert = config.cert.clone();
-        let owner_cert = config.host_cert.clone();
+        let owner_cert = config.server_cert.clone();
         let display_name = config.display_name;
         let revocations = own_revocations(config.revocations, &config.cert)?;
         let handle = tilo_session_client::start_session(
             PeerConfig {
                 host: dialled(config.address),
                 cert: config.cert,
-                host_cert: config.host_cert,
+                server_cert: config.server_cert,
                 revocations,
                 entering: config.entering,
             },

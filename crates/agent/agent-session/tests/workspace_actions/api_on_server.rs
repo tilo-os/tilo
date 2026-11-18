@@ -464,14 +464,14 @@ pub async fn enter_page(
         .unwrap();
     assert!(matches!(offer, JoinReply::Invitation { .. }), "{offer:?}");
     // The page's session carries the invitation in its first message.
-    let info = tilo_server_client::https::host_info(&host).await.unwrap();
+    let info = tilo_server_client::https::server_info(&host).await.unwrap();
     let label = page.cert.device_label.clone();
     let held = Held {
         cert: page.cert.clone(),
-        host_cert: Some(info.host_cert.clone()),
+        server_cert: Some(info.server_cert.clone()),
     };
     let (_, entering) = invitation_entry(
-        &info.host_cert,
+        &info.server_cert,
         invitation,
         &page.key,
         Entering {
@@ -489,7 +489,7 @@ pub async fn enter_page(
         tilo_session_client::PeerConfig {
             host: tilo_server_client::ServerAddress::published(&address),
             cert: page.cert.clone(),
-            host_cert: info.host_cert,
+            server_cert: info.server_cert,
             revocations: tilo_user_identity::RevocationList::new(),
             entering: Some(entering),
         },

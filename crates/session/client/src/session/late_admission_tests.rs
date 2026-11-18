@@ -81,7 +81,7 @@ fn a_record_sent_before_the_pages_admission_is_read_once_it_is_admitted() {
             None,
         ),
         cert: bootstrap.device_cert.clone(),
-        host_cert: host,
+        server_cert: host,
         revocations: RevocationList::new(),
         entering: None,
     };

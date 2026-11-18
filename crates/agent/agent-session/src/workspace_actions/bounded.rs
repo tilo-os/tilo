@@ -430,7 +430,7 @@ pub(super) fn member_actor(
 ) -> Result<crate::ReplicaActor, ActionCallError> {
     let own = own_device.key.verifying_key().to_bytes();
     let device = (who.caller.device_public_key() == Some(&own)).then(|| {
-        tilo_actions::InvokerDevice::certified(own, &own_device.endpoint.host_cert.device_label)
+        tilo_actions::InvokerDevice::certified(own, &own_device.endpoint.server_cert.device_label)
     });
     Ok(crate::ReplicaActor::Member {
         access: bounded_access(policy, who)?,
@@ -577,8 +577,8 @@ pub(super) fn governed(shared: &super::Shared, workspace_id: WorkspaceId) -> boo
         link.admits(
             workspace_id,
             &Caller::authenticated(
-                device.endpoint.host_cert.user_public_key,
-                device.endpoint.host_cert.device_public_key,
+                device.endpoint.server_cert.user_public_key,
+                device.endpoint.server_cert.device_public_key,
             ),
         )
     })

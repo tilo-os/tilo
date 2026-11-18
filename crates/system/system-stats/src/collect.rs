@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use crate::apps::{EndPolicy, app_of_cgroup};
 use crate::probe::{CpuTicks, Probe, RawSample, RawSystem, USER_HZ};
 use crate::protocol::{
-    AppUsage, CpuStats, DiskStats, Grants, HostInfo, InterfaceStats, NetworkStats, ProcessState,
-    ProcessStats, Snapshot, SystemStats,
+    AppUsage, CpuStats, DiskStats, Grants, InterfaceStats, NetworkStats, ProcessState,
+    ProcessStats, ServerInfo, Snapshot, SystemStats,
 };
 
 /// A full reading, rates included, before it is cut to a subscriber's
@@ -187,7 +187,7 @@ impl Collector {
             })
             .collect();
         SystemStats {
-            host: HostInfo {
+            host: ServerInfo {
                 hostname: raw.hostname,
                 kernel: raw.kernel,
                 cpu_model: raw.cpu_model,

@@ -683,12 +683,12 @@ mod tests {
     fn joined(engine: &Engine, cert: &DeviceCert, key: &SigningKey) -> (WorkspaceId, Host) {
         let root = SigningKey::from_bytes(&[0x42; 32]);
         let host_key = SigningKey::from_bytes(&[0x43; 32]);
-        let host_cert = testing::certificate(&root, &host_key, "The workspace's host");
+        let server_cert = testing::certificate(&root, &host_key, "The workspace's host");
         let state = tempfile::TempDir::new().expect("the host's state directory");
         let host = Arc::new(
             Engine::open(
                 tilo_identity::identity_store::DeviceIdentity::kept(
-                    host_cert.clone(),
+                    server_cert.clone(),
                     host_key.clone(),
                 ),
                 Some(state.path()),
@@ -697,9 +697,10 @@ mod tests {
             )
             .expect("the host's engine opens"),
         );
-        let governor = TestGovernor::empty_interactive(host_cert.clone(), host_key.clone(), JOINED)
-            .expect("another device governs the workspace");
-        let governor = testing::enroll_into(governor, host.owner(), &host_key, &host_cert)
+        let governor =
+            TestGovernor::empty_interactive(server_cert.clone(), host_key.clone(), JOINED)
+                .expect("another device governs the workspace");
+        let governor = testing::enroll_into(governor, host.owner(), &host_key, &server_cert)
             .expect("the host is in its own workspace");
         testing::enroll_into(governor, engine.owner(), key, cert)
             .expect("the workspace admits this device");

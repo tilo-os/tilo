@@ -616,7 +616,7 @@ async fn fixture_with(meter: Arc<Counting>, reconnect: Duration, answer_wait: Du
     let agent = user.enrol("agent", DeviceCapabilities::member());
     let home = host.device_pubkey();
     let host_key = host.sk.clone();
-    let host_cert = {
+    let server_cert = {
         let now = tilo_clock::unix_now_ns();
         let mut stand_in = prepare_stand_in_cert(
             user.user_pk,
@@ -665,7 +665,7 @@ async fn fixture_with(meter: Arc<Counting>, reconnect: Duration, answer_wait: Du
     }
     browsers.serve_from(tilo_server::hosted_browser::Authority {
         user_public_key: user.user_pk,
-        cert: host_cert,
+        cert: server_cert,
         key: host_key,
         server: server.server.node_addr(),
         workspaces: server.server.workspaces().cloned(),

@@ -48,7 +48,7 @@ fn change(base: &mut automerge::AutoCommit, key: &str) -> DocumentMutation {
 /// opening the desktop.
 async fn visitor(
     host: &crate::support::TestHost,
-    host_cert: &DeviceCert,
+    server_cert: &DeviceCert,
     workspace: &str,
     workspace_id: WorkspaceId,
     desktop: &DocumentRoute,
@@ -56,7 +56,7 @@ async fn visitor(
 ) -> Link {
     let (root, key) = (new_key(), new_key());
     let (cert, entry) = entry_request(
-        host_cert,
+        server_cert,
         workspace,
         &key,
         Entering {
@@ -72,7 +72,7 @@ async fn visitor(
     let page = enter_page(
         host.iroh(),
         cert,
-        host_cert.clone(),
+        server_cert.clone(),
         key,
         Arc::new(MemoryPeerStore::default()),
         entry,
@@ -114,11 +114,11 @@ async fn a_newcomer_reads_writes_follows_and_rejoins_its_channel_group() {
         cluster_id: lounge.workspace.clone(),
         document: "desktop".into(),
     };
-    let host_cert = host_device.cert.clone();
+    let server_cert = host_device.cert.clone();
     let enter = |name: &'static str| {
         visitor(
             &host,
-            &host_cert,
+            &server_cert,
             &lounge.workspace,
             lounge.workspace_id,
             &desktop,
@@ -205,11 +205,11 @@ async fn a_newcomer_asks_for_its_workspaces_live_session_and_joins_it() {
         cluster_id: lounge.workspace.clone(),
         document: "desktop".into(),
     };
-    let host_cert = host_device.cert.clone();
+    let server_cert = host_device.cert.clone();
 
     let member = visitor(
         &host,
-        &host_cert,
+        &server_cert,
         &lounge.workspace,
         lounge.workspace_id,
         &desktop,
@@ -218,7 +218,7 @@ async fn a_newcomer_asks_for_its_workspaces_live_session_and_joins_it() {
     .await;
     let newcomer = visitor(
         &host,
-        &host_cert,
+        &server_cert,
         &lounge.workspace,
         lounge.workspace_id,
         &desktop,

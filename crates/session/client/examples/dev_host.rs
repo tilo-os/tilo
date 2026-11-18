@@ -71,7 +71,7 @@ async fn main() {
     let state = tempfile::tempdir().expect("state directory");
     let root = SigningKey::generate(&mut UnwrapErr(SysRng));
     let user = root.verifying_key().to_bytes();
-    let (host_key, host_cert) = enrol(&root, "dev host", DeviceCapabilities::member());
+    let (host_key, server_cert) = enrol(&root, "dev host", DeviceCapabilities::member());
     let (approver_key, approver_cert) = enrol(&root, "dev approver", DeviceCapabilities::primary());
 
     let cfg = tilo_server::ServerConfig {
@@ -83,7 +83,7 @@ async fn main() {
         ServerIdentity {
             user_public_key: user,
             device_signing_key: host_key,
-            device_cert: host_cert,
+            device_cert: server_cert,
             revocations: RevocationList::new(),
         },
     )

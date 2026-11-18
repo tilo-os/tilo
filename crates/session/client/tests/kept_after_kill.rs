@@ -248,7 +248,7 @@ fn started(
         PeerConfig {
             host: server.iroh(),
             cert: device.cert.clone(),
-            host_cert: server_cert.clone(),
+            server_cert: server_cert.clone(),
             revocations: RevocationList::new(),
             entering: None,
         },

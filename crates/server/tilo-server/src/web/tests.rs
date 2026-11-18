@@ -92,8 +92,8 @@ fn web_of(server: &Server, host: &Host) -> Web {
 fn web_of_at(server: &Server, host: &Host, site: Option<&str>) -> Web {
     Web {
         context: server.web_context().clone(),
-        host_info: HostInfo {
-            host_cert: host.cert.clone(),
+        server_info: ServerInfo {
+            server_cert: host.cert.clone(),
             address: None,
         },
         endpoint: None,
@@ -2106,7 +2106,7 @@ fn the_host_address_follows_the_endpoint_relay() {
     let relay: iroh_base::RelayUrl = "https://live.example/".parse().unwrap();
     let relayless = iroh_base::EndpointAddr::new(id);
     let relayed = iroh_base::EndpointAddr::from_parts(id, [iroh_base::TransportAddr::Relay(relay)]);
-    let mut address = HostAddress {
+    let mut address = ServerAddress {
         endpoint_addr: relayless.clone(),
         relay_url: None,
         web: None,

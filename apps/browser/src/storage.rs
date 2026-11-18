@@ -145,7 +145,7 @@ fn sweep_orphaned_private_roots() {
     use std::sync::atomic::{AtomicBool, Ordering};
     static RUNNING: AtomicBool = AtomicBool::new(false);
     // Orphans are recognised by their dead owner process.
-    if !host_info::process::CAN_CHECK_LIVENESS {
+    if !server_info::process::CAN_CHECK_LIVENESS {
         return;
     }
     if RUNNING.swap(true, Ordering::AcqRel) {
@@ -194,7 +194,7 @@ fn sweep_orphaned_private_entries(entries: impl Iterator<Item = PathBuf>) {
                 && std::fs::read_to_string(&owner)
                     .ok()
                     .and_then(|value| value.parse::<i32>().ok())
-                    .is_some_and(|pid| pid > 1 && !host_info::process::is_alive(pid))
+                    .is_some_and(|pid| pid > 1 && !server_info::process::is_alive(pid))
         });
         let helper = root.join(PRIVATE_ROOT_HELPER);
         let helper_is_live_or_untrusted = match std::fs::symlink_metadata(&helper) {
@@ -207,7 +207,7 @@ fn sweep_orphaned_private_entries(entries: impl Iterator<Item = PathBuf>) {
                 std::fs::read_to_string(&helper)
                     .ok()
                     .and_then(|value| value.parse::<i32>().ok())
-                    .is_none_or(|pid| pid <= 1 || host_info::process::is_alive(pid))
+                    .is_none_or(|pid| pid <= 1 || server_info::process::is_alive(pid))
             }
             Err(_) | Ok(_) => true,
         };

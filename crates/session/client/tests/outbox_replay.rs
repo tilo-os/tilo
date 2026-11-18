@@ -112,7 +112,7 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
         PeerConfig {
             host: host.iroh(),
             cert: browser.cert.clone(),
-            host_cert: host_device.cert.clone(),
+            server_cert: host_device.cert.clone(),
             revocations: RevocationList::new(),
             entering: None,
         },

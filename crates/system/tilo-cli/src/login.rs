@@ -391,14 +391,14 @@ pub(crate) async fn connect(key: &SigningKey, device: &Device) -> Result<Entered
     ))
     .map_err(|error| anyhow!(error))?;
     let host = server_of(device).await?;
-    let (cert, host_cert) = device.certs()?;
+    let (cert, server_cert) = device.certs()?;
     let signed = SignIn {
         link,
         agent: device.agent.clone(),
         label: device.label.clone(),
         server: host,
         cert,
-        host_cert,
+        server_cert,
     };
     let entry = entry_at(&Origin::new(&http(), &device.site), &device.host_origin).await;
     Ok(Entered::enter(entry.as_ref(), &signed, Arc::new(key.clone())).await?)
@@ -411,7 +411,7 @@ pub(crate) async fn server_of(device: &Device) -> Result<tilo_server_client::Ser
         return Ok(tilo_server_client::ServerAddress::published(address));
     }
     let server_web = Origin::new(&http(), &device.host_origin);
-    let info = https::host_info(&server_web).await.map_err(|error| {
+    let info = https::server_info(&server_web).await.map_err(|error| {
         debug_why("asking the workspace's server", &error);
         anyhow!(UNREACHED)
     })?;
@@ -448,7 +448,7 @@ fn signed_over_iroh(device: &Device, address: &ServerAddress) -> Result<SignIn> 
         label: device.label.clone(),
         server: tilo_server_client::ServerAddress::published(address),
         cert,
-        host_cert: server_cert,
+        server_cert: server_cert,
     })
 }
 
@@ -631,7 +631,7 @@ pub fn login_invited(link: &str, name: Option<&str>, agent: Option<&str>) -> Res
         agent: agent.name.clone(),
         label,
         cert: hex::encode(postcard::to_allocvec(&cert)?),
-        host_cert: hex::encode(postcard::to_allocvec(&server.device_certificate)?),
+        server_cert: hex::encode(postcard::to_allocvec(&server.device_certificate)?),
         server_address: Some(address.clone()),
     };
     let runtime = runtime()?;
@@ -1097,7 +1097,7 @@ fn device_of(signed: &SignIn) -> Result<Device> {
         agent: signed.agent.clone(),
         label: signed.label.clone(),
         cert: hex::encode(postcard::to_allocvec(&signed.cert)?),
-        host_cert: hex::encode(postcard::to_allocvec(&signed.host_cert)?),
+        server_cert: hex::encode(postcard::to_allocvec(&signed.server_cert)?),
         server_address: None,
     })
 }
@@ -1265,7 +1265,7 @@ pub fn login_held(
     let (key, device) = runtime.block_on(async {
         let origin = home_server(&Origin::new(&http(), &site)).await?;
         let server = Origin::new(&http(), &origin);
-        let info = https::host_info(&server).await.map_err(|error| {
+        let info = https::server_info(&server).await.map_err(|error| {
             debug_why("asking the site's server", &error);
             anyhow!(UNREACHED)
         })?;
@@ -1290,7 +1290,7 @@ pub fn login_held(
             label: label.clone(),
             server: dialed,
             cert: cert.clone(),
-            host_cert: info.host_cert.clone(),
+            server_cert: info.server_cert.clone(),
         };
         let session = Entered::connect(&signed, Arc::new(key.clone()));
         let chosen = async {
@@ -1334,7 +1334,7 @@ pub fn login_held(
             agent: agent.name.clone(),
             label,
             cert: hex::encode(postcard::to_allocvec(&cert)?),
-            host_cert: hex::encode(postcard::to_allocvec(&info.host_cert)?),
+            server_cert: hex::encode(postcard::to_allocvec(&info.server_cert)?),
             server_address: None,
         };
         anyhow::Ok((key, device))
@@ -1494,7 +1494,7 @@ mod tests {
             agent: "Claude Code".into(),
             label: "Claude Code on build-box".into(),
             cert: "00".into(),
-            host_cert: "00".into(),
+            server_cert: "00".into(),
             server_address: None,
         }
     }

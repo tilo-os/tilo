@@ -134,15 +134,16 @@ fn sealed(key: &SigningKey) -> NeighbourMsg {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_write_before_the_change_it_builds_on_merges_once_that_change_comes() {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let (host_key, host_cert) = crate::common::device_with(&root, 2, DeviceCapabilities::member());
+    let (host_key, server_cert) =
+        crate::common::device_with(&root, 2, DeviceCapabilities::member());
     let (b_key, b_cert) = device(&root, 3);
     // A third member, whose writes the host passes on to the second.
     let (c_key, c_cert) = device(&root, 4);
     let now = SystemTime::now();
-    let devices = vec![host_cert.clone(), b_cert.clone(), c_cert.clone()];
+    let devices = vec![server_cert.clone(), b_cert.clone(), c_cert.clone()];
     let mut govern = StatePeer::new(
         WORKSPACE,
-        host_cert.clone(),
+        server_cert.clone(),
         devices.clone(),
         RevocationList::new(),
         now,
@@ -155,7 +156,7 @@ async fn a_write_before_the_change_it_builds_on_merges_once_that_change_comes() 
     govern
         .install_seed(
             SeedState {
-                workspace_changes: seed_workspace(WORKSPACE, &host_cert, &devices).unwrap(),
+                workspace_changes: seed_workspace(WORKSPACE, &server_cert, &devices).unwrap(),
                 documents: vec![SeedDocument {
                     app_id: APP.into(),
                     document_id: RECORD.into(),
@@ -181,7 +182,7 @@ async fn a_write_before_the_change_it_builds_on_merges_once_that_change_comes() 
         .accept(DIRECT_ALPN, serving.clone())
         .spawn();
 
-    let b = StatePeer::from_join(WORKSPACE, host_cert.clone(), devices, &[], now).unwrap();
+    let b = StatePeer::from_join(WORKSPACE, server_cert.clone(), devices, &[], now).unwrap();
     let b = DirectSync::new(b, b_key.clone());
     let mut heard = b.heard();
     let mut caught_up = b.caught_up();

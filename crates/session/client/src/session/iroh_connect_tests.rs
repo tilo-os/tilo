@@ -36,7 +36,7 @@ async fn dial_error(server: &Endpoint) -> TestResult<LinkError> {
     let config = PeerConfig {
         host: ServerAddress::at(server.addr()),
         cert: cert(&root, &device)?,
-        host_cert: cert(&root, &host)?,
+        server_cert: cert(&root, &host)?,
         revocations: RevocationList::new(),
         entering: None,
     };
@@ -201,7 +201,7 @@ async fn a_session_beside_the_devices_own_dials_from_the_devices_endpoint() {
     let config = PeerConfig {
         host: ServerAddress::at(server.addr()),
         cert: cert(&root, &device).unwrap(),
-        host_cert: cert(&root, &host).unwrap(),
+        server_cert: cert(&root, &host).unwrap(),
         revocations: RevocationList::new(),
         entering: None,
     };
@@ -283,7 +283,7 @@ async fn a_session_beside_the_devices_own_holds_no_keys() {
             iroh::SecretKey::from_bytes(&host.to_bytes()).public(),
         )),
         cert: cert(&root, &device).unwrap(),
-        host_cert: cert(&root, &host).unwrap(),
+        server_cert: cert(&root, &host).unwrap(),
         revocations: RevocationList::new(),
         entering: None,
     };
@@ -325,7 +325,7 @@ async fn a_session_beside_the_devices_own_reads_with_the_devices_keys() {
             iroh::SecretKey::from_bytes(&host.to_bytes()).public(),
         )),
         cert: cert(&root, &device).unwrap(),
-        host_cert: cert(&root, &host).unwrap(),
+        server_cert: cert(&root, &host).unwrap(),
         revocations: RevocationList::new(),
         entering: None,
     };

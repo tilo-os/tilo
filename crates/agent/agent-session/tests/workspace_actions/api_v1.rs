@@ -737,7 +737,7 @@ impl Holder {
             label: "Ada's laptop".to_owned(),
             server: on_server.server_host(),
             cert: laptop.cert.clone(),
-            host_cert: on_server.host.cert.clone(),
+            server_cert: on_server.host.cert.clone(),
         };
         let device =
             tilo_session_client::device::Device::enter(None, &signed, Arc::new(laptop.key.clone()))

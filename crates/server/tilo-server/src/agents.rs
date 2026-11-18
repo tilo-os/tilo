@@ -954,7 +954,7 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         Some(tilo_actions::remote::ResourceViewLocator {
             origin: (*origin).clone(),
             workspace: workspace.to_owned(),
-            host_device: hex::encode(self.host_device.endpoint.host_cert.device_public_key),
+            host_device: hex::encode(self.host_device.endpoint.server_cert.device_public_key),
             provider: provider.to_owned(),
             web_entry: self.web_entry.clone(),
         })
@@ -1050,7 +1050,7 @@ pub async fn start_serving_documents_and_events(
     ),
     ServerError,
 > {
-    let host_cert = identity.device_cert.clone();
+    let server_cert = identity.device_cert.clone();
     let catalogue = app_catalogue(catalogue, browsers.as_ref());
     cfg.services.app_serving = true;
     let events_state = cfg.state_root.join("person-events");
@@ -1067,7 +1067,7 @@ pub async fn start_serving_documents_and_events(
     attach_resources(
         &app_server.actions,
         &server,
-        &host_cert,
+        &server_cert,
         web_entry,
         (feedback_reviewer, shell, browsers),
     )?;
@@ -1096,7 +1096,7 @@ pub async fn start_serving_documents_and_events(
 fn attach_resources(
     actions: &WorkspaceActions,
     server: &Server,
-    host_cert: &DeviceCert,
+    server_cert: &DeviceCert,
     web_entry: Option<String>,
     (feedback_reviewer, shell, browsers): Lent,
 ) -> Result<(), ServerError> {
@@ -1111,7 +1111,7 @@ fn attach_resources(
         let (key, cert) = server.stand_in(&user).unwrap_or_else(|| {
             (
                 server.workspace_documents().signing_key().clone(),
-                host_cert.clone(),
+                server_cert.clone(),
             )
         });
         browsers.serve_from(crate::hosted_browser::Authority {
@@ -1147,7 +1147,7 @@ fn attach_resources(
             certification: server.web_context().certification.clone(),
             runtime: tokio::runtime::Handle::current(),
             host_device: HostDevice {
-                endpoint: HostEndpoint::iroh(server.node_addr(), host_cert.clone()),
+                endpoint: HostEndpoint::iroh(server.node_addr(), server_cert.clone()),
                 key: server.workspace_documents().signing_key().clone(),
                 runtime: tokio::runtime::Handle::current(),
             },
@@ -1185,7 +1185,7 @@ async fn start_inner(
     options: AgentOptions,
     relay_mode: Option<iroh::RelayMode>,
 ) -> Result<(Server, AgentHost), ServerError> {
-    let host_cert = identity.device_cert.clone();
+    let server_cert = identity.device_cert.clone();
     let catalogue = app_catalogue(options.catalogue, options.browsers.as_ref());
     let content = crate::content::stores(&cfg.state_root);
     let mut agents = AgentHost::new(
@@ -1218,14 +1218,14 @@ async fn start_inner(
     attach_resources(
         &host_actions.host.actions,
         &server,
-        &host_cert,
+        &server_cert,
         web_entry,
         (options.feedback_reviewer, options.shell, options.browsers),
     )?;
     drop(host_actions);
     agents
         .start(
-            HostEndpoint::iroh(server.node_addr(), host_cert),
+            HostEndpoint::iroh(server.node_addr(), server_cert),
             Arc::new(server.agent_link()),
         )
         .map_err(ServerError::Identity)?;

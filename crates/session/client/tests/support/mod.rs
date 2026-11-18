@@ -489,13 +489,13 @@ where
 pub fn start_peer(
     host: ServerAddress,
     cert: DeviceCert,
-    host_cert: DeviceCert,
+    server_cert: DeviceCert,
     key: SigningKey,
 ) -> Link {
     start_peer_with_store(
         host,
         cert,
-        host_cert,
+        server_cert,
         key,
         Arc::new(MemoryPeerStore::default()),
     )
@@ -505,7 +505,7 @@ pub fn start_peer(
 pub fn start_peer_with_store(
     host: ServerAddress,
     cert: DeviceCert,
-    host_cert: DeviceCert,
+    server_cert: DeviceCert,
     key: SigningKey,
     store: Arc<MemoryPeerStore>,
 ) -> Link {
@@ -513,7 +513,7 @@ pub fn start_peer_with_store(
         PeerConfig {
             host,
             cert,
-            host_cert,
+            server_cert,
             revocations: RevocationList::new(),
             entering: None,
         },
@@ -552,7 +552,7 @@ impl tilo_server_client::DeviceSigner for PageMembership {
 pub fn start_page(
     host: ServerAddress,
     cert: DeviceCert,
-    host_cert: DeviceCert,
+    server_cert: DeviceCert,
     key: SigningKey,
     store: Arc<MemoryPeerStore>,
 ) -> Link {
@@ -560,7 +560,7 @@ pub fn start_page(
         PeerConfig {
             host,
             cert,
-            host_cert,
+            server_cert,
             revocations: RevocationList::new(),
             entering: None,
         },
@@ -574,7 +574,7 @@ pub fn start_page(
 pub fn enter_page(
     host: ServerAddress,
     cert: DeviceCert,
-    host_cert: DeviceCert,
+    server_cert: DeviceCert,
     key: SigningKey,
     store: Arc<MemoryPeerStore>,
     entering: tilo_server_protocol::entering::Entering,
@@ -583,7 +583,7 @@ pub fn enter_page(
         PeerConfig {
             host,
             cert,
-            host_cert,
+            server_cert,
             revocations: RevocationList::new(),
             entering: Some(entering),
         },
@@ -858,11 +858,11 @@ pub async fn enter(
     entry: (Vec<u8>, Vec<u8>),
     cert: &DeviceCert,
     key: &SigningKey,
-    host_cert: &DeviceCert,
+    server_cert: &DeviceCert,
     workspace_id: WorkspaceId,
 ) -> Link {
     redeem(host, entry, cert, key).await;
-    let peer = start_peer(host.iroh(), cert.clone(), host_cert.clone(), key.clone());
+    let peer = start_peer(host.iroh(), cert.clone(), server_cert.clone(), key.clone());
     peer.send(Cmd::Join(workspace_id)).unwrap();
     in_workspace(&peer, workspace_id).await;
     peer

@@ -22,7 +22,7 @@ use std::time::Duration;
 use tilo_server_client::CertifyError;
 use tilo_server_client::https::{self, Origin};
 /// Where a server is dialed over iroh, and that with its certificate.
-pub use tilo_server_protocol::web::{HostAddress as ServerAddress, HostInfo as ServerInfo};
+pub use tilo_server_protocol::web::{ServerAddress, ServerInfo};
 use tilo_server_session::workspaces::{Refusal as WorkspaceRefusal, WorkspaceLabels};
 use tilo_session_client::PeerConfig;
 use tilo_session_client::device::{Device, DeviceRefusal};
@@ -240,7 +240,7 @@ impl Server {
     pub async fn connect(self: &Arc<Self>, key: &GrantKey) -> Result<Connection, ServerError> {
         let info = match self.known.get() {
             Some(known) => known.clone(),
-            None => https::host_info(&self.host)
+            None => https::server_info(&self.host)
                 .await
                 .map_err(|error| ServerError::Unavailable(error.to_string()))?,
         };
@@ -260,7 +260,7 @@ impl Server {
             PeerConfig {
                 host,
                 cert: key.cert().clone(),
-                host_cert: info.host_cert,
+                server_cert: info.server_cert,
                 revocations: tilo_user_identity::RevocationList::new(),
                 entering: None,
             },

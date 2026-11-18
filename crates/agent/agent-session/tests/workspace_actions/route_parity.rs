@@ -95,7 +95,7 @@ fn workspace_policy(member: &str) -> tilo_action_policy::WorkspacePolicy {
 
 impl WorkspaceDocumentsLink for Member {
     fn user_public_key(&self) -> [u8; 32] {
-        self.host.endpoint.host_cert.user_public_key
+        self.host.endpoint.server_cert.user_public_key
     }
     fn own_device(&self) -> HostDevice {
         self.host.clone()

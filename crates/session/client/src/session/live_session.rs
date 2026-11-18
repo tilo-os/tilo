@@ -333,7 +333,7 @@ pub(crate) struct LiveSessionJoin {
     pub revocations: tilo_user_identity::RevocationList,
     /// The certificate of the host the session reached: who the live session's
     /// host must prove to be over WebTransport.
-    pub host_cert: tilo_user_identity::DeviceCert,
+    pub server_cert: tilo_user_identity::DeviceCert,
     /// This device's statement that its iroh endpoint speaks for it, when the
     /// endpoint is not the device's own key (an ownership-held one): the grant
     /// carries it. Empty over WebTransport, where the device proves itself.
@@ -444,8 +444,8 @@ async fn proven_live_session_link(
         &join.cert,
         join.signer.as_ref(),
         &join.revocations,
-        join.host_cert.user_public_key,
-        Some(join.host_cert.device_public_key),
+        join.server_cert.user_public_key,
+        Some(join.server_cert.device_public_key),
     )
     .await;
     if proved.is_err() {
@@ -596,7 +596,7 @@ impl Task {
                 cert: self.config.cert.clone(),
                 signer: self.signer.clone(),
                 revocations: self.config.revocations.clone(),
-                host_cert: self.config.host_cert.clone(),
+                server_cert: self.config.server_cert.clone(),
                 delegation: delegation.clone(),
                 workspace_id,
                 workspace,

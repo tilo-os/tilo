@@ -2320,7 +2320,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn served_machine(notes_running: bool) -> tilo_system_stats::protocol::Snapshot {
         use tilo_system_stats::protocol::{
-            CpuStats, HostInfo, MemoryStats, ProcessState, ProcessStats, Snapshot, SystemStats,
+            CpuStats, MemoryStats, ProcessState, ProcessStats, ServerInfo, Snapshot, SystemStats,
         };
         let process =
             |pid: u32, name: &str, app: Option<&str>, user: &str, cpu: f32| ProcessStats {
@@ -2356,7 +2356,7 @@ mod tests {
             taken_ms: 1,
             window_ms: 1500,
             system: Some(SystemStats {
-                host: HostInfo {
+                host: ServerInfo {
                     hostname: "ada-laptop".into(),
                     kernel: "7.0.9".into(),
                     cpu_model: Some("Test CPU 9000".into()),

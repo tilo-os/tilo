@@ -189,9 +189,9 @@ fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, LinkError> {
 }
 
 /// What the server publishes before any session: its certificate.
-pub async fn host_info(
+pub async fn server_info(
     client: &dyn HttpClient,
-) -> Result<tilo_server_protocol::web::HostInfo, LinkError> {
+) -> Result<tilo_server_protocol::web::ServerInfo, LinkError> {
     call(client, "/host", Vec::new()).await
 }
 

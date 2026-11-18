@@ -47,13 +47,13 @@ async fn a_page_root_certifies_its_node_and_then_itself() {
     .await;
 
     let browser = SigningKey::generate(&mut UnwrapErr(SysRng));
-    let (cert, host_cert) = certify_with_root(&*host.https(), &root, &browser, "Browser")
+    let (cert, server_cert) = certify_with_root(&*host.https(), &root, &browser, "Browser")
         .await
         .unwrap();
-    assert_eq!(host_cert, node_cert);
+    assert_eq!(server_cert, node_cert);
     assert_eq!(cert.capabilities, DeviceCapabilities::member());
     assert_eq!(cert.device_public_key, browser.device_public_key());
-    let peer = start_peer(host.iroh(), cert, host_cert, browser);
+    let peer = start_peer(host.iroh(), cert, server_cert, browser);
     ready(&[&peer]).await;
 
     // Another person's root does not certify a page for this node.

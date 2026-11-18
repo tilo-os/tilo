@@ -38,7 +38,9 @@ use bytes::Bytes;
 use http_body_util::BodyExt as _;
 use hyper::{Method, Request, Response, StatusCode, header};
 pub(crate) use tilo_server_protocol::web as protocol;
-use tilo_server_protocol::web::{API_PREFIX, HostAddress, HostInfo, MAX_REQUEST_BYTES, WebLink};
+use tilo_server_protocol::web::{
+    API_PREFIX, MAX_REQUEST_BYTES, ServerAddress, ServerInfo, WebLink,
+};
 
 use crate::daemon::{Server, ServerError, WebContext};
 use collab_types::WorkspaceId;
@@ -190,8 +192,8 @@ impl Drop for WebHandle {
 
 struct Web {
     context: WebContext,
-    host_info: HostInfo,
-    /// The endpoint `host_info`'s address is of, whose current address `/host`
+    server_info: ServerInfo,
+    /// The endpoint `server_info`'s address is of, whose current address `/host`
     /// answers ([`Web::current_host_info`]). `None` where the listener serves
     /// no endpoint of its own.
     endpoint: Option<iroh::Endpoint>,
@@ -232,8 +234,8 @@ impl Web {
     /// device dials the host at this address, so it follows the endpoint: a relay the endpoint
     /// reached only after the listener started (its first network report found none, as when
     /// the host's own relay is not routable yet) is named as soon as it is.
-    fn current_host_info(&self) -> HostInfo {
-        let mut info = self.host_info.clone();
+    fn current_host_info(&self) -> ServerInfo {
+        let mut info = self.server_info.clone();
         if let (Some(endpoint), Some(address)) = (&self.endpoint, info.address.as_mut()) {
             follow_endpoint(address, endpoint.addr());
         }
@@ -245,7 +247,7 @@ impl Web {
 /// the relay `address` named, as a host keeps what it named elsewhere
 /// (`tilo_endpoint_reachability::own_address::follow`): it is reached there again once the
 /// relay is back, and an address with no relay reaches it from nowhere.
-fn follow_endpoint(address: &mut HostAddress, now: iroh_base::EndpointAddr) {
+fn follow_endpoint(address: &mut ServerAddress, now: iroh_base::EndpointAddr) {
     let relay = now.relay_urls().next().map(ToString::to_string);
     if relay.is_none() && address.relay_url.is_some() {
         return;
@@ -500,7 +502,7 @@ impl Server {
         if let Some(workspaces) = self.workspaces() {
             let _ = context.server.carried_calls.set(workspaces.downgrade());
         }
-        let host_cert = context.server.identity.cert.clone();
+        let server_cert = context.server.identity.cert.clone();
         // Where a page dials this host: its endpoint's key and addresses, and
         // the relay it is reached through — which the endpoint names from the
         // moment this host serves anything ([`Server::start`] waits for it), as
@@ -514,9 +516,9 @@ impl Server {
             bind_link(&config, udp, addr, public_origin.as_ref(), &identity).map_err(failed)?;
         let web = Arc::new(Web {
             context: context.clone(),
-            host_info: HostInfo {
-                host_cert,
-                address: Some(HostAddress {
+            server_info: ServerInfo {
+                server_cert,
+                address: Some(ServerAddress {
                     endpoint_addr,
                     relay_url,
                     web: Some(web_link.clone()),

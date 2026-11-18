@@ -37,7 +37,7 @@ pub struct Device {
     pub agent: String,
     pub label: String,
     pub cert: String,
-    pub host_cert: String,
+    pub server_cert: String,
     /// Where the server is dialed over iroh, as its signed invitation named it: a server reached
     /// that way only (behind a NAT, through a packet relay) has no web origin to ask.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -61,7 +61,7 @@ impl Device {
                 .and_then(|bytes| postcard::from_bytes(&bytes).ok())
                 .ok_or_else(|| anyhow!(LOGIN_DAMAGED))
         };
-        Ok((read(&self.cert)?, read(&self.host_cert)?))
+        Ok((read(&self.cert)?, read(&self.server_cert)?))
     }
 }
 

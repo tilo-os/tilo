@@ -7,7 +7,7 @@
 //!
 //! | Route | Body | Answer |
 //! |---|---|---|
-//! | `/host` | — | [`HostInfo`] |
+//! | `/host` | — | [`ServerInfo`] |
 //! | `/invitation` ([`INVITATION_PATH`]) | a signed invitation (`Vec<u8>`) | [`JoinReply`](crate::workspaces::JoinReply) |
 //! | `/workspace-deleted` ([`WORKSPACE_DELETED_PATH`]) | a workspace's id (`String`) | `bool` |
 //! | `/fetch` ([`FETCH_PATH`]) | any method: `tilo_net::proxy` wire protocol v1 | the target's response, or the proxy's failure |
@@ -95,18 +95,19 @@ pub struct Installed {
 pub const MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
 /// What a page needs to know about the host before it has a certificate.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostInfo {
+pub struct ServerInfo {
     /// The host's device certificate (pin its device key).
-    pub host_cert: tilo_user_identity::DeviceCert,
+    #[serde(rename = "host_cert")]
+    pub server_cert: tilo_user_identity::DeviceCert,
     /// Where the host listens on iroh, which is how a page reaches it for
     /// everything a session and its live sessions carry. `None` in a host that serves
     /// no iroh endpoint.
-    pub address: Option<HostAddress>,
+    pub address: Option<ServerAddress>,
 }
 
 /// Where a host's iroh endpoint is dialled.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostAddress {
+pub struct ServerAddress {
     /// The endpoint's key and the addresses it answers at.
     pub endpoint_addr: iroh_base::EndpointAddr,
     /// The packet relay it is reached through, when it names one; a page dials
@@ -119,7 +120,7 @@ pub struct HostAddress {
     pub web: Option<WebLink>,
 }
 
-/// [`HostInfo`] as a page reads it (JSON): what `hostInfo()` in the page's
+/// [`ServerInfo`] as a page reads it (JSON): what `hostInfo()` in the page's
 /// runtime resolves to, and what a site hands its page about the host it
 /// opens (`entry.json`, from the web entry's `TILO_WEB_HOME_HOST_INFO`), so the
 /// page dials that host without asking it first.
@@ -127,12 +128,13 @@ pub struct HostAddress {
 #[serde(rename_all = "camelCase")]
 pub struct PageHost {
     /// The host's device certificate.
-    pub host_cert: tilo_user_identity::DeviceCert,
+    #[serde(rename = "hostCert")]
+    pub server_cert: tilo_user_identity::DeviceCert,
     /// Where the host listens on iroh, when it names an endpoint.
     pub address: Option<PageHostAddress>,
 }
 
-/// [`HostAddress`] as a page reads it (JSON).
+/// [`ServerAddress`] as a page reads it (JSON).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PageHostAddress {
@@ -146,8 +148,8 @@ pub struct PageHostAddress {
     pub web: Option<WebLink>,
 }
 
-impl From<HostAddress> for PageHostAddress {
-    fn from(address: HostAddress) -> Self {
+impl From<ServerAddress> for PageHostAddress {
+    fn from(address: ServerAddress) -> Self {
         Self {
             endpoint_addr: address.endpoint_addr,
             relay_url: address.relay_url,
@@ -156,7 +158,7 @@ impl From<HostAddress> for PageHostAddress {
     }
 }
 
-impl From<PageHostAddress> for HostAddress {
+impl From<PageHostAddress> for ServerAddress {
     fn from(address: PageHostAddress) -> Self {
         Self {
             endpoint_addr: address.endpoint_addr,
@@ -166,16 +168,16 @@ impl From<PageHostAddress> for HostAddress {
     }
 }
 
-impl From<HostInfo> for PageHost {
-    fn from(info: HostInfo) -> Self {
+impl From<ServerInfo> for PageHost {
+    fn from(info: ServerInfo) -> Self {
         Self {
-            host_cert: info.host_cert,
+            server_cert: info.server_cert,
             address: info.address.map(Into::into),
         }
     }
 }
 
-impl HostInfo {
+impl ServerInfo {
     /// What a site hands its page about this host: its certificate, its
     /// endpoint's key, the packet relay and the WebTransport listener a page
     /// reaches it at, without the network addresses its endpoint answers at.
@@ -200,7 +202,7 @@ impl HostInfo {
             }
         });
         PageHost {
-            host_cert: self.host_cert.clone(),
+            server_cert: self.server_cert.clone(),
             address,
         }
     }

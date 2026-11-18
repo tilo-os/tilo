@@ -64,17 +64,17 @@ pub type CatalogueFactory = Arc<dyn Fn() -> AppCatalogue + Send + Sync>;
 pub struct HostEndpoint {
     pub host: ServerAddress,
     /// Its certificate.
-    pub host_cert: DeviceCert,
+    pub server_cert: DeviceCert,
 }
 
 impl HostEndpoint {
     /// The host at its iroh endpoint `addr`, the way a host's own agents
     /// reach it.
     #[must_use]
-    pub fn iroh(addr: iroh_base::EndpointAddr, host_cert: DeviceCert) -> Self {
+    pub fn iroh(addr: iroh_base::EndpointAddr, server_cert: DeviceCert) -> Self {
         Self {
             host: ServerAddress::at(addr),
-            host_cert,
+            server_cert,
         }
     }
 }
@@ -404,7 +404,7 @@ fn run_agent(
     let mut member = match AgentMember::start_with_store(
         MemberConfig {
             host: endpoint.host,
-            host_cert: endpoint.host_cert,
+            server_cert: endpoint.server_cert,
             workspace,
         },
         identity,

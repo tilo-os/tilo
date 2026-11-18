@@ -148,17 +148,17 @@ impl Ada {
             .unwrap();
         let approved = approve_one_over(host, &self.root, &self.laptop).await;
         assert_eq!(approved, shown, "the person compares codes");
-        let (cert, host_cert, _) = certifying.await.unwrap().unwrap();
-        (key, cert, host_cert)
+        let (cert, server_cert, _) = certifying.await.unwrap().unwrap();
+        (key, cert, server_cert)
     }
 
     /// Ada's laptop, in the workspace over a direct session.
-    async fn laptop_peer(&self, host_cert: &DeviceCert) -> Link {
+    async fn laptop_peer(&self, server_cert: &DeviceCert) -> Link {
         place(&self.host.server, &self.laptop.cert).await;
         let peer = start_peer(
             self.host.over(Carrier::Direct),
             self.laptop.cert.clone(),
-            host_cert.clone(),
+            server_cert.clone(),
             self.laptop.key.clone(),
         );
         peer.join_placed(WORKSPACE, "Workspace").unwrap();
@@ -173,12 +173,12 @@ fn page(
     carrier: Carrier,
     key: SigningKey,
     cert: &DeviceCert,
-    host_cert: &DeviceCert,
+    server_cert: &DeviceCert,
 ) -> Link {
     start_page(
         host.over(carrier),
         cert.clone(),
-        host_cert.clone(),
+        server_cert.clone(),
         key,
         Arc::new(MemoryPeerStore::default()),
     )
@@ -186,9 +186,9 @@ fn page(
 
 async fn a_root_holding_device_certifies_a_new_one(carrier: Carrier) {
     let ada = Ada::start().await;
-    let (_, cert, host_cert) = ada.certified(&ada.host.over(carrier)).await;
+    let (_, cert, server_cert) = ada.certified(&ada.host.over(carrier)).await;
     assert_eq!(
-        host_cert.device_public_key,
+        server_cert.device_public_key,
         ada.host_device.cert.device_public_key
     );
     assert_eq!(cert.user_public_key, ada.root.verifying_key().to_bytes());
@@ -202,8 +202,8 @@ async fn a_root_holding_device_certifies_a_new_one(carrier: Carrier) {
 async fn the_persons_root_pairs_a_new_device(carrier: Carrier) {
     let ada = Ada::start().await;
     let host = ada.host.over(carrier);
-    let (page_key, page_cert, host_cert) = ada.certified(&host).await;
-    let session = page(&ada.host, carrier, page_key, &page_cert, &host_cert);
+    let (page_key, page_cert, server_cert) = ada.certified(&host).await;
+    let session = page(&ada.host, carrier, page_key, &page_cert, &server_cert);
     let user = ada.root.verifying_key().to_bytes();
     let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let (code_tx, code_rx) = tokio::sync::oneshot::channel::<String>();
@@ -239,11 +239,11 @@ async fn the_persons_root_pairs_a_new_device(carrier: Carrier) {
     .await
     .unwrap()
     .expect("an approval issues a certificate");
-    let (cert, host_cert, _) = asking.await.unwrap().unwrap();
+    let (cert, server_cert, _) = asking.await.unwrap().unwrap();
     assert_eq!(cert, issued);
     assert_eq!(cert.device_public_key, key.verifying_key().to_bytes());
     assert_eq!(
-        host_cert.device_public_key,
+        server_cert.device_public_key,
         ada.host_device.cert.device_public_key
     );
     assert!(
@@ -258,10 +258,10 @@ async fn the_persons_root_pairs_a_new_device(carrier: Carrier) {
 
 async fn documents_sync_both_ways_until_the_device_is_revoked(carrier: Carrier) {
     let ada = Ada::start().await;
-    let (key, cert, host_cert) = ada.certified(&ada.host.over(carrier)).await;
-    let page = page(&ada.host, carrier, key, &cert, &host_cert);
+    let (key, cert, server_cert) = ada.certified(&ada.host.over(carrier)).await;
+    let page = page(&ada.host, carrier, key, &cert, &server_cert);
     page.join_placed(WORKSPACE, "Workspace").unwrap();
-    let laptop = ada.laptop_peer(&host_cert).await;
+    let laptop = ada.laptop_peer(&server_cert).await;
     ready(&[&page, &laptop]).await;
 
     // An acknowledged commit from the page reaches the laptop, and the
@@ -414,17 +414,17 @@ fn live_session_keys() -> ContentKeys {
 
 async fn the_workspace_admits_the_device_and_its_live_session_carries_it(carrier: Carrier) {
     let ada = Ada::start().await;
-    let (key, cert, host_cert) = ada.certified(&ada.host.over(carrier)).await;
+    let (key, cert, server_cert) = ada.certified(&ada.host.over(carrier)).await;
     place(&ada.host.server, &cert).await;
     let keys = live_session_keys();
 
     // The workspace's governance admits the page.
-    let page = page(&ada.host, carrier, key, &cert, &host_cert);
+    let page = page(&ada.host, carrier, key, &cert, &server_cert);
     page.send(Cmd::InstallGroupKeys(live_session_route(), keys.clone()))
         .unwrap();
     page.join_placed(WORKSPACE, "Workspace").unwrap();
     in_workspace(&page, crate::support::workspace()).await;
-    let laptop = ada.laptop_peer(&host_cert).await;
+    let laptop = ada.laptop_peer(&server_cert).await;
     laptop
         .send(Cmd::InstallGroupKeys(live_session_route(), keys.clone()))
         .unwrap();
