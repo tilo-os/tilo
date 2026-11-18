@@ -144,6 +144,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         param: &tilo_actions::ActionParam,
         arguments: &mut serde_json::Map<String, Value>,
     ) -> Result<(), Failure> {
+        // A secret named by reference (`vault.item:<id>`) is its person's, not the
+        // workspace's, so no path resolves it: the app reads the reference as given.
+        if tilo_actions::remote::person_vault::takes_item(param) {
+            return Ok(());
+        }
         // A resource parameter is typed as one, or declared as a reference
         // to one of a kind (`resource = "notes.pages.pages"`): either way
         // what it picks is a resource of the workspace.
