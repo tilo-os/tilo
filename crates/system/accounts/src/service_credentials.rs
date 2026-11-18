@@ -113,6 +113,49 @@ impl AccountCredentials {
         self.vault.remove(id)
     }
 
+    /// Stage `secret` as the secret of `account`, typed for the servers its
+    /// settings name now ([`SecretVault::put_for`]).
+    pub fn put_for(&mut self, account: &crate::Account, secret: &Secret) {
+        self.vault.put_for(account, secret);
+    }
+
+    /// Stage `secret` under `id` as typed just now: bound where its account
+    /// is first joined ([`SecretVault::put_anew`]).
+    pub fn put_anew(&mut self, id: &AccountId, secret: &Secret) {
+        self.vault.put_anew(id, secret);
+    }
+
+    /// The secret of `account`, while its settings name only servers the
+    /// secret was typed for ([`SecretVault::get_for`]).
+    #[must_use]
+    pub fn get_for(&self, account: &crate::Account) -> Option<Secret> {
+        self.vault.get_for(account)
+    }
+
+    /// The servers the secret under `id` was typed for and when it was
+    /// bound to them ([`SecretVault::typed_for`]).
+    #[must_use]
+    pub fn typed_for(&self, id: &AccountId) -> Option<crate::typed_for::TypedFor> {
+        self.vault.typed_for(id)
+    }
+
+    /// Bind each secret of `accounts` that has no servers on it yet to the
+    /// servers its account names now ([`SecretVault::bind_first`]), and
+    /// save where one was bound.
+    ///
+    /// # Errors
+    /// The vault could not be saved.
+    pub fn bind_first<'a>(
+        &mut self,
+        accounts: impl IntoIterator<Item = &'a crate::Account>,
+    ) -> Result<(), String> {
+        let mut bound = false;
+        for account in accounts {
+            bound |= self.vault.bind_first(account);
+        }
+        if bound { self.vault.try_save() } else { Ok(()) }
+    }
+
     /// Commit staged edits using the vault's locked, conflict-checked atomic write.
     pub fn try_save(&self) -> Result<(), String> {
         self.vault.try_save()
