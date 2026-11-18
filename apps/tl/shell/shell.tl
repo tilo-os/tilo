@@ -43,9 +43,11 @@ template view shell_around(front: Option<Layout>, traditional: Bool, content: Vi
                 bar_on_edge(s, traditional)
             }
             if resting {
-                stack(gap: .tight, fill) {
-                    at_rest()
+                // What the style shows keeps the whole band under the bar, and the banner floats
+                // over it: a notice rising never moves what the person had on screen.
+                layers(fill) {
                     content
+                    at_rest()
                 }
             } else if device.overlays.here == "switcher" {
                 surface(fill)
@@ -258,14 +260,14 @@ view top_bar(traditional: Bool) {
     }
 }
 
-/// The shell at rest under its bar: the banner a notice rose as. A person with windows sees
-/// them through the compositor behind this, and who is here is in the bar's own menu, so the
+/// The banner a notice rose as, floated over what the style shows at rest. A person with windows
+/// sees them through the compositor behind this, and who is here is in the bar's own menu, so the
 /// shell at rest adds nothing to its bar's band: closed, it lays nothing out and draws nothing.
 /// A banner stands the shell's gutter in from the window's edge, as a surface does: its card is
 /// rounded, and a rounded card on the edge has its corners cut by it.
 view at_rest() {
     if (device.notifications.banner ?? -1) != -1 {
-        stack(padding: .group) {
+        stack(at: .top, fill, padding: .group) {
             banner()
         }
     }
