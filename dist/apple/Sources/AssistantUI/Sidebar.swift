@@ -52,7 +52,9 @@ public struct Sidebar: View {
                 chose()
             } label: {
                 HStack(spacing: 10) {
-                    Mark()
+                    // The logo is the head's alone. The main chat has a sign of its own, whose dots
+                    // move while the assistant writes there.
+                    ChatSign(writes: model.isWriting(.main)).foregroundStyle(Token.ink)
                     Text(AssistantWords.mainChat.said)
                         .font(.tilo(14, model.place == .chat(.main) ? .medium : .regular)).foregroundStyle(Token.ink)
                     Spacer(minLength: 0)
@@ -65,6 +67,8 @@ public struct Sidebar: View {
             }
             .buttonStyle(.plain)
             .accessibilityAddTraits(model.place == .chat(.main) ? .isSelected : [])
+            // Read out as writing by the word the conversation itself says under a reply in work.
+            .accessibilityValue(model.isWriting(.main) ? AssistantWords.answering.said : "")
 
             HStack {
                 Text(AssistantWords.subAgents.said).font(.small12).foregroundStyle(Token.ink3)
@@ -152,9 +156,19 @@ private struct AgentRow: View {
     var body: some View {
         // At the largest text sizes a job's name is read whole, on as many lines as it takes.
         let lines = textSize.isAccessibilitySize ? 4 : 1
+        let writes = model.isWriting(.subAgent(agent.id))
         Button(action: open) {
             HStack(alignment: .top, spacing: 10) {
-                Circle().fill(dot).frame(width: 8, height: 8).padding(.top, 6)
+                // While this sub-agent writes, its dot gives way to the three dots that say so, in
+                // the same place: nothing beside them moves.
+                Group {
+                    if writes {
+                        WritingDots(writes: true, dot: 2.4, pitch: 3.6, lift: 2.4)
+                    } else {
+                        Circle().fill(dot)
+                    }
+                }
+                .frame(width: 8, height: 8).padding(.top, 6)
                 VStack(alignment: .leading, spacing: 0) {
                     Text(agent.title).font(.tilo(14, .medium)).foregroundStyle(Token.ink).lineLimit(lines)
                         .multilineTextAlignment(.leading)
@@ -171,6 +185,7 @@ private struct AgentRow: View {
         .buttonStyle(.plain)
         .accessibilityLabel([agent.title, agent.role, wording.state(agent)].filter { !$0.isEmpty }.joined(separator: ", "))
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityValue(writes ? AssistantWords.answering.said : "")
         .contextMenu {
             if agent.state == .working || agent.state == .needsYou {
                 Button(AssistantWords.stop.said, role: .destructive) { model.stop(agent.id) }

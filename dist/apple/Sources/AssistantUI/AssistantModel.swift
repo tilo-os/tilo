@@ -254,6 +254,12 @@ public final class AssistantModel {
         conversations[chat] ?? Conversation()
     }
 
+    /// Whether a reply is being written in a conversation right now. Its row in the sidebar
+    /// says so for exactly as long as the conversation itself does: both read this one word.
+    public func isWriting(_ chat: Chat) -> Bool {
+        conversation(chat).isAnswering
+    }
+
     public var person: Person? {
         if case .signedIn(let person) = session { person } else { nil }
     }
