@@ -320,8 +320,8 @@ async fn the_rundown_whole(process: tilo_clock::testing::OwnProcess) {
         );
     }
     assert!(
-        !told_to_do.contains(ORDER),
-        "a line of an entry's notes is nobody's instruction: {handed}"
+        as_data.contains(NOTES) && as_data.contains(ORDER) && !told_to_do.contains(ORDER),
+        "the entry's notes are handed over, and a line of them is nobody's instruction: {handed}"
     );
     agents.answer(&workspace, &turns[0]).await.unwrap();
     let reply = ended(&up.workspaces, &workspace, &ask).await;
@@ -334,7 +334,7 @@ async fn the_rundown_whole(process: tilo_clock::testing::OwnProcess) {
         let last = asked.last().expect("the model was asked");
         format!("{:?}", last.messages.last())
     };
-    for held in [TITLE, PLACE, BO, CY] {
+    for held in [TITLE, PLACE, BO, CY, NOTES] {
         assert!(
             shown.contains(held),
             "a turn with no device reads its person's calendars; {held} is not in what it was \
