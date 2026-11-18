@@ -3,13 +3,35 @@
 use super::*;
 
 /// A page whose network stalled: its connection never takes a byte.
-struct Stalled;
+struct Stalled {
+    /// One permit the page adds when its replay first waits on its network:
+    /// its capture, its replay ticket and its preparation are behind it by then.
+    started: Arc<tokio::sync::Semaphore>,
+    signalled: std::sync::atomic::AtomicBool,
+}
+impl Stalled {
+    fn new(started: Arc<tokio::sync::Semaphore>) -> Self {
+        Self {
+            started,
+            signalled: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+    fn first_write(&self) {
+        if !self
+            .signalled
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            self.started.add_permits(1);
+        }
+    }
+}
 impl tokio::io::AsyncWrite for Stalled {
     fn poll_write(
         self: std::pin::Pin<&mut Self>,
         _: &mut std::task::Context<'_>,
         _: &[u8],
     ) -> std::task::Poll<std::io::Result<usize>> {
+        self.first_write();
         std::task::Poll::Pending
     }
     fn poll_flush(
@@ -82,16 +104,24 @@ async fn a_crowd_is_replayed_once_each_and_never_waits_on_a_stalled_page() {
     }
     let (stalled, crowd) = peers.split_at(STALLED);
 
+    let started = Arc::new(tokio::sync::Semaphore::new(0));
     let mut stalled_pages = tokio::task::JoinSet::new();
     for peer in stalled {
-        let (fixture, peer) = (fixture.clone(), peer.clone());
-        stalled_pages.spawn(async move { enter(&fixture, &peer, &mut Stalled).await });
+        let (fixture, peer, started) = (fixture.clone(), peer.clone(), started.clone());
+        stalled_pages.spawn(async move {
+            let mut stalled = Stalled::new(started);
+            enter(&fixture, &peer, &mut stalled).await
+        });
     }
-    // Every stalled page's replay is captured and waits on its network.
-    tilo_test_env::within("the stalled pages' replays to be captured", async {
-        while fixture.metrics.snapshot().subscribes < STALLED as u64 {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+    // Every stalled page's replay reached its network: its capture, its replay
+    // ticket and its preparation are behind it, and none of it is left ahead of
+    // the crowd that enters next.
+    tilo_test_env::within("every stalled page's replay to reach its network", async {
+        started
+            .acquire_many(u32::try_from(STALLED).expect("a count of pages"))
+            .await
+            .expect("the stalled pages' permits")
+            .forget();
     })
     .await;
 
