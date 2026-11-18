@@ -624,7 +624,7 @@ impl Engine {
                     host: hint
                         .map(|hint| hint.host.device_label.clone())
                         .unwrap_or_default(),
-                    here: hint.is_some_and(|hint| hint.host.device_public_key == own),
+                    here: hint.is_some_and(|hint| hint.host.is_of_device(&own)),
                     admitted: Admission::of(view, own) == Admission::Admitted,
                 })
             })

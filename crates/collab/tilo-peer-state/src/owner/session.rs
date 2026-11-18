@@ -112,9 +112,8 @@ impl Connect {
                 .keeping_devices()
                 .into_iter()
                 .filter(|hint| {
-                    let device = hint.host.device_public_key;
-                    device != enrolled.host.device_public_key
-                        && &device != own
+                    hint.host.device_public_key != enrolled.host.device_public_key
+                        && !crate::owner::hosted_by(hint, own)
                         && !its_root_revoked(revocations.iter().cloned(), &hint.host)
                 });
             Ok(std::iter::once(enrolled.clone()).chain(named).collect())
@@ -129,7 +128,10 @@ impl Connect {
         self.owner
             .with_current(self.workspace, |view| {
                 let (cert, _) = identity.current_material(view.workspace_id())?;
-                Ok(view.transport_hint()?.host.device_public_key == cert.device_public_key)
+                Ok(view
+                    .transport_hint()?
+                    .host
+                    .is_of_device(&cert.device_public_key))
             })
             .unwrap_or(false)
     }

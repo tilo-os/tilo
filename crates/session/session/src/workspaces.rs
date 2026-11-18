@@ -1463,7 +1463,7 @@ impl crate::Shared {
                     else {
                         continue;
                     };
-                    if hint.host.device_public_key == device {
+                    if hint.host.is_of_device(&device) {
                         continue;
                     }
                     let name = self
