@@ -2260,6 +2260,39 @@ fn object_arg(
     }
 }
 
+/// The property `key` of an object of `schema`, where the schema or one of
+/// its alternatives lists it.
+fn listed<'a>(schema: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {
+    let own = |schema: &'a serde_json::Value| schema.get("properties")?.get(key);
+    own(schema).or_else(|| schema.get("oneOf")?.as_array()?.iter().find_map(own))
+}
+
+/// What [`APPLY`] says of itself, with its one argument written out as the
+/// schema it declares takes it. The words are read from that schema, so they
+/// cannot teach an object the check refuses; with no schema they write out
+/// none.
+fn apply_words(schema: Option<&serde_json::Value>) -> String {
+    let written = |named: &serde_json::Value| {
+        listed(named, "action").map(|_| {
+            if listed(named, "args").is_some() {
+                "{action: id, args: {..}}"
+            } else {
+                "{action: id, ...its params}"
+            }
+        })
+    };
+    let shape = schema.and_then(|schema| match listed(schema, "op") {
+        Some(op) => written(op).map(|op| format!("{{op: {op}}}")),
+        None => written(schema).map(str::to_owned),
+    });
+    match shape {
+        Some(shape) => format!(
+            "One edit as typed JSON: {shape}. The named action does the same and says more."
+        ),
+        None => "One edit as typed JSON. The named action does the same and says more.".to_owned(),
+    }
+}
+
 pub(crate) fn apply_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
     #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
     let _phase = crate::profiling::Phase::start("resource.apply_spec");
@@ -2267,12 +2300,14 @@ pub(crate) fn apply_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
         Some(value) => read_apply(vocabulary, serde_json::Value::Object(value)),
         None => Err("missing action".to_owned()),
     };
+    let param = apply_param(vocabulary);
+    let words = apply_words(param.schema.as_deref());
     ActionSpec::typed(
         APPLY,
         format!("Apply {} edit", vocabulary.label),
         "Action as JSON",
         ExecutionLocus::ClientLocal,
-        vec![apply_param(vocabulary)],
+        vec![param],
         move |args| match crate::content::invoking(|| read(args)) {
             Ok(mut action) => {
                 action.stamp(origin_now_ms());
@@ -2281,9 +2316,7 @@ pub(crate) fn apply_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
             Err(reason) => refused(&reason),
         },
     )
-    .with_description(
-        "One edit as a typed JSON value: {action: id, ...its params}. The named action does the same and says more.",
-    )
+    .with_description(words)
     // A typed edit is how a surface, an agent or a script says what should
     // happen without a named declaration; a person picks named actions.
     .for_audience(tilo_actions::Audience::Agents)

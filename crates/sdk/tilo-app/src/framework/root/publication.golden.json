@@ -99,7 +99,7 @@
       "resource_kind": "test.shelf",
       "resource_label": "Shelf",
       "action_label": "Apply Shelf edit",
-      "description": "One edit as a typed JSON value: {action: id, ...its params}. The named action does the same and says more.",
+      "description": "One edit as typed JSON. The named action does the same and says more.",
       "locus": "ClientLocal",
       "kind": "Document",
       "contract": {

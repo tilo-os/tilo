@@ -142,7 +142,7 @@
     "action": "apply",
     "resource_kind": "canvas.artwork",
     "label": "Apply Artwork edit",
-    "description": "One edit as a typed JSON value: {action: id, ...its params}. The named action does the same and says more.",
+    "description": "One edit as typed JSON: {op: {action: id, args: {..}}}. The named action does the same and says more.",
     "operation": "Document",
     "params": [
       {
@@ -4758,7 +4758,7 @@
     "action": "apply",
     "resource_kind": "canvas.recent-artworks",
     "label": "Apply Recent artworks edit",
-    "description": "One edit as a typed JSON value: {action: id, ...its params}. The named action does the same and says more.",
+    "description": "One edit as typed JSON: {op: {action: id, args: {..}}}. The named action does the same and says more.",
     "operation": "Effect",
     "params": [
       {

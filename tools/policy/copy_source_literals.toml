@@ -255,11 +255,6 @@ reason = "What the read tool answers an agent, never shown in a window."
 
 [[allow]]
 file = "crates/sdk/tilo-resource/src/resource.rs"
-text = "One edit as a typed JSON value: {action: id, ...its params}. The named action does the same and says more."
-reason = "What the apply tool answers an agent, never shown in a window."
-
-[[allow]]
-file = "crates/sdk/tilo-resource/src/resource.rs"
 text = "Several actions as one all-or-nothing step: one undo, and if any member refuses nothing is applied. actions: [{action: id, args: {..}}]."
 reason = "What the group tool answers an agent, never shown in a window."
 

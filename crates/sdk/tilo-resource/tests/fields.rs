@@ -1643,3 +1643,104 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+/// The generic apply among `published`'s actions.
+fn apply(published: &tilo_actions::ResourceSpec) -> &tilo_actions::ActionSpec {
+    published
+        .actions
+        .iter()
+        .find(|spec| spec.id == tilo_resource::APPLY)
+        .unwrap()
+}
+
+/// The keys of the JSON object some words write out, each with the keys
+/// written inside it: `{op: {action: id, args: {..}}}` shows `op`, and inside
+/// it `action` and `args`. What is no `key: value` (`..`, a word) is no key.
+#[derive(Debug, Default)]
+struct Shown(Vec<(String, Shown)>);
+
+/// What `words` show of the first object they write out.
+fn shown(words: &str) -> Shown {
+    let Some((_, object)) = words.split_once('{') else {
+        return Shown::default();
+    };
+    shown_inside(&mut object.chars().peekable())
+}
+
+/// The keys up to the brace that closes the object `rest` stands in.
+fn shown_inside(rest: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Shown {
+    let mut keys = Vec::new();
+    let mut word = String::new();
+    while let Some(next) = rest.next() {
+        match next {
+            '}' => break,
+            ',' => word.clear(),
+            ':' => {
+                let key = word.trim().to_owned();
+                word.clear();
+                while rest.next_if(|next| next.is_whitespace()).is_some() {}
+                let inside = if rest.next_if_eq(&'{').is_some() {
+                    shown_inside(rest)
+                } else {
+                    Shown::default()
+                };
+                keys.push((key, inside));
+            }
+            other => word.push(other),
+        }
+    }
+    Shown(keys)
+}
+
+/// The first key `shown` holds that an object of `schema` does not take at
+/// its depth: a key is taken where the schema, or one alternative of it,
+/// lists it as a property.
+fn not_taken(schema: &serde_json::Value, shown: &Shown) -> Option<String> {
+    let alternatives: Vec<&serde_json::Value> = schema
+        .get("oneOf")
+        .and_then(serde_json::Value::as_array)
+        .map_or_else(
+            || vec![schema],
+            |alternatives| alternatives.iter().collect(),
+        );
+    for (key, inside) in &shown.0 {
+        let holders: Vec<&serde_json::Value> = alternatives
+            .iter()
+            .filter_map(|alternative| alternative.get("properties")?.get(key))
+            .collect();
+        let Some(first) = holders.first() else {
+            return Some(format!("`{key}` is no property of {schema}"));
+        };
+        if holders
+            .iter()
+            .all(|holder| not_taken(holder, inside).is_some())
+        {
+            return not_taken(first, inside);
+        }
+    }
+    None
+}
+
+tilo_test_env::scenario! {
+    fn what_the_words_of_apply_show_is_what_its_schema_takes;
+
+    phase the_object_the_words_write_out_holds_only_keys_the_schema_takes;
+    // An agent writes its first call of `apply` from the action's words. The
+    // object they write out is held against the schema the argument
+    // declares, key by key, so the words cannot teach a shape the check
+    // refuses.
+    {
+        let published = Replica::<Board>::new().published().unwrap();
+        let spec = apply(&published);
+        let words = spec.description.clone().unwrap_or_default();
+        let schema = spec
+            .params()
+            .first()
+            .and_then(|param| param.schema.clone())
+            .expect("apply declares what its argument takes");
+        let shown = shown(&words);
+        assert!(!shown.0.is_empty(), "the words write out no object: {words}");
+        let refused = not_taken(&schema, &shown);
+        assert!(refused.is_none(), "{words}\n{}", refused.unwrap_or_default());
+    }
+}
