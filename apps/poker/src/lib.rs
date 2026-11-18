@@ -4,8 +4,6 @@ pub use ui::apps::POKER as APP_ID;
 pub const APP_TITLE: &str = "Poker";
 
 pub mod card;
-pub mod cards;
-pub mod game;
 pub mod locales;
 #[cfg(feature = "samples")]
 mod sample;
@@ -13,7 +11,9 @@ pub mod view;
 
 use ui::prelude::*;
 
-pub use game::Table;
+/// The table, the hand and the rules of Texas hold'em: their types and verbs
+/// live in `poker-model`.
+pub use poker_model::{Table, cards, game};
 
 pub struct App;
 

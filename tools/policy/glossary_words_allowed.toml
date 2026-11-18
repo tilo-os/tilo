@@ -1126,3 +1126,17 @@ reason = "A registry address's host, the network name a registry is reached at, 
 words = ["host"]
 identifiers = ["host", "host_str"]
 paths = ["apps/publisher-model/src/lib.rs"]
+
+[[allow]]
+reason = "A place at a poker table: the game's own word for where a player sits, in the resource the app and its module share."
+words = ["seat"]
+identifiers = [
+    "seat", "seats", "SEATS", "seating", "seat_of", "free_seat", "button_seat", "seated",
+    "seats_are_taken", "poker-take-seat", "two_people_asking_for_one_seat_both_sit",
+]
+paths = [
+    "apps/poker-model/src/game.rs",
+    "apps/poker-model/src/cards.rs",
+    "apps/poker-model/locales/en-US.ftl",
+    "apps/poker-model/locales/de-DE.ftl",
+]
