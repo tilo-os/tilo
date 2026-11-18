@@ -2129,17 +2129,9 @@ impl NotesApp {
 
     /// Open the notes chosen in the tree that the projection shows now.
     fn open_pending(&mut self) {
-        let pending = std::mem::take(&mut self.pending_open);
-        let mut moved = false;
-        for page in pending {
-            if self.select_page(page) {
-                moved = true;
-            }
-        }
-        if moved {
-            // A presented window takes no projection for a move, so the
-            // page tree marks the note it now shows.
-            self.sidebar.sync_from_workspace(&self.workspace);
+        // A move takes no projection: selecting marks the note in the page tree.
+        for page in std::mem::take(&mut self.pending_open) {
+            self.select_page(page);
         }
     }
 
@@ -2259,14 +2251,8 @@ impl NotesApp {
         changed
     }
 
-    /// Navigate to `id`: select + load the page. Used both by the
-    /// Cmd-K palette and by click-on-link events.
-    pub fn navigate_to(&mut self, id: PageId) {
-        self.open_page(id);
-    }
-
     /// Open note `id` on the next sync, where its body binds.
-    fn open_page(&mut self, id: PageId) {
+    pub fn navigate_to(&mut self, id: PageId) {
         // Explicit note navigation gives the body the keyboard. Keep a docked
         // tree visible, but dismiss its modal drawer, including saved intent
         // that has not yet been resolved against the first measured width.
@@ -3015,11 +3001,6 @@ impl Widget for NotesApp {
         let _profile = ui::tilo_resource::profiling::Phase::start("surface_sync");
         self.shell.sync(state, path);
         self.take_toast_undo();
-        // The window's bar shows the note's slots and runs what the person
-        // did with them through the same header requests.
-        if self.sync_window_toolbar() {
-            self.self_dirty = true;
-        }
         self.drain_header_requests();
         let (state, path) = ui::doc::document_ref(state, path);
         if let Some(saved) = self.save_status.as_ref().map(ui::LocalState::get)
@@ -3092,6 +3073,9 @@ impl Widget for NotesApp {
         self.finish_block_reveal();
         refresh_outline(self);
         self.note_steps();
+        // The window's bar shows the note this sync left open, and runs what
+        // the person did with its slots.
+        self.self_dirty |= self.sync_window_toolbar();
     }
 
     fn take_structure_dirty(&mut self) -> bool {

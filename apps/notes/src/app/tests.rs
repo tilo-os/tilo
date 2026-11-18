@@ -971,3 +971,22 @@ fn collaborative_rebinds_keep_marks_targets_and_reveal_focus() {
         );
     }
 }
+
+/// The window's bar names the note the window shows from the sync that shows it: a note
+/// opened from the page tree, and a rename from another member as it arrives.
+#[test]
+fn the_window_bar_names_the_shown_note_from_the_sync_that_shows_it() {
+    let (mut app, _) = seeded();
+    app.harness().present_in_window_bar();
+    let plan = PageId::new_v4();
+    apply(&mut app, &actions::create_page_action(plan, None, "Friday"));
+    let sync = |app: &mut App| -> Option<String> {
+        let doc = app.read_document(Clone::clone);
+        ui::widget::Widget::sync(notes(app), &doc, &automerge::ROOT);
+        Some(ui::window_toolbar::declared()?.location?.label)
+    };
+    notes(&mut app).navigate_to(plan);
+    assert_eq!(sync(&mut app).as_deref(), Some("Friday"));
+    arrive(&mut app, &actions::rename_page_action(plan, "Monday"));
+    assert_eq!(sync(&mut app).as_deref(), Some("Monday"));
+}

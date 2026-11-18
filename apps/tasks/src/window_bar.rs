@@ -161,8 +161,8 @@ impl ui::widget::Decorator for TasksWindow {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.bar.take_events();
-        self.declare();
         ui::widget::Widget::sync(&mut self.page, state, path);
+        self.declare();
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {

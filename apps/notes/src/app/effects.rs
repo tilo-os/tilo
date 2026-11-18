@@ -187,7 +187,7 @@ impl NotesApp {
         self.workspace
             .get(page)
             .ok_or("the note no longer exists")?;
-        self.open_page(page);
+        self.navigate_to(page);
         Ok(())
     }
 
@@ -207,7 +207,7 @@ impl NotesApp {
             return Err("the block no longer exists".into());
         }
         state.get(page).ok_or("the note no longer exists")?;
-        self.open_page(page);
+        self.navigate_to(page);
         self.pending_block_range = None;
         if let Some(block) = block {
             self.pending_block_reveal = Some((page, block));
