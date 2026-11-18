@@ -222,12 +222,13 @@ ok 'the boot judged itself: not paired yet, multi-user reached'
 # boot's is "not assessed", and the rollback check takes anything else for a
 # verdict the boot gave. So this check must not start it — only prove the same
 # wrapper, with the same configuration, accepts this machine's server probe.
-health_env="$(as_root 'systemctl show -p Environment --value tilo-boot-health.service')" \
-  || die 'cannot read tilo-boot-health.service'"'"'s environment'
-[ -n "$health_env" ] || die 'tilo-boot-health.service names no environment, so it would judge no server probe'
 as_root 'systemctl reset-failed host-assurance-boot-health.service' >/dev/null 2>&1 || true
-as_root "systemd-run --quiet --wait --unit=host-assurance-boot-health --service-type=oneshot \
-  --property=Environment=$(printf '%q' "$health_env") /usr/libexec/tilo-boot-health" \
+# The environment is read inside the guest: the console carries other writers'
+# lines too (a pairing prompt among them), and a value that makes a round trip
+# through it comes back with them in it.
+as_root 'systemd-run --quiet --wait --unit=host-assurance-boot-health --service-type=oneshot \
+  --property="Environment=$(systemctl show -p Environment --value tilo-boot-health.service)" \
+  /usr/libexec/tilo-boot-health' \
   || { as_root 'journalctl -b --no-pager -u host-assurance-boot-health' > "$out/boot-health.txt" 2>&1 || true
        cat "$out/boot-health.txt" >/dev/console 2>/dev/null || true
        die 'tilo-boot-health does not accept the server probe as this machine'"'"'s verdict'; }
