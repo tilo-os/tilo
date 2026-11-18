@@ -393,7 +393,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                 let spoken = if agent {
                     ui_core::history_source::agent_display_label(&name)
                 } else {
-                    name.clone()
+                    name
                 };
                 let chip = chip.with_accessible_name(&format!("{label}: {spoken}"));
                 let chip = if agent { chip.tone(Tone::Info) } else { chip };
@@ -509,7 +509,7 @@ mod tests {
             let agent = MemberId::agent("planner");
             let people = People::new(Some(&me));
             let mut presence = PresenceCtx::default();
-            presence.set_self_member(me.clone(), "Ada");
+            presence.set_self_member(me, "Ada");
             presence.set_display_name(agent.clone(), "Planner");
             assert!(people.follow(&presence));
             assert_eq!(
