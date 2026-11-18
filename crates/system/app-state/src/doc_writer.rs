@@ -25,7 +25,9 @@ use durable_store::{
 
 use tilo_app_id::AppId;
 
-use crate::{StoreError, decode_canonical_with, load_hint};
+use tilo_automerge::load_hint;
+
+use crate::{StoreError, decode_canonical_with};
 
 /// Debounce window [`FsStore`](crate::FsStore) applies by default. Long
 /// enough to swallow a burst of keystrokes, short enough that a `kill` a
@@ -112,6 +114,9 @@ impl StoredLoad {
 pub struct StoredBytes {
     bytes: Vec<u8>,
     known: Option<Vec<ChangeHash>>,
+    /// The document `bytes` are, when a reader on this thread holds it: the heads the writer
+    /// kept beside exactly these bytes, or the bytes themselves. Decoded as a copy.
+    held: Option<AutoCommit>,
     recover_partial: bool,
     label: PathBuf,
 }
@@ -127,6 +132,13 @@ impl StoredBytes {
     /// Decode the document, dropping a torn tail into a private repair when the owner read
     /// them to recover one.
     pub fn decode(self) -> Result<DecodedBytes, StoreError> {
+        if let Some(doc) = self.held {
+            return Ok(DecodedBytes {
+                doc,
+                source: self.bytes,
+                repair: None,
+            });
+        }
         let (doc, repair) = decode_canonical_with(
             &self.bytes,
             self.recover_partial,
@@ -313,13 +325,22 @@ impl DocOwner {
         let Some(stored) = self.store.read(&self.key)? else {
             return Ok(None);
         };
-        let known = self
-            .store
-            .read_hint(&self.key)
-            .and_then(|hint| load_hint::hashes_for(&hint, &stored.bytes));
+        let hint = self.store.read_hint(&self.key);
+        let known = hint
+            .as_deref()
+            .and_then(|hint| load_hint::hashes_for(hint, &stored.bytes));
+        // The document a page's replica captured, a window holds or another reader loaded is
+        // kept on this thread: taken by the heads the writer named for exactly these bytes
+        // first, so a document stored another way is still the same one, then by the bytes.
+        let held = hint
+            .as_deref()
+            .and_then(|hint| load_hint::heads_for(hint, &stored.bytes))
+            .and_then(|heads| tilo_automerge::shared::held_at(&heads))
+            .or_else(|| tilo_automerge::shared::held(&stored.bytes));
         Ok(Some(StoredBytes {
             bytes: stored.bytes,
             known,
+            held,
             recover_partial,
             label: self.label.clone(),
         }))
@@ -745,7 +766,7 @@ impl DocWriter {
     fn send_full(&mut self, doc: &AutoCommit, heads: Vec<ChangeHash>) -> Result<(), StoreError> {
         let bytes = doc.save_committed();
         let len = bytes.len();
-        let hint = load_hint::encode(&bytes, doc.committed_document().change_hashes());
+        let hint = load_hint::encode(&bytes, doc.committed_document().change_hashes(), &heads);
         tilo_automerge::shared::hold(&bytes, doc);
         self.submit(WriteOp::Replace(bytes), heads)?;
         // Only the primary writer keeps one: shared writers' hints would race
@@ -1455,6 +1476,7 @@ mod tests {
                 }
             }
             doc.commit();
+            let saved_heads = doc.committed_heads();
             let mut writer = DocWriter::start_new(&owner, &doc).unwrap();
             writer.try_flush().unwrap();
             let saved = store.read(&key).unwrap().unwrap().bytes;
@@ -1491,7 +1513,7 @@ mod tests {
             let mut swapped = hashes;
             swapped.swap(1, 2);
             store
-                .write_hint(&key, &load_hint::encode(&saved, &swapped).unwrap())
+                .write_hint(&key, &load_hint::encode(&saved, &swapped, &saved_heads).unwrap())
                 .unwrap();
             let mut expected = appended.clone();
             expected.swap(1, 2);
@@ -1506,7 +1528,8 @@ mod tests {
             store
                 .write_hint(
                     &key,
-                    &load_hint::encode(&other_saved, &other_swapped).unwrap(),
+                    &load_hint::encode(&other_saved, &other_swapped, &other.committed_heads())
+                        .unwrap(),
                 )
                 .unwrap();
             assert_eq!(loaded_hashes(&owner), appended);

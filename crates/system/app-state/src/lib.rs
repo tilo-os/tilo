@@ -30,6 +30,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use advisory_lock::{FileLock, LockMode, TryLockError};
 use durable_store::{DurableStore, StorageKey, WriteOp};
 use tilo_app_id::AppId;
+use tilo_automerge::load_hint;
 
 use automerge::{ActorId, AutoCommit, ChangeHash, LoadOptions, OnPartialLoad};
 
@@ -37,7 +38,6 @@ mod doc_writer;
 mod private_history;
 pub use private_history::PrivateAction;
 mod fs_store;
-pub mod load_hint;
 pub use doc_writer::{
     DEFAULT_DEBOUNCE, DecodedBytes, DocOwner, DocWriter, DurabilitySnapshot, StoredBytes,
     StoredLoad,
@@ -402,6 +402,20 @@ impl DocStore {
         self.load_with_completeness(false)
     }
 
+    /// The document `bytes` are, when a reader on this thread holds it: by the heads the writer
+    /// kept for exactly these bytes, else by the bytes themselves. Never a document these bytes
+    /// are not: a hint names the length and whole digest it was made for.
+    fn held_document(&self, bytes: &[u8]) -> Option<AutoCommit> {
+        let at = self
+            .owner
+            .store()
+            .read_hint(self.owner.key())
+            .as_deref()
+            .and_then(|hint| load_hint::heads_for(hint, bytes))
+            .and_then(|heads| tilo_automerge::shared::held_at(&heads));
+        at.or_else(|| tilo_automerge::shared::held(bytes))
+    }
+
     fn load_with_completeness(&mut self, complete: bool) -> Result<Option<AutoCommit>, StoreError> {
         let Some(stored) = self.owner.stored()? else {
             self.has_base = Some(false);
@@ -417,6 +431,15 @@ impl DocStore {
             } else {
                 Ok(None)
             };
+        }
+        // The document these bytes are, when a reader on this thread holds it: the page's replica
+        // that captured a document, the window that loaded it. Its heads are those the writer kept
+        // beside exactly these bytes, so the same document saved another way is still a copy
+        // rather than a load, and bytes a window rewrote are not decoded a second time.
+        if let Some(mut doc) = self.held_document(&bytes) {
+            doc.set_actor(self.actor());
+            self.persisted = doc.get_heads();
+            return Ok(Some(doc));
         }
         // The hashes the last full save listed for these exact bytes, if this
         // device kept them (`load_hint`); never anything a peer sent.
@@ -434,6 +457,7 @@ impl DocStore {
             Some(hashes) => options.known_change_hashes(hashes),
             None => options,
         };
+        tilo_automerge::shared::note_decoded();
         let mut doc = AutoCommit::load_with_options(&bytes, options).map_err(|source| {
             StoreError::Automerge {
                 path: self.document_path().to_path_buf(),
@@ -481,7 +505,11 @@ impl DocStore {
     /// Returns an error if the store fails to commit it.
     pub fn save(&mut self, doc: &mut AutoCommit) -> Result<(), StoreError> {
         let bytes = doc.save();
-        let hint = load_hint::encode(&bytes, doc.committed_document().change_hashes());
+        let hint = load_hint::encode(
+            &bytes,
+            doc.committed_document().change_hashes(),
+            &doc.committed_heads(),
+        );
         tilo_automerge::shared::hold(&bytes, doc);
         self.commit(WriteOp::Replace(bytes))?;
         self.keep_load_hint(hint.as_deref());
@@ -670,6 +698,7 @@ fn decode_canonical_with(
     if let Some(doc) = tilo_automerge::shared::held(bytes) {
         return Ok((doc, None));
     }
+    tilo_automerge::shared::note_decoded();
     let (mut doc, repair) =
         match AutoCommit::load_with_options(bytes, options(OnPartialLoad::Error)) {
             Ok(doc) => {
@@ -1197,7 +1226,10 @@ mod tests {
             let mut swapped = hashes.clone();
             swapped.swap(1, 2);
             store
-                .write_hint(&key, &load_hint::encode(&saved, &swapped).unwrap())
+                .write_hint(
+                    &key,
+                    &load_hint::encode(&saved, &swapped, &doc.committed_heads()).unwrap(),
+                )
                 .unwrap();
             assert_eq!(loaded_hashes(&mut primary), swapped);
 
@@ -1210,7 +1242,8 @@ mod tests {
             store
                 .write_hint(
                     &key,
-                    &load_hint::encode(&other.save(), &other_swapped).unwrap(),
+                    &load_hint::encode(&other.save(), &other_swapped, &other.committed_heads())
+                        .unwrap(),
                 )
                 .unwrap();
             assert_eq!(loaded_hashes(&mut primary), hashes);

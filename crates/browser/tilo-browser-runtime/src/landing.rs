@@ -47,7 +47,8 @@ pub(crate) fn keep(
         if heads.is_empty() {
             return Ok(Landed::Empty);
         }
-        let heads = heads.iter().copied().map(ChangeHash).collect();
+        let heads: Vec<ChangeHash> = heads.iter().copied().map(ChangeHash).collect();
+        kept_hint(store, key, &bytes, &heads);
         return store
             .write(key, WriteOp::Replace(bytes), writer.as_deref())
             .map(|_| Landed::Kept(heads))
@@ -74,10 +75,25 @@ pub(crate) fn keep(
     }
     let saved = doc.save();
     tilo_automerge::shared::hold(&saved, &doc);
+    // Kept before the write lands: a hint naming bytes the store does not hold is ignored by
+    // whoever reads it, so a failed write leaves none that answers.
+    kept_hint(store, key, &saved, &heads);
     store
         .write(key, WriteOp::Replace(saved), writer.as_deref())
         .map(|_| Landed::Kept(heads))
         .map_err(|error| error.to_string())
+}
+
+/// Keep the heads `heads` beside the bytes a document was kept as: whoever loads exactly these
+/// bytes next on this thread (a window opening the document, search reading what it holds) takes
+/// the replica's document as a copy instead of loading it again.
+fn kept_hint(store: &dyn DurableStore, key: &StorageKey, bytes: &[u8], heads: &[ChangeHash]) {
+    let Some(hint) = tilo_automerge::load_hint::encode(bytes, &[], heads) else {
+        return;
+    };
+    if let Err(error) = store.write_hint(key, &hint) {
+        tracing::debug!(%error, ?key, "a document's heads are not kept beside it");
+    }
 }
 
 /// The host answered `app`'s record `record` (its wire name) with `answer`:
