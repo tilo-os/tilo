@@ -2168,9 +2168,9 @@ mod command_path_tests {
         let mut entry = ent("shared.txt", false, "text/plain");
         entry.path = path;
         entry.availability = Some(fs_protocol::AvailabilityProjectionV1 {
-            schema_version: 1,
+            schema_version: fs_protocol::projection::AVAILABILITY_PROJECTION_VERSION,
             document_id: fs_protocol::FileDocumentId(uuid::Uuid::from_u128(1)),
-            current_version: Some(fs_protocol::FileVersionId(uuid::Uuid::from_u128(2))),
+            current_hash: Some(fs_protocol::ContentHash([2; 32])),
             residency: fs_protocol::Residency::Partial { resident_bytes: 1 },
             transfer: fs_protocol::ProjectedTransfer {
                 phase: fs_protocol::TransferPhase::Idle,
@@ -3538,9 +3538,9 @@ mod command_path_tests {
         let file = dir.path().join("shared.txt");
         std::fs::write(&file, b"shared").unwrap();
         let availability = serde_json::to_vec(&serde_json::json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-            "current_version": null,
+            "current_hash": null,
             "residency": {"state": "not_resident"},
             "transfer": {"phase": "idle", "progress": null, "last_error": null,
                 "last_error_at_ms": null, "error_truncated": false},
@@ -3581,9 +3581,9 @@ mod command_path_tests {
         std::fs::write(&remote, b"remote").unwrap();
         let availability = |state: serde_json::Value| {
             serde_json::to_vec(&serde_json::json!({
-                "schema_version": 1,
+                "schema_version": 2,
                 "document_id": uuid::Uuid::new_v4(),
-                "current_version": null,
+                "current_hash": null,
                 "residency": state,
                 "transfer": {"phase": "idle", "progress": null, "last_error": null,
                     "last_error_at_ms": null, "error_truncated": false},
@@ -3688,9 +3688,9 @@ mod command_path_tests {
         }
         let availability = |policy: &str, inherited: bool| {
             serde_json::to_vec(&serde_json::json!({
-                "schema_version": 1,
+                "schema_version": 2,
                 "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-                "current_version": null,
+                "current_hash": null,
                 "residency": {"state": "resident", "bytes": 4},
                 "transfer": {"phase": "idle", "progress": null, "last_error": null,
                     "last_error_at_ms": null, "error_truncated": false},
@@ -3781,9 +3781,9 @@ mod command_path_tests {
         let file = dir.path().join("inherited.txt");
         std::fs::write(&file, b"data").unwrap();
         let availability = serde_json::to_vec(&serde_json::json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-            "current_version": null,
+            "current_hash": null,
             "residency": {"state": "resident", "bytes": 4},
             "transfer": {"phase": "idle", "progress": null, "last_error": null,
                 "last_error_at_ms": null, "error_truncated": false},
@@ -3823,9 +3823,9 @@ mod command_path_tests {
         let mut entry = ent("offline.txt", false, "text/plain");
         entry.availability = fs_protocol::AvailabilityProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
-                "schema_version": 1,
+                "schema_version": 2,
                 "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-                "current_version": "a0d4e23f-c7cb-4ded-a427-b32cf9da9342",
+                "current_hash": "4242424242424242424242424242424242424242424242424242424242424242",
                 "residency": {"state": "not_resident"},
                 "transfer": {"phase": "idle", "progress": null,
                     "last_error": "No available replica could provide this file",

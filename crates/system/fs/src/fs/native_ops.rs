@@ -68,9 +68,8 @@ fn lease_of(
     let Some(lease) = ns.write_lease(record) else {
         return (None, None, None);
     };
-    let fence = ns
-        .content_revision_for(ino)
-        .and_then(|r| ns.version_fence(record, r.content_hash.map(|h| h.0), r.byte_len));
+    let size = ns.getattr(ino).map_or(0, |attr| attr.size);
+    let fence = ns.version_fence(record, ns.hash_for(ino).map(|h| *h.as_bytes()), size);
     let holder = fence.and_then(|f| ns.lease_holder(record, f.epoch));
     (Some(lease), fence, holder)
 }
@@ -550,20 +549,11 @@ impl QuickFS {
     /// or an open, write and close of the mount would ([`Self::apply_local_snapshot`]).
     pub fn write_path(&self, rel: &Path, snapshot: &Path, mtime_ms: u64) -> Result<(), i32> {
         let components = path_components(rel)?;
-        let Some((name, parents)) = components.split_last() else {
+        let Some((_, parents)) = components.split_last() else {
             return Err(EISDIR);
         };
-        let parent = self.ensure_dir_components(parents)?;
-        match self.lookup_kind(parent, name) {
-            None => {
-                self.write_snapshot(rel, snapshot, mtime_ms)?;
-                if let Some((ino, _)) = self.lookup_kind(parent, name) {
-                    self.document_version(ino, fs_protocol::FileProvenance::Create, None);
-                }
-                Ok(())
-            }
-            Some(_) => self.write_snapshot(rel, snapshot, mtime_ms),
-        }
+        self.ensure_dir_components(parents)?;
+        self.write_snapshot(rel, snapshot, mtime_ms)
     }
 
     fn write_snapshot(&self, rel: &Path, snapshot: &Path, mtime_ms: u64) -> Result<(), i32> {

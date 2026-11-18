@@ -242,8 +242,6 @@ pub const SIZE_KEY: &str = "size";
 /// When the content last changed, in milliseconds since the epoch.
 pub const MTIME_KEY: &str = "mtime";
 pub const AUTHOR_KEY: &str = "author";
-/// The signed content revision the node's bytes come from.
-pub const CONTENT_REVISION_KEY: &str = "content_revision_v1";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Tree {
@@ -648,8 +646,6 @@ fn write_declaration() -> ActionDecl<FilesTree> {
                 size: args.whole("size").unwrap_or_default(),
                 mtime: u64::try_from(now_ms).unwrap_or_default(),
                 author: String::new(),
-                revision: None,
-                keep_preview: false,
             })
         },
     )

@@ -13,13 +13,13 @@ use fs_protocol::projection::{
     ProjectedReplicaEvidence,
 };
 use fs_protocol::{
-    AvailabilityPolicy, AvailabilityProjectionV1, FileDocumentId, FileVersionId, ProjectedTransfer,
+    AvailabilityPolicy, AvailabilityProjectionV1, ContentHash, FileDocumentId, ProjectedTransfer,
     Residency, TransferPhase, TransferProgress,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const AVAILABILITY_SCHEMA_VERSION: u16 = 2;
+pub const AVAILABILITY_SCHEMA_VERSION: u16 = 3;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EntryKind {
@@ -40,7 +40,7 @@ pub struct TransferState {
     pub phase: TransferPhase,
     pub progress: Option<TransferProgress>,
     pub last_error: Option<TransferError>,
-    /// Consecutive automatic hydration failures for the current version; persisting this keeps a
+    /// Consecutive automatic hydration failures for the current content; persisting this keeps a
     /// restart from turning an unavailable peer into a tight retry loop.
     #[serde(default)]
     pub retry_count: u32,
@@ -51,14 +51,14 @@ pub struct TransferState {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReplicaEvidence {
-    /// Peers that recently acknowledged possessing the complete version and were reachable then.
+    /// Peers that recently acknowledged possessing the complete content and were reachable then.
     /// Only authenticated, authorized, non-revoked replicas count.
     pub reachable: u32,
     /// Recently acknowledged durable replicas, which may since be offline, after applying the
     /// workspace's acceptable-host policy.
     pub durable: u32,
-    /// The version both counts apply to. `None` is never eviction proof.
-    pub acknowledged_version: Option<FileVersionId>,
+    /// The content both counts apply to, by its hash. `None` is never eviction proof.
+    pub acknowledged_hash: Option<ContentHash>,
 }
 
 /// Freshness timestamps, kept apart because metadata, local bytes and replica observations
@@ -76,16 +76,14 @@ pub struct DocumentAvailability {
     pub kind: EntryKind,
     /// Stable parent record, not a path, so a directory pin reaches descendants created after it.
     pub parent: Option<FileDocumentId>,
-    /// Current immutable version. Replica evidence must name this exact value.
-    pub current_version: Option<FileVersionId>,
+    /// The current content, by its hash (the node's manifest hash); none for a folder or an
+    /// empty file. Replica evidence must name this exact value.
+    pub current_hash: Option<ContentHash>,
     pub residency: Residency,
     pub transfer: TransferState,
     pub policy: AvailabilityPolicy,
     pub replicas: ReplicaEvidence,
     pub freshness: Freshness,
-    /// Historical versions retained only on this device. IDs rather than a count, so history and
-    /// GC can remove the precise retention reason.
-    pub retained_versions: Vec<FileVersionId>,
 }
 
 impl DocumentAvailability {
@@ -94,13 +92,12 @@ impl DocumentAvailability {
             document_id,
             kind,
             parent: None,
-            current_version: None,
+            current_hash: None,
             residency: Residency::NotResident,
             transfer: TransferState::default(),
             policy: AvailabilityPolicy::Automatic,
             replicas: ReplicaEvidence::default(),
             freshness: Freshness::default(),
-            retained_versions: Vec::new(),
         }
     }
 }
@@ -123,10 +120,10 @@ impl DocumentAvailability {
                 (Some(message), truncated, Some(error.occurred_at_ms))
             });
 
-        // Counts without an observation time, or for any version but the current one, are not
+        // Counts without an observation time, or for any content but the current one, are not
         // current evidence: report them as unknown, keeping the last observation timestamp.
-        let replica_evidence_is_current = self.current_version.is_some()
-            && self.replicas.acknowledged_version == self.current_version
+        let replica_evidence_is_current = self.current_hash.is_some()
+            && self.replicas.acknowledged_hash == self.current_hash
             && self.freshness.replicas_observed_at_ms.is_some();
         let replicas = if replica_evidence_is_current {
             ProjectedReplicaEvidence::Known {
@@ -140,7 +137,7 @@ impl DocumentAvailability {
         AvailabilityProjectionV1 {
             schema_version: AVAILABILITY_PROJECTION_VERSION,
             document_id: self.document_id,
-            current_version: self.current_version,
+            current_hash: self.current_hash,
             residency: self.residency,
             transfer: ProjectedTransfer {
                 phase: self.transfer.phase,
@@ -177,6 +174,12 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> (String, bool) {
         .last()
         .unwrap_or(0);
     (value.get(..end).unwrap_or_default().to_owned(), true)
+}
+
+/// The format a saved registry or queue says it is written in.
+#[derive(Clone, Copy, Deserialize)]
+pub(crate) struct SchemaVersion {
+    pub(crate) schema_version: u16,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -219,9 +222,9 @@ pub enum EvictionBlocker {
     UnknownDocument,
     ActiveTransfer,
     Pinned,
-    RetainedVersions,
-    CurrentVersionUnknown,
-    ReplicaVersionMismatch,
+    /// The file has no content to release: a folder or an empty file.
+    NoContent,
+    ReplicaContentMismatch,
     ReplicaAcknowledgementMissing,
     ReplicaAcknowledgementFromFuture,
     ReplicaAcknowledgementStale,
@@ -254,8 +257,6 @@ pub enum AvailabilityError {
     AncestryCycle(FileDocumentId),
     #[error("transfer progress exceeds its declared total")]
     InvalidTransferProgress,
-    #[error("current content revision is invalid")]
-    InvalidCurrentRevision,
 }
 
 pub struct AvailabilityRegistry {
@@ -284,24 +285,41 @@ fn hydration_view(
     AvailabilityPolicy,
     EntryKind,
     Option<FileDocumentId>,
-    Option<FileVersionId>,
+    Option<ContentHash>,
     Residency,
 ) {
     (
         record.policy,
         record.kind,
         record.parent,
-        record.current_version,
+        record.current_hash,
         record.residency,
     )
 }
 
 impl AvailabilityRegistry {
-    /// Open an existing registry, or an empty in-memory one when the file is absent. The first
-    /// mutation creates parent directories.
+    /// Open an existing registry, or an empty in-memory one when the file is absent or written
+    /// in an older format, which the first mutation replaces. That mutation also creates parent
+    /// directories. A format newer than this build's is refused.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, AvailabilityError> {
         let path = path.into();
-        if !path.exists() {
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => Some(bytes),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        let format = bytes
+            .as_deref()
+            .map(serde_json::from_slice::<SchemaVersion>)
+            .transpose()?;
+        if let Some(SchemaVersion { schema_version }) = format
+            && schema_version > AVAILABILITY_SCHEMA_VERSION
+        {
+            return Err(AvailabilityError::UnsupportedVersion(schema_version));
+        }
+        let Some(bytes) = bytes.filter(|_| {
+            format.is_some_and(|format| format.schema_version == AVAILABILITY_SCHEMA_VERSION)
+        }) else {
             return Ok(Self {
                 path,
                 records: BTreeMap::new(),
@@ -313,14 +331,9 @@ impl AvailabilityRegistry {
                 #[cfg(test)]
                 persists: std::sync::atomic::AtomicU64::new(0),
             });
-        }
+        };
 
-        let document: RegistryDocument = serde_json::from_slice(&fs::read(&path)?)?;
-        if document.schema_version != AVAILABILITY_SCHEMA_VERSION {
-            return Err(AvailabilityError::UnsupportedVersion(
-                document.schema_version,
-            ));
-        }
+        let document: RegistryDocument = serde_json::from_slice(&bytes)?;
         let mut records = BTreeMap::new();
         for record in document.records {
             let id = record.document_id;
@@ -350,7 +363,7 @@ impl AvailabilityRegistry {
         self.records.values()
     }
 
-    /// Changes whenever a commit alters a record's policy, kind, parent, current version or
+    /// Changes whenever a commit alters a record's policy, kind, parent, current content or
     /// residency, or adds a record. Transfer progress, replica receipts and freshness stamps leave
     /// it alone, so the pinned hydration worker learns from it that nothing it acts on changed.
     #[must_use]
@@ -398,7 +411,7 @@ impl AvailabilityRegistry {
         self.persists.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Content ids of current versions another device proved it holds.
+    /// Content hashes of current contents another device proved it holds.
     ///
     /// Nothing acknowledges replicas since the tree became the record, so this is empty.
     #[must_use]
@@ -494,45 +507,6 @@ impl AvailabilityRegistry {
             self.clear_automatic_transfer_subtree(target)?;
         }
         Ok(())
-    }
-
-    /// Install the authenticated current revision before accepting replica evidence for it;
-    /// without this row a valid acknowledgement would be discarded as `UnknownDocument`.
-    pub fn track_current_revision(
-        &mut self,
-        revision: fs_protocol::ContentRevisionV1,
-        kind: EntryKind,
-        parent: Option<FileDocumentId>,
-        observed_at_ms: u64,
-    ) -> Result<bool, AvailabilityError> {
-        revision
-            .validate()
-            .map_err(|_| AvailabilityError::InvalidCurrentRevision)?;
-        let mut record = self
-            .records
-            .get(&revision.document_id)
-            .cloned()
-            .unwrap_or_else(|| DocumentAvailability::new(revision.document_id, kind));
-        let version_changed = record.current_version != Some(revision.version_id);
-        let metadata_changed = record.kind != kind
-            || record.parent != parent
-            || record.freshness.metadata_observed_at_ms != Some(observed_at_ms);
-        if !version_changed && !metadata_changed {
-            return Ok(false);
-        }
-        record.kind = kind;
-        record.parent = parent;
-        record.freshness.metadata_observed_at_ms = Some(observed_at_ms);
-        if version_changed {
-            record.current_version = Some(revision.version_id);
-            record.residency = Residency::NotResident;
-            record.transfer = TransferState::default();
-            record.replicas = ReplicaEvidence::default();
-            record.freshness.local_verified_at_ms = None;
-            record.freshness.replicas_observed_at_ms = None;
-        }
-        self.put(record)?;
-        Ok(true)
     }
 
     /// Runs `apply`'s mutations and commits them with one validation and one durable write, so
@@ -632,7 +606,7 @@ impl AvailabilityRegistry {
     }
 
     /// Whether local bytes may be released without losing the last copy: another device's replica
-    /// acknowledgement must be bound to exactly this version. Nothing acknowledges replicas since
+    /// acknowledgement must be bound to exactly this content. Nothing acknowledges replicas since
     /// the tree became the record, so only a caller who accepts losing the bytes may release them.
     pub fn eviction_decision(
         &self,
@@ -657,11 +631,8 @@ impl AvailabilityRegistry {
             Err(_) => return EvictionDecision::Denied(EvictionBlocker::InvalidAncestry),
             _ => {}
         }
-        if !record.retained_versions.is_empty() {
-            return EvictionDecision::Denied(EvictionBlocker::RetainedVersions);
-        }
-        if record.current_version.is_none() {
-            return EvictionDecision::Denied(EvictionBlocker::CurrentVersionUnknown);
+        if record.current_hash.is_none() {
+            return EvictionDecision::Denied(EvictionBlocker::NoContent);
         }
         EvictionDecision::Denied(EvictionBlocker::ReplicaAcknowledgementMissing)
     }
@@ -746,15 +717,21 @@ fn validate_documents(
     Ok(())
 }
 
+/// A content hash no other test content has.
+#[cfg(test)]
+pub(crate) fn test_hash() -> ContentHash {
+    ContentHash(*blake3::hash(uuid::Uuid::new_v4().as_bytes()).as_bytes())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use fs_protocol::projection::{MAX_AVAILABILITY_XATTR_BYTES, ProjectionError};
     use tempfile::TempDir;
 
-    fn file(id: FileDocumentId, version: FileVersionId) -> DocumentAvailability {
+    fn file(id: FileDocumentId, content: ContentHash) -> DocumentAvailability {
         let mut record = DocumentAvailability::new(id, EntryKind::File);
-        record.current_version = Some(version);
+        record.current_hash = Some(content);
         record.residency = Residency::Resident { bytes: 1024 };
         record
     }
@@ -770,7 +747,7 @@ mod tests {
             let dir = TempDir::new().unwrap();
             let mut registry = AvailabilityRegistry::open(dir.path().join("a.json")).unwrap();
             let (first, second) = (FileDocumentId::new(), FileDocumentId::new());
-            registry.put(file(first, FileVersionId::new())).unwrap();
+            registry.put(file(first, test_hash())).unwrap();
             assert!(
                 registry.take_changed_documents().is_empty(),
                 "nothing is kept while nobody subscribes"
@@ -791,7 +768,7 @@ mod tests {
 
             registry
                 .batch(|registry| {
-                    let _ = registry.put(file(second, FileVersionId::new()));
+                    let _ = registry.put(file(second, test_hash()));
                 })
                 .unwrap();
             assert!(changes.has_changed().unwrap());
@@ -818,7 +795,7 @@ mod tests {
                     .put(DocumentAvailability::new(other_dir, EntryKind::Directory))
                     .unwrap();
 
-                let mut child_document = file(child, FileVersionId::new());
+                let mut child_document = file(child, test_hash());
                 child_document.parent = Some(pinned_dir);
                 registry.put(child_document.clone()).unwrap();
                 assert_eq!(
@@ -839,7 +816,7 @@ mod tests {
                 assert!(!registry.has_pinned_policy());
 
                 let id = FileDocumentId::new();
-                let mut record = file(id, FileVersionId::new());
+                let mut record = file(id, test_hash());
                 registry.put(record.clone()).unwrap();
                 assert!(!registry.has_pinned_policy());
 
@@ -860,7 +837,7 @@ mod tests {
             let temp = TempDir::new().unwrap();
             let path = temp.path().join("availability/state.json");
             let id = FileDocumentId::new();
-            let version = FileVersionId::new();
+            let version = test_hash();
 
             let mut first = AvailabilityRegistry::open(&path).unwrap();
             let mut record = file(id, version);
@@ -885,16 +862,30 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
+            assert_eq!(
+                AvailabilityRegistry::open(&path).unwrap().records().count(),
+                0,
+                "a registry in an older format is dropped"
+            );
+            tilo_files::native::atomic::write_creating_parent(
+                &path,
+                &serde_json::to_vec(&serde_json::json!({
+                    "schema_version": AVAILABILITY_SCHEMA_VERSION + 1,
+                    "records": []
+                }))
+                .unwrap(),
+            )
+            .unwrap();
             assert!(matches!(
                 AvailabilityRegistry::open(path),
-                Err(AvailabilityError::UnsupportedVersion(1))
+                Err(AvailabilityError::UnsupportedVersion(_))
             ));
         }
         {
             let temp = TempDir::new().unwrap();
             let path = temp.path().join("availability.json");
             let id = FileDocumentId::new();
-            let version = FileVersionId::new();
+            let version = test_hash();
             let old_name = "draft.png";
 
             let mut registry = AvailabilityRegistry::open(&path).unwrap();
@@ -914,7 +905,7 @@ mod tests {
             let temp = TempDir::new().unwrap();
             let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
             let id = FileDocumentId::new();
-            let mut record = file(id, FileVersionId::new());
+            let mut record = file(id, test_hash());
             record.parent = Some(FileDocumentId::new());
             assert!(matches!(
                 registry.put(record),
@@ -922,7 +913,7 @@ mod tests {
             ));
             assert!(registry.get(id).is_none());
 
-            let mut record = file(id, FileVersionId::new());
+            let mut record = file(id, test_hash());
             record.transfer.progress = Some(TransferProgress {
                 completed_bytes: 2,
                 total_bytes: Some(1),
@@ -970,12 +961,11 @@ mod tests {
             }
             {
                 let mut record = rich_document();
-                let old_version = FileVersionId::new();
-                record.replicas.acknowledged_version = Some(old_version);
+                record.replicas.acknowledged_hash = Some(test_hash());
                 let projection = record.projection();
                 assert_eq!(projection.replicas, ProjectedReplicaEvidence::Unknown);
 
-                record.replicas.acknowledged_version = record.current_version;
+                record.replicas.acknowledged_hash = record.current_hash;
                 record.freshness.replicas_observed_at_ms = None;
                 let projection = record.projection();
                 assert_eq!(projection.replicas, ProjectedReplicaEvidence::Unknown);
@@ -1043,7 +1033,7 @@ mod tests {
                 ));
 
                 let mut projection = rich_document().projection();
-                projection.current_version = None;
+                projection.current_hash = None;
                 let bytes = serde_json::to_vec(&projection).unwrap();
                 assert!(matches!(
                     AvailabilityProjectionV1::parse_xattr(&bytes),
@@ -1055,12 +1045,12 @@ mod tests {
 
     fn rich_document() -> DocumentAvailability {
         let id = FileDocumentId::new();
-        let version = FileVersionId::new();
+        let version = test_hash();
         DocumentAvailability {
             document_id: id,
             kind: EntryKind::File,
             parent: None,
-            current_version: Some(version),
+            current_hash: Some(version),
             residency: Residency::Partial {
                 resident_bytes: 128,
             },
@@ -1081,14 +1071,13 @@ mod tests {
             replicas: ReplicaEvidence {
                 reachable: 2,
                 durable: 1,
-                acknowledged_version: Some(version),
+                acknowledged_hash: Some(version),
             },
             freshness: Freshness {
                 metadata_observed_at_ms: Some(7_000),
                 local_verified_at_ms: Some(7_500),
                 replicas_observed_at_ms: Some(7_900),
             },
-            retained_versions: Vec::new(),
         }
     }
 }

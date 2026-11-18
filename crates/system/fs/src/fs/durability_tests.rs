@@ -9,7 +9,6 @@ use fs_protocol::FileActor;
 struct Fixture {
     namespace: Arc<Mutex<Namespace>>,
     hydrator: Arc<Hydrator>,
-    history: Arc<crate::history_fixture::History>,
     actor: FileActor,
     dir: tempfile::TempDir,
 }
@@ -21,7 +20,6 @@ impl Fixture {
         let store = Arc::new(crate::store::ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&namespace)));
         let person = SigningKey::from_bytes(&[0x41; 32]);
         let device = SigningKey::from_bytes(&[0x52; 32]);
         let actor = FileActor {
@@ -31,7 +29,6 @@ impl Fixture {
         Self {
             namespace,
             hydrator,
-            history,
             actor,
             dir,
         }
@@ -40,8 +37,7 @@ impl Fixture {
     fn mount(&self, staging: bool) -> QuickFS {
         let heuristics = Arc::new(Heuristics::new(self.hydrator.clone()));
         let fs = QuickFS::new(self.namespace.clone(), self.hydrator.clone(), heuristics)
-            .with_history(self.actor)
-            .unwrap();
+            .with_actor(self.actor);
         if staging {
             fs.with_unsaved_store(crate::unsaved::UnsavedStore::open(self.staging_dir()).unwrap())
         } else {
@@ -60,10 +56,6 @@ impl Fixture {
         assert!(damaged.is_empty());
         loaded
     }
-
-    fn versions(&self, document_id: fs_protocol::FileDocumentId) -> usize {
-        self.history.snapshot(document_id).unwrap().versions.len()
-    }
 }
 
 fn create_open(fs: &QuickFS, name: &str) -> (u64, u64) {
@@ -71,7 +63,6 @@ fn create_open(fs: &QuickFS, name: &str) -> (u64, u64) {
         .create_empty_file(crate::namespace::ROOT_INO, name)
         .unwrap();
     fs.publish();
-    fs.document_version(ino, fs_protocol::FileProvenance::Create, None);
     fs.install_stage(ino, Vec::new());
     fs.buffer_states().insert(
         ino,
@@ -120,7 +111,6 @@ async fn a_failed_or_unstaged_fsync_commits_or_reports_without_discarding_bytes(
         let fixture = Fixture::new().await;
         let fs = fixture.mount(true);
         let (ino, fh) = create_open(&fs, "notes.txt");
-        let document_id = fs.ns().document_id_for(ino).unwrap();
         fs.write_buffer(ino, 0, b"precious bytes").unwrap();
 
         *fs.commit_fault.lock().unwrap() = Some((ino, EIO));
@@ -152,13 +142,11 @@ async fn a_failed_or_unstaged_fsync_commits_or_reports_without_discarding_bytes(
         assert!(!fs.buffers().contains_key(&ino));
         assert_eq!(committed_bytes(&fs, ino).await, b"preciousBYTESs");
         assert!(fixture.staged().is_empty());
-        assert_eq!(fixture.versions(document_id), 2);
     }
     {
         let fixture = Fixture::new().await;
         let fs = fixture.mount(false);
         let (ino, fh) = create_open(&fs, "plain.bin");
-        let document_id = fs.ns().document_id_for(ino).unwrap();
         fs.write_buffer(ino, 0, b"abc").unwrap();
         *fs.commit_fault.lock().unwrap() = Some((ino, EIO));
         assert_eq!(fs.fsync_inode(ino), Err(EIO));
@@ -167,7 +155,6 @@ async fn a_failed_or_unstaged_fsync_commits_or_reports_without_discarding_bytes(
         *fs.commit_fault.lock().unwrap() = None;
         assert_eq!(fs.fsync_inode(ino), Ok(()));
         assert_eq!(committed_bytes(&fs, ino).await, b"abc");
-        assert_eq!(fixture.versions(document_id), 2);
     }
 }
 
@@ -245,17 +232,18 @@ async fn a_file_backed_stage_syncs_commits_and_preserves_from_its_file() {
             .unwrap();
         fs.publish();
         let fh = open_handle(&fs, ino, true);
-        let document_id = fs.ns().document_id_for(ino).unwrap();
-        fs.document_version(ino, fs_protocol::FileProvenance::Create, None);
         fs.write_buffer(ino, 0, &bytes).unwrap();
         assert!(fs.stage(ino).unwrap().lock().is_file_backed());
         assert_eq!(fs.fsync_inode(ino), Ok(()));
         assert_eq!(fixture.staged()[0].bytes, bytes);
-        assert_eq!(fixture.versions(document_id), 1);
+        assert_eq!(
+            fs.ns().hash_for(ino),
+            None,
+            "fsync keeps the bytes, it commits nothing"
+        );
         assert_eq!(fs.flush_inode(ino), Ok(()));
         assert_eq!(fs.release_handle(ino, fh), Ok(()));
         assert_eq!(committed_bytes(&fs, ino).await, bytes);
-        assert_eq!(fixture.versions(document_id), 2);
         assert!(fixture.staged().is_empty());
     }
     {

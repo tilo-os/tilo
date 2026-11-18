@@ -648,8 +648,6 @@ mod folder_rows_tests {
             size: 4,
             mtime: 2,
             author: hex::encode(device()),
-            revision: None,
-            keep_preview: false,
         };
         let context = fs_protocol::file_action::change_context("tree", action.described(), invoker);
         let encoded = tilo_actions::EncodedAction {

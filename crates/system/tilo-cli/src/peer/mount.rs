@@ -88,8 +88,7 @@ pub(crate) fn filesystem(parts: &Parts<'_>) -> std::io::Result<QuickFS> {
     let fs = QuickFS::new(Arc::clone(&parts.replica.namespace), hydrator, heuristics)
         .with_availability(Arc::new(std::sync::Mutex::new(availability)))
         .with_eviction_queue(Arc::new(tokio::sync::Mutex::new(evictions)))
-        .with_history(parts.actor)
-        .map_err(std::io::Error::other)?
+        .with_actor(parts.actor)
         .with_writers(Arc::clone(&parts.writers))
         .with_pinned_hydration();
     fs.resume_pending_evictions();

@@ -12,8 +12,8 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use fs_protocol::{
-    ContentRevisionV1, FILE_BINDING_VERSION, FileActor, FileBindingV1, FileDocumentId, FileNameV1,
-    FileNodeKind, MAX_FILE_NAME_BYTES,
+    FILE_BINDING_VERSION, FileActor, FileBindingV1, FileDocumentId, FileNameV1, FileNodeKind,
+    MAX_FILE_NAME_BYTES,
 };
 use fuser::{FileAttr, FileType, INodeNo};
 use iroh_blobs::Hash;
@@ -24,8 +24,8 @@ pub use fs_protocol::tree::ROOT_ID;
 // The document's layout is `fs_protocol::tree`'s: the record that carries the tree reads
 // the same document the mount writes.
 use fs_protocol::tree::{
-    CONTENT_REVISION_KEY, DOCUMENT_ID_KEY, NODES_KEY, PLACEMENT_NAME_KEY, ROOT_DOCUMENT_ID_KEY,
-    TRASH_ID, document_node_id,
+    DOCUMENT_ID_KEY, NODES_KEY, PLACEMENT_NAME_KEY, ROOT_DOCUMENT_ID_KEY, TRASH_ID,
+    document_node_id,
 };
 const RECORD_ID_MIGRATION_DOMAIN: &[u8] = b"tilo.collaborative-fs.namespace-record-id.v1";
 /// Bounded fixed-point rounds for sibling name conflicts: each round gives a losing
@@ -41,7 +41,6 @@ mod records;
 pub use records::ResourceWrite;
 use records::bundle;
 mod document_index;
-pub mod history;
 #[cfg(test)]
 mod index_walk_tests;
 mod kernel_changes;
@@ -379,7 +378,7 @@ pub struct Namespace {
 }
 
 /// Cheap fingerprint of a [`Namespace`]: its document heads. Equal tokens mean no node,
-/// path, hash or content revision changed, so a reconciler can skip a pass.
+/// path or hash changed, so a reconciler can skip a pass.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NamespaceChangeToken {
     heads: Vec<automerge::ChangeHash>,
@@ -419,28 +418,6 @@ pub(crate) fn hash_from_hex(s: &str) -> Option<Hash> {
     let bytes = hex::decode(s).ok()?;
     let arr: [u8; 32] = bytes.try_into().ok()?;
     Some(Hash::from(arr))
-}
-
-fn revision_to_bytes(revision: &ContentRevisionV1) -> Option<Vec<u8>> {
-    revision.validate().ok()?;
-    collab_types::canonical_bytes(revision).ok()
-}
-
-fn revision_from_bytes(bytes: &[u8]) -> Option<ContentRevisionV1> {
-    let revision: ContentRevisionV1 = collab_types::canonical::from_canonical_bytes(bytes).ok()?;
-    revision.validate().ok()?;
-    Some(revision)
-}
-
-fn revision_from_scalar(value: &ScalarValue) -> Option<ContentRevisionV1> {
-    match value {
-        ScalarValue::Bytes(bytes) => revision_from_bytes(bytes),
-        // Transitional compatibility with the earliest development encoding.
-        ScalarValue::Str(value) => hex::decode(value)
-            .ok()
-            .and_then(|bytes| revision_from_bytes(&bytes)),
-        _ => None,
-    }
 }
 
 /// A bounded, valid sibling name for a record that lost a name to a smaller stable record
@@ -660,8 +637,7 @@ impl Namespace {
     }
 
     /// The fields of [`Self::entry`] a FUSE request needs, read from the node once: no parent,
-    /// name or author strings, and the record id and content revision resolved without looking
-    /// the node up again.
+    /// name or author strings, and the record id resolved without looking the node up again.
     fn node_meta(&self, id: &str) -> Option<NodeMeta> {
         self.node_meta_at(id, &self.node(id)?)
     }
@@ -674,18 +650,11 @@ impl Namespace {
         } else {
             FileDocumentId(Uuid::parse_str(&str_at(&self.doc, obj, DOCUMENT_ID_KEY)?).ok()?)
         };
-        let revision = self.content_revision_of(obj, document_id);
         Some(NodeMeta {
             document_id,
             kind: NodeKind::from_str(&str_at(&self.doc, obj, "kind").unwrap_or_default()),
-            hash: match revision {
-                Some(revision) => revision.content_hash.map(|hash| Hash::from(hash.0)),
-                None => str_at(&self.doc, obj, "hash").and_then(|h| hash_from_hex(&h)),
-            },
-            size: match revision {
-                Some(revision) => revision.byte_len,
-                None => read_u64(&self.doc, obj, "size"),
-            },
+            hash: str_at(&self.doc, obj, "hash").and_then(|h| hash_from_hex(&h)),
+            size: read_u64(&self.doc, obj, "size"),
             mtime: read_u64(&self.doc, obj, "mtime"),
         })
     }
@@ -1088,38 +1057,6 @@ impl Namespace {
             Some(document_id) => (1, document_id, id.to_string()),
             None => (0, FileDocumentId(Uuid::nil()), id.to_string()),
         }
-    }
-
-    /// Winning atomic content pointer for this inode. Malformed or cross-record values fail
-    /// closed to the legacy projection. Callers that cross a trust boundary must additionally
-    /// verify the referenced version in the signed record repository.
-    pub fn content_revision_for(&self, ino: u64) -> Option<ContentRevisionV1> {
-        self.content_revision_for_id(self.id_for_ino(ino)?)
-    }
-
-    pub(crate) fn content_revision_for_id(&self, id: &str) -> Option<ContentRevisionV1> {
-        self.raw_content_revision_for_id(id)
-    }
-
-    fn content_revision_of(
-        &self,
-        obj: &Obj,
-        document_id: FileDocumentId,
-    ) -> Option<ContentRevisionV1> {
-        let revision = match self.doc.get(obj, CONTENT_REVISION_KEY) {
-            Ok(Some((Value::Scalar(value), _))) => revision_from_scalar(value.as_ref())?,
-            _ => return None,
-        };
-        (revision.document_id == document_id).then_some(revision)
-    }
-
-    fn raw_content_revision_for_id(&self, id: &str) -> Option<ContentRevisionV1> {
-        let obj = self.node(id)?;
-        let revision = match self.doc.get(&obj, CONTENT_REVISION_KEY) {
-            Ok(Some((Value::Scalar(value), _))) => revision_from_scalar(value.as_ref())?,
-            _ => return None,
-        };
-        (self.document_id_for_id(id) == Some(revision.document_id)).then_some(revision)
     }
 
     /// Resolve a live stable record without going through a mutable path: shared-record
@@ -1608,26 +1545,6 @@ impl Namespace {
         Some(self.ino_for_id(&id))
     }
 
-    pub fn create_projected_file_at_revision(
-        &mut self,
-        parent_ino: u64,
-        name: impl AsRef<[u8]>,
-        revision: &ContentRevisionV1,
-        mtime: u64,
-    ) -> Option<u64> {
-        let hash = revision.content_hash.map(|hash| Hash::from(hash.0));
-        let ino = self.create_projected_file(
-            parent_ino,
-            name,
-            revision.document_id,
-            hash.as_ref(),
-            revision.byte_len,
-            mtime,
-        )?;
-        self.set_content_revision(ino, revision, mtime)
-            .then_some(ino)
-    }
-
     pub fn create_dir(
         &mut self,
         parent_ino: u64,
@@ -1720,75 +1637,6 @@ impl Namespace {
             size,
             mtime,
             author: self.author.clone(),
-            revision: None,
-            keep_preview: false,
-        })
-    }
-
-    /// Atomically advertise one immutable signed history version as the current file content. Loose
-    /// hash and size fields are mirrored only for legacy readers; revision-aware readers select this
-    /// single CRDT scalar and so cannot observe a torn content tuple.
-    pub fn set_content_revision(
-        &mut self,
-        ino: u64,
-        revision: &ContentRevisionV1,
-        mtime: u64,
-    ) -> bool {
-        self.install_content_revision(ino, revision, mtime, true)
-    }
-
-    /// Advance only the signed record and version pointer while retaining a preview of unchanged
-    /// bytes (for rename and move metadata versions).
-    pub fn set_content_revision_preserving_preview(
-        &mut self,
-        ino: u64,
-        revision: &ContentRevisionV1,
-        mtime: u64,
-    ) -> bool {
-        self.install_content_revision(ino, revision, mtime, false)
-    }
-
-    fn install_content_revision(
-        &mut self,
-        ino: u64,
-        revision: &ContentRevisionV1,
-        mtime: u64,
-        invalidate_preview: bool,
-    ) -> bool {
-        let Some(id) = self.ino_to_id.get(&ino).cloned() else {
-            return false;
-        };
-        if self.node(&id).is_none()
-            || self.document_id_for_id(&id) != Some(revision.document_id)
-            || revision.validate().is_err()
-        {
-            return false;
-        }
-        // When the document already carries this revision at this time (the author wrote it, or it
-        // is projected again), verifying it is all that is left: writing the same fields again would
-        // only add operations every peer has to sync. Concurrent values are resolved by writing the
-        // winner.
-        if self.raw_content_revision_for_id(&id) == Some(*revision)
-            && !self.has_concurrent_content(&id)
-            && self
-                .node(&id)
-                .is_some_and(|obj| read_u64(&self.doc, &obj, "mtime") == mtime)
-        {
-            return true;
-        }
-        let Some(encoded) = revision_to_bytes(revision) else {
-            return false;
-        };
-        self.write_action(&fs_protocol::FileAction::Write {
-            node: id,
-            hash: revision
-                .content_hash
-                .map(|hash| hash_to_hex(&Hash::from(hash.0))),
-            size: revision.byte_len,
-            mtime,
-            author: self.author.clone(),
-            revision: Some(encoded),
-            keep_preview: !invalidate_preview,
         })
     }
 
@@ -2125,37 +1973,6 @@ impl Namespace {
                         ScalarValue::Str(x) => Some((opid.to_string(), x.to_string())),
                         _ => None,
                     },
-                    Value::Object(_) => None,
-                })
-                .collect(),
-            Err(_) => Vec::new(),
-        }
-    }
-
-    fn has_concurrent_content(&self, id: &str) -> bool {
-        let Some(obj) = self.node(id) else {
-            return false;
-        };
-        [CONTENT_REVISION_KEY, "hash"].into_iter().any(|key| {
-            self.doc
-                .get_all(&obj, key)
-                .is_ok_and(|values| values.len() > 1)
-        })
-    }
-
-    /// Concurrent atomic revision values for a node. Cross-record or malformed scalars are omitted.
-    pub fn content_revision_conflicts(&self, id: &str) -> Vec<(String, ContentRevisionV1)> {
-        let Some(obj) = self.node(id) else {
-            return Vec::new();
-        };
-        let document_id = self.document_id_for_id(id);
-        match self.doc.get_all(&obj, CONTENT_REVISION_KEY) {
-            Ok(values) => values
-                .into_iter()
-                .filter_map(|(value, opid)| match value {
-                    Value::Scalar(value) => revision_from_scalar(value.as_ref())
-                        .filter(|revision| Some(revision.document_id) == document_id)
-                        .map(|revision| (opid.to_string(), revision)),
                     Value::Object(_) => None,
                 })
                 .collect(),

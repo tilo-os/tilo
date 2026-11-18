@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use collab_types::Ed25519PublicKey;
-use fs_protocol::{FileActor, FileDocumentId, FileProvenance};
+use fs_protocol::{FileActor, FileDocumentId};
 
 use super::{Pass, STAGING_PREFIX, SyncFolder};
 use crate::fs::QuickFS;
@@ -15,7 +15,6 @@ use crate::store::ContentStore;
 struct Fixture {
     dir: tempfile::TempDir,
     fs: Arc<QuickFS>,
-    history: Arc<crate::history_fixture::History>,
 }
 
 impl Fixture {
@@ -24,19 +23,15 @@ impl Fixture {
         let endpoint = test_server::direct_endpoint().await;
         let hydrator = Arc::new(Hydrator::new(endpoint, Arc::new(ContentStore::memory())));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&namespace)));
         let actor = FileActor {
             person: Ed25519PublicKey([1; 32]),
             device: Ed25519PublicKey([2; 32]),
         };
         let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
-        let fs = QuickFS::new(namespace, hydrator, heuristics)
-            .with_history(actor)
-            .unwrap();
+        let fs = QuickFS::new(namespace, hydrator, heuristics).with_actor(actor);
         Self {
             dir,
             fs: Arc::new(fs),
-            history,
         }
     }
 
@@ -71,10 +66,6 @@ impl Fixture {
     fn record(&self, path: &str) -> FileDocumentId {
         self.fs.entry_at(Path::new(path)).unwrap().record.unwrap()
     }
-
-    fn versions(&self, path: &str) -> Vec<fs_protocol::FileVersionV1> {
-        self.history.snapshot(self.record(path)).unwrap().versions
-    }
 }
 
 fn pass(imported: usize, exported: usize, removed: usize, renamed: usize) -> Pass {
@@ -99,10 +90,6 @@ async fn a_file_saved_in_the_folder_becomes_a_workspace_version() {
     std::fs::write(fx.local("notes/plan.txt"), b"second draft").unwrap();
     assert_eq!(folder.reconcile().unwrap(), pass(1, 0, 0, 0));
     assert_eq!(fx.remote("notes/plan.txt").unwrap(), b"second draft");
-    let versions = fx.versions("notes/plan.txt");
-    assert_eq!(versions.len(), 2);
-    assert_eq!(versions[0].provenance, FileProvenance::Create);
-    assert_eq!(versions[1].provenance, FileProvenance::Edit);
 
     assert_eq!(folder.reconcile().unwrap(), Pass::default());
 }
@@ -175,19 +162,13 @@ async fn an_edit_wins_over_a_removal_on_the_other_side() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn concurrent_edits_keep_the_folder_version_and_the_workspace_history() {
+async fn a_folder_edit_over_a_workspace_edit_keeps_the_folder_version() {
     let fx = Fixture::new().await;
     let mut folder = fx.folder();
     std::fs::write(fx.local("draft.txt"), b"base").unwrap();
     folder.reconcile().unwrap();
 
     fx.write_remote("draft.txt", b"workspace edit");
-    let workspace_edit = fx
-        .fs
-        .entry_at(Path::new("draft.txt"))
-        .unwrap()
-        .hash
-        .unwrap();
     std::fs::write(fx.local("draft.txt"), b"folder edit").unwrap();
     assert_eq!(folder.reconcile().unwrap(), pass(1, 0, 0, 0));
 
@@ -195,14 +176,6 @@ async fn concurrent_edits_keep_the_folder_version_and_the_workspace_history() {
     assert_eq!(
         std::fs::read(fx.local("draft.txt")).unwrap(),
         b"folder edit"
-    );
-    let versions = fx.versions("draft.txt");
-    assert_eq!(versions.len(), 3, "{versions:?}");
-    assert!(
-        versions
-            .iter()
-            .any(|v| v.content_hash.map(|h| h.0) == Some(*workspace_edit.as_bytes())),
-        "the overwritten workspace version stays in its history"
     );
 }
 

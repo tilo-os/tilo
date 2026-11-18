@@ -48,11 +48,10 @@ fn mounted(state: &Path) -> (QuickFS, Endpoint, tokio::runtime::Runtime) {
     let namespace = Arc::new(Mutex::new(Namespace::new("mount-tests").unwrap()));
     let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
     let fs = QuickFS::new(namespace, hydrator, heuristics)
-        .with_history(fs_protocol::FileActor {
+        .with_actor(fs_protocol::FileActor {
             person: fs_protocol::Ed25519PublicKey::from_bytes([3; 32]),
             device: fs_protocol::Ed25519PublicKey::from_bytes([4; 32]),
         })
-        .unwrap()
         .with_writers(Arc::new(crate::writer::WriterResolver::default()))
         .with_pinned_hydration()
         .with_unsaved_store(crate::unsaved::UnsavedStore::open(state.join("unsaved")).unwrap())

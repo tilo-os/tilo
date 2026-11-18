@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
 
-use crate::files::{FileDocumentError, FileDocumentId, FilePropertiesV1, FileVersionId};
+use crate::files::{ContentHash, FileDocumentError, FileDocumentId, FilePropertiesV1};
 
 pub const SYNC_XATTR: &str = "user.tilo.sync";
 /// A file's thumbnail preview. Absent when not previewable, not locally
@@ -49,7 +49,7 @@ pub const DOCUMENT_INDEX_V3_VERSION: u16 = 3;
 /// larger values with `ENOSPC` even when the volume has free space.
 pub const DOCUMENT_INDEX_PAGE_ENTRIES: usize = 32;
 pub const MAX_DOCUMENT_INDEX_PAGE_BYTES: usize = 48 * 1024;
-pub const AVAILABILITY_PROJECTION_VERSION: u16 = 1;
+pub const AVAILABILITY_PROJECTION_VERSION: u16 = 2;
 /// Hard input/output bound for the availability xattr. Parsing an untrusted
 /// value cannot allocate in proportion to an arbitrary value.
 pub const MAX_AVAILABILITY_XATTR_BYTES: usize = 2_048;
@@ -80,7 +80,7 @@ pub enum ProjectionError {
     InvalidProgress,
     #[error("availability transfer error fields are inconsistent")]
     InvalidTransferError,
-    #[error("known replica counts lack current-version acknowledgement evidence")]
+    #[error("known replica counts lack current-content acknowledgement evidence")]
     InvalidReplicaEvidence,
     #[error("share projection contains inconsistent or duplicate grant state")]
     InvalidGrantState,
@@ -417,7 +417,8 @@ pub enum AvailabilityPolicy {
 pub struct AvailabilityProjectionV1 {
     pub schema_version: u16,
     pub document_id: FileDocumentId,
-    pub current_version: Option<FileVersionId>,
+    /// The file's current content, by its hash; none for a folder or an empty file.
+    pub current_hash: Option<ContentHash>,
     pub residency: Residency,
     pub transfer: ProjectedTransfer,
     pub policy: AvailabilityPolicy,
@@ -446,7 +447,7 @@ pub struct ProjectedTransfer {
     pub error_truncated: bool,
 }
 
-/// Replica counts are either explicitly known for the current version or
+/// Replica counts are either explicitly known for the current content or
 /// unknown. Zero is a valid known count and is never used as a missing-value
 /// sentinel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -502,7 +503,7 @@ impl AvailabilityProjectionV1 {
             return Err(ProjectionError::InvalidTransferError);
         }
         if matches!(self.replicas, ProjectedReplicaEvidence::Known { .. })
-            && (self.current_version.is_none() || self.freshness.replicas_observed_at_ms.is_none())
+            && (self.current_hash.is_none() || self.freshness.replicas_observed_at_ms.is_none())
         {
             return Err(ProjectionError::InvalidReplicaEvidence);
         }
@@ -596,9 +597,9 @@ mod tests {
 
     fn availability_json(replicas: &serde_json::Value) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-            "current_version": "a0d4e23f-c7cb-4ded-a427-b32cf9da9342",
+            "current_hash": "4242424242424242424242424242424242424242424242424242424242424242",
             "residency": {"state": "resident", "bytes": 42},
             "transfer": {
                 "phase": "idle", "progress": null, "last_error": null,

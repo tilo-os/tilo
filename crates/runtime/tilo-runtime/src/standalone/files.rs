@@ -103,7 +103,7 @@ impl WorkspaceFiles {
         let files = Files::open(&profile.join(FILES), store, endpoint, author, None)?;
         let server = runtime_fs::workspace_server::serve_workspace(
             &profile.join(crate::FILES_SOCKET),
-            Arc::new(serve::Backend(Arc::new(files.quick_fs()?))),
+            Arc::new(serve::Backend(Arc::new(files.quick_fs()))),
             tilo_rt::app().handle().clone(),
         )?;
         let view = match projection {
@@ -115,7 +115,7 @@ impl WorkspaceFiles {
                 // Changes made in the folder while nothing was mounted over
                 // it enter the workspace before the mount hides them.
                 files.sync_folder(folder)?.reconcile()?;
-                match mount::Mount::start(files.quick_fs()?, folder, Arc::clone(&files.namespace)) {
+                match mount::Mount::start(files.quick_fs(), folder, Arc::clone(&files.namespace)) {
                     Ok(mount) => View::Mount { _mount: mount },
                     Err(error) => {
                         tracing::warn!(%error, "the workspace cannot be mounted; syncing a folder instead");
@@ -172,21 +172,20 @@ impl Files {
         })
     }
 
-    fn quick_fs(&self) -> io::Result<QuickFS> {
+    fn quick_fs(&self) -> QuickFS {
         let heuristics = Arc::new(Heuristics::new(Arc::clone(&self.hydrator)));
         QuickFS::new(
             Arc::clone(&self.namespace.namespace),
             Arc::clone(&self.hydrator),
             heuristics,
         )
-        .with_history(self.actor)
-        .map_err(io::Error::other)
+        .with_actor(self.actor)
     }
 
     fn sync_folder(&self, folder: &Path) -> io::Result<SyncFolder> {
         let namespace = Arc::clone(&self.namespace);
         let commit = Box::new(move || namespace.save_if_changed());
-        SyncFolder::open(Arc::new(self.quick_fs()?), folder, &self.state, commit)
+        SyncFolder::open(Arc::new(self.quick_fs()), folder, &self.state, commit)
     }
 }
 

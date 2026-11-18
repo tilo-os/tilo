@@ -19,8 +19,8 @@ use tilo_resource::Doc;
 
 use crate::files::{FileDocumentId, FileNameV1, FileNodeKind};
 use crate::tree::{
-    AUTHOR_KEY, CONTENT_REVISION_KEY, DOCUMENT_ID_KEY, HASH_KEY, KIND_KEY, MTIME_KEY, NAME_KEY,
-    PARENT_KEY, PLACEMENT_NAME_KEY, PREV_PARENT_KEY, ROOT_ID, SIZE_KEY, TRASH_ID, tree_nodes,
+    AUTHOR_KEY, DOCUMENT_ID_KEY, HASH_KEY, KIND_KEY, MTIME_KEY, NAME_KEY, PARENT_KEY,
+    PLACEMENT_NAME_KEY, PREV_PARENT_KEY, ROOT_ID, SIZE_KEY, TRASH_ID, tree_nodes,
 };
 
 /// The registry type every action of the tree is recorded and replayed under.
@@ -60,14 +60,6 @@ pub enum FileAction {
         size: u64,
         mtime: u64,
         author: String,
-        /// The signed content revision the bytes are, encoded, when the device that wrote
-        /// them signed one.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        revision: Option<Vec<u8>>,
-        /// Keep the preview: the bytes did not change, only what the revision says of
-        /// them (a rename's new version).
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        keep_preview: bool,
     },
     /// Put `node` into the folder `parent` under `name`: a rename, a move, or both.
     Move {
@@ -202,28 +194,16 @@ impl FileAction {
             size,
             mtime,
             author,
-            revision,
-            keep_preview,
         } = self
         else {
             return Ok(());
         };
         let obj = node_obj(doc, nodes, node)?;
-        match revision {
-            Some(revision) => doc.put(
-                &obj,
-                CONTENT_REVISION_KEY,
-                automerge::ScalarValue::Bytes(revision.clone()),
-            )?,
-            None => clear(doc, &obj, CONTENT_REVISION_KEY)?,
-        }
         match hash {
             Some(hash) => doc.put(&obj, HASH_KEY, hash.as_str())?,
             None => clear(doc, &obj, HASH_KEY)?,
         }
-        if !keep_preview {
-            clear(doc, &obj, THUMB_KEY)?;
-        }
+        clear(doc, &obj, THUMB_KEY)?;
         doc.put(&obj, SIZE_KEY, *size)?;
         doc.put(&obj, MTIME_KEY, *mtime)?;
         doc.put(&obj, AUTHOR_KEY, author.as_str())?;

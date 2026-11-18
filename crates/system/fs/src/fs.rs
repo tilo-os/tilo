@@ -38,7 +38,6 @@ use crate::availability::{AvailabilityRegistry, DocumentAvailability, EntryKind}
 use crate::clock::unix_now_ms as now_ms;
 use crate::eviction::{EvictionMode, EvictionQueue, EvictionRequestId, EvictionRequestState};
 use crate::hydration::Hydrator;
-use crate::namespace::history::VersionMetadataDigest;
 use crate::namespace::{InodeQuery, InodeView, Namespace};
 use crate::smart::Heuristics;
 use crate::smart::history::{AccessHistory, natural_cmp};
@@ -74,15 +73,6 @@ pub type WriteStages = HashMap<u64, Arc<Stage>>;
 /// Writes the namespace to disk unless the copy there already holds it
 /// ([`QuickFS::set_durability_hook`]).
 pub type DurabilityHook = Arc<dyn Fn() -> io::Result<()> + Send + Sync>;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct VersionSnapshot {
-    document_id: fs_protocol::FileDocumentId,
-    content_hash: Option<fs_protocol::ContentHash>,
-    metadata_hash: fs_protocol::ContentHash,
-    byte_len: u64,
-    kind: FileType,
-}
 
 /// Commit bookkeeping for one in-memory write buffer. `generation` counts mutations of
 /// the buffer; a buffer whose latest generation is committed is clean and may be
@@ -437,7 +427,6 @@ struct PinnedCandidate {
     document_id: fs_protocol::FileDocumentId,
     parent: Option<fs_protocol::FileDocumentId>,
     kind: EntryKind,
-    version: Option<fs_protocol::FileVersionId>,
     hash: Option<Hash>,
     size: u64,
     path: String,
@@ -552,7 +541,8 @@ pub struct QuickFS {
     pinned_hydration: Option<PinnedHydrationTask>,
     eviction_queue: Option<Arc<tokio::sync::Mutex<EvictionQueue>>>,
 
-    history: Option<fs_protocol::FileActor>,
+    /// The person and device this mount writes as, when it knows them.
+    actor: Option<fs_protocol::FileActor>,
     /// Who writes, from the process each request names ([`crate::writer`]).
     writers: Option<Arc<crate::writer::WriterResolver>>,
     /// Makes the namespace on disk hold the current placements: run after a record group
@@ -564,10 +554,6 @@ pub struct QuickFS {
     /// A changeset changed the namespace but was not durable: the next durable changeset
     /// announces both.
     announce_held: AtomicBool,
-    /// Whether files inherited from a document written before versions lived in it get
-    /// their baseline version here. A mount that joined another device's workspace does
-    /// not rewrite that device's history.
-    allow_history_baseline: bool,
 
     /// Tells inotify of the changes the kernel did not make; `None` leaves watchers to
     /// poll.
@@ -614,12 +600,11 @@ impl QuickFS {
             pinned_hydration: None,
             eviction_queue: None,
 
-            history: None,
+            actor: None,
             writers: None,
             durability_hook: std::sync::OnceLock::new(),
             changeset_open: AtomicBool::new(false),
             announce_held: AtomicBool::new(false),
-            allow_history_baseline: true,
 
             change_signal: None,
             #[cfg(test)]
@@ -665,12 +650,6 @@ impl QuickFS {
             &runtime,
             flush_delay,
         ));
-        self
-    }
-
-    #[must_use]
-    pub fn without_history_baseline(mut self) -> Self {
-        self.allow_history_baseline = false;
         self
     }
 
@@ -1485,7 +1464,7 @@ impl QuickFS {
     }
 
     /// Where a blocked read of `ino`'s bytes notes whether they arrived: its availability
-    /// record, when this mount keeps them. When it is the file's current version, the
+    /// record, when this mount keeps them. When it is the file's current content, the
     /// record says the file is stored once every byte of it is local.
     fn unavailable_note(
         &self,
@@ -1493,20 +1472,17 @@ impl QuickFS {
         hash: Option<Hash>,
     ) -> Option<unavailable::UnavailableNote> {
         let registry = Arc::clone(self.availability.as_ref()?);
-        let (document_id, revision) = {
+        let (document_id, current) = {
             let ns = self.ns();
-            (ns.document_id_for(ino)?, ns.observed_content_revision(ino))
+            (ns.document_id_for(ino)?, ns.hash_for(ino))
         };
-        let content = hash.zip(revision).and_then(|(hash, revision)| {
-            (revision.content_hash.map(|content| content.0) == Some(*hash.as_bytes())).then(|| {
-                unavailable::NotedContent {
+        let content =
+            hash.filter(|hash| current == Some(*hash))
+                .map(|hash| unavailable::NotedContent {
                     hydrator: Arc::clone(&self.hydrator),
                     hash,
-                    version: revision.version_id,
                     stored: Arc::clone(&self.stored_writes),
-                }
-            })
-        });
+                });
         Some(unavailable::UnavailableNote {
             registry,
             document_id,
@@ -1999,18 +1975,11 @@ impl QuickFS {
         self
     }
 
-    /// Keep immutable versions for this mount, and create a baseline version for records
-    /// that predate version history. Failure refuses the mount rather than silently
-    /// running with an incomplete audit trail.
-    pub fn with_history(
-        mut self,
-        actor: fs_protocol::FileActor,
-    ) -> Result<Self, crate::namespace::history::HistoryError> {
-        self.history = Some(actor);
-        if self.allow_history_baseline {
-            self.ensure_history_baseline()?;
-        }
-        Ok(self)
+    /// Write as `actor`: the person a writer acts for, unless the writer names another.
+    #[must_use]
+    pub fn with_actor(mut self, actor: fs_protocol::FileActor) -> Self {
+        self.actor = Some(actor);
+        self
     }
 
     /// Name who writes from the process each request comes from: an agent session, a
@@ -2028,96 +1997,12 @@ impl QuickFS {
             return WriterNote(None);
         };
         let writer = writers.resolve(pid);
-        let person = self
-            .history
-            .as_ref()
-            .map(|actor| hex::encode(actor.person.0));
+        let person = self.actor.as_ref().map(|actor| hex::encode(actor.person.0));
         WriterNote(Some(crate::namespace::acting_as(
             writer
                 .invoker(person.as_deref())
                 .map(|invoker| tilo_actions::ActionContext::default().with_invoker(invoker)),
         )))
-    }
-
-    fn ensure_history_baseline(&self) -> Result<(), crate::namespace::history::HistoryError> {
-        let Some(_) = &self.history else {
-            return Ok(());
-        };
-        let inodes = self.live_inodes_with_root();
-        for ino in inodes {
-            let Some(snapshot) = self.version_snapshot(ino, false, None) else {
-                continue;
-            };
-            if !self.ns().has_history(snapshot.document_id) {
-                self.append_version(snapshot, fs_protocol::FileProvenance::Create, now_ms())?;
-            }
-        }
-        Ok(())
-    }
-
-    fn live_inodes_with_root(&self) -> Vec<u64> {
-        let mut namespace = self.ns();
-        let mut inodes = Self::live_inodes_locked(&mut namespace);
-        drop(namespace);
-        inodes.insert(0, crate::namespace::ROOT_INO);
-        inodes
-    }
-
-    fn live_inodes_locked(namespace: &mut Namespace) -> Vec<u64> {
-        let paths = namespace
-            .live_node_ids()
-            .into_iter()
-            .filter_map(|id| namespace.path_for_id(&id))
-            .collect::<Vec<_>>();
-        paths
-            .iter()
-            .filter_map(|path| namespace.resolve_path_ino(path))
-            .collect()
-    }
-
-    fn version_snapshot(
-        &self,
-        ino: u64,
-        deleted: bool,
-        content_override: Option<fs_protocol::ContentHash>,
-    ) -> Option<VersionSnapshot> {
-        let namespace = self.ns();
-        Self::version_snapshot_locked(&namespace, ino, deleted, content_override, None)
-    }
-
-    fn version_snapshot_locked(
-        namespace: &Namespace,
-        ino: u64,
-        deleted: bool,
-        content_override: Option<fs_protocol::ContentHash>,
-        byte_len_override: Option<u64>,
-    ) -> Option<VersionSnapshot> {
-        let document_id = namespace.document_id_for(ino)?;
-        let attr = namespace.getattr(ino)?;
-        let content_hash = content_override.or_else(|| {
-            namespace
-                .hash_for(ino)
-                .map(|hash| fs_protocol::ContentHash(*hash.as_bytes()))
-        });
-        let byte_len = byte_len_override.unwrap_or(attr.size);
-        let metadata = VersionMetadataDigest {
-            path: namespace.path_for(ino),
-            kind: match attr.kind {
-                FileType::Directory => 1,
-                FileType::RegularFile => 2,
-                _ => 0,
-            },
-            byte_len,
-            deleted,
-        };
-        let bytes = postcard::to_allocvec(&metadata).ok()?;
-        Some(VersionSnapshot {
-            document_id,
-            content_hash,
-            metadata_hash: fs_protocol::ContentHash(*blake3::hash(&bytes).as_bytes()),
-            byte_len,
-            kind: attr.kind,
-        })
     }
 
     /// The metadata projection of `ino`'s current content: the rich facts this device
@@ -2147,88 +2032,21 @@ impl QuickFS {
         .ok()
     }
 
-    fn replacement_snapshot(
-        &self,
-        ino: u64,
-        content_hash: Option<Hash>,
-        byte_len: u64,
-    ) -> Option<VersionSnapshot> {
-        let namespace = self.ns();
-        let document_id = namespace.document_id_for(ino)?;
-        let attr = namespace.getattr(ino)?;
-        let metadata = VersionMetadataDigest {
-            path: namespace.path_for(ino),
-            kind: match attr.kind {
-                FileType::Directory => 1,
-                FileType::RegularFile => 2,
-                _ => 0,
-            },
-            byte_len,
-            deleted: false,
+    /// Tell the availability record of `ino`, when this mount keeps one, that its content is
+    /// now `hash`.
+    fn note_current_content(&self, ino: u64, hash: Option<Hash>) {
+        let Some(registry) = &self.availability else {
+            return;
         };
-        drop(namespace);
-        let bytes = postcard::to_allocvec(&metadata).ok()?;
-        Some(VersionSnapshot {
-            document_id,
-            content_hash: content_hash.map(|hash| fs_protocol::ContentHash(*hash.as_bytes())),
-            metadata_hash: fs_protocol::ContentHash(*blake3::hash(&bytes).as_bytes()),
-            byte_len,
-            kind: attr.kind,
-        })
-    }
-
-    fn append_version(
-        &self,
-        snapshot: VersionSnapshot,
-        provenance: fs_protocol::FileProvenance,
-        timestamp_ms: u64,
-    ) -> Result<fs_protocol::FileVersionId, crate::namespace::history::HistoryError> {
-        let Some(actor) = &self.history else {
-            return Ok(fs_protocol::FileVersionId::new());
+        let Some(document_id) = self.ns().document_id_for(ino) else {
+            return;
         };
-        let parents = self.ns().document_history_heads(snapshot.document_id);
-        let id = fs_protocol::FileVersionId::new();
-        let version = fs_protocol::FileVersionV1 {
-            id,
-            document_id: snapshot.document_id,
-            parents,
-            actor: *actor,
-            timestamp_ms,
-            content_hash: snapshot.content_hash,
-            metadata_hash: snapshot.metadata_hash,
-            provenance,
-        };
-        {
-            let mut namespace = self.ns();
-            namespace.append_version(version)?;
-        }
-        if let Some(registry) = &self.availability {
-            let mut registry = registry.lock_recover();
-            if let Some(mut record) = registry.get(snapshot.document_id).cloned() {
-                record.current_version = Some(id);
-                if let Err(error) = registry.put(record) {
-                    eprintln!("could not project history version into availability: {error}");
-                }
+        let mut registry = registry.lock_recover();
+        if let Some(mut record) = registry.get(document_id).cloned() {
+            record.current_hash = hash.map(|hash| fs_protocol::ContentHash(*hash.as_bytes()));
+            if let Err(error) = registry.put(record) {
+                eprintln!("could not note a file's new content in its availability: {error}");
             }
-        }
-        Ok(id)
-    }
-
-    fn document_version(
-        &self,
-        ino: u64,
-        provenance: fs_protocol::FileProvenance,
-        content_override: Option<fs_protocol::ContentHash>,
-    ) {
-        if self.history.is_none() {
-            return;
-        }
-        let Some(snapshot) = self.version_snapshot(ino, false, content_override) else {
-            eprintln!("could not capture version state for inode {ino}");
-            return;
-        };
-        if let Err(error) = self.append_version(snapshot, provenance, now_ms()) {
-            eprintln!("could not append durable file history for inode {ino}: {error}");
         }
     }
 
@@ -2803,7 +2621,6 @@ impl QuickFS {
             Arc::clone(&self.hydrator),
             self.availability.as_ref().ok_or(libc::ENOTSUP)?.clone(),
             self.eviction_queue.as_ref().ok_or(libc::ENOTSUP)?.clone(),
-            Arc::clone(&self.namespace),
         ))
     }
 
@@ -2864,8 +2681,9 @@ impl QuickFS {
         namespace.live_node_ids().into_iter().any(|node_id| {
             namespace.document_id_for_id(&node_id) == Some(request.document_id)
                 && namespace
-                    .content_revision_for_id(&node_id)
-                    .is_some_and(|revision| revision.version_id == request.version_id)
+                    .entry_for_node(&node_id)
+                    .and_then(|entry| entry.hash)
+                    == Some(request.content_hash)
         })
     }
 
@@ -3338,17 +3156,6 @@ impl QuickFS {
                 .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
             (expected_hash, attr.size, mtime_ms.max(current_ms))
         };
-        let snapshot = self
-            .replacement_snapshot(ino, hash, byte_len)
-            .ok_or_else(|| io::Error::from_raw_os_error(ENOENT))?;
-        self.append_version(snapshot, fs_protocol::FileProvenance::Edit, now_ms())
-            .map_err(|error| match error {
-                crate::namespace::history::HistoryError::CapacityExhausted(detail) => {
-                    eprintln!("inode {ino}: {detail}");
-                    io::Error::from_raw_os_error(EDQUOT)
-                }
-                error => io::Error::other(error.to_string()),
-            })?;
         {
             let mut ns = self.ns();
             let current_len = ns.getattr(ino).map(|attr| attr.size);
@@ -3367,6 +3174,7 @@ impl QuickFS {
             ns.set_content(ino, hash.as_ref(), byte_len, stamp);
             ns.note_change();
         }
+        self.note_current_content(ino, hash);
         self.publish();
         Ok(())
     }
@@ -3434,13 +3242,10 @@ impl QuickFS {
         }
     }
 
-    /// Durably append the delete version before making the move-tree tombstone visible. A
-    /// publication failure leaves the live namespace untouched; a concurrent edit or name
-    /// replacement fails the final CAS.
+    /// Put the node `name` in `parent` in the trash: one change of the tree.
     fn delete_named(&self, parent: u64, name: &[u8], expect_dir: bool) -> Result<(), i32> {
         self.check_existing_name(parent, name)?;
-        let timestamp_ms = now_ms();
-        let (ino, deleted_snapshot) = {
+        {
             let mut ns = self.ns();
             let attr = ns.lookup(parent, name).ok_or(ENOENT)?;
             let is_dir = attr.kind == FileType::Directory;
@@ -3464,35 +3269,7 @@ impl QuickFS {
                     return Err(if visible > 2 { ENOTEMPTY } else { EROFS });
                 }
             }
-            let Some(deleted_snapshot) =
-                Self::version_snapshot_locked(&ns, attr.ino.0, true, None, None)
-            else {
-                return Err(EIO);
-            };
-            (attr.ino.0, deleted_snapshot)
-        };
-        if self
-            .append_version(
-                deleted_snapshot,
-                fs_protocol::FileProvenance::Delete,
-                timestamp_ms,
-            )
-            .is_err()
-        {
-            return Err(EIO);
-        }
-        {
-            let mut ns = self.ns();
-            if ns.lookup(parent, name).is_none_or(|attr| attr.ino.0 != ino)
-                || Self::version_snapshot_locked(&ns, ino, true, None, None)
-                    != Some(deleted_snapshot)
-            {
-                return Err(EBUSY);
-            }
-            if expect_dir && ns.readdir(ino).is_some_and(|entries| entries.len() > 2) {
-                return Err(ENOTEMPTY);
-            }
-            if !ns.remove(ino) {
+            if !ns.remove(attr.ino.0) {
                 return Err(ENOENT);
             }
             ns.note_change();
@@ -3501,11 +3278,6 @@ impl QuickFS {
         Ok(())
     }
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        clippy::too_many_lines,
-        reason = "signed rename preflight, publication, and namespace projection must remain ordered"
-    )]
     fn rename_named(
         &self,
         parent: u64,
@@ -3515,33 +3287,13 @@ impl QuickFS {
     ) -> Result<(), i32> {
         let name: &[u8] = name.as_ref();
         let new_name: &[u8] = new_name.as_ref();
-        {
-            let (ino, replaced) = {
-                let mut namespace = self.ns();
-                let ino = namespace.lookup(parent, name).ok_or(ENOENT)?.ino.0;
-                let replaced = namespace
-                    .lookup(new_parent, new_name)
-                    .map(|attr| attr.ino.0)
-                    .filter(|replaced| *replaced != ino);
-                if !namespace.rename(parent, name, new_parent, new_name, now_ms()) {
-                    return Err(ENOENT);
-                }
-                namespace.note_change();
-                (ino, replaced)
-            };
-            if let Some(replaced) = replaced {
-                self.document_version(replaced, fs_protocol::FileProvenance::Delete, None);
-            }
-            self.document_version(
-                ino,
-                if parent == new_parent {
-                    fs_protocol::FileProvenance::Rename
-                } else {
-                    fs_protocol::FileProvenance::Move
-                },
-                None,
-            );
+        let mut namespace = self.ns();
+        namespace.lookup(parent, name).ok_or(ENOENT)?;
+        if !namespace.rename(parent, name, new_parent, new_name, now_ms()) {
+            return Err(ENOENT);
         }
+        namespace.note_change();
+        drop(namespace);
         Ok(())
     }
 }
@@ -3603,7 +3355,6 @@ fn pinned_candidates(
                 document_id,
                 parent: None,
                 kind: EntryKind::Directory,
-                version: None,
                 hash: None,
                 size: 0,
                 path: "/".into(),
@@ -3624,9 +3375,6 @@ fn pinned_candidates(
                 } else {
                     EntryKind::File
                 },
-                version: namespace
-                    .content_revision_for_id(&id)
-                    .map(|revision| revision.version_id),
                 hash: entry.hash,
                 size: entry.size,
                 path,
@@ -3642,6 +3390,13 @@ fn pinned_candidates(
     candidates
 }
 
+/// A candidate's content as its availability record names it.
+fn candidate_content(candidate: &PinnedCandidate) -> Option<fs_protocol::ContentHash> {
+    candidate
+        .hash
+        .map(|hash| fs_protocol::ContentHash(*hash.as_bytes()))
+}
+
 fn update_candidate_state(
     registry: &Arc<Mutex<AvailabilityRegistry>>,
     candidate: &PinnedCandidate,
@@ -3651,7 +3406,7 @@ fn update_candidate_state(
     let Some(mut record) = registry.get(candidate.document_id).cloned() else {
         return;
     };
-    if record.current_version != candidate.version {
+    if record.current_hash != candidate_content(candidate) {
         return;
     }
     update(&mut record);
@@ -3696,13 +3451,13 @@ fn topology_update(
     let mut record = current
         .cloned()
         .unwrap_or_else(|| DocumentAvailability::new(candidate.document_id, candidate.kind));
-    let version_changed = record.current_version != candidate.version;
+    let content_changed = record.current_hash != candidate_content(candidate);
     let mut changed =
         current.is_none() || record.kind != candidate.kind || record.parent != candidate.parent;
     record.kind = candidate.kind;
     record.parent = candidate.parent;
-    if version_changed {
-        record.current_version = candidate.version;
+    if content_changed {
+        record.current_hash = candidate_content(candidate);
         record.residency = Residency::NotResident;
         record.transfer = crate::availability::TransferState::default();
         record.replicas = crate::availability::ReplicaEvidence::default();
@@ -3738,7 +3493,7 @@ fn pinned_state_update(
     let mut record = current.clone();
     match probe {
         PinnedProbe::Local => {
-            if record.current_version != candidate.version {
+            if record.current_hash != candidate_content(candidate) {
                 return (None, false);
             }
             let resident = Residency::Resident {
@@ -4158,11 +3913,7 @@ fn pinned_candidate_is_current(
     let Some(ino) = namespace.ino_for_document_id(candidate.document_id) else {
         return false;
     };
-    namespace
-        .observed_content_revision(ino)
-        .map(|revision| revision.version_id)
-        == candidate.version
-        && namespace.hash_for(ino) == candidate.hash
+    namespace.hash_for(ino) == candidate.hash
         && namespace
             .getattr(ino)
             .is_some_and(|attr| attr.size == candidate.size)
@@ -4400,7 +4151,7 @@ impl Filesystem for QuickFS {
         flags: i32,
         reply: ReplyCreate,
     ) {
-        let mut writer = self.note_writer(req.pid());
+        let writer = self.note_writer(req.pid());
         let name_bytes = name.as_bytes();
         if let Err(e) = self.check_new_name(parent.0, name_bytes) {
             reply.error(to_errno(e));
@@ -4419,9 +4170,6 @@ impl Filesystem for QuickFS {
             return;
         };
         self.publish();
-        drop(writer);
-        writer = self.note_writer(req.pid());
-        self.document_version(attr.ino.0, fs_protocol::FileProvenance::Create, None);
         drop(writer);
         let handle = self.next_file_handle.fetch_add(1, Ordering::Relaxed);
         let opened_path = self.ns().path_for(attr.ino.0);
@@ -4627,7 +4375,6 @@ impl Filesystem for QuickFS {
         match attr {
             Some(attr) => {
                 self.publish();
-                self.document_version(attr.ino.0, fs_protocol::FileProvenance::Create, None);
                 reply.entry_with_ttls(
                     &self.attr_ttl(TTL),
                     &TTL,

@@ -333,4 +333,39 @@ mod tests {
             assert_eq!(size, 3);
         }
     }
+
+    #[test]
+    fn twenty_thousand_files_are_one_change_per_chunk() {
+        let mut namespace = Namespace::new("host").unwrap();
+        let names: Vec<String> = (0..20_000).map(|index| format!("f{index}.bin")).collect();
+        let hashes: Vec<String> = (0..20_000_u32)
+            .map(|index| Hash::new(index.to_le_bytes()).to_hex())
+            .collect();
+        let files: Vec<FileToPut<'_>> = names
+            .iter()
+            .zip(&hashes)
+            .map(|(name, hash)| FileToPut {
+                to: "import",
+                name,
+                hash,
+                size: 4,
+                mtime: 10,
+            })
+            .collect();
+        let put = namespace.put_files(&files).unwrap();
+        assert_eq!(put.files.len(), 20_000, "every file is placed");
+        let chunks: std::collections::BTreeSet<_> =
+            put.writes.iter().map(|write| write.chunk).collect();
+        assert_eq!(
+            chunks.len(),
+            put.writes.len(),
+            "each chunk the files land in changes once, whatever their number"
+        );
+        let entry = namespace.entry_at("import/f19999.bin").unwrap();
+        assert_eq!(
+            entry.hash.map(|hash| hash.to_hex()).as_ref(),
+            hashes.last(),
+            "each file names its own content"
+        );
+    }
 }

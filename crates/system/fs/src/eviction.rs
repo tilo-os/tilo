@@ -1,28 +1,28 @@
 //! Fail-closed planning for local collaborative-file eviction.
 //!
-//! A file payload is a manifest plus content-defined chunks, and chunks and manifests may be
-//! shared by several records or retained versions, so deleting "the blobs for one file" needs a
-//! complete, version-bound reference catalog. This module computes that set without mutating
-//! storage.
+//! A file's content is a manifest plus content-defined chunks, named by the manifest's hash, and
+//! chunks and manifests may be shared by several files, so deleting "the blobs for one file" needs
+//! a complete reference catalog of the contents kept here. This module computes that set without
+//! mutating storage.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use fs_protocol::{FileDocumentId, FileVersionId};
+use fs_protocol::FileDocumentId;
 use futures_util::stream::{self, StreamExt, TryStreamExt};
 use iroh_blobs::Hash;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::Hydrator;
 use crate::availability::{
     AvailabilityRegistry, DocumentAvailability, EntryKind, EvictionBlocker, EvictionDecision,
     EvictionRequirements, pinned_in_snapshot,
 };
 use crate::clock::unix_now_ms;
-use crate::{Hydrator, Namespace};
 use fs_protocol::{AvailabilityPolicy, Residency};
 use tilo_lock::MutexRecover as _;
 
@@ -31,14 +31,13 @@ use tilo_lock::MutexRecover as _;
 const MAX_CONCURRENT_CATALOG_INSPECTIONS: usize = 8;
 
 /// The one process-local bridge from durable eviction intent to backend GC, so no caller can
-/// silently replace exact-version receipts, retained-history checks, or the exact absence
+/// silently replace exact-content receipts or the exact absence
 /// observation with a Hydrator-lifetime approximation.
 #[derive(Clone)]
 pub struct EvictionCoordinator {
     hydrator: Arc<Hydrator>,
     registry: Arc<Mutex<AvailabilityRegistry>>,
     queue: Arc<tokio::sync::Mutex<EvictionQueue>>,
-    namespace: Arc<Mutex<Namespace>>,
 }
 
 impl EvictionCoordinator {
@@ -46,13 +45,11 @@ impl EvictionCoordinator {
         hydrator: Arc<Hydrator>,
         registry: Arc<Mutex<AvailabilityRegistry>>,
         queue: Arc<tokio::sync::Mutex<EvictionQueue>>,
-        namespace: Arc<Mutex<Namespace>>,
     ) -> Self {
         Self {
             hydrator,
             registry,
             queue,
-            namespace,
         }
     }
 
@@ -188,17 +185,9 @@ impl EvictionCoordinator {
             let current = records
                 .iter()
                 .find(|record| record.document_id == document_id)
-                .and_then(|record| record.current_version)
-                .ok_or_else(|| anyhow::anyhow!("record has no exact current version"))?;
-            let version = self
-                .namespace
-                .lock_recover()
-                .document_version(document_id, current)
-                .0
-                .ok_or_else(|| {
-                    anyhow::anyhow!("version history changed during eviction planning")
-                })?;
-            if version.content_hash != Some(fs_protocol::ContentHash(*expected_hash.as_bytes())) {
+                .and_then(current_content)
+                .ok_or_else(|| anyhow::anyhow!("the file has no content to free"))?;
+            if current != expected_hash {
                 anyhow::bail!("workspace changed since preview");
             }
         }
@@ -227,7 +216,7 @@ impl EvictionCoordinator {
     }
 
     /// Observe exact backend state once and atomically project completed work into durable local
-    /// residency. A newer record version is deliberately not changed.
+    /// residency. A record whose content changed since is deliberately not changed.
     pub async fn observe_once(
         &self,
         document_id: FileDocumentId,
@@ -250,8 +239,8 @@ impl EvictionCoordinator {
         let mut registry = self.registry.lock_recover();
         if request.document_id != document_id
             || registry.get(document_id).is_none_or(|record| {
-                record.current_version != Some(request.version_id)
-                    // A later verified local hydration of the same version
+                current_content(record) != Some(request.content_hash)
+                    // A later verified local hydration of the same content
                     // must not be erased by replaying an older completion.
                     || record.freshness.local_verified_at_ms.is_some_and(|at| at > observed_at_ms)
             })
@@ -287,7 +276,7 @@ impl EvictionCoordinator {
         targets: &[FileDocumentId],
     ) -> anyhow::Result<EvictionCatalog> {
         let targets = targets.iter().copied().collect::<HashSet<_>>();
-        let mut keys = Vec::new();
+        let mut contents = Vec::new();
         for record in records {
             if record.kind != EntryKind::File {
                 continue;
@@ -295,56 +284,28 @@ impl EvictionCoordinator {
             let protects_current = targets.contains(&record.document_id)
                 || record.residency != Residency::NotResident
                 || pinned_in_snapshot(records, record.document_id);
-            if protects_current && let Some(version) = record.current_version {
-                keys.push((record.document_id, version));
-            }
-            keys.extend(
-                record
-                    .retained_versions
-                    .iter()
-                    .copied()
-                    .map(|version| (record.document_id, version)),
-            );
-        }
-        keys.sort_unstable();
-        keys.dedup();
-        let versions = {
-            let namespace = self.namespace.lock_recover();
-            keys.iter()
-                .map(|&(document_id, version_id)| {
-                    namespace
-                        .document_version(document_id, version_id)
-                        .0
-                        .map(|version| (document_id, version_id, version.content_hash))
-                        .ok_or_else(|| {
-                            anyhow::anyhow!("version history changed during eviction planning")
-                        })
-                })
-                .collect::<anyhow::Result<Vec<_>>>()?
-        };
-        let mut payload_keys = Vec::new();
-        let mut empty = Vec::new();
-        for (document_id, version_id, content_hash) in versions {
-            match content_hash {
-                Some(hash) => payload_keys.push((document_id, version_id, Hash::from(hash.0))),
-                None => empty.push((document_id, version_id)),
+            if protects_current && let Some(hash) = current_content(record) {
+                contents.push(hash);
             }
         }
+        contents.sort_unstable_by_key(|hash| *hash.as_bytes());
+        contents.dedup();
         let store = Arc::clone(&self.hydrator.store);
-        let payloads = stream::iter(payload_keys)
-            .map(|(document_id, version_id, hash)| {
+        let payloads = stream::iter(contents)
+            .map(|hash| {
                 let store = Arc::clone(&store);
-                async move {
-                    store
-                        .inspect_version_payload(document_id, version_id, hash)
-                        .await
-                }
+                async move { store.inspect_content_payload(hash).await }
             })
             .buffer_unordered(MAX_CONCURRENT_CATALOG_INSPECTIONS)
             .try_collect::<Vec<_>>()
             .await?;
-        Ok(EvictionCatalog::with_empty_versions(payloads, empty)?)
+        Ok(EvictionCatalog::new(payloads))
     }
+}
+
+/// A record's current content, by the hash its blobs are kept under.
+fn current_content(record: &DocumentAvailability) -> Option<Hash> {
+    record.current_hash.map(|hash| Hash::from(hash.0))
 }
 
 fn plan_for_mode(
@@ -371,7 +332,7 @@ fn plan_for_mode(
     }
 }
 
-/// One blob in a version payload, with locally verified byte accounting.
+/// One blob of a content, with locally verified byte accounting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlobExtent {
     pub hash: Hash,
@@ -383,73 +344,40 @@ pub struct BlobExtent {
     pub resident_bytes: Option<u64>,
 }
 
+/// The blobs of one content: its manifest, whose hash names the content, and its chunks.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct VersionPayload {
-    pub document_id: FileDocumentId,
-    pub version_id: FileVersionId,
+pub struct ContentPayload {
     pub manifest: BlobExtent,
     pub chunks: Vec<BlobExtent>,
 }
 
-impl VersionPayload {
+impl ContentPayload {
     fn blobs(&self) -> impl Iterator<Item = BlobExtent> + '_ {
         std::iter::once(self.manifest).chain(self.chunks.iter().copied())
     }
 }
 
-/// Complete reference information supplied by the version and history index.
+/// The blobs of every content a plan must consider, by content hash.
 ///
-/// Planning fails closed when any resident, pinned or retained version is absent: an incomplete
-/// catalog cannot prove that a chunk is unshared.
+/// Planning fails closed when any resident or pinned content is absent: an incomplete catalog
+/// cannot prove that a chunk is unshared.
 #[derive(Clone, Debug, Default)]
 pub struct EvictionCatalog {
-    payloads: HashMap<(FileDocumentId, FileVersionId), VersionPayload>,
-    empty_versions: HashSet<(FileDocumentId, FileVersionId)>,
+    payloads: HashMap<Hash, ContentPayload>,
 }
 
 impl EvictionCatalog {
-    pub fn new(payloads: impl IntoIterator<Item = VersionPayload>) -> Result<Self, PlanError> {
-        Self::with_empty_versions(payloads, [])
-    }
-
-    /// Build a complete catalog including versions that have no manifest because their exact
-    /// content is empty. Empty versions protect no blobs, but naming them keeps fail-closed
-    /// planning from reading an intentional empty payload as a missing history entry.
-    pub fn with_empty_versions(
-        payloads: impl IntoIterator<Item = VersionPayload>,
-        empty_versions: impl IntoIterator<Item = (FileDocumentId, FileVersionId)>,
-    ) -> Result<Self, PlanError> {
-        let mut result = Self::default();
-        for payload in payloads {
-            let key = (payload.document_id, payload.version_id);
-            if result.payloads.insert(key, payload).is_some() {
-                return Err(PlanError::DuplicateVersion {
-                    document_id: key.0,
-                    version_id: key.1,
-                });
-            }
+    pub fn new(payloads: impl IntoIterator<Item = ContentPayload>) -> Self {
+        Self {
+            payloads: payloads
+                .into_iter()
+                .map(|payload| (payload.manifest.hash, payload))
+                .collect(),
         }
-        for key in empty_versions {
-            if result.payloads.contains_key(&key) || !result.empty_versions.insert(key) {
-                return Err(PlanError::DuplicateVersion {
-                    document_id: key.0,
-                    version_id: key.1,
-                });
-            }
-        }
-        Ok(result)
     }
 
-    fn get(
-        &self,
-        document_id: FileDocumentId,
-        version_id: FileVersionId,
-    ) -> Option<&VersionPayload> {
-        self.payloads.get(&(document_id, version_id))
-    }
-
-    fn is_empty(&self, document_id: FileDocumentId, version_id: FileVersionId) -> bool {
-        self.empty_versions.contains(&(document_id, version_id))
+    fn get(&self, hash: Hash) -> Option<&ContentPayload> {
+        self.payloads.get(&hash)
     }
 }
 
@@ -458,11 +386,11 @@ impl EvictionCatalog {
 pub enum EvictionMode {
     Safe,
     /// The caller explicitly accepts that the target's only known copy may be
-    /// lost. Shared blobs and retained history remain protected.
+    /// lost. Shared blobs remain protected.
     DestructiveOverride,
 }
 
-pub const EVICTION_QUEUE_SCHEMA_VERSION: u16 = 1;
+pub const EVICTION_QUEUE_SCHEMA_VERSION: u16 = 2;
 pub const MAX_EVICTION_REQUESTS: usize = 4_096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -485,7 +413,8 @@ pub enum EvictionRequestState {
 pub struct EvictionRequest {
     pub id: EvictionRequestId,
     pub document_id: FileDocumentId,
-    pub version_id: FileVersionId,
+    /// The content freed, by its hash.
+    pub content_hash: Hash,
     pub mode: EvictionMode,
     pub requested_hashes: Vec<Hash>,
     pub requested_at_ms: u64,
@@ -566,20 +495,32 @@ pub enum BackendGcAuthorizationError {
 }
 
 impl EvictionQueue {
+    /// Open the saved queue, or an empty one when there is none or it is written in an older
+    /// format: requests of an older format are dropped, and the next enqueue replaces the file.
+    /// A format newer than this build's is refused.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, EvictionQueueError> {
         let path = path.into();
-        if !path.exists() {
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => return Err(error.into()),
+        };
+        let format = (!bytes.is_empty())
+            .then(|| serde_json::from_slice::<crate::availability::SchemaVersion>(&bytes))
+            .transpose()?
+            .map(|format| format.schema_version);
+        if format.is_some_and(|version| version > EVICTION_QUEUE_SCHEMA_VERSION) {
+            return Err(EvictionQueueError::UnsupportedVersion(
+                format.unwrap_or_default(),
+            ));
+        }
+        if format != Some(EVICTION_QUEUE_SCHEMA_VERSION) {
             return Ok(Self {
                 path,
                 requests: BTreeMap::new(),
             });
         }
-        let document: EvictionQueueDocument = serde_json::from_slice(&fs::read(&path)?)?;
-        if document.schema_version != EVICTION_QUEUE_SCHEMA_VERSION {
-            return Err(EvictionQueueError::UnsupportedVersion(
-                document.schema_version,
-            ));
-        }
+        let document: EvictionQueueDocument = serde_json::from_slice(&bytes)?;
         let mut requests = BTreeMap::new();
         for request in document.requests {
             if requests.len() >= MAX_EVICTION_REQUESTS {
@@ -612,7 +553,7 @@ impl EvictionQueue {
         let requested_hashes = plan_requested_hashes(plan);
         let id = request_id(
             plan.document_id,
-            plan.version_id,
+            plan.content_hash,
             plan.mode,
             &requested_hashes,
         );
@@ -656,7 +597,7 @@ impl EvictionQueue {
         let request = EvictionRequest {
             id,
             document_id: plan.document_id,
-            version_id: plan.version_id,
+            content_hash: plan.content_hash,
             mode: plan.mode,
             requested_hashes,
             requested_at_ms,
@@ -675,7 +616,7 @@ impl EvictionQueue {
 
     /// Reauthorize a queued request against a freshly computed exact plan, immediately before its
     /// hashes become collectible, while holding whatever lock keeps the availability registry and
-    /// version catalog stable through the handoff. A record version change, policy refusal, or
+    /// content catalog stable through the handoff. A change of the file's content, a policy refusal, or
     /// newly shared safety root changes the plan, so enqueue-time authority is never enough.
     ///
     /// Deletes and unprotects nothing; completion still requires one all-absent observation.
@@ -692,7 +633,7 @@ impl EvictionQueue {
             return Err(EvictionQueueError::RequestNotPending(id));
         }
         if request.document_id != fresh_plan.document_id
-            || request.version_id != fresh_plan.version_id
+            || request.content_hash != fresh_plan.content_hash
             || request.mode != fresh_plan.mode
             || request.requested_hashes != plan_requested_hashes(fresh_plan)
         {
@@ -830,14 +771,14 @@ fn plan_requested_hashes(plan: &EvictionPlan) -> Vec<Hash> {
 
 fn request_id(
     document_id: FileDocumentId,
-    version_id: FileVersionId,
+    content_hash: Hash,
     mode: EvictionMode,
     hashes: &[Hash],
 ) -> EvictionRequestId {
     let mut digest_builder = blake3::Hasher::new();
-    digest_builder.update(b"tilo.collaborative-fs.eviction-request.v1\0");
+    digest_builder.update(b"tilo.collaborative-fs.eviction-request.v2\0");
     digest_builder.update(document_id.0.as_bytes());
-    digest_builder.update(version_id.0.as_bytes());
+    digest_builder.update(content_hash.as_bytes());
     digest_builder.update(&[match mode {
         EvictionMode::Safe => 0,
         EvictionMode::DestructiveOverride => 1,
@@ -865,7 +806,7 @@ fn validate_request(request: &EvictionRequest) -> Result<(), EvictionQueueError>
     if request.id
         != request_id(
             request.document_id,
-            request.version_id,
+            request.content_hash,
             request.mode,
             &request.requested_hashes,
         )
@@ -878,10 +819,11 @@ fn validate_request(request: &EvictionRequest) -> Result<(), EvictionQueueError>
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EvictionPlan {
     pub document_id: FileDocumentId,
-    pub version_id: FileVersionId,
+    /// The content freed, by its hash.
+    pub content_hash: Hash,
     pub mode: EvictionMode,
     pub reclaimable: Vec<BlobExtent>,
-    /// Target blobs kept because another resident, pinned or retained version uses them.
+    /// Target blobs kept because another resident or pinned file's content uses them.
     pub shared_and_protected: Vec<BlobExtent>,
     pub already_absent: Vec<Hash>,
     pub reclaimable_bytes: u64,
@@ -896,25 +838,12 @@ pub struct EvictionPlan {
 pub enum PlanError {
     #[error("availability policy denied eviction: {0:?}")]
     Denied(EvictionBlocker),
-    #[error("target record has no exact current version")]
-    TargetVersionUnknown,
-    #[error("payload catalog is missing target version {version_id:?} for {document_id:?}")]
-    TargetPayloadMissing {
-        document_id: FileDocumentId,
-        version_id: FileVersionId,
-    },
-    #[error("protected record {document_id:?} has no exact current version")]
-    ProtectedCurrentVersionUnknown { document_id: FileDocumentId },
-    #[error("payload catalog is missing protected version {version_id:?} for {document_id:?}")]
-    ProtectedPayloadMissing {
-        document_id: FileDocumentId,
-        version_id: FileVersionId,
-    },
-    #[error("payload catalog contains duplicate version {version_id:?} for {document_id:?}")]
-    DuplicateVersion {
-        document_id: FileDocumentId,
-        version_id: FileVersionId,
-    },
+    #[error("the file has no content to free")]
+    TargetHasNoContent,
+    #[error("payload catalog is missing the target content {hash}")]
+    TargetPayloadMissing { hash: Hash },
+    #[error("payload catalog is missing the protected content {hash}")]
+    ProtectedPayloadMissing { hash: Hash },
     #[error("blob {hash} has conflicting resident byte counts")]
     ConflictingBlobAccounting { hash: Hash },
     #[error("absent blob {hash} claims resident bytes")]
@@ -948,8 +877,7 @@ pub fn plan_safe_eviction(
 }
 
 /// Plan an explicitly destructive removal. It bypasses replica and pin checks only for the
-/// target current version; shared and retained references and exact-version validation always
-/// apply.
+/// target's current content; shared references and exact-content validation always apply.
 pub fn plan_destructive_eviction(
     registry: &AvailabilityRegistry,
     catalog: &EvictionCatalog,
@@ -988,16 +916,10 @@ fn plan(
     let target_document = registry
         .get(document_id)
         .ok_or(PlanError::Denied(EvictionBlocker::UnknownDocument))?;
-    let target_version = target_document
-        .current_version
-        .ok_or(PlanError::TargetVersionUnknown)?;
-    let target = catalog.get(document_id, target_version);
-    if target.is_none() && !catalog.is_empty(document_id, target_version) {
-        return Err(PlanError::TargetPayloadMissing {
-            document_id,
-            version_id: target_version,
-        });
-    }
+    let content_hash = current_content(target_document).ok_or(PlanError::TargetHasNoContent)?;
+    let target = catalog
+        .get(content_hash)
+        .ok_or(PlanError::TargetPayloadMissing { hash: content_hash })?;
 
     let mut protected = HashSet::new();
     for record in registry.records() {
@@ -1013,27 +935,12 @@ fn plan(
                     .effective_policy(record.document_id)
                     .map_err(|_| PlanError::InvalidAncestry)?
                     == Some(AvailabilityPolicy::Pinned));
-        if protects_current {
-            let version_id =
-                record
-                    .current_version
-                    .ok_or(PlanError::ProtectedCurrentVersionUnknown {
-                        document_id: record.document_id,
-                    })?;
-            add_protected_payload(&mut protected, catalog, record.document_id, version_id)?;
-        }
-
-        // Retained history remains protected even for the target during an
-        // explicit destructive current-version eviction.
-        for &version_id in &record.retained_versions {
-            add_protected_payload(&mut protected, catalog, record.document_id, version_id)?;
+        if protects_current && let Some(hash) = current_content(record) {
+            add_protected_payload(&mut protected, catalog, hash)?;
         }
     }
 
-    let target_blobs = match target {
-        Some(target) => canonical_blobs(target.blobs())?,
-        None => Vec::new(),
-    };
+    let target_blobs = canonical_blobs(target.blobs())?;
     let mut reclaimable = Vec::new();
     let mut shared_and_protected = Vec::new();
     let mut already_absent = Vec::new();
@@ -1050,7 +957,7 @@ fn plan(
 
     Ok(EvictionPlan {
         document_id,
-        version_id: target_version,
+        content_hash,
         mode,
         reclaimable_bytes: sum_bytes(&reclaimable),
         unaccounted_reclaimable_blobs: reclaimable
@@ -1091,29 +998,14 @@ fn batch_plan_safe(
             roots_valid = false;
             true
         };
-        if current_is_protected {
-            let Some(version) = record.current_version else {
-                roots_valid = false;
-                continue;
-            };
-            match payload_hashes(catalog, record.document_id, version) {
+        if current_is_protected && let Some(hash) = current_content(record) {
+            match payload_hashes(catalog, hash) {
                 Ok(hashes) => {
                     for hash in &hashes {
                         let count = protected_counts.entry(*hash).or_default();
                         *count = count.saturating_add(1);
                     }
                     own_current.insert(record.document_id, hashes);
-                }
-                Err(_) => roots_valid = false,
-            }
-        }
-        for &version in &record.retained_versions {
-            match payload_hashes(catalog, record.document_id, version) {
-                Ok(hashes) => {
-                    for hash in hashes {
-                        let count = protected_counts.entry(hash).or_default();
-                        *count = count.saturating_add(1);
-                    }
                 }
                 Err(_) => roots_valid = false,
             }
@@ -1142,20 +1034,10 @@ fn batch_plan_safe(
         .collect()
 }
 
-fn payload_hashes(
-    catalog: &EvictionCatalog,
-    document_id: FileDocumentId,
-    version_id: FileVersionId,
-) -> Result<HashSet<Hash>, PlanError> {
-    if catalog.is_empty(document_id, version_id) {
-        return Ok(HashSet::new());
-    }
+fn payload_hashes(catalog: &EvictionCatalog, hash: Hash) -> Result<HashSet<Hash>, PlanError> {
     Ok(catalog
-        .get(document_id, version_id)
-        .ok_or(PlanError::ProtectedPayloadMissing {
-            document_id,
-            version_id,
-        })?
+        .get(hash)
+        .ok_or(PlanError::ProtectedPayloadMissing { hash })?
         .blobs()
         .map(|blob| blob.hash)
         .collect())
@@ -1179,22 +1061,13 @@ fn batch_target_plan(
     let record = registry
         .get(document_id)
         .ok_or(PlanError::Denied(EvictionBlocker::UnknownDocument))?;
-    let version_id = record
-        .current_version
-        .ok_or(PlanError::TargetVersionUnknown)?;
-    let target = if catalog.is_empty(document_id, version_id) {
-        Vec::new()
-    } else {
-        canonical_blobs(
-            catalog
-                .get(document_id, version_id)
-                .ok_or(PlanError::TargetPayloadMissing {
-                    document_id,
-                    version_id,
-                })?
-                .blobs(),
-        )?
-    };
+    let content_hash = current_content(record).ok_or(PlanError::TargetHasNoContent)?;
+    let target = canonical_blobs(
+        catalog
+            .get(content_hash)
+            .ok_or(PlanError::TargetPayloadMissing { hash: content_hash })?
+            .blobs(),
+    )?;
     let mut reclaimable = Vec::new();
     let mut shared_and_protected = Vec::new();
     let mut already_absent = Vec::new();
@@ -1215,7 +1088,7 @@ fn batch_target_plan(
     already_absent.sort_by_key(|hash| *hash.as_bytes());
     Ok(EvictionPlan {
         document_id,
-        version_id,
+        content_hash,
         mode: EvictionMode::Safe,
         reclaimable_bytes: sum_bytes(&reclaimable),
         unaccounted_reclaimable_blobs: reclaimable
@@ -1236,19 +1109,11 @@ fn batch_target_plan(
 fn add_protected_payload(
     protected: &mut HashSet<Hash>,
     catalog: &EvictionCatalog,
-    document_id: FileDocumentId,
-    version_id: FileVersionId,
+    hash: Hash,
 ) -> Result<(), PlanError> {
-    if catalog.is_empty(document_id, version_id) {
-        return Ok(());
-    }
-    let payload =
-        catalog
-            .get(document_id, version_id)
-            .ok_or(PlanError::ProtectedPayloadMissing {
-                document_id,
-                version_id,
-            })?;
+    let payload = catalog
+        .get(hash)
+        .ok_or(PlanError::ProtectedPayloadMissing { hash })?;
     protected.extend(payload.blobs().map(|blob| blob.hash));
     Ok(())
 }
@@ -1300,15 +1165,9 @@ mod tests {
         Hash::from([byte; 32])
     }
 
-    fn payload(
-        document_id: FileDocumentId,
-        version_id: FileVersionId,
-        manifest: (u8, Option<u64>),
-        chunks: &[(u8, Option<u64>)],
-    ) -> VersionPayload {
-        VersionPayload {
-            document_id,
-            version_id,
+    /// The payload of the content whose manifest is `hash(manifest.0)`.
+    fn payload(manifest: (u8, Option<u64>), chunks: &[(u8, Option<u64>)]) -> ContentPayload {
+        ContentPayload {
             manifest: BlobExtent {
                 hash: hash(manifest.0),
                 locally_present: manifest.1.is_some(),
@@ -1325,14 +1184,16 @@ mod tests {
         }
     }
 
-    fn resident_file(id: FileDocumentId, version: FileVersionId, now: u64) -> DocumentAvailability {
+    /// A file kept here whose content is the one with manifest `hash(content)`.
+    fn resident_file(id: FileDocumentId, content: u8, now: u64) -> DocumentAvailability {
+        let content = Some(fs_protocol::ContentHash([content; 32]));
         let mut record = DocumentAvailability::new(id, EntryKind::File);
-        record.current_version = Some(version);
+        record.current_hash = content;
         record.residency = Residency::Resident { bytes: 30 };
         record.replicas = crate::availability::ReplicaEvidence {
             reachable: 0,
             durable: 1,
-            acknowledged_version: Some(version),
+            acknowledged_hash: content,
         };
         record.freshness.replicas_observed_at_ms = Some(now);
         record
@@ -1345,7 +1206,7 @@ mod tests {
         )]
         fn eviction_is_planned_accounted_and_queued_fail_closed;
 
-        phase eviction_plans_protect_shared_and_retained_blobs_and_fail_closed;
+        phase eviction_plans_protect_shared_blobs_and_fail_closed;
         {
             {
                 let temp = TempDir::new().unwrap();
@@ -1353,22 +1214,21 @@ mod tests {
                     AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
                 let now = unix_now_ms();
                 let record = FileDocumentId::new();
-                let version = FileVersionId::new();
-                registry.put(resident_file(record, version, now)).unwrap();
-                let catalog = EvictionCatalog::with_empty_versions([], [(record, version)]).unwrap();
+                let mut empty = resident_file(record, 1, now);
+                empty.current_hash = None;
+                registry.put(empty).unwrap();
 
-                let plan = plan_destructive_eviction(
-                    &registry,
-                    &catalog,
-                    record,
-                    now,
-                    EvictionRequirements::default(),
-                )
-                .unwrap();
-                assert!(plan.reclaimable.is_empty());
-                assert!(plan.shared_and_protected.is_empty());
-                assert!(plan.already_absent.is_empty());
-                assert_eq!(plan.reclaimable_bytes, 0);
+                assert_eq!(
+                    plan_destructive_eviction(
+                        &registry,
+                        &EvictionCatalog::default(),
+                        record,
+                        now,
+                        EvictionRequirements::default(),
+                    ),
+                    Err(PlanError::TargetHasNoContent),
+                    "an empty file has no bytes to free"
+                );
             }
             {
                 let temp = TempDir::new().unwrap();
@@ -1376,20 +1236,12 @@ mod tests {
                     AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
                 let now = 1_000;
                 let target = FileDocumentId::new();
-                let target_version = FileVersionId::new();
                 let other = FileDocumentId::new();
-                let other_version = FileVersionId::new();
-                registry
-                    .put(resident_file(target, target_version, now))
-                    .unwrap();
-                registry
-                    .put(resident_file(other, other_version, now))
-                    .unwrap();
-                let catalog = EvictionCatalog::with_empty_versions(
-                    [payload(target, target_version, (1, Some(4)), &[])],
-                    [(other, other_version)],
-                )
-                .unwrap();
+                registry.put(resident_file(target, 1, now)).unwrap();
+                let mut empty = resident_file(other, 2, now);
+                empty.current_hash = None;
+                registry.put(empty).unwrap();
+                let catalog = EvictionCatalog::new([payload((1, Some(4)), &[])]);
 
                 let plan = plan_destructive_eviction(
                     &registry,
@@ -1408,30 +1260,13 @@ mod tests {
                     AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
                 let now = 1_000;
                 let target_id = FileDocumentId::new();
-                let target_version = FileVersionId::new();
                 let other_id = FileDocumentId::new();
-                let other_version = FileVersionId::new();
-                registry
-                    .put(resident_file(target_id, target_version, now))
-                    .unwrap();
-                registry
-                    .put(resident_file(other_id, other_version, now))
-                    .unwrap();
+                registry.put(resident_file(target_id, 1, now)).unwrap();
+                registry.put(resident_file(other_id, 5, now)).unwrap();
                 let catalog = EvictionCatalog::new([
-                    payload(
-                        target_id,
-                        target_version,
-                        (1, Some(4)),
-                        &[(2, Some(10)), (3, Some(20))],
-                    ),
-                    payload(
-                        other_id,
-                        other_version,
-                        (1, Some(4)),
-                        &[(2, Some(10)), (4, Some(7))],
-                    ),
-                ])
-                .unwrap();
+                    payload((1, Some(4)), &[(2, Some(10)), (3, Some(20))]),
+                    payload((5, Some(4)), &[(2, Some(10)), (4, Some(7))]),
+                ]);
 
                 let plan = plan_destructive_eviction(
                     &registry,
@@ -1441,17 +1276,39 @@ mod tests {
                     EvictionRequirements::default(),
                 )
                 .unwrap();
+                assert_eq!(plan.content_hash, hash(1));
                 assert_eq!(
                     plan.reclaimable,
-                    vec![BlobExtent {
-                        hash: hash(3),
-                        locally_present: true,
-                        resident_bytes: Some(20)
-                    }]
+                    vec![
+                        BlobExtent {
+                            hash: hash(1),
+                            locally_present: true,
+                            resident_bytes: Some(4)
+                        },
+                        BlobExtent {
+                            hash: hash(3),
+                            locally_present: true,
+                            resident_bytes: Some(20)
+                        }
+                    ]
                 );
-                assert_eq!(plan.reclaimable_bytes, 20);
-                assert_eq!(plan.protected_shared_bytes, 14);
-                assert_eq!(plan.shared_and_protected.len(), 2);
+                assert_eq!(plan.reclaimable_bytes, 24);
+                assert_eq!(plan.protected_shared_bytes, 10);
+                assert_eq!(plan.shared_and_protected.len(), 1);
+
+                // Another file with the very same content keeps all of it.
+                let twin = FileDocumentId::new();
+                registry.put(resident_file(twin, 1, now)).unwrap();
+                let plan = plan_destructive_eviction(
+                    &registry,
+                    &catalog,
+                    target_id,
+                    now,
+                    EvictionRequirements::default(),
+                )
+                .unwrap();
+                assert!(plan.reclaimable.is_empty());
+                assert_eq!(plan.shared_and_protected.len(), 3);
             }
             {
                 let temp = TempDir::new().unwrap();
@@ -1459,22 +1316,10 @@ mod tests {
                     AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
                 let now = 1_000;
                 let target_id = FileDocumentId::new();
-                let target_version = FileVersionId::new();
                 let other_id = FileDocumentId::new();
-                let other_version = FileVersionId::new();
-                registry
-                    .put(resident_file(target_id, target_version, now))
-                    .unwrap();
-                registry
-                    .put(resident_file(other_id, other_version, now))
-                    .unwrap();
-                let catalog = EvictionCatalog::new([payload(
-                    target_id,
-                    target_version,
-                    (1, Some(4)),
-                    &[(2, Some(10))],
-                )])
-                .unwrap();
+                registry.put(resident_file(target_id, 1, now)).unwrap();
+                registry.put(resident_file(other_id, 5, now)).unwrap();
+                let catalog = EvictionCatalog::new([payload((1, Some(4)), &[(2, Some(10))])]);
 
                 assert_eq!(
                     plan_destructive_eviction(
@@ -1484,10 +1329,7 @@ mod tests {
                         now,
                         EvictionRequirements::default(),
                     ),
-                    Err(PlanError::ProtectedPayloadMissing {
-                        document_id: other_id,
-                        version_id: other_version,
-                    })
+                    Err(PlanError::ProtectedPayloadMissing { hash: hash(5) })
                 );
             }
             {
@@ -1506,30 +1348,13 @@ mod tests {
                     AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
                 let now = unix_now_ms();
                 let first = FileDocumentId::new();
-                let first_version = FileVersionId::new();
                 let second = FileDocumentId::new();
-                let second_version = FileVersionId::new();
-                registry
-                    .put(resident_file(first, first_version, now))
-                    .unwrap();
-                registry
-                    .put(resident_file(second, second_version, now))
-                    .unwrap();
+                registry.put(resident_file(first, 1, now)).unwrap();
+                registry.put(resident_file(second, 2, now)).unwrap();
                 let catalog = EvictionCatalog::new([
-                    payload(
-                        first,
-                        first_version,
-                        (1, Some(4)),
-                        &[(7, Some(9)), (8, None)],
-                    ),
-                    payload(
-                        second,
-                        second_version,
-                        (2, Some(4)),
-                        &[(7, Some(9)), (9, None)],
-                    ),
-                ])
-                .unwrap();
+                    payload((1, Some(4)), &[(7, Some(9)), (8, None)]),
+                    payload((2, Some(4)), &[(7, Some(9)), (9, None)]),
+                ]);
                 let batch = batch_plan_safe(&registry, &catalog, &[first, second], now);
                 for record in [first, second] {
                     assert_eq!(
@@ -1548,11 +1373,10 @@ mod tests {
                 let mut registry =
                     AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
                 let id = FileDocumentId::new();
-                let version = FileVersionId::new();
-                let mut record = resident_file(id, version, 1_000);
+                let mut record = resident_file(id, 1, 1_000);
                 record.policy = AvailabilityPolicy::Pinned;
                 registry.put(record).unwrap();
-                let catalog = EvictionCatalog::new([payload(id, version, (1, Some(4)), &[])]).unwrap();
+                let catalog = EvictionCatalog::new([payload((1, Some(4)), &[])]);
 
                 assert_eq!(
                     plan_safe_eviction(
@@ -1570,51 +1394,11 @@ mod tests {
                 let mut registry =
                     AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
                 let id = FileDocumentId::new();
-                let current = FileVersionId::new();
-                let retained = FileVersionId::new();
-                let mut record = resident_file(id, current, 1_000);
-                record.policy = AvailabilityPolicy::Pinned;
-                record.retained_versions.push(retained);
-                registry.put(record).unwrap();
-                let catalog = EvictionCatalog::new([
-                    payload(id, current, (1, Some(4)), &[(2, Some(10)), (3, Some(20))]),
-                    payload(id, retained, (4, Some(4)), &[(2, Some(10))]),
-                ])
-                .unwrap();
-
-                let plan = plan_destructive_eviction(
-                    &registry,
-                    &catalog,
-                    id,
-                    1_000,
-                    EvictionRequirements::default(),
-                )
-                .unwrap();
-                assert_eq!(plan.mode, EvictionMode::DestructiveOverride);
-                assert_eq!(
-                    plan.shared_and_protected,
-                    vec![BlobExtent {
-                        hash: hash(2),
-                        locally_present: true,
-                        resident_bytes: Some(10)
-                    }]
-                );
-                assert_eq!(plan.reclaimable_bytes, 24);
-            }
-            {
-                let temp = TempDir::new().unwrap();
-                let mut registry =
-                    AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
-                let id = FileDocumentId::new();
-                let version = FileVersionId::new();
-                registry.put(resident_file(id, version, 1_000)).unwrap();
+                registry.put(resident_file(id, 1, 1_000)).unwrap();
                 let catalog = EvictionCatalog::new([payload(
-                    id,
-                    version,
                     (1, Some(4)),
                     &[(2, None), (3, Some(20)), (3, Some(20))],
-                )])
-                .unwrap();
+                )]);
 
                 let plan = plan_destructive_eviction(
                     &registry,
@@ -1633,11 +1417,8 @@ mod tests {
                 let mut registry =
                     AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
                 let id = FileDocumentId::new();
-                let version = FileVersionId::new();
-                registry.put(resident_file(id, version, 1_000)).unwrap();
-                let catalog = EvictionCatalog::new([VersionPayload {
-                    document_id: id,
-                    version_id: version,
+                registry.put(resident_file(id, 1, 1_000)).unwrap();
+                let catalog = EvictionCatalog::new([ContentPayload {
                     manifest: BlobExtent {
                         hash: hash(1),
                         locally_present: true,
@@ -1648,8 +1429,7 @@ mod tests {
                         locally_present: true,
                         resident_bytes: None,
                     }],
-                }])
-                .unwrap();
+                }]);
 
                 let plan = plan_destructive_eviction(
                     &registry,
@@ -1667,7 +1447,7 @@ mod tests {
             {
                 let temp = TempDir::new().unwrap();
                 let path = temp.path().join("evictions.json");
-                let plan = queued_plan(FileDocumentId::new(), FileVersionId::new());
+                let plan = queued_plan(FileDocumentId::new(), hash(42));
                 let mut queue = EvictionQueue::open(&path).unwrap();
                 let id = queue.enqueue(&plan, 100).unwrap().id;
 
@@ -1708,8 +1488,7 @@ mod tests {
                 let temp = TempDir::new().unwrap();
                 let path = temp.path().join("cache/evictions.json");
                 let document_id = FileDocumentId::new();
-                let version_id = FileVersionId::new();
-                let plan = queued_plan(document_id, version_id);
+                let plan = queued_plan(document_id, hash(42));
 
                 let first = {
                     let mut queue = EvictionQueue::open(&path).unwrap();
@@ -1730,7 +1509,7 @@ mod tests {
             {
                 let temp = TempDir::new().unwrap();
                 let path = temp.path().join("evictions.json");
-                let plan = queued_plan(FileDocumentId::new(), FileVersionId::new());
+                let plan = queued_plan(FileDocumentId::new(), hash(42));
                 let mut queue = EvictionQueue::open(&path).unwrap();
                 let first = queue.enqueue(&plan, 100).unwrap();
                 let absent = plan_requested_hashes(&plan)
@@ -1764,7 +1543,7 @@ mod tests {
                         EvictionRequest {
                             id,
                             document_id: FileDocumentId::new(),
-                            version_id: FileVersionId::new(),
+                            content_hash: hash(42),
                             mode: EvictionMode::Safe,
                             requested_hashes: Vec::new(),
                             requested_at_ms: u64::try_from(value).unwrap(),
@@ -1772,7 +1551,7 @@ mod tests {
                         },
                     );
                 }
-                let plan = queued_plan(FileDocumentId::new(), FileVersionId::new());
+                let plan = queued_plan(FileDocumentId::new(), hash(42));
                 assert!(matches!(
                     queue.enqueue(&plan, 10_000),
                     Err(EvictionQueueError::TooManyRequests)
@@ -1788,8 +1567,7 @@ mod tests {
             {
                 let temp = TempDir::new().unwrap();
                 let document_id = FileDocumentId::new();
-                let version_id = FileVersionId::new();
-                let plan = queued_plan(document_id, version_id);
+                let plan = queued_plan(document_id, hash(42));
                 let mut queue = EvictionQueue::open(temp.path().join("evictions.json")).unwrap();
                 let id = queue.enqueue(&plan, 100).unwrap().id;
 
@@ -1806,9 +1584,9 @@ mod tests {
                     Err(EvictionQueueError::FreshPlanMismatch(found)) if found == id
                 ));
 
-                let changed_version = queued_plan(document_id, FileVersionId::new());
+                let changed_content = queued_plan(document_id, hash(43));
                 assert!(matches!(
-                    queue.revalidate_for_backend_gc(id, &changed_version),
+                    queue.revalidate_for_backend_gc(id, &changed_content),
                     Err(EvictionQueueError::FreshPlanMismatch(found)) if found == id
                 ));
 
@@ -1823,22 +1601,17 @@ mod tests {
                 let temp = TempDir::new().unwrap();
                 let now = 1_000;
                 let target_id = FileDocumentId::new();
-                let target_version = FileVersionId::new();
                 let other_id = FileDocumentId::new();
-                let other_version = FileVersionId::new();
                 let mut registry =
                     AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
-                registry
-                    .put(resident_file(target_id, target_version, now))
-                    .unwrap();
-                let mut other = resident_file(other_id, other_version, now);
+                registry.put(resident_file(target_id, 1, now)).unwrap();
+                let mut other = resident_file(other_id, 3, now);
                 other.residency = Residency::NotResident;
                 registry.put(other.clone()).unwrap();
                 let catalog = EvictionCatalog::new([
-                    payload(target_id, target_version, (1, Some(4)), &[(2, Some(10))]),
-                    payload(other_id, other_version, (3, Some(4)), &[(2, Some(10))]),
-                ])
-                .unwrap();
+                    payload((1, Some(4)), &[(2, Some(10))]),
+                    payload((3, Some(4)), &[(2, Some(10))]),
+                ]);
                 let plan = plan_destructive_eviction(
                     &registry,
                     &catalog,
@@ -1881,7 +1654,7 @@ mod tests {
             {
                 let temp = TempDir::new().unwrap();
                 let path = temp.path().join("evictions.json");
-                let plan = queued_plan(FileDocumentId::new(), FileVersionId::new());
+                let plan = queued_plan(FileDocumentId::new(), hash(42));
                 let mut queue = EvictionQueue::open(&path).unwrap();
                 let id = queue.enqueue(&plan, 100).unwrap().id;
 
@@ -1937,10 +1710,10 @@ mod tests {
         }
     }
 
-    fn queued_plan(document_id: FileDocumentId, version_id: FileVersionId) -> EvictionPlan {
+    fn queued_plan(document_id: FileDocumentId, content_hash: Hash) -> EvictionPlan {
         EvictionPlan {
             document_id,
-            version_id,
+            content_hash,
             mode: EvictionMode::Safe,
             reclaimable: vec![
                 BlobExtent {

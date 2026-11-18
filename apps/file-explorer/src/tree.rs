@@ -902,8 +902,6 @@ mod window_tests {
                 size: 14,
                 mtime: 1_500,
                 author: hex::encode([9_u8; 32]),
-                revision: None,
-                keep_preview: false,
             },
             Some(agent()),
         );
