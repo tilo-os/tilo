@@ -65,6 +65,10 @@ public struct ChatMessage: Sendable, Equatable, Identifiable {
 
     /// What a read of a conversation asks of each message: all that a client draws.
     static let drawn = ["channel", "author", "ts", "text", "question", "share", "attachments", "work", "parent", "stopped", "cause", "view"]
+    /// What a read of a conversation names: `drawn`, and whom a message's author acted for.
+    static let wanted = drawn + ["acting"]
+    /// The fields of `wanted` that a page's Chat may keep on no message yet.
+    static let newer = ["acting", "view"]
 
     public init?(id: String, fields: JSON) {
         guard let conversation = fields["channel"]?.string, let author = ChatMember(fields["author"]),
@@ -80,6 +84,22 @@ public struct ChatMessage: Sendable, Equatable, Identifiable {
 
     /// The name Chat's own actions take for it: the last part of its item.
     public var name: String { id.split(separator: "/").last.map(String.init) ?? id }
+
+    /// The one person the software that wrote it acted for, as Chat keeps who wrote a message
+    /// for whom (`acting`: who acted, and under `for` whom they acted for, as a tree). Nil for a
+    /// person's own message, for software that acted for nobody, and for what acted for several
+    /// people at once. Chat's own check of who ends a share reads the same.
+    public var actedFor: String? {
+        guard var node = fields["acting"], !node.isNull else { return nil }
+        if ChatMember(node["by"]?["member"])?.kind == .person { return nil }
+        while true {
+            if let member = ChatMember(node["by"]?["member"]), member.kind == .person {
+                return member.id.isEmpty ? nil : member.id
+            }
+            guard let acted = node["for"]?.array, acted.count == 1 else { return nil }
+            node = acted[0]
+        }
+    }
 
     /// Whether an agent is still at work on it: its work has not ended, and nobody stopped it.
     public var isWorkedOn: Bool {
@@ -151,22 +171,25 @@ extension TiloEngine {
     public func chatConversation(_ id: String, newest count: Int = 60) async throws -> [ChatMessage]? {
         guard let resource = try await chatMessagesResource() else { return [] }
         guard found["chat.messages.narrows"] == "yes" else { return nil }
-        // A read refuses a field its items do not have. A page whose Chat keeps no view on a
-        // message yet is asked once with it, and from then on without.
-        let viewless = ChatMessage.drawn.filter { $0 != "view" }
+        // A read refuses a field its items do not have. A page whose Chat keeps a newer field on
+        // no message yet (the view a message carries, whom its author acted for) is asked once
+        // with it and from then on without: first without each alone, then without all of them.
         func asked(_ fields: [String]) async throws -> JSON {
             try await self.read(resource, ["where": ["channel": .string(id)], "fields": .array(fields.map(JSON.string)),
                                       "pageSize": .number(Double(min(max(count, 1), 200)))])
         }
-        let page: JSON
-        if found["chat.messages.view"] == "no" {
-            page = try await asked(viewless)
-        } else {
+        let kept = ChatMessage.wanted.filter { found["chat.messages.\($0)"] != "no" }
+        let doubted = ChatMessage.newer.filter(kept.contains)
+        var without: [[String]] = [[]] + doubted.map { [$0] }
+        if doubted.count > 1 { without.append(doubted) }
+        var page: JSON = .null
+        for (index, left) in without.enumerated() {
             do {
-                page = try await asked(ChatMessage.drawn)
-            } catch TiloEngine.Problem.refused {
-                page = try await asked(viewless)
-                found["chat.messages.view"] = "no"
+                page = try await asked(kept.filter { !left.contains($0) })
+                for field in left { found["chat.messages.\(field)"] = "no" }
+                break
+            } catch TiloEngine.Problem.refused where index + 1 < without.count {
+                continue
             }
         }
         let read = (page["messages"]?.array ?? []).compactMap { row in
@@ -196,6 +219,14 @@ extension TiloEngine {
     public func chatStop(_ message: ChatMessage) async throws {
         guard let resource = try await chatMessagesResource() else { throw Problem.notOpen }
         try await invoke("stop-agent", on: resource, ["message": .string(message.name)])
+    }
+
+    /// End the share the message `item` carries, as the person: Chat's own `stop-sharing`. Chat
+    /// decides whose it is to end: its sharer's, or the person their agent shared it for.
+    public func chatStopSharing(_ item: String) async throws {
+        guard let resource = try await chatMessagesResource() else { throw Problem.notOpen }
+        let name = item.split(separator: "/").last.map(String.init) ?? item
+        try await invoke("stop-sharing", on: resource, ["message": .string(name)])
     }
 }
 

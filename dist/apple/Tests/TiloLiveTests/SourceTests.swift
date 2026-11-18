@@ -261,6 +261,9 @@ final class TiloSourceTests: XCTestCase {
             window.heard.push({resource, action, args});
             const item = resource.startsWith('chat.messages/messages/') ? window.messages.find(m => m.id === resource.split('/').pop()) : null;
             if (resource === 'chain:messages' && action === 'read') {
+              // A Chat that keeps a field on no message refuses a read that names it.
+              const none = (args.fields ?? []).find(field => (window.noFields ?? []).includes(field));
+              if (none) throw new Error('unknown_field: a message has no field ' + none);
               const wanted = args.where?.channel;
               return said({kind: 'chat.messages', messages: [...window.messages].reverse()
                 .filter(m => wanted === undefined || m.channel === wanted).slice(0, args.pageSize ?? 50)
@@ -280,6 +283,13 @@ final class TiloSourceTests: XCTestCase {
               const worked = window.messages.find(m => m.id === args.message);
               if (!worked?.work) throw new Error('unknown_item: no agent works on this message');
               worked.stopped = {by: ADA, at: 1794900200};
+              touch();
+              return said(null);
+            }
+            if (resource === 'chain:messages' && action === 'stop-sharing') {
+              const shared = window.messages.find(m => m.id === args.message);
+              if (!shared?.share) throw new Error('refused: this message shares nothing');
+              shared.share = {...shared.share, open: false, ended: true};
               touch();
               return said(null);
             }
@@ -390,6 +400,73 @@ final class TiloSourceTests: XCTestCase {
         try await source.stopAnswering(in: .main)
         let again = try await page("return String(window.heard.filter(h => h.action === 'stop-agent').length)")
         XCTAssertEqual(again, "1")
+    }
+
+    /// A share stands in its message as a live thing. It is the person's to end only where the
+    /// message says an agent made it for them and for nobody else: not what was made for someone
+    /// else, for two, for nobody, what says nothing, or their own. Ending it is Chat's own
+    /// `stop-sharing` on that message and no other, and the ended share's place is gone.
+    func testAShareTheirAssistantMadeForThemIsTheirsToEndWithChatsOwnStopSharing() async throws {
+        try await start(.agent(id: "assistant", name: "Assistant"))
+        try await enter("""
+            window.byKind = true;
+            const BO = 'b0'.repeat(32);
+            const poem = [{at: {app: 'so.tilo.word-processor', reference: {label: 'A poem'}}}];
+            const share = {access: 'edit', open: true, ended: false};
+            const made = people => ({by: {member: {agent: 'assistant'}}, for: people.map(person => ({by: {member: {person}}}))});
+            const shared = (id, more) => direct({id, author: {agent: 'assistant'}, text: id, share: {...share}, attachments: poem, ...more});
+            shared('s1', {acting: made([ADA])});
+            shared('s2', {acting: made([BO])});
+            shared('s3', {acting: made([ADA, BO])});
+            shared('s4', {acting: made([])});
+            shared('s5', {});
+            shared('s6', {author: {person: ADA}, acting: {by: {member: {person: ADA}}}});
+            shared('s7', {acting: {by: {member: {bot: 'bridge'}}, for: [made([ADA])]}})
+            """)
+        try await until("the seven shares are held") { self.held.count == 7 }
+        let things = held.compactMap { item -> AssistantCore.LiveThing? in
+            if case .message(let message) = item.content { message.live.first } else { nil }
+        }
+        XCTAssertEqual(things.map(\.title), Array(repeating: "A poem", count: 7))
+        XCTAssertTrue(things.allSatisfy { $0.reference.hasSuffix(":so.tilo.word-processor:@tilo:package-primary") }, "\(things.map(\.reference))")
+        // The first, and the one an automation posted through her agent for her alone: the one
+        // person down the chain of who acted for whom, as Chat reads it.
+        XCTAssertEqual(things.map(\.theirsToEnd), [true, false, false, false, false, false, true])
+
+        try await source.stopSharing(things[0].id)
+        let stopped = try await page("return JSON.stringify(window.heard.filter(h => h.action === 'stop-sharing').map(h => [h.resource, h.args.message]))")
+        XCTAssertEqual(stopped, #"[["chain:messages","s1"]]"#)
+        try await until("the ended share's place is gone and its message stays") {
+            guard self.held.count == 7, case .message(let ended) = self.held[0].content else { return false }
+            return ended.live.isEmpty && ended.text == "s1"
+        }
+        guard case .message(let other) = held[6].content else { return XCTFail("the last message") }
+        XCTAssertEqual(other.live.map(\.theirsToEnd), [true], "no other share was ended")
+    }
+
+    /// A page whose Chat keeps on no message whom its author acted for refuses a read that
+    /// names the field. The conversation fills all the same, the field is asked for once and
+    /// from then on not, and nothing there is offered to be ended.
+    func testOnAPageWhoseChatKeepsNoActingTheConversationFillsAndNothingIsOfferedToEnd() async throws {
+        try await start(.agent(id: "assistant", name: "Assistant"))
+        try await enter("""
+            window.byKind = true;
+            window.noFields = ['acting'];
+            direct({id: 's1', author: {agent: 'assistant'}, text: 'The poem', share: {access: 'edit', open: true, ended: false},
+              attachments: [{at: {app: 'so.tilo.word-processor'}}],
+              acting: {by: {member: {agent: 'assistant'}}, for: [{by: {member: {person: ADA}}}]}})
+            """)
+        try await until("the conversation is held") { self.held.count == 1 }
+        guard case .message(let shared) = held[0].content else { return XCTFail("a message") }
+        XCTAssertEqual(shared.live.map(\.title), ["The poem"])
+        XCTAssertEqual(shared.live.map(\.theirsToEnd), [false])
+        _ = try await page("direct({id: 'm2', author: {person: ADA}, text: 'Thank you'}); return ''")
+        try await until("what follows is held") { self.held.count == 2 }
+        let named = try await page("return JSON.stringify(window.heard.filter(h => h.action === 'read' && Object.values(h.args?.where ?? {}).includes(DIRECT)).map(h => (h.args.fields ?? []).includes('acting')))")
+        let reads = (JSON(text: named)?.array ?? []).map { $0.bool ?? false }
+        XCTAssertEqual(reads.first, true, "the first read names the field: \(named)")
+        XCTAssertEqual(reads.last, false, "the reads after its refusal do not: \(named)")
+        XCTAssertEqual(reads.filter { $0 }.count, 1, "it is named once: \(named)")
     }
 
     func testTheAppIsSignedInAsThePersonAndItsConversationFillsAndFollows() async throws {

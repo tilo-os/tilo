@@ -280,12 +280,16 @@ public struct LiveThing: Identifiable, Hashable, Sendable {
     /// Whether the source's view says how tall the thing is, as a view on live data does. One that
     /// does not keeps the shape its source's view gives it.
     public var sizesItself: Bool
+    /// Whether it is the person's to end here: a thing their own assistant shared for them. The
+    /// source says so from what Tilo keeps of the share. Tilo decides when they ask.
+    public var theirsToEnd: Bool
 
-    public init(id: ID, title: String, reference: String, sizesItself: Bool = false) {
+    public init(id: ID, title: String, reference: String, sizesItself: Bool = false, theirsToEnd: Bool = false) {
         self.id = id
         self.title = title
         self.reference = reference
         self.sizesItself = sizesItself
+        self.theirsToEnd = theirsToEnd
     }
 }
 

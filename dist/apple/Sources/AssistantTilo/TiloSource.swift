@@ -1431,6 +1431,9 @@ public final class TiloSource: AssistantSource {
             let record = shared["record"]?.string ?? "@tilo:package-primary"
             let title = shared["reference"]?["label"]?.string ?? message.text
             live.append(AssistantCore.LiveThing(id: .init(message.id), title: title, reference: "record:\(app):\(record)"))
+            // It is theirs to end here where the message says an agent made the share for them
+            // and for nobody else. Chat decides when they ask.
+            live[live.count - 1].theirsToEnd = message.author.kind == .agent && me != nil && message.actedFor == me
         }
         // The view a message carries stands in it live, named by its message: its text stays in Tilo.
         if live.isEmpty, let view = fields["view"], !view.isNull {
@@ -1527,6 +1530,12 @@ public final class TiloSource: AssistantSource {
             guard let atWork = read?.last(where: \.isWorkedOn) else { return }
             try await self.engine.chatStop(atWork)
         }
+    }
+
+    /// End the share a message carries, as the person: Chat's own `stop-sharing` on the message
+    /// the live thing stands in. Chat decides whether it is theirs to end.
+    public func stopSharing(_ thing: AssistantCore.LiveThing.ID) async throws {
+        try await taken { try await self.engine.chatStopSharing(thing.value) }
     }
 
     public func answer(_ question: Question.ID, with choice: Choice.ID) async throws {

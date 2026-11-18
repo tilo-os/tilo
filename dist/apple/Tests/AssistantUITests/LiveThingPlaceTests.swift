@@ -57,5 +57,60 @@ final class LiveThingPlaceTests: XCTestCase {
         XCTAssertLessThanOrEqual(far(colour(20 + 150, 20 + 3), tone), 1, "under its upper edge the card is \(colour(20 + 150, 20 + 3))")
         XCTAssertLessThanOrEqual(far(colour(20 + 1, 20 + 1), ground), 1, "the card's corner is not cut round: \(colour(20 + 1, 20 + 1))")
     }
+
+    /// A thing the person's own assistant shared for them carries one button under it, Stop
+    /// sharing, and a press hands that thing to the source to end. A thing that is not theirs to
+    /// end carries none. With TILO_SHOTS_DIR set, the light and the dark look are kept as pictures.
+    func testAThingTheirAssistantSharedForThemCarriesStopSharingAndNoOtherThingDoes() async throws {
+        if let faces = ProcessInfo.processInfo.environment["TILO_FONTS_DIR"] { Typeface.register(in: URL(fileURLWithPath: faces)) }
+        for scheme in [ColorScheme.light, .dark] {
+            let source = Recording(Drawing.source())
+            let model = AssistantModel(source: source)
+            await model.prime()
+            let theirs = LiveThing(id: "poem", title: "A poem", reference: "shared:poem", theirsToEnd: true)
+            let other = LiveThing(id: "letter", title: "A letter", reference: "shared:letter")
+            let view = AssistantRoot(model: model) {
+                VStack(alignment: .leading, spacing: 16) {
+                    LiveThingPlace(thing: theirs)
+                    LiveThingPlace(thing: other)
+                }
+                .frame(width: 320)
+                .padding(20)
+                .background(Token.content)
+            }
+            .environment(\.liveThingView, { thing in AnyView(Lines(title: thing.title)) })
+            .environment(\.colorScheme, scheme)
+            let hosting = NSHostingView(rootView: view)
+            let window = HeldWindow.make(NSRect(x: 0, y: 0, width: 360, height: 420), [.borderless])
+            window.contentView = hosting
+            let drive = Drive(window)
+            await drive.settle(300)
+            window.setContentSize(hosting.fittingSize)
+            await drive.settle(200)
+            let stops = drive.nodes(AssistantWords.stopSharing.said, role: "AXButton")
+            XCTAssertEqual(stops.count, 1, "one thing is theirs to end, and one button says so: \(drive.said())")
+            drive.picture("live-place-stop-sharing-\(scheme == .dark ? "dark" : "light")")
+            drive.press(stops.first)
+            await drive.until("the source is asked to end that thing and no other") { source.calls("stopSharing") == ["stopSharing(poem)"] }
+            window.contentView = nil
+            window.close()
+        }
+    }
+}
+
+/// What stands in the place in the test of its button: a name and a line, as a page of a
+/// document would. Tilo's own drawing is not in it.
+private struct Lines: View {
+    let title: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.tilo(14, .medium)).foregroundStyle(Token.ink)
+            Text("The page is shared, the cursor waits.").font(.small12).foregroundStyle(Token.ink3)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .frame(height: 80, alignment: .topLeading)
+    }
 }
 #endif
