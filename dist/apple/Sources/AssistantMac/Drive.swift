@@ -24,7 +24,7 @@ import WebKit
 ///   {"do": "add-device"}   {"do": "stop-pairing"}    as the two buttons under what Tilo asks before it pairs
 ///   {"do": "make-assistant"}                         as Try again does where the assistant could not be made
 ///   {"do": "choose", "model": "…"}                    as the main chat's choice of a model
-///   {"do": "send", "text": "…"}                      as the message field sends
+///   {"do": "send", "text": "…", "files": ["…"]}       as the message field sends, with the files picked under it
 ///   {"do": "answer", "question": "…", "choice": "…"}  as a question's button answers
 ///   {"do": "keep", "request": "…", "file": "…"}       as the protected field keeps what was typed
 ///   {"do": "link", "preset": "…", "file": "…"}       as the provider step's protected field links a provider;
@@ -251,6 +251,12 @@ final class AssistantDrive {
             }
             line["text"] = .string(message.text)
             line["live"] = .number(Double(message.live.count))
+            // The files a message carries, as their tags say them: by name and size.
+            if !message.attachments.isEmpty {
+                line["files"] = .array(message.attachments.map { file in
+                    ["id": .string(file.id.value), "name": .string(file.name), "bytes": file.bytes.map { .number(Double($0)) } ?? .null]
+                })
+            }
         case .question(let question):
             line["kind"] = "question"
             line["text"] = .string(question.text)
@@ -300,8 +306,10 @@ final class AssistantDrive {
             AssistantDrive.say(["asked": "pair"])
         case "send":
             guard let typed = step["text"]?.string else { AssistantDrive.say(["error": "send takes text"]); return }
-            // As the message field does: the words stand in the draft, and Send takes them.
-            model.drafts[.main] = Draft(text: typed)
+            // As the message field does: the words stand in the draft with the files picked
+            // under it, and Send takes them.
+            let files = (step["files"]?.array ?? []).compactMap(\.string).map { Draft.File(url: URL(fileURLWithPath: $0)) }
+            model.drafts[.main] = Draft(text: typed, files: files)
             model.send(in: .main)
             AssistantDrive.say(["asked": "send", "ms": .number((Date().timeIntervalSince1970 * 1000).rounded())])
         case "answer":
