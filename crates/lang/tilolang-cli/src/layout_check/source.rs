@@ -302,6 +302,17 @@ impl SourceMap {
             .map(|(app, view)| (app.as_str(), view.as_str()))
     }
 
+    /// Whether a view of the packages read lists destinations a person chooses (`ui.NavItem`): the
+    /// pages behind them are reached only by choosing one, never by the window's first frame.
+    pub fn navigates(&self) -> bool {
+        self.packages.values().any(|package| {
+            package
+                .calls
+                .values()
+                .any(|call| call.what.rsplit('.').next() == Some("NavItem"))
+        })
+    }
+
     /// Where the node keyed `key` in a window's tree comes from, when its key is the compiler's.
     pub fn origin(&self, key: &str) -> Option<Origin> {
         let (at, view_id) = self

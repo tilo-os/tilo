@@ -96,6 +96,12 @@ hit targets that are too small, pages that scroll sideways and edges between dev
 a view path. It runs as the `layout-check` t checks, on the build servers, where its findings are
 the verdict and each standard size's dump and shots are `t outputs`.
 
+A window that names its places in a sidebar shows one of them, so the check chooses each destination
+as a person does and lays the page behind it out at every size and scale: a page only a choice
+reaches is checked like the one the window opens on. A window that draws on a surface shows what the
+person pointed at, so a finger taps that surface once where nothing else stands, and the page at that
+point is checked too.
+
 It also reads what a screen says and how its rows line up: every row at one depth starts its title
 at one x, nesting indents by one gutter, a box's rows end at one right edge, one choice is drawn
 selected once, a list offers one add entry, a name a screen reader announces is words rather than a
