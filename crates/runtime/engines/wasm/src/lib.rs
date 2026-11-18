@@ -12,6 +12,8 @@
 extern crate runtime_dylib;
 
 #[cfg(feature = "thin")]
+pub use tilo_theme_painter_wasm;
+#[cfg(feature = "thin")]
 pub use wasmi;
 
 /// Compile and start an empty module, for the check binary.

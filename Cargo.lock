@@ -22863,6 +22863,7 @@ name = "tilo-wasm-engine"
 version = "0.1.0"
 dependencies = [
  "runtime-dylib",
+ "tilo-theme-painter-wasm",
  "wasmi",
  "workspace-hack",
 ]
