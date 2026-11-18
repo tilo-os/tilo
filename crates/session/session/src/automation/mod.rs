@@ -23,8 +23,6 @@ use std::time::{Duration, Instant};
 
 use settings_store::hardware::{ActionChord, KeyChord};
 use settings_store::notification_policy::NotificationPolicy;
-use tilo_action_broker::automation::chord_target;
-use tilo_action_broker::collab_broker::AppActionBroker;
 use tilo_actions::remote::Caller;
 use tilo_automation::dispatch::DocumentEvent;
 use tilo_automation::{AutomationInvocationId, ScheduleClaim, TriggerSpec};
@@ -32,6 +30,8 @@ use tilo_desktop_model::WorkspaceId;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_lock::MutexRecover as _;
 use tilo_service::Wake;
+use tilo_workspace_service::apps::automation::chord_target;
+use tilo_workspace_service::apps::collab_broker::AppActionBroker;
 
 pub(crate) use triggers::{
     Armed, Firing, FocusState, PersonalDevices, TriggerEvent, TriggerHost, armed, unix_ns,
@@ -55,7 +55,7 @@ fn devices_of(fabric: Option<&crate::platform::fabric::SharedLink>) -> PersonalD
     }
 }
 
-pub use tilo_action_broker::automation::FinishedInvocation;
+pub use tilo_workspace_service::apps::automation::FinishedInvocation;
 
 /// How often the passing of time is shown to the schedules.
 const TICK_INTERVAL: Duration = Duration::from_millis(500);

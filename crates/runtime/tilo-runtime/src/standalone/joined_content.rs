@@ -11,15 +11,15 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-use tilo_action_broker::{
+use tilo_desktop_model::WorkspaceId;
+use tilo_peer_state::peer_handle;
+use tilo_workspace_service::apps::{
     document_content::{
         ContentPeer, ContentPeers, ContentPiece, ContentScope, ContentShelf, ContentSources,
         RouteContent,
     },
     route::CrdtRoute,
 };
-use tilo_desktop_model::WorkspaceId;
-use tilo_peer_state::peer_handle;
 
 /// The profile's content store, read and written as the desktop session
 /// reaches its own: through the scope a record's content lives under.

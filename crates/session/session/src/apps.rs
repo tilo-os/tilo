@@ -13,7 +13,6 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
 use crate::platform::surfaces::{DesktopHost, WidgetHost};
-use tilo_action_broker::collab_app_broker::AppBrokerState;
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, Caller, InvokeArgument, InvokeRequest,
     RemoteActionTarget, application_open_target, application_provider, provider_workspace,
@@ -28,6 +27,7 @@ use tilo_desktop_search::LaunchPlace as OpenPlace;
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
 use tilo_desktop_surface::outcome::{Closed, Outcome};
+use tilo_workspace_service::apps::collab_app_broker::AppBrokerState;
 
 mod launch;
 #[cfg(target_os = "linux")]

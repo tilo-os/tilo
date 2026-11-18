@@ -8,13 +8,13 @@ use std::{
     process::Stdio,
     time::{Duration, Instant},
 };
-use tilo_action_broker::services::{
-    LegacyWorkspaceProjection, WorkspaceAuthority, WorkspaceGrants,
-};
 use tilo_actions::remote::{InvokeArgument, PendingPoll, RemoteActionTarget};
 use tilo_desktop_model::WorkspaceId;
 use tilo_identity::broker::WorkspaceMembership;
 use tilo_test_env::SpawnUnderEnvLock as _;
+use tilo_workspace_service::apps::services::{
+    LegacyWorkspaceProjection, WorkspaceAuthority, WorkspaceGrants,
+};
 
 /// The test whose phase runs in a fresh process; libtest selects it by this
 /// exact path.
@@ -30,7 +30,7 @@ const PUBLICATION_HELPER: &str = "TILO_STANDALONE_PUBLICATION_HELPER";
 )]
 #[allow(clippy::too_many_lines, reason = "one end-to-end ownership scenario")]
 async fn runtime_invocation_ownership_survives_device_normalization() {
-    use tilo_action_broker::{
+    use tilo_workspace_service::apps::{
         collab_app_broker::{AppBrokerState, PublishedAction, PublishedInput, PublishedSurface},
         collab_broker::CrdtRoute,
         test_support::{Workspace, WorkspaceId, WorkspaceTree},
@@ -45,7 +45,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
 
     let placed = WorkspaceId::new();
     let (joined, directory) = Joined::test_hosting(placed).await;
-    let actor = tilo_action_broker::collab_app_broker::person_id_for_root(
+    let actor = tilo_workspace_service::apps::collab_app_broker::person_id_for_root(
         joined.test_certificate().user_public_key,
     );
     let mut workspace = Workspace::new(placed, "Execution isolation");
@@ -857,7 +857,7 @@ tilo_test_env::scenario! {
 
     phase the_desktop_sessions_workspace_takes_no_grants_here;
     {
-        use tilo_action_broker::app_actions::AppActionConsent;
+        use tilo_workspace_service::apps::app_actions::AppActionConsent;
         let temp = tempfile::tempdir().unwrap();
         let mut tree = bootstrap();
         tree.workspaces[0].set_owner("owner".to_owned());
@@ -894,8 +894,8 @@ tilo_test_env::scenario! {
 fn consent(
     workspace: &str,
     person: &str,
-) -> tilo_action_broker::app_actions::AppActionConsentRequest {
-    tilo_action_broker::app_actions::AppActionConsentRequest {
+) -> tilo_workspace_service::apps::app_actions::AppActionConsentRequest {
+    tilo_workspace_service::apps::app_actions::AppActionConsentRequest {
         handle: "question-1".into(),
         workspace: workspace.into(),
         person: person.into(),
@@ -939,7 +939,7 @@ fn grants(workspace: ProfileWorkspace, root: &Path) -> ProfileGrants {
 
 #[test]
 fn grants_in_the_runtimes_own_workspace_are_recorded_by_its_administrator_and_saved() {
-    use tilo_action_broker::app_actions::AppActionConsent;
+    use tilo_workspace_service::apps::app_actions::AppActionConsent;
     let temp = tempfile::tempdir().unwrap();
     let workspace = ProfileWorkspace::open(temp.path()).unwrap();
     workspace.adopt("owner").unwrap();
@@ -992,10 +992,10 @@ tilo_test_env::scenario! {
 
     phase the_runtime_governs_only_its_own_workspace_from_its_own_device;
     {
-        use tilo_action_broker::certificate_authority::CertificateAuthority as _;
+        use tilo_workspace_service::apps::certificate_authority::CertificateAuthority as _;
         let workspace = uuid::Uuid::from_u128(7);
         let origin = Arc::new(
-            tilo_action_broker::policy_clock::OwnerPolicyClock::new()
+            tilo_workspace_service::apps::policy_clock::OwnerPolicyClock::new()
                 .unwrap()
                 .new_origin(),
         );
@@ -1014,9 +1014,9 @@ tilo_test_env::scenario! {
 
     phase runtime_original_policy_time_cannot_survive_origin_retirement;
     {
-        use tilo_action_broker::certificate_authority::CertificateAuthority as _;
+        use tilo_workspace_service::apps::certificate_authority::CertificateAuthority as _;
         let origin = Arc::new(
-            tilo_action_broker::policy_clock::OwnerPolicyClock::new()
+            tilo_workspace_service::apps::policy_clock::OwnerPolicyClock::new()
                 .unwrap()
                 .new_origin(),
         );
@@ -1031,7 +1031,7 @@ tilo_test_env::scenario! {
         assert!(certificates.policy_time().is_err());
         drop(certificates);
         assert!(retained.now_ns().is_err());
-        let replacement = tilo_action_broker::policy_clock::OwnerPolicyClock::new()
+        let replacement = tilo_workspace_service::apps::policy_clock::OwnerPolicyClock::new()
             .unwrap()
             .new_origin();
         assert!(!retained.same_origin(&replacement.capture().unwrap()));

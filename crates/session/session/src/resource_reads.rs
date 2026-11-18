@@ -14,15 +14,15 @@
 
 use std::sync::Arc;
 
-use tilo_action_broker::route::CrdtRoute;
-use tilo_action_broker::services::{
-    AwaitingDocument, ChainHeadAnswer, DocumentBytes, HeldRevision, NativeDocumentRead,
-    NativeDocumentReadContext, NativeDocumentReads, ResourceRead,
-};
 use tilo_broker_core::owner_service::OwnerService as _;
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::owner::Holding;
 use tilo_session_client::DocumentAnswer;
+use tilo_workspace_service::apps::route::CrdtRoute;
+use tilo_workspace_service::apps::services::{
+    AwaitingDocument, ChainHeadAnswer, DocumentBytes, HeldRevision, NativeDocumentRead,
+    NativeDocumentReadContext, NativeDocumentReads, ResourceRead,
+};
 use ui::resource::DocumentId;
 
 use crate::engine::{Engine, ResourceReading};
@@ -339,15 +339,15 @@ mod tests {
 
     use ed25519_dalek::SigningKey;
     use futures_util::FutureExt as _;
-    use tilo_action_broker::route::CrdtRoute;
-    use tilo_action_broker::services::{
-        NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads as _,
-    };
     use tilo_desktop_model::WorkspaceId;
     use tilo_peer_state::owner::testing::{self, governor::TestGovernor};
     use tilo_session_client::Cmd;
     use tilo_session_client::network::topic_of;
     use tilo_user_identity::DeviceCert;
+    use tilo_workspace_service::apps::route::CrdtRoute;
+    use tilo_workspace_service::apps::services::{
+        NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads as _,
+    };
 
     use super::*;
     use crate::engine::Engine;

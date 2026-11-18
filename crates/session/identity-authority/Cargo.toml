@@ -18,7 +18,7 @@ path = "src/lib.rs"
 # the shell it is replacing — asks this one implementation.
 
 [dependencies]
-tilo-action-broker = { path = "../../collab/tilo-action-broker" }
+tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["apps"] }
 tilo-identity = { path = "../../runtime/tilo-identity" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tracing.workspace = true

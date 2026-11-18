@@ -18,11 +18,11 @@
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tilo_action_broker::app_actions::{
+use tilo_service::{Question, Questions};
+use tilo_workspace_service::apps::app_actions::{
     AGENT_SESSION_ASK, AppActionAnswer, AppActionConsent, AppActionConsentPrompter,
     AppActionConsentRequest,
 };
-use tilo_service::{Question, Questions};
 
 use crate::agent_sessions::AgentSessions;
 
@@ -348,16 +348,19 @@ mod tests {
         assert!(questions.pending().is_empty(), "withdrawn");
         let mut disclosure = request(None);
         disclosure.handle = "confirm:x".into();
-        disclosure.moderation = Some(tilo_action_broker::app_actions::ModerationConsentPreview {
-            purpose: tilo_action_broker::app_actions::ModerationConsentPurpose::Report,
-            destination: "https://registry.example".into(),
-            owner_root: String::new(),
-            signing_root: String::new(),
-            target: "org.example.app".into(),
-            category: None,
-            content: "misleading".into(),
-            evidence_digest: None,
-        });
+        disclosure.moderation = Some(
+            tilo_workspace_service::apps::app_actions::ModerationConsentPreview {
+                purpose:
+                    tilo_workspace_service::apps::app_actions::ModerationConsentPurpose::Report,
+                destination: "https://registry.example".into(),
+                owner_root: String::new(),
+                signing_root: String::new(),
+                target: "org.example.app".into(),
+                category: None,
+                content: "misleading".into(),
+                evidence_digest: None,
+            },
+        );
         assert!(
             sheet.ask(disclosure).is_none(),
             "a Store disclosure is not shown on this sheet"

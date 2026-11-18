@@ -1128,7 +1128,7 @@ fn session_serving(state: &std::path::Path, socket: &std::path::Path) -> crate::
 /// this device may change.
 #[track_caller]
 fn wait_for_people(
-    broker: &tilo_action_broker::collab_broker::AppActionBroker,
+    broker: &tilo_workspace_service::apps::collab_broker::AppActionBroker,
     workspace_id: WorkspaceId,
 ) {
     let resource = tilo_actions::remote::workspace_governance_resource(&workspace_id.to_string());
@@ -1432,7 +1432,7 @@ fn a_person_changes_a_workspaces_people_through_the_session_this_computer_runs()
 /// device only.
 #[track_caller]
 fn an_agent_is_refused_a_role(
-    broker: &tilo_action_broker::collab_broker::AppActionBroker,
+    broker: &tilo_workspace_service::apps::collab_broker::AppActionBroker,
     cert: &tilo_user_identity::DeviceCert,
     workspace_id: WorkspaceId,
     person: &str,
@@ -1794,7 +1794,7 @@ fn a_share_signed_late_never_holds_the_loop_that_asked() {
 /// once is taken back the same way once spent.
 #[test]
 fn a_grant_the_person_gives_is_in_force_once_the_shell_carries_it() {
-    use tilo_action_broker::services::WorkspaceGrants as _;
+    use tilo_workspace_service::apps::services::WorkspaceGrants as _;
     let (engine, mut workspace, _, _state) = workspace_here("ada");
     let engine = std::sync::Arc::new(engine);
     let person = engine
@@ -1826,7 +1826,7 @@ fn a_grant_the_person_gives_is_in_force_once_the_shell_carries_it() {
         tilo_action_policy::Answer::Allow,
         Grantee::person(&person),
     );
-    let request = tilo_action_broker::app_actions::AppActionConsentRequest {
+    let request = tilo_workspace_service::apps::app_actions::AppActionConsentRequest {
         handle: "app-action:i1".into(),
         workspace: WORKSPACE.into(),
         person,
@@ -1852,7 +1852,7 @@ fn a_grant_the_person_gives_is_in_force_once_the_shell_carries_it() {
         let mut recording = grants.record(
             &request,
             grant,
-            tilo_action_broker::app_actions::AppActionConsent::Always,
+            tilo_workspace_service::apps::app_actions::AppActionConsent::Always,
         );
         // Written into the governance, the grant is not yet in force: the session does not carry it.
         let held = |engine: &crate::engine::Engine| {

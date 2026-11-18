@@ -181,7 +181,7 @@ async fn found(
     changes: &[u8],
     until: Instant,
 ) -> Result<(), String> {
-    use tilo_action_broker::owner_commits::OwnerService as _;
+    use tilo_workspace_service::apps::owner_commits::OwnerService as _;
     let sealed = if engine.commits_documents(workspace) {
         None
     } else {

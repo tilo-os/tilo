@@ -17,14 +17,14 @@ use runtime_portal::tools::{
     AppEntry, DriveEntry, MAX_LISTED_APPS, MAX_LISTED_DRIVES, MAX_REPLY_BYTES, MAX_WIRE_BYTES,
     TOOL_PROTOCOL_VERSION, ToolIntent, ToolReply, ToolRequest, WorkspaceSettingsRoute,
 };
-use tilo_action_broker::services::{
-    ApplicationChange, ApplicationServices, DriveChange, DriveServices,
-};
 use tilo_app_launch::Launch;
 use tilo_broker_core::services::LaunchPlace;
 use tilo_desktop_model::app::AppKind as Builtin;
 use tilo_lock::MutexRecover as _;
 use tilo_service::Wake;
+use tilo_workspace_service::apps::services::{
+    ApplicationChange, ApplicationServices, DriveChange, DriveServices,
+};
 
 use crate::Launches;
 use crate::drives::{Medium, files_on};

@@ -1263,7 +1263,7 @@ fn notes(
         .encode()
         .expect("a presentation encodes");
         // In the person's own workspace an app takes part only in their records.
-        let channel = tilo_action_broker::route::CrdtRoute {
+        let channel = tilo_workspace_service::apps::route::CrdtRoute {
             app_id: NOTES_APP.into(),
             cluster_id: workspace.into(),
             document_id: collab_types::person_document_id(NOTEBOOK),

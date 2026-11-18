@@ -361,7 +361,7 @@ TEST_CLASS_JOBS = {
 TEST_SHARD_APART = (
     frozenset({"tilo-fs", "fs-native"}),
     frozenset({
-        "tilo-action-broker",
+        "tilo-workspace-service",
         "tilo-peer-state",
         "tilo-server",
     }),

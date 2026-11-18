@@ -4,14 +4,14 @@
 use super::*;
 use crate::standalone::RuntimeActionProvider;
 use serde_json::json;
-use tilo_action_broker::{
+use tilo_user_identity::DeviceCert;
+use tilo_workspace_service::apps::{
     certificate_authority::CertificateAuthority,
     collab_app_broker::AppBrokerState,
     policy_clock::{OwnerPolicyClock, PolicyTime},
     services::{LaunchableApplication, LauncherServices},
     test_support::{Workspace as TestWorkspace, WorkspaceTree},
 };
-use tilo_user_identity::DeviceCert;
 
 pub(in crate::standalone) struct FixtureAuthority {
     pub(in crate::standalone) workspace: uuid::Uuid,
@@ -67,7 +67,7 @@ impl LauncherServices for RecordingLauncher {
         app: &str,
         workspace: &Workspace,
         _: Option<&str>,
-        _: &tilo_action_broker::services::LaunchPlace,
+        _: &tilo_workspace_service::apps::services::LaunchPlace,
     ) -> Result<(), String> {
         self.0
             .lock()
@@ -88,8 +88,9 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
     let placed = WorkspaceId::new();
     let (joined, directory) = Joined::test_hosting(placed).await;
     let certificate = joined.identity.device_cert.clone();
-    let actor =
-        tilo_action_broker::collab_app_broker::person_id_for_root(certificate.user_public_key);
+    let actor = tilo_workspace_service::apps::collab_app_broker::person_id_for_root(
+        certificate.user_public_key,
+    );
     let mut workspace = TestWorkspace::new(placed, "Runtime APIs");
     workspace.set_owner(actor.clone());
     let workspace_id = workspace.id().to_string();
@@ -186,7 +187,7 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
 async fn ownership_the_runtime_no_longer_holds_ends_the_run() {
     let workspace = WorkspaceId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
     let (joined, _directory) = Joined::test_hosting(workspace).await;
-    let actor = tilo_action_broker::collab_app_broker::person_id_for_root(
+    let actor = tilo_workspace_service::apps::collab_app_broker::person_id_for_root(
         joined.test_certificate().user_public_key,
     );
     let run = joined

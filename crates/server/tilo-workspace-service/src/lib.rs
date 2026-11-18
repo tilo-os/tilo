@@ -15,6 +15,9 @@
 )]
 
 pub mod app_serving;
+/// The apps this device serves, on the devices that have any.
+#[cfg(feature = "apps")]
+pub mod apps;
 pub mod attach;
 #[doc(hidden)]
 pub mod authority_epoch;

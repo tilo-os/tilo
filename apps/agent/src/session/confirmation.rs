@@ -2,7 +2,7 @@
 //!
 //! An operation that asks first is shown to the person by its own app, on the resource the operation
 //! acts on; a turn's step is asked about on the system's own sheet, and the host answers the agent
-//! once the person decided there (`tilo_action_broker`'s agent connection, and the session's
+//! once the person decided there (`tilo_workspace_service::apps`'s agent connection, and the session's
 //! `step_questions`). The agent waits for that answer in the person's own time.
 
 /// The host's `error` as the step's outcome: a decline in the person's

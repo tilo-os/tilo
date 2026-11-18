@@ -24,7 +24,6 @@ use std::time::Duration;
 use runtime_portal::tools::{
     AppKind, AppRemoval, TOOL_PROTOCOL_VERSION, ToolIntent, ToolReply, ToolRequest,
 };
-use tilo_action_broker::services::{LaunchPlace, LauncherServices as _};
 use tilo_app_launch::SessionEnvironment;
 use tilo_desktop_model::Workspace;
 use tilo_desktop_policy::Window;
@@ -32,6 +31,7 @@ use tilo_notifications_service::Notifications;
 use tilo_session::apps::Apps;
 use tilo_session::drives::{Drives, Media, Medium};
 use tilo_session::{AppActions, AppLists, Launches, Lists, Options, Session};
+use tilo_workspace_service::apps::services::{LaunchPlace, LauncherServices as _};
 
 /// The notes app, as its package names it: what an agent asks for.
 const NOTES: &str = "so.tilo.notes";

@@ -356,7 +356,7 @@ fn record_request(
 /// theirs read it back from. One ask per host, in one of its workspaces this device is in; a host
 /// that does not answer is told the next time the list moves.
 pub(crate) fn keep_on_hosts(
-    hosted: &dyn tilo_action_broker::services::HostedWorkspaces,
+    hosted: &dyn tilo_workspace_service::apps::services::HostedWorkspaces,
     engine: &Engine,
     list: &tilo_server_session::workspaces::PersonalList,
 ) {
@@ -391,7 +391,7 @@ pub(crate) fn keep_on_hosts(
     }
 }
 
-impl tilo_action_broker::services::HostedWorkspaces for HostedWorkspaces {
+impl tilo_workspace_service::apps::services::HostedWorkspaces for HostedWorkspaces {
     fn host_actions(&self, workspace: &str) -> Option<Arc<dyn ActionProvider + Send + Sync>> {
         self.actions_of(workspace)
     }

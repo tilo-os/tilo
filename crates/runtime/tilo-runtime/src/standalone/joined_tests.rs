@@ -426,7 +426,7 @@ fn assert_changed_ownership_refused(joined: &Joined, workspace: WorkspaceId, act
     let default_root = SigningKey::from_bytes(&[95; 32]);
     identity.device_cert.user_public_key = default_root.verifying_key().to_bytes();
     sign_device_cert(&mut identity.device_cert, &default_root).unwrap();
-    let default_actor = tilo_action_broker::collab_app_broker::person_id_for_root(
+    let default_actor = tilo_workspace_service::apps::collab_app_broker::person_id_for_root(
         identity.device_cert.user_public_key,
     );
     identity = HostIdentity::held(
@@ -508,15 +508,15 @@ fn assert_changed_ownership_refused(joined: &Joined, workspace: WorkspaceId, act
 
 fn assert_runtime_admission_revoked(joined: &Arc<Joined>, workspace: WorkspaceId, actor: &str) {
     use crate::standalone::RuntimeActionProvider;
-    use tilo_action_broker::{
-        collab_app_broker::{AppBrokerState, PublishedAction, PublishedInput, PublishedSurface},
-        collab_broker::CrdtRoute,
-        test_support::{Workspace, WorkspaceId, WorkspaceTree},
-    };
     use tilo_actions::remote::{
         ActionCallError, ActionProvider, Caller, CatalogueQuery, InvokeRequest,
     };
     use tilo_actions::remote::{InvokeArgument, PendingPoll, RemoteActionTarget};
+    use tilo_workspace_service::apps::{
+        collab_app_broker::{AppBrokerState, PublishedAction, PublishedInput, PublishedSurface},
+        collab_broker::CrdtRoute,
+        test_support::{Workspace, WorkspaceId, WorkspaceTree},
+    };
 
     let mut placed = Workspace::new(workspace, "Execution isolation");
     placed.set_owner(actor.to_owned());
@@ -528,7 +528,7 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, workspace: WorkspaceId
     };
     tree.desktop.workspaces.push(placed);
     let membership = tree.shared();
-    let origin = tilo_action_broker::policy_clock::OwnerPolicyClock::new()
+    let origin = tilo_workspace_service::apps::policy_clock::OwnerPolicyClock::new()
         .unwrap()
         .new_origin();
     let admission = joined.admit_mcp_execution(&workspace_id, actor).unwrap();
@@ -686,7 +686,8 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
         ),
     )
     .unwrap();
-    let actor = tilo_action_broker::collab_app_broker::person_id_for_root(device.user_public_key);
+    let actor =
+        tilo_workspace_service::apps::collab_app_broker::person_id_for_root(device.user_public_key);
     assert!(
         joined
             .action_workspace(&actor, &workspace.to_string())
@@ -729,8 +730,8 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
         .unwrap();
     let retained_caller = execution.caller().clone();
     {
-        use tilo_action_broker::certificate_authority::CertificateAuthority as _;
-        let origin = tilo_action_broker::policy_clock::OwnerPolicyClock::new()
+        use tilo_workspace_service::apps::certificate_authority::CertificateAuthority as _;
+        let origin = tilo_workspace_service::apps::policy_clock::OwnerPolicyClock::new()
             .unwrap()
             .new_origin();
         let authority = super::super::Certificates {
@@ -1185,16 +1186,19 @@ fn the_workspaces_the_desktop_session_enrolled_are_refused() {
 struct Shelf(
     Mutex<
         std::collections::BTreeMap<
-            (tilo_action_broker::document_content::ContentScope, String),
+            (
+                tilo_workspace_service::apps::document_content::ContentScope,
+                String,
+            ),
             Vec<u8>,
         >,
     >,
 );
 
-impl tilo_action_broker::document_content::ContentShelf for Shelf {
+impl tilo_workspace_service::apps::document_content::ContentShelf for Shelf {
     fn read(
         &self,
-        scope: &tilo_action_broker::document_content::ContentScope,
+        scope: &tilo_workspace_service::apps::document_content::ContentScope,
         hash: &str,
     ) -> Option<Vec<u8>> {
         self.0
@@ -1206,7 +1210,7 @@ impl tilo_action_broker::document_content::ContentShelf for Shelf {
 
     fn keep(
         &self,
-        scope: &tilo_action_broker::document_content::ContentScope,
+        scope: &tilo_workspace_service::apps::document_content::ContentScope,
         hash: &str,
         bytes: &[u8],
     ) -> Result<(), String> {
@@ -1220,9 +1224,9 @@ impl tilo_action_broker::document_content::ContentShelf for Shelf {
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_joined_workspace_s_record_content_crosses_the_host_both_ways() {
-    use tilo_action_broker::document_content::PIECE_BYTES;
     use tilo_content::hash_bytes;
     use tilo_peer_state::peer_handle;
+    use tilo_workspace_service::apps::document_content::PIECE_BYTES;
 
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let governing = Box::pin(HostedWorkspace::start(directory.path())).await;
@@ -1260,7 +1264,7 @@ async fn a_joined_workspace_s_record_content_crosses_the_host_both_ways() {
     let mut heard = governor.heard();
     let governor_handle = peer_handle(&governing.governor.device_public_key);
     let runtime_handle = peer_handle(&device.device_public_key);
-    let route = tilo_action_broker::route::CrdtRoute::record(
+    let route = tilo_workspace_service::apps::route::CrdtRoute::record(
         "so.tilo.slides",
         workspace.to_string(),
         "deck",
@@ -1367,9 +1371,9 @@ async fn a_joined_workspace_s_record_content_crosses_the_host_both_ways() {
 /// content arrives: waiting, then fetching, then here.
 #[tokio::test(flavor = "current_thread")]
 async fn a_want_through_the_host_waits_for_its_offline_holder_and_arrives_when_it_connects() {
-    use tilo_action_broker::document_content::PIECE_BYTES;
     use tilo_content::{ContentState, hash_bytes};
     use tilo_peer_state::peer_handle;
+    use tilo_workspace_service::apps::document_content::PIECE_BYTES;
 
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let governing = Box::pin(HostedWorkspace::start(directory.path())).await;
@@ -1406,7 +1410,7 @@ async fn a_want_through_the_host_waits_for_its_offline_holder_and_arrives_when_i
     // The holder is offline: it is no device of the workspace's link yet.
     let governor_handle = peer_handle(&governing.governor.device_public_key);
     let runtime_handle = peer_handle(&device.device_public_key);
-    let route = tilo_action_broker::route::CrdtRoute::record(
+    let route = tilo_workspace_service::apps::route::CrdtRoute::record(
         "so.tilo.ebook",
         workspace.to_string(),
         "library",
@@ -1526,7 +1530,7 @@ async fn the_profile_workspace_is_placed_once_on_its_own_host_and_held() {
     assert!(joined.workspace(workspace).is_some());
     joined.place(workspace, "Home").await.unwrap();
     assert_eq!(joined.owner.workspaces(), vec![workspace]);
-    let actor = tilo_action_broker::collab_app_broker::person_id_for_root(
+    let actor = tilo_workspace_service::apps::collab_app_broker::person_id_for_root(
         joined.test_certificate().user_public_key,
     );
     assert_eq!(

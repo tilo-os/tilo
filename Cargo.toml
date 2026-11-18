@@ -75,7 +75,6 @@ members = [
     "crates/platform/tilo-messaging",
     "crates/platform/tilo-handoff",
     "apps/canvas",
-    "crates/collab/tilo-action-broker",
     "crates/collab/broker-core",
     "crates/collab/workspace-keys",
     "crates/collab/feedback-transport",

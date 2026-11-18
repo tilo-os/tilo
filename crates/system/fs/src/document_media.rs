@@ -12,7 +12,7 @@
 //! that workspace: by an app in it, or by the session for a record of the
 //! workspace whose content arrived from another of the record's devices. That
 //! exchange is the collaboration broker's — content travels on the record's
-//! route (`tilo_action_broker::document_content`), never between daemons.
+//! route (`tilo_workspace_service::apps::document_content`), never between daemons.
 //!
 //! A host can also offer an explicit owner action
 //! through [`LegacyMediaImportHost`]: it verifies a bounded selection and creates new

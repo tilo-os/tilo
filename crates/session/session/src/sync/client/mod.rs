@@ -57,13 +57,13 @@ use crate::platform::fabric::{Continuity, SessionFabric};
 #[cfg(target_os = "linux")]
 use crate::workspace_keys::KeyLink;
 #[cfg(target_os = "linux")]
-use tilo_action_broker::document_content::ContentSources;
-#[cfg(target_os = "linux")]
 use tilo_endpoint_reachability::{Need, Reachability};
 #[cfg(target_os = "linux")]
 use tilo_identity::identity_store::HostIdentity;
 #[cfg(target_os = "linux")]
 use tilo_network_actor::{WorkspaceId, native_ingress};
+#[cfg(target_os = "linux")]
+use tilo_workspace_service::apps::document_content::ContentSources;
 
 #[cfg(target_os = "linux")]
 mod adopt;
@@ -2298,9 +2298,9 @@ fn endpoint_for(
 #[cfg(target_os = "linux")]
 pub struct PeerDocuments {
     channels: Arc<std::sync::Mutex<tilo_broker_core::collab_core::BrokerChannels>>,
-    fanout: Arc<tilo_action_broker::collab_broker::FanoutState>,
+    fanout: Arc<tilo_workspace_service::apps::collab_broker::FanoutState>,
     /// What search reads again of a record a peer wrote.
-    changes: Option<Arc<dyn tilo_action_broker::services::DocumentIndexChanges>>,
+    changes: Option<Arc<dyn tilo_workspace_service::apps::services::DocumentIndexChanges>>,
     /// What wakes a read waiting for a record this device held none of until it lands.
     arrivals: Option<Arc<tilo_session_client::Arrivals>>,
 }
@@ -2312,8 +2312,8 @@ impl PeerDocuments {
     #[must_use]
     pub fn new(
         channels: Arc<std::sync::Mutex<tilo_broker_core::collab_core::BrokerChannels>>,
-        fanout: Arc<tilo_action_broker::collab_broker::FanoutState>,
-        changes: Option<Arc<dyn tilo_action_broker::services::DocumentIndexChanges>>,
+        fanout: Arc<tilo_workspace_service::apps::collab_broker::FanoutState>,
+        changes: Option<Arc<dyn tilo_workspace_service::apps::services::DocumentIndexChanges>>,
         arrivals: Option<Arc<tilo_session_client::Arrivals>>,
     ) -> Self {
         Self {
@@ -2337,10 +2337,10 @@ impl PeerDocuments {
     /// session wrote into the engine itself.
     pub(crate) fn deliver_write(&self, workspace: &str, write: tilo_peer_state::owner::AppWrite) {
         let (app, record) = (write.app_id.clone(), write.document_id.clone());
-        tilo_action_broker::collab_inbound::deliver(
+        tilo_workspace_service::apps::collab_inbound::deliver(
             &self.channels,
             &self.fanout,
-            tilo_action_broker::collab_inbound::RemoteDocument {
+            tilo_workspace_service::apps::collab_inbound::RemoteDocument {
                 app_id: write.app_id,
                 cluster_id: write.cluster_id,
                 document_id: write.document_id,

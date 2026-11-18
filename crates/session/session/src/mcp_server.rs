@@ -38,7 +38,6 @@ use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tilo_action_broker::collab_app_broker::{AgentConnection, AppBrokerState};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
     ContentPuts, InvocationReceipt, InvocationState, InvokeRequest, Pending,
@@ -49,6 +48,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_mcp::session_api::{Consent, Hello};
 use tilo_service::{Answer, Asked, Question, Questions, Wake};
 use tilo_sheets::{word, words};
+use tilo_workspace_service::apps::collab_app_broker::{AgentConnection, AppBrokerState};
 
 use crate::Shared;
 use crate::agent_sessions::{AgentSessions, Doing};
@@ -2310,7 +2310,7 @@ impl ActionProvider for Host {
     fn content_puts(&self) -> Option<Arc<dyn ContentPuts>> {
         self.state
             .as_ref()
-            .and_then(tilo_action_broker::collab_app_broker::AppBrokerState::content_puts)
+            .and_then(tilo_workspace_service::apps::collab_app_broker::AppBrokerState::content_puts)
     }
 
     /// The session's one search, the one the palette and text typed on the canvas run: what an

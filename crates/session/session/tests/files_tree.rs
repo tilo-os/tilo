@@ -53,7 +53,7 @@ fn a_tree_changed_here_reaches_the_persons_other_devices() {
     let phone = laptop.second("Ada's phone");
     let tablet = laptop.second("Ada's tablet");
     let cluster = laptop.cluster();
-    tilo_action_broker::register_package_surface(FILES, SURFACE);
+    tilo_workspace_service::apps::register_package_surface(FILES, SURFACE);
     let state = tempfile::tempdir().expect("a state for the session");
     let socket = laptop.socket().to_path_buf();
     let mut session = personal::session(&socket, "Ada", &cluster, state.path(), FILES, true);

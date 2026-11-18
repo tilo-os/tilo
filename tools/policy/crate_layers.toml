@@ -76,10 +76,6 @@ reason = "it is the sync engine, and everyone else acts on the workspace through
   why = "the shared runtime runs the engine for the apps attached to a member"
 
   [[rule.allow]]
-  package = "tilo-action-broker"
-  why = "the broker admits the actions apps publish against the engine's workspace"
-
-  [[rule.allow]]
   package = "tilo-broker-core"
   why = "the broker core declares the boundary a host's owner answers for its commits, so a broker and the host holding the owner name that owner in a signature; it holds no engine state and reads none"
 

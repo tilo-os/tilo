@@ -89,7 +89,6 @@ runtime-fs = { path = "../runtime-fs" }
 runtime-identity = { path = "../runtime-identity" }
 serde.workspace = true
 serde_json.workspace = true
-tilo-action-broker = { path = "../../collab/tilo-action-broker" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-automerge-isolate.workspace = true
 tilo-desktop-model = { path = "../../session/desktop-model" }
@@ -113,7 +112,7 @@ tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 # The neighbour wire messages joined workspaces exchange.
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 # The workspace host every device runs, which the profile's own workspace is placed on.
-tilo-workspace-service = { path = "../../server/tilo-workspace-service" }
+tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["apps"] }
 # The content store app surfaces are read from.
 tilo-content = { path = "../../system/content" }
 # The apps' store: the device content store when the launcher handed one over.
@@ -170,7 +169,7 @@ tilo-mcp = { path = "../tilo-mcp", features = ["test-support"] }
 # process-boundary tests drive as an app inside a login does.
 runtime-portal = { path = "../runtime-portal" }
 # The channel fixtures owner tests seal writes with.
-tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["test-support"] }
+tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["apps", "test-support"] }
 # The join protocol a runtime joins workspaces over.
 tilo-delivery-protocol = { path = "../../server/tilo-delivery-protocol" }
 # The governor whose workspaces a runtime joins.

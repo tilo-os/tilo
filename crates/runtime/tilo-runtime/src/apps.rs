@@ -27,14 +27,14 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
 };
-use tilo_action_broker::{
+use tilo_lock::MutexRecover as _;
+use tilo_workspace_service::apps::{
     app_actions::{AppActionAccess, AppActionAccessResolver, AppResourceKindsResolver},
     services::{
         AuthenticatedApplicationLaunch, LaunchContent, LaunchPlace, LaunchableApplication,
         Launched as LaunchOutcome, LauncherServices,
     },
 };
-use tilo_lock::MutexRecover as _;
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -245,7 +245,7 @@ impl Apps {
             .into_iter()
             .find(|app| app.app_id == app_id)?;
         let bytes = self.signed_surface_of(&app)?;
-        tilo_action_broker::register_package_surface(app_id, &bytes);
+        tilo_workspace_service::apps::register_package_surface(app_id, &bytes);
         Some(bytes)
     }
 
@@ -264,7 +264,7 @@ impl Apps {
     /// signature declares none.
     fn run_with_signed_surface(&self, app: &InstalledApp) {
         if let Some(surface) = self.signed_surface_of(app) {
-            tilo_action_broker::register_package_surface(&app.app_id, &surface);
+            tilo_workspace_service::apps::register_package_surface(&app.app_id, &surface);
         }
     }
 

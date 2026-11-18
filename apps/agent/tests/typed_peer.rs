@@ -148,7 +148,7 @@ impl TypedPeer {
 pub fn spawn_with_agent_actions(
     path: &Path,
     actions: &[(&str, &str, &str)],
-) -> tilo_action_broker::collab_broker::BrokerHandle {
+) -> tilo_workspace_service::apps::collab_broker::BrokerHandle {
     spawn_with_agent_grants(path, actions, &[])
 }
 
@@ -166,14 +166,15 @@ pub fn spawn_with_agent_grants(
     path: &Path,
     actions: &[(&str, &str, &str)],
     denied: &[(&str, &str, &str)],
-) -> tilo_action_broker::collab_broker::BrokerHandle {
+) -> tilo_workspace_service::apps::collab_broker::BrokerHandle {
     let parent = path.parent().expect("typed broker socket has a parent");
-    tilo_action_broker::collab_app_broker::tests::secure_socket_parent(parent)
+    tilo_workspace_service::apps::collab_app_broker::tests::secure_socket_parent(parent)
         .expect("secure typed broker fixture root");
     let root = SigningKey::from_bytes(&ROOT_KEY);
     let actor = hex::encode(root.verifying_key().to_bytes());
-    let mut workspace = tilo_action_broker::test_support::Workspace::new(
-        tilo_action_broker::test_support::WorkspaceId::parse(&TEST_WORKSPACE.to_string()).unwrap(),
+    let mut workspace = tilo_workspace_service::apps::test_support::Workspace::new(
+        tilo_workspace_service::apps::test_support::WorkspaceId::parse(&TEST_WORKSPACE.to_string())
+            .unwrap(),
         "Agent integration workspace",
     );
     workspace.set_owner(actor.clone());
@@ -262,24 +263,24 @@ pub fn spawn_with_agent_grants(
         let node = workspace.node().app(app);
         workspace.grant(everything(format!("fixture:{host}:{app}"), host, node));
     }
-    let mut tree = tilo_action_broker::test_support::WorkspaceTree::default();
+    let mut tree = tilo_workspace_service::apps::test_support::WorkspaceTree::default();
     tree.desktop.workspaces.push(workspace);
     let shared = tree.shared();
     let trusted_devices = ["ada", "Scribe", "files", "photos"]
         .map(|handle| device_key(handle).verifying_key().to_bytes())
         .into_iter()
         .collect();
-    let broker = tilo_action_broker::collab_broker::spawn_with_test_services(
+    let broker = tilo_workspace_service::apps::collab_broker::spawn_with_test_services(
         path.to_path_buf(),
         Some(shared.authority()),
-        tilo_action_broker::collab_outbound::PeerPublisher::disabled(),
+        tilo_workspace_service::apps::collab_outbound::PeerPublisher::disabled(),
         None,
         shared.services(),
         Some(std::sync::Arc::new(trusted_devices)),
         std::sync::Arc::new(std::sync::Mutex::new(
-            tilo_action_broker::collab_core::BrokerChannels::default(),
+            tilo_workspace_service::apps::collab_core::BrokerChannels::default(),
         )),
-        std::sync::Arc::new(tilo_action_broker::collab_broker::FanoutState::new()),
+        std::sync::Arc::new(tilo_workspace_service::apps::collab_broker::FanoutState::new()),
     )
     .expect("bind the typed collaboration service");
     // The fixture apps read the catalogue to see their own publication land,
@@ -288,7 +289,7 @@ pub fn spawn_with_agent_grants(
         .app_action_broker()
         .expect("the harness serves actions")
         .set_app_action_access(std::sync::Arc::new(|_: &str| {
-            tilo_action_broker::app_actions::AppActionAccess {
+            tilo_workspace_service::apps::app_actions::AppActionAccess {
                 query: true,
                 invoke: false,
             }

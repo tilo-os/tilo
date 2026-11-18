@@ -29,7 +29,6 @@ serde.workspace = true
 serde_json.workspace = true
 settings-store = { path = "../../system/settings-store" }
 thiserror.workspace = true
-tilo-action-broker = { path = "../../collab/tilo-action-broker" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-delivery-protocol = { path = "../../server/tilo-delivery-protocol" }
@@ -44,7 +43,7 @@ tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tilo-server-client = { path = "../../server/tilo-server-client" }
 tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
 tilo-server-session = { path = "../../server/tilo-server-session" }
-tilo-workspace-service = { path = "../../server/tilo-workspace-service" }
+tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["apps"] }
 tilo-rt.workspace = true
 tilo-session-client = { path = "../client" }
 tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol" }

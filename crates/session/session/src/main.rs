@@ -1332,7 +1332,7 @@ fn search_options(
     match app_catalogue::apps::signed_surfaces_from_env() {
         Ok(surfaces) => {
             for (app, _name, surface) in surfaces {
-                tilo_action_broker::register_package_surface(&app, &surface);
+                tilo_workspace_service::apps::register_package_surface(&app, &surface);
             }
         }
         Err(error) => eprintln!("tilo-session: installed app surfaces: {error}"),

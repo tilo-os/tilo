@@ -361,7 +361,7 @@ impl InstalledApps {
 
 impl PersonResourceTypes for InstalledApps {
     fn person_resource_types(&self, app_id: &str) -> Vec<String> {
-        tilo_action_broker::SurfacePersonDocuments.person_resource_types(app_id)
+        tilo_workspace_service::apps::SurfacePersonDocuments.person_resource_types(app_id)
     }
 
     fn earlier_ids(&self, app_id: &str) -> Vec<String> {
@@ -369,7 +369,7 @@ impl PersonResourceTypes for InstalledApps {
     }
 
     fn reads_documents_of(&self, reader: &str, owner: &str) -> bool {
-        tilo_action_broker::SurfacePersonDocuments.reads_documents_of(reader, owner)
+        tilo_workspace_service::apps::SurfacePersonDocuments.reads_documents_of(reader, owner)
     }
 }
 

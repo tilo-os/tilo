@@ -30,7 +30,7 @@ use tilo_automation::{
 /// A fire time this far in the past counts as missed rather than on time.
 pub const MISSED_AFTER: SignedDuration = tilo_automation::schedule::MISSED_AFTER;
 
-pub use tilo_action_broker::automation::{readable_folder, validate_trigger};
+pub use tilo_workspace_service::apps::automation::{readable_folder, validate_trigger};
 
 /// How long each device waits, per device ranked before it, for a fire time to be claimed before it
 /// takes it.

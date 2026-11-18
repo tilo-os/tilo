@@ -645,7 +645,7 @@ impl Session {
         // an app holds shows everyone's writes, and the broker below shows
         // this device's own.
         let channels_fanout =
-            std::sync::Arc::new(tilo_action_broker::collab_broker::FanoutState::new());
+            std::sync::Arc::new(tilo_workspace_service::apps::collab_broker::FanoutState::new());
         let key_link = crate::workspace_keys::KeyLink::new();
         // Search reads the workspaces' records off the records themselves,
         // with no window of their app running: what this device holds is
@@ -2337,7 +2337,8 @@ impl Session {
     #[must_use]
     pub fn action_broker(
         &self,
-    ) -> Option<std::sync::Arc<tilo_action_broker::collab_app_broker::AppBrokerState>> {
+    ) -> Option<std::sync::Arc<tilo_workspace_service::apps::collab_app_broker::AppBrokerState>>
+    {
         self.app_wire.as_ref().and_then(AppWire::agent_broker)
     }
 

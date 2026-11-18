@@ -1,7 +1,7 @@
 use super::*;
 use crate::{RuntimeServices as _, standalone::Standalone};
-use tilo_action_broker::collab_app_broker::BrokerActor;
 use tilo_actions::remote::Caller;
+use tilo_workspace_service::apps::collab_app_broker::BrokerActor;
 
 #[test]
 fn issued_owner_permits_recheck_execution_and_device_revocation() {

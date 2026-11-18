@@ -1118,7 +1118,6 @@ doc = false
 "tilo-accessibility-settings" = { path = "../../../crates/platform/tilo-accessibility-settings", default-features = false, features = ["model"] }
 "tilo-accesskit-winit-0_34_0" = { package = "tilo-accesskit-winit", path = "../../../vendor/accesskit_winit", default-features = false, features = ["accesskit_unix", "rwh_06", "tokio"] }
 "tilo-account-probe" = { path = "../../../crates/platform/account-probe", default-features = false, features = [] }
-"tilo-action-broker" = { path = "../../../crates/collab/tilo-action-broker", default-features = false, features = ["test-support"] }
 "tilo-action-policy" = { path = "../../../crates/collab/action-policy", default-features = false, features = [] }
 "tilo-actions" = { path = "../../../crates/collab/actions", default-features = false, features = ["test-support"] }
 "tilo-activities" = { path = "../../../crates/session/activities", default-features = false, features = [] }
@@ -1226,7 +1225,6 @@ doc = false
 "tilo-highlight" = { path = "../../../crates/text/highlight", default-features = false, features = [] }
 "tilo-highlight-grammars" = { path = "../../../crates/text/highlight-grammars", default-features = false, features = ["syntax-definitions"] }
 "tilo-history" = { path = "../../../crates/sdk/tilo-history", default-features = false, features = [] }
-"tilo-server-account" = { path = "../../../crates/server/tilo-server-account", default-features = false, features = [] }
 "tilo-host-search" = { path = "../../../crates/platform/tilo-host-search", default-features = false, features = [] }
 "tilo-identity" = { path = "../../../crates/runtime/tilo-identity", default-features = false, features = [] }
 "tilo-identity-authority" = { path = "../../../crates/session/identity-authority", default-features = false, features = [] }
@@ -1311,6 +1309,7 @@ doc = false
 "tilo-segment" = { path = "../../../crates/media/segment", default-features = false, features = ["infer"] }
 "tilo-selector" = { path = "../../../crates/platform/tilo-selector", default-features = false, features = [] }
 "tilo-server" = { path = "../../../crates/server/tilo-server", default-features = false, features = ["agents", "test-support", "web"] }
+"tilo-server-account" = { path = "../../../crates/server/tilo-server-account", default-features = false, features = [] }
 "tilo-server-client" = { path = "../../../crates/server/tilo-server-client", default-features = false, features = ["default", "dial"] }
 "tilo-server-protocol" = { path = "../../../crates/server/tilo-server-protocol", default-features = false, features = [] }
 "tilo-server-session" = { path = "../../../crates/server/tilo-server-session", default-features = false, features = [] }
@@ -1374,9 +1373,9 @@ doc = false
 "tilo-workspace-agent" = { path = "../../../crates/platform/tilo-workspace-agent", default-features = false, features = [] }
 "tilo-workspace-directory" = { path = "../../../crates/session/workspace-directory", default-features = false, features = [] }
 "tilo-workspace-emoji" = { path = "../../../crates/platform/tilo-workspace-emoji", default-features = false, features = [] }
-"tilo-workspace-service" = { path = "../../../crates/server/tilo-workspace-service", default-features = false, features = ["agents", "test-support", "web"] }
 "tilo-workspace-join" = { path = "../../../crates/collab/workspace-join", default-features = false, features = ["test-support"] }
 "tilo-workspace-keys" = { path = "../../../crates/collab/workspace-keys", default-features = false, features = ["test-support"] }
+"tilo-workspace-service" = { path = "../../../crates/server/tilo-workspace-service", default-features = false, features = ["agents", "apps", "test-support", "web"] }
 "tilo-written-view" = { path = "../../../crates/platform/tilo-written-view", default-features = false, features = [] }
 "tilo-x11-transfer" = { path = "../../../crates/session/x11-transfer", default-features = false, features = [] }
 "tilo-zone-globe" = { path = "../../../crates/platform/zone-globe", default-features = false, features = [] }
@@ -2421,7 +2420,6 @@ doc = false
 "tilo-caps" = { path = "../../../crates/sdk/tilo-caps", default-features = false, features = [] }
 "tilo-clock" = { path = "../../../crates/platform/tilo-clock", default-features = false, features = ["test-support"] }
 "tilo-content" = { path = "../../../crates/system/content", default-features = false, features = ["default", "dir"] }
-"tilo-content-device" = { path = "../../../crates/system/content-device", default-features = false, features = [] }
 "tilo-content-types" = { path = "../../../crates/system/content-types", default-features = false, features = [] }
 "tilo-crypto" = { path = "../../../crates/system/tilo-crypto", default-features = false, features = ["default", "pcr-prediction", "release-bundle", "srp", "srp-test-server", "tls-fixture"] }
 "tilo-dav" = { path = "../../../crates/system/tilo-dav", default-features = false, features = ["client", "default", "net", "oauth", "test-support"] }
@@ -2431,6 +2429,7 @@ doc = false
 "tilo-doc" = { path = "../../../crates/doc/tilo-doc", default-features = false, features = ["bulk-instrumentation"] }
 "tilo-doc-codecs" = { path = "../../../crates/doc/tilo-doc-codecs", default-features = false, features = ["all", "default", "docx", "epub", "html", "markdown", "ods", "odt", "office", "rtf", "xlsx"] }
 "tilo-documents" = { path = "../../../crates/system/documents", default-features = false, features = [] }
+"tilo-durable-writer" = { path = "../../../crates/platform/tilo-durable-writer", default-features = false, features = [] }
 "tilo-endpoint-reachability" = { path = "../../../crates/system/endpoint-reachability", default-features = false, features = [] }
 "tilo-face" = { path = "../../../crates/platform/tilo-face", default-features = false, features = [] }
 "tilo-failure" = { path = "../../../crates/platform/tilo-failure", default-features = false, features = [] }
@@ -3731,7 +3730,6 @@ doc = false
 "tiff-0_11_3" = { package = "tiff", version = "^0.11.3", default-features = false, features = ["default", "deflate", "fax", "jpeg", "lzw"] }
 "tilo-accessibility-settings" = { path = "../../../crates/platform/tilo-accessibility-settings", default-features = false, features = ["model"] }
 "tilo-accesskit-winit-0_34_0" = { package = "tilo-accesskit-winit", path = "../../../vendor/accesskit_winit", default-features = false, features = ["accesskit_unix", "rwh_06", "tokio"] }
-"tilo-action-broker" = { path = "../../../crates/collab/tilo-action-broker", default-features = false, features = ["test-support"] }
 "tilo-action-policy" = { path = "../../../crates/collab/action-policy", default-features = false, features = [] }
 "tilo-actions" = { path = "../../../crates/collab/actions", default-features = false, features = ["test-support"] }
 "tilo-activities" = { path = "../../../crates/session/activities", default-features = false, features = [] }

@@ -126,7 +126,7 @@ words = ["custody"]
 paths = [
     "crates/runtime/runtime-collab/src/lib.rs",
     "crates/runtime/runtime-collab/src/local_document_action_transport_tests.rs",
-    "crates/collab/tilo-action-broker/src/local_document_action.rs",
+    "crates/server/tilo-workspace-service/src/apps/local_document_action.rs",
     "crates/sdk/ui-core/src/app/local_action_persistence.rs",
     "crates/sdk/ui-core/src/app/local_action_persistence_tests.rs",
 ]
@@ -387,7 +387,7 @@ paths = [
 reason = "The module an action's edited-field constant is declared in."
 words = ["run"]
 identifiers = ["run"]
-paths = ["crates/collab/tilo-action-broker/src/collab_app_broker/execution_activity.rs"]
+paths = ["crates/server/tilo-workspace-service/src/apps/collab_app_broker/execution_activity.rs"]
 
 [[allow]]
 reason = "CSS's own property and keyword names (white-space, space-between) in the styles the HTML presenter writes."

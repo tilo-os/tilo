@@ -21,10 +21,10 @@ use runtime_collab::native_media::{
     Command, Issue, PICTURES_HOLD, PictureSource, Request, Roster, Shown, Snapshot, State,
     WATCH_HOLD,
 };
-use tilo_action_broker::services::{
+use tilo_lock::MutexRecover as _;
+use tilo_workspace_service::apps::services::{
     NativeMediaFuture, NativeMediaRequestContext, NativeMediaServices,
 };
-use tilo_lock::MutexRecover as _;
 
 use crate::media::{CallTarget, MediaFactory, MediaSession, Prepare};
 

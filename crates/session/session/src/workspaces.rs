@@ -1362,7 +1362,7 @@ impl crate::Shared {
     /// this device did since the last pass.
     pub(crate) fn follow_records(
         &self,
-        hosted: Option<&dyn tilo_action_broker::services::HostedWorkspaces>,
+        hosted: Option<&dyn tilo_workspace_service::apps::services::HostedWorkspaces>,
     ) {
         self.follow_data_usage();
         self.follow_personal(hosted);
@@ -1379,7 +1379,7 @@ impl crate::Shared {
     /// took off theirs, and say again what this device has when theirs was missing something.
     pub(crate) fn follow_personal(
         &self,
-        hosted: Option<&dyn tilo_action_broker::services::HostedWorkspaces>,
+        hosted: Option<&dyn tilo_workspace_service::apps::services::HostedWorkspaces>,
     ) {
         let Some(personal) = &self.personal else {
             return;
@@ -1520,7 +1520,7 @@ impl crate::Shared {
     fn keep_readable(
         &self,
         personal: &mut Personal,
-        hosted: Option<&dyn tilo_action_broker::services::HostedWorkspaces>,
+        hosted: Option<&dyn tilo_workspace_service::apps::services::HostedWorkspaces>,
         moved: bool,
     ) {
         let owed = personal.kept.is_none() || (hosted.is_some() && !personal.kept_on_hosts);

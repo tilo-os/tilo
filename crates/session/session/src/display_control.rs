@@ -10,7 +10,7 @@ use std::sync::Arc;
 use settings_store::SettingsSource;
 use settings_store::display_control::{DisplayCommand, MAX_DISPLAY_CONTROL_BYTES};
 use settings_store::hardware::DisplayHardwareSnapshot;
-use tilo_action_broker::services::DisplayControlServices;
+use tilo_workspace_service::apps::services::DisplayControlServices;
 
 /// This device's certificate in a workspace, for the person it belongs to.
 type Certificate =
@@ -103,7 +103,7 @@ impl DisplayControl {
 impl DisplayControlServices for DisplayControl {
     fn command(
         &self,
-        context: &tilo_action_broker::services::DisplayControlContext,
+        context: &tilo_workspace_service::apps::services::DisplayControlContext,
         command: &[u8],
     ) -> Result<Vec<u8>, String> {
         self.answer(

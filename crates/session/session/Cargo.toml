@@ -246,7 +246,7 @@ tilo-model-client = { path = "../../agent/model-client", features = ["runtime-cl
 tilo-network-actor = { path = "../network-actor" }
 # This device's own workspace service: the one a server runs, holding the workspaces this
 # device founds.
-tilo-workspace-service = { path = "../../server/tilo-workspace-service" }
+tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["apps"] }
 # A host's own questions to a member, asked on the collaboration endpoint:
 # what an agent asks before it acts on a workspace, answered by the person.
 tilo-server-client = { path = "../../server/tilo-server-client" }
@@ -272,7 +272,6 @@ tilo-system-stats = { path = "../../system/system-stats" }
 # The broker that serves the socket this session's apps speak on, and the
 # provider service it asks for what the services publish. Its channel encryption
 # service governs the sealed channels a workspace's content is carried in.
-tilo-action-broker = { path = "../../collab/tilo-action-broker" }
 # The person's other devices: what was copied here is shared through
 # the same fabric as everything else that follows them.
 tilo-device-fabric = { path = "../device-fabric" }
@@ -479,7 +478,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 test-http = { path = "../../dev/test-http" }
 # The broker's certified-connection context, for driving a service the way
 # the broker admits Files.
-tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["test-support"] }
+tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["apps", "test-support"] }
 # A site's workspace as a site runs it: the host on this machine that
 # governs the workspace a join enrolls into, folding what its pages write,
 # and the page of its person that recorded there first.

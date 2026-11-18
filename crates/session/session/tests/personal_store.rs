@@ -86,7 +86,7 @@ fn a_contact_added_here_is_kept_in_the_persons_own_store() {
     let cluster = machine.cluster();
     // Contacts declares the kind of the record the app writes, as its package ships it: what the
     // session admits the join against.
-    tilo_action_broker::register_package_surface(CONTACTS, SURFACE);
+    tilo_workspace_service::apps::register_package_surface(CONTACTS, SURFACE);
     let socket = machine.socket().to_path_buf();
     let state = tempfile::tempdir().expect("a state for this session");
     let mut session = personal::session(&socket, "Ada", &cluster, state.path(), CONTACTS, false);

@@ -15,8 +15,8 @@ use std::sync::{Arc, Mutex};
 
 use collab_types::presence::{PresenceKey, PresencePayload, ShellSelection};
 use runtime_collab::event::CollabEvent;
-use tilo_action_broker::collab_broker::{CrdtRoute, FanoutState, WorkspaceSubscription};
 use tilo_lock::MutexRecover as _;
+use tilo_workspace_service::apps::collab_broker::{CrdtRoute, FanoutState, WorkspaceSubscription};
 
 /// Where the person here last put their caret or selection: the app they did it in, the editor,
 /// the range, and whether they write a message there.
