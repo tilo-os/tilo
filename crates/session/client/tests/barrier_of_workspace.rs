@@ -7,6 +7,9 @@
 //! waited, no write of any other workspace was confirmed either: what asks whether a write is
 //! saved asked about the whole session, so every workspace's answers waited on the one
 //! document.
+//!
+//! Nor did anything say why the change stayed unconfirmed: the session says which document
+//! it keeps writes of and what they wait for, to whoever asks of that workspace.
 
 #![allow(
     clippy::unwrap_used,
@@ -19,7 +22,7 @@
 use automerge::{AutoCommit, ROOT, transaction::Transactable as _};
 use collab_types::DocumentMutation;
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_session_client::{Cmd, Outbox as _, TryRecvError};
+use tilo_session_client::{Cmd, Kept, Link, Outbox as _, Topic, TryRecvError, Waits};
 use tilo_test_env::within;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
@@ -41,6 +44,16 @@ fn write(doc: &mut AutoCommit, text: &str) -> DocumentMutation {
     } else {
         DocumentMutation::Incremental(doc.save_after(&before))
     }
+}
+
+/// What `page`'s session says it keeps of what it wrote to `workspaces`.
+async fn kept(page: &Link, workspaces: &[Topic]) -> Vec<Kept> {
+    within(
+        "the session to say what it keeps",
+        page.kept_of(workspaces).unwrap(),
+    )
+    .await
+    .expect("the session answers")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -103,6 +116,23 @@ async fn a_write_one_workspace_holds_keeps_no_other_workspaces_write_from_being_
     .expect("the session answers")
     .expect("the server has the write here");
 
+    // The session says what it keeps and why: elsewhere the change, which waits for the
+    // document it changes; here nothing, once the server has the write.
+    assert_eq!(
+        kept(&page, &[elsewhere])
+            .await
+            .iter()
+            .map(|kept| (&kept.route, &kept.waits))
+            .collect::<Vec<_>>(),
+        [(&there, &Waits::Document)],
+        "a change that waits for its document is said so, by its document"
+    );
+    assert_eq!(
+        kept(&page, &[workspace()]).await,
+        Vec::new(),
+        "a workspace whose writes the server has keeps none"
+    );
+
     // The change that waits is not confirmed, nor is the session as a whole: both were asked
     // before a later write here, which is confirmed again.
     let own = page.barrier_of(&[elsewhere]).unwrap();
@@ -145,6 +175,11 @@ async fn a_write_one_workspace_holds_keeps_no_other_workspaces_write_from_being_
         .await
         .expect("the session answers")
         .expect("the server has every write");
+    assert_eq!(
+        kept(&page, &[elsewhere, workspace()]).await,
+        Vec::new(),
+        "nothing is kept once the document landed and the change went"
+    );
     for peer in [founder, page] {
         peer.close();
     }

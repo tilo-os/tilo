@@ -328,6 +328,9 @@ fn session_task(
         workspace_keys,
         governance,
         outbound_due: false,
+        held_since: BTreeMap::new(),
+        kept_why: BTreeMap::new(),
+        owed_since: BTreeMap::new(),
         answered: Vec::new(),
         arrived: Vec::new(),
         let_go: BTreeSet::new(),
@@ -482,6 +485,13 @@ struct Task {
     /// Writes were published, or the host answered writes held, since held writes were
     /// last committed: what waits may commit ([`Self::commit_held`]).
     outbound_due: bool,
+    /// Since when each document holds writes of this device that are not committed to its
+    /// replica: how long they have waited, for whoever asks ([`Self::keeps`]).
+    held_since: BTreeMap<DocumentRoute, tilo_clock::time::Instant>,
+    /// What the replica last said a document's held writes wait for, where it named something.
+    kept_why: BTreeMap<DocumentRoute, crate::Waits>,
+    /// Since when each document has committed writes of this device its holder has not answered.
+    owed_since: BTreeMap<DocumentRoute, tilo_clock::time::Instant>,
     /// Documents the host delivered that the replica decides together ([`Self::keep_arrived`]).
     arrived: Vec<Arrived>,
     /// Records of writes the replica let go undecided, its queue of undecided writes full: the
@@ -1624,6 +1634,10 @@ impl Task {
             }
             Command::Client(Cmd::BarrierOf(workspaces, done)) => {
                 self.barrier(done, Some(workspaces.into_iter().collect()));
+                true
+            }
+            Command::Client(Cmd::KeptOf(workspaces, said)) => {
+                let _ = said.send(self.keeps(&workspaces.into_iter().collect()));
                 true
             }
             Command::Client(Cmd::Presence(workspace_id, frames)) => {
