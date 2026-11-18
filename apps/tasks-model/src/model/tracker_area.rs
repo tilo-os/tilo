@@ -75,10 +75,14 @@ impl TrackerArea {
     pub fn valid(&self) -> Result<(), Refusal> {
         let name = self.name.trim();
         if name.is_empty() {
-            return Err(Refusal::new("A project has a name"));
+            return Err(Refusal::new(
+                tilo_resource::word!("tasks-project-needs-name").read(),
+            ));
         }
         if name.chars().count() > MAX_NAME_CHARS {
-            return Err(Refusal::new("A project's name fits on a line"));
+            return Err(Refusal::new(
+                tilo_resource::word!("tasks-name-one-line").read(),
+            ));
         }
         Ok(())
     }

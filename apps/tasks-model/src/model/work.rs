@@ -287,12 +287,19 @@ pub fn task_state(issue: &Issue) -> TaskState {
 pub fn checked_line(line: &str, what: &str) -> Result<String, Refusal> {
     let line = line.trim();
     if line.is_empty() {
-        return Err(Refusal::new(format!("Say {what} in a few words")));
+        return Err(Refusal::new(
+            tilo_resource::word!("tasks-say-few-words", what = what.to_owned()).read(),
+        ));
     }
     if line.chars().count() > MAX_LINE_CHARS {
-        return Err(Refusal::new(format!(
-            "{what} fits in {MAX_LINE_CHARS} characters"
-        )));
+        return Err(Refusal::new(
+            tilo_resource::word!(
+                "tasks-fits-chars",
+                what = what.to_owned(),
+                max = MAX_LINE_CHARS
+            )
+            .read(),
+        ));
     }
     Ok(line.to_owned())
 }
@@ -309,7 +316,9 @@ pub fn checked_address(address: Option<String>) -> Result<Option<String>, Refusa
         return Ok(None);
     };
     if address.chars().count() > MAX_ADDRESS_CHARS {
-        return Err(Refusal::new("That address is too long"));
+        return Err(Refusal::new(
+            tilo_resource::word!("tasks-address-too-long").read(),
+        ));
     }
     Ok(Some(address))
 }
@@ -326,17 +335,23 @@ pub fn checked_folder(path: &str) -> Result<String, Refusal> {
         .filter(|part| !part.is_empty())
         .collect();
     if parts.is_empty() {
-        return Err(Refusal::new("Name the folder its material is kept in"));
+        return Err(Refusal::new(
+            tilo_resource::word!("tasks-folder-unnamed").read(),
+        ));
     }
     if parts
         .iter()
         .any(|part| *part == "." || *part == ".." || part.contains('\0'))
     {
-        return Err(Refusal::new("That is no folder's path"));
+        return Err(Refusal::new(
+            tilo_resource::word!("tasks-folder-unpath").read(),
+        ));
     }
     let folder = parts.join("/");
     if folder.chars().count() > MAX_ADDRESS_CHARS {
-        return Err(Refusal::new("That folder's path is too long"));
+        return Err(Refusal::new(
+            tilo_resource::word!("tasks-folder-path-long").read(),
+        ));
     }
     Ok(folder)
 }
@@ -347,9 +362,9 @@ pub fn checked_folder(path: &str) -> Result<String, Refusal> {
 /// Refuses more than [`MAX_WAITS`], and a wait that does not say what it is for.
 pub fn checked_waits(waits: Vec<WaitFor>) -> Result<Vec<WaitFor>, Refusal> {
     if waits.len() > MAX_WAITS {
-        return Err(Refusal::new(format!(
-            "A wait names at most {MAX_WAITS} things"
-        )));
+        return Err(Refusal::new(
+            tilo_resource::word!("tasks-wait-limit", max = MAX_WAITS).read(),
+        ));
     }
     waits
         .into_iter()

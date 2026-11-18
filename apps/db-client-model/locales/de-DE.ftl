@@ -22,3 +22,10 @@ db-client-effects-begin = Transaktion beginnen
 db-client-effects-commit = Transaktion festschreiben
 db-client-effects-rollback = Transaktion zurückrollen
 db-client-effects-rerun = Frühere Abfrage ausführen
+
+## Was der Datensatz in Worten sagt.
+
+db-client-unknown-engine = Es gibt keine Engine namens { $engine }.
+db-client-search-saved-query = Gespeicherte gemeinsame Abfrage
+db-client-profile-in-memory = im Arbeitsspeicher
+db-client-profile-no-file = keine Datei

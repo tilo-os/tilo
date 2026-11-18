@@ -22,3 +22,10 @@ db-client-effects-begin = Begin transaction
 db-client-effects-commit = Commit transaction
 db-client-effects-rollback = Roll back transaction
 db-client-effects-rerun = Run historical query
+
+## What the resource says in words.
+
+db-client-unknown-engine = There is no engine called { $engine }.
+db-client-search-saved-query = Collaborative saved query
+db-client-profile-in-memory = in-memory
+db-client-profile-no-file = no file

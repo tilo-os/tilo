@@ -9,3 +9,4 @@ hex-editor-document-insert-byte = Insert at cursor
 hex-editor-document-overwrite-byte = Overwrite at cursor
 hex-editor-document-delete-selection = Delete selection
 hex-editor-document-delete-byte = Delete byte
+hex-editor-not-hex-bytes = { $text } is not hexadecimal bytes (e.g. `de ad be ef`)

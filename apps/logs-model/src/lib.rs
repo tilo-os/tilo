@@ -69,31 +69,31 @@ impl Priority {
 
     /// The severity's name, the same in the list and the detail.
     #[must_use]
-    pub fn long(self) -> &'static str {
+    pub fn long(self) -> String {
         match self {
-            Priority::Emerg => "Emergency",
-            Priority::Alert => "Alert",
-            Priority::Crit => "Critical",
-            Priority::Err => "Error",
-            Priority::Warning => "Warning",
-            Priority::Notice => "Notice",
-            Priority::Info => "Info",
-            Priority::Debug => "Debug",
+            Priority::Emerg => tilo_resource::word!("logs-priority-emerg").read(),
+            Priority::Alert => tilo_resource::word!("logs-priority-alert").read(),
+            Priority::Crit => tilo_resource::word!("logs-priority-crit").read(),
+            Priority::Err => tilo_resource::word!("logs-priority-err").read(),
+            Priority::Warning => tilo_resource::word!("logs-priority-warning").read(),
+            Priority::Notice => tilo_resource::word!("logs-priority-notice").read(),
+            Priority::Info => tilo_resource::word!("logs-priority-info").read(),
+            Priority::Debug => tilo_resource::word!("logs-priority-debug").read(),
         }
     }
 
     /// The threshold this severity sets, as the severity filter names it.
     #[must_use]
-    pub fn threshold_label(self) -> &'static str {
+    pub fn threshold_label(self) -> String {
         match self {
-            Priority::Emerg => "Emergency only",
-            Priority::Alert => "Alert and above",
-            Priority::Crit => "Critical and above",
-            Priority::Err => "Error and above",
-            Priority::Warning => "Warning and above",
-            Priority::Notice => "Notice and above",
-            Priority::Info => "Info and above",
-            Priority::Debug => "All levels",
+            Priority::Emerg => tilo_resource::word!("logs-threshold-emerg").read(),
+            Priority::Alert => tilo_resource::word!("logs-threshold-alert").read(),
+            Priority::Crit => tilo_resource::word!("logs-threshold-crit").read(),
+            Priority::Err => tilo_resource::word!("logs-threshold-err").read(),
+            Priority::Warning => tilo_resource::word!("logs-threshold-warning").read(),
+            Priority::Notice => tilo_resource::word!("logs-threshold-notice").read(),
+            Priority::Info => tilo_resource::word!("logs-threshold-info").read(),
+            Priority::Debug => tilo_resource::word!("logs-threshold-debug").read(),
         }
     }
 }

@@ -130,9 +130,9 @@ impl ConnectionProfile {
         match self.engine {
             Engine::Sqlite => {
                 if self.file_path == ":memory:" {
-                    "in-memory".to_string()
+                    tilo_resource::word!("db-client-profile-in-memory").read()
                 } else if self.file_path.is_empty() {
-                    "no file".to_string()
+                    tilo_resource::word!("db-client-profile-no-file").read()
                 } else {
                     self.file_path.clone()
                 }
