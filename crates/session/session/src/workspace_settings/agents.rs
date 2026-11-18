@@ -342,6 +342,10 @@ impl Agents {
                         label: agent_access::kind_label(cell.kind),
                         answer: answer_index(cell.answer),
                         choices: row.choices(cell),
+                        // Only the person's own account rows say what reaching outside means.
+                        caption: (cell.kind == ActionKind::Outside)
+                            .then(|| row.effects.clone())
+                            .flatten(),
                     })
                     .collect(),
             })
@@ -429,7 +433,6 @@ impl Agents {
             reset: t("workspace-settings-agent-access-reset"),
             custom: t("workspace-settings-agent-access-set-here"),
             apps: Self::access_apps(&rows),
-            empty: t("workspace-settings-agent-access-empty"),
             // The keeper chooses the model on their own devices, which run it: a page runs none.
             models: (!RUNS_ON_HOST).then_some(models),
             limit: Some(limit),

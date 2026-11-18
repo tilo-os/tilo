@@ -65,6 +65,10 @@ pub struct AgentAccessRow {
     pub app: String,
     pub scope: AnswerScope,
     pub label: String,
+    /// What the row's outside effects are, in one line, for the person's own account rows whose
+    /// name does not say what reaching outside them means: creating and deleting their
+    /// workspaces, inviting people. `None` for an app's own row.
+    pub effects: Option<String>,
     pub cells: [AnswerCell; 3],
 }
 
@@ -158,21 +162,22 @@ pub fn agent_access_rows(
     );
     ids.compact_sort();
     ids.dedup();
-    ids.retain(|app| !ACCOUNT.iter().any(|(own, _)| own == app));
-    let row = |app: String, label: String| {
+    ids.retain(|app| !ACCOUNT.iter().any(|(own, ..)| own == app));
+    let row = |app: String, label: String, effects: Option<String>| {
         let scope = AnswerScope::app(&app);
         AgentAccessRow {
             cells: KINDS.map(|kind| answer_at(ws, agent, admission, &scope, kind)),
             label,
             scope,
             app,
+            effects,
         }
     };
     let mut rows: Vec<AgentAccessRow> = ids
         .into_iter()
         .map(|app| {
             let label = app_display_name(apps, &app);
-            row(app, label)
+            row(app, label, None)
         })
         .collect();
     rows.compact_sort_by_key(|row| row.label.to_lowercase());
@@ -181,20 +186,23 @@ pub fn agent_access_rows(
     rows.extend(
         ACCOUNT
             .iter()
-            .map(|(app, label)| row((*app).to_owned(), t(label))),
+            .map(|(app, label, effects)| row((*app).to_owned(), t(label), Some(t(effects)))),
     );
     rows
 }
 
-/// The person's own account, as the rows after the apps name it.
-const ACCOUNT: [(&str, &str); 2] = [
+/// The person's own account, as the rows after the apps name it, with a line naming the
+/// outside effects the row covers.
+const ACCOUNT: [(&str, &str, &str); 2] = [
     (
         agent_answers::ACCOUNT_APP,
         "workspace-settings-agent-access-workspaces",
+        "workspace-settings-agent-access-workspaces-effects",
     ),
     (
         agent_answers::WORKSPACE_GOVERNANCE_APP,
         "workspace-settings-agent-access-members",
+        "workspace-settings-agent-access-members-effects",
     ),
 ];
 
@@ -215,7 +223,7 @@ pub fn agent_exceptions(bound: &[Rule], apps: &dyn AppDirectory) -> Vec<AgentExc
                     "workspace-settings-agent-exception",
                     &[
                         ("app", app_display_name(apps, app).into()),
-                        ("action", humanize(action).into()),
+                        ("action", tilo_actions::action_label(action).into()),
                     ],
                 );
                 Some(AgentException { scope, kind, label })
@@ -251,15 +259,6 @@ pub fn bound_with(
         }
     }
     rules
-}
-
-/// `send_message` as `Send message` .
-fn humanize(id: &str) -> String {
-    let spaced = id.replace(['_', '-', '.'], " ");
-    let mut chars = spaced.trim().chars();
-    chars.next().map_or_else(String::new, |first| {
-        first.to_uppercase().chain(chars).collect()
-    })
 }
 
 /// A model of the person's providers that an agent may plan with.
@@ -476,13 +475,26 @@ mod tests {
             // The person may let it go unasked within their own account, never elsewhere.
             let outside = |row: &AgentAccessRow| row.choices(&row.cells[2]);
             assert_eq!(outside(&rows[0]), [1, 2], "Mail's outside effects ask or are denied");
+            assert_eq!(rows[0].effects, None, "an app's own name says what it is");
             assert_eq!(
                 (rows[1].app.as_str(), rows[1].label.as_str()),
                 (agent_answers::ACCOUNT_APP, "Your workspaces")
             );
             assert_eq!(outside(&rows[1]), [0, 1, 2], "making a workspace may be allowed");
+            assert_eq!(
+                rows[1].effects.as_deref(),
+                Some("Creating, branching, entering and deleting your workspaces."),
+                "its row says what reaching outside it is"
+            );
             assert_eq!(rows[2].app, agent_answers::WORKSPACE_GOVERNANCE_APP);
             assert_eq!(outside(&rows[2]), [0, 1, 2]);
+            assert!(
+                rows[2]
+                    .effects
+                    .as_deref()
+                    .is_some_and(|effects| effects.contains("Inviting")),
+                "its row says what reaching outside it is"
+            );
             let exceptions = agent_exceptions(&bound, &super::super::NoAppDirectory);
             assert_eq!(exceptions.len(), 1, "a Deny is no exception to list");
             assert_eq!(exceptions[0].scope, send);

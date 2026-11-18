@@ -598,6 +598,25 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
     };
     assert_eq!(choices("change"), Some(vec![0, 1, 2]), "{notes:?}");
     assert_eq!(choices("outside"), Some(vec![1, 2]), "{notes:?}");
+    assert_eq!(
+        notes.kinds[2].caption, None,
+        "an app's own name says what reaching outside it means"
+    );
+    // The person's own account rows say what their outside effects are, which their names do
+    // not, and the review's line says what an app's outside effects may be given.
+    let workspaces = listed_app(
+        &session,
+        &format!("app:{}", tilo_action_policy::agent_answers::ACCOUNT_APP),
+    );
+    assert_eq!(workspaces.label, "Your workspaces");
+    assert_eq!(
+        workspaces.kinds[2].caption.as_deref(),
+        Some("Creating, branching, entering and deleting your workspaces.")
+    );
+    assert_eq!(
+        review.note,
+        "In apps, outside effects ask you first or are denied; in your own account you may allow them."
+    );
     choose(&mut app, "Notes Changes", "Ask first");
     settle(&mut session, &mut app);
     assert_eq!(

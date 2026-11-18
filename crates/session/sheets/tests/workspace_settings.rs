@@ -644,6 +644,49 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase a_line_with_fewer_answers_keeps_the_places_of_the_ones_it_has;
+    // Ask first and Deny stand where they stand in a line offering Allow too, so the answers
+    // line up under each other down the review.
+    {
+        let (mut app, _) = mounted("agent-review");
+        let segments = |app: &mut HeadlessApp<WorkspaceSettingsApp>, name: &str| {
+            let nodes: std::collections::HashMap<_, _> =
+                app.harness().a11y_nodes().into_iter().collect();
+            let (_, group) = nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some(name))
+                .unwrap_or_else(|| panic!("{name:?} is shown"));
+            group
+                .children()
+                .iter()
+                .filter_map(|child| nodes.get(child)?.bounds())
+                .collect::<Vec<_>>()
+        };
+        let two = segments(&mut app, "Notes Outside effects");
+        let three = segments(&mut app, "Notes Reading");
+        assert_eq!((two.len(), three.len()), (2, 3), "each answer is placed");
+        for (offered, held) in two.iter().zip(&three[1..]) {
+            assert!(
+                (offered.x0 - held.x0).abs() < 1.0 && (offered.x1 - held.x1).abs() < 1.0,
+                "Ask first and Deny keep their places: {offered:?} then {held:?}"
+            );
+        }
+    }
+
+    phase an_account_rows_outside_line_says_what_those_effects_are;
+    // Outside effects under the person's own account rows name the actions they cover, which
+    // their row names alone do not say.
+    {
+        let mut settings = staged_settings("agent-review");
+        settings.agents.review.as_mut().unwrap().apps[0].kinds[2].caption =
+            Some("Creating and deleting your workspaces.".to_owned());
+        let (mut app, _) = mounted_with(settings);
+        assert!(
+            says(&mut app, "Creating and deleting your workspaces."),
+            "the line says what its outside effects are"
+        );
+    }
+
     phase in_a_review_escape_goes_back_to_the_agents;
     {
         let (mut app, state) = mounted("agent-review");
