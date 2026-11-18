@@ -803,6 +803,12 @@ identifiers = ["test_host"]
 paths = ["crates/server/tilo-workspace-service/src/workspaces/packaged_model_tests.rs"]
 
 [[allow]]
+reason = "The service's test fixture starts a certified device (`test_host`), a name its other tests share."
+words = ["host"]
+identifiers = ["test_host"]
+paths = ["crates/server/tilo-workspace-service/src/workspaces/governed_grants_tests.rs"]
+
+[[allow]]
 reason = "The domain bytes a genesis change is hashed under, fixed before the word was retired; a different domain forks every resource created since."
 words = ["record"]
 identifiers = ["record"]

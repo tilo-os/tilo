@@ -144,6 +144,8 @@ pub use device_keys::{
 pub use sealed_documents::fixtures as sealed_fixtures;
 mod desktop_document;
 #[cfg(test)]
+mod governed_grants_tests;
+#[cfg(test)]
 mod naming_tests;
 pub mod servers;
 mod shares;
@@ -1525,6 +1527,17 @@ impl Workspaces {
     #[must_use]
     pub fn governor(&self) -> &DeviceCert {
         &self.inner.host.cert
+    }
+
+    /// Whether this server's own person governs `workspace` here: every
+    /// workspace it keeps is theirs, except a workspace of someone else's
+    /// own, which that person governs.
+    #[must_use]
+    pub fn governs(&self, workspace: &str) -> bool {
+        let person = self.inner.host.cert.user_public_key;
+        self.own()
+            .and_then(|own| own.owner_of(workspace))
+            .is_none_or(|owner| owner == person)
     }
 
     /// The governor answering the workspace-join exchange for these workspaces.
