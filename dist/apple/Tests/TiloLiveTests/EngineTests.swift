@@ -875,6 +875,29 @@ final class EngineTests: XCTestCase {
         XCTFail("waited ten seconds for \(what)")
         throw CancellationError()
     }
+
+    /// As on a slow connection: the page fetches a thing's app the first time it mounts one.
+    func testMountingALiveThingMayTakeLongerThanAnAskOfAServerAndIsNotEndedByThatBound() async throws {
+        try await inPage("""
+            location.hash = '#/w/ws-1/so.tilo.chat'; offerBeside();
+            const mounts = globalThis.tiloOpen;
+            globalThis.tiloOpen = async (element, what) => { await new Promise(on => setTimeout(on, 1200)); return mounts(element, what); };
+            enter()
+            """)
+        try await until("the engine is in") { if case .open = self.engine.state { true } else { false } }
+        engine.askPatience = .milliseconds(300)
+        let shown = try await engine.show(live: "draft", .new(app: "so.tilo.word-processor"))
+        XCTAssertEqual(shown, "uuid:made-now")
+    }
+
+    /// Tilo's page ends an ask of a person's server after thirty seconds, looked at every half
+    /// second, and follows the making of a person's own workspace for 160 seconds: the engine's
+    /// own bounds are longer, so that the page's word comes first.
+    func testTheEnginesBoundsAreLongerThanThePagesOwn() {
+        XCTAssertGreaterThan(engine.askPatience, .seconds(30.5))
+        XCTAssertGreaterThan(engine.ownPatience, .seconds(160))
+        XCTAssertGreaterThanOrEqual(engine.mountPatience, engine.askPatience)
+    }
 }
 
 final class EngineAddressTests: XCTestCase {
