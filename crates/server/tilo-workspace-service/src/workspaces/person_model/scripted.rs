@@ -167,13 +167,58 @@ fn words_of(content: &[Content]) -> u64 {
         .fold(0, u64::saturating_add)
 }
 
-/// `content` as a provider streams it, and the answer it ends in.
+/// As much of `content` as `allowance` tokens hold, a word a token and thought counted with
+/// the words, and whether that is less than all of it: what a provider does with an answer
+/// longer than the `max_tokens` it was sent. The part the allowance ends in is cut there; a
+/// tool call cut short is no call.
+fn within(content: Vec<Content>, allowance: u64) -> (Vec<Content>, bool) {
+    let mut left = allowance;
+    let mut kept = Vec::new();
+    for part in content {
+        let takes = words_of(std::slice::from_ref(&part));
+        if takes <= left {
+            left = left.saturating_sub(takes);
+            kept.push(part);
+            continue;
+        }
+        match part {
+            Content::Text { text } if left > 0 => kept.push(Content::Text {
+                text: first_words(&text, left),
+            }),
+            Content::Reasoning {
+                text,
+                extra_content,
+            } if left > 0 => kept.push(Content::Reasoning {
+                text: first_words(&text, left),
+                extra_content,
+            }),
+            _ => {}
+        }
+        return (kept, true);
+    }
+    (kept, false)
+}
+
+/// The first `count` words of `text`, with what stands between them.
+fn first_words(text: &str, count: u64) -> String {
+    let count = usize::try_from(count).unwrap_or(usize::MAX);
+    text.split_inclusive(' ')
+        .take(count)
+        .collect::<String>()
+        .trim_end()
+        .to_owned()
+}
+
+/// `content` as a provider streams it, and the answer it ends in. As a provider does, it
+/// stops where the request's allowance of output tokens ends ([`within`]) and says that the
+/// answer was cut.
 fn said(
     request: &ModelRequest,
     content: Vec<Content>,
     cost_micros: u64,
     events: Events<'_>,
 ) -> ModelResponse {
+    let (content, cut) = within(content, u64::from(request.max_output_tokens));
     let mut calls = 0_u32;
     for part in &content {
         match part {
@@ -210,7 +255,9 @@ fn said(
             role: Role::Assistant,
             content,
         },
-        stop_reason: if calls == 0 {
+        stop_reason: if cut {
+            StopReason::OutputLimit
+        } else if calls == 0 {
             StopReason::EndTurn
         } else {
             StopReason::ToolCalls

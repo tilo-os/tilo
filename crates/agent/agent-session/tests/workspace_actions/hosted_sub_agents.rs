@@ -13,6 +13,10 @@ use ui::tilo_workspace_agent::{Agent, NewSubAgent, Stands, workspace_agents};
 #[path = "hosted_coding_agents.rs"]
 mod hosted_coding_agents;
 
+/// An answer arrives whole, however long it is.
+#[path = "hosted_long_answers.rs"]
+mod long_answers;
+
 /// A model whose answer to each call is `play`'s. Every call is kept, in the order asked.
 struct Plays {
     play: Arc<dyn Fn(&ModelRequest) -> ModelResponse + Send + Sync>,

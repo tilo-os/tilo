@@ -390,6 +390,116 @@ async fn an_openai_compatible_providers_tool_call_comes_back_whole() {
     assert_eq!(sent["tools"][0]["function"]["name"], "lookup");
 }
 
+/// A short answer as an OpenAI-compatible provider streams one.
+fn done(model: &str) -> Reply {
+    openai_stream(&[
+        chunk(
+            model,
+            &json!({"role": "assistant", "content": "Done"}),
+            &Value::Null,
+        ),
+        chunk(model, &json!({}), &json!("stop")),
+        usage(model, 10, 1),
+    ])
+}
+
+/// Have Ada's provider list `model` with `tokens` as the most one answer of it may take, as
+/// a provider's own list of models publishes it.
+fn publishes(workspaces: &Workspaces, model: &str, tokens: u32) {
+    let root = workspaces.person_settings_root(&ADA);
+    let mut config = crate::workspaces::person_settings::provider_config(&root);
+    for listed in config
+        .profiles
+        .iter_mut()
+        .flat_map(|profile| &mut profile.models)
+    {
+        if listed.id == model {
+            listed.max_output_tokens = Some(tokens);
+        }
+    }
+    crate::workspaces::person_settings::save_provider_config(&root, &config).unwrap();
+}
+
+/// Nothing of the server's bounds an answer. A request that names no allowance of its own
+/// goes out with none where the provider's protocol takes such a request, so the provider's
+/// own maximum holds. Once the provider's list publishes the model's maximum, that is what
+/// is asked for. A caller that wants a short answer keeps the number it named.
+#[tokio::test]
+async fn an_answer_is_bounded_by_its_models_own_maximum_and_nothing_of_the_servers() {
+    let model = "gemini-main";
+    let responder = Responder::start(vec![done(model), done(model), done(model)]);
+    let (_dir, server) = linked(
+        ("Google", OPENAI),
+        &format!("{}/v1", responder.url()),
+        model,
+    )
+    .await;
+    let asked = server.workspaces().person_model(ADA, Interaction::Request);
+    let mut whole = asking("Write the whole report", Vec::new());
+    whole.max_output_tokens = ModelRequest::NO_OUTPUT_BOUND;
+
+    asked.answer(&whole, soon(), &mut |_| {}).await.unwrap();
+    let sent = body_of(&responder.next_request());
+    assert!(
+        sent.get("max_tokens").is_none() && sent.get("max_completion_tokens").is_none(),
+        "an allowance nobody published went to the provider: {sent}"
+    );
+
+    publishes(server.workspaces(), model, 65_536);
+    asked.answer(&whole, soon(), &mut |_| {}).await.unwrap();
+    assert_eq!(body_of(&responder.next_request())["max_tokens"], 65_536);
+
+    let short = asking("Yes or no?", Vec::new());
+    asked.answer(&short, soon(), &mut |_| {}).await.unwrap();
+    assert_eq!(body_of(&responder.next_request())["max_tokens"], 256);
+}
+
+/// A short answer as Anthropic's Messages API streams one.
+fn anthropic_done(model: &str) -> Reply {
+    anthropic_stream(&[
+        json!({"type": "message_start", "message": {"id": "msg_1", "type": "message",
+            "role": "assistant", "model": model, "content": [], "stop_reason": null,
+            "stop_sequence": null, "usage": {"input_tokens": 10, "output_tokens": 1}}}),
+        json!({"type": "content_block_start", "index": 0,
+            "content_block": {"type": "text", "text": ""}}),
+        json!({"type": "content_block_delta", "index": 0,
+            "delta": {"type": "text_delta", "text": "Done"}}),
+        json!({"type": "content_block_stop", "index": 0}),
+        json!({"type": "message_delta",
+            "delta": {"stop_reason": "end_turn", "stop_sequence": null},
+            "usage": {"output_tokens": 1}}),
+        json!({"type": "message_stop"}),
+    ])
+}
+
+/// Anthropic's protocol refuses a request without an allowance. For a model whose maximum
+/// nobody published, neither its provider's list nor Anthropic's own table of its models,
+/// the stand-in for an unpublished maximum is sent. Once the list publishes one, that is.
+#[tokio::test]
+async fn anthropic_is_sent_the_stand_in_only_while_nobody_published_a_maximum() {
+    let model = "house-model-7";
+    let responder = Responder::start(vec![anthropic_done(model), anthropic_done(model)]);
+    let (_dir, server) = linked(
+        ("A provider", ProviderProtocol::Anthropic),
+        &responder.url(),
+        model,
+    )
+    .await;
+    let asked = server.workspaces().person_model(ADA, Interaction::Request);
+    let mut whole = asking("Write the whole report", Vec::new());
+    whole.max_output_tokens = ModelRequest::NO_OUTPUT_BOUND;
+
+    asked.answer(&whole, soon(), &mut |_| {}).await.unwrap();
+    assert_eq!(
+        body_of(&responder.next_request())["max_tokens"],
+        ModelDescriptor::DEFAULT_OUTPUT_TOKENS
+    );
+
+    publishes(server.workspaces(), model, 100_000);
+    asked.answer(&whole, soon(), &mut |_| {}).await.unwrap();
+    assert_eq!(body_of(&responder.next_request())["max_tokens"], 100_000);
+}
+
 /// Anthropic is asked at its Messages API with the key in its own header,
 /// and its stream of typed events arrives as words, a tool call and usage.
 #[tokio::test]

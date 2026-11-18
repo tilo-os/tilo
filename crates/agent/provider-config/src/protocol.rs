@@ -18,7 +18,17 @@ pub struct ModelRequest {
     #[serde(default)]
     pub tools: Vec<ToolDefinition>,
     pub tool_choice: ToolChoice,
+    /// The most output tokens the answer may take, its reasoning included;
+    /// [`Self::NO_OUTPUT_BOUND`] where the caller sets no bound of its own.
     pub max_output_tokens: u32,
+}
+
+impl ModelRequest {
+    /// What [`Self::max_output_tokens`] says where the caller sets no bound
+    /// of its own: the model's own maximum is the one that holds, and a
+    /// provider whose protocol takes a request without an allowance is sent
+    /// none.
+    pub const NO_OUTPUT_BOUND: u32 = u32::MAX;
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
