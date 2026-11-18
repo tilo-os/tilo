@@ -732,7 +732,6 @@ paths = [
     "crates/session/session/src/enrollment.rs",
     "crates/session/session/src/enrollment_tests.rs",
     "crates/session/install-plan/src/lib.rs",
-    "crates/session/install-plan/src/host.rs",
     "crates/server/tilo-server/tests/machines.rs",
 ]
 
@@ -1108,7 +1107,6 @@ paths = [
     "crates/server/tilo-workspace-service/src/workspaces/actions/host.rs",
     "crates/server/tilo-workspace-service/src/workspaces/actions/host/machine.rs",
     "crates/server/tilo-workspace-service/src/workspaces/actions/server.rs",
-    "crates/session/install-plan/src/host.rs",
     "crates/session/install-plan/src/lib.rs",
 ]
 
@@ -1315,3 +1313,25 @@ paths = [
 reason = "A workspace's kept entry as the code around it names it (`WorkspaceDocumentEntry`, its publications and the records it holds), moved here with its comments; the file is the typing of a workspace's first history, and no new name is meant."
 words = ["host", "record"]
 paths = ["crates/server/tilo-workspace-service/src/workspaces/founding.rs"]
+
+[[allow]]
+reason = "The control front's own name for running one action at a given address (`front::run_address`), which the command asks the session's action API through."
+words = ["run"]
+identifiers = ["run_address"]
+paths = ["crates/system/tilo-cli/src/machine.rs"]
+
+[[allow]]
+reason = "The action API's own name for reading one invocation's arguments from the one string a host step is handed (`InvokeArgument::from_slot`)."
+words = ["slot"]
+identifiers = ["from_slot"]
+paths = ["crates/session/session/src/machine_steps.rs"]
+
+[[allow]]
+reason = "The broker's own name for the steps a host runs itself (`HostStepServices`, `HostStepRequest`, `HostStepOutcome`) and the session's reach to them (`ask_host`, `ask_own_host`, `hosts_itself`), under the `tilo.host` provider a device's workspace service answers."
+words = ["host"]
+paths = [
+    "crates/session/client/src/engine.rs",
+    "crates/session/session/src/machine_steps.rs",
+    "crates/session/session/src/pair_device.rs",
+    "crates/session/session/src/sync/client/own_service.rs",
+]

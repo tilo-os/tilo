@@ -19,5 +19,6 @@ pub use tilo_workspace_service::workspaces::servers::{
 pub use tilo_workspace_service::workspaces::servers::attach;
 
 pub mod applied;
+pub mod first_install;
 pub mod floor;
 pub mod policy;

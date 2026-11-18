@@ -777,12 +777,18 @@ impl Server {
                 } else if earlier.is_empty() {
                     Ok(())
                 } else {
+                    // Until an earlier server takes this one in, it holds no
+                    // Servers workspace and so cannot read the plan it was
+                    // installed from. Once it does, it finishes installing and
+                    // applies the document from then on.
                     push_background_task(
                         &background_tasks,
-                        tokio::spawn(ask_to_be_admitted(
+                        tokio::spawn(admitted_first_boot(
                             endpoint.clone(),
                             identity.clone(),
                             earlier,
+                            governed.clone(),
+                            cfg.state_root.clone(),
                         )),
                     );
                     Ok(())
@@ -1227,6 +1233,52 @@ async fn ask_to_be_taken_in(
         tokio::time::sleep(wait).await;
         wait = wait.saturating_mul(2).min(Duration::from_secs(300));
     }
+}
+
+/// A machine installed from a plan asks its person's earlier servers to take
+/// it in, waits until it holds their Servers workspace, finishes the
+/// installation its plan describes and applies the workspace's document from
+/// then on.
+async fn admitted_first_boot(
+    endpoint: Endpoint,
+    identity: ServerIdentity,
+    earlier: Vec<(tilo_user_identity::DeviceCert, EndpointAddr)>,
+    workspaces: crate::workspaces::Workspaces,
+    state_root: PathBuf,
+) {
+    ask_to_be_admitted(endpoint.clone(), identity.clone(), earlier).await;
+    // The hand-over is the holders' to make: one of them names this device in
+    // the workspace, which then reaches it, and it holds the workspace.
+    let mut wait = Duration::from_millis(500);
+    while !crate::servers::holds_admin(&workspaces).await {
+        tokio::time::sleep(wait).await;
+        wait = wait.saturating_mul(2).min(Duration::from_secs(30));
+    }
+    if let Some(nonce) = crate::servers::first_install::recorded_nonce(&state_root) {
+        let requests = crate::servers::applied::Requests::default();
+        match crate::servers::first_install::install(
+            &workspaces,
+            &identity.device_cert,
+            &nonce,
+            &crate::servers::first_install::real_drives(),
+            &requests,
+        )
+        .await
+        {
+            Ok(()) => tracing::info!("this machine installed from its plan"),
+            Err(error) => {
+                tracing::warn!(%error, "this machine did not install from its plan");
+            }
+        }
+    }
+    // What the person's servers are told to be is the workspace's document,
+    // which this device applies from now on.
+    let _following = crate::servers::applied::follow(
+        &workspaces,
+        crate::servers::applied::Requests::default(),
+        Some(endpoint),
+        state_root,
+    );
 }
 
 /// Ask the person's earlier servers, in turn, to take this one in among

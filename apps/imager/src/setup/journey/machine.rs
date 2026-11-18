@@ -9,6 +9,9 @@
 use std::path::{Path, PathBuf};
 
 use install_profile_model::plan::{self, DiskRule, Network, Plan};
+use ui::InvocationCall;
+use ui::tilo_actions::remote::InvokeArgument;
+use ui::tilo_actions::remote::machines;
 
 /// The OS the other computer installs. Tilo Server is a destination OS like
 /// Tilo OS, not a purpose for a desktop.
@@ -273,19 +276,19 @@ impl Waiting {
     }
 }
 
-/// Make the plan `choices` describes for the computer named `name`, mint its
-/// single-use token and write it to a file only this account reads. The plan
-/// itself is written into the person's Servers workspace through the running
-/// session, so every one of their devices reads it there. `system` is this
-/// computer's identity and `home_peers` the registry its token names the
+/// Make the plan `choices` describes for the computer named `name` and mint its
+/// single-use token into a file only this account reads. The plan itself is
+/// published into the person's Servers workspace through the running session
+/// ([`publish`]), so every one of their devices reads it there. `system` is
+/// this computer's identity and `home_peers` the registry its token names the
 /// person's devices from.
 ///
 /// # Errors
 ///
-/// This computer holds no identity that may admit a device, no session is
-/// running, the plan is refused, or its token file cannot be written.
+/// This computer holds no identity that may admit a device, the plan is
+/// refused, or its token file cannot be written.
 #[cfg(target_os = "linux")]
-pub(super) fn create(
+pub(super) fn prepare(
     choices: &Choices,
     name: &str,
     installer_url: &str,
@@ -295,12 +298,6 @@ pub(super) fn create(
     let id = install_plan::new_id();
     let plan = choices.install(name).plan(&id, named)?;
     let token_file = install_plan::plans_dir(local.identity_dir).join(format!("{id}.token"));
-    let label = if plan.name.is_empty() {
-        plan.destination.as_str()
-    } else {
-        plan.name.as_str()
-    };
-    install_plan::host::plan(&plan, label, &token_file, installer_url)?;
     install_plan::store_token(local.identity_dir, &id, &token, Some(&token_file))?;
     let commands = plan::commands(
         &plan,
@@ -315,35 +312,113 @@ pub(super) fn create(
     })
 }
 
-/// The computers this person planned and has not installed, each with what it
-/// still asks answered against the hardware it reported.
-#[cfg(target_os = "linux")]
-pub(super) fn waiting(installer_url: &str) -> Vec<Waiting> {
-    let Ok(local) = crate::handoff::local_identity_from_env() else {
-        return Vec::new();
+/// Publish `created`'s plan into the person's Servers workspace, through the
+/// session that holds it: the request the window follows until it answered.
+pub(super) fn publish(created: &Created, installer_url: &str) -> InvocationCall {
+    let plan = &created.plan;
+    let label = if plan.name.is_empty() {
+        plan.destination.as_str()
+    } else {
+        plan.name.as_str()
     };
-    let mut waiting = Vec::new();
-    for planned in install_plan::host::waiting().unwrap_or_default() {
-        let plan = planned.plan;
-        let token_file =
-            install_plan::plans_dir(local.identity_dir).join(format!("{}.token", plan.plan));
-        let commands = plan::commands(
-            &plan,
-            installer_url.trim_end_matches('/'),
-            &token_file.display().to_string(),
-            std::env::consts::ARCH,
-        );
-        waiting.push(Waiting {
-            name: plan.name.clone(),
-            destination: destination_label(&plan.destination),
-            plan: plan.plan.clone(),
-            disk_answer: disk_answer(&plan, &planned.drives),
-            questions: questions(&plan, &planned.drives),
-            expires_in_hours: hours_left(plan.token.expires_at_ns).unwrap_or(0),
-            commands,
-        });
+    let mut arguments = serde_json::Map::new();
+    arguments.insert(
+        "plan".into(),
+        serde_json::to_string(plan).unwrap_or_default().into(),
+    );
+    arguments.insert("label".into(), label.into());
+    arguments.insert(
+        "token_file".into(),
+        created.token_file.display().to_string().into(),
+    );
+    arguments.insert("installer_url".into(), installer_url.into());
+    ui::RemoteActions::current().invoke(
+        machines::target(machines::PLAN),
+        InvokeArgument::Json(arguments),
+        None,
+    )
+}
+
+/// The computers this person planned and has not installed, asked of the
+/// session that holds their Servers workspace: the request the window follows.
+pub(super) fn waiting() -> InvocationCall {
+    ui::RemoteActions::current().invoke(
+        machines::target(machines::LIST),
+        InvokeArgument::None,
+        None,
+    )
+}
+
+/// What a followed plan-making answered, once it did: the plan is in the
+/// person's workspace.
+pub(super) fn planned(call: &InvocationCall) -> Option<Result<(), String>> {
+    Some(answered(call)?.map(drop))
+}
+
+/// The computers a followed waiting read answered, once it did, each with what
+/// it still asks answered against the hardware it reported.
+pub(super) fn listed(
+    call: &InvocationCall,
+    installer_url: &str,
+) -> Option<Result<Vec<Waiting>, String>> {
+    let value = match answered(call)? {
+        Ok(value) => value,
+        Err(error) => return Some(Err(error)),
+    };
+    let planned: Vec<install_profile_model::plan::WaitingPlan> = match serde_json::from_value(value)
+    {
+        Ok(planned) => planned,
+        Err(error) => return Some(Err(format!("the session's plans do not read: {error}"))),
+    };
+    let token_dir = crate::handoff::local_identity_from_env().map_or_else(
+        |_| PathBuf::new(),
+        |local| install_plan::plans_dir(local.identity_dir),
+    );
+    Some(Ok(planned
+        .into_iter()
+        .map(|planned| {
+            let plan = planned.plan;
+            let token_file = token_dir.join(format!("{}.token", plan.plan));
+            let commands = plan::commands(
+                &plan,
+                installer_url.trim_end_matches('/'),
+                &token_file.display().to_string(),
+                std::env::consts::ARCH,
+            );
+            Waiting {
+                name: plan.name.clone(),
+                destination: destination_label(&plan.destination),
+                plan: plan.plan.clone(),
+                disk_answer: disk_answer(&plan, &planned.drives),
+                questions: questions(&plan, &planned.drives),
+                expires_in_hours: hours_left(plan.token.expires_at_ns).unwrap_or(0),
+                commands,
+            }
+        })
+        .collect()))
+}
+
+/// What a followed call answered, once it stopped changing: its value, or why
+/// it failed. `None` while it is still on its way.
+pub(super) fn answered(call: &InvocationCall) -> Option<Result<serde_json::Value, String>> {
+    match call.get() {
+        ui::Arrival::Pending { .. } => None,
+        ui::Arrival::Failed(error) => Some(Err(error.to_string())),
+        ui::Arrival::Ready(update) => Some(match update {
+            ui::tilo_actions::InvocationUpdate::Succeeded { output, .. } => {
+                Ok(output.value.unwrap_or(serde_json::Value::Null))
+            }
+            ui::tilo_actions::InvocationUpdate::Failed { error, .. } => Err(error.message),
+            ui::tilo_actions::InvocationUpdate::Cancelled { message, .. } => {
+                Err(message.unwrap_or_else(|| "the session stopped making the plan".to_owned()))
+            }
+            ui::tilo_actions::InvocationUpdate::Accepted { .. }
+            | ui::tilo_actions::InvocationUpdate::Progress { .. }
+            | ui::tilo_actions::InvocationUpdate::Item { .. } => {
+                return None;
+            }
+        }),
     }
-    waiting
 }
 
 /// What `plan` still asks, each with the hardware fact that answers it:
@@ -537,4 +612,79 @@ fn commands_for(plan: &Plan, token_file: &str) -> plan::Commands {
 pub(super) fn hours_left(expires_at_ns: u64) -> Option<u64> {
     let left = expires_at_ns.checked_sub(ui::time::unix_now_ns())?;
     Some(left / (60 * 60 * 1_000_000_000))
+}
+
+/// The plan an "on another computer" preparation makes, followed from the
+/// window's own passes: the request that writes it, and the list of the
+/// computers this person planned.
+impl super::InstallerPreview {
+    /// Make the plan the review describes, or answer `false` while the one
+    /// made here is still being written into the person's Servers workspace:
+    /// the window follows it ([`Self::poll_plan`]) and continues once it
+    /// answered.
+    pub(super) fn make_plan(&mut self) -> Result<bool, &'static str> {
+        if self.machine.created.is_some() {
+            return Ok(true);
+        }
+        if self.machine.making.is_none() {
+            #[cfg(target_os = "linux")]
+            {
+                if let Ok(created) = prepare(
+                    &self.journey.plan,
+                    &self.journey.device_name,
+                    install_plan::INSTALLER_URL,
+                ) {
+                    let call = publish(&created, install_plan::INSTALLER_URL);
+                    self.machine.making = Some((created, call));
+                    self.machine.plan_continue = true;
+                    self.machine.error = None;
+                } else {
+                    self.machine.error = Some("installer-plan-unavailable");
+                    return Err("installer-plan-unavailable");
+                }
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                self.machine.error = Some("installer-plan-unavailable");
+                return Err("installer-plan-unavailable");
+            }
+        }
+        Ok(self.machine.created.is_some())
+    }
+
+    /// Follow the plan being written and the list of waiting computers once
+    /// each, continuing the review that waited for the plan.
+    pub(super) fn poll_plan(&mut self) -> bool {
+        let mut changed = false;
+        if let Some((created, call)) = self.machine.making.take() {
+            match planned(&call) {
+                Some(Ok(())) => {
+                    self.machine.created = Some(created);
+                    self.machine.error = None;
+                    if std::mem::take(&mut self.machine.plan_continue)
+                        && let Err(error) = self.apply(super::InstallerPreviewEffect::PrepareUsb)
+                    {
+                        self.error = Some(error);
+                    }
+                    changed = true;
+                }
+                Some(Err(_)) => {
+                    self.machine.error = Some("installer-plan-unavailable");
+                    changed = true;
+                }
+                None => self.machine.making = Some((created, call)),
+            }
+        }
+        if let Some(call) = self.machine.listing.take() {
+            match listed(&call, install_plan::INSTALLER_URL) {
+                Some(Ok(waiting)) => {
+                    self.machine.waiting = waiting;
+                    changed = true;
+                }
+                Some(Err(_)) => changed = true,
+                None => self.machine.listing = Some(call),
+            }
+        }
+        changed
+    }
 }

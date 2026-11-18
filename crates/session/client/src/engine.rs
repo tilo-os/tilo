@@ -317,9 +317,9 @@ pub trait Founder: Send + Sync {
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Option<ServiceAnswer>;
 
-    /// Ask this device's own host its own action `action` with `arguments`, in process, as the
-    /// person at this device: what a window of theirs asks through the app broker, such as the
-    /// machines their Servers workspace holds. `None` when this device serves no such host of its own.
+    /// Ask the host itself its own operation `action` (`machine.plan` and the
+    /// rest the person's own device answers, `tilo.host`) with `arguments`;
+    /// `None` when this device has no workspace service open.
     fn ask_host(
         &self,
         action: &str,
@@ -1917,10 +1917,12 @@ impl Engine {
         }))
     }
 
-    /// Ask this device's own host its own action `action` with `arguments`, in process, as the
-    /// person at this device ([`Founder::ask_host`]): what a window of theirs asks through the
-    /// app broker, such as the machines their Servers workspace holds.
-    pub fn ask_host(
+    /// Ask this device's own workspace service its host operation `action`
+    /// (`machine.plan` and the rest, `tilo.host`) with `arguments`, when it is
+    /// open: what this device's own person plans and reads there, whether or
+    /// not it holds the workspace yet.
+    #[must_use]
+    pub fn ask_own_host(
         &self,
         action: &str,
         arguments: serde_json::Map<String, serde_json::Value>,

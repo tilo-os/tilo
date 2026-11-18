@@ -201,6 +201,11 @@ pub fn workspace_governance_resource(workspace: &str) -> String {
 /// provider name, for the person at this device in the workspace they joined.
 pub mod device_pairing;
 
+/// Machines a person prepared to install: the plan and its waiting entry in
+/// their Servers workspace, read and written through the session that holds
+/// it. The command and the installer's window name one set of steps.
+pub mod machines;
+
 /// The person's settings, kept by the provider whether or not the app that shows
 /// them is open: each section a record published with its field edits and
 /// verbs (`settings:<kind>`), changed through them as that app's window

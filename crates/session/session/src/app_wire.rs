@@ -1367,6 +1367,10 @@ fn broker_services(
                         fabric: steps_fabric,
                         pairing: crate::pairing::Pairing::session(),
                     }),
+                    // The machines the person planned to install: their plans
+                    // are entries in their Servers workspace, which this
+                    // session's own workspace service keeps.
+                    crate::machine_steps::MachineSteps::session(engine.clone()),
                     std::sync::Arc::new(crate::identity_admin::BrokerApi {
                         layout: layout_authority,
                         admin: crate::identity_admin::IdentityAdmin::session(),
@@ -2210,6 +2214,10 @@ mod tests {
     /// as one still to serve — so an app that starts calling a service this
     /// session serves nothing of fails this test.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one walk through every boundary this session decides"
+    )]
     fn every_boundary_is_decided_and_no_shipped_app_asks_for_what_is_not_served() {
         let decided = broker_services(
             Link::for_test(),
@@ -2265,9 +2273,10 @@ mod tests {
         );
         assert_eq!(
             services.host_steps.len(),
-            5,
+            6,
             "the steps this session serves are the workspace's activity, device \
-             pairing, identity administration, the person's hosting account and its own actions"
+             pairing, identity administration, the person's hosting account, the machines they \
+             planned and its own actions"
         );
         let providers: Vec<&str> = services
             .host_steps
@@ -2290,6 +2299,10 @@ mod tests {
             (
                 tilo_actions::remote::server_account::PROVIDER,
                 "Settings' Billing reads the person's account with their host",
+            ),
+            (
+                tilo_actions::remote::machines::PROVIDER,
+                "the installer's window and the command plan a machine",
             ),
         ] {
             assert!(

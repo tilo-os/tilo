@@ -8218,7 +8218,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-clock",
- "tilo-control",
  "tilo-device-identity",
  "tilo-endpoint-reachability",
  "tilo-files",

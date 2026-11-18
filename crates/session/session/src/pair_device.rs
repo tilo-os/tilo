@@ -306,32 +306,38 @@ impl crate::Shared {
     }
 
     /// Take the machine `machine` the person approved into its waiting entry in their Servers
-    /// workspace, through the workspace's holder: the entry becomes the machine's under its device
-    /// key, and the holder hands it over from there. A machine that came with no token is no
-    /// planned machine.
+    /// workspace, through this device's own workspace service: the entry becomes the machine's
+    /// under its device key, and the device that governs the workspace hands it over from there.
+    /// A machine that came with no token is no planned machine.
     fn admit_planned(&self, machine: &crate::enrollment::Waiting) {
         if machine.nonce.is_empty() {
             return;
         }
-        let Some(engine) = self.engine.as_ref() else {
-            return;
-        };
-        let admin = tilo_server_protocol::servers::admin_workspace_id(
-            &engine.identity().device_cert.user_public_key,
-        );
-        let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&admin) else {
+        let Some(engine) = self.engine.clone() else {
             return;
         };
         let mut arguments = serde_json::Map::new();
         arguments.insert("device".to_owned(), machine.device.clone().into());
         arguments.insert("nonce".to_owned(), machine.nonce.clone().into());
-        let Some(asked) = engine.ask_holder(workspace, "machine.admit", arguments) else {
-            tracing::info!(
-                "this device reaches no holder of the Servers workspace, so the machine waits to be taken in there"
-            );
-            return;
-        };
+        let admin = tilo_server_protocol::servers::admin_workspace_id(
+            &engine.identity().device_cert.user_public_key,
+        );
         drop(crate::landing::off_loop(async move {
+            // The device that planned the machine may be another of theirs:
+            // this one holds the Servers workspace from the moment it knows
+            // it, as every one of the person's devices does.
+            if !engine.is_holder(&admin) {
+                #[cfg(target_os = "linux")]
+                if let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&admin) {
+                    engine.found(workspace, "Servers").await;
+                }
+            }
+            let Some(asked) = engine.ask_own_host("machine.admit", arguments) else {
+                tracing::info!(
+                    "this device's workspace service is not open, so the machine waits to be taken in where it is held"
+                );
+                return;
+            };
             match asked.await {
                 Ok(_) => {}
                 Err(error) => tracing::warn!(%error, "a planned machine was not taken in"),
@@ -622,7 +628,7 @@ mod tests {
         let runtime = tilo_rt::try_app().expect("the app runtime");
         let planned = runtime.block_on(
             engine
-                .ask_host(
+                .ask_own_host(
                     "machine.plan",
                     serde_json::Map::from_iter([
                         ("plan".to_owned(), plan.into()),
@@ -669,7 +675,7 @@ mod tests {
             session.step(std::time::Duration::from_millis(1)).ok();
             let entry = runtime.block_on(
                 engine
-                    .ask_host(
+                    .ask_own_host(
                         "machine.show",
                         serde_json::Map::from_iter([("plan".to_owned(), machine.clone().into())]),
                     )
@@ -680,7 +686,7 @@ mod tests {
                     runtime
                         .block_on(
                             engine
-                                .ask_host(
+                                .ask_own_host(
                                     "machine.show",
                                     serde_json::Map::from_iter([(
                                         "plan".to_owned(),

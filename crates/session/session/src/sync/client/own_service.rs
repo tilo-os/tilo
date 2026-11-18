@@ -302,6 +302,10 @@ impl tilo_session_client::engine::Founder for Founding {
         }))
     }
 
+    /// The host's own operations (`tilo.host`): what the person plans and
+    /// reads here, whether or not this device holds the workspace yet. The
+    /// service makes the workspace a plan needs when the first machine is
+    /// planned into it.
     fn ask_host(
         &self,
         action: &str,
