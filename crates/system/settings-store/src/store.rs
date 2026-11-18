@@ -20,7 +20,7 @@ use serde_json::{Map, Value};
 use tilo_automerge::{ApplyIncoming as _, json};
 use tilo_lock::MutexRecover as _;
 
-use app_state::{FsStore, Held};
+use app_state::{FsStore, Held, Save, SavePlan};
 use automerge::ChangeHash;
 use durable_store::{DurableStore as _, StorageKey, WriteOp};
 use tilo_settings_records::{Records, Socket, Watch};
@@ -47,10 +47,6 @@ fn key(holder: Holder) -> StorageKey {
     })
 }
 
-/// Appends a document may gather before its next save rewrites it whole, as a multiple of its
-/// whole size: what keeps a long-lived profile's file from growing with every change.
-const COMPACT_AFTER: usize = 2;
-
 /// What a write makes of the section it found: the leaves to merge, or
 /// `None` when the writer's intent was superseded.
 type Decide<'a> = dyn FnMut(&Map<String, Value>) -> Option<Map<String, Value>> + 'a;
@@ -66,8 +62,8 @@ struct Docs {
     unsaved: std::collections::BTreeSet<String>,
     /// What the documents' files stood at when they were last read, for a follower.
     seen: u64,
-    /// Each document's heads as last saved, and the bytes appended since it was last whole.
-    saved: [(Vec<ChangeHash>, usize, usize); 2],
+    /// Each document's heads as last saved, and how its saves stand since it was last whole.
+    saved: [(Vec<ChangeHash>, SavePlan); 2],
 }
 
 impl Docs {
@@ -89,7 +85,10 @@ impl Docs {
     }
 
     fn loaded(mut person: AutoCommit, mut device: AutoCommit, seen: u64) -> Self {
-        let saved = [(person.get_heads(), 0, 0), (device.get_heads(), 0, 0)];
+        let saved = [
+            (person.get_heads(), SavePlan::default()),
+            (device.get_heads(), SavePlan::default()),
+        ];
         Self {
             person,
             device,
@@ -469,8 +468,8 @@ impl Store {
     }
 
     /// Hand what changed to the document store, which commits it on its own thread: the changes
-    /// since each document's last save, appended, or the whole document once the appends outgrow
-    /// it. Only the holder writes; a profile held in memory keeps what it has.
+    /// since each document's last save, as the document's [`SavePlan`] decides, appended or whole.
+    /// Only the holder writes; a profile held in memory keeps what it has.
     fn save(&self) {
         let mut docs = self.docs.lock_recover();
         if docs.unsaved.is_empty() || self.lock.lock_recover().is_none() {
@@ -479,7 +478,7 @@ impl Store {
         let sections = std::mem::take(&mut docs.unsaved);
         let mut saved = Ok(());
         for (index, holder) in [Holder::Person, Holder::Device].into_iter().enumerate() {
-            let Some((heads, appended, whole)) = docs.saved.get(index).cloned() else {
+            let Some((heads, plan)) = docs.saved.get(index).cloned() else {
                 continue;
             };
             let doc = docs.doc(holder);
@@ -487,21 +486,22 @@ impl Store {
             if now == heads {
                 continue;
             }
-            let op = if whole == 0 || appended > whole.saturating_mul(COMPACT_AFTER) {
-                WriteOp::Replace(doc.save())
-            } else {
-                WriteOp::Append(doc.save_after(&heads))
+            let op = match plan.next() {
+                Save::Full => WriteOp::Replace(doc.save()),
+                Save::Append => WriteOp::Append(doc.save_after(&heads)),
             };
             let written = op.bytes().len();
             if let Err(error) = self.kept.write(&key(holder), op.clone(), None) {
                 saved = Err(error);
                 break;
             }
+            let mut after = plan;
+            match op {
+                WriteOp::Replace(_) => after.stored_whole(written),
+                WriteOp::Append(_) => after.appended(written),
+            }
             if let Some(last) = docs.saved.get_mut(index) {
-                *last = match op {
-                    WriteOp::Replace(_) => (now, 0, written),
-                    WriteOp::Append(_) => (now, appended.saturating_add(written), whole),
-                };
+                *last = (now, after);
             }
         }
         drop(docs);
