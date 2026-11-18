@@ -329,6 +329,10 @@ async fn a_thing_the_turn_cannot_read_is_not_shown() {
     page.peer.close();
 }
 
+/// A share gives a reader nothing the workspace denies them.
+#[path = "hosted_share_denied.rs"]
+mod denied;
+
 /// The owner's case: asked to write a document and show it, the agent writes in the word
 /// processor and answers with that document shown live. The share is one message of the agent's
 /// in the conversation the person asked in, of the document the turn wrote in, and the reply
