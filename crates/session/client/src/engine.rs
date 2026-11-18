@@ -325,6 +325,25 @@ fn kept_under<K: Default>(kept: Option<(KeysUsed, K)>, used: &KeysUsed) -> K {
     }
 }
 
+/// Read a document with what this device kept of it, holding `opening`, the lock a second read
+/// of the same resource waits on, until what the read opened is kept under `used`.
+fn opened_under<T>(
+    opening: Option<&std::sync::Mutex<KeptResource>>,
+    used: &KeysUsed,
+    read: impl FnOnce(&mut KeptDocument) -> T,
+) -> T {
+    let Some(opening) = opening else {
+        return read(&mut KeptDocument::default());
+    };
+    let mut held = opening.lock_recover();
+    let mut kept = kept_under(held.take(), used);
+    let value = read(&mut kept);
+    if kept.is_open() {
+        *held = Some((*used, kept));
+    }
+    value
+}
+
 /// Keys, by workspace.
 type RouteKeys = BTreeMap<WorkspaceId, key_group::ContentKeys>;
 
@@ -931,35 +950,32 @@ impl Engine {
             }
             Arc::clone(kept.entry(key).or_default())
         });
-        let mut held = opening.as_deref().map(|opening| opening.lock_recover());
-        let mut kept = kept_under(held.as_deref_mut().and_then(Option::take), &used);
-        let read = read(
-            workspace,
-            &mut |write| {
-                let opened = match (&keys, &history) {
-                    (Some(keys), Some(Ok(history))) => {
-                        keys.open(write).or_else(|_| history.open(write))
-                    }
-                    (Some(keys), _) => keys.open(write),
-                    (None, Some(history)) => history.as_ref().map_err(Clone::clone)?.open(write),
-                    (None, None) => Err("this session's channel service is not running".into()),
-                };
-                unopened |= opened.is_err();
-                opened
-            },
-            &mut kept,
-        );
-        // The person's other devices may hold the key the workspace's host has not handed this one
-        // yet, or cannot, being away: they are asked for the group's frames from the epoch held.
+        let read = opened_under(opening.as_deref(), &used, |kept| {
+            read(
+                workspace,
+                &mut |write| {
+                    let opened = match (&keys, &history) {
+                        (Some(keys), Some(Ok(history))) => {
+                            keys.open(write).or_else(|_| history.open(write))
+                        }
+                        (Some(keys), _) => keys.open(write),
+                        (None, Some(history)) => {
+                            history.as_ref().map_err(Clone::clone)?.open(write)
+                        }
+                        (None, None) => Err("this session's channel service is not running".into()),
+                    };
+                    unopened |= opened.is_err();
+                    opened
+                },
+                kept,
+            )
+        });
+        // The person's other devices may hold the key the workspace's server has not handed this
+        // one yet, or cannot, being away: they are asked for the group's frames from the epoch
+        // held.
         if unopened && let (Some(link), Some(Ok(history))) = (self.link(), &history) {
             link.want_frames(workspace, history.generation().1);
         }
-        if let Some(held) = held.as_deref_mut()
-            && kept.is_open()
-        {
-            *held = Some((used, kept));
-        }
-        drop(held);
         match read {
             Err(_) if unopened => Ok(None),
             read => read.map(Some),
