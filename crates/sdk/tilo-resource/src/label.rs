@@ -77,13 +77,96 @@ pub struct Word {
 
 impl Word {
     /// The word in the person's language, its placeables filled — and its
-    /// declared text where no catalogue of theirs holds the key, or where no
-    /// host installed one ([`install`], which every host that draws words
-    /// does).
+    /// declared text, its placeables filled too, where no catalogue of theirs
+    /// holds the key, or where no process installed one ([`install`]): a server or
+    /// an agent applying an action reads the same words as a window without the
+    /// catalogue syntax.
     #[must_use]
     pub fn read(&self) -> String {
         resolve(self.catalogue, self.key, &self.arguments, Fill::AsGiven)
-            .unwrap_or_else(|| self.source.to_owned())
+            .unwrap_or_else(|| filled(self.source, &self.arguments))
+    }
+}
+
+/// `source` with its placeables filled from `arguments`: a simple one shows its
+/// argument, a select block the form its count names (else the `*` form), and
+/// a placeable no argument names stays as the catalogue wrote it.
+fn filled(source: &str, arguments: &[(&'static str, Argument)]) -> String {
+    let mut out = String::with_capacity(source.len());
+    let mut rest = source;
+    while let Some(open) = rest.find('{') {
+        out.push_str(rest.get(..open).unwrap_or_default());
+        let after = rest.get(open.saturating_add(1)..).unwrap_or_default();
+        let Some(close) = matching_close(after) else {
+            out.push_str(rest.get(open..).unwrap_or_default());
+            return out;
+        };
+        let placeable = after.get(..close).unwrap_or_default().trim();
+        rest = after.get(close.saturating_add(1)..).unwrap_or_default();
+        out.push_str(
+            &placeable_text(placeable, arguments).unwrap_or_else(|| format!("{{{placeable}}}")),
+        );
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The offset of the `}` closing a placeable whose text starts at `after`:
+/// a select block holds placeables of its own, so braces pair up.
+fn matching_close(after: &str) -> Option<usize> {
+    let mut depth = 0_usize;
+    for (at, character) in after.char_indices() {
+        match character {
+            '{' => depth = depth.saturating_add(1),
+            '}' if depth == 0 => return Some(at),
+            '}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// What the placeable `placeable` (the text between its braces) shows, or
+/// `None` when no argument fills it.
+fn placeable_text(placeable: &str, arguments: &[(&'static str, Argument)]) -> Option<String> {
+    let (name, body) = match placeable.split_once("->") {
+        Some((name, body)) => (name.trim(), Some(body)),
+        None => (placeable, None),
+    };
+    let name = name.strip_prefix('$')?.trim();
+    let (_, value) = arguments.iter().find(|(called, _)| *called == name)?;
+    match body {
+        None => Some(shown(value)),
+        Some(body) => {
+            let wanted = match value {
+                Argument::Number(count) if (*count - 1.0).abs() < f64::EPSILON => "one",
+                _ => "other",
+            };
+            let forms: Vec<(&str, bool, &str)> = body
+                .lines()
+                .filter_map(|line| {
+                    let line = line.trim();
+                    let starred = line.starts_with('*');
+                    let line = line.strip_prefix('*').unwrap_or(line).trim_start();
+                    let (key, text) = line.strip_prefix('[')?.split_once(']')?;
+                    Some((key, starred, text.trim()))
+                })
+                .collect();
+            let (_, _, text) = forms
+                .iter()
+                .find(|(key, _, _)| *key == wanted)
+                .or_else(|| forms.iter().find(|(_, starred, _)| *starred))?;
+            Some(filled(text, arguments))
+        }
+    }
+}
+
+/// What one argument shows.
+fn shown(value: &Argument) -> String {
+    match value {
+        Argument::Text(text) => text.clone(),
+        Argument::Number(count) if count.fract() == 0.0 => format!("{count:.0}"),
+        Argument::Number(count) => count.to_string(),
     }
 }
 
@@ -322,6 +405,35 @@ pub fn localized_noun(kind: &str, derived: tilo_actions::Noun) -> tilo_actions::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A word read where no process installed a lookup — a server applying an
+    /// action, an agent reading one — fills its placeables from the source
+    /// text rather than showing the catalogue syntax.
+    #[test]
+    fn a_word_without_a_lookup_fills_its_placeables() {
+        let pair = Word {
+            key: "merge-title-pair",
+            source: "Merge of { $ours } and { $theirs }",
+            catalogue: None,
+            arguments: vec![
+                ("ours", Argument::from("a.txt")),
+                ("theirs", Argument::from("b.txt")),
+            ],
+        };
+        assert_eq!(pair.read(), "Merge of a.txt and b.txt");
+        let rules = Word {
+            key: "zone-rules",
+            source: "{ $count ->\n    [one] 1 rule\n   *[other] { $count } rules\n}",
+            catalogue: None,
+            arguments: vec![("count", Argument::from(2_usize))],
+        };
+        assert_eq!(rules.read(), "2 rules");
+        let one = Word {
+            arguments: vec![("count", Argument::from(1_usize))],
+            ..rules
+        };
+        assert_eq!(one.read(), "1 rule");
+    }
 
     fn german(
         _: Option<&'static Catalogue>,
