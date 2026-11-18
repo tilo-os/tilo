@@ -1338,9 +1338,9 @@ async fn mark_with(session: Session, root: &Path, marking: MarkMail) -> Result<(
 }
 
 /// The providers the person keeps, their models and what runs where.
-pub(super) fn providers(root: &Path) -> Result<ModelProviders, String> {
+pub(super) fn providers(root: &Path) -> ModelProviders {
     let config = provider_config(root);
-    Ok(providers_of(&config, &ProviderKeys::of(root)))
+    providers_of(&config, &ProviderKeys::of(root))
 }
 
 /// `config`'s providers as the pane reads them, with `keys` saying which
@@ -1517,21 +1517,23 @@ pub(super) fn add_provider(
 }
 
 pub(super) fn set_key(root: &Path, setting: SetKey) -> Result<ProviderView, String> {
-    if setting.key.trim().is_empty() {
+    let SetKey { provider, key } = setting;
+    let key = zeroize::Zeroizing::new(key);
+    if key.trim().is_empty() {
         return Err("An API key cannot be empty".into());
     }
     let mut config = provider_config(root);
     let profile = config
         .profiles
         .iter_mut()
-        .find(|profile| profile.id == setting.provider)
+        .find(|profile| profile.id == provider)
         .ok_or_else(|| "That provider is not kept here".to_owned())?;
     profile.credential = Some(agent_provider_config::SecretReference::provider_api_key(
         &profile.id,
     ));
     let profile = profile.clone();
     let keys = ProviderKeys::of(root);
-    keys.put(&profile, setting.key.trim())?;
+    keys.put(&profile, key.trim())?;
     save_provider_config(root, &config)?;
     Ok(view_of(&profile, &keys))
 }
@@ -1565,7 +1567,7 @@ pub(super) fn remove_provider(root: &Path, provider: &str) -> Result<ModelProvid
         .interaction_models
         .retain(|_, chosen| chosen.profile != provider);
     save_provider_config(root, &config)?;
-    providers(root)
+    Ok(providers(root))
 }
 
 pub(super) fn set_assignment(
@@ -1584,7 +1586,7 @@ pub(super) fn set_assignment(
         .set_interaction_model(kind, chosen)
         .map_err(str::to_owned)?;
     save_provider_config(root, &config)?;
-    providers(root)
+    Ok(providers(root))
 }
 
 #[cfg(test)]
@@ -1662,18 +1664,13 @@ mod tests {
                 file.display()
             );
         }
-        let listed = providers(root.path()).expect("the providers read back");
+        let listed = providers(root.path());
         let json = serde_json::to_string(&listed).unwrap();
         assert!(!json.contains("sk-live-secret"), "{json}");
         assert!(json.contains("\"configured\":true"), "{json}");
 
         remove_key(root.path(), &added.id).expect("the key is removed");
-        assert!(
-            !providers(root.path())
-                .expect("the providers read back")
-                .providers[0]
-                .configured
-        );
+        assert!(!providers(root.path()).providers[0].configured);
     }
 
     /// A provider removed takes its key with it, and its model choices stop
@@ -1729,7 +1726,7 @@ mod tests {
         let kept = set_key(
             root.path(),
             SetKey {
-                provider: added.id.clone(),
+                provider: added.id,
                 key: "sk-for-example".into(),
             },
         )
@@ -1741,7 +1738,7 @@ mod tests {
         save_provider_config(root.path(), &config).unwrap();
         let moved = &provider_config(root.path()).profiles[0];
         assert_eq!(ProviderKeys::of(root.path()).get(moved).unwrap(), None);
-        let listed = providers(root.path()).unwrap();
+        let listed = providers(root.path());
         assert!(!listed.providers[0].configured, "{listed:?}");
     }
 
@@ -1762,12 +1759,7 @@ mod tests {
             );
             assert!(refused.is_err(), "{name} {endpoint}");
         }
-        assert!(
-            providers(root.path())
-                .expect("the providers")
-                .providers
-                .is_empty()
-        );
+        assert!(providers(root.path()).providers.is_empty());
     }
 
     /// A mail account's stored metadata never holds its password; a removal

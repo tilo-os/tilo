@@ -87,7 +87,7 @@ impl Workspaces {
         let root = self.person_settings_root(&person);
         let reach = self.model_reach();
         let changed = match request.target.address.action.as_str() {
-            person_models::LIST => return answer(&providers(&root)),
+            person_models::LIST => return answer(&Ok(providers(&root))),
             person_models::ASK => {
                 let asked: ModelRequest = argument(request, "a model request")?;
                 return self.ask_person_model(person, workspace_id, &asked).await;
@@ -157,7 +157,8 @@ impl Workspaces {
         if let Some(workspace) = workspace_id {
             model = model.working_in(workspace);
         }
-        let deadline = tilo_clock::now() + TURN_TIMEOUT;
+        let now = tilo_clock::now();
+        let deadline = now.checked_add(TURN_TIMEOUT).unwrap_or(now);
         let answered: Result<ModelResponse, ModelError> = model
             .answer(asked, deadline, &mut |_| {})
             .await
@@ -411,7 +412,7 @@ fn set_default(root: &Path, choosing: &SetDefault) -> Result<ModelProviders, Str
     profile.default_model = Some(choosing.model.clone());
     config.default_profile = Some(choosing.provider.clone());
     save_provider_config(root, &config)?;
-    providers(root)
+    Ok(providers(root))
 }
 
 /// One model for every kind `choosing` names, or none of them changed.
@@ -433,7 +434,7 @@ fn set_assignments(root: &Path, choosing: SetAssignments) -> Result<ModelProvide
             .map_err(str::to_owned)?;
     }
     save_provider_config(root, &config)?;
-    providers(root)
+    Ok(providers(root))
 }
 
 #[cfg(test)]
@@ -607,7 +608,7 @@ mod tests {
             );
             assert!(refused.is_err(), "{slug} is not added by name on a host");
         }
-        assert_eq!(providers(root.path()).unwrap().providers.len(), 4);
+        assert_eq!(providers(root.path()).providers.len(), 4);
     }
 
     /// The host asks an OpenAI-compatible provider for its models with the
@@ -640,7 +641,7 @@ mod tests {
         assert!(!answered.contains(KEY), "{answered}");
 
         // The list is kept: a reading has it, and asks the provider nothing.
-        let read = providers(root.path()).unwrap();
+        let read = providers(root.path());
         assert_eq!(ids(&read.providers[0]), ["large", "small"]);
         assert!(fake.drain_requests().is_empty());
     }
@@ -693,7 +694,7 @@ mod tests {
         assert_eq!(refused.problem, Some(ListingProblem::KeyRefused));
         assert_eq!(ids(&refused.provider), ["large", "small"]);
         assert_eq!(
-            ids(&providers(root.path()).unwrap().providers[0]),
+            ids(&providers(root.path()).providers[0]),
             ["large", "small"]
         );
 
@@ -812,7 +813,7 @@ mod tests {
             );
             assert!(refused.is_err(), "{endpoint} is kept");
         }
-        assert!(providers(root.path()).unwrap().providers.is_empty());
+        assert!(providers(root.path()).providers.is_empty());
         // The operator's leave reaches the host's own network, there alone
         // without TLS.
         assert!(kept_location("http://127.0.0.1:8000/v1", Destinations::Any).is_ok());
@@ -971,7 +972,7 @@ mod tests {
         let root = temp_root();
         let (first, second) = chosen(root.path());
 
-        let read = providers(root.path()).unwrap();
+        let read = providers(root.path());
         assert_eq!(read.default_provider.as_deref(), Some(first.as_str()));
         let default_model = read
             .providers
@@ -1019,7 +1020,7 @@ mod tests {
     fn half_a_choice_changes_nothing_and_a_cleared_one_follows_the_default() {
         let root = temp_root();
         let (first, second) = chosen(root.path());
-        let read = providers(root.path()).unwrap();
+        let read = providers(root.path());
 
         assert!(
             set_default(
@@ -1034,7 +1035,7 @@ mod tests {
         assert!(choose(root.path(), &["request", "errand"], &second, "sub").is_err());
         assert!(choose(root.path(), &[], &second, "sub").is_err());
         assert!(choose(root.path(), &["task"], &second, "main").is_err());
-        assert_eq!(providers(root.path()).unwrap(), read);
+        assert_eq!(providers(root.path()), read);
 
         let following = set_assignments(
             root.path(),

@@ -255,14 +255,14 @@ impl LateFeedback {
         // Reports are looked over before they are sent: by the model the
         // embedder lends this page, else the one the reports' owner
         // lends its reporters, else the person's own model on their server.
-        let lent = if !self.model_name.is_empty() {
-            Some((self.models.clone(), self.model_name.clone()))
-        } else {
+        let lent = if self.model_name.is_empty() {
             crate::feedback_code::owner_model(self.peer).or_else(|| {
                 self.models
                     .is_available()
                     .then(|| (self.models.clone(), "your own model".to_owned()))
             })
+        } else {
+            Some((self.models.clone(), self.model_name.clone()))
         };
         if let (Some(feedback), Some((models, name))) = (shared.feedback.borrow().as_ref(), lent) {
             feedback.set_models(models, name);

@@ -184,7 +184,8 @@ impl ServerTurns {
             .ok_or_else(unreachable)?
             .map_err(|error| refused(error.to_string()))?;
         if matches!(receipt.status, ReceiptStatus::Accepted) {
-            let until = tilo_clock::now() + TURN_TIMEOUT;
+            let now = tilo_clock::now();
+            let until = now.checked_add(TURN_TIMEOUT).unwrap_or(now);
             receipt = settle_with(&api, &caller, invocation, None, until)
                 .await
                 .flatten()
