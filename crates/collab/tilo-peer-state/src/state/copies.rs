@@ -141,6 +141,21 @@ fn hex_key<S: serde::Serializer>(key: &[u8; 32], serializer: S) -> Result<S::Ok,
     serializer.serialize_str(&hex::encode(key))
 }
 
+/// A device key, when there is one, as its hex.
+#[expect(
+    clippy::ref_option,
+    reason = "serde's `serialize_with` hands the field over by reference"
+)]
+fn hex_key_or_none<S: serde::Serializer>(
+    key: &Option<[u8; 32]>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match key {
+        Some(key) => serializer.serialize_some(&hex::encode(key)),
+        None => serializer.serialize_none(),
+    }
+}
+
 /// What a holder lacks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
@@ -213,6 +228,10 @@ pub struct CopyStatus {
     pub holders: Vec<HolderCopy>,
     /// What falls short, holders first, then the counts.
     pub shortfall: Vec<Shortfall>,
+    /// The holder that makes the workspace's compacted base
+    /// ([`PeerGovernance::base_maker`]), when its governance names one.
+    #[serde(serialize_with = "hex_key_or_none")]
+    pub base_maker: Option<[u8; 32]>,
 }
 
 impl CopyStatus {
@@ -310,13 +329,6 @@ impl PeerWorkspace<'_> {
         let servers = governance.keeping_devices();
         let chosen = governance.chosen_copy_policy();
         let policy = chosen.unwrap_or_else(|| CopyPolicy::default_for(!servers.is_empty()));
-        let members = governance.governed_policy().ok();
-        let is_member = |person: [u8; 32]| {
-            let person = hex::encode(person);
-            members
-                .as_ref()
-                .is_some_and(|policy| policy.is_member(&person) || policy.is_owner(&person))
-        };
         let rows = self
             .peer
             .core
@@ -325,18 +337,12 @@ impl PeerWorkspace<'_> {
             .map(held_rows)
             .unwrap_or_default();
 
-        // A server holds the keys when its person is in the workspace; a
-        // holder that says where its copy stands writes into the workspace's
-        // state, which only a key holder does.
+        // Each holder holds the workspace as its signed entry says; a holder
+        // that says where its copy stands writes into the workspace's state,
+        // which only a key holder does.
         let mut roles: BTreeMap<[u8; 32], CopyRole> = BTreeMap::new();
         for hint in &servers {
-            let device = &hint.host;
-            let role = if is_member(device.user_public_key) {
-                CopyRole::KeyHolder
-            } else {
-                CopyRole::Store
-            };
-            roles.insert(device.device_public_key, role);
+            roles.insert(hint.host.device_public_key, super::holder_role(hint));
         }
         for (device, row) in &rows {
             roles.entry(*device).or_insert(CopyRole::KeyHolder);
@@ -408,6 +414,7 @@ impl PeerWorkspace<'_> {
             chosen: chosen.is_some(),
             holders,
             shortfall,
+            base_maker: governance.base_maker(),
         }
     }
 }

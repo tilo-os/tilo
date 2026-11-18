@@ -1,16 +1,24 @@
-//! The holders of a workspace this host governs: itself and each host it asked
-//! to hold the workspace as well, every one alike ([`super::holding`]): another host of its
-//! own person, or another person's host whose operator takes that work.
+//! The holders of a workspace held here: this device and each one its owners
+//! asked to hold the workspace as well, every one alike ([`super::holding`]):
+//! another device of the owner's person, or another person's server whose
+//! operator takes that work.
 //!
-//! Each host signs its own address. The workspace's governance names the hosts
-//! serving it beside the governor ([`tilo_peer_state::WORKSPACE_KEEPING_DEVICES_KEY`]), so
-//! every member learns of each as it learns any change to the workspace, and the
-//! workspace's join answers carry them all, governor first: a member reaches the
-//! workspace wherever it is served. Being named there is what admits a host
-//! everywhere the workspace is held: its device holds the workspace, and its
-//! person may reach the hosts that do ([`tilo_peer_state::GovernedAccess`]).
-//! A host of the governor's own person is also admitted as one of the owner's
-//! devices before it is handed the workspace, as before it was named.
+//! Each holder signs its own address, and the address says how it holds the
+//! workspace ([`CopyRole`]): as a key holder, which reads it and takes its work,
+//! or as a store, which keeps and forwards its ciphertext alone. The
+//! workspace's governance names its holders
+//! ([`tilo_peer_state::WORKSPACE_KEEPING_DEVICES_KEY`]), so every member learns
+//! of each, and how it holds the workspace, as it learns any change to the
+//! workspace, and the workspace's join answers carry them all: a member
+//! reaches the workspace wherever it is held. Being named there is what admits
+//! a holder everywhere the workspace is held: its device holds the workspace,
+//! and its person may reach the holders that do
+//! ([`tilo_peer_state::GovernedAccess`]). Being named a key holder is what gives
+//! it the workspace's keys ([`tilo_peer_state::PeerGovernance::key_holders`]),
+//! never a part among its members: a key holder of another person reads the
+//! workspace without changing who is in it. A device of the owner's own
+//! person is also admitted as one of the owner's devices before it is handed
+//! the workspace, whatever role it holds it in.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,6 +29,7 @@ use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteA
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_net::proxy::host::{Destinations, check_destination, guarded_client, system_lookup};
+use tilo_peer_state::CopyRole;
 use tilo_peer_state::join::{Role, TransportHint};
 use tilo_server_client::{
     LinkError,
@@ -68,6 +77,43 @@ impl Workspaces {
         Ok(hosts)
     }
 
+    /// The devices that hold `workspace`'s keys now, as every device reads it
+    /// from its governance ([`tilo_peer_state::PeerGovernance::key_holders`]):
+    /// who can read it.
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not held here, or its governance does not read.
+    pub async fn key_holders(
+        &self,
+        workspace: &str,
+    ) -> Result<std::collections::BTreeSet<[u8; 32]>, String> {
+        let governed = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        let governed = governed.lock().await;
+        governed.peer().governance().key_holders(tilo_clock::wall())
+    }
+
+    /// Whether `governed`'s governance names this device a store of the
+    /// workspace's ciphertext: it then asks for none of its keys and compacts
+    /// none of what it cannot read.
+    #[cfg_attr(
+        not(any(feature = "agents", feature = "web")),
+        allow(
+            dead_code,
+            reason = "sealed histories are followed only where they are read"
+        )
+    )]
+    pub(super) fn holds_as_store(&self, governed: &GovernedWorkspace) -> bool {
+        governed
+            .peer()
+            .governance()
+            .holder_role(&self.inner.host.cert.device_public_key)
+            == Some(CopyRole::Store)
+    }
+
     /// Whether `workspace`'s governance names the device `device` among its
     /// hosts.
     pub(crate) async fn names_host(&self, workspace: &str, device: [u8; 32]) -> bool {
@@ -88,13 +134,24 @@ impl Workspaces {
     /// already holds. Naming it as it is named changes nothing. A host
     /// keeping another person's workspace names nothing: its holders are
     /// that person's to name, and the address it signed is the one they
-    /// named.
+    /// named. Nor does a holder its owners have not named yet, other than the
+    /// device the workspace was founded on: whoever hands it the workspace
+    /// names it, in the role they chose for it.
     pub(super) async fn name_own_host(
         &self,
         governed: &mut GovernedWorkspace,
     ) -> Result<(), String> {
         let host = &self.inner.host;
-        if governed.peer().owner() != host.cert.user_public_key {
+        let own = host.cert.device_public_key;
+        let (others, unnamed) = {
+            let peer = governed.peer();
+            (
+                peer.owner() != host.cert.user_public_key,
+                peer.governance().holder_role(&own).is_none()
+                    && peer.governance().founder() != Some(own),
+            )
+        };
+        if others || unnamed {
             return Ok(());
         }
         let hint = self
@@ -193,59 +250,128 @@ impl Workspaces {
         Ok(())
     }
 
-    /// Have the host `device`, at `addr`, hold `workspace` as well, as its
-    /// owners chose ([`Workspaces::chooses_hosts`]): hand the workspace over with [`HOST_WORKSPACE`] and name the
-    /// address it answers among the workspace's hosts. A host of this host's
-    /// own person is admitted to the workspace as one of the owner's devices
-    /// first; another person's host takes the workspace only when its
-    /// operator's work setting does. Asked again, the host is handed the
-    /// workspace afresh. Answers that address.
+    /// Have the server `device`, at `addr`, hold `workspace` as well, as
+    /// `role`, as its owners chose ([`Workspaces::chooses_hosts`]): hand the
+    /// workspace over with [`HOST_WORKSPACE`] and name the address it answers,
+    /// which says that role, among the workspace's holders. A device of this
+    /// device's own person is admitted to the workspace as one of the owner's
+    /// devices first; another person's server takes the workspace only
+    /// when its operator's work setting does. Asked again, the server is
+    /// handed the workspace afresh, as `role`. Answers that address.
     ///
     /// # Errors
     ///
-    /// The workspace is not held here, the host cannot be reached or is not that device, or it
-    /// refused or answered an address that is not its own for the workspace.
+    /// The workspace is not held here, `device` is this device, the server
+    /// cannot be reached or is not that device, or it refused or answered an
+    /// address that is not its own for the workspace in that role.
     pub async fn attach_server(
         &self,
         workspace: &str,
         device: [u8; 32],
         addr: EndpointAddr,
+        role: CopyRole,
     ) -> Result<TransportHint, String> {
         let host = &self.inner.host;
         if device == host.cert.device_public_key {
-            return Err("a workspace's governor hosts it already".into());
+            return Err("this device holds the workspace already".into());
         }
         let reached = self.reach_host(device, addr).await?;
         let member = reached.certificate.clone();
-        let (workspace_id, arguments) = self.hand_over(workspace, &member).await?;
+        let (workspace_id, arguments) = self.hand_over(workspace, &member, role).await?;
         let answer = reached.ask(HOST_WORKSPACE, arguments).await?;
         let hosted: HostedWorkspace =
             serde_json::from_value(answer).map_err(|error| error.to_string())?;
         let hint: TransportHint = super::decode_hex(&hosted.host_hint)?;
         let address =
             WorkspaceDeviceHintV1::from_transport_hint(&hint).map_err(|error| error.to_string())?;
-        if hint.host != member || !address.holds_keys || address.workspace_id != workspace_id {
+        if hint.host != member
+            || address.holds_keys != (role == CopyRole::KeyHolder)
+            || address.workspace_id != workspace_id
+        {
             return Err(
-                "the device answered an address that is not its own for the workspace".into(),
+                "the device answered an address that is not its own for the workspace in the \
+                 role it was asked to hold it in"
+                    .into(),
             );
         }
         self.name_host(workspace, |governance, key, now| {
             governance.author_keeping_device(&hint, key, now)
         })
         .await?;
-        tracing::info!(%workspace, host = %hex::encode(device), person = %hex::encode(member.user_public_key), "another host holds the workspace");
+        tracing::info!(%workspace, holder = %hex::encode(device), person = %hex::encode(member.user_public_key), ?role, "another device holds the workspace");
         let _ = self.inner.changes.send(workspace.to_owned());
         Ok(hint)
     }
 
-    /// What `workspace` is handed to the device `member` with: the workspace
-    /// as a joining member gets it and this device's own signed address,
-    /// under the workspace's id. A device of this one's own person is
-    /// admitted to the workspace as one of the owner's devices first.
+    /// Have the holder `device` of `workspace` hold it as `role` from now on,
+    /// as its owners chose: its signed entry among the workspace's holders
+    /// says so, and every device reads who gets the workspace's keys from it.
+    /// Made a store, it leaves the workspace's key group, whose commit
+    /// removing it rotates the keys, so it reads nothing written after; made a
+    /// key holder, the group admits it. Another device is handed the
+    /// workspace afresh in its new role at the address it is named at; this
+    /// device signs its own entry. Answers the holder's address.
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not held here or does not name `device` among its
+    /// holders, or the holder refused or could not be reached.
+    pub async fn set_holder_role(
+        &self,
+        workspace: &str,
+        device: [u8; 32],
+        role: CopyRole,
+    ) -> Result<TransportHint, String> {
+        let (named, own) = {
+            let governed = self
+                .workspace(workspace)
+                .await
+                .map_err(|error| error.to_string())?;
+            let governed = governed.lock().await;
+            let named = governed
+                .peer()
+                .governance()
+                .keeping_devices()
+                .into_iter()
+                .find(|hint| host_device(hint) == device);
+            let own = (device == self.inner.host.cert.device_public_key)
+                .then(|| self.transport_hint_as(&governed, role))
+                .transpose();
+            drop(governed);
+            (named, own.map_err(|error| error.to_string())?)
+        };
+        let named =
+            named.ok_or_else(|| format!("{} does not hold the workspace", hex::encode(device)))?;
+        if tilo_peer_state::holder_role(&named) == role {
+            return Ok(named);
+        }
+        let Some(own) = own else {
+            let addr = WorkspaceDeviceHintV1::from_transport_hint(&named)
+                .map_err(|error| error.to_string())?
+                .endpoint_addr;
+            return self.attach_server(workspace, device, addr, role).await;
+        };
+        self.name_host(workspace, |governance, key, now| {
+            governance.author_keeping_device(&own, key, now)
+        })
+        .await?;
+        tracing::info!(%workspace, ?role, "this device holds the workspace in another role");
+        let _ = self.inner.changes.send(workspace.to_owned());
+        Ok(own)
+    }
+
+    /// What `workspace` is handed to the device `member` with, to hold it as
+    /// `role`: the workspace as a joining member gets it and this device's
+    /// own signed address, under the workspace's id. A device of this one's
+    /// own person is admitted to the workspace as one of the owner's devices
+    /// first, so it takes in and writes the workspace's changes as they do;
+    /// named a store, it holds no keys all the same
+    /// ([`tilo_peer_state::PeerGovernance::key_holders`]).
     async fn hand_over(
         &self,
         workspace: &str,
         member: &DeviceCert,
+        role: CopyRole,
     ) -> Result<(WorkspaceId, Map<String, Value>), String> {
         if member.user_public_key == self.inner.host.cert.user_public_key {
             self.enter(workspace, member)
@@ -282,6 +408,10 @@ impl Workspaces {
             Value::String(hex_postcard(&holder_hint)?),
         );
         arguments.insert("bootstrap".into(), Value::String(hex_postcard(&bootstrap)?));
+        arguments.insert(
+            "role".into(),
+            serde_json::to_value(role).map_err(|error| error.to_string())?,
+        );
         Ok((workspace_id, arguments))
     }
 
@@ -302,15 +432,21 @@ impl Workspaces {
         named: &str,
     ) -> Result<Value, String> {
         let reached = self.reach_host(device, addr).await?;
-        let (_, mut arguments) = self.hand_over(workspace, &reached.certificate).await?;
+        let (_, mut arguments) = self
+            .hand_over(workspace, &reached.certificate, CopyRole::KeyHolder)
+            .await?;
         arguments.insert("workspace".into(), Value::String(named.to_owned()));
         reached.ask(HOST_WORKSPACE, arguments).await
     }
 
-    /// Stop having the host `device` serve `workspace`, as its owners chose: its
-    /// address leaves the workspace's hosts at once, and the host is asked to stop
-    /// ([`UNHOST_WORKSPACE`]) at `addr` when given. Answers whether the host
-    /// confirmed it stopped; one that could not be reached is still no
+    /// Stop having the holder `device` hold `workspace`, as its owners chose:
+    /// its address leaves the workspace's holders at once, and the holder is
+    /// asked to stop ([`UNHOST_WORKSPACE`]) at `addr` when given. What only
+    /// that holder did passes on with its entry: the workspace's compacted
+    /// base is made by the holder governance names for it
+    /// ([`tilo_peer_state::PeerGovernance::base_maker`]), so with this one
+    /// gone the next key holder of the owner makes it. Answers whether the
+    /// holder confirmed it stopped; one that could not be reached is still no
     /// longer named to members.
     ///
     /// # Errors
@@ -404,17 +540,22 @@ impl Workspaces {
     }
 
     /// Have the holder whose site is at `origin` (`https://tilo.sh`) hold
-    /// `workspace` as well: the holder says who it is and
-    /// where it is dialed at its origin, and is then handed the workspace
+    /// `workspace` as well, as `role`: the holder says who it is and where it
+    /// is dialed at its origin, and is then handed the workspace
     /// ([`Self::attach_server`]), which it takes as its own rules for whom it
     /// keeps workspaces say.
     ///
     /// # Errors
     ///
     /// As [`Self::attach_server`], or the origin did not say who it is.
-    pub async fn add_host(&self, workspace: &str, origin: &str) -> Result<TransportHint, String> {
+    pub async fn add_host(
+        &self,
+        workspace: &str,
+        origin: &str,
+        role: CopyRole,
+    ) -> Result<TransportHint, String> {
         let (device, addr) = host_at(origin, self.site_reach()).await?;
-        self.attach_server(workspace, device, addr).await
+        self.attach_server(workspace, device, addr, role).await
     }
 
     /// Which addresses this device asks when an owner names a holder by its
@@ -655,13 +796,31 @@ async fn host_at(
 
 impl Workspaces {
     /// The signed Iroh address a joining device dials to redeem an
-    /// invitation of `workspace`: the relay this host is reached through and
-    /// the addresses a stranger can dial, never the ones only the network
-    /// around this host knows (`tilo_delivery_protocol::workspace_join::reachable`).
+    /// invitation of `workspace`, saying the role this device holds it in as
+    /// its governance names it (a key holder until it names one): the relay
+    /// this host is reached through and the addresses a stranger can dial,
+    /// never the ones only the network around this host knows
+    /// (`tilo_delivery_protocol::workspace_join::reachable`).
     pub(super) fn transport_hint(
         &self,
         workspace: &GovernedWorkspace,
     ) -> Result<tilo_peer_state::join::TransportHint, CollaborationError> {
+        let role = workspace
+            .peer()
+            .governance()
+            .holder_role(&self.inner.host.cert.device_public_key)
+            .unwrap_or(CopyRole::KeyHolder);
+        self.transport_hint_as(workspace, role)
+    }
+
+    /// [`Self::transport_hint`], saying this device holds `workspace` as
+    /// `role`: a store neither holds its keys nor takes its work.
+    pub(super) fn transport_hint_as(
+        &self,
+        workspace: &GovernedWorkspace,
+        role: CopyRole,
+    ) -> Result<tilo_peer_state::join::TransportHint, CollaborationError> {
+        let holds_keys = role == CopyRole::KeyHolder;
         let host = &self.inner.host;
         // An invitation is handed to whoever the link reaches, so what this
         // host answers at inside its own network stays out of it.
@@ -673,8 +832,8 @@ impl Workspaces {
             .map_or_else(|| "iroh:direct".to_owned(), ToString::to_string);
         tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1 {
             version: 1,
-            holds_keys: true,
-            runs_work: !host.work.takes_nothing(),
+            holds_keys,
+            runs_work: holds_keys && !host.work.takes_nothing(),
             workspace_id: workspace.workspace_id(),
             endpoint_addr,
             user_public_key: host.cert.user_public_key,

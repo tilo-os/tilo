@@ -257,6 +257,7 @@ fn a_workspace_short_without_this_server_holds_its_restart() {
         chosen: key_holders > 0,
         holders,
         shortfall,
+        base_maker: None,
     };
     let attic = [1; 32];
     let both = vec![

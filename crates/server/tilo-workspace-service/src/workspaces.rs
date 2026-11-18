@@ -684,9 +684,17 @@ impl GovernedWorkspace {
         crate::timing::window("workspace.commit.record", copying);
         // A member admitted from now on is given the workspace as it stands,
         // not what was withdrawn before they joined.
-        // The workspace's compacted base stays with the device that made it:
-        // every other holder publishes only its own changes after it.
-        let makes_base = record.owner.device_public_key == key.verifying_key().to_bytes();
+        // One device makes the workspace's compacted base, the one its
+        // governance names for it, so every holder agrees which, and the next
+        // one takes over when that one stops holding the workspace; every
+        // other holder publishes only its own changes after it. A workspace
+        // naming no holder of its owner's with its keys keeps it with the
+        // device that made it.
+        let base_maker = candidate
+            .governance()
+            .base_maker()
+            .unwrap_or(record.owner.device_public_key);
+        let makes_base = base_maker == key.verifying_key().to_bytes();
         let started_over = makes_base
             && (starts_over(&record.outgoing)
                 || (self.since_base == SinceBase::Withdrew
@@ -2120,6 +2128,10 @@ impl Workspaces {
     /// from its first write. Asked once per record until the first answer.
     #[cfg(any(feature = "agents", feature = "web"))]
     fn join_soon(&self, workspace: &mut GovernedWorkspace, app: String, record: String) {
+        // A store of the workspace's ciphertext is never let into its group.
+        if self.holds_as_store(workspace) {
+            return;
+        }
         if !workspace.asking.insert((app.clone(), record.clone())) {
             return;
         }

@@ -188,10 +188,23 @@ impl PeerGovernance<'_> {
     }
 
     /// The devices that hold the workspace's keys at `now`: every device of
-    /// its members. The workspace's one MLS group follows this set.
+    /// its members and every holder it names as holding them, and no holder
+    /// it names as a store of its ciphertext, whoever's device that is. The
+    /// workspace's one MLS group follows this set, so a holder named a store
+    /// leaves the group, and the commit that removes it rotates the keys.
     pub fn key_holders(self, now: SystemTime) -> Result<BTreeSet<[u8; 32]>, String> {
         let access = self.peer.governance().governed_access(now)?;
-        Ok(access.member_devices.into_iter().collect())
+        let stores: BTreeSet<[u8; 32]> = self
+            .keeping_devices()
+            .iter()
+            .filter(|hint| super::holder_role(hint) == super::CopyRole::Store)
+            .map(|hint| hint.host.device_public_key)
+            .collect();
+        Ok(access
+            .member_devices
+            .into_iter()
+            .filter(|device| !stores.contains(device))
+            .collect())
     }
 
     /// The workspace's people and grants as its governance records them: its

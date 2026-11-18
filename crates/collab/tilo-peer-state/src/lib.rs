@@ -74,8 +74,8 @@ pub use state::{
     ReceiveOutcome, RequestedBot, Reseal, RowError, SealCheckpoint, SeedDocument, SeedState,
     Shortfall, StatePeer, TransportOrigin, UnmergedReason, UnmergedWrite,
     WORKSPACE_KEEPING_DEVICES_KEY, committed_document_revision, decide_with_surfaces,
-    default_surfaces, keeping_devices_of, peer_handle, seed_workspace, trigger_mark, unranked,
-    workspace_grants_of, workspace_host_actor, workspace_seed,
+    default_surfaces, holder_role, keeping_devices_of, peer_handle, seed_workspace, trigger_mark,
+    unranked, workspace_grants_of, workspace_host_actor, workspace_seed,
 };
 pub use state::{vm_lease, vm_rank};
 pub mod coverage;

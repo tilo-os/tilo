@@ -5,10 +5,11 @@
 //! one applies the document it reads:
 //!
 //! - A device that governs a workspace attaches the servers the document says
-//!   hold it ([`Workspaces::attach_server`]) and detaches the ones it no longer
-//!   names, each at the address that server enrolled. One action on the
-//!   document thus both chooses a holder and names it in the workspace, and a
-//!   server never has to be told anything by hand.
+//!   hold it ([`Workspaces::attach_server`]), each in the role its entry says,
+//!   moves one whose role changed ([`Workspaces::set_holder_role`]) and
+//!   detaches the ones it no longer names, each at the address that server
+//!   enrolled. One action on the document thus both chooses a holder and names
+//!   it in the workspace, and a server never has to be told anything by hand.
 //! - Each server sets what it answers devices offering it work from its own
 //!   entry ([`Workspaces::set_offer`]), writes the update policy it follows
 //!   ([`super::policy`]), and, once retired, lets go of every workspace it
@@ -18,10 +19,11 @@
 //! it. Nothing here remembers a setting of its own: what a server is is what
 //! its entry says.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use iroh_base::EndpointAddr;
+use tilo_peer_state::CopyRole;
 use tilo_workspace_service::workspaces::{Offer, ResourceWrite, Workspaces};
 
 use super::{SERVERS, admin_workspace_id, device_id, policy, read};
@@ -114,8 +116,13 @@ pub async fn reconcile_into(
         };
         let named = hosts
             .iter()
-            .map(|hint| hint.host.device_public_key)
-            .collect::<BTreeSet<_>>();
+            .map(|hint| {
+                (
+                    hint.host.device_public_key,
+                    tilo_peer_state::holder_role(hint),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
         for (device, server) in servers.servers.iter() {
             let Ok(key) = <[u8; 32]>::try_from(hex::decode(device.as_str()).unwrap_or_default())
             else {
@@ -129,7 +136,16 @@ pub async fn reconcile_into(
             // holds none.
             let wants =
                 !server.retired && (workspace == admin || server.holding(&workspace).is_some());
-            if wants && !named.contains(&key) {
+            // The admin workspace is read by every server of the person.
+            let role = if workspace != admin && server.holding(&workspace) == Some(super::STORE) {
+                CopyRole::Store
+            } else {
+                CopyRole::KeyHolder
+            };
+            if wants && named.get(&key).is_some_and(|named| *named != role) {
+                workspaces.set_holder_role(&workspace, key, role).await?;
+                applied.held.push(workspace.clone());
+            } else if wants && !named.contains_key(&key) {
                 let Some(endpoint) = endpoint(server) else {
                     tracing::info!(
                         %workspace,
@@ -138,9 +154,11 @@ pub async fn reconcile_into(
                     );
                     continue;
                 };
-                workspaces.attach_server(&workspace, key, endpoint).await?;
+                workspaces
+                    .attach_server(&workspace, key, endpoint, role)
+                    .await?;
                 applied.held.push(workspace.clone());
-            } else if !wants && named.contains(&key) {
+            } else if !wants && named.contains_key(&key) {
                 workspaces.detach_host(&workspace, key, None).await?;
                 applied.released.push(workspace.clone());
             }

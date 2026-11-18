@@ -917,7 +917,7 @@ impl Workspaces {
         workspace: &mut GovernedWorkspace,
     ) -> Result<(), String> {
         let due = workspace.peer().publication().sealed_to_compact();
-        if due.is_empty() {
+        if due.is_empty() || self.holds_as_store(workspace) {
             return Ok(());
         }
         if workspace.compaction_wait > 0 {

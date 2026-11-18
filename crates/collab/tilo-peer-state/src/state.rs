@@ -87,7 +87,7 @@ mod publication;
 mod workspace_grants;
 pub use workspace_grants::workspace_grants_of;
 mod keeping_devices;
-pub use keeping_devices::{WORKSPACE_KEEPING_DEVICES_KEY, keeping_devices_of};
+pub use keeping_devices::{WORKSPACE_KEEPING_DEVICES_KEY, holder_role, keeping_devices_of};
 mod personal;
 pub(crate) mod seed;
 mod workspace_name;

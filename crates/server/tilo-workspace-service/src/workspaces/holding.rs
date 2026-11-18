@@ -39,7 +39,7 @@ use std::sync::{Arc, Weak};
 use neighbour_wire::NeighbourMsg;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_peer_state::join::{JoinBootstrap, TransportHint};
-use tilo_peer_state::{StatePeer, TransportOrigin};
+use tilo_peer_state::{CopyRole, StatePeer, TransportOrigin};
 use tilo_server_protocol::{Whose, WorkSetting, WorkspaceId};
 use tilo_user_identity::DeviceCert;
 use tokio::sync::Mutex as AsyncMutex;
@@ -62,6 +62,9 @@ pub struct HostWorkspaceRequest {
     /// The workspace as a joining member gets it, this device
     /// admitted.
     pub bootstrap: JoinBootstrap,
+    /// How this device is to hold it: with its keys, or as a store of its
+    /// ciphertext. The address it answers says so.
+    pub role: CopyRole,
 }
 
 impl HostWorkspaceRequest {
@@ -217,8 +220,9 @@ impl GovernedWorkspace {
 impl Workspaces {
     /// Hold the workspace `request` hands over, `caller`'s request: a
     /// writable copy of it here, current with its governance. Answers this
-    /// host's own signed address for it. Asked again, it takes in what the
-    /// hand-over carries.
+    /// host's own signed address for it, saying the role it was asked to hold
+    /// it in. Asked again, it takes in what the hand-over carries, and its
+    /// address says the role asked now.
     ///
     /// # Errors
     ///
@@ -285,8 +289,8 @@ impl Workspaces {
         };
         let mut governed = state.lock().await;
         self.settle(&mut governed).await?;
-        tracing::info!(%workspace, workspace_id = %request.workspace_id, "holding a workspace another host handed over");
-        self.transport_hint(&governed)
+        tracing::info!(%workspace, workspace_id = %request.workspace_id, role = ?request.role, "holding a workspace another host handed over");
+        self.transport_hint_as(&governed, request.role)
             .map_err(|error| error.to_string())
     }
 

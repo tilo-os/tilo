@@ -70,6 +70,7 @@ async fn a_holder_away_during_writes_catches_up_and_the_shortfall_clears() {
                 &workspace.workspace,
                 devices[at].device_pubkey(),
                 holders[at].as_ref().unwrap().host.node_addr(),
+                tilo_peer_state::CopyRole::KeyHolder,
             )
             .await
             .unwrap();
@@ -202,6 +203,7 @@ async fn the_server_a_workspace_was_made_on_is_named_among_its_holders() {
             &workspace.workspace,
             other_server.device_pubkey(),
             holder.host.node_addr(),
+            CopyRole::KeyHolder,
         )
         .await
         .unwrap();

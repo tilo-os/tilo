@@ -486,13 +486,26 @@ fn add_member_params() -> Vec<ActionParam> {
 }
 
 fn add_host_params() -> Vec<ActionParam> {
-    vec![ActionParam::required(
-        "origin",
-        ParamType::Text,
-        "The other host's site, like https://tilo.sh. You must be let in there, and it may \
-         refuse by its own rules.",
-    )]
+    vec![
+        ActionParam::required(
+            "origin",
+            ParamType::Text,
+            "The other host's site, like https://tilo.sh. You must be let in there, and it may \
+             refuse by its own rules.",
+        ),
+        ActionParam::optional(
+            "role",
+            ParamType::Text,
+            "`key_holder` (the default): it holds the workspace's keys, reads it and takes its \
+             work, without becoming a member. `store`: it keeps and forwards it encrypted and \
+             reads none of it.",
+        )
+        .with_choices(HOLDER_ROLES),
+    ]
 }
+
+/// How a holder may hold a workspace, as [`tilo_peer_state::CopyRole`] spells it.
+const HOLDER_ROLES: [&str; 2] = ["key_holder", "store"];
 
 fn copies_params() -> Vec<ActionParam> {
     vec![
@@ -1973,7 +1986,13 @@ impl Workspaces {
         } = call;
         let confirmed = match action {
             ADD_HOST => {
-                self.add_host(workspace, args.required_text("origin")?)
+                let role = args
+                    .text("role")?
+                    .map(|role| serde_json::from_value(Value::String(role.to_owned())))
+                    .transpose()
+                    .map_err(|_| invalid("`role` is `key_holder` or `store`"))?
+                    .unwrap_or(tilo_peer_state::CopyRole::KeyHolder);
+                self.add_host(workspace, args.required_text("origin")?, role)
                     .await
                     .map_err(|error| refused(&error))?;
                 None

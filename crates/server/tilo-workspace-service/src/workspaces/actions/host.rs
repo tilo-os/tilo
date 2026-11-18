@@ -1018,6 +1018,10 @@ impl Workspaces {
                         .map_err(|error| invalid(format!("`holder_hint`: {error}")))?,
                     bootstrap: super::super::decode_hex(args.required_text("bootstrap")?)
                         .map_err(|error| invalid(format!("`bootstrap`: {error}")))?,
+                    role: serde_json::from_value(Value::String(
+                        args.required_text("role")?.to_owned(),
+                    ))
+                    .map_err(|_| invalid("`role` is `key_holder` or `store`"))?,
                 };
                 self.kept_for(device, &request, now)
                     .await

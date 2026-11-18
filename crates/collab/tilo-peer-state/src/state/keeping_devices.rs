@@ -1,9 +1,13 @@
-//! The hosts serving a workspace beside its owner, written by the workspace's
-//! governance and read by every member.
+//! The devices holding a workspace, written by the workspace's governance and
+//! read by every member.
 //!
-//! Each is a device of the owner's own person that serves the workspace as well
-//! (a home relay the person chose for it), named by its own signed address, so a
-//! member reaches the workspace while the owner's own device is away.
+//! Each is named by its own signed address, so a member reaches the workspace
+//! wherever it is held. The address says how the device holds it
+//! ([`CopyRole`]): with its keys, reading it and taking its work, or as a
+//! store of its ciphertext alone. Who gets the workspace's keys is read from
+//! these entries and its membership alike on every device
+//! ([`PeerGovernance::key_holders`]).
+use super::copies::CopyRole;
 use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{ROOT, SystemTime, err, governed_map};
 use crate::join::TransportHint;
@@ -41,9 +45,59 @@ pub fn keeping_devices_of(doc: &automerge::AutoCommit) -> Vec<TransportHint> {
         .collect()
 }
 
+/// How the holder whose signed address is `hint` holds the workspace, as the
+/// address says: with its keys, or as a store of its ciphertext. An address
+/// that does not say is read as a store's: nobody is given keys it did not
+/// sign for.
+#[must_use]
+pub fn holder_role(hint: &TransportHint) -> CopyRole {
+    let holds_keys = tilo_failure::ignored!(
+        "an address another build signed is not one this one reads: it holds no keys",
+        tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1::from_transport_hint(hint)
+            .ok()
+    )
+    .is_some_and(|address| address.holds_keys);
+    if holds_keys {
+        CopyRole::KeyHolder
+    } else {
+        CopyRole::Store
+    }
+}
+
 impl PeerGovernance<'_> {
-    /// The hosts serving the workspace beside its governor, as its governance
-    /// names them.
+    /// How the governance names `device` holding the workspace, if it names
+    /// it among the workspace's holders.
+    #[must_use]
+    pub fn holder_role(self, device: &[u8; 32]) -> Option<CopyRole> {
+        self.keeping_devices()
+            .iter()
+            .find(|hint| &hint.host.device_public_key == device)
+            .map(holder_role)
+    }
+
+    /// The holder whose copy makes the workspace's compacted base, the same
+    /// on every device: of the owner's own holders with the keys, the device
+    /// the workspace was founded on while it is one, else the first by device
+    /// key. `None` while it names no such holder. A newer base is taken only
+    /// from the owner's devices, and only one device may make each, so when
+    /// the one making it stops holding the workspace the next one takes over.
+    #[must_use]
+    pub fn base_maker(self) -> Option<[u8; 32]> {
+        let owner = self.peer.owner();
+        let makers: Vec<[u8; 32]> = self
+            .keeping_devices()
+            .iter()
+            .filter(|hint| {
+                hint.host.user_public_key == owner && holder_role(hint) == CopyRole::KeyHolder
+            })
+            .map(|hint| hint.host.device_public_key)
+            .collect();
+        self.founder()
+            .filter(|founder| makers.contains(founder))
+            .or_else(|| makers.into_iter().min())
+    }
+
+    /// The holders of the workspace, as its governance names them.
     #[must_use]
     pub fn keeping_devices(self) -> Vec<TransportHint> {
         self.peer

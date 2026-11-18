@@ -2661,6 +2661,7 @@ async fn an_approved_submission_is_performed_once_by_one_of_the_workspaces_holde
         &WS.to_string(),
         other.device_pubkey(),
         second.server.node_addr(),
+        tilo_peer_state::CopyRole::KeyHolder,
     )
     .await
     .expect("the person's other server holds the workspace too");
