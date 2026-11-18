@@ -74,6 +74,7 @@ mod across;
 mod answers;
 mod asking;
 mod asks;
+mod calendar_connect;
 mod calendars;
 mod carried;
 mod coding;
@@ -1197,6 +1198,12 @@ impl HostAgents {
             .answering(uses)
             .answering(mail)
             .answering(calendars);
+        // What connects a calendar its person tells it of: they are asked for its password
+        // where no agent reads it.
+        let connects =
+            calendar_connect::TurnConnects::for_turn(&self.workspaces, turn, &scope.reply(turn))
+                .await;
+        scope.provider = scope.provider.answering(connects);
         // Its open of Browser, whose window this server places where it has a machine for one.
         let browser =
             turn_browser::TurnBrowser::for_turn(self.browsers.clone(), &scope.reply(turn));

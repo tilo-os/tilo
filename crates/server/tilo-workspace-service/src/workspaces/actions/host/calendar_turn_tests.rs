@@ -444,3 +444,7 @@ async fn a_turn_reads_an_entrys_notes_whole_when_short_and_by_their_beginning_wh
         "her calendar server wrote to nobody"
     );
 }
+
+/// A calendar connected by her telling her assistant where it is.
+#[path = "calendar_connect_tests.rs"]
+mod connect;

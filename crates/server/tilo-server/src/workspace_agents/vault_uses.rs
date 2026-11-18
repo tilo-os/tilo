@@ -516,7 +516,7 @@ fn as_asked(parts: &[(String, chat::parts::ChatPart)], ask: &OpenAsk) -> bool {
 
 /// Say on the question `message` in the part `document` what came of its
 /// answer.
-async fn settle(
+pub(super) async fn settle(
     (service, asker): (&WorkspaceActionProvider, &Caller),
     workspace: &str,
     (document, message): (&str, &str),
@@ -642,7 +642,7 @@ impl HostAgents {
     }
 
     /// Every part of the chat's messages `workspace` holds, by its document.
-    async fn chat_parts(&self, workspace: &str) -> Vec<(String, chat::parts::ChatPart)> {
+    pub(super) async fn chat_parts(&self, workspace: &str) -> Vec<(String, chat::parts::ChatPart)> {
         let routes = self
             .workspaces
             .document_routes(workspace)
