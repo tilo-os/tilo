@@ -12,18 +12,18 @@
     clippy::cast_sign_loss,
     reason = "app-local arithmetic; see the note above"
 )]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "desktop")]
 pub mod actions;
 pub mod commands;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "desktop")]
 mod emulator;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "desktop")]
 mod graphics;
 pub mod history;
 mod i18n;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "desktop")]
 mod image_loads;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "desktop")]
 mod native_editor;
 pub mod parse;
 pub mod preferences;
@@ -31,24 +31,24 @@ pub mod resource;
 #[cfg(feature = "samples")]
 mod scenarios;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "desktop")]
 pub mod screen;
 pub mod target;
 pub mod undoability;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "desktop")]
 pub use graphics::TerminalImagePlacement;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "desktop")]
 pub use crate::inner::{
     Attr, CellColor, GridPos, OpenError, Requester, Selection, TermModes, TerminalBackend,
     TerminalWidget, parse_target_argument,
 };
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "desktop")]
 pub use portable_pty::CommandBuilder;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "desktop")]
 mod inner {
     include!("main_body.rs");
     include!("scrollback_ui.rs");
@@ -56,30 +56,23 @@ mod inner {
     include!("window_ui.rs");
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "desktop")]
 mod async_open;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "desktop")]
 pub mod sessions;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "desktop")]
 mod app_widget_impl;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "desktop")]
 mod view;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "desktop")]
 pub use view::TerminalView;
 
 #[must_use]
 pub fn demo_session_input() -> &'static str {
-    #[cfg(windows)]
-    {
-        "echo Tilo embedded terminal (live PTY)\recho shell: %COMSPEC%\recho demo output:\recho primes below 20: 2 3 5 7 11 13 17 19\recho done\r"
-    }
-    #[cfg(not(windows))]
-    {
-        "echo 'Tilo embedded terminal (live PTY)'; echo \"shell: $SHELL\"; \
-         echo 'demo output:'; echo '  primes below 20: 2 3 5 7 11 13 17 19'; echo done\n"
-    }
+    "echo 'Tilo embedded terminal (live PTY)'; echo \"shell: $SHELL\"; \
+     echo 'demo output:'; echo '  primes below 20: 2 3 5 7 11 13 17 19'; echo done\n"
 }
 
 #[cfg(test)]
@@ -89,18 +82,16 @@ mod target_tests;
 #[cfg(test)]
 pub(crate) mod tests;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "desktop")]
 #[derive(Clone, Copy, Debug)]
 pub struct HostedSessionSource;
 
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg_attr(not(unix), derive(Default))]
+#[cfg(feature = "desktop")]
 pub struct HostedProcessServices {
-    #[cfg(unix)]
-    pub ush: Option<std::os::unix::net::UnixStream>,
+    pub ush: Option<tilo_process::local_socket::ServiceSocket>,
 }
 
-#[cfg(unix)]
+#[cfg(feature = "desktop")]
 impl Default for HostedProcessServices {
     fn default() -> Self {
         let ush = tilo_paths::xdg::runtime_dir()
@@ -109,17 +100,14 @@ impl Default for HostedProcessServices {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "desktop")]
 impl HostedProcessServices {
     pub fn unavailable() -> Self {
-        Self {
-            #[cfg(unix)]
-            ush: None,
-        }
+        Self { ush: None }
     }
 }
 
-#[cfg(unix)]
+#[cfg(feature = "desktop")]
 impl HostedProcessServices {
     pub fn has_ush(&self) -> bool {
         self.ush.is_some()
@@ -141,7 +129,11 @@ impl HostedProcessServices {
             })?;
         if let Some(cancellation) = cancellation {
             cancellation
-                .track(&stream)
+                .track(
+                    &stream
+                        .try_clone_stream()
+                        .map_err(|e| OpenError::Failed(e.to_string()))?,
+                )
                 .map_err(|e| OpenError::Failed(e.to_string()))?;
         }
         crate::inner::ush_backend_on(&stream, &[], target, requested_by, relay_session, workspace)
@@ -174,28 +166,29 @@ impl HostedProcessServices {
     }
 }
 
-#[cfg(unix)]
+#[cfg(feature = "desktop")]
 const USH_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// Connect the owner-only session socket without letting a stale or saturated
 /// endpoint stall shell construction indefinitely.
-#[cfg(unix)]
-fn discover_ush(runtime: &std::path::Path) -> std::io::Result<std::os::unix::net::UnixStream> {
+#[cfg(feature = "desktop")]
+fn discover_ush(
+    runtime: &std::path::Path,
+) -> std::io::Result<tilo_process::local_socket::ServiceSocket> {
     let socket = runtime.join("tilo/services/ush.sock");
     let stream =
         tilo_process::local_socket::connect_owner_only(runtime, &socket, USH_CONNECT_TIMEOUT)?;
-    stream.set_read_timeout(Some(USH_CONNECT_TIMEOUT))?;
-    stream.set_write_timeout(Some(USH_CONNECT_TIMEOUT))?;
+    stream.set_timeout(USH_CONNECT_TIMEOUT)?;
     Ok(stream)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "desktop")]
 #[derive(Debug)]
 pub enum HostedTerminalError {
     RequiredServiceMissing(&'static str),
     ServiceFailed(String),
 }
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "desktop")]
 impl std::fmt::Display for HostedTerminalError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -206,14 +199,14 @@ impl std::fmt::Display for HostedTerminalError {
         }
     }
 }
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "desktop")]
 impl std::error::Error for HostedTerminalError {}
 pub use resource::{Terminal, TerminalEffect, TerminalShell};
 
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(any(not(feature = "desktop"), test))]
 mod command_list;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "desktop")]
 pub fn mounted_terminal(widget: &mut dyn ui::widget::Widget) -> Option<&mut TerminalWidget> {
     ui::framework::testing::surface_in_root::<TerminalShell, TerminalView>(widget)
         .map(TerminalView::terminal_mut)
@@ -221,35 +214,6 @@ pub fn mounted_terminal(widget: &mut dyn ui::widget::Widget) -> Option<&mut Term
 
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(TerminalShell)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(not(unix))]
-impl HostedProcessServices {
-    /// Whether the host handed over the `ush` supervisor: never, here.
-    pub fn has_ush(&self) -> bool {
-        false
-    }
-
-    pub(crate) fn open_session(
-        _first: Option<Self>,
-        _target: &target::SessionTarget,
-        _requested_by: Requester,
-        _relay_session: Option<&str>,
-        _workspace: Option<&str>,
-        _cancellation: Option<&runtime_portal::pending_connection::Cancellation>,
-    ) -> Result<TerminalBackend, OpenError> {
-        Err(OpenError::NoRuntime(
-            HostedTerminalError::RequiredServiceMissing("ush").to_string(),
-        ))
-    }
-
-    pub(crate) fn ask(
-        _request: &serde_json::Value,
-        _workspace: Option<&str>,
-    ) -> Result<String, String> {
-        Err("environments are managed through Tilo's shell runtime".into())
-    }
 }
 
 #[cfg(test)]

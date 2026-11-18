@@ -18,13 +18,36 @@ name = "terminal"
 path = "src/main.rs"
 
 [features]
+# The terminal on a computer: the session's shell, its emulator and its window.
+# A page has no shell of its own, so it shows the session's commands instead
+# (`src/command_list.rs`) and a web build leaves this off
+# (`[package.metadata.tilo] web-features`).
+default = ["desktop"]
+desktop = [
+    "dep:alacritty_terminal",
+    "dep:anyhow",
+    "dep:portable-pty",
+    "dep:regex",
+    "dep:runtime-portal",
+    "dep:taffy",
+    "dep:tilo-paths",
+    "dep:tilo-process",
+    "dep:unicode-segmentation",
+    "dep:unicode-width",
+    "dep:vello",
+    "dep:winit",
+    "dep:workspace-hack",
+]
 # The canned sessions the screenshot scenarios show: development runs,
 # captures and tests only, never a release.
-samples = []
-thin = ["dep:runtime-dylib"]
+samples = ["desktop"]
+thin = ["desktop", "dep:runtime-dylib"]
 # Hooks a host's own tests use (`TerminalWidget::attach_input_probe`) in an
 # optimised profile, where debug assertions are off.
 test-support = []
+
+[package.metadata.tilo]
+web-features = []
 
 [dependencies]
 # OSC 8 links open through `ui::portal::open_uri` (the OpenURI portal on Linux).
@@ -41,32 +64,30 @@ base64.workspace = true
 # What a command printed, which its record names by content.
 tilo-content = { path = "../../crates/system/content", default-features = false }
 
-# The session's shell, its emulator and its window run on a device that runs
-# the session; a page shows the session's commands instead.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The desktop surface's dependencies, on by the `desktop` feature alone.
 # The workspace-hack's native feature set does not build for wasm32.
-workspace-hack = { version = "0.1" }
-tilo-content = { path = "../../crates/system/content" }
-tilo-process = { version = "0.1.0", path = "../../crates/platform/tilo-process", features = ["native-editor"] }
-tilo-paths.workspace = true
+workspace-hack = { version = "0.1", optional = true }
+tilo-process = { version = "0.1.0", path = "../../crates/platform/tilo-process", features = ["native-editor"], optional = true }
+tilo-paths = { workspace = true, optional = true }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-portable-pty = "0.9.0"
+portable-pty = { version = "0.9.0", optional = true }
 # The application runtime the terminal hosts. Only its client half is used:
 # the service protocol and the descriptor-passing helper.
-runtime-portal = { path = "../../crates/runtime/runtime-portal" }
-libc.workspace = true
+runtime-portal = { path = "../../crates/runtime/runtime-portal", optional = true }
 # The VT emulator: parser, grid with scrollback and reflow, modes and replies.
-alacritty_terminal = "0.26.0"
+alacritty_terminal = { version = "0.26.0", optional = true }
 # The window bar's search can find a regular expression in the scrollback.
-regex.workspace = true
-unicode-width = "0.2.2"
-unicode-segmentation = "1.12"
-vello.workspace = true
-winit.workspace = true
-taffy.workspace = true
-anyhow.workspace = true
+regex = { workspace = true, optional = true }
+unicode-width = { version = "0.2.2", optional = true }
+unicode-segmentation = { version = "1.12", optional = true }
+vello = { workspace = true, optional = true }
+winit = { workspace = true, optional = true }
+taffy = { workspace = true, optional = true }
+anyhow = { workspace = true, optional = true }
 
 [dev-dependencies]
+# A test raises the OS errors a pty read can fail with.
+libc.workspace = true
 # The stored shape History reads a session's runs by.
 tilo-automerge.workspace = true
 # Tests see this package's samples. The key must not be the package name:
