@@ -82,6 +82,28 @@ fn public_v6(address: Ipv6Addr) -> bool {
     !reserved && (s0 & 0xe000) == 0x2000
 }
 
+/// The address `url` writes out where a name would stand, if it writes one:
+/// `https://10.0.0.7/` and `https://[::1]/` do, `https://example.com/` does
+/// not. Such an address is never looked up, so whoever keeps a request to the
+/// public internet judges it ([`is_public`]) before anything is sent; a name
+/// is judged where it is looked up.
+#[must_use]
+pub fn written_out(url: &url::Url) -> Option<IpAddr> {
+    let url::Origin::Tuple(_, named, _) = url.origin() else {
+        return None;
+    };
+    literal(&named.to_string())
+}
+
+/// `name` as the address it writes out, in brackets or not.
+fn literal(name: &str) -> Option<IpAddr> {
+    name.strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+        .unwrap_or(name)
+        .parse()
+        .ok()
+}
+
 /// Resolves a name to its addresses: the shape of a client's lookup
 /// ([`crate::Lookup`]) and of the fetch proxy's, so one value serves them all.
 #[cfg(not(target_family = "wasm"))]
@@ -128,13 +150,9 @@ impl std::error::Error for NotPublic {}
 /// [`NotPublic`], which [`not_public`] tells apart.
 #[cfg(not(target_family = "wasm"))]
 pub async fn public_addresses(lookup: &Lookup, name: &str) -> std::io::Result<Vec<IpAddr>> {
-    let literal = name
-        .strip_prefix('[')
-        .and_then(|inner| inner.strip_suffix(']'))
-        .unwrap_or(name);
-    let addresses = match literal.parse::<IpAddr>() {
-        Ok(address) => vec![address],
-        Err(_) => lookup(name.to_owned()).await?,
+    let addresses = match literal(name) {
+        Some(address) => vec![address],
+        None => lookup(name.to_owned()).await?,
     };
     if addresses.is_empty() {
         return Err(std::io::Error::new(
@@ -158,6 +176,22 @@ pub fn public_only(lookup: Lookup) -> Lookup {
     std::sync::Arc::new(move |name: String| {
         let lookup = std::sync::Arc::clone(&lookup);
         Box::pin(async move { public_addresses(&lookup, &name).await })
+    })
+}
+
+/// The system's resolver, as a [`Lookup`].
+#[cfg(not(target_family = "wasm"))]
+#[must_use]
+pub fn system_lookup() -> Lookup {
+    std::sync::Arc::new(|name: String| {
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || {
+                std::net::ToSocketAddrs::to_socket_addrs(&(name.as_str(), 0))
+                    .map(|found| found.map(|address| address.ip()).collect::<Vec<IpAddr>>())
+            })
+            .await
+            .map_err(std::io::Error::other)?
+        })
     })
 }
 
@@ -327,5 +361,41 @@ mod tests {
             7,
             "an address written out is never looked up"
         );
+    }
+
+    /// An address written into a URL is found in the forms a URL takes, and
+    /// a name is not one.
+    #[allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
+    #[test]
+    fn an_address_a_url_writes_out_is_found_and_a_name_is_not() {
+        for (url, address) in [
+            ("https://10.0.0.7/x", "10.0.0.7"),
+            ("https://[::1]:8443/x", "::1"),
+            ("http://[::ffff:127.0.0.1]/", "::ffff:127.0.0.1"),
+            ("https://0x7f.1/", "127.0.0.1"),
+            ("https://2130706433/", "127.0.0.1"),
+        ] {
+            assert_eq!(
+                written_out(&url::Url::parse(url).unwrap()),
+                Some(address.parse().unwrap()),
+                "{url}"
+            );
+        }
+        for url in ["https://example.com/", "mailto:ops@example.com"] {
+            assert_eq!(written_out(&url::Url::parse(url).unwrap()), None, "{url}");
+        }
+    }
+
+    /// The system's resolver answers for this machine's own name, and that
+    /// name is refused: nothing leaves the machine for it.
+    #[cfg(not(target_family = "wasm"))]
+    #[allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
+    #[tokio::test]
+    async fn the_systems_resolver_answers_and_this_machines_own_name_is_refused() {
+        let system = system_lookup();
+        let found = system("localhost".to_owned()).await.unwrap();
+        assert!(!found.is_empty() && found.iter().all(IpAddr::is_loopback));
+        let refused = public_addresses(&system, "localhost").await.unwrap_err();
+        assert!(not_public(&refused), "{refused}");
     }
 }
