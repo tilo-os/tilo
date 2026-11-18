@@ -18869,8 +18869,8 @@ dependencies = [
  "tilo-feedback-transport",
  "tilo-resource",
  "tilo-session-core",
- "tilo-sort",
  "tilo-shell-surface",
+ "tilo-sort",
  "tilo-system-stats",
  "tilo-test-env",
  "tilo-tts",
@@ -22043,9 +22043,9 @@ dependencies = [
  "tilo-session-power",
  "tilo-settings-service",
  "tilo-sheets",
+ "tilo-shell-surface",
  "tilo-speaker-service",
  "tilo-startup-metrics",
- "tilo-shell-surface",
  "tilo-system-service",
  "tilo-system-stats",
  "tilo-test-env",
@@ -22290,6 +22290,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-shell-surface"
+version = "0.1.0"
+dependencies = [
+ "app-catalogue",
+ "jiff",
+ "package-store",
+ "serde",
+ "serde_json",
+ "tilo-action-policy",
+ "tilo-app-window",
+ "tilo-compositor",
+ "tilo-desktop-model",
+ "tilo-desktop-policy",
+ "tilo-desktop-surface",
+ "tilo-presentation",
+ "tilo-render-protocol",
+ "tilo-render-service",
+ "tilo-resource",
+ "tilo-service",
+ "tilo-session-core",
+ "tilo-ui",
+ "tilo-vello",
+ "tilo-winit",
+ "tilolang-tilo",
+ "tracing",
+ "url",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-sibling-unlock"
 version = "0.1.0"
 dependencies = [
@@ -22428,36 +22458,6 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-model-client",
  "tilo-segment",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-shell-surface"
-version = "0.1.0"
-dependencies = [
- "app-catalogue",
- "jiff",
- "package-store",
- "serde",
- "serde_json",
- "tilo-action-policy",
- "tilo-app-window",
- "tilo-compositor",
- "tilo-desktop-model",
- "tilo-desktop-policy",
- "tilo-desktop-surface",
- "tilo-presentation",
- "tilo-render-protocol",
- "tilo-render-service",
- "tilo-resource",
- "tilo-service",
- "tilo-session-core",
- "tilo-ui",
- "tilo-vello",
- "tilo-winit",
- "tilolang-tilo",
- "tracing",
- "url",
  "workspace-hack",
 ]
 
@@ -29233,6 +29233,7 @@ dependencies = [
  "tilo-settings-records",
  "tilo-settings-service",
  "tilo-sheets",
+ "tilo-shell-surface",
  "tilo-sibling-unlock",
  "tilo-sort",
  "tilo-speaker-service",
@@ -29241,7 +29242,6 @@ dependencies = [
  "tilo-staging-reclaim",
  "tilo-startup-metrics",
  "tilo-subject",
- "tilo-shell-surface",
  "tilo-system-info",
  "tilo-system-service",
  "tilo-system-stats",
