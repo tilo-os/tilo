@@ -233,8 +233,10 @@ struct Asking {
 
 /// The conversation a turn's question goes to: the one the turn is in, or
 /// for a turn an issue caused the person's own conversation with the agent.
-fn conversation_id_of(conversation: &str, person: &str, agent: &str) -> String {
-    let conversation_ids = format!("{}/channels/", chat::chat::Chat::KIND);
+pub(super) fn conversation_id_of(conversation: &str, person: &str, agent: &str) -> String {
+    // A conversation's address as Chat itself writes it, up to the conversation's own id.
+    let conversation_ids =
+        chat::summons::conversation_address(&tilo_resource::Id::from_raw(String::new()));
     conversation
         .strip_prefix(&conversation_ids)
         .filter(|conversation_id| !conversation_id.is_empty())
