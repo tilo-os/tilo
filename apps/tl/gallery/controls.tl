@@ -212,6 +212,7 @@ view controls(g: Gallery) {
 /// The controls' page, with a report a week from starting, looked after by Mia.
 scenario "controls" {
     let g = root Gallery
+    fill(g)
     g.controls_owner = .some(person("Mia"))
     g.controls_starts = 2026-11-03
     g.controls_clock = 2026-11-03T09:30Z

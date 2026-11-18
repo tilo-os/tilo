@@ -1518,7 +1518,13 @@ impl Host {
             app: AppId::from(app),
             fields: Vec::new(),
         };
-        Ok(self.inner.store.create_with_id(&record, &id)?)
+        let root = self.inner.store.create_with_id(&record, &id)?;
+        // A root made now has its package's migrations behind it: what a package fills its first
+        // start with is there before the window that asked for the root is drawn.
+        if let Some(package) = self.package(app) {
+            self.migrate_doc(&package, ty, &id);
+        }
+        Ok(root)
     }
 
     /// The type id of the root `chosen` names in `app`: the named root, or a root by its type's
@@ -1569,37 +1575,55 @@ impl Host {
                     continue;
                 };
                 for doc in self.inner.store.resources_of(&package.meta.app, &ty.id) {
-                    if self
-                        .inner
-                        .store
-                        .migrated(&doc, &migration.id)
-                        .unwrap_or(true)
-                    {
-                        continue;
-                    }
-                    let target = Value::resource(&ResourceRef::root(&doc, ty.id.clone()));
-                    self.inner
-                        .store
-                        .set_migrating(Some((migration.id.clone(), doc.clone())));
-                    // The package updating its own documents, not the person at the window: the
-                    // change is the package version's, under the platform's migration actor.
-                    let by = Actor::App(AppId::from(package.meta.app.as_str()));
-                    let outcome = self
-                        .inner
-                        .runtime
-                        .invoke_action(&by, (migration.id.as_str(), vec![target]));
-                    self.inner.store.set_migrating(None);
-                    match outcome {
-                        Ok(InvokeOutcome::Done(_)) => ran = ran.saturating_add(1),
-                        other => tracing::warn!(
-                            app = package.meta.app,
-                            migration = migration.name,
-                            doc,
-                            ?other,
-                            "a migration did not run"
-                        ),
-                    }
+                    ran = ran.saturating_add(self.migrate_doc(&package, &ty.id, &doc));
                 }
+            }
+        }
+        ran
+    }
+
+    /// Do each of `package`'s migrations of the type `ty` (a type id) that has not happened on
+    /// the resource `doc`, as the package's own invocation. Answers how many happened.
+    fn migrate_doc(&self, package: &Package, ty: &str, doc: &str) -> usize {
+        let mut ran: usize = 0;
+        for migration in package.meta.migrations() {
+            let Some(target) = migration
+                .params
+                .first()
+                .and_then(|target| package.meta.type_named(&target.ty))
+            else {
+                continue;
+            };
+            if target.id != ty
+                || self
+                    .inner
+                    .store
+                    .migrated(doc, &migration.id)
+                    .unwrap_or(true)
+            {
+                continue;
+            }
+            let at = Value::resource(&ResourceRef::root(doc, ty.to_owned()));
+            self.inner
+                .store
+                .set_migrating(Some((migration.id.clone(), doc.to_owned())));
+            // The package updating its own documents, not the person at the window: the change
+            // is the package version's, under the platform's migration actor.
+            let by = Actor::App(AppId::from(package.meta.app.as_str()));
+            let outcome = self
+                .inner
+                .runtime
+                .invoke_action(&by, (migration.id.as_str(), vec![at]));
+            self.inner.store.set_migrating(None);
+            match outcome {
+                Ok(InvokeOutcome::Done(_)) => ran = ran.saturating_add(1),
+                other => tracing::warn!(
+                    app = package.meta.app,
+                    migration = migration.name,
+                    doc,
+                    ?other,
+                    "a migration did not run"
+                ),
             }
         }
         ran

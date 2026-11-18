@@ -762,3 +762,9 @@ d-x3epwv5u-filter-controls_starts = Bedienelemente Beginn
 d-x3epwv5u-filter-controls_urgency = Bedienelemente Dringlichkeit
 
 d-x3epwv5u-filter-media_at = Position der Medien
+
+d-ugfyyjbk = Füllen beim ersten Start
+    .doc = Eine Galerie, deren Wurzel angelegt wird, öffnet sich gefüllt: Die Plattform wendet dies einmal auf die Wurzel an, wie jede Migration, während die Wurzel entsteht und bevor das Fenster gezeichnet wird, das sie angefordert hat.
+
+d-haqpp6u6 = Füllen
+    .doc = Was die Galerie zeigt, solange noch nichts in ihr steht: ein Dokument jeder Gruppe, damit ein Mensch die Komponenten trifft statt ein leeres Fenster.

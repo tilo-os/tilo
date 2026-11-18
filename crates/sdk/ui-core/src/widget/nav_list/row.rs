@@ -579,6 +579,31 @@ impl Widget for NavRow {
             NavRowKind::Item { label, spec, .. } => {
                 cx.element("li");
                 cx.selected(self.selection.selected);
+                // The chosen row's lift as the canvas paints it: a rounded ground inset from
+                // the list's edge, under the row's words.
+                if self.selection.selected {
+                    let tokens = &theme.tokens;
+                    let s2 = f64::from(tokens.spacing.s2);
+                    let hairline = f64::from(tokens.metrics.chrome_rule_px);
+                    let lift = Rect::new(
+                        self.rect.x0 + s2,
+                        self.rect.y0 + hairline,
+                        self.rect.x1 - s2,
+                        self.rect.y1 - hairline,
+                    );
+                    let fill = crate::chrome::selection_tier_on(
+                        &theme,
+                        crate::chrome::SelectionState::active(true),
+                        tokens.colors.surfaces.content,
+                    )
+                    .fill;
+                    let part = cx.part("selection", "NavRowSelection", lift);
+                    part.ground = Some(crate::composition::Ground {
+                        fill: Some(crate::composition::rgba8(fill)),
+                        edge: None,
+                        radius: f64::from(tokens.radii.control),
+                    });
+                }
                 let detail = spec
                     .secondary
                     .clone()

@@ -138,64 +138,7 @@ view data(g: Gallery) {
 
 /// The data group, over a release a team is working on.
 scenario "data" {
-    let g = root Gallery
-    g.data_rows.insert(Row(title: "Readme.md", state: "Edited", size: 1204))
-    g.data_rows.insert(Row(title: "release.toml", state: "New", size: 312))
-    g.data_rows.insert(Row(title: "notes.txt", state: "Locked", size: 48))
-    let project = g.data_files.insert(Node(title: "Project", folder: true))
-    let src = g.data_files.insert(Node(title: "src", parent: project, folder: true, size: 0))
-    g.data_files.insert(Node(title: "main.rs", parent: src, folder: false, size: 880))
-    g.data_files.insert(Node(title: "board.rs", parent: src, folder: false, size: 2416))
-    let docs = g.data_files.insert(Node(title: "docs", parent: project, folder: true, size: 0))
-    g.data_files.insert(Node(title: "release-notes.md", parent: docs, folder: false, size: 1204))
-    g.data_messages.insert(
-        Message(
-            title: "a",
-            from: "Ada",
-            body: "Are we ready to ship the release tomorrow?",
-            at: 2026-06-29T16:05Z,
-            mine: false,
-        ),
-    )
-    g.data_messages.insert(
-        Message(
-            title: "b",
-            from: "Sam",
-            body: "The build is green. One screenshot is left for the docs.",
-            at: 2026-06-29T16:07Z,
-            mine: true,
-        ),
-    )
-    g.data_messages.insert(
-        Message(
-            title: "c",
-            from: "Sam",
-            body: "I'll finish it first thing.",
-            at: 2026-06-29T16:07Z,
-            mine: true,
-        ),
-    )
-    g.data_messages.insert(
-        Message(
-            title: "d",
-            from: "Ada",
-            body: "Screenshots are in. Then let us go.",
-            at: 2026-06-30T08:44Z,
-            mine: false,
-        ),
-    )
-    g.data_messages.insert(
-        Message(title: "e", from: "Sam", body: "Shipping now.", at: 2026-06-30T08:46Z, mine: true),
-    )
-    g.data_cards.insert(Card(title: "Design", count: 12))
-    g.data_cards.insert(Card(title: "Engineering", count: 34))
-    g.data_cards.insert(Card(title: "Support", count: 7))
-    g.data_changes.insert(
-        Change(title: "a", who: "Ada", summary: "Rewrote the summary", at: 2026-06-30T08:42Z),
-    )
-    g.data_changes.insert(
-        Change(title: "b", who: "Sam", summary: "Moved to Done", at: 2026-06-30T09:10Z),
-    )
+    fill(root Gallery)
 }
 
 /// Note the row the table picked, in the page's answer.

@@ -519,7 +519,7 @@ tilo_test_env::scenario! {
         check_index(&replica, &packages, app);
     }
 
-    phase a_board_the_new_version_made_is_migrated_once_and_left_as_it_was;
+    phase a_board_the_new_version_made_has_its_migration_behind_it;
     {
         let packages = vec![app!("board")];
         let mut replica = Replica::new("ada", AutoCommit::new(), &packages).0;
@@ -538,19 +538,14 @@ tilo_test_env::scenario! {
         let columns = listed(&replica, &board, &columns_field);
         assert_eq!(columns.len(), 1, "the column the new version added");
 
-        // A migration runs once on each document of its target type, on a document the same version
-        // made as on an older one: the board the new version made is migrated once, and the
-        // migration leaves it as it was, nothing of the older form being there to move.
-        assert_eq!(replica.host.migrate(), 1);
-        for done in replica.host.take_committed() {
-            replica.apply(&done.action);
-        }
+        // A document this version makes has its package's migrations behind it as its root is
+        // made: the board the new version made is migrated once, and the migration left it as it
+        // was, nothing of the older form being there to move.
+        assert_eq!(replica.host.migrate(), 0);
+        assert!(replica.host.take_committed().is_empty());
         assert_eq!(listed(&replica, &board, &columns_field), columns);
         assert!(listed(&replica, &board, &cards_field).is_empty());
         assert!(listed(&replica, &board.item(&columns[0], column_ty), &list_field).is_empty());
-        // It ran once: the next open runs nothing.
-        assert_eq!(replica.host.migrate(), 0);
-        assert!(replica.host.take_committed().is_empty());
         check_index(&replica, &packages, app);
     }
 }
