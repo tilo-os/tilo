@@ -178,7 +178,7 @@ mod tests {
             assert!(matches!(session.caller(), Caller::Chat));
             assert!(!crate::caller::permitted(
                 session.as_ref(),
-                &crate::Request::SecretStatus {
+                &crate::Request::ListModels {
                     profile_id: "profile".into()
                 }
             ));

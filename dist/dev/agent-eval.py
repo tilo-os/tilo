@@ -30,7 +30,7 @@ Everything goes to the results directory: `summary.md` (the table), `results.jso
 ask's session and gateway log lines.
 
 Usage:
-  dist/dev/agent-eval.py --model-record FILE [--results DIR] [--path agent|mcp]
+  dist/dev/agent-eval.py [--model-record FILE] [--results DIR] [--path agent|mcp]
                          [--no-build] [--profile P] [--attach RUNLOG] [--only NAME[,NAME…]]
                          [--compare DIR] [--canvas-check] [--keep]
 
@@ -311,8 +311,6 @@ class Session:
                 args.size,
                 "--scale",
                 args.scale,
-                "--model-record",
-                str(Path(args.model_record).resolve()),
                 "--profile",
                 args.profile,
                 "--agent-key",
@@ -712,7 +710,10 @@ def main() -> int:
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    p.add_argument("--model-record", required=True)
+    # The session's agent asks the person's model on their workspace's server, through this
+    # computer's `tilo login` session; only the external agent of `--path mcp` asks a provider
+    # itself, with this record's endpoint and model.
+    p.add_argument("--model-record", default=None)
     p.add_argument("--results", default=None)
     p.add_argument("--path", choices=["agent", "mcp"], default="agent")
     p.add_argument("--no-build", action="store_true")
@@ -754,6 +755,8 @@ def main() -> int:
         s.program(FRAMES)
         external = None
         if args.path == "mcp":
+            if args.model_record is None:
+                raise SystemExit("--path mcp needs --model-record: the external agent's model")
             external = McpAgent(s, json.loads(Path(args.model_record).read_text()))
         for ask in chosen:
             print(f"asking {ask.name!r} ({args.path})", flush=True)

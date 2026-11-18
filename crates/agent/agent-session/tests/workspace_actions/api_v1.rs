@@ -588,7 +588,11 @@ async fn a_workspaces_listing_reads_the_same_through_mcp_and_the_api() {
 }
 
 /// A workspace `person` made, with a key they approved at their `page`.
-async fn own_workspace(on_server: &OnServer, person: &SigningKey, page: &Device) -> String {
+pub(super) async fn own_workspace(
+    on_server: &OnServer,
+    person: &SigningKey,
+    page: &Device,
+) -> String {
     let backend = V1 {
         api: &on_server.api,
         token: approved_key(on_server, person, page, "Visa backend").await,

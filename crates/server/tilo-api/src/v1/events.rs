@@ -166,7 +166,8 @@ pub fn stream(mut watch: Watch, invocation: Option<String>) -> crate::Body {
     super::chunked_body(receiver)
 }
 
-fn frame(id: Option<&str>, kind: &str, data: &Value) -> Bytes {
+/// One server-sent event: `kind` with `data`, and the cursor `id` resumes after.
+pub(super) fn frame(id: Option<&str>, kind: &str, data: &Value) -> Bytes {
     let mut text = String::new();
     if let Some(id) = id.filter(|id| !id.is_empty()) {
         text.push_str("id: ");

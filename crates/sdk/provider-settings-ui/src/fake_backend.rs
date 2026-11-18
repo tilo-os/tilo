@@ -3,7 +3,6 @@
 struct BackendState {
     config: ProviderConfig,
     revision: u64,
-    keys: HashMap<String, CredentialStatus>,
     fail_next: bool,
     /// What a provider lists, when not the two stand-in models.
     listing: Option<Vec<agent_provider_config::ModelDescriptor>>,
@@ -37,14 +36,6 @@ impl ProviderAdmin for FakeAdminBackend {
             if revision != state.revision.to_string() {
                 return Err(ModelError::new(ErrorKind::Conflict));
             }
-            // The backend requires credential cleanup before metadata deletion.
-            if state
-                .keys
-                .keys()
-                .any(|id| !config.profiles.iter().any(|profile| &profile.id == id))
-            {
-                return Err(ModelError::new(ErrorKind::PermissionDenied));
-            }
             state.config = config;
             state.revision = state
                 .revision
@@ -57,28 +48,12 @@ impl ProviderAdmin for FakeAdminBackend {
         })
     }
 
-    fn credential_status(&self, id: String) -> AdminFuture<'_, CredentialStatus> {
-        Box::pin(async move {
-            Ok(self
-                .state
-                .lock_recover()
-                .keys
-                .get(&id)
-                .copied()
-                .unwrap_or(CredentialStatus::Missing))
-        })
-    }
-
     fn list_models(
         &self,
-        id: String,
+        _id: String,
     ) -> AdminFuture<'_, Vec<agent_provider_config::ModelDescriptor>> {
         Box::pin(async move {
             self.ready().await?;
-            // A provider answers only with the key it was given.
-            if self.state.lock_recover().keys.get(&id) != Some(&CredentialStatus::Configured) {
-                return Err(ModelError::new(ErrorKind::Authentication));
-            }
             let listing = self.state.lock_recover().listing.clone();
             if let Some(listing) = listing {
                 return Ok(listing);
@@ -91,26 +66,6 @@ impl ProviderAdmin for FakeAdminBackend {
                 },
                 agent_provider_config::ModelDescriptor::new("listed-b"),
             ])
-        })
-    }
-
-    fn set_api_key(&self, id: String, key: String) -> AdminFuture<'_, ()> {
-        Box::pin(async move {
-            self.ready().await?;
-            assert_eq!(key, "private-key-draft");
-            self.state
-                .lock_recover()
-                .keys
-                .insert(id, CredentialStatus::Configured);
-            Ok(())
-        })
-    }
-
-    fn remove_api_key(&self, id: String) -> AdminFuture<'_, ()> {
-        Box::pin(async move {
-            self.ready().await?;
-            self.state.lock_recover().keys.remove(&id);
-            Ok(())
         })
     }
 }

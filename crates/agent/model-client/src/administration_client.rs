@@ -2,7 +2,7 @@
 use crate::{Request, Response, transport::Transport};
 use agent_provider_config::{
     ModelDescriptor, ProviderConfig,
-    management::{AdminFuture, CredentialStatus, ProviderAdmin, ProviderSnapshot},
+    management::{AdminFuture, ProviderAdmin, ProviderSnapshot},
     protocol::{ErrorKind, ModelError},
 };
 
@@ -49,27 +49,7 @@ impl<T: Transport> ProviderAdmin for AdministrationClient<T> {
             config,
         }))
     }
-    fn credential_status(&self, profile_id: String) -> AdminFuture<'_, CredentialStatus> {
-        Box::pin(self.read(Request::CredentialStatus { profile_id }))
-    }
     fn list_models(&self, profile_id: String) -> AdminFuture<'_, Vec<ModelDescriptor>> {
         Box::pin(self.read(Request::ListModels { profile_id }))
-    }
-    fn set_api_key(&self, profile_id: String, api_key: String) -> AdminFuture<'_, ()> {
-        Box::pin(async move {
-            self.call(Request::SetApiKey {
-                profile_id,
-                api_key,
-            })
-            .await
-            .map(|_| ())
-        })
-    }
-    fn remove_api_key(&self, profile_id: String) -> AdminFuture<'_, ()> {
-        Box::pin(async move {
-            self.call(Request::RemoveApiKey { profile_id })
-                .await
-                .map(|_| ())
-        })
     }
 }

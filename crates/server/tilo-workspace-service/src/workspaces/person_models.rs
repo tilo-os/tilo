@@ -83,17 +83,18 @@ impl Workspaces {
         certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
     ) -> Result<Value, ActionCallError> {
+        if request.target.address.action == person_models::ASK {
+            let person = Self::asking_for_model(caller, certificate, workspace_id)?;
+            let asked: ModelRequest = argument(request, "a model request")?;
+            return self
+                .ask_person_model(person, workspace_id, &asked, &mut |_| {})
+                .await;
+        }
         let person = Self::asking_person(caller, certificate, workspace_id)?;
         let root = self.person_settings_root(&person);
         let reach = self.model_reach();
         let changed = match request.target.address.action.as_str() {
             person_models::LIST => return answer(&Ok(providers(&root))),
-            person_models::ASK => {
-                let asked: ModelRequest = argument(request, "a model request")?;
-                return self
-                    .ask_person_model(person, workspace_id, &asked, &mut |_| {})
-                    .await;
-            }
             person_models::ADD_PROVIDER => {
                 let adding: person_models::AddProvider = argument(request, "a provider to add")?;
                 answer(&add_provider(&root, &adding, reach.destinations))
@@ -159,7 +160,7 @@ impl Workspaces {
         request: &InvokeRequest,
         events: super::person_model::Events<'_>,
     ) -> Result<Value, ActionCallError> {
-        let person = Self::asking_person(caller, certificate, workspace_id)?;
+        let person = Self::asking_for_model(caller, certificate, workspace_id)?;
         let asked: ModelRequest = argument(request, "a model request")?;
         self.ask_person_model(person, workspace_id, &asked, events)
             .await

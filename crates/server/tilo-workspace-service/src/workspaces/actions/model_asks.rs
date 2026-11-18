@@ -62,7 +62,7 @@ impl Actions {
         request: &InvokeRequest,
     ) -> Result<InvocationReceipt, ActionCallError> {
         // Who may ask is decided before anything is admitted.
-        Workspaces::asking_person(caller, certificate, workspace_id)?;
+        Workspaces::asking_for_model(caller, certificate, workspace_id)?;
         let invocation = request.invocation;
         let mut log = self.log();
         if log.reserve(caller, request)? == tilo_actions::remote::Reservation::Admitted {

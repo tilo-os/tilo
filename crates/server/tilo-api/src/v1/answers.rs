@@ -771,6 +771,30 @@ pub struct Event {
     pub data: Value,
 }
 
+/// One turn asked of the person's own model, which the server that keeps
+/// their workspace asks with the key their vault keeps there: the
+/// conversation as the model service takes it. The answer streams as
+/// server-sent events: `text` and `reasoning` each carry `{"text": …}`, what
+/// the model wrote since the event before; `answer` ends the stream with the
+/// whole turn, `{"Ok": {"message", "stop_reason", "usage"}}` or
+/// `{"Err": {"kind", "message"}}`, the kind telling a caller what to do
+/// (`no_provider`: none set up yet; `authentication`: no key kept); `error`
+/// ends it with a refusal of the API's own shape.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ModelAsk {
+    /// The conversation: each `{"role", "content"}`, the role `system`,
+    /// `user`, `assistant` or `tool`.
+    pub messages: Vec<Value>,
+    /// The tools the model may call, each `{"name", "description",
+    /// "input_schema"}`.
+    #[serde(default)]
+    pub tools: Vec<Value>,
+    /// `auto`, `required` or `none`.
+    pub tool_choice: String,
+    /// The most tokens the answer may take.
+    pub max_output_tokens: u32,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct NewWebhook {
     /// `https://…`, where each event is posted.
@@ -863,6 +887,7 @@ pub fn schemas(generator: &mut schemars::SchemaGenerator) -> Vec<(&'static str, 
         NewUpload,
         Upload,
         Event,
+        ModelAsk,
         NewWebhook,
         Webhook,
         WebhookList,

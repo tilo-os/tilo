@@ -2,7 +2,7 @@
 # (tools/policy/check_glossary_words.py). Counts only go down.
 room 3239
 space 4630
-channel 19207
+channel 19204
 subject 2956
 host 27592
 relay 3369

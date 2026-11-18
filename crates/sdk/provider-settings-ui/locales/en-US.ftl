@@ -98,7 +98,6 @@ agent-provider-busy = A provider operation is still running. Wait before making 
 agent-provider-conflict = Provider settings changed elsewhere. The latest settings were reloaded. Review your draft and save again.
 agent-provider-refresh-required = Load provider settings before editing. Choose Refresh providers to retry.
 agent-provider-refresh = Refresh providers
-agent-key-empty = Enter an API key before saving.
 agent-request-limits-title = Model request limits
 
 
@@ -115,13 +114,6 @@ agent-disable = Disable
 agent-enable = Enable
 agent-remove-provider = Remove provider
 agent-protocol = Protocol
-agent-placeholder-key = API key (stored in Tilo vault)
-agent-replace-key = Replace key
-agent-save-key = Save key
-agent-remove-key = Remove key
-agent-key-stored = API key is stored in the Tilo vault.
-agent-key-none = No API key stored.
-agent-key-needed = Needs a key on this device
 agent-default-current = Default for new tasks
 agent-use-default = Use by default
 agent-config-issue = Provider configuration: { $message }
@@ -147,7 +139,6 @@ agent-location-this-device = This device (local)
 agent-location-private = Private network
 settings-failure-details = Details
 settings-read-error = Can't read
-agent-key-read-error = Can't tell whether a key is saved: { $error }
 
 agent-accel-active-caption = Accelerator support is active on this device.
 agent-accel-available = Compatible accelerator support is available for this device.
@@ -161,6 +152,7 @@ agent-ready-running-caption = The model is ready and running on this device.
 agent-ready-stopped-caption = The model is downloaded. Start it when needed.
 agent-rec-waiting-caption = A recommendation will appear when the model service is available.
 agent-sign-in-credentials = Sign-in credentials are managed by system accounts, not an API key.
+agent-key-workspace = This computer keeps no provider keys: add this provider from your workspace, which keeps them.
 agent-models-agents-title = Agents
 agent-models-agents-caption = These agents plan with a model of their own; the rest use the default. Choose an agent's model in its workspace settings.
 agent-model-of-provider = { $model } from { $provider }
@@ -264,7 +256,6 @@ agent-model-use = Use
 agent-model-use-named = Use { $model }
 agent-provider-where = Where it runs
 agent-endpoint-fill-in = Put { $what }, then save the details.
-agent-key-unencrypted = This key is sent unencrypted on your network: the endpoint uses http, not https.
 agent-model-tools-in-use = { $agents } plans with this model. Choose another model for it first.
 
 ## Actions

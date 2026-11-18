@@ -18,6 +18,7 @@ pub mod answers;
 pub mod errors;
 pub mod events;
 pub mod idempotency;
+mod model_asks;
 pub mod names;
 pub mod openapi;
 pub mod operations;
@@ -444,6 +445,7 @@ impl<'a> Caller<'a> {
             "listWebhooks" | "createWebhook" | "deleteWebhook" => {
                 self.webhook_operation(operation.id)
             }
+            "askModel" => model_asks::ask(&self.session, &self.workspace(), self.body).await,
             other => self.workspace_operation(other).await,
         }
     }

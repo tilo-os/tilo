@@ -5,10 +5,9 @@ use ui::framework::testing::TestApp;
 
 use super::{AgentModelsEffect, PanelActions, ProviderPanel, SettingsEffect};
 use crate::{SettingsShell, effects::NavigationEffect};
-use agent_provider_config::management::{CredentialStatus, ProviderAdmin, ProviderSnapshot};
+use agent_provider_config::management::{ProviderAdmin, ProviderSnapshot};
 use agent_provider_config::protocol::{ErrorKind, ModelError};
 use agent_provider_config::{ProviderConfig, ProviderProfile};
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use ui::lock::MutexRecover as _;
 use ui::tilo_resource::Effect;
@@ -52,9 +51,6 @@ fn invoke(
     if row != "settings.root" {
         arguments.remove("provider");
         arguments.remove("on");
-        if arguments.get("key").is_some_and(serde_json::Value::is_null) {
-            arguments.remove("key");
-        }
     }
     app.call_by(
         ui::tilo_actions::ActionInvoker::person("provider-administrator"),
@@ -66,10 +62,7 @@ fn invoke(
 }
 
 fn run(app: &mut TestApp<SettingsShell>, effect: AgentModelsEffect) {
-    if matches!(
-        effect,
-        AgentModelsEffect::RemoveProvider { .. } | AgentModelsEffect::RemoveProviderKey { .. }
-    ) {
+    if matches!(effect, AgentModelsEffect::RemoveProvider { .. }) {
         let row = row_for(&effect);
         let effect = SettingsEffect::from(effect);
         app.call_confirmed_on(&row, effect.id(), serde_json::json!({}))
@@ -104,17 +97,6 @@ fn config(app: &mut TestApp<SettingsShell>) -> ProviderConfig {
     .unwrap()
 }
 
-fn key_buffer(app: &mut TestApp<SettingsShell>, id: &str) -> Arc<Mutex<String>> {
-    app.with_widget::<crate::window::Inspected, _>(|app| {
-        crate::panes::agent_models::area(app)
-            .unwrap()
-            .model()
-            .borrow()
-            .key_buffer(id)
-    })
-    .unwrap()
-}
-
 #[test]
 fn mounted_without_administration_edits_only_honestly_labelled_offline_metadata() {
     let mut app = TestApp::<SettingsShell>::for_person("provider-administrator").unwrap();
@@ -128,13 +110,13 @@ fn mounted_without_administration_edits_only_honestly_labelled_offline_metadata(
             preset: "anthropic".into(),
         },
     );
-    let id = config(&mut app).profiles[0].id.clone();
+    let profile = config(&mut app).profiles[0].clone();
     app.with_widget::<crate::window::Inspected, _>(|app| {
         let model = crate::panes::agent_models::area(app)
             .unwrap()
             .model()
             .borrow();
-        assert_eq!(model.providers.config().profiles.len(), 1);
+        assert_eq!(model.providers.config().profiles[0], profile);
         assert!(
             model
                 .notice
@@ -144,60 +126,6 @@ fn mounted_without_administration_edits_only_honestly_labelled_offline_metadata(
         );
     })
     .unwrap();
-    let draft = key_buffer(&mut app, &id);
-    *draft.lock_recover() = "private-key-draft".into();
-    assert!(
-        invoke(
-            &mut app,
-            AgentModelsEffect::SaveProviderKey {
-                provider: id,
-                key: None
-            }
-        )
-        .is_err()
-    );
-    assert_eq!(*draft.lock_recover(), "private-key-draft");
-    app.with_widget::<crate::window::Inspected, _>(|app| {
-        assert!(
-            crate::panes::agent_models::area(app)
-                .unwrap()
-                .model()
-                .borrow()
-                .notice
-                .as_ref()
-                .unwrap()
-                .contains("unavailable")
-        );
-    })
-    .unwrap();
-}
-
-fn assert_private(app: &mut TestApp<SettingsShell>) {
-    app.with_widget::<crate::window::Inspected, _>(|app| {
-        let model = crate::panes::agent_models::area(app)
-            .unwrap()
-            .model()
-            .borrow();
-        assert!(
-            model.providers.config().profiles.is_empty(),
-            "backend metadata must not be duplicated into the local settings channel"
-        );
-        let shared = serde_json::to_string(&model.providers.config()).unwrap();
-        assert!(!shared.contains("private-key-draft"));
-    })
-    .unwrap();
-    app.settle();
-    assert!(
-        !provider_settings_ui::widgets::announced_text(crate::effects::page_of(
-            app.harness().root_widget()
-        ))
-        .join(" ")
-        .contains("private-key-draft")
-    );
-    let document = app
-        .read_document(|doc| serde_json::to_string(&ui::automerge::AutoSerde::from(doc)).unwrap());
-    assert!(!document.contains("private-key-draft"));
-    assert!(!format!("{:?}", app.history()).contains("private-key-draft"));
 }
 
 fn with_panel<T>(
@@ -290,8 +218,8 @@ fn mounted_vertex_save_serializes_and_reloads_after_failure_and_conflict() {
 
 mod shared_contract {
     use super::{
-        AgentModelsEffect, CredentialStatus, FakeAdminBackend, Ordering, ProviderProfile,
-        SettingsEffect, assert_private, config, invoke, key_buffer, mount, run, with_panel,
+        AgentModelsEffect, FakeAdminBackend, Ordering, ProviderProfile, SettingsEffect, config,
+        invoke, mount, run, with_panel,
     };
     use agent_provider_config::Interaction;
     use provider_settings_ui::widgets;

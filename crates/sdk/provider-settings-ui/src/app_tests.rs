@@ -1,10 +1,9 @@
 use super::app::{ProviderSettingsApp, ProviderSurface};
 use super::{ProviderEffect, ProviderPanel, definition, widgets};
 use agent_provider_config::management::AdminFuture;
-use agent_provider_config::management::{CredentialStatus, ProviderAdmin, ProviderSnapshot};
+use agent_provider_config::management::{ProviderAdmin, ProviderSnapshot};
 use agent_provider_config::protocol::{ErrorKind, ModelError};
 use agent_provider_config::{EndpointLocation, Interaction, ProviderConfig, ProviderProfile};
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use ui::framework::testing::TestApp;
@@ -43,9 +42,6 @@ fn invoke(
     if row != "model-providers.root" {
         arguments.remove("provider");
         arguments.remove("on");
-        if arguments.get("key").is_some_and(serde_json::Value::is_null) {
-            arguments.remove("key");
-        }
     }
     app.call_by(
         ui::tilo_actions::ActionInvoker::person("provider-administrator"),
@@ -56,10 +52,7 @@ fn invoke(
     .map(|_| ())
 }
 fn run(app: &mut TestApp<ProviderSettingsApp>, effect: ProviderEffect) {
-    if matches!(
-        effect,
-        ProviderEffect::RemoveProvider { .. } | ProviderEffect::RemoveProviderKey { .. }
-    ) {
+    if matches!(effect, ProviderEffect::RemoveProvider { .. }) {
         app.call_confirmed_on(&row_for(&effect), effect.id(), serde_json::json!({}))
             .unwrap();
         app.settle();
@@ -76,31 +69,6 @@ fn with_panel<T>(
 }
 fn config(app: &mut TestApp<ProviderSettingsApp>) -> ProviderConfig {
     with_panel(app, |panel| panel.provider_config().clone())
-}
-fn key_buffer(app: &mut TestApp<ProviderSettingsApp>, id: &str) -> Arc<Mutex<String>> {
-    with_panel(app, |panel| panel.key_buffer(id))
-}
-fn assert_private(app: &mut TestApp<ProviderSettingsApp>) {
-    with_panel(app, |panel| {
-        assert!(
-            panel.offline_config.profiles.is_empty(),
-            "backend metadata must not be duplicated into local settings"
-        );
-        assert!(
-            !serde_json::to_string(&panel.offline_config)
-                .unwrap()
-                .contains("private-key-draft")
-        );
-        assert!(
-            !widgets::announced_text(widgets::page(panel.sections()).as_ref())
-                .join(" ")
-                .contains("private-key-draft")
-        );
-    });
-    let document = app
-        .read_document(|doc| serde_json::to_string(&ui::automerge::AutoSerde::from(doc)).unwrap());
-    assert!(!document.contains("private-key-draft"));
-    assert!(!format!("{:?}", app.history()).contains("private-key-draft"));
 }
 #[test]
 fn standalone_without_authority_starts_empty_and_rejects_mutation() {
@@ -120,7 +88,6 @@ fn standalone_without_authority_starts_empty_and_rejects_mutation() {
         tree.contains("Model providers are set up by an administrator"),
         "{tree}"
     );
-    assert!(!tree.contains("private-key-draft"));
     assert_eq!(definition().app_id(), "so.tilo.model-providers");
 }
 #[test]
@@ -248,16 +215,6 @@ fn a_typed_endpoint_takes_the_location_its_address_has() {
             (profile.endpoint.as_str(), profile.location),
             (endpoint, location)
         );
-        // A key sent over plain http on the person's network is said to be.
-        let warned = with_panel(&mut app, |panel| {
-            widgets::announced_text(widgets::page(panel.sections()).as_ref())
-                .contains(&crate::i18n::t("agent-key-unencrypted"))
-        });
-        assert_eq!(
-            warned,
-            location == EndpointLocation::PrivateNetwork,
-            "{endpoint}"
-        );
     }
 }
 
@@ -311,9 +268,6 @@ fn a_model_set_by_id_takes_its_capabilities_from_the_providers_list() {
         let mut state = backend.state.lock_recover();
         state.listing = Some(agent_provider_config::transform::parse_models(&listing).unwrap());
         state.config.upsert(profile);
-        state
-            .keys
-            .insert("openrouter-a".into(), CredentialStatus::Configured);
     }
     let mut app = mount(backend.clone());
     run(
@@ -418,17 +372,7 @@ fn agents_set_model_capabilities_and_cannot_plan_with_a_model_without_tools() {
         },
     );
     app.settle();
-    // The key is written through its action, and is never read back.
     let provider = config(&mut app).profiles[0].id.clone();
-    run(
-        &mut app,
-        ProviderEffect::SaveProviderKey {
-            provider: provider.clone(),
-            key: Some("private-key-draft".into()),
-        },
-    );
-    app.settle();
-    assert_private(&mut app);
     // The provider lists its models, answered as the action declares.
     let listed = list_models_through_the_api(&mut app, &provider);
     assert_eq!(listed.value.as_ref().unwrap()[0]["id"], "listed-a");
@@ -527,7 +471,7 @@ fn review_pictures_of_the_catalogue_and_a_providers_form() {
     .unwrap();
     backend.state.lock_recover().listing =
         Some(agent_provider_config::transform::parse_models(&listing).unwrap());
-    let mut app = mount(backend.clone());
+    let mut app = mount(backend);
     for (theme, name) in [
         (ui::theme::Theme::dark(), "dark"),
         (ui::theme::Theme::light(), "light"),
@@ -556,11 +500,6 @@ fn review_pictures_of_the_catalogue_and_a_providers_form() {
         app.settle();
     }
     let id = config(&mut app).profiles.last().unwrap().id.clone();
-    backend
-        .state
-        .lock_recover()
-        .keys
-        .insert(id.clone(), CredentialStatus::Configured);
     run(&mut app, ProviderEffect::RefreshProviders);
     app.settle();
     run(

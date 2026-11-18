@@ -1,19 +1,12 @@
 //! Host-authorized provider administration, separate from inference authority.
-//! Credentials are write-only here; ownership stays in the shared backend broker.
+//! No provider key passes here: keys are kept where the person's workspace
+//! is, and set there (`tilo.models`).
 
 use std::{future::Future, pin::Pin};
 
 use serde::{Deserialize, Serialize};
 
 use crate::{ModelDescriptor, ProviderConfig, protocol::ModelError};
-
-/// Non-secret diagnosis of a provider's credential storage.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum CredentialStatus {
-    Missing,
-    Configured,
-}
 
 /// Authoritative backend settings and their compare-and-swap revision.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -38,11 +31,8 @@ pub trait ProviderAdmin: Send + Sync {
         expected_revision: String,
         config: ProviderConfig,
     ) -> AdminFuture<'_, ProviderSnapshot>;
-    fn credential_status(&self, profile_id: String) -> AdminFuture<'_, CredentialStatus>;
-    /// The models the provider lists, asked with its stored credential:
-    /// also the proof that the endpoint and credential work.
+    /// The models the provider lists, asked as its sign-in or, for a local
+    /// server, as itself: also the proof that the endpoint answers.
     /// [`crate::protocol::ErrorKind::Unsupported`] when it lists none.
     fn list_models(&self, profile_id: String) -> AdminFuture<'_, Vec<ModelDescriptor>>;
-    fn set_api_key(&self, profile_id: String, api_key: String) -> AdminFuture<'_, ()>;
-    fn remove_api_key(&self, profile_id: String) -> AdminFuture<'_, ()>;
 }

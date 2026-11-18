@@ -1,8 +1,7 @@
-//! Durable, compare-and-swap provider descriptions under the credential lock.
+//! Durable, compare-and-swap provider descriptions under the administration lock.
 use super::{
-    ErrorKind, ModelError, PLAN_PROFILES, ProviderConfig, Request, Response, ServiceCredentials,
-    VAULT_WRITES, blocking_model, credential_binding, credential_status_in, management_write,
-    succeeded,
+    ErrorKind, ModelError, ProviderConfig, Request, Response, VAULT_WRITES, blocking_model,
+    management_write, succeeded,
 };
 use agent_provider_config::management::ProviderSnapshot;
 use sha2::{Digest, Sha256};
@@ -67,7 +66,6 @@ fn validate_descriptions(config: &ProviderConfig) -> Result<(), ModelError> {
         {
             return Err(invalid());
         }
-        credential_binding(profile).map_err(|_| invalid())?;
         // Endpoint userinfo, queries and fragments can contain credentials.
         let url = url::Url::parse(&profile.endpoint).map_err(|_| invalid())?;
         if !url.username().is_empty()
@@ -103,28 +101,6 @@ fn set_provider_config(
     {
         return Err(ModelError::new(ErrorKind::Conflict));
     }
-    let store = ServiceCredentials::open();
-    for old in &previous.profiles {
-        let new = config.profiles.iter().find(|profile| profile.id == old.id);
-        // References and keys belong to an origin, not to the editable profile
-        // id. Require removal first, including for profile deletion. A storage
-        // failure is not evidence that a credential is absent.
-        let binding_changed = match new {
-            None => true,
-            Some(new) => {
-                credential_binding(old).ok().map(|binding| binding.1)
-                    != credential_binding(new).ok().map(|binding| binding.1)
-                    || old.credential != new.credential
-            }
-        };
-        if binding_changed {
-            let status = credential_status_in(&store, old)
-                .map_err(|_| ModelError::new(ErrorKind::Unavailable))?;
-            if status != crate::CredentialStatus::Missing {
-                return Err(ModelError::new(ErrorKind::PermissionDenied));
-            }
-        }
-    }
     for profile in &config.profiles {
         for model in &profile.models {
             if model.revision.is_some() {
@@ -156,12 +132,6 @@ fn set_provider_config(
         .map_err(|_| ModelError::new(ErrorKind::Unavailable))?
     {
         return Err(ModelError::new(ErrorKind::Conflict));
-    }
-    for profile in &previous.profiles {
-        PLAN_PROFILES.forget(&profile.id);
-    }
-    for profile in &config.profiles {
-        PLAN_PROFILES.forget(&profile.id);
     }
     provider_snapshot(config)
 }

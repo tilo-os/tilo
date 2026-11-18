@@ -1,10 +1,7 @@
 //! Portable provider administration shared by Settings and standalone hosts.
 use crate::i18n::{t, t_args};
-use crate::widgets::{
-    Item, SettingsSection, StatusTone, field_row, note, row, rows, section, semantic_status_pill,
-    value_row,
-};
-use agent_provider_config::management::{CredentialStatus, ProviderAdmin, ProviderSnapshot};
+use crate::widgets::{Item, SettingsSection, field_row, note, row, rows, section, value_row};
+use agent_provider_config::management::{ProviderAdmin, ProviderSnapshot};
 use agent_provider_config::presets::Preset;
 use agent_provider_config::protocol::{ErrorKind, ModelError};
 use agent_provider_config::{
@@ -16,8 +13,7 @@ use std::sync::{Arc, Mutex};
 use ui::framework::{ActionControl, LiveRow};
 use ui::lock::MutexRecover as _;
 use ui::tilo_resource::{self, ActionRef, Binds, Effect};
-use ui::widget::{Button, DisclosureGroup, DisclosureRow, Dropdown, Row, Text, TextInput, Toggle};
-use zeroize::Zeroize;
+use ui::widget::{Button, DisclosureGroup, DisclosureRow, Dropdown, Row, TextInput, Toggle};
 mod admin;
 use admin::AdminRead;
 mod app;
@@ -222,24 +218,9 @@ pub enum ProviderEffect {
         #[param("The model's id, one the provider offers")]
         model: Option<String>,
     },
-    /// Remove a provider and its stored API key.
+    /// Remove a provider.
     #[effect(job, row, destructive, label = "agent-remove-provider")]
     RemoveProvider {
-        #[param("The provider's id")]
-        provider: String,
-    },
-    /// Store a provider's API key in this device's vault: a hosted
-    /// provider that roamed here from another device needs its own.
-    #[effect(job, row)]
-    SaveProviderKey {
-        #[param("The provider's id")]
-        provider: String,
-        #[param(secret, "The API key; what the key field holds when omitted")]
-        key: Option<String>,
-    },
-    /// Remove a provider's stored API key.
-    #[effect(job, row, destructive)]
-    RemoveProviderKey {
         #[param("The provider's id")]
         provider: String,
     },
@@ -325,48 +306,31 @@ fn provider_row(profile: &ProviderProfile) -> LiveRow {
         }
         .bound_asking(&["model"]),
     );
-    let row = row
-        .operation(
-            ProviderEffect::SetProviderDetails {
-                provider: id.clone(),
-                label: profile.label.clone(),
-                endpoint: profile.endpoint.clone(),
-                model: profile.default_model.clone(),
-            }
-            .bound_asking(&["label", "endpoint", "model"]),
-        )
-        .operation(
-            ProviderEffect::SetProviderProtocol {
-                provider: id.clone(),
-                protocol: protocol_slug(profile.protocol).into(),
-            }
-            .bound_asking(&["protocol"]),
-        )
-        .operation(
-            ProviderEffect::SetModelCapabilities {
-                provider: id.clone(),
-                model: profile.default_model.clone().unwrap_or_default(),
-                vision: None,
-                tool_calling: None,
-            }
-            .bound_asking(&["model", "vision", "tool_calling"]),
-        );
-    // A provider with a key in this device's vault offers its key's
-    // actions: a hosted one, or a server the person gave a key.
-    if profile.credential.is_some() && profile.sign_in.is_none() {
-        row.operation(
-            ProviderEffect::SaveProviderKey {
-                provider: id,
-                key: None,
-            }
-            .bound_asking(&["key"]),
-        )
-        .operation(offer(ProviderEffect::RemoveProviderKey {
-            provider: profile.id.clone(),
-        }))
-    } else {
-        row
-    }
+    row.operation(
+        ProviderEffect::SetProviderDetails {
+            provider: id.clone(),
+            label: profile.label.clone(),
+            endpoint: profile.endpoint.clone(),
+            model: profile.default_model.clone(),
+        }
+        .bound_asking(&["label", "endpoint", "model"]),
+    )
+    .operation(
+        ProviderEffect::SetProviderProtocol {
+            provider: id.clone(),
+            protocol: protocol_slug(profile.protocol).into(),
+        }
+        .bound_asking(&["protocol"]),
+    )
+    .operation(
+        ProviderEffect::SetModelCapabilities {
+            provider: id,
+            model: profile.default_model.clone().unwrap_or_default(),
+            vision: None,
+            tool_calling: None,
+        }
+        .bound_asking(&["model", "vision", "tool_calling"]),
+    )
 }
 
 struct PanelWake(ui::WakeHandle);
@@ -384,10 +348,8 @@ pub struct ProviderPanel<H: PanelBindings> {
     pub offline_config: ProviderConfig,
     pub notice: Option<String>,
     pub changed: bool,
-    pub provider_key_buffers: Mutex<HashMap<String, Arc<Mutex<String>>>>,
     provider_field_buffers: Mutex<HashMap<String, HostedFieldBuffers>>,
     limit_field_buffers: Mutex<HashMap<(String, String), LimitFieldBuffers>>,
-    pub keys: HashMap<String, Result<CredentialStatus, String>>,
     /// What each provider answered when its models were last asked for.
     pub listed_models: HashMap<String, Result<Vec<ModelDescriptor>, String>>,
     pub admin_snapshot: Option<ProviderSnapshot>,
@@ -395,7 +357,6 @@ pub struct ProviderPanel<H: PanelBindings> {
     pub admin_pending: Option<admin::PendingAdmin>,
     waker: std::task::Waker,
     admin_reply: Option<ui::framework::EffectReply>,
-    saved_key: Option<(Arc<Mutex<String>>, zeroize::Zeroizing<String>)>,
     limits_ack: Option<admin::LimitAck>,
     /// Which provider's form is open: one at a time, the one just added
     /// first.
@@ -413,21 +374,18 @@ impl<H: PanelBindings> ProviderPanel<H> {
             offline_config,
             notice: None,
             changed: true,
-            provider_key_buffers: Mutex::default(),
             provider_field_buffers: Mutex::default(),
             limit_field_buffers: Mutex::default(),
-            keys: HashMap::new(),
             listed_models: HashMap::new(),
             admin_snapshot: None,
             empty_config: ProviderConfig::default(),
             admin_pending: None,
             waker: std::task::Waker::from(Arc::new(PanelWake(ui::WakeHandle::new()))),
             admin_reply: None,
-            saved_key: None,
             limits_ack: None,
             open_profile: DisclosureGroup::new(),
         };
-        panel.read_keys();
+        panel.refresh_admin();
         panel
     }
     /// Nobody here can change providers and there is nothing to keep
@@ -604,7 +562,7 @@ impl<H: PanelBindings> ProviderPanel<H> {
             .collect()
     }
     /// Read only through the mount's explicitly granted administration capability.
-    pub fn read_keys(&mut self) {
+    pub fn refresh_admin(&mut self) {
         if self.admin_pending.is_some() || !self.provider_admin.is_available() {
             return;
         }
@@ -641,7 +599,6 @@ impl<H: PanelBindings> ProviderPanel<H> {
             // A failed reload must not leave an apparently writable stale revision.
             self.admin_snapshot = None;
         }
-        self.keys = read.keys;
         if let Some((provider, models)) = read.cached {
             self.listed_models.insert(provider, Ok(models));
         }
@@ -680,15 +637,6 @@ impl<H: PanelBindings> ProviderPanel<H> {
                 error.to_string()
             }
         });
-        if read.acknowledged
-            && let Some((buffer, submitted)) = self.saved_key.take()
-        {
-            let mut draft = buffer.lock_recover();
-            if *draft == *submitted {
-                draft.zeroize();
-            }
-        }
-        self.saved_key = None;
         if let Some(acknowledgement) = self.limits_ack.take().filter(|_| read.acknowledged) {
             self.acknowledge_limits(&acknowledgement);
         }
@@ -718,17 +666,6 @@ impl<H: PanelBindings> ProviderPanel<H> {
             }));
         }
         self.changed = true;
-    }
-
-    /// Whether `profile` takes a key and this device's vault has none for
-    /// it: one that roamed here from another device needs its own.
-    pub fn needs_key(&self, profile: &ProviderProfile) -> bool {
-        profile.credential.is_some()
-            && profile.sign_in.is_none()
-            && matches!(
-                self.keys.get(&profile.id),
-                Some(Ok(CredentialStatus::Missing))
-            )
     }
 
     /// Apply a provider change to the person's settings.
@@ -868,14 +805,6 @@ impl<H: PanelBindings> ProviderPanel<H> {
             Err(error) => error.clone(),
         });
         self.changed = true;
-    }
-
-    pub fn key_buffer(&self, profile_id: &str) -> Arc<Mutex<String>> {
-        let mut buffers = self.provider_key_buffers.lock_recover();
-        buffers
-            .entry(profile_id.to_string())
-            .or_insert_with(|| Arc::new(Mutex::new(String::new())))
-            .clone()
     }
 
     /// The draft fields of `profile`'s form. Each follows the profile as it
@@ -1233,94 +1162,12 @@ impl<H: PanelBindings> ProviderPanel<H> {
         )));
     }
 
-    fn profile_credentials(
-        &self,
-        body: &mut Vec<Item>,
-        profile: &ProviderProfile,
-        can_admin: bool,
-    ) {
-        let profile_id = profile.id.clone();
-        if profile.sign_in.is_some() {
-            body.push(note(&t("agent-sign-in-credentials")));
-        } else {
-            let buffer = self.key_buffer(&profile_id);
-            let initial = buffer.lock().map(|key| key.clone()).unwrap_or_default();
-            let (configured, configured_error) = match self.keys.get(&profile_id) {
-                Some(Ok(status)) => (matches!(status, CredentialStatus::Configured), None),
-                Some(Err(error)) => (false, Some(error.clone())),
-                None => (false, None),
-            };
-            if let Some(error) = configured_error {
-                body.push(row(widgets::error_caption(&t_args(
-                    "agent-key-read-error",
-                    &[("error", error.into())],
-                ))));
-            }
-            body.push(field_row(
-                &t("agent-placeholder-key"),
-                Box::new(
-                    TextInput::local()
-                        .with_id(&format!("agent-models-api-key-{profile_id}"))
-                        .with_external_buffer(buffer)
-                        .with_initial_value(&initial)
-                        .with_secret(true)
-                        .with_placeholder(t("agent-placeholder-key")),
-                ),
-            ));
-            if sends_key_unencrypted(profile) {
-                body.push(row(widgets::caption(&t("agent-key-unencrypted"))));
-            }
-            body.push(row(Box::new(
-                Row::new()
-                    .push(Box::new(
-                        self.bind_invocation(
-                            Button::new(
-                                &format!("agent-models-set-api-key-{profile_id}"),
-                                &if configured {
-                                    t("agent-replace-key")
-                                } else {
-                                    t("agent-save-key")
-                                },
-                            )
-                            .with_enabled(can_admin),
-                            ProviderEffect::SaveProviderKey {
-                                provider: profile_id.clone(),
-                                key: None,
-                            },
-                        ),
-                    ))
-                    .push(Box::new(
-                        self.bind_invocation(
-                            Button::new(
-                                &format!("agent-models-remove-api-key-{profile_id}"),
-                                &t("agent-remove-key"),
-                            )
-                            .with_enabled(can_admin),
-                            ProviderEffect::RemoveProviderKey {
-                                provider: profile_id,
-                            },
-                        ),
-                    )),
-            )));
-            // why: a key-status sentence or badge is a status line, not a label/control pair.
-            body.push(row(if configured {
-                Box::new(Text::new(&t("agent-key-stored")).dimmed())
-            } else if self.needs_key(profile) {
-                semantic_status_pill(&t("agent-key-needed"), StatusTone::Warning)
-            } else {
-                Box::new(Text::new(&t("agent-key-none")).dimmed())
-            }));
-        }
-    }
-
     fn profile_body(&self, body: &mut Vec<Item>, profile: &ProviderProfile, can_admin: bool) {
         let profile_id = profile.id.clone();
-        // What it needs first: its key, then its details, then its models;
-        // what changes the provider as a whole comes last.
-        // A provider with a key keeps it in this device's vault: a hosted
-        // one, or a server the person runs with a key they gave it.
-        if profile.credential.is_some() || profile.sign_in.is_some() {
-            self.profile_credentials(body, profile, can_admin);
+        // What it needs first: its details, then its models; what changes
+        // the provider as a whole comes last.
+        if profile.sign_in.is_some() {
+            body.push(note(&t("agent-sign-in-credentials")));
         }
         let mut details = Vec::new();
         self.profile_fields(&mut details, profile);
@@ -1711,19 +1558,6 @@ fn set_details(
     Ok(())
 }
 
-/// Whether `profile`'s key leaves this device without TLS: a server on the
-/// person's network reached over plain http. A loopback endpoint never
-/// leaves the device, and a hosted one is refused without TLS.
-fn sends_key_unencrypted(profile: &ProviderProfile) -> bool {
-    profile.credential.is_some()
-        && profile.location == EndpointLocation::PrivateNetwork
-        && profile
-            .endpoint
-            .trim()
-            .to_ascii_lowercase()
-            .starts_with("http://")
-}
-
 /// `row` as one entry of a group.
 fn row_item(row: ui::widget::ListRow) -> Item {
     widgets::row(Box::new(row))
@@ -1781,16 +1615,5 @@ fn limit_input(buffer: &Arc<Mutex<String>>) -> Option<u32> {
         None
     } else {
         Some(text.parse().unwrap_or(0))
-    }
-}
-
-impl<H: PanelBindings> Drop for ProviderPanel<H> {
-    fn drop(&mut self) {
-        // A key typed but never sent is wiped with the panel, poisoned
-        // locks included: the buffer is a whole `String`, so nothing a
-        // panic left can stop it being zeroed.
-        for buffer in self.provider_key_buffers.lock_recover().values() {
-            buffer.lock_recover().zeroize();
-        }
     }
 }

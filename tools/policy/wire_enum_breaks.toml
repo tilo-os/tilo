@@ -531,3 +531,11 @@ reason = "the presence frame goes: presence is a frame of the workspace's live s
 file = "crates/server/tilo-server-protocol/src/live.rs"
 enum = "LiveKind"
 reason = "the presence kind goes with the frame it named; a sealed live frame lives only as long as the connection, and the peer protocol version is bumped to 57 with the removal"
+[[break]]
+file = "crates/agent/model-client/src/lib.rs"
+enum = "Request"
+reason = "the verbs that read and kept a provider key on this computer go: a computer keeps no key, its model is asked on the workspace's server. The gateway and its clients speak tagged JSON by verb name over a local socket, never by position, and nothing writes a request down"
+[[break]]
+file = "crates/agent/provider-config/src/management.rs"
+enum = "CredentialStatus"
+reason = "said whether this computer kept a provider key, which it no longer does; it was only ever an answer on the gateway's local socket, never stored"

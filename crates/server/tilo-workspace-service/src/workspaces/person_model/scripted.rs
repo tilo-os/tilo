@@ -27,6 +27,8 @@ use crate::workspaces::person_settings::{provider_config, save_provider_config, 
 pub struct Reply {
     outcome: Outcome,
     cost_micros: u64,
+    /// How long the provider takes over each word it writes.
+    pause: Option<std::time::Duration>,
 }
 
 #[derive(Clone, Debug)]
@@ -62,6 +64,7 @@ impl Reply {
         Self {
             outcome: Outcome::Says(content),
             cost_micros: 0,
+            pause: None,
         }
     }
 
@@ -71,6 +74,7 @@ impl Reply {
         Self {
             outcome: Outcome::Fails(error),
             cost_micros: 0,
+            pause: None,
         }
     }
 
@@ -81,7 +85,16 @@ impl Reply {
         Self {
             outcome: Outcome::Never,
             cost_micros: 0,
+            pause: None,
         }
+    }
+
+    /// This answer, its words written `pause` apart, as a model that
+    /// takes its time writes them.
+    #[must_use]
+    pub const fn pausing(mut self, pause: std::time::Duration) -> Self {
+        self.pause = Some(pause);
+        self
     }
 
     /// This answer, costing `micros` millionths of the currency.
@@ -245,7 +258,20 @@ impl ModelProvider for ScriptedProvider {
             };
             match reply.outcome {
                 Outcome::Says(content) => {
-                    Ok(said(call.request, content, reply.cost_micros, events))
+                    let Some(pause) = reply.pause else {
+                        return Ok(said(call.request, content, reply.cost_micros, events));
+                    };
+                    for part in &content {
+                        if let Content::Text { text } = part {
+                            for piece in text.split_inclusive(' ') {
+                                tokio::time::sleep(pause).await;
+                                events(StreamEvent::TextDelta {
+                                    text: piece.to_owned(),
+                                });
+                            }
+                        }
+                    }
+                    Ok(said(call.request, content, reply.cost_micros, &mut |_| {}))
                 }
                 Outcome::Fails(error) => Err(error),
                 Outcome::Never => std::future::pending().await,

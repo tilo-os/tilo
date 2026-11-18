@@ -1,7 +1,12 @@
-//! Per-user hosted model gateway.
+//! Per-user model gateway.
 //!
-//! This is a narrow OpenAI-compatible/Anthropic server for a profile-selected
-//! planning call. It does not include a general `LiteLLM` control plane.
+//! An app's model turn (`Complete`, `CompleteDefault`, `Transform`) is the
+//! person's own model on their workspace's server, asked through the session
+//! this computer holds with it ([`server_asks`]): this computer keeps no
+//! provider key. What stays here runs on this computer alone: local vision
+//! and face models, on-device picture segmentation, and the description of
+//! the providers Settings shows. A trusted server operator's own provider
+//! calls share the provider transport (`host_backend`).
 
 #[cfg(feature = "local-models")]
 #[path = "subject.rs"]
@@ -20,11 +25,10 @@ use std::time::{Duration, Instant};
 #[cfg(feature = "host-backend")]
 #[path = "host_backend.rs"]
 pub mod host_backend;
-#[path = "profile_cache.rs"]
-mod profile_cache;
 #[path = "provider_call.rs"]
 mod provider_call;
-use profile_cache::{PLAN_PROFILES, PROFILE_REUSE, ProfileSources};
+#[path = "server_asks.rs"]
+pub mod server_asks;
 
 use crate::{
     EVENT_TOOL_CALL, EVENT_TOOL_CALL_DELTA, FRAMING, FaceImage, Frame, MAX_DELTA_EVENTS,
@@ -33,12 +37,12 @@ use crate::{
 };
 #[cfg(test)]
 use crate::{read_frame, write_frame};
-use account_credentials::{
-    Capability, CredentialError, CredentialStore, GrantState, OAuthIssuer, OAuthUse,
-};
-use accounts::{AccountId, CredentialRef, ServiceAuthorization, ServiceCredentials};
+use account_credentials::{Capability, CredentialError, CredentialStore, OAuthIssuer, OAuthUse};
+use accounts::{AccountId, ServiceAuthorization, ServiceCredentials};
+#[cfg(test)]
+use agent_provider_config::ProviderProtocol;
 use agent_provider_config::{
-    EndpointLocation, ProviderConfig, ProviderProfile, ProviderProtocol, SignInIssuer,
+    EndpointLocation, ProviderConfig, ProviderProfile, SignInIssuer,
     transform as provider_transform,
 };
 use base64::Engine as _;
@@ -47,7 +51,7 @@ use std::future::Future;
 use tilo_lock::MutexRecover as _;
 use tokio::io::AsyncReadExt as _;
 use tokio::sync::Semaphore;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 #[derive(Parser)]
 #[command(name = "tilo-model-gateway", about = "Tilo hosted model gateway")]
@@ -64,40 +68,7 @@ enum Action {
         #[arg(long)]
         socket: PathBuf,
     },
-    SecretStatus {
-        #[arg(long)]
-        profile: String,
-    },
-    RemoveApiKey {
-        #[arg(long)]
-        profile: String,
-    },
-    /// Give this configuration's person a provider, as Settings' "Add
-    /// provider", "Use model", "Set default provider" and "Save API key" do:
-    /// the profile into their provider settings, the key (read from stdin,
-    /// never an argument) into the gateway's own credential storage. For a
-    /// scripted session; `provision::Record` on stdin with `--record`.
-    #[command(hide = true)]
-    ProvisionProvider {
-        /// A preset slug (`anthropic`, `openai`, `gemini`, ...).
-        #[arg(long, required_unless_present = "record")]
-        preset: Option<String>,
-        /// The model agents use from it.
-        #[arg(long, required_unless_present = "record")]
-        model: Option<String>,
-        /// Read a whole record (`export-provider`'s output) from stdin
-        /// instead of a bare key.
-        #[arg(long)]
-        record: bool,
-    },
-    /// Write this configuration's default provider and its stored key to
-    /// stdout, for `provision-provider --record` in another configuration.
-    #[command(hide = true)]
-    ExportProvider,
 }
-
-#[path = "provision.rs"]
-mod provision;
 
 /// The launcher's handoff: a little-endian `u32` length, then JSON.
 const HANDOFF_FRAMING: wire_frame::Framing = wire_frame::Framing::little_endian(4096);
@@ -147,29 +118,10 @@ struct Handoff {
 
 pub fn main() {
     let cli = Cli::parse();
-    // The service follows the settings its session holds. Provisioning
-    // writes them as any program of the person does, before a session holds
-    // them or through the one that does, as Settings' own writes land.
-    if !matches!(
-        cli.action,
-        Action::ProvisionProvider { .. } | Action::ExportProvider
-    ) {
-        crate::follow_session_settings();
-    }
+    // The service follows the settings its session holds.
+    crate::follow_session_settings();
     let result = match cli.action {
         Action::Serve { socket } => serve(&socket),
-        Action::SecretStatus { profile } => control(Request::SecretStatus {
-            profile_id: profile,
-        }),
-        Action::RemoveApiKey { profile } => control(Request::RemoveApiKey {
-            profile_id: profile,
-        }),
-        Action::ProvisionProvider {
-            preset,
-            model,
-            record,
-        } => provision::provision(preset.as_deref(), model.as_deref(), record),
-        Action::ExportProvider => provision::export(),
     };
     if let Err(error) = result {
         // Never interpolate a request or provider response here; either could
@@ -177,14 +129,6 @@ pub fn main() {
         eprintln!("tilo-model-gateway: {error}");
         std::process::exit(1);
     }
-}
-
-fn control(request: Request) -> Result<(), String> {
-    let response = crate::request(request).map_err(|error| error.to_string())?;
-    if let Some(configured) = response.configured {
-        println!("{configured}");
-    }
-    Ok(())
 }
 
 fn serve(socket: &Path) -> Result<(), String> {
@@ -202,13 +146,6 @@ fn serve(socket: &Path) -> Result<(), String> {
     let http = Arc::new(provider_client()?);
     tilo_rt::daemon("model-gateway")
         .run(async move {
-            // An idle gateway lets go of the provider keys it kept.
-            tokio::spawn(async {
-                loop {
-                    tokio::time::sleep(PROFILE_REUSE).await;
-                    PLAN_PROFILES.sweep(Instant::now());
-                }
-            });
             let listener =
                 tokio::net::UnixListener::from_std(listener).map_err(|error| error.to_string())?;
             serve_on(listener, http, MAX_CLIENTS, HANDOFF_TIMEOUT, same_user).await
@@ -380,12 +317,7 @@ async fn negotiate_cancellation(
 }
 
 fn management_mutation(request: &Request) -> bool {
-    matches!(
-        request,
-        Request::SetProviderConfig { .. }
-            | Request::SetApiKey { .. }
-            | Request::RemoveApiKey { .. }
-    )
+    matches!(request, Request::SetProviderConfig { .. })
 }
 
 #[cfg(test)]
@@ -535,7 +467,7 @@ async fn send_body(
 
 /// Read one length-prefixed request frame. Waiting for its first byte has no
 /// limit (see [`FRAME_TIMEOUT`]); the rest must follow promptly. The buffer
-/// is zeroized on drop because a Settings frame can carry an API key.
+/// is zeroized on drop because a frame can carry a person's words.
 async fn read_request_frame(
     stream: &mut (impl tokio::io::AsyncRead + Unpin),
 ) -> Result<Zeroizing<Vec<u8>>, ()> {
@@ -614,23 +546,13 @@ pub(super) async fn handle_streaming(
 ) -> Response {
     let output = |output| succeeded(Some(output), None);
     let done = |()| succeeded(None, None);
-    let configured = |configured| succeeded(None, Some(configured));
     let result = match request {
-        Request::SelectionConfigured {
-            profile_id,
-            model_id,
-            protocol,
-        } if app_id == AGENT_APP => {
-            blocking(move || selection_configured(&profile_id, &model_id, protocol))
-                .await
-                .map(|()| configured(true))
-        }
         request @ (Request::Complete { .. } | Request::CompleteDefault { .. })
             if app_id == AGENT_APP
                 || ((app_id == CHAT_APP || app_id == FEEDBACK_APP || app_id == ACTIVITY_APP)
                     && crate::caller::chat_completion(&request)) =>
         {
-            return complete_request(http, request, emit)
+            return complete_request(request, emit)
                 .await
                 .map_or_else(Response::failure, output);
         }
@@ -641,7 +563,7 @@ pub(super) async fn handle_streaming(
             return permission_denied();
         }
         request @ Request::Transform { .. } if app_id == AGENT_APP => {
-            transform_request(http, request).await.map(output)
+            return transform_request(request).await;
         }
         Request::Transform { .. } => {
             Err("only tilo-agent may run transforms through the model gateway".into())
@@ -705,8 +627,6 @@ fn segment_request(image: VisionImage) -> impl Future<Output = Result<String, St
 /// Credential operations are reachable only after the Settings caller check.
 async fn settings_request(http: &reqwest::Client, request: Request) -> Result<Response, String> {
     let output = |output| succeeded(Some(output), None);
-    let done = |()| succeeded(None, None);
-    let configured = |configured| succeeded(None, Some(configured));
     match request {
         Request::ListModels { profile_id } => Ok(list_models(http, profile_id)
             .await
@@ -718,25 +638,6 @@ async fn settings_request(http: &reqwest::Client, request: Request) -> Result<Re
         request @ (Request::GetProviderConfig | Request::SetProviderConfig { .. }) => {
             Ok(administration::configuration_request(request).await)
         }
-        Request::SecretStatus { profile_id } => blocking(move || secret_status(&profile_id))
-            .await
-            .map(configured),
-        Request::CredentialStatus { profile_id } => blocking(move || {
-            let profile = credential_profile(&profile_id)?;
-            let status = credential_status_in(&ServiceCredentials::open(), &profile)?;
-            serde_json::to_string(&status).map_err(|_| "invalid credential status".into())
-        })
-        .await
-        .map(output),
-        Request::SetApiKey {
-            profile_id,
-            api_key,
-        } => blocking(move || set_key(&profile_id, api_key))
-            .await
-            .map(done),
-        Request::RemoveApiKey { profile_id } => {
-            blocking(move || remove_key(&profile_id)).await.map(done)
-        }
         _ => Err("caller is not authorized for this gateway operation".into()),
     }
 }
@@ -746,9 +647,9 @@ const MAX_MODEL_LIST_BYTES: usize = 2 * 1024 * 1024;
 /// How long a model list may take.
 const MODEL_LIST_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// The models `profile_id`'s provider lists, asked with its stored key or
-/// a token minted from its sign-in, enabled or not: answering is also the
-/// proof that the endpoint and credential work. A provider without a model
+/// The models `profile_id`'s provider lists, asked with a token minted from
+/// its sign-in or, for a server on this computer, as itself, enabled or not:
+/// answering is also the proof that the endpoint and sign-in work. A provider without a model
 /// list answers [`ErrorKind::Unsupported`]; the model is then typed.
 async fn list_models(
     http: &reqwest::Client,
@@ -763,8 +664,15 @@ async fn list_models(
                     .map_err(|_| ModelError::new(ErrorKind::Authentication))?
                     .0,
             )
+        } else if unauthenticated_local_plan(&profile)? {
+            None
         } else {
-            plan_secret(&profile)?
+            // This computer keeps no provider key: the person's keyed
+            // providers are listed where their workspace keeps the keys.
+            return Err(resolution_error(
+                ErrorKind::Authentication,
+                "this computer keeps no provider keys; your workspace's server keeps them",
+            ));
         };
         Ok((profile, secret))
     })
@@ -815,73 +723,44 @@ async fn list_models(
         .map_err(|_| ModelError::new(ErrorKind::InvalidResponse))
 }
 
-/// Run a provider-neutral request after the launcher caller was authorized.
+/// Run a provider-neutral request after the launcher caller was authorized:
+/// a turn of the person's own model on their workspace's server
+/// ([`server_asks`]). The provider and model a request names are this
+/// computer's own settings, which keep no key: the server answers with the
+/// model the person chose there.
 async fn complete_request(
-    http: &reqwest::Client,
     request: Request,
     emit: Emit<'_>,
 ) -> Result<String, agent_provider_config::protocol::ModelError> {
-    let (profile_id, model_id, request, timeout_ms, stream) = match request {
-        Request::Complete {
-            profile_id,
-            model_id,
-            request,
-            timeout_ms,
-            stream,
-        } => (profile_id, model_id, request, timeout_ms, stream),
-        Request::CompleteDefault {
-            request,
-            timeout_ms,
-            stream,
-        } => {
-            let (profile_id, model_id) = blocking_model(|| {
-                let config = ProviderConfig::load();
-                if !config.validation_errors().is_empty() {
-                    return Err(ModelError::new(ErrorKind::InvalidRequest));
-                }
-                // Nothing set up yet is not an outage: the caller says
-                // where to set a provider up.
-                let profile = config
-                    .active_profile()
-                    .ok_or_else(|| ModelError::new(ErrorKind::NoProvider))?;
-                let model = profile
-                    .default_model
-                    .as_ref()
-                    .ok_or_else(|| ModelError::new(ErrorKind::NoProvider))?;
-                Ok((profile.id.clone(), model.clone()))
-            })
-            .await?;
-            (profile_id, model_id, request, timeout_ms, stream)
-        }
-        _ => return Err(ModelError::new(ErrorKind::InvalidRequest)),
-    };
-    provider_call::complete(
-        http,
-        &PlanCall {
-            profile_id: &profile_id,
-            model_id: &model_id,
-            timeout: Duration::from_millis(timeout_ms),
-            stream,
-            trace: None,
-        },
+    let (Request::Complete {
         request,
-        emit,
-    )
-    .await
+        timeout_ms,
+        ..
+    }
+    | Request::CompleteDefault {
+        request,
+        timeout_ms,
+        ..
+    }) = request
+    else {
+        return Err(ModelError::new(ErrorKind::InvalidRequest));
+    };
+    let answer = server_asks::ask(&request, Duration::from_millis(timeout_ms), emit).await?;
+    serde_json::to_string(&answer).map_err(|_| ModelError::new(ErrorKind::InvalidResponse))
 }
 
-/// Run a transform request for tilo-agent.
-async fn transform_request(http: &reqwest::Client, request: Request) -> Result<String, String> {
+/// Run a transform request for tilo-agent, as one turn of the person's own
+/// model ([`server_asks::transform`]).
+async fn transform_request(request: Request) -> Response {
     let Request::Transform {
-        profile_id,
-        model_id,
         instructions,
         input,
         max_output_tokens,
         timeout_ms,
+        ..
     } = request
     else {
-        return Err("not a transform request".into());
+        return rejected("not a transform request");
     };
     let ask = TransformAsk {
         instructions,
@@ -889,7 +768,17 @@ async fn transform_request(http: &reqwest::Client, request: Request) -> Result<S
         max_output_tokens,
         timeout: Duration::from_millis(timeout_ms),
     };
-    transform(http, profile_id, model_id, ask).await
+    if let Err(why) = validate_transform(&ask) {
+        return rejected(&why);
+    }
+    server_asks::transform(
+        &ask.instructions,
+        &ask.input,
+        ask.max_output_tokens,
+        ask.timeout.min(crate::MAX_TRANSFORM_TIMEOUT),
+    )
+    .await
+    .map_or_else(Response::failure, |text| succeeded(Some(text), None))
 }
 
 /// Run synchronous configuration and vault work — file reads, key
@@ -922,17 +811,6 @@ fn resolution_error(kind: ErrorKind, message: &str) -> ModelError {
     }
 }
 
-fn credential_model_error(error: &accounts::secrets::BrokerError) -> ModelError {
-    use accounts::secrets::BrokerError;
-    let kind = match error {
-        BrokerError::Denied | BrokerError::OriginMismatch => ErrorKind::PermissionDenied,
-        BrokerError::InvalidOrigin => ErrorKind::InvalidRequest,
-        BrokerError::NotFound => ErrorKind::Authentication,
-        _ => ErrorKind::Unavailable,
-    };
-    resolution_error(kind, &credential_error(error))
-}
-
 async fn blocking_model<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, ModelError> + Send + 'static,
 ) -> Result<T, ModelError> {
@@ -952,13 +830,6 @@ fn rejected(error: &str) -> Response {
     }
 }
 
-fn credential_binding(
-    profile: &ProviderProfile,
-) -> Result<(CredentialRef, ServiceAuthorization), String> {
-    accounts::provider_api_key(&profile.id, &profile.endpoint)
-        .map_err(|_| "invalid provider credential origin or profile id".to_string())
-}
-
 fn credential_error(error: &accounts::secrets::BrokerError) -> String {
     use accounts::secrets::BrokerError;
     match error {
@@ -967,33 +838,6 @@ fn credential_error(error: &accounts::secrets::BrokerError) -> String {
         BrokerError::InvalidOrigin => "a valid provider endpoint is required".into(),
         _ => "provider credential storage is unavailable; restore vault access and retry".into(),
     }
-}
-
-fn resolve_key(profile: &ProviderProfile) -> Result<Zeroizing<String>, ModelError> {
-    resolve_key_in(&ServiceCredentials::open(), profile)
-}
-
-fn resolve_key_in(
-    store: &ServiceCredentials,
-    profile: &ProviderProfile,
-) -> Result<Zeroizing<String>, ModelError> {
-    let (reference, authorization) = accounts::provider_api_key(&profile.id, &profile.endpoint)
-        .map_err(|_| {
-            resolution_error(
-                ErrorKind::InvalidRequest,
-                "invalid provider credential origin or profile id",
-            )
-        })?;
-    if let Some(key) = store
-        .resolve(&reference, &authorization)
-        .map_err(|error| credential_model_error(&error))?
-    {
-        return Ok(key);
-    }
-    Err(resolution_error(
-        ErrorKind::Authentication,
-        "API key is not configured",
-    ))
 }
 
 fn configured_profile(profile_id: &str) -> Result<ProviderProfile, ModelError> {
@@ -1018,80 +862,6 @@ fn credential_profile(profile_id: &str) -> Result<ProviderProfile, String> {
         .into_iter()
         .find(|profile| profile.id == profile_id)
         .ok_or_else(|| "provider is no longer available".into())
-}
-
-fn credential_status_in(
-    store: &ServiceCredentials,
-    profile: &ProviderProfile,
-) -> Result<crate::CredentialStatus, String> {
-    if profile.sign_in.is_some() {
-        return Ok(if sign_in_state(profile)? == GrantState::Usable {
-            crate::CredentialStatus::Configured
-        } else {
-            crate::CredentialStatus::Missing
-        });
-    }
-    let (reference, authorization) = credential_binding(profile)?;
-    Ok(
-        if store
-            .status(&reference, &authorization)
-            .map_err(|error| credential_error(&error))?
-        {
-            crate::CredentialStatus::Configured
-        } else {
-            crate::CredentialStatus::Missing
-        },
-    )
-}
-
-fn secret_status(profile_id: &str) -> Result<bool, String> {
-    let profile = credential_profile(profile_id)?;
-    match credential_status_in(&ServiceCredentials::open(), &profile)? {
-        crate::CredentialStatus::Configured => Ok(true),
-        crate::CredentialStatus::Missing => Ok(false),
-    }
-}
-
-/// Check only prerequisites available locally. No HTTP client is created and
-/// no request is sent; credential and loopback rules match Plan.
-fn selection_configured(
-    profile_id: &str,
-    model_id: &str,
-    protocol: ProviderProtocol,
-) -> Result<(), String> {
-    if model_id.is_empty() || model_id.len() > 256 || model_id.chars().any(char::is_control) {
-        return Err("invalid selected model id".into());
-    }
-    let profile = configured_profile(profile_id).map_err(|error| error.message)?;
-    if profile.protocol != protocol {
-        return Err("provider protocol does not match the selected protocol".into());
-    }
-    if !profile.models.iter().any(|model| model.id == model_id) {
-        return Err("model is not configured for this provider".into());
-    }
-    let endpoint = url::Url::parse(&provider_url(&profile))
-        .map_err(|_| "provider endpoint is invalid".to_string())?;
-    if !matches!(endpoint.scheme(), "http" | "https") || endpoint.host().is_none() {
-        return Err("provider endpoint is invalid".into());
-    }
-    if profile.sign_in.is_some() {
-        return match sign_in_state(&profile)? {
-            GrantState::Usable => Ok(()),
-            GrantState::Missing | GrantState::SignInAgain => Err(SIGN_IN_AGAIN.into()),
-        };
-    }
-    if let Some(secret) = plan_secret(&profile).map_err(|error| error.message)? {
-        // Header parsing is local and never includes credential bytes in errors.
-        let header = match protocol {
-            ProviderProtocol::Anthropic => secret,
-            ProviderProtocol::OpenAiCompatible => {
-                Zeroizing::new(format!("Bearer {}", secret.as_str()))
-            }
-        };
-        reqwest::header::HeaderValue::from_str(header.as_str())
-            .map_err(|_| "API key cannot form a provider request".to_string())?;
-    }
-    Ok(())
 }
 
 /// Vault writes are read-modify-write of one file; requests run on separate
@@ -1121,38 +891,6 @@ fn management_write() -> Result<ManagementWrite, String> {
         _thread: thread,
         _file: file,
     })
-}
-
-fn set_key(profile_id: &str, api_key: String) -> Result<(), String> {
-    let _serial = management_write()?;
-    let profile = credential_profile(profile_id)?;
-    let (reference, authorization) = credential_binding(&profile)?;
-    let mut key = Zeroizing::new(api_key);
-    if key.trim().is_empty() || key.len() > 16 * 1024 {
-        return Err("API key is empty or too large".into());
-    }
-    let result = ServiceCredentials::open()
-        .store(&reference, &authorization, key.as_str())
-        .map_err(|error| credential_error(&error));
-    key.zeroize();
-    if result.is_ok() {
-        PLAN_PROFILES.forget(profile_id);
-    }
-    result
-}
-
-fn remove_key(profile_id: &str) -> Result<(), String> {
-    let _serial = management_write()?;
-    let profile = credential_profile(profile_id)?;
-    let (reference, authorization) = credential_binding(&profile)?;
-    let result = ServiceCredentials::open()
-        .remove(&reference, &authorization)
-        .map(|_| ())
-        .map_err(|error| credential_error(&error));
-    if result.is_ok() {
-        PLAN_PROFILES.forget(profile_id);
-    }
-    result
 }
 
 const MAX_PROVIDER_TIMEOUT: Duration = Duration::from_secs(60);
@@ -1200,34 +938,6 @@ struct PlanCall<'a> {
     trace: Option<PlanTrace>,
 }
 
-/// A configured profile and its API key (none for an unauthenticated local
-/// endpoint).
-type ResolvedProfile = (ProviderProfile, Option<Zeroizing<String>>);
-
-/// The configured profile for a planning call and its API key, as
-/// [`PLAN_PROFILES`] keeps them between model turns.
-fn plan_profile(profile_id: &str, model_id: &str) -> Result<ResolvedProfile, ModelError> {
-    // Stamped before reading, so a change made while reading is a miss next time.
-    let stamp = ProfileSources::current().and_then(|sources| sources.stamp());
-    PLAN_PROFILES.resolve((profile_id, model_id), stamp, Instant::now(), || {
-        let profile = configured_profile(profile_id)?;
-        if !profile.models.iter().any(|model| model.id == model_id) {
-            return Err(resolution_error(
-                ErrorKind::InvalidRequest,
-                "model is not configured for this provider",
-            ));
-        }
-        let (secret, until) = if profile.sign_in.is_some() {
-            let (token, until) = sign_in_token(&profile, tilo_clock::unix_now(), Instant::now())
-                .map_err(|error| resolution_error(ErrorKind::Authentication, &error))?;
-            (Some(token), until)
-        } else {
-            (plan_secret(&profile)?, None)
-        };
-        Ok(((profile, secret), until))
-    })
-}
-
 /// What a signed-in provider asks for when its sign-in has to be renewed
 /// interactively.
 const SIGN_IN_AGAIN: &str = "the sign-in for this provider has ended; sign in again in \
@@ -1273,13 +983,6 @@ fn grant_id(profile_id: &str) -> Result<AccountId, String> {
     )))
 }
 
-fn sign_in_state(profile: &ProviderProfile) -> Result<GrantState, String> {
-    sign_in_issuer(profile)?;
-    CredentialStore::live()
-        .oauth_grant_state(&grant_id(&profile.id)?)
-        .map_err(|error| error.to_string())
-}
-
 /// A current access token for `profile`'s sign-in, refreshed by ownership
 /// when due (the refresh token never leaves it), and the instant after
 /// which it must not be reused. For a Copilot subscription the refresh is
@@ -1316,8 +1019,8 @@ fn reuse_until(expires_unix: u64, now_unix: u64, now: Instant) -> Instant {
 }
 
 /// A missing credential means unauthenticated only for a literal loopback
-/// endpoint explicitly classified as this device. All other Plan profiles
-/// retain the existing vault requirement. The decision itself is
+/// endpoint explicitly classified as this device; any other keyless
+/// profile is listed nowhere here. The decision itself is
 /// [`agent_provider_config::is_unauthenticated_local`], the same rule the
 /// request headers read, so a plan the gateway lets through sends no
 /// credential on either protocol.
@@ -1344,13 +1047,6 @@ fn unauthenticated_local_plan(profile: &ProviderProfile) -> Result<bool, ModelEr
         ErrorKind::InvalidRequest,
         "unauthenticated local Plan requires a literal loopback endpoint",
     ))
-}
-
-fn plan_secret(profile: &ProviderProfile) -> Result<Option<Zeroizing<String>>, ModelError> {
-    if unauthenticated_local_plan(profile)? {
-        return Ok(None);
-    }
-    resolve_key(profile).map(Some)
 }
 
 /// The largest provider stream read for one Plan.
@@ -1791,49 +1487,6 @@ fn validate_transform(ask: &TransformAsk) -> Result<(), String> {
         return Err("a transform needs a deadline".into());
     }
     Ok(())
-}
-
-/// One transformation as a single-shot ask: deterministic sampling, one
-/// system instruction, one user turn, a JSON object back, and no tools.
-fn transform_ask<'a>(model_id: &'a str, ask: &'a TransformAsk) -> provider_transform::Ask<'a> {
-    provider_transform::Ask {
-        model: model_id,
-        instructions: &ask.instructions,
-        input: &ask.input,
-        max_tokens: Some(ask.max_output_tokens),
-        sampling: provider_transform::Sampling::Deterministic,
-        output: provider_transform::Output::JsonObject,
-    }
-}
-
-async fn transform(
-    http: &reqwest::Client,
-    profile_id: String,
-    model_id: String,
-    ask: TransformAsk,
-) -> Result<String, String> {
-    validate_transform(&ask)?;
-    let model = model_id.clone();
-    let (profile, secret) = blocking_model(move || plan_profile(&profile_id, &model))
-        .await
-        .map_err(|error| error.message)?;
-    let asked = transform_ask(&model_id, &ask);
-    let body = provider_transform::profile_body(&profile, &asked)?;
-    let result = unary_with_retries(
-        http,
-        (&profile, agent_provider_config::wire::url(&profile)),
-        secret.as_ref().map(|secret| secret.as_str()),
-        &body,
-        ask.timeout.min(crate::MAX_TRANSFORM_TIMEOUT),
-    )
-    .await;
-    drop(secret);
-    provider_transform::profile_answer(
-        &profile,
-        &asked,
-        &result?,
-        crate::MAX_TRANSFORM_OUTPUT_BYTES,
-    )
 }
 
 /// Validate Photos' one fixed local-only visual-analysis operation and
@@ -2496,7 +2149,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        /// The Transform verb: its bounds, its bodies, its answers and who may ask.
+        /// The Transform verb: its bounds and who may ask.
         fn a_transform_is_one_bounded_tool_free_text_turn_for_the_agent_alone;
 
         phase transform_requests_are_bounded_before_any_provider_is_asked;
@@ -2511,30 +2164,6 @@ mod tests {
             let mut rushed = ask("text");
             rushed.timeout = Duration::ZERO;
             assert!(validate_transform(&rushed).is_err());
-        }
-
-        phase transform_bodies_carry_no_tools_in_either_dialect;
-        {
-            for protocol in [
-                ProviderProtocol::Anthropic,
-                ProviderProtocol::OpenAiCompatible,
-            ] {
-                let profile = agent_provider_config::ProviderProfile::hosted(protocol);
-                let asked = ask("the input");
-                let body =
-                    provider_transform::profile_body(&profile, &transform_ask("model-x", &asked))
-                        .unwrap();
-                assert_eq!(body["model"], "model-x");
-                // Its limit, in the field the profile's wire names it.
-                assert!(
-                    ["max_tokens", "max_completion_tokens", "max_output_tokens"]
-                        .iter()
-                        .any(|field| body[*field] == 512),
-                    "{body}"
-                );
-                assert!(body.get("tools").is_none());
-                assert!(body.to_string().contains("the input"));
-            }
         }
 
         phase only_the_agent_may_transform;
@@ -2705,10 +2334,11 @@ mod tests {
     }
 
     fn unauthorized_round_trip(stream: &mut UnixStream) {
-        // Answered without configuration or network: Agent may not read secrets.
+        // Answered without configuration or network: Agent may not list a
+        // provider's models.
         write_frame(
             stream,
-            &serde_json::json!({"version": RPC_VERSION, "verb": "secret_status", "profile_id": "p"}),
+            &serde_json::json!({"version": RPC_VERSION, "verb": "list_models", "profile_id": "p"}),
         )
         .unwrap();
         let response: Response = read_frame(stream).unwrap();
@@ -2773,7 +2403,7 @@ mod tests {
                 &mut client,
                 &Frame {
                     version: RPC_VERSION,
-                    value: Request::SecretStatus {
+                    value: Request::ListModels {
                         profile_id: "hosted".into(),
                     },
                 },
@@ -2816,12 +2446,12 @@ mod service_error_tests;
 mod stream_policy_tests;
 
 #[cfg(test)]
-#[path = "selection_tests.rs"]
-mod selection_tests;
-
-#[cfg(test)]
 #[path = "cancellation_tests.rs"]
 mod cancellation_tests;
+
+#[cfg(test)]
+#[path = "server_ask_tests.rs"]
+mod server_ask_tests;
 
 #[cfg(test)]
 #[path = "administration_tests.rs"]

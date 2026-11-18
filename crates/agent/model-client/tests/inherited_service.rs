@@ -13,12 +13,10 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_model_client::{ClientError, Frame, Request, Response, read_frame, write_frame};
 
-fn selection_request() -> Request {
+fn listing_request() -> Request {
     serde_json::from_value(serde_json::json!({
-        "verb": "selection_configured",
+        "verb": "list_models",
         "profile_id": "test-provider",
-        "model_id": "test-model",
-        "protocol": "open_ai_compatible",
     }))
     .unwrap()
 }
@@ -27,7 +25,7 @@ fn child_request(case: &str) {
     if matches!(case, "legacy-alias" | "absent" | "invalid") {
         assert!(!tilo_model_client::available());
         assert!(matches!(
-            tilo_model_client::request(selection_request()),
+            tilo_model_client::request(listing_request()),
             Err(ClientError::Unavailable)
         ));
         #[cfg(feature = "runtime-client")]
@@ -50,7 +48,7 @@ fn child_request(case: &str) {
     // A request must duplicate the descriptor, preserving the inherited
     // capability for subsequent operations in the same managed child.
     for _ in 0..2 {
-        let response = tilo_model_client::request(selection_request()).unwrap();
+        let response = tilo_model_client::request(listing_request()).unwrap();
         assert!(response.ok);
         assert_eq!(response.configured, Some(true));
         assert!(response.output.is_none());
@@ -120,7 +118,7 @@ fn run_child(test: &str, case: &str) {
             assert_eq!(frame.version, 3);
             assert_eq!(
                 serde_json::to_value(frame.value).unwrap(),
-                serde_json::to_value(selection_request()).unwrap()
+                serde_json::to_value(listing_request()).unwrap()
             );
             requests += 1;
             write_frame(

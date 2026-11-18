@@ -49,8 +49,6 @@
 #                 there when FILE is empty or absent): an MCP client presenting it
 #                 (`TILO_AGENT_KEY=FILE`, or the key in its `initialize`) is admitted as the
 #                 person's agent without the sheet, as an external agent such as Claude Code is
-#   --model-record FILE  give the person this model provider (`tilo-model-gateway
-#                 provision-provider --record` JSON) once the session is up
 #   --dev-rust-views  seed a Rust app's sample resources and views too (Tube's channels and
 #                     videos), so a shell draws their views live: a shot of a Rust view on the
 #                     canvas. Development builds only.
@@ -87,7 +85,6 @@ scale=
 apps=(--seed-apps)
 rust_views=0
 window=0
-model_record=
 agent_key=
 profile=debug
 while (($#)); do
@@ -99,7 +96,6 @@ while (($#)); do
         --scale) scale=${2:?--scale needs a number}; shift 2 ;;
         --dev-rust-views) rust_views=1; shift ;;
         --window) window=1; shift ;;
-        --model-record) model_record=${2:?--model-record needs FILE}; shift 2 ;;
         --agent-key) agent_key=$(realpath -m "${2:?--agent-key needs FILE}"); shift 2 ;;
         -h|--help) sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p' "$0"; exit 0 ;;
         *) die "unknown option $1 (see --help)" ;;
@@ -450,9 +446,9 @@ printf 'site = ""\n' > "$community_file"
 # its user unit does, at the socket the launcher hands to every app of the
 # session (`tilo-model-gateway.service`: `serve --socket %t/tilo/services/`).
 # A kept agent's turn is planned through it (`so.tilo.agent` requires the
-# service), and the provider it plans with is the person's, written to their
-# configuration by Settings or `tilo-model-gateway provision-provider`. A
-# session that plans no turn runs no gateway, and starts as before.
+# service), and the model it asks is the person's own on their workspace's
+# server, through this computer's `tilo login` session. A session that plans no
+# turn runs no gateway, and starts as before.
 gateway_socket=$runtime/tilo/services/model-gateway.sock
 start_gateway() {
     mkdir -p "$runtime/tilo/services"
@@ -552,17 +548,6 @@ until grep -q "^TILO_MCP_SERVER=$runtime/" "$log"; do
     sleep 0.1
 done
 socket=$(sed -n "s|^TILO_MCP_SERVER=\($runtime/.*\)\$|\1|p" "$log" | tail -1)
-
-if [[ -n $model_record ]]; then
-    env -u WAYLAND_DISPLAY -u DISPLAY -u DBUS_SESSION_BUS_ADDRESS \
-        HOME="$home" XDG_CONFIG_HOME="$home/.config" XDG_DATA_HOME="$home/.local/share" \
-        XDG_STATE_HOME="$home/.local/state" XDG_CACHE_HOME="$home/.cache" \
-        XDG_RUNTIME_DIR="$runtime" TILO_IDENTITY_ROOT="$scratch/identity" \
-        TILO_SECRETS_DIR="$secrets" \
-        "$bin/tilo-model-gateway" provision-provider --record < "$model_record" \
-        || die "could not give the person the model provider in $model_record"
-    say "the person's model provider: $model_record"
-fi
 
 cat <<EOF
 TILO_MCP_SERVER=$socket

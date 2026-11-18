@@ -1,0 +1,159 @@
+//! One turn of the person's own model through the API (`POST …/model/ask`),
+//! its events read as the server sends them.
+
+use super::{Answer, Client, Method, fresh_key};
+use anyhow::{Result, bail};
+use serde_json::Value;
+
+impl Client {
+    /// The client a program of this computer asks the person's model with,
+    /// as this computer's own device: the process holding the session `tilo
+    /// login` made, where one serves it, else this login's Tilo desktop.
+    /// `None` when neither serves here, or this computer's login is
+    /// damaged.
+    #[must_use]
+    pub fn this_computer() -> Option<Self> {
+        let held = super::device::held_api()
+            .ok()
+            .flatten()
+            .filter(|socket| is_socket(socket));
+        held.or_else(super::desktop_socket)
+            .map(|socket| Self::session(&socket))
+    }
+
+    /// The workspace a program of this computer asks the person's model in:
+    /// the one this computer's login entered, else the first of the
+    /// person's own, else the first the key reaches.
+    ///
+    /// # Errors
+    /// The workspaces could not be listed.
+    pub async fn model_workspace(&self) -> Result<String> {
+        if let Some((entered, _)) = super::device::entered_workspace().ok().flatten() {
+            return Ok(entered);
+        }
+        let listed = self.get("/v1/workspaces").await?;
+        let workspaces: Vec<&Value> = listed
+            .get("workspaces")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .collect();
+        let own = workspaces
+            .iter()
+            .find(|workspace| workspace.get("role").and_then(Value::as_str) == Some("owner"));
+        own.or_else(|| workspaces.first())
+            .and_then(|workspace| workspace.get("id").and_then(Value::as_str))
+            .map(str::to_owned)
+            .ok_or_else(|| anyhow::anyhow!("no workspace of yours to ask your model in"))
+    }
+
+    /// One turn of the person's own model in `workspace`: `request` is the
+    /// conversation as `ModelAsk` describes it. `told` hears each `text` and
+    /// `reasoning` event with its data as it comes; the answer is the whole
+    /// turn the `answer` event carries, `{"Ok": …}` or `{"Err": …}`.
+    ///
+    /// # Errors
+    /// The API was not reached, refused the ask, or the stream ended before
+    /// the turn did.
+    pub async fn ask_model(
+        &self,
+        workspace: &str,
+        request: &Value,
+        told: &mut (dyn FnMut(&str, &Value) + Send),
+    ) -> Result<Value> {
+        let path = format!("/v1/workspaces/{workspace}/model/ask");
+        let said = request.to_string();
+        let headers = [
+            ("accept", "text/event-stream".to_owned()),
+            ("content-type", "application/json".to_owned()),
+            ("idempotency-key", fresh_key()),
+        ];
+        let mut opened = self
+            .opening(Method::Post, &path, &headers, said.as_bytes())
+            .await?;
+        let mut events = Events::default();
+        let mut whole = Vec::new();
+        while let Some(piece) = opened.piece().await? {
+            if !(200..300).contains(&opened.status) {
+                whole.extend_from_slice(&piece);
+                continue;
+            }
+            for (kind, data) in events.read(&piece) {
+                match kind.as_str() {
+                    "answer" => return Ok(data),
+                    "error" => {
+                        let body = serde_json::to_vec(&data).unwrap_or_default();
+                        return Err(Answer { status: 503, body }.refused());
+                    }
+                    _ => told(&kind, &data),
+                }
+            }
+        }
+        if !(200..300).contains(&opened.status) {
+            return Err(Answer {
+                status: opened.status,
+                body: whole,
+            }
+            .refused());
+        }
+        bail!("the model's answer ended before the turn did")
+    }
+}
+
+/// Whether `path` is a socket something may listen at.
+fn is_socket(path: &std::path::Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .is_ok_and(|found| std::os::unix::fs::FileTypeExt::is_socket(&found.file_type()))
+}
+
+/// Server-sent events, read from pieces cut anywhere.
+#[derive(Default)]
+struct Events {
+    unread: Vec<u8>,
+}
+
+impl Events {
+    /// The events `piece` completes, each its kind and its data as JSON.
+    fn read(&mut self, piece: &[u8]) -> Vec<(String, Value)> {
+        self.unread.extend_from_slice(piece);
+        let mut read = Vec::new();
+        while let Some(end) = self.unread.windows(2).position(|pair| pair == b"\n\n") {
+            let event: Vec<u8> = self.unread.drain(..end.saturating_add(2)).collect();
+            let text = String::from_utf8_lossy(&event);
+            let (mut kind, mut data) = ("message".to_owned(), String::new());
+            for line in text.lines() {
+                if let Some(named) = line.strip_prefix("event:") {
+                    named.trim().clone_into(&mut kind);
+                } else if let Some(said) = line.strip_prefix("data:") {
+                    data.push_str(said.trim_start());
+                }
+            }
+            if let Ok(data) = serde_json::from_str(&data) {
+                read.push((kind, data));
+            }
+        }
+        read
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// An event cut across pieces is read once it is whole, and a comment
+    /// that keeps the stream alive is none.
+    #[test]
+    fn events_are_read_whole_from_any_cut() {
+        let mut events = Events::default();
+        assert!(events.read(b"event: text\ndata: {\"te").is_empty());
+        let read = events.read(b"xt\":\"Hi\"}\n\n: keep-alive\n\nevent: answer\ndata: {}\n\n");
+        assert_eq!(
+            read,
+            [
+                ("text".to_owned(), json!({"text": "Hi"})),
+                ("answer".to_owned(), json!({})),
+            ]
+        );
+    }
+}

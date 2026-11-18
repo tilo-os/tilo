@@ -227,6 +227,44 @@ impl Workspaces {
         Ok(certificate.user_public_key)
     }
 
+    /// The person whose own model `caller` asks: the person on a device of
+    /// theirs ([`Self::asking_person`]), or the agent their own computer
+    /// holds its session as, acting for them. A computer the person paired
+    /// keeps one session with this server, which its programs share as that
+    /// computer's agent: its apps' model turns come through it, asked of the
+    /// person's model as a page's are. A key minted for an agent or a script
+    /// is no device of theirs and is answered nothing.
+    pub(super) fn asking_for_model(
+        caller: &Caller,
+        certificate: Option<&DeviceCert>,
+        workspace_id: Option<collab_types::WorkspaceId>,
+    ) -> Result<[u8; 32], ActionCallError> {
+        if let Ok(person) = Self::asking_person(caller, certificate, workspace_id) {
+            return Ok(person);
+        }
+        workspace_id.ok_or(ActionCallError::UnknownAction)?;
+        let acting = caller.acting();
+        let (Some(_), Some(person)) = (acting.agent_id(), acting.acted_for_person()) else {
+            return Err(ActionCallError::UnknownAction);
+        };
+        let person: [u8; 32] = hex::decode(person)
+            .ok()
+            .and_then(|key| key.try_into().ok())
+            .ok_or(ActionCallError::UnknownAction)?;
+        let own_computer = certificate.is_some_and(|certificate| {
+            certificate.user_public_key == person
+                && !certificate.capabilities.server_key
+                && certificate.capabilities.agent.is_none()
+                && !certificate.capabilities.stand_in
+                && caller.device_public_key() == Some(&certificate.device_public_key)
+                && caller.user_public_key() == Some(&certificate.user_public_key)
+        });
+        if !own_computer {
+            return Err(ActionCallError::UnknownAction);
+        }
+        Ok(person)
+    }
+
     /// Who `caller` is to a person's mail: the person on a device of theirs
     /// ([`Self::asking_person`]), or an agent acting for a person. An agent
     /// is a person's when a key of that person's stands behind its

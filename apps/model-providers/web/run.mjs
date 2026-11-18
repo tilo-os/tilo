@@ -12,11 +12,10 @@ assert(existsSync(join(bundle, 'pkg/tilo_browser_runtime_bg.wasm')), 'build the 
 const metadata = JSON.parse(readFileSync(join(bundle, 'build.json')));
 assert.equal(metadata.app, 'so.tilo.model-providers');
 let browser, server;
-const secret = 'private-browser-provider-key-92731';
 const token = 'explicit-provider-management-session';
-let config = {profiles: []}, revision = 0, rejectWrite = false, rejectKey = false;
+let config = {profiles: []}, revision = 0, rejectWrite = false;
 let releaseFailure;
-const credentials = new Map(), calls = [];
+const calls = [];
 const snapshot = () => ({config: structuredClone(config), revision: String(revision)});
 const mime = {'.js':'text/javascript', '.mjs':'text/javascript', '.wasm':'application/wasm', '.json':'application/json', '.html':'text/html', '.ttf':'font/ttf', '.otf':'font/otf'};
 // The server's own certificate, made for this run: the browser loads this and
@@ -44,15 +43,6 @@ try {
               res.writeHead(503).end(); return;
             }
             config = structuredClone(request.config); revision++; output = snapshot(); break;
-          case 'credential_status': output = credentials.has(request.profile_id) ? 'configured' : 'missing'; break;
-          case 'set_api_key':
-            if (rejectKey) {
-              rejectKey = false;
-              await new Promise(resolve => {releaseFailure = resolve;});
-              res.writeHead(503).end(); return;
-            }
-            credentials.set(request.profile_id, request.api_key); break;
-          case 'remove_api_key': credentials.delete(request.profile_id); break;
           default: throw Error(`unexpected administration request: ${request.verb}`);
         }
         res.writeHead(200, {'content-type':'application/x-ndjson'}).end(JSON.stringify({ok:true, ...(output === undefined ? {} : {output:JSON.stringify(output)})})+'\n');
@@ -77,10 +67,9 @@ try {
   await tab.evaluate(`(async()=>{
     const {mountDesktop}=await import('/host.mjs');
     window.semanticDeliveries=0;
-    window.publicReports=[];
     window.mount=await mountDesktop(document.getElementById('app'), {
       app:'so.tilo.model-providers', profile:'provider-browser-proof', device:'browser',
-      onStatus:state=>{if(state.semantics)semanticDeliveries++;publicReports.push(JSON.stringify(state));},
+      onStatus:state=>{if(state.semantics)semanticDeliveries++;},
       providerManagement:{endpoint:location.origin+'/model/rpc',sessionToken:${JSON.stringify(token)}}
     });
     window.findControl=(id)=>{
@@ -95,7 +84,6 @@ try {
         ? undefined : n.semantics?.action_target;
       if(mount.semantic(n.path,target,action,value,0,0)!==true)throw Error('rejected '+id+' '+action);
     };
-    window.privateSurface=()=>JSON.stringify({reports:publicReports,state:mount.state(),actions:mount.actions(),publications:mount.publications(),projection:mount.semantics.outerHTML,editorValues:[...mount.semantics.querySelectorAll('input,textarea')].map(e=>e.value)});
     return true;
   })()`);
   const wait = expression => tab.waitFor(expression, {timeout:30000});
@@ -123,17 +111,9 @@ try {
     const before = await tab.evaluate('semanticDeliveries');
     await tab.evaluate('mount.requestSemantics()');
     await wait(`semanticDeliveries > ${before}`);
-    // A private key buffer is never projected.
-    if (action === 'value' && !id.startsWith('agent-models-api-key-')) {
+    if (action === 'value') {
       await wait(`findControl(${JSON.stringify(id)})?.semantics?.value === ${JSON.stringify(value)}`);
     }
-  };
-  const noSecrets = async () => {
-    const before = await tab.evaluate('semanticDeliveries');
-    await tab.evaluate('mount.requestSemantics()');
-    await wait(`semanticDeliveries > ${before}`);
-    assert(!(await tab.evaluate('privateSurface()')).includes(secret), 'secret leaked to resource metadata, document or UI snapshot');
-    assert(!JSON.stringify(config).includes(secret), 'secret leaked to backend configuration');
   };
   assert.equal(await tab.evaluate('mount.state()?.phase'), 'presented',
     await tab.evaluate('JSON.stringify({phase:mount.state()?.phase,error:mount.state()?.error,frames:mount.state()?.frames})') + '; ' + tab.log.join('; ') + '; browser: ' + browser.diagnostics());
@@ -159,24 +139,6 @@ try {
   await backend(() => config.default_profile === id);
   await settled();
   assert.equal(config.default_profile, id);
-  await control(`agent-models-api-key-${id}`, 'value', secret);
-  await noSecrets();
-  rejectKey = true;
-  await control(`agent-models-set-api-key-${id}`);
-  await backend(() => !!releaseFailure);
-  await wait('findControl("agent-models-refresh-providers")?.semantics?.state?.disabled === true');
-  await noSecrets();
-  assert(!credentials.has(id));
-  releaseFailure();
-  releaseFailure = undefined;
-  await settled();
-  await noSecrets();
-  // No reinsertion: retry must read the same retained private widget buffer.
-  await control(`agent-models-set-api-key-${id}`);
-  await wait(`JSON.stringify(mount.state()?.semantics).includes('API key is stored')`);
-  assert.equal(credentials.get(id), secret);
-  await noSecrets();
-
   // Hold a real HTTP response after the production save click. The editor must
   // retain the newer draft, both while pending and after the failure arrives.
   rejectWrite = true;
@@ -191,26 +153,18 @@ try {
   releaseFailure = undefined;
   await settled();
   await wait(`JSON.stringify(findControl(${JSON.stringify(`agent-models-label-${id}`)})).includes('Retained failed draft')`);
-  await noSecrets();
 
   const confirmed = async label => {
     await tab.evaluate(`(()=>{const a=mount.actions().find(a=>a.resource_kind==='settings.agent-provider'&&a.action_label===${JSON.stringify(label)});if(!a)throw Error('missing '+${JSON.stringify(label)});return mount.invokeAction(a.address.resource,a.address.action,{}, {confirm:true});})()`);
   };
-  await confirmed('Remove API key');
-  await backend(() => !credentials.has(id));
-  await settled();
-  assert(!credentials.has(id));
-  await wait(`!JSON.stringify(mount.state()?.semantics).includes('API key is stored')`);
   await confirmed('Remove provider');
   await backend(() => config.profiles.length === 0);
   await wait('!mount.actions().some(a=>a.resource_kind==="settings.agent-provider")');
   assert.equal(config.profiles.length, 0);
-  await noSecrets();
-  assert(calls.some(c=>c.verb==='credential_status'));
-  assert(calls.filter(c=>c.verb==='set_provider_config').length >= 5);
+  assert(calls.filter(c=>c.verb==='set_provider_config').length >= 4);
   assert(!tab.log.some(line=>line.startsWith('EXC') || /panic/i.test(line)), tab.log.join('\n'));
   await mountCleanup(tab);
-  console.log('PASS Model Providers production WASM controls, HTTPS administration, private secrets and retained failed draft');
+  console.log('PASS Model Providers production WASM controls, HTTPS administration and retained failed draft');
 } finally {
   releaseFailure?.();
   try {

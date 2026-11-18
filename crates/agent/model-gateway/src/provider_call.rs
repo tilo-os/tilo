@@ -15,8 +15,8 @@ use zeroize::{Zeroize as _, Zeroizing};
 use super::provider_client;
 use super::{
     Again, DeltaCoalescer, Emit, MAX_STREAM_BYTES, PlanCall, PlanTiming, ProviderFailure,
-    StreamAssembly, StreamCall, blocking_model, classified_error_advice, emit_complete, error_body,
-    log_token, plan_profile, plan_send, stream_failure,
+    StreamAssembly, StreamCall, classified_error_advice, emit_complete, error_body, log_token,
+    plan_send, stream_failure,
 };
 use crate::{MAX_DELTA_EVENTS, MAX_STREAM_EVENTS, Response};
 use agent_provider_config::wire::{self, Delta, Stream, StreamError};
@@ -539,27 +539,6 @@ impl StreamProgress {
 /// The frame kinds a stream's words go out as.
 const EVENT_TEXT_DELTA: &str = "text_delta";
 const EVENT_REASONING_DELTA: &str = "reasoning_delta";
-
-pub(super) async fn complete(
-    client: &reqwest::Client,
-    call: &PlanCall<'_>,
-    request: neutral::ModelRequest,
-    emit: Emit<'_>,
-) -> Result<String, ModelError> {
-    let timing = PlanTiming::start();
-    let (profile_id, model_id) = (call.profile_id.to_owned(), call.model_id.to_owned());
-    let (profile, secret) = blocking_model(move || plan_profile(&profile_id, &model_id)).await?;
-    let answer = complete_with(
-        client,
-        call,
-        (&profile, secret),
-        &request,
-        emit,
-        (timing, Carry::default()),
-    )
-    .await?;
-    serde_json::to_string(&answer).map_err(|_| ModelError::new(neutral::ErrorKind::InvalidResponse))
-}
 
 /// How a turn is carried besides what its call names.
 #[derive(Clone, Copy, Default)]

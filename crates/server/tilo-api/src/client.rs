@@ -17,6 +17,7 @@
 //! it sends that same key: Tilo never runs one invocation twice.
 
 pub mod device;
+mod model_asks;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use http_body_util::BodyExt as _;
@@ -811,6 +812,28 @@ impl Client {
         headers: &[(&'static str, String)],
         body: &[u8],
     ) -> Result<Answer> {
+        let mut opened = self.opening(method, path, headers, body).await?;
+        let mut whole = Vec::new();
+        while let Some(piece) = opened.piece().await? {
+            if whole.len().saturating_add(piece.len()) > MAX_ANSWER {
+                bail!("the answer is larger than {MAX_ANSWER} bytes");
+            }
+            whole.extend_from_slice(&piece);
+        }
+        Ok(Answer {
+            status: opened.status,
+            body: whole,
+        })
+    }
+
+    /// `method` on `path`: its status, and its body to read as it comes.
+    async fn opening(
+        &self,
+        method: Method,
+        path: &str,
+        headers: &[(&'static str, String)],
+        body: &[u8],
+    ) -> Result<Opened> {
         match &self.transport {
             Transport::Http { origin, key, http } => {
                 let url = format!("{origin}{path}");
@@ -830,10 +853,9 @@ impl Client {
                     .send()
                     .await
                     .with_context(|| format!("reaching {origin}"))?;
-                let status = response.status().as_u16();
-                Ok(Answer {
-                    status,
-                    body: response.bytes_limited(MAX_ANSWER).await?.to_vec(),
+                Ok(Opened {
+                    status: response.status().as_u16(),
+                    body: Pieces::Net(Box::new(response)),
                 })
             }
             Transport::Direct(direct) => {
@@ -847,15 +869,10 @@ impl Client {
                     Box<dyn std::future::Future<Output = crate::Reply> + Send + '_>,
                 > = Box::pin(direct.request(method.as_str(), path, &pairs, body));
                 let reply = request.await;
-                let status = reply.status().as_u16();
-                let body = reply
-                    .into_body()
-                    .collect()
-                    .await
-                    .context("reading the answer")?
-                    .to_bytes()
-                    .to_vec();
-                Ok(Answer { status, body })
+                Ok(Opened {
+                    status: reply.status().as_u16(),
+                    body: Pieces::Direct(reply.into_body()),
+                })
             }
             Transport::Session(socket) => {
                 let reached = || format!("reaching Tilo on this computer at {}", socket.display());
@@ -880,14 +897,50 @@ impl Client {
                     .await
                     .with_context(reached)?
                     .with_context(reached)?;
-                let status = response.status().as_u16();
-                let body = http_body_util::Limited::new(response.into_body(), MAX_ANSWER)
-                    .collect()
-                    .await
-                    .map_err(|error| anyhow!("reading the answer: {error}"))?
-                    .to_bytes()
-                    .to_vec();
-                Ok(Answer { status, body })
+                Ok(Opened {
+                    status: response.status().as_u16(),
+                    body: Pieces::Socket(response.into_body()),
+                })
+            }
+        }
+    }
+}
+
+/// An answer whose body is read as it comes.
+struct Opened {
+    status: u16,
+    body: Pieces,
+}
+
+/// A body of an answer, by the transport that carries it.
+enum Pieces {
+    Net(Box<tilo_net::Response>),
+    Direct(crate::Body),
+    Socket(hyper::body::Incoming),
+}
+
+impl Opened {
+    /// The body's next piece; `None` once it ended.
+    async fn piece(&mut self) -> Result<Option<hyper::body::Bytes>> {
+        loop {
+            let frame = match &mut self.body {
+                Pieces::Net(response) => {
+                    return response
+                        .chunk()
+                        .await
+                        .map_err(|error| anyhow!("reading the answer: {error}"));
+                }
+                Pieces::Direct(body) => match body.frame().await {
+                    None => return Ok(None),
+                    Some(frame) => frame.map_err(|never| match never {})?,
+                },
+                Pieces::Socket(body) => match body.frame().await {
+                    None => return Ok(None),
+                    Some(frame) => frame.map_err(|error| anyhow!("reading the answer: {error}"))?,
+                },
+            };
+            if let Ok(data) = frame.into_data() {
+                return Ok(Some(data));
             }
         }
     }

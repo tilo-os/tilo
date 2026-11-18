@@ -32,8 +32,8 @@ use agent_provider_config::management::AdminFuture;
 use agent_provider_config::protocol::{ModelResponse, StreamEvent};
 use tilo_actions::remote::person_models;
 use ui::models::{
-    CompletionFuture, CredentialStatus, ErrorKind, ModelBackend, ModelError, ModelRequest,
-    ProviderAdmin, ProviderSnapshot, StreamSink,
+    CompletionFuture, ErrorKind, ModelBackend, ModelError, ModelRequest, ProviderAdmin,
+    ProviderSnapshot, StreamSink,
 };
 
 /// Model access belongs to a mount, never to the page's ambient services.
@@ -214,10 +214,29 @@ impl ServerTurns {
             ReceiptStatus::Failed { error } => return Err(refused(error.message)),
             ReceiptStatus::Rejected { error } => return Err(refused(error.to_string())),
         };
-        serde_json::from_value::<Result<ModelResponse, ModelError>>(
+        let answer = serde_json::from_value::<Result<ModelResponse, ModelError>>(
             output.value.unwrap_or_default(),
         )
-        .map_err(|_| ModelError::new(ErrorKind::InvalidResponse))?
+        .map_err(|_| ModelError::new(ErrorKind::InvalidResponse))??;
+        // The whole turn replaces the last item: what it wrote after the
+        // newest item read is shown now.
+        let (mut text, mut reasoning) = (String::new(), String::new());
+        for part in &answer.message.content {
+            match part {
+                agent_provider_config::protocol::Content::Text { text: said } => {
+                    text.push_str(said);
+                }
+                agent_provider_config::protocol::Content::Reasoning { text: said, .. } => {
+                    reasoning.push_str(said);
+                }
+                _ => {}
+            }
+        }
+        shown.show(
+            &serde_json::json!({"text": text, "reasoning": reasoning}),
+            sink,
+        );
+        Ok(answer)
     }
 }
 
@@ -411,23 +430,11 @@ impl ProviderAdmin for LazyAdministration {
         })
     }
 
-    fn credential_status(&self, profile_id: String) -> AdminFuture<'_, CredentialStatus> {
-        Box::pin(async move { self.client().await?.credential_status(profile_id).await })
-    }
-
     fn list_models(
         &self,
         profile_id: String,
     ) -> AdminFuture<'_, Vec<agent_provider_config::ModelDescriptor>> {
         Box::pin(async move { self.client().await?.list_models(profile_id).await })
-    }
-
-    fn set_api_key(&self, profile_id: String, api_key: String) -> AdminFuture<'_, ()> {
-        Box::pin(async move { self.client().await?.set_api_key(profile_id, api_key).await })
-    }
-
-    fn remove_api_key(&self, profile_id: String) -> AdminFuture<'_, ()> {
-        Box::pin(async move { self.client().await?.remove_api_key(profile_id).await })
     }
 }
 

@@ -528,3 +528,12 @@ reason = "The session tests' support helpers that start and restart a test serve
 words = ["host"]
 identifiers = ["HostSettings", "start_host_serving", "restart_host_relayed"]
 paths = ["crates/session/client/tests/server_restart.rs"]
+
+[[allow]]
+reason = "Tokio's mpsc hand-off: the pipe a streamed answer's events go through from the task that follows the model to the body that sends them."
+words = ["channel"]
+identifiers = ["channel", "unbounded_channel"]
+paths = [
+    "crates/agent/model-gateway/src/server_ask_tests.rs",
+    "crates/server/tilo-api/src/v1/model_asks.rs",
+]
