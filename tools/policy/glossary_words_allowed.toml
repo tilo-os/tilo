@@ -904,6 +904,12 @@ paths = [
 ]
 
 [[allow]]
+reason = "Tokio's mpsc hand-off: what a model writes goes from the thread its ask blocks to the turn's task that hears it."
+words = ["channel"]
+identifiers = ["unbounded_channel"]
+paths = ["crates/agent/agent-turn/src/hearing.rs"]
+
+[[allow]]
 reason = "The session tests' support helpers that start a test server for workspaces, by the names the other session tests import them under, and the server client's types for the address it dials."
 words = ["host"]
 identifiers = ["start_workspace_host", "start_workspace_host_relaying", "Host", "HostAddress"]

@@ -10,6 +10,7 @@ use serde_json::json;
 use tilo_actions::ActionOutput;
 use tilo_actions::remote::agent_tools as wire;
 use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, TestProvider};
+use tilo_lock::MutexRecover as _;
 
 use super::*;
 
@@ -75,7 +76,7 @@ impl Doing<Answering> for Told {
     fn stopped(&self) -> bool {
         self.stop.load(Ordering::SeqCst)
     }
-    async fn calling(&self, call: &ToolCall) {
+    async fn calling(&self, call: &ToolCall, _: Step) {
         self.calls.lock_recover().push(call.name.clone());
     }
     fn spent(&self, total: u64) {
@@ -335,7 +336,7 @@ async fn a_turn_of_endless_tool_calls_stops_at_its_round_bound_and_says_where_it
     }));
     let told = Told::default();
     let turn = Asked {
-        most_rounds: 2,
+        most_rounds: Some(2),
         ..Asked::new("s", "r")
     };
     let (outcome, _) = work(&server, model, &turn, &told).await;
@@ -361,7 +362,7 @@ async fn a_turn_out_of_rounds_that_says_nothing_tells_how_to_go_on() {
         asked: Arc::default(),
     }));
     let turn = Asked {
-        most_rounds: 1,
+        most_rounds: Some(1),
         ..Asked::new("s", "r")
     };
     let (outcome, _) = work(&server, model, &turn, &Told::default()).await;
@@ -437,7 +438,7 @@ fn a_long_tool_answer_is_cut_at_a_character_and_says_so() {
     // Three-byte characters behind one ASCII byte, more of them than a model reads: the cut
     // falls where a character would be split if it counted bytes alone.
     let text = format!("x{}", "€".repeat(20_000));
-    let cut_text = cut(text.clone());
+    let cut_text = cut(text.clone(), MOST_RESULT_BYTES);
     let kept = cut_text
         .strip_suffix(notice)
         .unwrap_or_else(|| panic!("a long answer says it was cut: {cut_text}"));
@@ -454,7 +455,7 @@ fn a_long_tool_answer_is_cut_at_a_character_and_says_so() {
         kept.len()
     );
     assert_eq!(
-        cut("It is there.".into()),
+        cut("It is there.".into(), MOST_RESULT_BYTES),
         "It is there.",
         "a short answer is whole"
     );
@@ -488,3 +489,5 @@ fn old_answers_give_way_and_the_latest_stays() {
     assert_eq!(contents[0], compact::LEFT_OUT);
     assert_eq!(contents[2].len(), 1000, "the latest answer stays whole");
 }
+
+mod hooks;

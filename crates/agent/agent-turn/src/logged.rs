@@ -1,4 +1,4 @@
-//! What the server's log keeps of a tool call of a turn.
+//! What a log keeps of a tool call of a turn.
 //!
 //! A call's input is its caller's words: a person's sentence, a document's text, a search, and
 //! where a model errs a password. What a tool answers is what the workspace holds. So no value
@@ -7,8 +7,10 @@
 //! making the call again by hand begins, and of a refusal its sentence without anything the
 //! call wrote.
 
-use super::LOGGED_CHARS;
 use serde_json::Value;
+
+/// How much of a refusal's sentence a line keeps.
+pub const LOGGED_CHARS: usize = 300;
 
 /// What stands in a refusal's sentence where something the call wrote was cut out of it.
 const CUT: &str = "…";
@@ -17,7 +19,8 @@ const CUT: &str = "…";
 /// as the call wrote it, `name:bytes`, with a comma between, and `-` for a call without any.
 /// Only a name a tool can declare is written: a key that has not the form of one, and an
 /// input that names nothing, is `?`.
-pub(super) fn arguments(input: &Value) -> String {
+#[must_use]
+pub fn arguments(input: &Value) -> String {
     let named = match input {
         Value::Null => return "-".to_owned(),
         Value::Object(named) if named.is_empty() => return "-".to_owned(),
@@ -32,6 +35,18 @@ pub(super) fn arguments(input: &Value) -> String {
         })
         .collect::<Vec<_>>()
         .join(",")
+}
+
+/// `tool` as a line names it: a name a tool can have, or `other` for anything else a model wrote
+/// in its place.
+#[must_use]
+pub fn offered_name(tool: &str) -> &str {
+    let plain = !tool.is_empty()
+        && tool.len() <= 48
+        && tool
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_');
+    if plain { tool } else { "other" }
 }
 
 /// Whether `name` has the form of an argument's name as a tool declares one: ASCII letters,
@@ -52,7 +67,8 @@ fn plain(name: &str) -> bool {
 /// whole wherever the sentence quotes it, then every stretch of letters and digits, and every
 /// stretch of other signs, that stands somewhere in a value, whatever the case of its letters.
 /// So a part of a value, as a refusal names one step of a path, goes as the whole value does.
-pub(super) fn refusal(said: &str, input: &Value) -> String {
+#[must_use]
+pub fn refusal(said: &str, input: &Value) -> String {
     let line = said.lines().next().unwrap_or_default();
     let line = line.split_once(". ").map_or(line, |(first, _)| first);
     let line = line.split_once(';').map_or(line, |(first, _)| first);
@@ -155,7 +171,7 @@ fn stretches(text: &str) -> Vec<(Made, String)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{LOGGED_CHARS, arguments, refusal};
+    use super::{LOGGED_CHARS, arguments, offered_name, refusal};
     use serde_json::{Value, json};
 
     #[test]
@@ -237,5 +253,22 @@ mod tests {
             refusal(&"a".repeat(1000), &json!({})).chars().count(),
             LOGGED_CHARS
         );
+    }
+
+    #[test]
+    fn a_name_no_tool_can_have_is_not_written() {
+        for name in ["tilo_ls", "answer_with_view", "learned"] {
+            assert_eq!(offered_name(name), name);
+        }
+        for name in [
+            "",
+            "tilo_ls notes/Budget",
+            "Tilo_Read",
+            "a/b",
+            "the-quarter's-figures",
+            &"x".repeat(49),
+        ] {
+            assert_eq!(offered_name(name), "other", "{name:?}");
+        }
     }
 }

@@ -72,11 +72,11 @@ impl Doing<SessionTools<SessionActions>> for Telling {
         self.stop.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    async fn calling(&self, call: &ToolCall) {
+    async fn calling(&self, call: &ToolCall, _: tilo_agent_turn::Step) {
         self.tell(Told::Calling(call.clone()));
     }
 
-    fn called(&self, call: &ToolCall, answer: &Answer) {
+    fn called(&self, call: &ToolCall, _: tilo_agent_turn::Step, answer: &Answer) {
         self.tell(Told::Called {
             call: call.clone(),
             failed: answer.is_error.then(|| answer.text.clone()),

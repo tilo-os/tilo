@@ -497,7 +497,7 @@ impl Doing<McpServer<SessionActions>> for Steering {
         self.leaving.load(Ordering::Acquire) || !self.control.is_running(&self.task)
     }
 
-    async fn calling(&self, call: &ToolCall) {
+    async fn calling(&self, call: &ToolCall, _: tilo_agent_turn::Step) {
         let activity = step_of(call).map_or_else(
             || call.name.clone(),
             |(_, resource, action)| format!("{action} {resource}"),
@@ -507,7 +507,7 @@ impl Doing<McpServer<SessionActions>> for Steering {
     }
 
     /// Each action the agent ran is a step of its task.
-    fn called(&self, call: &ToolCall, answer: &Answer) {
+    fn called(&self, call: &ToolCall, _: tilo_agent_turn::Step, answer: &Answer) {
         let Some((app, resource, action)) = step_of(call) else {
             return;
         };

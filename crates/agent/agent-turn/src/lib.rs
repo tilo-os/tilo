@@ -4,30 +4,35 @@
 //! (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_view`, `tilo_watch` and the rest). A turn
 //! lists those tools as the model's, sends every call the model makes to them, and hands the model
 //! what each answered, until the model answers in words, its person stops it, its spending limit
-//! is reached or its rounds are spent ([`work`]).
+//! is reached or, where it has a limit of rounds, its rounds are spent ([`work`]).
 //!
 //! What the turn works with is the caller's: where its tools are answered ([`Tools`]: an MCP
 //! server in the same process on a server, or the device's session asked over the agent's own
 //! link, [`SessionTools`]), the model that answers ([`Model`]), and what the agent's person is told as it
 //! works ([`Doing`]). Tools of the caller's own beside the workspace's (a web search, a view the
 //! answer is) are offered with [`Asked::own_tools`] and answered by [`Doing::own`]. What its
-//! person writes while it works is taken in between its rounds ([`Doing::went_on`]).
+//! person writes while it works is taken in between its rounds ([`Doing::went_on`]). What the
+//! model writes while it answers is handed on as it comes ([`Doing::hear`]), and each tool step
+//! is told where it stands among the calls of its answer ([`Step`]). A log line of a call names
+//! its tool and its arguments' names and sizes, never a value or an answer ([`logged`]).
 
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use agent_provider_config::protocol::{
-    Content, Message, ModelRequest, ModelResponse, Role, StopReason, ToolCall, ToolChoice,
-    ToolDefinition, ToolResult,
+    Content, Message, ModelRequest, ModelResponse, Role, StopReason, StreamEvent, ToolCall,
+    ToolChoice, ToolDefinition, ToolResult,
 };
 use serde_json::Value;
-use tilo_lock::MutexRecover as _;
 
 mod carried;
 mod compact;
+mod hearing;
+pub mod logged;
 mod session_tools;
 pub use carried::{Carried, carried};
+pub use hearing::Hearing;
 pub use session_tools::SessionTools;
 pub use tilo_session_actions::SessionActions;
 
@@ -52,8 +57,6 @@ const STOPPED_UNFINISHED: &str =
 /// What the model is told before what its person wrote while it worked.
 pub const CAME_SINCE: &str = "While you were working, your person wrote again. Take it into your \
      work: answer what they wrote last, and keep anything from before that still holds.";
-/// How much of a refused call's arguments and words its log line keeps.
-const LOGGED_CHARS: usize = 300;
 /// What the model reads before the reason its last answer was not used.
 const UNUSABLE: &str = "Your last answer could not be used, and none of its calls ran";
 
@@ -69,6 +72,23 @@ pub trait Model: Send {
         key: &str,
         deadline: Instant,
     ) -> Result<ModelResponse, String>;
+
+    /// [`Self::turn`], handing what the model writes to `heard` while it writes: its words and
+    /// thought as they arrive, and a break where a call is asked again. Presentation only: the
+    /// answer returned is what counts. A model with nothing to hand on answers whole.
+    ///
+    /// # Errors
+    /// The model did not answer, in words its person reads.
+    fn turn_streaming(
+        &mut self,
+        request: &ModelRequest,
+        key: &str,
+        deadline: Instant,
+        heard: &mut (dyn FnMut(StreamEvent) + Send),
+    ) -> Result<ModelResponse, String> {
+        let _ = heard;
+        self.turn(request, key, deadline)
+    }
 }
 
 impl Model for Box<dyn Model> {
@@ -79,6 +99,33 @@ impl Model for Box<dyn Model> {
         deadline: Instant,
     ) -> Result<ModelResponse, String> {
         (**self).turn(request, key, deadline)
+    }
+
+    fn turn_streaming(
+        &mut self,
+        request: &ModelRequest,
+        key: &str,
+        deadline: Instant,
+        heard: &mut (dyn FnMut(StreamEvent) + Send),
+    ) -> Result<ModelResponse, String> {
+        (**self).turn_streaming(request, key, deadline, heard)
+    }
+}
+
+/// Where a tool step stands among the calls of the model's answer that asked for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Step {
+    /// Which call it is, counted from nought.
+    pub nth: usize,
+    /// How many calls the answer holds.
+    pub of: usize,
+}
+
+impl Step {
+    /// Whether it is the answer's last call: once it is done, so are the answer's calls.
+    #[must_use]
+    pub const fn last(self) -> bool {
+        self.nth.saturating_add(1) >= self.of
     }
 }
 
@@ -99,14 +146,47 @@ pub trait Tools: Send + Sync {
 pub trait Doing<T>: Send + Sync {
     /// Whether the person stopped the turn: no tool is begun after a stop.
     fn stopped(&self) -> bool;
-    /// The turn is about to run `call`.
-    fn calling(&self, call: &ToolCall) -> impl Future<Output = ()> + Send {
-        let _ = call;
+    /// The turn is about to run `call`, at `step` of its answer's calls.
+    fn calling(&self, call: &ToolCall, step: Step) -> impl Future<Output = ()> + Send {
+        let _ = (call, step);
         async {}
     }
-    /// `call` answered `answer`.
-    fn called(&self, call: &ToolCall, answer: &Answer) {
-        let _ = (call, answer);
+    /// Carry out `call`, at `step` of its answer's calls, by `work`, which answers it (the
+    /// caller's own tool or the workspace's): what it answered. Between [`Self::calling`] and
+    /// [`Self::called`], so whoever times or notes a step can wrap the call itself.
+    fn carry_out<W>(
+        &self,
+        call: &ToolCall,
+        step: Step,
+        work: W,
+    ) -> impl Future<Output = Answer> + Send
+    where
+        W: Future<Output = Answer> + Send,
+    {
+        let _ = (call, step);
+        work
+    }
+    /// `call`, at `step` of its answer's calls, answered `answer`. After the last step the
+    /// answer's calls are done ([`Step::last`]); a stop leaves the rest untold.
+    fn called(&self, call: &ToolCall, step: Step, answer: &Answer) {
+        let _ = (call, step, answer);
+    }
+    /// What the model writes while one ask goes on, as it comes; it ends with the ask. Nothing
+    /// is shown by default.
+    fn hear(&self, hearing: Hearing) -> impl Future<Output = ()> + Send {
+        drop(hearing);
+        async {}
+    }
+    /// The ask's answer, after everything it wrote was heard ([`Self::hear`]).
+    fn heard(&self, response: &ModelResponse) -> impl Future<Output = ()> + Send {
+        let _ = response;
+        async {}
+    }
+    /// What the turn ends with when its model gave no answer for `why`, the conversation being
+    /// `messages` by then: `why` itself by default.
+    fn left_off(&self, why: String, messages: &[Message]) -> String {
+        let _ = messages;
+        why
     }
     /// The turn's model calls cost `total` millionths of the currency by now.
     fn spent(&self, total: u64) {
@@ -176,8 +256,12 @@ pub struct Asked {
     pub sees: bool,
     /// What the turn may spend, in millionths of the currency; `None` for no limit.
     pub budget: Option<u64>,
-    /// The most rounds of tool calls before the turn stops.
-    pub most_rounds: usize,
+    /// The most rounds of tool calls before the turn stops; `None` asks the model for as long
+    /// as it calls tools, and only the budget, its person or its answer ends the turn.
+    pub most_rounds: Option<usize>,
+    /// The most bytes of one tool's words the model is handed; past it the answer says to ask
+    /// for less.
+    pub result_bytes: usize,
     /// The most tokens one answer may take.
     pub output_tokens: u32,
     /// The most characters the conversation keeps before old answers give way.
@@ -198,7 +282,8 @@ impl Asked {
             own_tools: Vec::new(),
             sees: false,
             budget: None,
-            most_rounds: 40,
+            most_rounds: Some(40),
+            result_bytes: MOST_RESULT_BYTES,
             output_tokens: 8_192,
             context_chars: 400_000,
             round_time: Duration::from_secs(90),
@@ -220,11 +305,11 @@ pub enum Outcome {
     Cancelled,
 }
 
-/// `text`, at most [`MOST_RESULT_BYTES`] of it.
+/// `text`, at most `most` bytes of it.
 #[must_use]
-pub fn cut(mut text: String) -> String {
-    if text.len() > MOST_RESULT_BYTES {
-        let mut end = MOST_RESULT_BYTES;
+pub fn cut(mut text: String, most: usize) -> String {
+    if text.len() > most {
+        let mut end = most;
         while !text.is_char_boundary(end) {
             end = end.saturating_sub(1);
         }
@@ -264,19 +349,10 @@ where
     M: Model + 'static,
     D: Doing<T>,
 {
-    // Boxed: where the tools are answered is the caller's, and its futures stay out of the turn's.
-    let listed = tokio::time::timeout(TOOL_TIME, Box::pin(answering.list())).await;
-    let mut tools = match listed {
-        Ok(Ok(tools)) => tools,
-        Ok(Err(why)) => return (Outcome::Failed(why), 0),
-        Err(_) => {
-            return (
-                Outcome::Failed("the agent's tools did not say what they are in time".to_owned()),
-                0,
-            );
-        }
+    let tools = match listed(answering, asked).await {
+        Ok(tools) => tools,
+        Err(why) => return (Outcome::Failed(why), 0),
     };
-    tools.extend(asked.own_tools.iter().cloned());
     let mut messages = vec![
         Message::text(Role::System, asked.system.clone()),
         Message::text(Role::User, asked.request.clone()),
@@ -286,7 +362,10 @@ where
     let mut unusable = 0usize;
     // Where the turn's tools are answered once what its person wrote since moved it.
     let mut moved: Option<T> = None;
-    for round in 0..asked.most_rounds {
+    for round in 0.. {
+        if asked.most_rounds.is_some_and(|most| round >= most) {
+            break;
+        }
         if doing.stopped() {
             return (Outcome::Cancelled, cost);
         }
@@ -317,10 +396,12 @@ where
             tool_choice: ToolChoice::Auto,
             max_output_tokens: asked.output_tokens,
         };
-        let response = match ask(&model, request, format!("{}:{round}", asked.key), asked).await {
+        let key = format!("{}:{round}", asked.key);
+        let deadline = later(asked.round_time);
+        let response = match hearing::ask(&model, request, key, deadline, doing).await {
             Ok(response) => response,
             Err(_) if doing.stopped() => return (Outcome::Cancelled, cost),
-            Err(why) => return (Outcome::Failed(why), cost),
+            Err(why) => return (Outcome::Failed(doing.left_off(why, &messages)), cost),
         };
         if response.cost_micros > 0 {
             cost = cost.saturating_add(response.cost_micros);
@@ -365,6 +446,16 @@ where
     said_where_it_got(&model, asked, doing, messages, tools, cost).await
 }
 
+/// The tools the model is offered: `answering`'s and the caller's own, or why there are none.
+async fn listed<T: Tools>(answering: &T, asked: &Asked) -> Result<Vec<ToolDefinition>, String> {
+    // Boxed: where the tools are answered is the caller's, and its futures stay out of the turn's.
+    let mut tools = tokio::time::timeout(TOOL_TIME, Box::pin(answering.list()))
+        .await
+        .map_err(|_| "the agent's tools did not say what they are in time".to_owned())??;
+    tools.extend(asked.own_tools.iter().cloned());
+    Ok(tools)
+}
+
 /// Out of rounds, it may well have finished: it is asked once more, with no tools, to say what
 /// it did, rather than its person being told only that it stopped.
 async fn said_where_it_got<T, M: Model + 'static>(
@@ -386,7 +477,8 @@ async fn said_where_it_got<T, M: Model + 'static>(
         tool_choice: ToolChoice::None,
         max_output_tokens: asked.output_tokens,
     };
-    let said = match ask(model, request, format!("{}:last", asked.key), asked).await {
+    let key = format!("{}:last", asked.key);
+    let said = match hearing::ask(model, request, key, later(asked.round_time), doing).await {
         Ok(response) => {
             cost = cost.saturating_add(response.cost_micros);
             doing.spent(cost);
@@ -401,23 +493,6 @@ async fn said_where_it_got<T, M: Model + 'static>(
         said
     };
     (Outcome::Stopped(said), cost)
-}
-
-/// Ask `model` one round, named `key`, on a thread it may block: its answer, or why none came.
-async fn ask<M: Model + 'static>(
-    model: &Arc<Mutex<M>>,
-    request: ModelRequest,
-    key: String,
-    asked: &Asked,
-) -> Result<ModelResponse, String> {
-    let deadline = later(asked.round_time);
-    let carrier = Arc::clone(model);
-    match tokio::task::spawn_blocking(move || carrier.lock_recover().turn(&request, &key, deadline))
-        .await
-    {
-        Ok(answered) => answered,
-        Err(error) => Err(error.to_string()),
-    }
 }
 
 /// Tell the model what its person wrote since its last step: beside their last words when the
@@ -501,30 +576,31 @@ async fn call_each<T: Tools>(
 ) -> Option<(Message, Vec<(String, String)>)> {
     let mut results = Vec::new();
     let mut shown = Vec::new();
-    for call in calls {
+    let of = calls.len();
+    for (nth, call) in calls.into_iter().enumerate() {
         if doing.stopped() {
             return None;
         }
-        doing.calling(&call).await;
-        let mut answer = match doing.own(&call).await {
-            Some(answer) => answer,
-            None => tokio::time::timeout(
-                TOOL_TIME,
-                Box::pin(answering.call(&call.name, call.input.clone())),
-            )
-            .await
-            .unwrap_or_else(|_| Answer::failed(format!("{} did not answer in time", call.name))),
+        let step = Step { nth, of };
+        doing.calling(&call, step).await;
+        let work = async {
+            let mut answer = match doing.own(&call).await {
+                Some(answer) => answer,
+                None => tokio::time::timeout(
+                    TOOL_TIME,
+                    Box::pin(answering.call(&call.name, call.input.clone())),
+                )
+                .await
+                .unwrap_or_else(|_| {
+                    Answer::failed(format!("{} did not answer in time", call.name))
+                }),
+            };
+            answer.text = cut(std::mem::take(&mut answer.text), asked.result_bytes);
+            answer
         };
-        answer.text = cut(std::mem::take(&mut answer.text));
-        doing.called(&call, &answer);
-        // What it asked is logged with a refusal, so the call can be made again by hand.
-        if answer.is_error {
-            let asked: String = call.input.to_string().chars().take(LOGGED_CHARS).collect();
-            let said: String = answer.text.chars().take(LOGGED_CHARS).collect();
-            tracing::info!(tool = %call.name, %asked, %said, "an agent's tool was refused or failed");
-        } else {
-            tracing::debug!(tool = %call.name, "an agent used a tool");
-        }
+        let answer = doing.carry_out(&call, step, work).await;
+        doing.called(&call, step, &answer);
+        logged(&call, &answer);
         if asked.sees {
             let room = MOST_PICTURES.saturating_sub(shown.len());
             shown.extend(answer.pictures.iter().take(room).cloned());
@@ -546,6 +622,21 @@ async fn call_each<T: Tools>(
         },
         shown,
     ))
+}
+
+/// Say in the log what `call` came to: its tool and each argument by its name and the bytes of
+/// its value, which is where making a refused call again by hand begins; of a refusal its
+/// sentence without anything the call wrote, and of an answer its size. No value of an argument
+/// and nothing of an answer stands in a line, at any level ([`logged`]).
+fn logged(call: &ToolCall, answer: &Answer) {
+    let tool = logged::offered_name(&call.name);
+    let arguments = logged::arguments(&call.input);
+    if answer.is_error {
+        let said = logged::refusal(&answer.text, &call.input);
+        tracing::info!(%tool, %arguments, %said, "an agent's tool was refused or failed");
+    } else {
+        tracing::debug!(%tool, %arguments, answered_bytes = answer.text.len(), "an agent used a tool");
+    }
 }
 
 /// `wait` from now, or now when that is past what a clock reads.

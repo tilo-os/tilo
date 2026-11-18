@@ -17468,6 +17468,7 @@ dependencies = [
  "tilo-session-actions",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "workspace-hack",
 ]
 
