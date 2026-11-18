@@ -732,9 +732,27 @@ impl Server {
             // A server of the person's own takes part in their admin workspace,
             // whose record of their servers says what it should be.
             if enrolled_server {
-                crate::servers::enroll(governed, &identity.device_cert, &endpoint.addr())
-                    .await
-                    .map_err(|error| ServerError::Identity(format!("admin workspace: {error}")))?;
+                // The person's first server makes it; a later one asks an
+                // earlier one, as its enrollment named them, to take it in.
+                let earlier = earlier_servers(&cfg.identity_root, &identity.device_cert)?;
+                if crate::servers::holds_admin(governed).await {
+                    crate::servers::enroll(governed, &endpoint.addr()).await
+                } else if earlier.is_empty() {
+                    crate::servers::found(governed, &endpoint.addr())
+                        .await
+                        .map(drop)
+                } else {
+                    push_background_task(
+                        &background_tasks,
+                        tokio::spawn(ask_to_be_admitted(
+                            endpoint.clone(),
+                            identity.clone(),
+                            earlier,
+                        )),
+                    );
+                    Ok(())
+                }
+                .map_err(|error| ServerError::Identity(format!("admin workspace: {error}")))?;
                 // Its OS updates wait their turn among the person's servers.
                 let rollout = crate::rollout::serve(crate::rollout::ServerMachine::new(
                     governed.clone(),
@@ -744,7 +762,13 @@ impl Server {
                 // What this server is, and what the person's other servers are
                 // told to be, is its entry in the admin workspace's document:
                 // it applies the document now and after each change to it.
-                push_background_task(&background_tasks, crate::servers::applied::follow(governed));
+                push_background_task(
+                    &background_tasks,
+                    crate::servers::applied::follow(
+                        governed,
+                        PathBuf::from(crate::servers::policy::POLICY_REQUEST),
+                    ),
+                );
             }
             // A server's name is its entry's in its person's admin workspace:
             // the workspaces it holds show it by that name from now on.
@@ -1041,6 +1065,70 @@ fn import_home_peer(cfg: &mut ServerConfig) -> Result<(), ServerError> {
     }
     cfg.services.full_content_replication = true;
     Ok(())
+}
+
+/// The servers of this server's person that its enrollment named, earlier
+/// ones than itself, each where it was last dialled: none for the person's
+/// first server.
+///
+/// # Errors
+/// The list of them cannot be read.
+fn earlier_servers(
+    identity_root: &std::path::Path,
+    own: &tilo_user_identity::DeviceCert,
+) -> Result<Vec<(tilo_user_identity::DeviceCert, EndpointAddr)>, ServerError> {
+    let registry = crate::home_peer_registry_path(identity_root);
+    // One that cannot be read stops the start rather than have this server
+    // make a second admin workspace beside the one the others hold.
+    let peers = crate::read_home_peers(&registry)
+        .map_err(|error| ServerError::Identity(format!("the person's servers: {error}")))?;
+    Ok(peers
+        .into_iter()
+        .filter_map(|peer| Some((peer.device_cert?, peer.server_endpoint?)))
+        .filter(|(cert, _)| {
+            cert.user_public_key == own.user_public_key
+                && cert.device_public_key != own.device_public_key
+        })
+        .collect())
+}
+
+/// Ask the person's earlier servers, in turn, to take this one in among
+/// their servers, until one does; it is then handed the admin workspace.
+/// One that cannot be reached is asked again after a while, longer each time.
+async fn ask_to_be_admitted(
+    endpoint: Endpoint,
+    identity: ServerIdentity,
+    earlier: Vec<(tilo_user_identity::DeviceCert, EndpointAddr)>,
+) {
+    let mut wait = Duration::from_secs(1);
+    loop {
+        for (server, addr) in &earlier {
+            let asked = crate::client::ServerClient::manage_home_peer(
+                &endpoint,
+                addr.clone(),
+                identity.user_public_key,
+                server.device_public_key,
+                identity.device_cert.clone(),
+                identity.device_signing_key.clone(),
+                identity.revocations.clone(),
+                HomePeerManagementRequest::AdmitServer {
+                    endpoint: endpoint.addr(),
+                },
+            )
+            .await;
+            match asked {
+                Ok(_) => {
+                    tracing::info!(server = %hex::encode(server.device_public_key), "an earlier server took this one in");
+                    return;
+                }
+                Err(error) => {
+                    tracing::info!(server = %hex::encode(server.device_public_key), %error, "an earlier server did not take this one in");
+                }
+            }
+        }
+        tokio::time::sleep(wait).await;
+        wait = wait.saturating_mul(2).min(Duration::from_secs(300));
+    }
 }
 
 impl ServerHandle {
@@ -1469,6 +1557,16 @@ impl ProtocolHandler for ManagementProtocol {
                 )
                 .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
                 decommissioned = true;
+            }
+            HomePeerManagementRequest::AdmitServer { endpoint } => {
+                let workspaces = self.workspaces.as_ref().ok_or_else(|| {
+                    AcceptError::from_err(std::io::Error::other(
+                        "this home peer keeps no admin workspace",
+                    ))
+                })?;
+                crate::servers::admit(workspaces, &peer.cert, &endpoint)
+                    .await
+                    .map_err(|error| AcceptError::from_err(std::io::Error::other(error)))?;
             }
         }
         // Its name is its entry's in the admin workspace, its certificate's

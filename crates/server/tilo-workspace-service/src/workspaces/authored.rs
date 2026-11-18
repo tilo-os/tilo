@@ -9,10 +9,12 @@ use tilo_user_identity::DeviceCert;
 
 impl Workspaces {
     /// Author a workspace record no app factory makes, such as the shared
-    /// desktop members' pages keep, as its exact current governor: an
-    /// existing record keeps its graph and gains only the change, and an
-    /// absent one starts from it. Members' pages admit it like any member's
-    /// change to that record.
+    /// desktop members' pages keep, as the device that governs the workspace
+    /// or any other holder its governance names: every holder keeps a
+    /// writable copy, so what is set at one holder is written by it and
+    /// reaches the rest. An existing record keeps its graph and gains only
+    /// the change, and an absent one starts from it. Members' pages admit it
+    /// like any member's change to that record.
     ///
     /// # Errors
     /// Refuses other certificates, stale ownership, incomplete records, sealed
@@ -44,9 +46,9 @@ impl Workspaces {
         let state = self.workspace(workspace).await?;
         let mut governed = state.lock().await;
         if &governed.record.owner != governor {
-            return Err(CollaborationError::new(
-                "record governor differs from current workspace authority",
-            ));
+            // Every other holder its governance names writes it too: each
+            // keeps a writable copy.
+            super::holding::require_holder(&governed.peer(), governor)?;
         }
         governed
             .peer()

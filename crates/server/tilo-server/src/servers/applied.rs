@@ -20,7 +20,7 @@
 //! its entry says.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use iroh_base::EndpointAddr;
 use tilo_peer_state::CopyRole;
@@ -173,27 +173,37 @@ fn endpoint(server: &super::Server) -> Option<EndpointAddr> {
     serde_json::from_str(&server.endpoint).ok()
 }
 
-/// Apply the document now, and again after each change to it,
-/// for as long as `workspaces` lives.
-pub fn follow(workspaces: &Workspaces) -> tokio::task::JoinHandle<()> {
+/// Apply the document now, and again after each change to it and to the
+/// admin workspace's holders, for as long as `workspaces` lives, writing the
+/// update policy to `policy_request`. A change another holder wrote reaches
+/// this one as its copy takes it in; one this device wrote, as it is
+/// committed. A server handed the workspace after it started applies it as
+/// the hand-over lands.
+pub fn follow(workspaces: &Workspaces, policy_request: PathBuf) -> tokio::task::JoinHandle<()> {
     let workspaces = workspaces.clone();
     let admin = admin_workspace_id(&workspaces.serving_certificate().user_public_key);
     let mut writes = workspaces.document_writes();
+    let mut governance = workspaces.governance_changes();
     tokio::spawn(async move {
-        apply_now(&workspaces).await;
+        apply_now(&workspaces, &policy_request).await;
         loop {
-            match writes.recv().await {
-                Ok(ResourceWrite { workspace, app, .. })
-                    if workspace == admin && app == SERVERS.0 =>
-                {
+            let ours = tokio::select! {
+                write = writes.recv() => match write {
                     // The app keeps one document, so any write to it is this one.
-                    apply_now(&workspaces).await;
-                }
-                Ok(_) => {}
-                // A device that fell behind the document's writes applies it as
-                // it stands, which is what every write asked for anyway.
+                    Ok(ResourceWrite { workspace, app, .. }) => {
+                        Ok(workspace == admin && app == SERVERS.0)
+                    }
+                    Err(error) => Err(error),
+                },
+                change = governance.recv() => change.map(|workspace| workspace == admin),
+            };
+            match ours {
+                Ok(true) => apply_now(&workspaces, &policy_request).await,
+                Ok(false) => {}
+                // A device that fell behind applies the document as it
+                // stands, which is what every change asked for anyway.
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    apply_now(&workspaces).await;
+                    apply_now(&workspaces, &policy_request).await;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
@@ -201,9 +211,9 @@ pub fn follow(workspaces: &Workspaces) -> tokio::task::JoinHandle<()> {
     })
 }
 
-/// [`reconcile`], with what it did in the log rather than in an answer.
-async fn apply_now(workspaces: &Workspaces) {
-    match reconcile(workspaces).await {
+/// [`reconcile_into`], with what it did in the log rather than in an answer.
+async fn apply_now(workspaces: &Workspaces, policy_request: &Path) {
+    match reconcile_into(workspaces, policy_request).await {
         Ok(applied) if applied != Applied::default() => {
             tracing::info!(?applied, "the servers' document applied");
         }
