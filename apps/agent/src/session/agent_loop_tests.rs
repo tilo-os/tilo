@@ -1559,6 +1559,8 @@ fn finish(reply: &str, done: bool) -> (&'static str, Value) {
 mod anthropic_dialect;
 #[path = "agent_loop/tests/catalogue_waits.rs"]
 mod catalogue_waits;
+#[path = "agent_loop/tests/log_lines.rs"]
+mod log_lines;
 #[path = "agent_loop/tests/long_run.rs"]
 mod long_run;
 #[path = "agent_loop/tests/malformed_calls.rs"]

@@ -66,6 +66,7 @@ use empty_finish::EmptyFinish;
 mod answer;
 mod compaction;
 mod failure;
+mod logged;
 use answer::SAY_WHAT_YOU_DID;
 pub(crate) use failure::Failure;
 mod progress;
@@ -1212,13 +1213,19 @@ impl Session {
         // The gateway's own cache breakpoints make a provider read the
         // prefix back instead of prefilling it.
         let request = super::selection_prompt::task_request(run, &catalogue);
-        // The request as the model reads it, the selection it is about and
-        // the operations named for it included, so a run that acted at the
-        // wrong place can be told apart from one that was never told where.
-        tracing::info!(message = %run.message, %request, "task request");
-        // The operations the first turn shows, as the model reads them: a run that wandered can
-        // be told apart from one that was never shown the step it needed.
-        tracing::info!(operations = %head(&summary, 12_000), "task operations");
+        // The request as the model reads it is the person's words, and the operations the
+        // first turn shows name what the workspace holds. The log keeps how much of each there
+        // was, never the words; which message the task answers is an address, not what it says.
+        tracing::info!(
+            message = %run.message,
+            request_bytes = request.len(),
+            "task request"
+        );
+        tracing::info!(
+            operations_bytes = summary.len(),
+            operations_lines = summary.lines().count(),
+            "task operations"
+        );
         self.program_world(run, state)?;
         let place = program_steps::where_section(run, &state.programs);
         let now = ui::clock::local_now();
@@ -1573,15 +1580,17 @@ impl Session {
                     && state.malformed_turns < MOST_MALFORMED_TURNS
                 {
                     state.malformed_turns += 1;
-                    // What the model sent, as it sent it: the resource of a refused call is the
-                    // call, not only the parser's reason.
+                    // What the model sent, as the log may keep it: each call by its tool and its
+                    // arguments' names and sizes. Why it was refused is told to the model; the
+                    // reason can quote the call, so the log keeps the person's sentence for it
+                    // and the size of the reason.
                     let sent = conversation
                         .read_calls(raw)
                         .map(|calls| {
                             calls
                                 .iter()
                                 .map(|call| {
-                                    format!("{}({})", call.name, head(&call.input.to_string(), 600))
+                                    format!("{}({})", call.name, logged::arguments(&call.input))
                                 })
                                 .collect::<Vec<_>>()
                                 .join("; ")
@@ -1589,7 +1598,8 @@ impl Session {
                         .unwrap_or_default();
                     tracing::info!(
                         turn,
-                        %error,
+                        error = error.message(),
+                        detail_bytes = error.detail().len(),
                         calls = refused.len(),
                         %sent,
                         "the model's calls were refused; answering them with what was wrong"
@@ -1618,7 +1628,8 @@ impl Session {
                     state.unusable_turns += 1;
                     tracing::info!(
                         turn,
-                        %error,
+                        error = error.message(),
+                        detail_bytes = error.detail().len(),
                         again = state.unusable_turns,
                         "the model's answer could not be used; asking again"
                     );
@@ -1628,7 +1639,12 @@ impl Session {
                     ));
                     return Ok(None);
                 }
-                tracing::info!(turn, %error, "the model's turn failed; ending the run");
+                tracing::info!(
+                    turn,
+                    error = error.message(),
+                    detail_bytes = error.detail().len(),
+                    "the model's turn failed; ending the run"
+                );
                 // `error` is the failure's record: its sentence is what a
                 // person reads, and what the turn kept goes beside it.
                 return Ok(Some(LoopEnd::Failed(error)));
@@ -1677,13 +1693,13 @@ impl Session {
                 said,
             }) => {
                 conversation.continued();
-                // Debug capture (the launcher keeps the agent's stderr):
-                // each tool call with its arguments, truncated.
+                // The launcher keeps the agent's stderr: each tool call by its name, with its
+                // arguments' names and sizes and none of their values.
                 for call in &calls {
                     tracing::info!(
                         turn,
                         tool = %call.name,
-                        args = %head(&call.input.to_string(), 400),
+                        args = %logged::arguments(&call.input),
                         "agent tool call"
                     );
                 }
@@ -1780,7 +1796,7 @@ impl Session {
                 .collect();
             if !undone.is_empty() {
                 state.refusals += 1;
-                tracing::info!(parts = ?undone, "finish refused: parts not done");
+                tracing::info!(parts = undone.len(), "finish refused: parts not done");
                 let note = format!(
                     "Not finished: these parts of the request have no successful operation \
                      yet: {}. Do them now with invoke (a reply in your panel does not reach \
@@ -1854,9 +1870,10 @@ impl Session {
                 )
             })
             .collect::<Vec<(String, String)>>();
-        // Debug capture beside "agent tool call": what each call answered, truncated.
+        // Beside "agent tool call": that each call was answered, and with how much. What a
+        // tool answers is what the workspace holds, so none of it is logged.
         for (id, result) in &ordered {
-            tracing::info!(turn, %id, result = %head(result, 600), "agent tool result");
+            tracing::info!(turn, %id, result_bytes = result.len(), "agent tool result");
         }
         conversation
             .push(assistant, ordered)
@@ -2212,10 +2229,7 @@ impl Session {
         if !report.succeeded {
             tracing::info!(
                 turn = state.turn,
-                error = %head(
-                    report.error.as_deref().unwrap_or("not run"),
-                    300
-                ),
+                error_bytes = report.error.as_deref().map_or(0, str::len),
                 "agent invoke failed"
             );
             *failed = true;
@@ -2338,7 +2352,7 @@ impl Session {
         if !report.succeeded {
             tracing::info!(
                 tool = call.name,
-                error = %head(report.error.as_deref().unwrap_or("not run"), 300),
+                error_bytes = report.error.as_deref().map_or(0, str::len),
                 "agent web tool failed"
             );
             *failed = true;
