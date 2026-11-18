@@ -35,10 +35,9 @@
 #   2. Staging an update and running the same maintenance, as every update path
 #      does, gives the staged deployment's entry, and only it, a try counter
 #      BEFORE the reboot into it.
-#   3. The staged deployment is made unable to reach the greeter, by a greetd
-#      drop-in in /etc that acts only on the staged deployment's composefs
-#      identity. /etc is carried into the staged deployment when it is
-#      finalized, so the image itself is untouched and the fault is bounded to
+#   3. The staged deployment is made unable to come into service, by a drop-in
+#      in the current /etc that acts only on the staged deployment's composefs
+#      identity, so the image itself is untouched and the fault is bounded to
 #      that one deployment. FAULT picks how it breaks:
 #        greetd   (default) greetd itself fails to start.
 #        greeter  greetd starts and stays in service, but its greeter is the
@@ -57,7 +56,10 @@
 #                 boots, so its real encrypted root waits.
 #        server   the staged deployment's own service (SUBJECT_UNIT) fails to
 #                 start: the shape of an update whose server comes up unable to
-#                 serve, which no "the unit is enabled" check would catch.
+#                 serve, which no "the unit is enabled" check would catch. This
+#                 fault is in the staged image instead of this machine's /etc:
+#                 a staged deployment's /etc is made when the deployment is,
+#                 so the caller builds the update so that it cannot serve.
 #      Each of its boots spends a try: tilo-boot-health.service fails (or, at
 #      the unlock prompt, nothing runs at all), systemd-bless-boot leaves the
 #      counter, and the boot loader decrements it. While a broken boot is up,
@@ -378,14 +380,12 @@ grep "^options" "$file"'
     ok "the staged entry's initrd now waits at an unlock prompt: $shape"
   fi
 elif [ "$FAULT" = server ]; then
-  as_root "install -d -m 0755 $DROPIN_DIR && cat > $DROPIN <<EOF
-# Written by os/tests/boot_assessment_rollback.sh: $SUBJECT_UNIT, this machine's
-# own liveness, fails on the deployment under test (composefs $B_DIGEST) and
-# nowhere else: the shape of an update whose server comes up unable to serve.
-[Service]
-ExecStartPre=/usr/bin/sh -c '! grep -q \"composefs=$B_DIGEST\" /proc/cmdline'
-EOF
-systemctl daemon-reload" > "$OUT/03-fault.txt" 2>&1 || fail "could not write $DROPIN"
+  # Nothing to write: the staged image is the broken one, and it is the caller
+  # that builds it that way. A drop-in written here would not reach it — a
+  # staged deployment's /etc is made when the deployment is, and staging ran
+  # already — so an update that breaks a server is broken in the image, as a
+  # real one would be.
+  : > "$OUT/03-fault.txt"
 elif [ "$FAULT" = greetd ]; then
   as_root "install -d -m 0755 $DROPIN_DIR && cat > $DROPIN <<EOF
 # Written by os/tests/boot_assessment_rollback.sh: greetd fails on the
@@ -427,8 +427,12 @@ ExecStart=/usr/bin/sh -c 'if grep -q \"composefs=$B_DIGEST\" /proc/cmdline; then
 EOF
 systemctl daemon-reload" > "$OUT/03-fault.txt" 2>&1 || fail "could not write $DROPIN"
 fi
-guest "systemctl is-active --quiet $SUBJECT_UNIT" || fail "$SUBJECT_UNIT is not active on the booted deployment after the fault was written; it must only affect the staged one"
-[ "$FAULT" = unlock ] || ok "$SUBJECT_UNIT still runs here; its $FAULT fault acts on composefs ${B_DIGEST:0:16}"
+guest "systemctl is-active --quiet $SUBJECT_UNIT" || fail "$SUBJECT_UNIT is not active on the booted deployment; the fault must only affect the staged one"
+case "$FAULT" in
+  unlock) ;;
+  server) ok "$SUBJECT_UNIT is still in service here; the staged image's own probe is what fails" ;;
+  *) ok "$SUBJECT_UNIT is still in service here; its $FAULT fault acts on composefs ${B_DIGEST:0:16}" ;;
+esac
 
 has_fallback_unit() {
   guest 'systemctl cat tilo-boot-fallback.service >/dev/null 2>&1'

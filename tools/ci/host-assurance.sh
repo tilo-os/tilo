@@ -126,8 +126,18 @@ mv "$work/install/qcow2/disk.qcow2" "$disk"
 # to the guest on a small disk of its own (there is no sshd to copy it with).
 say 'build the update the machine will stage'
 mkdir -p "$work/update"
-printf 'FROM localhost/tilo-host:ci\nRUN echo %s > /usr/lib/tilo/host-assurance-update\n' "$target" \
-  > "$work/update/Containerfile"
+{
+  printf 'FROM localhost/tilo-host:ci\n'
+  printf 'RUN echo %s > /usr/lib/tilo/host-assurance-update\n' "$target"
+  # The update whose server cannot serve: the probe the boot judges itself by
+  # fails on this image and nowhere else. It is part of the image rather than
+  # a drop-in written at run time because a staged deployment's /etc is made
+  # when the deployment is, and the check writes after that.
+  printf '%s\n' \
+    'RUN install -d -m 0755 /usr/lib/systemd/system/tilo-server-health.service.d \' \
+    " && printf '[Service]\\nExecStartPre=/usr/bin/false\\n' \\" \
+    '      > /usr/lib/systemd/system/tilo-server-health.service.d/90-boot-assessment-fault.conf'
+} > "$work/update/Containerfile"
 podman build -q -t "$update_ref" -f "$work/update/Containerfile" "$work/update" >/dev/null
 podman save --format oci-archive -o "$work/update.tar" "$update_ref"
 rm -f "$work/update.raw"
@@ -247,24 +257,22 @@ as_root 'mkdir -p /mnt/update && mount /dev/vdb /mnt/update && skopeo copy --qui
        die "could not put the update image on the machine; see $out/stage-transfer.txt"; }
 ok 'the update image is on the machine'
 
-# What the boot itself recorded as its verdict, printed before the rollback
-# check reads it: a check that fails on it says what the boot loader's boot
-# left, not only that something did.
-as_root 'echo "--- cmdline"; cat /proc/cmdline
-         echo "--- boot count"; test -e /sys/firmware/efi/efivars/LoaderBootCountPath-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f && echo present || echo absent
-         echo "--- entries"; ls /boot/loader/entries /boot/efi/loader/entries 2>&1
-         echo "--- health"; systemctl show -p ActiveState -p Result -p ConditionResult tilo-boot-health.service tilo-server-health.service
-         echo "--- boot-complete"; systemctl list-dependencies --reverse --plain boot-complete.target 2>&1 | head -12
-         echo "--- cycles"; journalctl -b --no-pager 2>/dev/null | grep -i "ordering cycle\|deleted to break" | head -12
-         echo "--- bootctl"; bootctl status --no-pager 2>&1 | sed -n "1,20p"' \
-  2>&1 | tee "$out/boot-verdict.txt" > /dev/console || true
-
-RUNNER='./os/tests/serial_runner.sh' SUDO_PASS="$TILO_PASS" FAULT=server \
-  SUBJECT_UNIT=tilo-server-health.service \
-  RESET="./os/dev/vm.sh stop; ./os/dev/vm.sh boot --2d --disk '$disk' --attach '$work/update.qcow2'" \
-  SERIAL='./os/dev/vm.sh serial' \
-  BOOT_TIMEOUT=900 HEALTH_TIMEOUT=900 SWITCH_TIMEOUT=1800 \
-  ./os/tests/boot_assessment_rollback.sh oci:/mnt/update/image:tilo-host "$out/boot-assessment"
+# A failed check keeps no evidence files, and the boot it died on is the only
+# evidence there is: say what that boot recorded of its own verdict, its probe
+# and any ordering cycle the boot loader resolved against them.
+if ! RUNNER='./os/tests/serial_runner.sh' SUDO_PASS="$TILO_PASS" FAULT=server \
+     SUBJECT_UNIT=tilo-server-health.service \
+     RESET="./os/dev/vm.sh stop; ./os/dev/vm.sh boot --2d --disk '$disk' --attach '$work/update.qcow2'" \
+     SERIAL='./os/dev/vm.sh serial' \
+     BOOT_TIMEOUT=900 HEALTH_TIMEOUT=900 SWITCH_TIMEOUT=1800 \
+     ./os/tests/boot_assessment_rollback.sh oci:/mnt/update/image:tilo-host "$out/boot-assessment"; then
+  as_root 'echo "--- health"; systemctl show -p ActiveState -p Result -p ConditionResult tilo-boot-health.service
+           echo "--- probe"; systemctl show -p ActiveState -p Result tilo-server-health.service
+           echo "--- cycles"; journalctl -b --no-pager 2>/dev/null | grep -i "ordering cycle\|deleted to break" | head -20
+           echo "--- health journal"; journalctl -b --no-pager -u tilo-boot-health -u systemd-bless-boot -u tilo-server-health 2>/dev/null | tail -40' \
+    || true
+  exit 1
+fi
 
 say 'the machine serves again, on the deployment that came back'
 refuse 'multi-user.target is active' 'systemctl is-active --quiet multi-user.target'
