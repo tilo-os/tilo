@@ -524,6 +524,19 @@ for two things side by side stacks them, names are read whole on as many lines a
 take, the way in scrolls, and the message field keeps its height while the conversation
 gives way.
 
+**A piece's menu.** A long press on a piece of words on an iPhone, the second button or
+Control and a click on a Mac, opens a menu for it (`PieceMenu`): Copy and Select text. Copy
+puts the piece's words on the pasteboard as plain text with every line where it stood
+(`Markdown.copied`): Markdown's own signs are gone, a list keeps its entries and its numbers,
+code keeps its lines, a link's address follows its words. Select text lays the same words out
+in the system's own text view, where a part is marked with the system's handles on an iPhone
+and by a drag on a Mac, and copied by the system's own Copy; nothing in it can be changed. On
+a Mac a drag also marks a message's words where they stand in the conversation. Words that can
+be marked answer the second button with the system's own menu for text, so a view of the
+app's lies over a message there and takes the second button and Control with a click alone
+(`SecondButtonView`): every other press goes past it to the words. The app keeps nothing of
+this.
+
 **A task's replies.** A task's line counts the replies the conversation does not show.
 Pressed, they open under the line (`AssistantSource.replies(of:in:)`), and the same press
 puts them away. On a narrow window what does not fit beside a task's title goes under the

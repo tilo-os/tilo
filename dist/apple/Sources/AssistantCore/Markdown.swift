@@ -411,3 +411,51 @@ extension Markdown {
         !marks.contains { $0.kind != .syntax && ($0.range.lowerBound == range.upperBound || $0.range.upperBound == range.lowerBound) }
     }
 }
+
+extension Markdown {
+    /// A message's words as a person takes them elsewhere: plain text, every line where it stood.
+    /// Markdown's own characters are gone. A list's dash is the round sign a bubble draws, and its
+    /// number stays; a line of code stays as it was written and its fence's lines are left out; a
+    /// link's address follows its words.
+    public static func copied(_ text: String) -> String {
+        let units = Array(text.utf16)
+        var gone = IndexSet()
+        var put: [Int: [UInt16]] = [:]
+        for mark in marks(in: text) {
+            switch mark.kind {
+            case .syntax:
+                gone.insert(integersIn: mark.range)
+            case .marker:
+                let sign = units[mark.range.lowerBound]
+                if sign == backtick {
+                    // A fence's own line goes with the break that ends it, the last line's with the break before it.
+                    var start = mark.range.lowerBound
+                    while start > 0, units[start - 1] != newline { start -= 1 }
+                    var end = mark.range.upperBound
+                    if end < units.count { end += 1 } else if start > 0 { start -= 1 }
+                    gone.insert(integersIn: start..<end)
+                } else if sign == u16(">") {
+                    var end = mark.range.upperBound
+                    if end < units.count, units[end] == u16(" ") { end += 1 }
+                    gone.insert(integersIn: mark.range.lowerBound..<end)
+                } else if mark.range.count == 1 {
+                    gone.insert(mark.range.lowerBound)
+                    put[mark.range.lowerBound] = Array("•".utf16)
+                }
+            case .link(let address):
+                if String(decoding: units[mark.range], as: UTF16.self) != address {
+                    put[mark.range.upperBound] = Array(" (\(address))".utf16)
+                }
+            default:
+                break
+            }
+        }
+        var kept: [UInt16] = []
+        kept.reserveCapacity(units.count)
+        for (index, unit) in units.enumerated() {
+            if let words = put[index] { kept.append(contentsOf: words) }
+            if !gone.contains(index) { kept.append(unit) }
+        }
+        return String(decoding: kept, as: UTF16.self).trimmingCharacters(in: .newlines)
+    }
+}

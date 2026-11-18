@@ -261,13 +261,13 @@ private struct PieceView: View {
     var body: some View {
         switch item.content {
         case .message(let message):
-            MessageView(message: message, isWritten: item.id == writtenPiece)
+            MessageView(message: message, piece: item.id, isWritten: item.id == writtenPiece)
         case .report(let line):
-            Bubble { MarkdownText(text: line) }
+            Bubble(words: PieceWords(of: item.id, line)) { MarkdownText(text: line) }
         case .reminder(let words):
-            Bubble { MarkdownText(text: words) }
+            Bubble(words: PieceWords(of: item.id, words)) { MarkdownText(text: words) }
         case .question(let asked):
-            Bubble { MarkdownText(text: asked.text) }
+            Bubble(words: PieceWords(of: item.id, asked.text)) { MarkdownText(text: asked.text) }
                 // Read out as what it is: a question, and that it waits.
                 .modifier(WaitsForAnswer(waits: asked.waits))
             QuickAnswers(choices: asked.choices, chosen: asked.answer) { model.answer(asked.id, with: $0.id) }
@@ -313,6 +313,8 @@ private struct SaidByPerson: ViewModifier {
 /// Words from the person, the assistant or the main agent, with what came with them.
 private struct MessageView: View {
     let message: Message
+    /// The piece these words are.
+    let piece: Item.ID
     /// Whether its model is writing it now.
     var isWritten = false
     @Environment(AssistantModel.self) private var model
@@ -321,7 +323,7 @@ private struct MessageView: View {
 
     var body: some View {
         if !message.text.isEmpty {
-            Bubble(tone: tone) {
+            Bubble(tone: tone, words: PieceWords(of: piece, message.text), marks: true) {
                 if isAddress {
                     // An address alone is shown as what it is, letter by letter.
                     Text(message.text).font(.tiloMono(12.5))
@@ -330,9 +332,6 @@ private struct MessageView: View {
                     MarkdownText(text: message.text, isWritten: isWritten && message.author != .person)
                 }
             }
-            #if os(macOS)
-            .textSelection(.enabled)
-            #endif
             // The person's own words are read out as theirs; everything else in a conversation is
             // whoever it is with, or says who it is from in the line above it.
             .modifier(SaidByPerson(words: message.author == .person ? Markdown.plain(message.text) : nil))
