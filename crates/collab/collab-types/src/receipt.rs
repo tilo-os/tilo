@@ -994,6 +994,28 @@ fn claimed_kind(claims: &[ChangeClaim]) -> Option<&str> {
         })
 }
 
+/// Who the changes of `op` name as having made them, as its claims or its
+/// cleartext changes say, each once and in order: what a refusal reports, so
+/// whoever reads it knows whose change was refused.
+#[must_use]
+pub fn claimed_invokers(op: &crate::op::SignedOp) -> Vec<Acting> {
+    let named: Vec<Option<Acting>> = match cleartext_changes(op) {
+        Ok(Some(changes)) => changes.iter().map(crate::claim::invoker_of).collect(),
+        _ => op
+            .claims
+            .iter()
+            .map(|claim| claim.invoker.clone())
+            .collect(),
+    };
+    let mut invokers: Vec<Acting> = Vec::new();
+    for invoker in named.into_iter().flatten() {
+        if !invokers.contains(&invoker) {
+            invokers.push(invoker);
+        }
+    }
+    invokers
+}
+
 /// The hashes of the changes a cleartext op carries; `None` for a sealed
 /// op or one segment of a larger mutation, whose changes are checked once
 /// readable.

@@ -892,7 +892,30 @@ impl StatePeer {
             Ok(collab_types::Receipt::Hold) => {
                 Ok(Authorized::Hold(crate::MissingPrerequisite::AppSurface))
             }
-            Err(refusal) => Err(format!("document change forbidden: {refusal}")),
+            Err(refusal) => {
+                // Who the change names as having made it, and who signed it:
+                // what a refusal report needs to say whose change it was.
+                let invokers: Vec<String> = collab_types::claimed_invokers(envelope)
+                    .iter()
+                    .map(|invoker| serde_json::to_string(invoker).unwrap_or_default())
+                    .collect();
+                tracing::warn!(
+                    route = ?route,
+                    signer = %hex::encode(source),
+                    invokers = ?invokers,
+                    %refusal,
+                    "a change was refused"
+                );
+                Err(format!(
+                    "document change forbidden: {refusal} (made by {}, signed by device {})",
+                    if invokers.is_empty() {
+                        "its signer".to_owned()
+                    } else {
+                        invokers.join(", ")
+                    },
+                    hex::encode(source)
+                ))
+            }
         }
     }
 }

@@ -170,4 +170,61 @@ mod tests {
         );
         Ok(())
     }
+
+    /// A key its person approved acts as their agent in the workspace on
+    /// every device holding it, whoever signs what it changes: the server's
+    /// device here. Revoking its grant ends that with the next change.
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the regression returns setup errors and asserts actual production outcomes"
+    )]
+    fn an_approved_key_acts_as_its_persons_agent_until_its_grant_is_revoked() -> TestResult {
+        use ed25519_dalek::SigningKey;
+        use tilo_action_policy::{Acting, ActionKind, Answer, Context, TreePath};
+        use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, sign_device_cert};
+        let (mut peer, governor, _, server, now) = crate::admission_tests::seeded();
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let key = SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes();
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: key,
+            device_label: "Visa backend".into(),
+            capabilities: DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+            issued_at_ns: 1_000_000_000_000,
+            // A day, as an agent's grant lasts at most a bounded while.
+            expires_at_ns: Some(87_400_000_000_000),
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut cert, &root)?;
+        peer.admit_certificate(cert, &governor, now)?;
+        let person = hex::encode(root.verifying_key().to_bytes());
+        let agent = tilo_action_policy::key_agent_id(&key);
+        // The key's call, carried out and signed by another device of the
+        // workspace's: the change names the key's agent, for its person.
+        let invoker = Acting::handed_agent(agent, person);
+        let node = TreePath::workspace(peer.workspace_id()).app("test.app");
+        let decided = |peer: &crate::StatePeer| {
+            peer.permissions(server.device_public_key, now)
+                .map(|signer| {
+                    signer.invoked_by(&invoker).answer(
+                        &node,
+                        ActionKind::Undoable,
+                        &Context::at_secs(2000),
+                    )
+                })
+                .map_err(|error| error.to_string())
+        };
+        assert_eq!(decided(&peer)?, Answer::Allow, "the approved key writes");
+        let mut listed = grant(key);
+        listed.id = WorkspaceGrant::id_of(&key);
+        peer.governance_mut()
+            .author_workspace_grant(&listed, &governor, now)?;
+        assert_eq!(decided(&peer)?, Answer::Allow, "listing it changes nothing");
+        peer.governance_mut()
+            .author_workspace_grant_revoked(&listed.id, 42, &governor, now)?;
+        assert_ne!(decided(&peer)?, Answer::Allow, "its revoked grant ends it");
+        Ok(())
+    }
 }

@@ -10,6 +10,7 @@
 use super::api::ISSUER;
 use super::api_on_server::{OnServer, api_on_server, json_of};
 use super::branch_workspace::{Key, person};
+use super::hosted_documents::{content_in, put};
 use super::put_files::tree_kept;
 use super::*;
 use serde_json::{Value, json};
@@ -49,6 +50,27 @@ async fn parents_kept(on_server: &OnServer, workspace: &str) -> BTreeMap<String,
         }
     }
     kept
+}
+
+/// The titles of the notes the notebook of `workspace` keeps on the server.
+async fn titles_kept(on_server: &OnServer, workspace: &str) -> std::collections::BTreeSet<String> {
+    let workspaces = on_server.hosted.server.workspaces().unwrap();
+    let mut titles = std::collections::BTreeSet::new();
+    for index in 0.. {
+        let part_id = notes::note_list::chain().part(index);
+        let Some(part) = workspaces
+            .resource_document(workspace, "so.tilo.notes", part_id.as_str())
+            .await
+            .ok()
+            .flatten()
+            .and_then(|bytes| automerge::AutoCommit::load(&bytes).ok())
+            .and_then(|doc| <notes::NoteList as ui::tilo_resource::Resource>::read(&doc).ok())
+        else {
+            break;
+        };
+        titles.extend(part.pages.iter().map(|(_, note)| note.title.clone()));
+    }
+    titles
 }
 
 /// The id of the note a `new-note` answered.
@@ -315,6 +337,56 @@ async fn a_computers_agent_moves_things_in() {
     )
     .await;
 
+    // A folder that fills many chunks of the tree, as `tilo files put` of
+    // a repository writes it: every file names one content, and the list
+    // goes in as content of its own.
+    let content = content_in(&put(&server, b"a line of a file\n").await);
+    let entries: Vec<Value> = (0..FOLDER)
+        .map(|index| json!({"content": content, "name": format!("f{index}.txt"), "dir": "repo"}))
+        .collect();
+    // In opens of a few thousand, each after the one before, as the
+    // command sends a large folder: the chunks a later open fills are made
+    // after the first open was decided.
+    for part in entries.chunks(FOLDER_OPEN) {
+        let list = content_in(&put(&server, &serde_json::to_vec(part).unwrap()).await);
+        did(
+            &server,
+            "tilo_do",
+            json!({"path": "files#open", "args": {"files": list}}),
+        )
+        .await;
+    }
+
+    // Pages moved in from another tool, one call each after the one before.
+    for index in 0..PAGES {
+        did(
+            &server,
+            "tilo_do",
+            json!({"path": "notes#import-markdown", "args": {
+                "title": format!("page {index}"),
+                "markdown": format!("# Page {index}\n\n{}\n", "A paragraph moved in. ".repeat(40)),
+                "images": [],
+            }}),
+        )
+        .await;
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        let tree = tree_kept(on_server.hosted.server.workspaces().unwrap(), &workspace).await;
+        let missing = (0..FOLDER)
+            .filter(|index| !holds(&tree, "repo", &format!("f{index}.txt")))
+            .count();
+        if missing == 0 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the workspace never kept every file the agent put: {missing} of {FOLDER} missing"
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let kept = parents_kept(&on_server, &workspace).await;
@@ -323,17 +395,30 @@ async fn a_computers_agent_moves_things_in() {
             .filter(|note| kept.get(*note).cloned().flatten().as_deref() != Some(&folder))
             .count();
         let commented = comments_kept(&on_server, &workspace).await;
-        if unmoved == 0 && commented == COMMENTS {
+        let titles = titles_kept(&on_server, &workspace).await;
+        let unimported = (0..PAGES)
+            .filter(|index| !titles.contains(&format!("page {index}")))
+            .count();
+        if unmoved == 0 && commented == COMMENTS && unimported == 0 {
             break;
         }
         assert!(
             Instant::now() < deadline,
             "the workspace never kept everything the agent moved in: {unmoved} notes not moved, \
-             {commented} of {COMMENTS} comments"
+             {commented} of {COMMENTS} comments, {unimported} of {PAGES} pages missing"
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }
+
+/// More files than 22 chunks of the tree hold.
+const FOLDER: usize = 22 * fs_protocol::tree::CHUNK_NODES + 300;
+
+/// How many files one open puts.
+const FOLDER_OPEN: usize = 8000;
+
+/// How many pages the agent imports, one call each.
+const PAGES: usize = 40;
 
 /// How many comments the agent moves in, in one group.
 const COMMENTS: usize = 24;

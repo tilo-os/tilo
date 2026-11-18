@@ -412,6 +412,11 @@ impl Workspaces {
             {
                 self.settle(&mut workspace).await?;
             }
+            // A key admitted another way (with the workspace it made) is
+            // listed too, so its person can revoke it here.
+            if let Some(scope) = device.capabilities.agent {
+                self.list_grant(&mut workspace, device, scope, now).await?;
+            }
             return Ok(false);
         }
         let state = workspace.collaboration().clone();
@@ -422,8 +427,7 @@ impl Workspaces {
         // The workspace keeps the grant it admitted, so every holder and every
         // API server reads the same grant from the workspace itself.
         if let Some(scope) = device.capabilities.agent {
-            self.record_grant(&mut workspace, device, scope, now)
-                .await?;
+            self.list_grant(&mut workspace, device, scope, now).await?;
         }
         Ok(true)
     }
@@ -431,7 +435,7 @@ impl Workspaces {
     /// Record the grant `cert` was admitted under in `workspace`'s governance,
     /// reaching `scope`, authored by this host: the workspace's holders and
     /// the API servers that read them see it from then on.
-    async fn record_grant(
+    async fn list_grant(
         &self,
         workspace: &mut GovernedWorkspace,
         cert: &DeviceCert,
