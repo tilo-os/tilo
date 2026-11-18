@@ -1372,6 +1372,11 @@ installer-options-heading = Installationsoptionen
 installer-recovery-tools = Brauchst du Dateien von diesem Rechner, oder willst du eine Nebeneinander-Installation von Tilo entfernen? Drücke Ctrl+Alt+F2 für die Wiederherstellungswerkzeuge; Ctrl+Alt+F1 führt hierher zurück.
 installer-account-create = Konto anlegen
 installer-account-secure = Sichere dein Konto
+installer-account-server-title = Schütze die Festplatte dieses Servers
+installer-account-server-note = Auf diesem Rechner meldet sich niemand an. Er wird beim ersten Start Teil deiner Identität, und du verwaltest ihn von deinen anderen Geräten aus.
+installer-account-server-secret = Entsperrgeheimnis der Festplatte
+installer-account-server-secret-note = Wird bei jedem Neustart des Servers gebraucht. Bewahre den Wiederherstellungsschlüssel sicher auf.
+installer-account-server-secret-confirm = Gib das Entsperrgeheimnis erneut ein
 installer-region-measured = Die Position wird vom Anfang der gewählten Festplatte gemessen. Vorhandene Partitionen zwischen freien Bereichen bleiben unberührt.
 installer-region-choose = Wähle den genauen freien Bereich für Tilo
 installer-disk-protected = Diese Festplatte ist durch Hardware oder Richtlinie schreibgeschützt.
@@ -1738,6 +1743,7 @@ imager-download-sentence-handoff-failed = Der geprüfte Download bleibt erhalten
 
 ## What the wizard reports about the target it was given
 installer-status-install-start = Die Installation auf { $disk } für { $user } beginnt ({ $filesystem }).
+installer-status-install-start-server = Die Installation auf { $disk } beginnt ({ $filesystem }).
 installer-blocked-no-such-disk = Der Datenträger { $device } ist nicht aufgeführt; aktualisiere die Liste.
 installer-error-unknown-filesystem = Unbekanntes Dateisystem: { $filesystem }
 installer-keyboard-map-name = Tastaturbelegung { $layout }

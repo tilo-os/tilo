@@ -2168,6 +2168,11 @@ installer-options-heading = Installation options
 installer-recovery-tools = Need files from this computer, or removing an alongside Tilo install? Press Ctrl+Alt+F2 for recovery tools; Ctrl+Alt+F1 returns here.
 installer-account-create = Create your account
 installer-account-secure = Secure your account
+installer-account-server-title = Protect this server's disk
+installer-account-server-note = There is no sign-in on this machine. It joins your identity on first start, and you manage it from your other devices.
+installer-account-server-secret = Disk unlock secret
+installer-account-server-secret-note = Needed whenever the server restarts. Keep the recovery key somewhere safe.
+installer-account-server-secret-confirm = Type the disk unlock secret again
 installer-region-measured = The location is measured from the start of the selected disk. Existing partitions between free regions remain untouched.
 installer-region-choose = Choose the exact unallocated region for Tilo
 installer-disk-protected = This disk is hardware or policy write-protected.
@@ -2533,6 +2538,7 @@ imager-download-sentence-handoff-failed = The verified download is kept; the ins
 
 ## What the wizard reports about the target it was given
 installer-status-install-start = Starting the install to { $disk } for user { $user } ({ $filesystem }).
+installer-status-install-start-server = Starting the install to { $disk } ({ $filesystem }).
 installer-blocked-no-such-disk = No disk { $device } is listed; refresh the list.
 installer-error-unknown-filesystem = Unknown filesystem: { $filesystem }
 installer-keyboard-map-name = { $layout } keyboard layout

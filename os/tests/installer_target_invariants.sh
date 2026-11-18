@@ -636,4 +636,19 @@ else
   bad "a durable-identity service has an incorrect live-installer check"
 fi
 
+# The server destination installs the server image with no login account: the
+# image decides, and neither the credential seed nor the one-boot session
+# handoff can be written for it. First boot refuses a seed on a server image.
+if grep -Fq 'SERVER_DESTINATION=1' "$backend" \
+   && grep -Fq '[ "$INSTALLED_FLAVOUR" = server ]' "$backend" \
+   && grep -Fq 'if [ "$SERVER_DESTINATION" -eq 0 ]; then
+  stage_installed_firstboot_runtime / "$DEPLOY_ETC"' "$backend" \
+   && grep -Fq 'rm -f "$DEPLOY_ETC/tilo/install-user.conf"' "$backend" \
+   && ! grep -Fq -- '--user "$USERNAME"' "$backend" \
+   && grep -Fq '[ "$(cat /usr/lib/tilo/image-flavour 2>/dev/null || true)" = server ]' "$firstboot_user"; then
+  ok "a server destination installs the server image without a login account"
+else
+  bad "the server destination can seed or launch a login account on a headless image"
+fi
+
 exit "$fail"

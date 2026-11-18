@@ -7,6 +7,16 @@
 #
 # and the account password on **stdin** (a single line). Optional flags:
 #
+#     --purpose <computer|server>     the destination OS. `server` installs the
+#                                     Tilo Server image, which has no login
+#                                     account: no --user, no --full-name, no
+#                                     credential seed and no first-boot user.
+#                                     Its identity comes from enrollment, and
+#                                     stdin carries only the disk startup secret
+#                                     (on both lines when --pin is set). The
+#                                     image being installed must declare itself
+#                                     a server; the two never disagree silently.
+#
 #     --filesystem <btrfs|ext4|xfs>   root filesystem (default: btrfs)
 #     --device-label <label>         friendly name for this device (optional)
 #     --hostname <name>               hostname for the installed system (default: tilo)
@@ -469,7 +479,7 @@ while [ $# -gt 0 ]; do
     --prepared-setup-receipt) PREPARED_SETUP_RECEIPT="${2:-}"; shift 2 ;;
     --prepared-tpm-handoff) PREPARED_TPM_HANDOFF="${2:-}"; shift 2 ;;
     --account-operation) ACCOUNT_OPERATION="${2:-}"; shift 2 ;;
-    -h|--help) sed -n '2,54p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,73p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -486,7 +496,6 @@ fi
 [ "$ENCRYPT" -eq 1 ] || die "the signed target UKI requires encrypted TILO_BOOT layout"
 
 [ -n "$DISK" ] || die "missing --disk <device>"
-[ -n "$USERNAME" ] || die "missing --user <name>"
 case "$EXPECT_DISK_SIZE_BYTES" in
   ''|*[!0-9]*|0) die "missing or invalid --expect-disk-size-bytes" ;;
 esac
@@ -618,23 +627,50 @@ if [ -n "$PREPARED_TPM_HANDOFF" ]; then
     || die "prepared TPM handoff does not match the reviewed package"
 fi
 
+case "$PURPOSE_VAL" in
+  computer|server) ;;
+  *) die "invalid --purpose '$PURPOSE_VAL'" ;;
+esac
+
+# A Tilo Server is managed from the person's other devices and has no local
+# login: its identity comes from enrollment. The installed image declares
+# itself one (`/usr/lib/tilo/image-flavour` = server), and this destination
+# must agree with that image below.
+SERVER_DESTINATION=0
+if [ "$PURPOSE_VAL" = server ]; then
+  SERVER_DESTINATION=1
+  [ "$PASSWORD_IS_HASH" -eq 0 ] \
+    || die "--password-hash cannot seed a Tilo Server: it has no login account"
+  [ -z "$ACCOUNT_OPERATION" ] \
+    || die "a Tilo Server has no desktop account to hand selected accounts to"
+  # A prepared setup carries a desktop account; it has nothing to fulfil here.
+  [ -z "$PREPARED_SETUP_RECEIPT$PREPARED_TPM_HANDOFF" ] \
+    || die "a Tilo Server takes no prepared desktop setup"
+fi
+
 # Use the portable Linux login-name subset accepted consistently by useradd
 # across the distributions Tilo targets. It also keeps the colon-delimited
 # first-boot seed file unambiguous.
-if [ "${#USERNAME}" -gt 32 ]; then
-  die "invalid --user '$USERNAME' (use at most 32 characters)"
+if [ "$SERVER_DESTINATION" -eq 1 ]; then
+  [ -z "$USERNAME" ] || die "the Tilo Server image takes no --user: it has no login account"
+  [ -z "$FULL_NAME" ] || die "the Tilo Server image takes no --full-name: it has no login account"
+else
+  [ -n "$USERNAME" ] || die "missing --user <name>"
+  if [ "${#USERNAME}" -gt 32 ]; then
+    die "invalid --user '$USERNAME' (use at most 32 characters)"
+  fi
+  case "${USERNAME:0:1}" in
+    [a-z_]) : ;;
+    *) die "invalid --user '$USERNAME' (start with a lowercase letter or _)" ;;
+  esac
+  case "$USERNAME" in
+    *[!a-z0-9_-]*) die "invalid --user '$USERNAME' (use lowercase letters, digits, _ or -)" ;;
+  esac
+  case "$USERNAME" in
+    root|bin|daemon|adm|lp|sync|shutdown|halt|mail|operator|games|ftp|nobody|dbus|polkitd|sshd|chrony|tss|greetd|tilo)
+      die "reserved --user '$USERNAME'" ;;
+  esac
 fi
-case "${USERNAME:0:1}" in
-  [a-z_]) : ;;
-  *) die "invalid --user '$USERNAME' (start with a lowercase letter or _)" ;;
-esac
-case "$USERNAME" in
-  *[!a-z0-9_-]*) die "invalid --user '$USERNAME' (use lowercase letters, digits, _ or -)" ;;
-esac
-case "$USERNAME" in
-  root|bin|daemon|adm|lp|sync|shutdown|halt|mail|operator|games|ftp|nobody|dbus|polkitd|sshd|chrony|tss|greetd|tilo)
-    die "reserved --user '$USERNAME'" ;;
-esac
 
 # Validate the filesystem against the set bootc accepts for to-disk.
 case "$FILESYSTEM" in
@@ -689,11 +725,6 @@ if [ -n "$TIMEZONE_VAL" ]; then
   [ -f "/usr/share/zoneinfo/$TIMEZONE_VAL" ] \
     || die "unknown --timezone '$TIMEZONE_VAL'"
 fi
-
-case "$PURPOSE_VAL" in
-  computer|server) ;;
-  *) die "invalid --purpose '$PURPOSE_VAL'" ;;
-esac
 
 # Keyboard layout: default to us, validate it's a plain xkb token (these
 # values land verbatim in /etc/environment and /etc/vconsole.conf below).
@@ -1021,6 +1052,13 @@ if [ "$WANT_PIN" -eq 1 ]; then
   if [ -n "${AUTHENTICATED_PREPARED:-}" ]; then
     [ "$PIN" = "$PASSWORD" ] || die "prepared setup requires its original startup passphrase"
   fi
+  # No account means no account password: the wizard's one startup secret
+  # arrives on both lines, and a caller that supplied two different secrets
+  # has one of them silently dropped, so it fails closed instead.
+  if [ "$SERVER_DESTINATION" -eq 1 ]; then
+    [ "$PIN" = "$PASSWORD" ] \
+      || die "the Tilo Server's startup secret must be the one secret supplied on stdin"
+  fi
   SECRET_POLICY=/usr/libexec/tilo-startup-secret-policy
   [ -x "$SECRET_POLICY" ] || die "startup-secret policy helper is missing"
   POLICY_MODE=()
@@ -1132,8 +1170,12 @@ fi
 
 log "Tilo installer"
 log "  target disk : $DISK"
-log "  username    : $USERNAME"
-log "  full name   : ${FULL_NAME:-<not set>}"
+if [ "$SERVER_DESTINATION" -eq 0 ]; then
+  log "  username    : $USERNAME"
+  log "  full name   : ${FULL_NAME:-<not set>}"
+else
+  log "  account     : none (Tilo Server enrolls as one of the person's devices)"
+fi
 log "  filesystem  : $FILESYSTEM"
 log "  hostname    : $HOSTNAME_VAL"
 log "  locale      : $LOCALE_VAL"
@@ -1566,8 +1608,10 @@ if [ "$ENCRYPT" -eq 1 ]; then
     ( umask 0077; printf '%s' "$PIN" > "$PIN_FILE" )
     ENROL_ARGS+=(--pin-file "$PIN_FILE")
     # The wizard's one secret: the disk's startup secret is the account
-    # password, and the boot prompt should call it that.
-    if [ "$PASSWORD_IS_HASH" -eq 0 ] && [ "$PIN" = "$PASSWORD" ]; then
+    # password, and the boot prompt should call it that. A server has no
+    # account, so its prompt asks for the disk passphrase it has.
+    if [ "$SERVER_DESTINATION" -eq 0 ] && [ "$PASSWORD_IS_HASH" -eq 0 ] \
+       && [ "$PIN" = "$PASSWORD" ]; then
       ENROL_ARGS+=(--pin-is-account-password)
     fi
     TILO_GENERATION="$(cat /usr/lib/tilo/generation 2>/dev/null || true)"
@@ -1588,7 +1632,13 @@ fi
 udevadm settle 2>/dev/null || true
 
 # --- 3. seed the user account ------------------------------------------------
-step "Preparing the '$USERNAME' account on the installed system"
+HASH=""
+if [ "$SERVER_DESTINATION" -eq 1 ]; then
+  unset PASSWORD
+  step "Installing a Tilo Server with no login account"
+else
+  step "Preparing the '$USERNAME' account on the installed system"
+fi
 
 # SHA-512 crypt the password (no colons in a crypt(3) hash, so the
 # name:hash record below parses unambiguously). An unattended caller may
@@ -1606,14 +1656,16 @@ valid_sha512_crypt() {
   fi
   return 1
 }
-if [ "$PASSWORD_IS_HASH" -eq 1 ]; then
-  HASH="$PASSWORD"
-  valid_sha512_crypt "$HASH" || die "the supplied account credential is not a canonical SHA-512 crypt hash"
-  [ -z "${AUTHENTICATED_PREPARED:-}" ] || die "a prepared setup cannot take a password hash"
-else
-  HASH="$(printf '%s\n' "$PASSWORD" | tilo-crypto hash-password)"
+if [ "$SERVER_DESTINATION" -eq 0 ]; then
+  if [ "$PASSWORD_IS_HASH" -eq 1 ]; then
+    HASH="$PASSWORD"
+    valid_sha512_crypt "$HASH" || die "the supplied account credential is not a canonical SHA-512 crypt hash"
+    [ -z "${AUTHENTICATED_PREPARED:-}" ] || die "a prepared setup cannot take a password hash"
+  else
+    HASH="$(printf '%s\n' "$PASSWORD" | tilo-crypto hash-password)"
+  fi
+  [ -n "$HASH" ] || die "failed to hash password"
 fi
-[ -n "$HASH" ] || die "failed to hash password"
 unset PASSWORD
 
 # Find the newly-installed root partition by probe-mounting each partition
@@ -1665,6 +1717,17 @@ else
 fi
 
 [ -n "$DEPLOY_ETC" ] || die "could not locate the installed deployment's writable /etc on $DISK"
+
+# The installed image decides what this machine is; the destination must agree
+# with it. A server image boots a headless, always-on server with no login, and
+# a desktop image boots a graphical session for the account seeded below.
+INSTALLED_FLAVOUR="$(cat "$(dirname "$DEPLOY_ETC")/usr/lib/tilo/image-flavour" 2>/dev/null || true)"
+if [ "$SERVER_DESTINATION" -eq 1 ]; then
+  [ "$INSTALLED_FLAVOUR" = server ] \
+    || die "the image being installed is not a Tilo Server image (flavour '${INSTALLED_FLAVOUR:-none}'); refusing to install it without a login account"
+elif [ "$INSTALLED_FLAVOUR" = server ]; then
+  die "the Tilo Server image has no login account; select the server destination to install it"
+fi
 
 if [ -n "$ACCOUNT_OPERATION" ]; then
   install -d -m 0755 "$DEPLOY_ETC/tilo"
@@ -1874,38 +1937,44 @@ fi
 # read this initial_session.  A power loss can therefore at worst show the
 # normal greeter; it cannot strand the installed account in permanent
 # autologin.
-install -d -m 0755 "$DEPLOY_ETC/greetd"
-GREETD_CONFIG="$DEPLOY_ETC/greetd/config.toml"
-GREETD_CONFIG_TMP="$(mktemp "$DEPLOY_ETC/greetd/.config.toml.XXXXXX")"
-install -m 0644 /usr/share/tilo/greetd-config.toml "$GREETD_CONFIG_TMP"
-printf '\n[initial_session]\ncommand = "/usr/libexec/tilo-session --backend drm"\nuser = "%s"\n' \
-  "$USERNAME" >> "$GREETD_CONFIG_TMP"
-# DEPLOY_ETC is reached through a transient /run mount. SELinux therefore
-# cannot infer the eventual /etc pathname while we are offline and otherwise
-# gives this file var_run_t. Enforcing greetd (xdm_t) then refuses to read its
-# own configuration on the first installed boot. Copy the label from the
-# correctly labelled live /etc counterpart; only the contents differ.
-chcon --reference=/etc/greetd/config.toml "$GREETD_CONFIG_TMP"
-AUTOLOGIN_PENDING="$DEPLOY_ETC/tilo/firstboot-autologin-pending"
-AUTOLOGIN_PENDING_TMP="$(mktemp "$DEPLOY_ETC/tilo/.firstboot-autologin.XXXXXX")"
-chmod 0600 "$AUTOLOGIN_PENDING_TMP"
-printf 'version=1\n' > "$AUTOLOGIN_PENDING_TMP"
-label_installed_tilo_path "$AUTOLOGIN_PENDING_TMP" /etc/tilo/firstboot-autologin-pending
-mv -f -- "$AUTOLOGIN_PENDING_TMP" "$AUTOLOGIN_PENDING"
-# Flush both the marker and its containing directory before publishing the
-# initial_session.  If interrupted after this point, the cleanup unit has an
-# unambiguous instruction to restore normal authentication on the next boot.
-sync -f "$AUTOLOGIN_PENDING" 2>/dev/null || sync
-sync -f "$DEPLOY_ETC/tilo" 2>/dev/null || sync
-mv -f -- "$GREETD_CONFIG_TMP" "$GREETD_CONFIG"
-sync -f "$DEPLOY_ETC/greetd" 2>/dev/null || sync
+if [ "$SERVER_DESTINATION" -eq 0 ]; then
+  install -d -m 0755 "$DEPLOY_ETC/greetd"
+  GREETD_CONFIG="$DEPLOY_ETC/greetd/config.toml"
+  GREETD_CONFIG_TMP="$(mktemp "$DEPLOY_ETC/greetd/.config.toml.XXXXXX")"
+  install -m 0644 /usr/share/tilo/greetd-config.toml "$GREETD_CONFIG_TMP"
+  printf '\n[initial_session]\ncommand = "/usr/libexec/tilo-session --backend drm"\nuser = "%s"\n' \
+    "$USERNAME" >> "$GREETD_CONFIG_TMP"
+  # DEPLOY_ETC is reached through a transient /run mount. SELinux therefore
+  # cannot infer the eventual /etc pathname while we are offline and otherwise
+  # gives this file var_run_t. Enforcing greetd (xdm_t) then refuses to read its
+  # own configuration on the first installed boot. Copy the label from the
+  # correctly labelled live /etc counterpart; only the contents differ.
+  chcon --reference=/etc/greetd/config.toml "$GREETD_CONFIG_TMP"
+  AUTOLOGIN_PENDING="$DEPLOY_ETC/tilo/firstboot-autologin-pending"
+  AUTOLOGIN_PENDING_TMP="$(mktemp "$DEPLOY_ETC/tilo/.firstboot-autologin.XXXXXX")"
+  chmod 0600 "$AUTOLOGIN_PENDING_TMP"
+  printf 'version=1\n' > "$AUTOLOGIN_PENDING_TMP"
+  label_installed_tilo_path "$AUTOLOGIN_PENDING_TMP" /etc/tilo/firstboot-autologin-pending
+  mv -f -- "$AUTOLOGIN_PENDING_TMP" "$AUTOLOGIN_PENDING"
+  # Flush both the marker and its containing directory before publishing the
+  # initial_session.  If interrupted after this point, the cleanup unit has an
+  # unambiguous instruction to restore normal authentication on the next boot.
+  sync -f "$AUTOLOGIN_PENDING" 2>/dev/null || sync
+  sync -f "$DEPLOY_ETC/tilo" 2>/dev/null || sync
+  mv -f -- "$GREETD_CONFIG_TMP" "$GREETD_CONFIG"
+  sync -f "$DEPLOY_ETC/greetd" 2>/dev/null || sync
+fi
 rm -f "$DEPLOY_ETC/sudoers.d/tilo-installer"
 # Release media mask sshd, while an explicit diagnostic image may enable it.
 # Neither live-only state belongs on the installed system; the base Tilo image
 # leaves sshd disabled but unmasked.
 rm -f "$DEPLOY_ETC/systemd/system/sshd.service" \
       "$DEPLOY_ETC/systemd/system/multi-user.target.wants/sshd.service"
-log "  configured one-boot startup handoff to the '$USERNAME' session"
+if [ "$SERVER_DESTINATION" -eq 0 ]; then
+  log "  configured one-boot startup handoff to the '$USERNAME' session"
+else
+  log "  left no login session: this machine is managed from the person's other devices"
+fi
 
 # NetworkManager creates user-selected Wi-Fi profiles as root-owned regular
 # files in the live medium. Preserve those profiles so a connection made in
@@ -1944,21 +2013,28 @@ fi
 # heals a surviving provisional marker when an install is safely resumed.
 write_install_marker
 log "  finalized Tilo recovery ownership marker"
-stage_installed_firstboot_runtime / "$DEPLOY_ETC"
-CONF="$DEPLOY_ETC/tilo/install-user.conf"
-CONF_TMP="$(mktemp "$DEPLOY_ETC/tilo/.install-user.XXXXXX")"
-chmod 0600 "$CONF_TMP"
-printf '%s:%s\n' "$USERNAME" "$HASH" > "$CONF_TMP"
-label_installed_tilo_path "$CONF_TMP" /etc/tilo/install-user.conf
-mv -f "$CONF_TMP" "$CONF"
-log "  wrote $CONF (consumed by tilo-firstboot-user.service on first boot)"
-if [ -n "$FULL_NAME" ]; then
-  FULL_NAME_CONF="$DEPLOY_ETC/tilo/install-user-full-name"
-  FULL_NAME_TMP="$(mktemp "$DEPLOY_ETC/tilo/.install-user-full-name.XXXXXX")"
-  chmod 0600 "$FULL_NAME_TMP"
-  printf '%s\n' "$FULL_NAME" > "$FULL_NAME_TMP"
-  label_installed_tilo_path "$FULL_NAME_TMP" /etc/tilo/install-user-full-name
-  mv -f "$FULL_NAME_TMP" "$FULL_NAME_CONF"
+if [ "$SERVER_DESTINATION" -eq 0 ]; then
+  stage_installed_firstboot_runtime / "$DEPLOY_ETC"
+  CONF="$DEPLOY_ETC/tilo/install-user.conf"
+  CONF_TMP="$(mktemp "$DEPLOY_ETC/tilo/.install-user.XXXXXX")"
+  chmod 0600 "$CONF_TMP"
+  printf '%s:%s\n' "$USERNAME" "$HASH" > "$CONF_TMP"
+  label_installed_tilo_path "$CONF_TMP" /etc/tilo/install-user.conf
+  mv -f "$CONF_TMP" "$CONF"
+  log "  wrote $CONF (consumed by tilo-firstboot-user.service on first boot)"
+  if [ -n "$FULL_NAME" ]; then
+    FULL_NAME_CONF="$DEPLOY_ETC/tilo/install-user-full-name"
+    FULL_NAME_TMP="$(mktemp "$DEPLOY_ETC/tilo/.install-user-full-name.XXXXXX")"
+    chmod 0600 "$FULL_NAME_TMP"
+    printf '%s\n' "$FULL_NAME" > "$FULL_NAME_TMP"
+    label_installed_tilo_path "$FULL_NAME_TMP" /etc/tilo/install-user-full-name
+    mv -f "$FULL_NAME_TMP" "$FULL_NAME_CONF"
+  fi
+else
+  # Fail closed on a credential seed from anywhere else: the server's identity
+  # comes from enrollment, and a login account would be one it never asked for.
+  rm -f "$DEPLOY_ETC/tilo/install-user.conf" "$DEPLOY_ETC/tilo/install-user-full-name"
+  log "  no login account: this machine enrolls as one of the person's devices"
 fi
 
 # Same OS for either purpose. The power service reads this default;
@@ -1974,9 +2050,13 @@ label_installed_tilo_path "$DEPLOY_ETC/tilo/install-purpose" /etc/tilo/install-p
 # the account exists.
 if [ -n "$STORE_PART" ]; then
   step "Configuring the store volume"
+  # The store's files belong to whichever account serves them: the person's
+  # desktop account, or the server image's own service account.
+  STORE_OWNER="$USERNAME"
+  [ "$SERVER_DESTINATION" -eq 0 ] || STORE_OWNER=tilo-server
   "$STORE_VOLUME" install-config --etc "$DEPLOY_ETC" \
     --luks-uuid "$STORE_LUKS_UUID" --fs-uuid "$STORE_FS_UUID" \
-    --key-file "$STORE_KEY_FILE" --owner "$USERNAME"
+    --key-file "$STORE_KEY_FILE" --owner "$STORE_OWNER"
   shred -u "$STORE_KEY_FILE" 2>/dev/null || rm -f "$STORE_KEY_FILE"
 fi
 

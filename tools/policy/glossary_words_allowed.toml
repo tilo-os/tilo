@@ -393,6 +393,12 @@ words = ["run"]
 paths = ["tools/integrate.sh", "tools/ci/pre_push_lint.py", "tools/ci/check-changed-rustfmt.sh", "tools/tests/test_pre_push_lint.py", "tools/tests/test_changed_rustfmt.py"]
 
 [[allow]]
+reason = "The installer backend's entry point starts the privileged tilo-install process and feeds it its secrets through stdin."
+words = ["run"]
+identifiers = ["run_install"]
+paths = ["crates/platform/imager-backend/src/destination/install.rs"]
+
+[[allow]]
 reason = "t's own key for the commands a check starts, and the `run` subcommands of cargo and nextest it names."
 words = ["run"]
 paths = ["t.toml"]
