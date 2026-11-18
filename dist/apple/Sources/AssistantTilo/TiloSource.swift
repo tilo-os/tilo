@@ -35,6 +35,9 @@ public final class TiloSource: AssistantSource {
     public let engine: TiloEngine
     /// Where live things stand. The app puts `engineRoom` into its root view.
     public let stage: LiveStage
+    /// The one place that follows what the parts of the window show (`ChangeFollower`): a part
+    /// says what it shows and how it reads it again, and reads again at the page's word.
+    public private(set) lazy var follows = ChangeFollower(engine: engine)
 
     private let mainChat: MainChat
     private let defaults: UserDefaults
@@ -224,6 +227,10 @@ public final class TiloSource: AssistantSource {
                 }
             },
         ]
+        // The Tasks panel reads again when the page says that something Tasks keeps in the
+        // workspace changed. Its other moments stay: they are what it reads at where a page
+        // tells nothing this way.
+        follows.follow(Followed(app: "so.tilo.tasks")) { [weak self] in await self?.readTasks() }
         // A device that was paired before comes back as itself.
         if let route = defaults.string(forKey: TiloSource.routeKey) { try? engine.open(route: route) }
     }
