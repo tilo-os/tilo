@@ -2363,7 +2363,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
     ) -> Vec<String> {
         let source = A::catalog().and_then(ui_core::i18n::EmbeddedCatalog::source);
         let catalogue = tilo_history::Catalogue::new("en-US", &Vec::from_iter(source));
-        let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
+        let reader = tilo_history::Reader::new("en-US")
+            .with_app(&catalogue)
+            .with_labels(&ui_core::history_source::sentence::ThreadLabels);
         entries
             .into_iter()
             .map(|entry| reader.sentence(entry))

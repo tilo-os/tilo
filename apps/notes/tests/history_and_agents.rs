@@ -109,8 +109,9 @@ fn an_agent_changes_notes_in_one_call_each_and_history_tells_what_it_did() {
     assert_eq!(
         sentences,
         [
-            "Created Plan",
-            "Edited Plan",
+            // A note's making names it as it is called now; the steps after it as it was then.
+            "Created “Roadmap”",
+            "Edited “Plan”",
             "Created Step one in Plan",
             "Tagged Plan with Release",
             "Renamed Plan to Roadmap",

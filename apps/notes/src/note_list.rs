@@ -28,7 +28,6 @@ use ui::tilo_resource::{
 };
 use ui::widget::marks::Mark;
 
-use crate::metadata::CATALOG;
 use crate::model::PageId;
 use crate::notebook::{
     MarkdownFile, Notebook, Page, check_markdown_import, check_picture, heading_href, mark_op,
@@ -737,16 +736,7 @@ impl NoteList {
         for picture in &images {
             self.store_image(picture)?;
         }
-        let fallback = CATALOG.t("notes-imported-untitled");
-        let page = Page::titled(
-            if title.trim().is_empty() {
-                &fallback
-            } else {
-                &title
-            },
-            None,
-        )
-        .made_by_invoker();
+        let page = Page::titled(&title, None).made_by_invoker();
         let path = path
             .map(|path| crate::markdown::normal_path(&path))
             .filter(|path| !path.is_empty());
@@ -1413,13 +1403,13 @@ impl<'a> Pages<'a> {
         if wanted.is_empty() {
             return Err("name the note by its title".into());
         }
-        if let Some((id, _)) = self.iter().find(|(_, page)| page.title == wanted) {
+        if let Some((id, _)) = self.iter().find(|(_, page)| page.name() == wanted) {
             return Ok(id);
         }
         let wanted_folded = folded(wanted);
         let alike: Vec<(&Id, &Page)> = self
             .iter()
-            .filter(|(_, page)| folded(&page.title) == wanted_folded)
+            .filter(|(_, page)| folded(&page.name()) == wanted_folded)
             .collect();
         match alike.as_slice() {
             [(id, _)] => Ok(id),
@@ -1463,7 +1453,7 @@ impl<'a> Pages<'a> {
     #[must_use]
     pub fn linked(&self, title: &str) -> Option<&'a Id> {
         self.iter()
-            .find(|(_, page)| page.title == title)
+            .find(|(_, page)| page.name() == title)
             .map(|(id, _)| id)
     }
 
@@ -1510,7 +1500,7 @@ fn titles(pages: &[&Page]) -> String {
     let mut named: Vec<String> = pages
         .iter()
         .take(MOST_TITLES)
-        .map(|page| format!("“{}”", page.title))
+        .map(|page| format!("“{}”", page.name()))
         .collect();
     if more > 0 {
         named.push(format!("and {more} more"));
@@ -1707,7 +1697,11 @@ fn prepare_one(
         }
     };
     match &mut action.operation {
-        NoteListAction::NewNote(verb::NewNote { parent, rank, .. }) => {
+        NoteListAction::NewNote(verb::NewNote {
+            parent, rank, note, ..
+        }) => {
+            // The note is named where it is made, so the step names the note it made.
+            note.get_or_insert_with(|| crate::notebook::page_id(PageId::new_v4()));
             let under = shown_parent(parent.as_ref())?;
             *rank = Some(ends.next(pages, under.as_ref()));
             *parent = under;

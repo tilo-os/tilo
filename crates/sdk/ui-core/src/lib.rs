@@ -545,8 +545,8 @@ pub use collab_types::presence::{
 };
 pub use history_source::groups as history_groups;
 pub use history_source::sentence::{
-    AuthorParts, attribution_hover, author_line, author_parts, author_spoken, wire_author_line,
-    writer_badge,
+    AuthorParts, attribution_hover, author_line, author_parts, author_spoken, learn_item_names,
+    wire_author_line, writer_badge,
 };
 pub use history_source::{
     ActivityBrief, ActivityBriefAction, ActivityDigest, ActivityNarrator, AuthorDirectory,

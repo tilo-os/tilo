@@ -151,7 +151,7 @@ impl States {
         if lenses {
             capture = capture.field(choice(
                 crate::CATALOG.t("camera-settings-default-camera"),
-                options(&Facing::ALL, Facing::as_str, Facing::label),
+                options(&Facing::ALL, Facing::as_str, crate::model::facing_label),
                 &self.default_camera,
                 actions,
                 CameraEffect::SET_DEFAULT_LENS,

@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::library::Bookmarks;
+use ui::tilo_resource::Id;
 use ui::tilo_resource::{Edit, Replica, Resource as _};
 
 fn edit(browser: &mut Replica<Browser>, edit: &Edit<Browser>) -> Result<(), String> {

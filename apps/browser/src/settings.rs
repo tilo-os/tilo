@@ -13,8 +13,6 @@ use ui::widget::{
     Spacer, Text, TextInput, Toggle, Widget,
 };
 
-use ui::tilo_resource::{self, Model, Refusal};
-
 /// The action APIs the pane's controls use, injected by Browser: field edits for the
 /// preferences, published operations for the one-shot effects and closing the
 /// pane, so pointer, keyboard and assistive technology take the same path as Ctrl+K
@@ -76,22 +74,9 @@ impl SettingsPresentation {
 
 type El = Box<dyn Widget>;
 
-/// The default search-engine query template; the `?q=` suffix lets the chrome build
-/// a search URL by appending typed terms.
-pub const DEFAULT_SEARCH_ENGINE: &str = "https://duckduckgo.com/?q=";
-pub const DEFAULT_HOMEPAGE: &str = "https://duckduckgo.com";
-
-/// The search engines offered by name, each with its query template. A template set
-/// some other way stays selected and is shown by its host.
-pub const SEARCH_ENGINES: &[(&str, &str)] = &[
-    ("DuckDuckGo", DEFAULT_SEARCH_ENGINE),
-    ("Google", "https://www.google.com/search?q="),
-    ("Bing", "https://www.bing.com/search?q="),
-    ("Brave Search", "https://search.brave.com/search?q="),
-    ("Ecosia", "https://www.ecosia.org/search?q="),
-    ("Startpage", "https://www.startpage.com/do/search?q="),
-    ("Kagi", "https://kagi.com/search?q="),
-];
+pub use browser_model::settings::{
+    DEFAULT_HOMEPAGE, DEFAULT_SEARCH_ENGINE, SEARCH_ENGINES, Settings,
+};
 
 /// The name a person knows the search engine `template` by: its name from
 /// [`SEARCH_ENGINES`], else its host.
@@ -118,43 +103,6 @@ fn search_engine_choices(current: &str) -> Vec<(String, String)> {
         choices.push((current.to_owned(), name));
     }
     choices
-}
-
-/// Durable browser preferences, as the browser document holds them.
-///
-/// A new resource starts with ad-blocking on, clear-on-exit off and `DuckDuckGo` for
-/// both search and homepage. The homepage and search engine are always absolute
-/// http(s) addresses.
-#[derive(Clone, Debug, PartialEq, Eq, Model)]
-#[model(check = Settings::valid)]
-pub struct Settings {
-    pub adblock_enabled: bool,
-    pub clear_on_exit: bool,
-    pub search_engine: String,
-    pub homepage: String,
-}
-
-impl Settings {
-    fn valid(&self) -> Result<(), Refusal> {
-        if crate::actions::normalized_bookmark_url(&self.homepage).is_none() {
-            return Err(Refusal::new("the homepage is an absolute http(s) URL"));
-        }
-        if crate::actions::normalized_bookmark_url(&self.search_engine).is_none() {
-            return Err(Refusal::new("the search engine is an absolute http(s) URL"));
-        }
-        Ok(())
-    }
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            adblock_enabled: true,
-            clear_on_exit: false,
-            search_engine: DEFAULT_SEARCH_ENGINE.to_string(),
-            homepage: DEFAULT_HOMEPAGE.to_string(),
-        }
-    }
 }
 
 /// The settings surface: a scrollable column of preference controls. Typed actions

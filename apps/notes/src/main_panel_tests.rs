@@ -19,10 +19,10 @@ fn page_titles_and_empty_state_are_accessible_rename_boundaries() {
         let mut p = MainPanel::new();
         p.mark_drawn();
         assert!(!p.needs_redraw());
-        p.set_title(Some("Hello".into()));
+        p.set_title("Hello".into(), &crate::metadata::note_name("", []));
         assert!(p.needs_redraw());
         p.mark_drawn();
-        p.set_title(Some("Hello".into()));
+        p.set_title("Hello".into(), &crate::metadata::note_name("", []));
         assert!(!p.needs_redraw());
     }
 
@@ -222,7 +222,7 @@ fn main_panel_loads_snapshots_and_clears_page_bodies() {
         p.load_page(fresh_page_id(), "T", "# H\n");
         p.clear();
         assert!(p.page_id().is_none());
-        assert!(p.title().is_none());
+        assert!(p.name().is_none());
     }
 }
 

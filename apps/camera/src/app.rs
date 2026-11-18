@@ -946,7 +946,10 @@ impl CameraApp {
                 Role::Button,
                 crate::CATALOG.t_args(
                     "camera-a11y-switch-camera",
-                    &[("facing", ui::i18n::ArgValue::Text(self.facing.label()))],
+                    &[(
+                        "facing",
+                        ui::i18n::ArgValue::Text(crate::model::facing_label(self.facing)),
+                    )],
                 ),
                 AccessState::new().focusable(true),
             ),
@@ -3799,6 +3802,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one walk through the camera's semantic controls and the actions they dispatch"
+    )]
     fn semantic_controls_are_plainly_named_and_dispatch_camera_actions() {
         {
             let tag = scanner_view::detected_label("QR Code");
@@ -3810,8 +3817,11 @@ mod tests {
         }
         {
             // The lens selector caption must not be the word "Back".
-            assert_eq!(Facing::Back.label(), crate::CATALOG.t("camera-facing-rear"));
-            assert_ne!(Facing::Back.label(), "Back");
+            assert_eq!(
+                crate::model::facing_label(Facing::Back),
+                crate::CATALOG.t("camera-facing-rear")
+            );
+            assert_ne!(crate::model::facing_label(Facing::Back), "Back");
         }
         {
             let (app, doc, _root) = sample_app();

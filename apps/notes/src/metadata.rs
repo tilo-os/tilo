@@ -9,17 +9,34 @@ use automerge::{AutoCommit, ChangeHash};
 // a widget built on its own loads them as it is made.
 ui::embedded_catalog!(pub static CATALOG, ["en-US", "de"]);
 
-/// What a note is called wherever this app shows one: the title it was given, or the word for a
-/// note nobody named. A title is only ever what a person typed, so the word stands in at every
-/// surface — the page tree, the palette, a toast, the note's heading — rather than being stored.
+/// The most characters of its first line a note nobody titled is called by.
+const NAME_CHARS: usize = 60;
+
+/// What a note is called wherever this app shows or says one: the title it was given, else the
+/// first line its `body` says, else the word for a new note. A title is only ever what a person
+/// typed, so the name is never stored: the page tree, the window's title, the heading's
+/// placeholder, search, links and History all read it from here.
 #[must_use]
-pub fn note_title(title: &str) -> String {
+pub fn note_name<'a>(title: &str, body: impl IntoIterator<Item = &'a str>) -> String {
     let title = title.trim();
-    if title.is_empty() {
-        CATALOG.t("notes-title-placeholder")
-    } else {
-        title.to_owned()
+    if !title.is_empty() {
+        return title.to_owned();
     }
+    let Some(line) = body
+        .into_iter()
+        .flat_map(str::lines)
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+    else {
+        return CATALOG.t("notes-unnamed");
+    };
+    if line.chars().count() <= NAME_CHARS {
+        return line.to_owned();
+    }
+    let mut short: String = line.chars().take(NAME_CHARS - 1).collect();
+    short.truncate(short.trim_end().len());
+    short.push('…');
+    short
 }
 
 /// Load the toolkit's widget messages and [`CATALOG`] on this thread, and
@@ -247,6 +264,23 @@ mod tests {
     use crate::actions::{self, Action};
     use tilo_actions::Action as _;
     use tilo_automerge::ApplyIncoming;
+
+    /// A note is called by its title, else by the first line it says, trimmed and shortened,
+    /// else by the word for a new note.
+    #[test]
+    fn a_note_is_named_by_its_title_else_its_first_line() {
+        ui::i18n::I18nManager::init("en-US");
+        let body = ["", "  \n", " Garden plan \nWater the beds", "Later"];
+        assert_eq!(note_name(" Plan ", body), "Plan");
+        assert_eq!(note_name(" ", body), "Garden plan");
+        assert_eq!(note_name("", []), "New note");
+        assert_eq!(note_name("", ["   "]), "New note");
+        let long = "word ".repeat(30);
+        let short = note_name("", [long.as_str()]);
+        assert_eq!(short.chars().count(), NAME_CHARS);
+        assert!(short.ends_with("word…"), "{short}");
+    }
+
     /// `page`'s dates, as an index that has not read `doc` before reads them.
     fn dates(doc: &AutoCommit, page: PageId) -> NoteDates {
         let mut index = NoteDateIndex::default();

@@ -44,8 +44,9 @@ pub struct Notebook {
     pub tags: Collection<Tag>,
 }
 
-/// One note.
+/// One note, listed and found by its name ([`Page::name`]).
 #[derive(Model, Default, Clone, Debug, PartialEq)]
+#[model(label = Page::name)]
 pub struct Page {
     /// Title
     ///
@@ -133,6 +134,21 @@ impl Tag {
 }
 
 impl Page {
+    /// What the note is called: its title, else its first line ([`crate::metadata::note_name`]).
+    #[must_use]
+    pub fn name(&self) -> String {
+        let body = self.body.state();
+        crate::metadata::note_name(
+            &self.title,
+            body.into_iter().flat_map(|body| {
+                body.body()
+                    .all()
+                    .filter_map(|id| body.block(id))
+                    .map(|block| block.text.as_str())
+            }),
+        )
+    }
+
     /// A new note titled `title` (no title at all when blank) under `parent`.
     #[must_use]
     pub fn titled(title: &str, parent: Option<Id>) -> Self {

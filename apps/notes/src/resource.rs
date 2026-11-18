@@ -99,7 +99,7 @@ impl ResourceApp for NotesShell {
     }
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
-        Some(&crate::metadata::CATALOG)
+        Some(&CATALOG)
     }
 
     #[cfg(feature = "samples")]
@@ -162,8 +162,8 @@ fn import_launched(input: &LaunchInput<'_>, chain: &ui::framework::Chain<NoteLis
     let title = std::path::Path::new(file.name())
         .file_stem()
         .and_then(|stem| stem.to_str())
-        .filter(|stem| !stem.trim().is_empty())
-        .map_or_else(|| CATALOG.t("notes-imported-untitled"), str::to_owned);
+        .unwrap_or_default()
+        .to_owned();
     // Images next to a file named on the command line come with it.
     let (markdown, assets) = input.argument().map_or_else(
         || (markdown.to_owned(), Vec::new()),

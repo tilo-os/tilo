@@ -62,8 +62,8 @@ pub trait Messages {
     fn has(&self, key: &str) -> bool;
 }
 
-/// The labels an app publishes for its fields and actions, in the reader's
-/// language: the field's doc label, the action's label.
+/// The labels an app publishes for its fields, actions and items, in the reader's language: the
+/// field's doc label, the action's label, the name an item goes by now.
 pub trait Labels {
     fn field(&self, ty: &str, field: &str) -> Option<String> {
         let _ = (ty, field);
@@ -72,6 +72,13 @@ pub trait Labels {
 
     fn action(&self, key: &ActionKey) -> Option<String> {
         let _ = key;
+        None
+    }
+
+    /// The name the item `id` goes by now, where the reader's app holds it: a step that recorded
+    /// no name for it reads with its name as it is.
+    fn item(&self, id: &str) -> Option<String> {
+        let _ = id;
         None
     }
 }
@@ -361,10 +368,22 @@ impl<'a> Reader<'a> {
         self
     }
 
+    /// What `item` is called: the label the step recorded, when that names it ("Renamed Plan to
+    /// Roadmap" keeps the name it had then), else the name the reader's app gives it now (a
+    /// note typed into after it was made reads as what it says).
+    #[must_use]
+    pub fn item_name(&self, item: &tilo_actions::ActionItem) -> Option<String> {
+        item_label(item).map(str::to_owned).or_else(|| {
+            self.labels
+                .and_then(|labels| labels.item(&item.id))
+                .filter(|name| !name.trim().is_empty())
+        })
+    }
+
     /// The sentence for `entry`, without naming who did it.
     pub fn sentence(&self, entry: &ActionContext) -> String {
         let app = entry.app.as_ref().map_or("", |app| app.id.as_str());
-        let item = entry.item.as_ref().and_then(item_label);
+        let item = entry.item.as_ref().and_then(|item| self.item_name(item));
         // A step on an item of the resource that has no name yet is about that item: it says
         // the item unnamed rather than borrowing the resource's name ("Renamed Notebook to …"
         // for a note that had no title).
@@ -376,7 +395,7 @@ impl<'a> Reader<'a> {
             .filter(|label| !label.trim().is_empty());
         let scope = Scope {
             app,
-            item: item.or(resource),
+            item: item.as_deref().or(resource),
             within: item.is_none() && resource.is_some(),
         };
         match &entry.what {
@@ -388,12 +407,15 @@ impl<'a> Reader<'a> {
     /// The sentence for one described step, as an undo names what it took
     /// back.
     pub fn described(&self, described: &Described, app: &str) -> String {
-        let item = described.item.as_ref().and_then(item_label);
+        let item = described
+            .item
+            .as_ref()
+            .and_then(|item| self.item_name(item));
         self.did(
             &described.what,
             &Scope {
                 app,
-                item,
+                item: item.as_deref(),
                 within: false,
             },
             &mut false,
@@ -556,9 +578,22 @@ impl<'a> Reader<'a> {
     fn verb(&self, verb: &VerbCall, what: &Did, scope: &Scope<'_>) -> String {
         let mut args = self.base_args(scope);
         // An empty value says nothing: a message that needs it falls back to the action's label.
+        // An argument naming an item reads as the item's name now ("New note" says the note it
+        // made); an id the reader cannot name says nothing either.
         for (name, value) in &verb.args {
-            if !matches!(name.as_str(), "item" | "actor" | "for") && value.as_str() != Some("") {
-                args.set(name.clone(), fluent_value(value));
+            if matches!(name.as_str(), "item" | "actor" | "for") {
+                continue;
+            }
+            match value.as_str() {
+                Some("") => {}
+                Some(id) => {
+                    if let Some(named) = self.labels.and_then(|labels| labels.item(id)) {
+                        args.set(name.clone(), named);
+                    } else if !is_uuid(id) {
+                        args.set(name.clone(), fluent_value(value));
+                    }
+                }
+                None => args.set(name.clone(), fluent_value(value)),
             }
         }
         if let Some(sentence) = self.app_message(what, scope, &args) {
@@ -602,12 +637,15 @@ impl<'a> Reader<'a> {
         // What it took back is named as the step itself was: on its item,
         // else in the resource the undo ran in.
         let one = step.of.as_deref().map(|described| {
-            let item = described.item.as_ref().and_then(item_label);
+            let item = described
+                .item
+                .as_ref()
+                .and_then(|item| self.item_name(item));
             self.did(
                 &described.what,
                 &Scope {
                     app: scope.app,
-                    item: item.or(scope.item),
+                    item: item.as_deref().or(scope.item),
                     within: item.is_none() && scope.within,
                 },
                 by_app,

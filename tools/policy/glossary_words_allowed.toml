@@ -1052,3 +1052,24 @@ reason = "Chat's share-window names the shared document by its `record` argument
 words = ["record"]
 identifiers = ["record"]
 paths = ["crates/server/tilo-server/src/workspace_agents/shares.rs"]
+
+[[allow]]
+reason = "Camera's verb that keeps a scanned code, its action-id constant and the catalogue keys the action macro reads: renaming them is an action-id change of its own."
+words = ["record"]
+identifiers = ["record", "record_scan", "RECORD_SCAN"]
+paths = [
+    "apps/camera-model/src/camera.rs",
+    "apps/camera-model/locales/en-US.ftl",
+    "apps/camera-model/locales/de-DE.ftl",
+]
+
+[[allow]]
+reason = "A published container port's mapping names the machine's port as Docker does (host port); the record's field and its catalogue key keep that name."
+words = ["host"]
+identifiers = ["host", "host_port", "containers-host-port"]
+paths = [
+    "apps/containers-model/src/model.rs",
+    "apps/containers-model/src/draft.rs",
+    "apps/containers-model/locales/en-US.ftl",
+    "apps/containers-model/locales/de-DE.ftl",
+]

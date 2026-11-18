@@ -15,7 +15,7 @@ notes-surface-tag = Show notes tagged { $tag }
 notes-surface-backlink = Open linking note: { $title }
 notes-parent-path = In { $path }
 notes-linked-from = Linked from
-notes-title-placeholder = Untitled
+notes-unnamed = New note
 
 notes-affordance-new-note = New note
 notes-affordance-new-child = New sub-note
@@ -36,7 +36,7 @@ notes-a11y-more-actions-for = More actions for
 
 ## History: what each change did, by field and by verb
 
-notes-page-body = Edited { $item }
+notes-page-body = Edited “{ $item }”
 notes-page-tags = { $op ->
     [insert] Tagged { $item }
    *[other] Untagged { $item }
@@ -51,7 +51,7 @@ notes-notebook-tags = { $op ->
     [insert] Added a tag
    *[other] Removed a tag
 }
-notes-new-note = Created { $title }
+notes-new-note = Created “{ $note }”
 notes-deleted = { $inside ->
     [0] Deleted { $title }
     [one] Deleted { $title } and 1 note inside
@@ -74,7 +74,7 @@ notes-keep-image = Kept a picture with the notebook
 notes-place-image = Added a picture to { $item }
 notes-import-markdown = Imported { $title }
 notes-append-to-note = Added to { $title }
-notes-write-note = Edited { $item }
+notes-write-note = Edited “{ $item }”
 
 ## Keyboard shortcuts sheet
 notes-help-title = Keyboard shortcuts
@@ -134,7 +134,6 @@ notes-menu-cut = Cut
 notes-menu-copy = Copy
 notes-menu-paste = Paste
 notes-menu-select-all = Select all
-notes-imported-untitled = Imported note
 notes-no-previous = No earlier note
 notes-no-next = No later note
 notes-link-copied = Copied link to { $title }

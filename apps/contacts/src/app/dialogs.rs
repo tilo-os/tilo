@@ -116,7 +116,7 @@ pub(super) fn duplicate_field_value(contact: &Contact, field: MergeField) -> Str
         MergeField::Website => contact.website.clone(),
         MergeField::Birthday => contact
             .birthday
-            .map(|birthday| birthday.pretty())
+            .map(|birthday| crate::model::pretty(&birthday))
             .unwrap_or_default(),
         MergeField::Notes => contact.notes.clone(),
     }

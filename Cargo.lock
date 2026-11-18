@@ -1571,6 +1571,7 @@ dependencies = [
  "blake3",
  "bounded-zip",
  "browser-continuity",
+ "browser-model",
  "fnv",
  "hex",
  "host-info",
@@ -1637,6 +1638,18 @@ dependencies = [
  "tilo-sandbox-core",
  "workspace-hack",
  "zeroize",
+]
+
+[[package]]
+name = "browser-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-resource",
+ "tilo-test-env",
+ "url",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -1930,6 +1943,7 @@ name = "camera"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "camera-model",
  "image",
  "qrcode",
  "rqrr",
@@ -1950,6 +1964,17 @@ dependencies = [
  "tilo-thumbnail",
  "tilo-vello",
  "tilo-winit",
+ "workspace-hack",
+]
+
+[[package]]
+name = "camera-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-content",
+ "tilo-resource",
  "workspace-hack",
 ]
 
@@ -2414,6 +2439,7 @@ dependencies = [
 name = "clocks"
 version = "0.1.0"
 dependencies = [
+ "clocks-model",
  "jiff",
  "runtime-dylib",
  "serde",
@@ -2427,6 +2453,18 @@ dependencies = [
  "tilo-timezone-engine",
  "tracing",
  "uuid",
+ "workspace-hack",
+]
+
+[[package]]
+name = "clocks-model"
+version = "0.1.0"
+dependencies = [
+ "jiff",
+ "serde",
+ "serde_json",
+ "tilo-recurrence",
+ "tilo-resource",
  "workspace-hack",
 ]
 
@@ -2950,6 +2988,7 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 name = "contacts"
 version = "0.1.0"
 dependencies = [
+ "contacts-model",
  "image",
  "pim-lines",
  "runtime-dylib",
@@ -2974,11 +3013,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "contacts-model"
+version = "0.1.0"
+dependencies = [
+ "jiff",
+ "serde",
+ "serde_json",
+ "tilo-resource",
+ "unicode-normalization",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
 name = "containers"
 version = "0.1.0"
 dependencies = [
  "blake3",
  "bounded-command",
+ "containers-model",
  "runtime-dylib",
  "runtime-portal",
  "serde",
@@ -2990,6 +3043,17 @@ dependencies = [
  "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
+ "workspace-hack",
+]
+
+[[package]]
+name = "containers-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-resource",
+ "tilo-test-env",
  "workspace-hack",
 ]
 

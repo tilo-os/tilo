@@ -227,6 +227,24 @@ impl Workspace {
         self.data.pages.iter().find(|p| p.id == id)
     }
 
+    /// What `page` is called ([`crate::metadata::note_name`]).
+    #[must_use]
+    pub fn name_of(&self, page: &PageMeta) -> String {
+        self.named(&page.title, page.id)
+    }
+
+    /// What note `id` is called when titled `title`: with no title, by its first line.
+    #[must_use]
+    pub fn named(&self, title: &str, id: PageId) -> String {
+        crate::metadata::note_name(
+            title,
+            self.bodies
+                .get(&id)
+                .into_iter()
+                .flat_map(|blocks| blocks.iter().map(|block| block.text.as_str())),
+        )
+    }
+
     /// The children of `parent` (or roots when `parent` is None), in
     /// notebook order.
     pub fn children_of(&self, parent: Option<PageId>) -> Vec<&PageMeta> {

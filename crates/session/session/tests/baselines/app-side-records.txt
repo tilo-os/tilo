@@ -8,6 +8,7 @@
 activity: runner
 agent: broker
 api-tester: runner
+assistant: runner
 backups: runner
 browser: runner
 calculator: runner
@@ -68,6 +69,5 @@ typst-editor: runner
 video-editor: runner
 video-player: runner
 weather: runner
-web-search: broker
 windows: runner
 word-processor: runner

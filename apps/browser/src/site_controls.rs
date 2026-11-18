@@ -1,13 +1,7 @@
 //! Exact-origin site protection and information, owned by the browser chrome.
 use std::collections::BTreeSet;
 
-pub fn origin(input: &str) -> Option<String> {
-    if input.len() > 8192 {
-        return None;
-    }
-    let url = url::Url::parse(input).ok()?;
-    matches!(url.scheme(), "http" | "https").then(|| url.origin().ascii_serialization())
-}
+pub use browser_model::urls::origin;
 use ui::time::{Duration, Instant};
 use ui::{
     LocalState,
