@@ -53,12 +53,22 @@ final class WorkspaceGoneTests: XCTestCase {
         document.documentElement.dataset.failure = 'loading';
         document.documentElement.dataset.arrival = 'stopped'; document.documentElement.dataset.entry = 'failed'
         """
+    /// Tilo's page where its site answered nothing once the page stopped. Its failure screen's
+    /// case says so; its sentence is, on purpose, the one of any stop on the way in.
+    private static let noAnswer = """
+        document.getElementById('status').textContent = 'Couldn’t open Lounge. It stopped while joining. Try again, or reload the page.';
+        document.documentElement.dataset.failure = 'no-connection';
+        document.documentElement.dataset.arrival = 'stopped'; document.documentElement.dataset.entry = 'failed'
+        """
+    /// The page that was asked for again, on its way: it names no entry yet.
+    private static let onItsWay = "document.documentElement.dataset.entry = ''; document.documentElement.dataset.arrival = 'load'; document.documentElement.dataset.failure = ''"
     private var source: TiloSource!
     private var engine: TiloEngine!
     private var defaults: UserDefaults!
     private var suite = ""
     private var sessions: [Session] = []
     private var reaches: [Reach] = []
+    private var joins: [Bool] = []
     private var conversation = Conversation()
     private var loaded: [URL] = []
     private var listening: [Task<Void, Never>] = []
@@ -86,6 +96,7 @@ final class WorkspaceGoneTests: XCTestCase {
         for task in listening { task.cancel() }
         sessions = []
         reaches = []
+        joins = []
         loaded = []
         conversation = Conversation()
         let engine = TiloEngine(settings: try ShellSettings(site: Self.site), store: .keepsNothing)
@@ -98,6 +109,7 @@ final class WorkspaceGoneTests: XCTestCase {
         listening = [
             Task { for await session in source.session() { self.sessions.append(session) } },
             Task { for await reach in source.reach() { self.reaches.append(reach) } },
+            Task { for await stops in source.joinStops() { self.joins.append(stops) } },
             Task { for await change in source.conversation(.main) { self.conversation.apply(change) } },
         ]
         try await until("the source says where it stands") { !self.sessions.isEmpty }
@@ -190,6 +202,68 @@ final class WorkspaceGoneTests: XCTestCase {
         try await until("the page to be asked for again") { self.loaded.count > asked }
         XCTAssertTrue(isSignedIn, "a device whose page stopped for a moment is nobody's any more")
         XCTAssertNotNil(defaults.string(forKey: "TiloLiveRoute"), "the workspace of a page that stopped for a moment was put away")
+    }
+
+    // MARK: A site that answers and does not let the device in
+
+    /// The page of a device that is its person's stops; it is asked for again, and the page
+    /// that comes is on its way and then says the same. Nothing but a page's own word ends a
+    /// try here.
+    private func stopTwice(saying said: String) async throws {
+        try await startAgain()
+        engine.stopPatience = .seconds(60)
+        let asked = loaded.count
+        try await inPage(said)
+        try await until("the page to be asked for again") { self.loaded.count > asked }
+        try await inPage(Self.onItsWay)
+        try await inPage(said)
+        try await until("the app to say that the try failed") { self.reaches.last == .unreachable }
+    }
+
+    /// A device that is its person's, whose site serves its page and whose page's join stops at
+    /// every load: a store that missed the one time its page said that its workspace is gone
+    /// stands so for ever. The app says that Tilo answers and does not let this device in, so
+    /// that its window can offer the way in. Nothing of the device is given up by that: it
+    /// stays its person's and keeps where it was let in until its person presses, which does
+    /// what "Sign out of this device" does.
+    func testADeviceWhoseSiteAnswersAndWhoseJoinStopsIsOfferedItsWayInAndGivesNothingUpBeforeItsPersonPresses() async throws {
+        try await stopTwice(saying: Self.stoppedJoining)
+        try await until("the app to say that Tilo answers and does not let this device in") { self.joins.last == true }
+        XCTAssertTrue(isSignedIn, "a device that is only offered its way in is nobody's any more")
+        XCTAssertEqual(defaults.string(forKey: "TiloLiveRoute"), "/w/ws-1", "where the device was let in was put away before its person pressed")
+        XCTAssertNotNil(defaults.array(forKey: "TiloLivePerson"), "who the device is was put away before its person pressed")
+        // Its page is asked for again as before, and the offer stands through the try.
+        let asked = loaded.count
+        try await until("the page to be asked for once more") { self.loaded.count > asked }
+        XCTAssertEqual(joins.last, true, "the offer went away while a try was in work")
+        XCTAssertTrue(isSignedIn)
+        // The person presses.
+        await source.signOut()
+        try await until("the device to stand at its way in") { self.sessions.last == .signedOut }
+        XCTAssertEqual(joins.last, false, "a device at its way in is still told that it is not let in")
+        XCTAssertNil(defaults.string(forKey: "TiloLiveRoute"))
+        XCTAssertEqual(engine.state, .away)
+    }
+
+    /// A site that does not answer offers no way in: signing out brings nobody nearer to a
+    /// server that is away.
+    func testADeviceWhoseSiteDoesNotAnswerIsOfferedNoWayIn() async throws {
+        try await stopTwice(saying: Self.noAnswer)
+        let asked = loaded.count
+        try await until("the page to be asked for once more") { self.loaded.count > asked }
+        XCTAssertFalse(joins.contains(true), "a device whose site did not answer was offered its way in")
+        XCTAssertTrue(isSignedIn)
+        XCTAssertEqual(reaches.last, .unreachable)
+    }
+
+    /// A page that names another case in the same sentence ends no new try and changes no
+    /// sentence: its word is heard all the same.
+    func testAPageThatSaysOnlyLaterThatItsSiteAnsweredIsHeardAlthoughItsSentenceIsTheSame() async throws {
+        try await stopTwice(saying: Self.noAnswer)
+        XCTAssertNotEqual(joins.last, true)
+        try await inPage("document.documentElement.dataset.failure = 'loading'")
+        try await until("the app to say that Tilo answers and does not let this device in") { self.joins.last == true }
+        XCTAssertTrue(isSignedIn)
     }
 
     /// The site is set up again while the app is open: its server turns the open page's session
@@ -445,6 +519,15 @@ final class WorkspaceGoneTests: XCTestCase {
         XCTAssertTrue(entry.contains("document.documentElement.dataset.refusal = code;"), "an open page no longer names its server's refusal on its root")
         // A join that stopped otherwise than by a refusal is named `failed`, and what became of the workspace is asked after that.
         XCTAssertTrue(entry.contains("? 'refused' : 'failed';"), "the page no longer names a join that stopped without a refusal `failed`")
+        // What says nothing of a site that answered and stopped the page's join is the failure screen's own names.
+        for name in TiloEngine.unanswered.sorted() {
+            XCTAssertFalse(TiloEngine.answered(failure: name), name)
+            XCTAssertTrue(screen.contains("return '\(name)';"), "web/failure-screen.mjs has no case \(name)")
+        }
+        for name in ["loading", "desktop", "stopped"] {
+            XCTAssertTrue(TiloEngine.answered(failure: name), name)
+        }
+        XCTAssertFalse(TiloEngine.answered(failure: ""), "a page that has not named its case says nothing of its site")
         // An open page says how its connection to its server stands on its root, and calls one that is cut by this name.
         XCTAssertTrue(entry.contains("document.documentElement.dataset.connection = reading.state;"),
                       "an open page no longer says on its root how its connection stands")

@@ -103,14 +103,17 @@ struct JobSheet: View {
 /// for waiting, one sentence through every step behind it (the page, the session, the look for
 /// the assistant, what answers for it), so that a server that takes its time is not silent and
 /// no step is said as if it were something new. A try that is in work is never said to have
-/// failed, however long it takes.
+/// failed, however long it takes. Where Tilo answers and does not let this device in, that is
+/// said in its place, with the way in offered (`WayInOffer`).
 public struct ReachLine: View {
     @Environment(AssistantModel.self) private var model
 
     public init() {}
 
     public var body: some View {
-        if model.reach == .unreachable {
+        if model.joinStops {
+            WayInOffer()
+        } else if model.reach == .unreachable {
             Text(AssistantWords.notReachable.said).font(.small12).foregroundStyle(Token.ink2)
                 .padding(.horizontal, 10).padding(.vertical, 3)
                 .background(Token.raised, in: Capsule())
@@ -118,6 +121,25 @@ public struct ReachLine: View {
         } else if model.isStarting {
             Fine(words: AssistantWords.pairing.said).padding(.bottom, 6)
         }
+    }
+}
+
+/// Where the person's Tilo answers and does not let this device in: one sentence that says so
+/// and what its button does, and the button, which does what "Sign out of this device" does
+/// and so shows the way in. Nothing happens until the person presses.
+struct WayInOffer: View {
+    @Environment(AssistantModel.self) private var model
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Text(AssistantWords.joinStops.said).font(.small12).foregroundStyle(Token.ink2)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            Button(AssistantWords.signOutToPair.said) { model.signOut() }.buttonStyle(BoxButtonStyle(isMain: true))
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(Token.raised, in: RoundedRectangle(cornerRadius: 12))
+        .padding(.horizontal, 16).padding(.bottom, 6)
     }
 }
 

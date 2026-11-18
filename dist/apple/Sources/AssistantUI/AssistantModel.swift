@@ -61,6 +61,9 @@ public final class AssistantModel {
     public private(set) var session: Session?
     /// Not known until the source has said it: nothing is said to have failed before a try has ended.
     public private(set) var reach = Reach.unknown
+    /// Whether the person's Tilo answers and does not let this device in. The window then
+    /// offers the way in where it would say that Tilo cannot be reached.
+    public private(set) var joinStops = false
     public private(set) var subAgents: [SubAgent] = []
     public private(set) var tasks: [AssistantTask] = []
     public private(set) var automations: [Automation] = []
@@ -164,6 +167,7 @@ public final class AssistantModel {
         follow(source.automations()) { $0.automations = $1 }
         follow(source.supervision()) { $0.supervision = $1 }
         follow(source.sinceLeft()) { $0.sinceLeft = $1 }
+        follow(source.joinStops()) { $0.joinStops = $1 }
         listen(.main)
     }
 
@@ -183,6 +187,7 @@ public final class AssistantModel {
         automations = await first(source.automations()) ?? []
         supervision = await first(source.supervision()) ?? Supervision()
         sinceLeft = await first(source.sinceLeft()) ?? nil
+        joinStops = await first(source.joinStops()) ?? false
         for chat in [Chat.main] + subAgents.map({ Chat.subAgent($0.id) }) {
             guard let change = await first(source.conversation(chat)) else { continue }
             var conversation = Conversation()

@@ -340,6 +340,17 @@ those first seconds waits for the try to end and for the assistant to be found, 
 then; where the try fails it is back in the field with the reason, as any message that did
 not go through.
 
+**A site that answers and lets the device in no more.** A device that is its person's can
+stand before a site that serves its page and whose page's join stops at every load: a store
+that missed the one time Tilo's page said that its workspace is gone stands so for ever. The
+engine tells a try that ended so from one that met no server, by the case the page's failure
+screen names (`TiloEngine.joinStops`, `answered(failure:)`); `TiloSource` says it to a device
+that is its person's (`AssistantSource.joinStops()`); and where the window would say that Tilo
+cannot be reached it says so in one sentence and offers the way in: one button, which does
+what "Sign out of this device" does. Nothing of the device is given up before that press, and
+nothing presses for the person. `WorkspaceGoneTests` checks the engine and the source,
+`WayInOfferedTests` the window.
+
 **The provider step.** While no provider of the person's has a key, the main chat says so
 and offers the step: the person picks a provider and types a key of their own into the
 protected field, the one field of the app a secret is typed into (`ProtectedField`), and
