@@ -23,13 +23,48 @@ const SIGNING_FAILED: &str = "signing-failed";
 /// The failures of writes that wait, held: gone once nothing is held.
 const HELD_CODES: &[&str] = &[RECORD_FULL, SIGNING_FAILED];
 
-/// The workspaces a barrier answers for ([`crate::Outbox::barrier_of`]): these alone, or every
-/// one this session joined.
-pub(super) type Scope = Option<BTreeSet<WorkspaceId>>;
+/// What a barrier answers for: every write of this session, the writes to some workspaces alone
+/// ([`crate::Outbox::barrier_of`]), or the writes to some documents alone
+/// ([`crate::Outbox::barrier_of_documents`]).
+#[derive(Debug)]
+pub(super) enum Scope {
+    /// Every workspace this session joined.
+    Session,
+    /// These workspaces alone.
+    Workspaces(BTreeSet<WorkspaceId>),
+    /// These documents alone, whatever else their workspaces hold back.
+    Documents(BTreeSet<DocumentRoute>),
+}
+
+impl Scope {
+    /// Whether it answers for the writes to `route`.
+    fn covers(&self, route: &DocumentRoute) -> bool {
+        match self {
+            Self::Session => true,
+            Self::Workspaces(workspaces) => within(Some(workspaces), route),
+            Self::Documents(documents) => documents.contains(route),
+        }
+    }
+
+    /// Whether it answers for writes to `workspace`.
+    fn reaches(&self, workspace: WorkspaceId) -> bool {
+        match self {
+            Self::Session => true,
+            Self::Workspaces(workspaces) => workspaces.contains(&workspace),
+            Self::Documents(documents) => documents
+                .iter()
+                .any(|route| route.workspace_id().is_ok_and(|named| named == workspace)),
+        }
+    }
+}
+
+/// The document a write in this device's ownership was written to, where its bytes say.
+fn written_to(entry: &OwnershipEntry) -> Option<DocumentRoute> {
+    DocumentRoute::of_message(&postcard::from_bytes(&entry.1).ok()?)
+}
 
 /// A barrier waiting on what this device owes: the writes still unanswered of those it was
-/// asked about, the refusal one of them met, where its outcome goes, and the workspaces it
-/// answers for.
+/// asked about, the refusal one of them met, where its outcome goes, and what it answers for.
 pub(super) type Owed = (BTreeSet<[u8; 32]>, Option<String>, Completion, Scope);
 
 /// Whether `route` is of a workspace `scope` answers for.
@@ -346,16 +381,16 @@ impl Task {
             return;
         }
         // Read once for the barriers that answer for every workspace, and for each of those
-        // that answer for their own.
+        // that answer for their own workspaces or documents.
         let every = self
             .barriers
             .iter()
-            .any(|(.., scope)| scope.is_none())
-            .then(|| self.owed(None));
+            .any(|(.., scope)| matches!(scope, Scope::Session))
+            .then(|| self.owed(&Scope::Session));
         let (waiting, done): (Vec<_>, Vec<_>) = std::mem::take(&mut self.barriers)
             .into_iter()
             .map(|(mut left, refused, complete, scope)| {
-                let own = scope.as_ref().map(|named| self.owed(Some(named)));
+                let own = (!matches!(scope, Scope::Session)).then(|| self.owed(&scope));
                 if let Some(owed) = own.as_ref().or(every.as_ref())
                     && !left.is_subset(owed)
                 {
@@ -370,18 +405,18 @@ impl Task {
         }
     }
 
-    /// Complete `done` once every write said so far is durable at this device's holder: every
-    /// write of this session, or, with a `scope`, those to its workspaces alone. What another
-    /// workspace still holds back or is owed then keeps nothing waiting here: a write that
-    /// waits in one workspace, for its document or for its keys, says nothing about the
-    /// others'.
+    /// Complete `done` once every write said so far that `scope` answers for is durable at this
+    /// device's holder: every write of this session, those to some workspaces alone, or those
+    /// to some documents alone. What another workspace, or another document, still holds back
+    /// or is owed then keeps nothing waiting here: a write that waits, for its document or for
+    /// its keys, says nothing about the writes beside it.
     pub(super) fn barrier(&mut self, done: Completion, scope: Scope) {
         let held: BTreeSet<DocumentRoute> = self
             .engine
             .held_writes()
             .lock()
             .keys()
-            .filter(|route| within(scope.as_ref(), route))
+            .filter(|route| scope.covers(route))
             .cloned()
             .collect();
         if held.is_empty() {
@@ -392,15 +427,15 @@ impl Task {
     }
 
     /// Complete `done` once every write now in this device's ownership is answered by its host, or
-    /// the write that carries it is ([`Self::follow_ownership`]): every write, or those of
-    /// `scope`'s workspaces alone.
+    /// the write that carries it is ([`Self::follow_ownership`]): every write, or those `scope`
+    /// answers for alone.
     pub(super) fn await_ownership(
         &mut self,
         done: Completion,
         refused: Option<String>,
         scope: Scope,
     ) {
-        let owed = self.owed(scope.as_ref());
+        let owed = self.owed(&scope);
         if owed.is_empty() {
             let _ = done.send(refused.map_or(Ok(()), Err));
         } else {
@@ -408,16 +443,43 @@ impl Task {
         }
     }
 
-    /// Every write in this device's ownership, sendable now or not: over every workspace, or
-    /// over `scope`'s alone.
-    fn owed(&self, scope: Option<&BTreeSet<WorkspaceId>>) -> BTreeSet<[u8; 32]> {
+    /// Every write in this device's ownership, sendable now or not, that `scope` answers for:
+    /// over every workspace, over some alone, or to some documents alone.
+    fn owed(&self, scope: &Scope) -> BTreeSet<[u8; 32]> {
         let owner = self.replicas.owner();
         self.workspaces
             .iter()
-            .filter(|workspace_id| scope.is_none_or(|named| named.contains(*workspace_id)))
+            .filter(|workspace_id| scope.reaches(**workspace_id))
             .filter_map(|workspace_id| self.replicas.workspace(*workspace_id))
-            .flat_map(|workspace| owner.owed_writes(workspace).unwrap_or_default())
+            .flat_map(|workspace| {
+                let owed = owner.owed_writes(workspace).unwrap_or_default();
+                match scope {
+                    Scope::Session | Scope::Workspaces(_) => owed,
+                    Scope::Documents(documents) => self.owed_to(workspace, documents, owed),
+                }
+            })
             .collect()
+    }
+
+    /// Those of `owed`, the writes in this device's ownership of `workspace`, that a barrier of
+    /// `documents` waits for: all but the ones known to be written to another document. A write
+    /// ownership does not show now, or whose document its bytes do not say, stays among them:
+    /// the barrier waits for it sooner than answer saved for a write it cannot place.
+    fn owed_to(
+        &self,
+        workspace: tilo_desktop_model::WorkspaceId,
+        documents: &BTreeSet<DocumentRoute>,
+        mut owed: Vec<[u8; 32]>,
+    ) -> Vec<[u8; 32]> {
+        if owed.is_empty() {
+            return owed;
+        }
+        for entry in self.ownership(workspace) {
+            if written_to(&entry).is_some_and(|route| !documents.contains(&route)) {
+                owed.retain(|id| *id != entry.0);
+            }
+        }
+        owed
     }
 
     /// Whether this device's replica holds nothing of `route`'s document.
@@ -505,7 +567,7 @@ impl Task {
                     .into_iter()
                     .filter(move |entry| unanswered.contains(&entry.0))
             })
-            .filter_map(|entry| DocumentRoute::of_message(&postcard::from_bytes(&entry.1).ok()?))
+            .filter_map(|entry| written_to(&entry))
             .collect();
         self.owed_since
             .retain(|route, _| !within(scope, route) || owed.contains(route));
