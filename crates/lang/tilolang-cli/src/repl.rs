@@ -253,13 +253,13 @@ impl<'a> Repl<'a> {
         let failed = status == "failed";
         self.previewed = (status == "preview").then(|| program.to_owned());
         let mut said = Vec::new();
-        for line in text_of(&answer).lines() {
-            if let Some(shown) = render::line_ref(line)
+        for line in lines_of(&answer) {
+            if let Some(shown) = render::line_ref(&line)
                 && !self.names.iter().any(|name| name == shown)
             {
                 self.names.push(shown.to_owned());
             }
-            said.push(render::api_line(line, failed));
+            said.push(render::api_line(&line, failed));
         }
         if !failed {
             for name in program.lines().filter_map(bound_name) {
@@ -317,6 +317,39 @@ impl<'a> Repl<'a> {
 /// The words of an answer: what a person reads.
 fn text_of(answer: &Json) -> &str {
     answer.get("text").and_then(Json::as_str).unwrap_or("")
+}
+
+/// The lines an entry shows: the program's own as the model reads them — a value's resources by
+/// the references a later entry names them by — then the answer's own lines (what it did), which
+/// a person reads. An answer with no lines of its own is its text, a note or a refusal.
+fn lines_of(answer: &Json) -> Vec<String> {
+    let lines = |key: &str| -> Vec<String> {
+        answer
+            .get(key)
+            .and_then(Json::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Json::as_str)
+            .flat_map(str::lines)
+            .map(str::to_owned)
+            .collect()
+    };
+    let output = lines("output");
+    if output.is_empty() {
+        return text_of(answer).lines().map(str::to_owned).collect();
+    }
+    let person = lines("person_output");
+    let mut said = output;
+    if !person.is_empty() {
+        // The answer's text is the person's lines of the program first, then its own.
+        said.extend(
+            text_of(answer)
+                .lines()
+                .skip(person.len())
+                .map(str::to_owned),
+        );
+    }
+    said
 }
 
 const HELP: &str = "\
