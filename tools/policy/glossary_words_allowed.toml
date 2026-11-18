@@ -770,3 +770,9 @@ paths = ["crates/agent/agent-session/tests/workspace_actions/hosted_consent_noti
 reason = "The verb that keeps a sent request, its action-id constant and the catalogue keys the action macro reads, moved from the app with the resource: renaming them is an action-id change of its own."
 words = ["record"]
 paths = ["apps/api-tester-model/src/workspace_verbs.rs", "apps/api-tester-model/locales/en-US.ftl", "apps/api-tester-model/locales/de-DE.ftl"]
+
+[[allow]]
+reason = "`MemberQuestions`'s `host` field and tokio's `unbounded_channel`: the client whose questions a page answers and the stream carrying the answers, named as the libraries name them."
+words = ["host", "channel"]
+identifiers = ["host", "unbounded_channel"]
+paths = ["crates/agent/agent-session/tests/workspace_actions/packaged_model.rs"]

@@ -1068,17 +1068,12 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
             .map_err(|error| error.to_string())
     }
 
-    fn packaged_action(
-        &self,
-        workspace: WorkspaceId,
-        app: &str,
-        action: &str,
-    ) -> Option<tilo_actions::surface::VerbSurface> {
+    fn packaged_surface(&self, workspace: WorkspaceId, app: &str) -> Option<Vec<u8>> {
         let workspaces = self.workspaces.as_ref()?;
         let package = self
             .runtime
             .block_on(workspaces.installed_package(&workspace.to_string(), app))?;
-        tilo_workspace_service::workspaces::packaged_action_verb(&package, app, action).ok()
+        tilo_workspace_service::workspaces::package_surface(&package, app).ok()
     }
 
     fn view_locator(

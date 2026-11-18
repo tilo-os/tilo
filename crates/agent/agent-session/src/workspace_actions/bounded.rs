@@ -828,7 +828,7 @@ impl Worker {
     }
 
     /// `invocation` waits for the person's answer, asked as `about` says.
-    fn waits_for_person(&self, invocation: InvocationId, about: About) -> Outcome {
+    pub(super) fn waits_for_person(&self, invocation: InvocationId, about: About) -> Outcome {
         if let Some(entry) = self.log().entries.get_mut(&invocation) {
             entry.about = Some(Box::new(about));
         }

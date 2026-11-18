@@ -165,7 +165,7 @@ impl Worker {
             .as_ref()
             .map_or_else(|| self.member.clone(), |who| who.person.clone());
         let routes: Vec<DocumentRoute> = self
-            .documents(&state, &cluster_id)
+            .documents(Some(workspace_id), &state, &cluster_id)
             .into_iter()
             .take(crate::search::MOST_SEARCHED)
             .collect();
@@ -768,7 +768,7 @@ impl Worker {
         let state = self.refresh(workspace_id, Needs::Workspace)?;
         // Nothing written in the workspace yet: no records, and its first ones are news.
         let routes = match state.workspace.clone() {
-            Some(cluster_id) => self.documents(&state, &cluster_id),
+            Some(cluster_id) => self.documents(Some(workspace_id), &state, &cluster_id),
             None => Vec::new(),
         };
         let records: Vec<DocumentKey> = routes

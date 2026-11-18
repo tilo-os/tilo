@@ -85,7 +85,7 @@ mod own;
 #[cfg(not(target_arch = "wasm32"))]
 mod packaged_model;
 #[cfg(not(target_arch = "wasm32"))]
-pub use packaged_model::{PackagedAction, packaged_action_verb};
+pub use packaged_model::{PackagedAction, package_surface};
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod packaged_model_tests;
 mod pages;

@@ -17,10 +17,15 @@
 )]
 
 use super::*;
-use tilo_actions::remote::Caller;
+use std::sync::Mutex;
+use tilo_action_policy::{Answer as PolicyAnswer, KindSet, Rule, TreePath};
+use tilo_actions::remote::{Caller, CataloguePage, CatalogueQuery};
+use tilo_actions::{ActionKind, RiskLevel};
 use tilo_app_package::{Manifest, SigningIdentity, pack, tapp};
 use tilo_peer_state::workspace_membership::{AppRelease, WorkspaceMembershipCommand};
+use tilo_server_client::questions::{Answered, MemberQuestions, QuestionSheet, answer_questions};
 use tilo_server_protocol::WorkspaceId;
+use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use ui::tilo_resource::Resource as _;
 
 /// The app the test installs, which the server does not have compiled in.
@@ -37,7 +42,7 @@ fn tasks_model() -> Vec<u8> {
     let directory = std::env::var_os("TILO_APP_MODELS").map_or_else(
         || {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../../..")
+                .join("../../..")
                 .join("target/app-models")
         },
         std::path::PathBuf::from,
@@ -181,6 +186,58 @@ fn settled(
     }
 }
 
+/// The page `query` lists from the server, as a caller's listing reads it.
+fn catalogue(
+    actions: &tilo_agent_session::workspace_actions::WorkspaceActions,
+    workspace: WorkspaceId,
+    caller: &Caller,
+    query: CatalogueQuery,
+) -> CataloguePage {
+    let answer = actions
+        .serve(
+            workspace,
+            caller,
+            RemoteActionMessage::CatalogueRequest {
+                correlation: 1,
+                query,
+            },
+        )
+        .unwrap()
+        .wait_timeout(tilo_test_env::hang_bound())
+        .ok()
+        .flatten()
+        .unwrap();
+    match answer {
+        RemoteActionMessage::CatalogueResponse {
+            result: Ok(page), ..
+        } => page,
+        other => panic!("a catalogue page: {other:?}"),
+    }
+}
+
+/// What the person's device was asked.
+#[derive(Clone, Default)]
+struct Seen {
+    asked: Arc<Mutex<Vec<PendingConfirmation>>>,
+}
+
+/// The person at their device, allowing every question once.
+struct ApproveOnce {
+    seen: Seen,
+    answers: tokio::sync::mpsc::UnboundedSender<Answered>,
+}
+
+impl QuestionSheet for ApproveOnce {
+    fn ask(&mut self, question: &PendingConfirmation) {
+        self.seen.asked.lock().unwrap().push(question.clone());
+        let _ = self
+            .answers
+            .send((question.id, ConfirmationAnswer::AllowOnce));
+    }
+
+    fn withdraw(&mut self, _: [u8; 32]) {}
+}
+
 #[test]
 fn an_agent_applies_a_packaged_apps_action_on_a_server_that_never_built_it() {
     // The invocation's origin clock is the wall clock, which the replay has to
@@ -291,6 +348,60 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
         cluster_id: created.workspace.clone(),
         document: String::new(),
     };
+    // The catalogue every caller lists names the installed app's actions,
+    // read from the surface its package carries: the same rows an app
+    // compiled into the server offers.
+    let listed = catalogue(
+        &actions,
+        created.workspace_id,
+        &caller,
+        CatalogueQuery {
+            provider: Some(provider(&route)),
+            ..CatalogueQuery::default()
+        },
+    );
+    let row = |action: &str| {
+        listed
+            .rows
+            .iter()
+            .find(|row| {
+                row.action
+                    .as_ref()
+                    .is_some_and(|held| held.address.action == action)
+            })
+            .unwrap_or_else(|| panic!("the catalogue lists {action}: {listed:?}"))
+    };
+    let create = row("create-area");
+    assert_eq!(create.app_id, TASKS);
+    assert_eq!(create.resource.kind, TRACKER);
+    assert_eq!(create.resource.label, "Tasks");
+    let descriptor = create.action.as_ref().unwrap();
+    assert_eq!(descriptor.address.resource, TRACKER);
+    assert_eq!(descriptor.contract.kind, ActionKind::Undoable);
+    assert_eq!(descriptor.params[0].name, "name");
+    assert!(descriptor.params[0].required);
+    // A destructive verb is listed as the destructive risk its surface
+    // declares, so a caller knows it asks before it is invoked.
+    let delete = row("delete-area").action.as_ref().unwrap();
+    assert_eq!(delete.contract.risk, RiskLevel::Destructive);
+    assert_eq!(delete.contract.confirmation, ConfirmationPolicy::None);
+    // A listing that names no provider offers the app's provider too.
+    let all = catalogue(
+        &actions,
+        created.workspace_id,
+        &caller,
+        CatalogueQuery {
+            max_results: 0,
+            ..CatalogueQuery::default()
+        },
+    );
+    assert!(
+        all.providers
+            .iter()
+            .any(|listed| listed.provider == provider(&route)),
+        "the installed app is a browsable provider: {all:?}"
+    );
+
     let request = request(
         &provider(&route),
         ActionAddress::new(TRACKER, "create-area"),
@@ -369,6 +480,92 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
         replayed_document.get_heads(),
         document.get_heads(),
         "the same module replays the action to the same document"
+    );
+
+    // A packaged action whose grant needs the person's consent is put to them,
+    // as an app compiled in would be: the agent's turn is bound to asking for
+    // undoable changes, the question reaches the person's own device, and the
+    // answer applies the action.
+    let area = tracker
+        .areas
+        .iter()
+        .find(|(_, area)| area.name.as_str() == "Ship it")
+        .map(|(id, _)| id.to_string())
+        .expect("the tracker holds the area the agent made");
+    let asking = Caller::authenticated(
+        root.verifying_key().to_bytes(),
+        server_device.cert.device_public_key,
+    )
+    .delegated_to("assistant")
+    .named("Claude Code")
+    .in_workspace(&created.workspace)
+    .in_new_execution()
+    .on_turn(
+        tilo_action_policy::turn::Turn::new("chat.workspace/asking", "m1"),
+        vec![Rule::new(
+            TreePath::workspace(&created.workspace).rest(),
+            KindSet::UNDOABLE,
+            PolicyAnswer::Ask,
+        )],
+    );
+    let mut delete = serde_json::Map::new();
+    delete.insert("area".into(), serde_json::Value::String(area.clone()));
+    let asking_request = super::request(
+        &provider(&route),
+        ActionAddress::new(TRACKER, "delete-area"),
+        InvokeArgument::Json(delete),
+    );
+    let seen = Seen::default();
+    let (answered, mut answers) = tokio::sync::mpsc::unbounded_channel();
+    let mut sheet = ApproveOnce {
+        seen: seen.clone(),
+        answers: answered,
+    };
+    let approver = tilo_server_client::MemberApprover::new(Host::at(server.node_addr()));
+    let mut member = MemberQuestions {
+        host: &approver,
+        root: &root,
+        device: None,
+    };
+    let mut session = Box::pin(answer_questions(
+        &mut member,
+        &mut sheet,
+        &mut answers,
+        || tokio::time::sleep(Duration::from_millis(20)),
+    ));
+    let mut running = {
+        let actions = actions.clone();
+        let asking = asking.clone();
+        let request = asking_request.clone();
+        let workspace_id = created.workspace_id;
+        tokio::task::spawn_blocking(move || settled(&actions, workspace_id, &asking, &request))
+    };
+    let status = tokio::select! {
+        status = &mut running => status.unwrap(),
+        error = &mut session => panic!("the page's session with the server ended: {error}"),
+    };
+    assert!(
+        matches!(status, ReceiptStatus::Completed { .. }),
+        "the approved action applies: {status:?}"
+    );
+    let question = seen
+        .asked
+        .lock()
+        .unwrap()
+        .first()
+        .cloned()
+        .expect("the person's device was asked");
+    assert_eq!(question.risk, "destructive");
+    assert_eq!(question.action_label, "delete-area");
+    let done = workspaces
+        .resource_document(&created.workspace, TASKS, "")
+        .await
+        .unwrap()
+        .expect("the document still exists");
+    let tracker = tasks_model::Tracker::read(&automerge::AutoCommit::load(&done).unwrap()).unwrap();
+    assert!(
+        !tracker.areas.iter().any(|(id, _)| id.as_str() == area),
+        "the approved action deleted the area"
     );
     server.shutdown().await;
 }

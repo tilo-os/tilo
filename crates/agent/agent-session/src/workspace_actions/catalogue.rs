@@ -59,7 +59,7 @@ impl Worker {
         else {
             return Ok(CataloguePage::from_rows(revision, Vec::new(), query));
         };
-        let routes = self.documents(&state, &cluster_id);
+        let routes = self.documents(Some(workspace_id), &state, &cluster_id);
         let own_provider = workspace_provider(&cluster_id);
         let wanted: Vec<DocumentRoute> = match query.provider.as_deref() {
             Some(provider) if provider == own_provider => Vec::new(),
