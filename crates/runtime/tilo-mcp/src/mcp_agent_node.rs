@@ -5,8 +5,18 @@ use super::{ActionDescriptor, CatalogueRow, HashMap, bound_key, path_name};
 
 impl Node {
     /// This resource as a row of a listing under `parent`: the name its line
-    /// prints, and the actions it offers by their ids.
-    pub(super) fn listing_row(&self, parent: &str, name: &str, kind: &str) -> super::Value {
+    /// prints, the actions it offers by their ids, and whether a read answers
+    /// it as a resource of its own (`reads`), or it is only a place inside
+    /// what it is listed under (an option, a choice): those are part of their
+    /// parent's read and name no resource, so a walk that reads resources one
+    /// by one reads only the rows that say so.
+    pub(super) fn listing_row(
+        &self,
+        parent: &str,
+        name: &str,
+        kind: &str,
+        reads: bool,
+    ) -> super::Value {
         super::json!({
             "path": format!("{parent}/{name}"),
             "name": name,
@@ -15,6 +25,7 @@ impl Node {
             "label": self.label,
             "kind": kind,
             "has_children": self.container,
+            "reads": reads,
             "actions": self
                 .actions
                 .iter()

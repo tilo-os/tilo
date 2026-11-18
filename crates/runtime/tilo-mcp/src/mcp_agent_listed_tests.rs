@@ -84,3 +84,67 @@ async fn a_typed_listing_names_no_action_its_text_does_not() {
         );
     }
 }
+
+/// A typed listing says which of its rows a read answers as a resource of
+/// its own: a note its notebook reads is one, though it publishes no read
+/// itself, and a place inside what lists it (an option, a choice) is not, so
+/// a walk that reads resources one by one reads only the rows that are.
+#[tokio::test]
+async fn a_typed_listing_says_which_rows_a_read_answers() {
+    let notes = Notes::new(true);
+    let mut rows = notes.rows("1");
+    rows.push(notes.row(NOTEBOOK, "font:sans", "font", "Sans", None, false));
+    *notes.published_kinds.lock().unwrap() = Some(rows);
+    let server = agent(&notes);
+    let (listing, failed) =
+        typed_calls::answer(&server, "tilo_ls", json!({"path": "notes/Notebook"})).await;
+    assert!(!failed, "{listing}");
+    let reads = |name: &str| {
+        listing["rows"]
+            .as_array()
+            .and_then(|rows| rows.iter().find(|row| row["name"] == name))
+            .map(|row| row["reads"].clone())
+    };
+    assert_eq!(
+        reads("Todo"),
+        Some(json!(true)),
+        "a note its notebook reads is a resource of its own: {listing}"
+    );
+    assert_eq!(
+        reads("Sans"),
+        Some(json!(false)),
+        "a font place is part of what lists it: {listing}"
+    );
+}
+
+/// A path naming a place inside a resource answers no read of its own without
+/// reading the app's root resources for one: nothing there is that place's to
+/// read, so a caller is told so instead of waiting on every root resource.
+#[tokio::test]
+async fn a_read_of_a_place_answers_no_read_without_reading_the_apps_root() {
+    let notes = Notes::new(true);
+    let mut rows = vec![
+        notes.row("", "font", "place", "Fonts", None, false),
+        notes.row("", "theme", "place", "Themes", None, false),
+        notes.row("", "folder", "place", "Folders", None, false),
+        notes.row("", "voice", "place", "Voices", None, false),
+    ];
+    rows.extend(notes.rows("1"));
+    *notes.published_kinds.lock().unwrap() = Some(rows);
+    let server = agent(&notes);
+    notes.take_asked();
+    let (text, failed) = tool(&server, "tilo_read", json!({"path": "notes/Fonts"})).await;
+    assert!(failed, "{text}");
+    assert!(text.contains("no read action"), "{text}");
+    let asked = notes.take_asked();
+    // The place the read names is listed to find it; the other root
+    // resources are not read looking for a read that answers it.
+    for place in ["theme", "folder", "voice"] {
+        let id = notes.id(place);
+        assert!(
+            !asked.iter().any(|ask| ask.contains(&format!("under {id}"))),
+            "{} was read to find a read it does not answer: {asked:?}",
+            place
+        );
+    }
+}

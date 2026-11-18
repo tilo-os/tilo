@@ -1768,6 +1768,19 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // own actions, a line each. A page is a window of them.
         let mut entries: Vec<(String, Option<Value>)> = Vec::new();
         if want_resources {
+            // Whether a read answers every row listed here: one of the
+            // resources they are listed under reads them as its items (a
+            // notebook its pages), or the app itself does. A row that neither
+            // it nor its own actions read is only a place inside what lists
+            // it (an option, a choice), which the row says.
+            let inherited_read = resolved.node.iter().chain(&resolved.chain).any(|ancestor| {
+                resolved
+                    .levels
+                    .get(&ancestor.id)
+                    .is_some_and(|level| reads_action(&level.own).is_some())
+                    || reads_action(&ancestor.actions).is_some()
+            }) || (resolved.node.is_none()
+                && reads_action(&resolved.actions).is_some());
             let mut named: Vec<Node> = children.clone();
             named.extend(resolved.node.clone());
             let shared = shared_names(&children, &named);
@@ -1806,6 +1819,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     &resolved.path,
                     &name,
                     forms.kind(&child.kind).unwrap_or(&child.kind),
+                    inherited_read || reads_action(&child.actions).is_some(),
                 );
                 entries.push((line, Some(row)));
             }
@@ -2182,24 +2196,23 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 return Ok(Some((ancestor.id.clone(), found)));
             }
         }
+        // A path that names a resource answers with no read of its own when
+        // neither it nor what it is listed under has one: it is a place inside
+        // that resource (an option, a choice), which the resource's own read
+        // already answers, and looking further would read every root resource
+        // to find a read that takes nothing here as its item. Say so, and let
+        // the caller go on without paying for it.
+        if resolved.node.is_some() {
+            return Ok(None);
+        }
         // The app's root resources: a notebook reads its pages. A read that
         // names no item answers a document whole, and a resource inside it is
         // that read's to answer: a listing that takes no item would answer
         // every item with the whole document.
-        let reading_item = |found: &ActionDescriptor| {
-            resolved.node.is_none()
-                || found
-                    .params
-                    .iter()
-                    .any(|param| param.name.as_ref() == "item")
-        };
         let root = self.level(&resolved.provider, "", levels).await?;
         for node in &root.children {
             let level = self.level(&resolved.provider, &node.id, levels).await?;
-            if let Some(found) = reads_action(&level.own)
-                .or_else(|| reads_action(&node.actions))
-                .filter(|found| reading_item(found))
-            {
+            if let Some(found) = reads_action(&level.own).or_else(|| reads_action(&node.actions)) {
                 return Ok(Some((node.id.clone(), found)));
             }
         }
