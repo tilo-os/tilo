@@ -52,9 +52,9 @@ pub(super) fn delegate_item_use(
         let reply = answering.await.map_err(|_| refused())?;
         context.revalidate().map_err(|_| refused())?;
         if matches!(reply, Reply::ItemText { .. })
-            && !service
+            && service
                 .as_ref()
-                .is_some_and(|service| service.authorize_command(&context, &command).is_ok())
+                .is_none_or(|service| service.authorize_command(&context, &command).is_err())
         {
             return Err(refused());
         }

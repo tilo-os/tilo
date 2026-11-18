@@ -389,10 +389,10 @@ pub(crate) mod testing {
             if self.down.get() {
                 return Err("the session is not there".to_owned());
             }
-            assert!(
-                !self.busy.replace(true),
-                "the session is sent one request at a time"
-            );
+            // As the session's own client: one request at a time, and a second is refused.
+            if self.busy.replace(true) {
+                return Err("the session carries one request at a time".to_owned());
+            }
             let answer = Kept::default();
             self.sent.borrow_mut().push((command, Rc::clone(&answer)));
             Ok(Box::new(Asked {

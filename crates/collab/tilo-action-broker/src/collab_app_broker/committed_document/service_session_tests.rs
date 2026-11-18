@@ -41,7 +41,6 @@ impl Future for Later {
 /// Whoever keeps the vault, stood in for: it counts the item uses it was asked for and
 /// answers each when a test says what.
 struct Items {
-    live: Arc<AtomicBool>,
     asked: AtomicUsize,
     /// Whether its leave for Browser is withdrawn.
     withdrawn: AtomicBool,
@@ -72,9 +71,8 @@ impl BrowserServiceSessionServices for Items {
     }
     fn disconnect(&self, _: u64) {}
 }
-fn items(live: &Arc<AtomicBool>) -> Arc<Items> {
+fn items() -> Arc<Items> {
     Arc::new(Items {
-        live: live.clone(),
         asked: AtomicUsize::new(0),
         withdrawn: AtomicBool::new(false),
         decided: Decided::default(),
@@ -353,7 +351,7 @@ tilo_test_env::scenario! {
         let live = Arc::new(AtomicBool::new(true));
 
         // Any other command is no item's use: it is answered at once, as it always was.
-        let stood_in = items(&live);
+        let stood_in = items();
         for other in [
             BrowserServiceSessionCommand::List {}.encode().unwrap().to_vec(),
             BrowserServiceSessionCommand::LendsItems {}.encode().unwrap().to_vec(),
@@ -408,7 +406,7 @@ tilo_test_env::scenario! {
                 false,
             ),
         ] {
-            let stood_in = items(&live);
+            let stood_in = items();
             let mut answer = put(&stood_in, BROWSER, &live, &bytes).unwrap().unwrap();
             stood_in.withdrawn.store(withdrawn, Ordering::Release);
             *stood_in.decided.lock().unwrap() = Some(Ok(decided));
@@ -427,7 +425,7 @@ tilo_test_env::scenario! {
         // answers another page action. Nor does what a fault says leave.
         for case in 0..4 {
             let live = Arc::new(AtomicBool::new(true));
-            let stood_in = items(&live);
+            let stood_in = items();
             let mut answer = put(&stood_in, BROWSER, &live, &bytes).unwrap().unwrap();
             let decided = match case {
                 0 => {
@@ -453,7 +451,7 @@ tilo_test_env::scenario! {
 
         // A connection that is gone is refused before anybody is asked.
         let gone = Arc::new(AtomicBool::new(false));
-        let stood_in = items(&gone);
+        let stood_in = items();
         assert!(put(&stood_in, BROWSER, &gone, &bytes).unwrap().is_err());
         assert_eq!(stood_in.asked.load(Ordering::Acquire), 0);
 

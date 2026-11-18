@@ -230,9 +230,9 @@ impl HostAsks {
     async fn use_item(
         &self,
         key: &ed25519_dalek::SigningKey,
-        used: environment_device::ItemUse,
+        used: &environment_device::ItemUse,
     ) -> ItemReply {
-        let argument = match serde_json::to_value(&used) {
+        let argument = match serde_json::to_value(used) {
             Ok(serde_json::Value::Object(named)) => InvokeArgument::Json(named),
             _ => {
                 return ItemReply::item_refused(
@@ -243,7 +243,7 @@ impl HostAsks {
             }
         };
         let answered = self.ask_told(environment_device::USE_ITEM, argument).await;
-        item_answer(&self.workspace, key, &used, answered)
+        item_answer(&self.workspace, key, used, answered)
     }
 }
 
@@ -682,7 +682,7 @@ impl HostedBrowser {
                         items.lent_by(std::sync::Arc::new(
                             move |used: environment_device::ItemUse| -> crate::item_lending::Lending {
                                 let (asking, key) = (asking.clone(), key.clone());
-                                Box::pin(async move { asking.use_item(&key, used).await })
+                                Box::pin(async move { asking.use_item(&key, &used).await })
                             },
                         ));
                     }
