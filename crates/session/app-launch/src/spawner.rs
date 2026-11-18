@@ -530,7 +530,7 @@ impl Spawner {
         };
         // Taken before the watcher can reap the child, so it names this
         // process and no later one with its pid.
-        let app_of = self.app_of(started.pid, &planned.app, kept.as_ref());
+        let (app_of, heard) = self.app_of(started.pid, &planned.app, kept.as_ref());
         running(&self.running).insert(id, app_of);
         write_down(started.pid);
         if let Some(hold) = hold {
@@ -556,12 +556,11 @@ impl Spawner {
                 let end = ended(child, &ends);
                 // A kept launch the session let go of for a restart is the next run's to report.
                 #[cfg(target_os = "linux")]
-                if let Some(kept) = &kept {
-                    if kept.released() {
-                        return;
-                    }
-                    kept.remove();
-                }
+                let Some(end) = kept_end(kept.as_deref(), heard, end) else {
+                    return;
+                };
+                #[cfg(not(target_os = "linux"))]
+                drop(heard);
                 // What the app said before it ended, which the session keeps
                 // for the report it makes of a launch that never opened: both
                 // pipes are read to their end first, so the tail is all of it.
@@ -781,18 +780,24 @@ impl Spawner {
     }
 
     /// The app `pid` runs, behind `kept` when it is kept: shown on the desktop once its keeper
-    /// answers.
-    fn app_of(&self, pid: u32, name: &str, kept: Option<&Arc<crate::kept::Kept>>) -> App {
+    /// answers, and with what tells how the keeper said its app ended.
+    fn app_of(
+        &self,
+        pid: u32,
+        name: &str,
+        kept: Option<&Arc<crate::kept::Kept>>,
+    ) -> (App, Option<Heard>) {
         let mut app = App::of(pid, name);
         if let Some(kept) = kept {
             // Its launch started: the directory is a keeper's from now on, not one held for later.
             self.reserved.lock_recover().remove(&kept.dir);
         }
+        let mut heard = None;
         if let (Some(kept), Some(keeping)) = (kept, &self.keeping) {
             app.kept = Some(Arc::clone(kept));
-            watch_started(Arc::clone(kept), pid, Arc::clone(&keeping.desktop));
+            heard = watch_started(Arc::clone(kept), pid, Arc::clone(&keeping.desktop));
         }
-        app
+        (app, heard)
     }
 
     /// Take back the apps the run before an in-place restart left running behind keepers: each
@@ -1169,33 +1174,36 @@ fn keep_in(
 /// Wait for the keeper the launcher `launcher` starts for `kept`, greet it and show its app on
 /// `desktop`, then drain what it says until it goes: the launch's end is the launcher's to tell.
 #[cfg(target_os = "linux")]
-fn watch_started(kept: Arc<crate::kept::Kept>, launcher: u32, desktop: crate::kept::Desktop) {
-    let Some(pidfd) = crate::kept::pidfd(launcher) else {
-        return;
-    };
+fn watch_started(
+    kept: Arc<crate::kept::Kept>,
+    launcher: u32,
+    desktop: crate::kept::Desktop,
+) -> Option<Heard> {
+    let pidfd = crate::kept::pidfd(launcher)?;
     let spawned = std::thread::Builder::new()
         .name("kept-attach".into())
         .spawn(move || {
             if !crate::kept::wait_for_control(&kept.dir, &pidfd) {
-                return;
+                return None;
             }
             match crate::kept::greet(&kept.dir, crate::kept::ANSWER) {
                 Ok(greeted) => {
                     if let Err(error) = kept.greeted(&greeted.control, greeted.keeper) {
                         tracing::warn!(%error, "a kept app's keeper cannot be written to");
-                        return;
+                        return None;
                     }
                     kept.attach(&desktop);
-                    let _ = kept.listen(&greeted.control, greeted.inbox);
+                    kept.listen(&greeted.control, greeted.inbox)
                 }
                 Err(error) => {
                     tracing::warn!(dir = %kept.dir.display(), ?error, "a kept app's keeper did not answer");
+                    None
                 }
             }
         });
-    if let Err(error) = spawned {
-        tracing::warn!(%error, "a kept app is not shown");
-    }
+    spawned
+        .inspect_err(|error| tracing::warn!(%error, "a kept app is not shown"))
+        .ok()
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -1217,10 +1225,36 @@ impl Spawner {
     const fn abandon(&self, _: Option<&()>) {}
 
     #[expect(clippy::unused_self, reason = "the Linux spawner's signature")]
-    fn app_of(&self, pid: u32, name: &str, _: Option<&()>) -> App {
-        App::of(pid, name)
+    fn app_of(&self, pid: u32, name: &str, _: Option<&()>) -> (App, Option<Heard>) {
+        (App::of(pid, name), None)
     }
 }
+
+/// How the launch behind `kept` ended, its launcher having ended as `end` says: `None` for a
+/// launch the session let go of for a restart, which the desktop after it reports. The launcher's
+/// exit says only that the keeper ended; the keeper said how its app did (`heard`). A keeper that
+/// said nothing went down with its app (a memory kill takes the whole launch), which the
+/// launcher's end tells.
+#[cfg(target_os = "linux")]
+fn kept_end(kept: Option<&crate::kept::Kept>, heard: Option<Heard>, end: End) -> Option<End> {
+    let Some(kept) = kept else {
+        return Some(end);
+    };
+    if kept.released() {
+        return None;
+    }
+    let heard = heard.and_then(|heard| heard.join().ok().flatten());
+    kept.remove();
+    Some(match (heard, end.memory()) {
+        (Some(heard), Some(cause)) if heard.crashed() => heard.remembering(cause),
+        (Some(heard), _) => heard,
+        (None, _) => end,
+    })
+}
+
+/// The thread that reads a kept launch's keeper, which answers how the keeper said its app ended
+/// once the keeper is gone: `None` when it said nothing.
+type Heard = std::thread::JoinHandle<Option<End>>;
 
 /// A started app the spawner can still end: a pidfd of it, where the kernel
 /// has them.
