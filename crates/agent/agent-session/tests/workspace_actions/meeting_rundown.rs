@@ -160,6 +160,10 @@ async fn the_rundown_whole(process: tilo_clock::testing::OwnProcess) {
     let (up, workspace, mut page) = team_on(&root, (&device, &browser), state.path()).await;
     let me = themselves(&root, &browser, &workspace);
 
+    // Her calendar server answers on this machine. Its operator lets this server call its own
+    // network, which it is otherwise kept from.
+    up.workspaces.call_private_model_addresses(true);
+
     // Her calendar server holds a meeting filed under Board and a lunch filed under nothing.
     let starts = meeting_start();
     let calendars = calendar_server::Server::start(ADA, PASSWORD);
