@@ -2906,6 +2906,8 @@ use typed_calls::typed;
 mod flux;
 #[path = "mcp_agent_level_tests.rs"]
 mod levels;
+#[path = "mcp_agent_listed_tests.rs"]
+mod listed;
 #[path = "mcp_agent_names_tests.rs"]
 mod naming;
 #[path = "mcp_agent_narrowed_tests.rs"]

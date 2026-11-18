@@ -55,7 +55,7 @@ mod undo_invocation;
 mod view;
 #[path = "mcp_watch.rs"]
 pub(super) mod watch;
-use answer::{action_row, action_rows, answer_of, outcome, text_result};
+use answer::{action_named, action_row, actions_named, answer_of, outcome, text_result};
 use level::{LevelPages, LsCursor};
 use render::{
     action_line, action_page, block_line, parse_read_cursor, read_answer, restart_pause,
@@ -1767,7 +1767,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         }
         let total = entries.len();
         // The actions of each kind of resource on the page, once: a row names
-        // the ones it offers, by id.
+        // the ones it offers, by id. Each is named here; what one takes in full is
+        // answered where that one action is asked for.
         let mut kinds = serde_json::Map::new();
         for child in children
             .iter()
@@ -1782,7 +1783,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                         .iter()
                         .any(|row| row["id"] == action.address.action.as_str())
                     {
-                        listed.push(action_row(action));
+                        listed.push(action_named(action));
                     }
                 }
             }
@@ -1838,8 +1839,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             let mut answer = json!({
                 "path": resolved.path,
                 "kind": kind,
-                "actions": action_rows(&resolved.actions),
                 "rows": rows,
+                "actions": actions_named(&resolved.actions),
                 "kinds": kinds,
             });
             if let (Some(fields), Some(next)) = (answer.as_object_mut(), next) {
