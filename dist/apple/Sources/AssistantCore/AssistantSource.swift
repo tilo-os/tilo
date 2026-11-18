@@ -49,6 +49,11 @@ public protocol AssistantSource: Sendable {
     /// into the conversation, not to a model, not into a log.
     func link(_ provider: ProviderChoice.ID, key: Secret) async throws -> [ModelChoice]
 
+    /// The providers a key can be typed for: the ones the person linked, each said to be so,
+    /// and the ones they can link beside them. It is what the provider step offers a person
+    /// who comes back to it for another key or another provider.
+    func providers() async throws -> [ProviderChoice]
+
     // MARK: A conversation
 
     /// The pieces of a conversation, live. The first change is `.all` with the latest pieces.
@@ -187,6 +192,7 @@ extension AssistantSource {
     public func link(_ provider: ProviderChoice.ID, key: Secret) async throws -> [ModelChoice] {
         throw SourceProblem.refused("No provider can be linked here")
     }
+    public func providers() async throws -> [ProviderChoice] { [] }
 }
 
 /// How a conversation changed.

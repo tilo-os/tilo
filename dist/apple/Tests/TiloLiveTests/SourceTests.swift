@@ -1218,6 +1218,46 @@ final class TiloSourceTests: XCTestCase {
         try await until("nothing more stands in the way") { self.setups.last == .ready }
     }
 
+    func testAPersonComesBackToAProviderTheyLinkedAndItsNewKeyTakesTheOldOnesPlaceOnTheirServer() async throws {
+        try await start(.assistant)
+        // A person whose server keeps one provider with its key, and whose main chat answers on a model of it.
+        try await enter(device: true, """
+            window.byKind = true; window.unlinked = true; window.agents = [kept('assistant', {name: 'Assistant'})];
+            window.added = [{id: 'p-7', name: 'OpenRouter', protocol: 'openrouter', endpoint: 'https://openrouter.example',
+              configured: true, models: [{id: 'm-1', label: 'Model one'}], defaultModel: 'm-1'}];
+            window.assignments = [{kind: 'request', provider: 'p-7', model: 'm-1'}]
+            """)
+        try await until("nothing stands in the way of an answer") { self.setups.last == .ready }
+        // The step they come back to offers the provider they linked, said to be linked, and the
+        // rest their server links by name. The one they linked is not offered a second time.
+        let offered = try await source.providers()
+        XCTAssertEqual(offered, [ProviderChoice(id: "p-7", name: "OpenRouter", isLinked: true), ProviderChoice(id: "anthropic", name: "Anthropic"),
+                                 ProviderChoice(id: "gemini", name: "Google Gemini"), ProviderChoice(id: "openai", name: "OpenAI")])
+        let said = setups.count
+        // Another made-up key, typed as into the protected field, for the provider that is linked.
+        let typed = "sk-made-up-second-key-typed-into-the-protected-field"
+        let models = try await source.link("p-7", key: Secret(typed))
+        XCTAssertEqual(models, [ModelChoice(id: "p-7/m-1", name: "Model one", provider: "OpenRouter"),
+                                ModelChoice(id: "p-7/m-2", name: "Model two", provider: "OpenRouter")])
+        // The provider keeps its place on their server: it is not added again, only its key is set.
+        let asked = try await page("return JSON.stringify(window.asks.filter(what => what.startsWith('tilo.models ') && !what.endsWith(' list')))")
+        XCTAssertEqual(asked, #"["tilo.models set-key","tilo.models refresh-models"]"#)
+        let keys = try await page("return JSON.stringify(window.keys)")
+        XCTAssertEqual(keys, "[\"\(typed)\"]")
+        // The model they chose stands, and nothing came to stand in the way of an answer.
+        let assigned = try await page("return JSON.stringify(window.assignments)")
+        XCTAssertEqual(assigned, #"[{"kind":"request","provider":"p-7","model":"m-1"}]"#)
+        XCTAssertEqual(setups.dropFirst(said).filter { $0 != .ready }, [])
+        XCTAssertEqual(setups.last, .ready)
+        // The key stands nowhere else.
+        let leaked = try await page("return String(JSON.stringify([window.messages, window.heard, window.asks]).includes(typed)) + ' ' + String(document.documentElement.outerHTML.includes(typed))",
+                                    ["typed": typed])
+        XCTAssertEqual(leaked, "false false")
+        XCTAssertFalse(String(describing: setups).contains(typed))
+        XCTAssertFalse(String(describing: changes).contains(typed))
+        XCTAssertFalse(String(describing: defaults.dictionaryRepresentation()).contains(typed))
+    }
+
     func testWhatThePageAsksBeforePairingIsWhereTheAppStandsAndOnlyThePersonsAnswerPressesIt() async throws {
         try await start()
         let whose = "You are adding this device to Ada Lovelace’s devices. If that is not you, stop."

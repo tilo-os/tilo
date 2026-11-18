@@ -18,6 +18,37 @@ public final class AssistantModel {
         case active, upNext, scheduled, resolved
     }
 
+    /// The provider step as a person comes back to it after the first start.
+    public struct KeyStep: Equatable, Sendable {
+        /// The providers it offers: the linked ones and the ones that can be linked.
+        public var providers: [ProviderChoice]
+        /// The one its protected field is for when it appears.
+        public var picked: ProviderChoice.ID
+    }
+
+    /// A way back to the provider step, as the assistant view's Model line offers it under the models.
+    public enum KeyWay: Equatable, Sendable, Identifiable {
+        /// Another key for a provider that is linked.
+        case anotherKey(ProviderChoice)
+        /// A provider that is not linked yet.
+        case anotherProvider
+
+        public var id: String {
+            switch self {
+            case .anotherKey(let provider): "key-\(provider.id.value)"
+            case .anotherProvider: "provider"
+            }
+        }
+
+        /// The line's words.
+        public var words: String {
+            switch self {
+            case .anotherKey(let provider): AssistantWords.anotherKey.said(["name": provider.name])
+            case .anotherProvider: AssistantWords.linkAnother.said
+            }
+        }
+    }
+
     @ObservationIgnored public let source: any AssistantSource
     /// Nil until the source has said where this device stands.
     public private(set) var session: Session?
@@ -28,6 +59,11 @@ public final class AssistantModel {
     public private(set) var supervision = Supervision()
     public private(set) var conversations: [Chat: Conversation] = [:]
     public private(set) var models: [ModelChoice] = []
+    /// The providers a key can be typed for, as the source listed them: linked, or to link.
+    public private(set) var providers: [ProviderChoice] = []
+    /// The provider step shown in the main chat again after the first start: the person asked
+    /// for it from the assistant view, for another key or another provider. Nil: not shown.
+    public private(set) var keyStep: KeyStep?
     /// What stands between the person and their assistant's first answer.
     public private(set) var setup = Setup.unknown
     /// What Tilo said before it asked whether to pair this device, kept while its code is compared.
@@ -408,8 +444,41 @@ public final class AssistantModel {
     public func loadModels() {
         Task {
             var found: [ModelChoice] = []
-            if await self.call({ found = try await self.source.models() }) { self.models = found }
+            var listed: [ProviderChoice] = []
+            let read = await self.call {
+                found = try await self.source.models()
+                listed = try await self.source.providers()
+            }
+            guard read else { return }
+            self.models = found
+            self.providers = listed
         }
+    }
+
+    /// The ways back to the provider step: another key for each linked provider, and another
+    /// provider where one is left to link. None while no provider is linked: then the main
+    /// chat shows the step by itself.
+    public var keyWays: [KeyWay] {
+        let linked = providers.filter(\.isLinked)
+        guard !linked.isEmpty else { return [] }
+        return linked.map(KeyWay.anotherKey) + (providers.contains { !$0.isLinked } ? [.anotherProvider] : [])
+    }
+
+    /// Take a way back: the provider step stands in the main chat again, with the way's
+    /// provider picked. Its protected field is the one place of the app a key is typed into.
+    public func take(_ way: KeyWay) {
+        let picked: ProviderChoice.ID? = switch way {
+        case .anotherKey(let provider): providers.first { $0.id == provider.id }?.id
+        case .anotherProvider: providers.first { !$0.isLinked }?.id
+        }
+        guard let picked else { return }
+        keyStep = KeyStep(providers: providers, picked: picked)
+        open(.main)
+    }
+
+    /// Put the provider step away again: the person types no other key now.
+    public func putAwayKeyStep() {
+        keyStep = nil
     }
 
     /// Choose the model of the main chat: the one that answers there and the one that works there.
@@ -452,6 +521,9 @@ public final class AssistantModel {
         var offered: [ModelChoice] = []
         guard await call({ offered = try await self.source.link(provider, key: key) }) else { return false }
         models = offered
+        // What is linked now is read anew, and a step the person came back to is done with.
+        if let listed = try? await source.providers() { providers = listed }
+        keyStep = nil
         return true
     }
 

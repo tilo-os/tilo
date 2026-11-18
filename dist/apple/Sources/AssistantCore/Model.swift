@@ -90,10 +90,14 @@ public struct ProviderChoice: Identifiable, Equatable, Sendable {
     public typealias ID = Identifier<ProviderChoice>
     public var id: ID
     public var name: String
+    /// Whether the person's vault keeps a key for it already: it is linked, and a key typed
+    /// for it takes that key's place.
+    public var isLinked: Bool
 
-    public init(id: ID, name: String) {
+    public init(id: ID, name: String, isLinked: Bool = false) {
         self.id = id
         self.name = name
+        self.isLinked = isLinked
     }
 }
 

@@ -27,6 +27,9 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     case findingAssistant = "finding-assistant", makingWorkspace = "making-workspace"
     case needsProvider = "needs-provider", providerKey = "provider-key"
     case linkProvider = "link-provider", needsModel = "needs-model", chooseModel = "choose-model", answersOn = "answers-on"
+    // The way back to the provider step, from the assistant view's Model line.
+    case anotherKey = "another-key", linkAnother = "link-another", anotherKeyStep = "another-key-step"
+    case anotherProviderStep = "another-provider-step", useKey = "use-key", keyTaken = "key-taken"
     // A sub-agent's window.
     case startedByMain = "started-by-main", startedByYou = "started-by-you", cannotReadMain = "cannot-read-main"
     case worksOnServer = "works-on-server", worksOnMachine = "works-on-machine", worksOnMachineWith = "works-on-machine-with"
@@ -144,6 +147,12 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .needsModel: "A provider is linked. Choose the model your assistant answers on."
         case .chooseModel: "Choose a model"
         case .answersOn: "Your assistant answers on {model}"
+        case .anotherKey: "Use another key for {name}"
+        case .linkAnother: "Link another provider"
+        case .anotherKeyStep: "Type another key of your own for {name} below. It takes the place of the key your vault keeps for {name}."
+        case .anotherProviderStep: "Choose a provider and type your own key for it below."
+        case .useKey: "Use this key for {name}"
+        case .keyTaken: "The key is in your vault. Your assistant answers on the model you chose, and you can change it here."
         case .startedByMain: "started {time} by the main agent"
         case .startedByYou: "started {time} by you"
         case .cannotReadMain: "it cannot read the main chat"

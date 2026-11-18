@@ -1737,12 +1737,25 @@ public final class TiloSource: AssistantSource {
     private static func setup(of linked: ModelProviders, choices: [ModelChoice]) -> Setup {
         if let answers = linked.model(for: WorkKind.request.rawValue), answers.provider.hasKey { return .ready }
         if !choices.isEmpty { return .needsModel(choices) }
-        // A provider the person added already stands first, under the name their server gives it.
-        var linkable = linked.providers.map { ProviderChoice(id: .init($0.id), name: $0.name) }
+        return .needsProvider(linkable(beside: linked))
+    }
+
+    /// The providers a key can be typed for. A provider the person added already stands first,
+    /// under the name their server gives it and said to be linked where it has its key; the
+    /// rest of the catalogue follows.
+    private static func linkable(beside linked: ModelProviders) -> [ProviderChoice] {
+        var linkable = linked.providers.map { ProviderChoice(id: .init($0.id), name: $0.name, isLinked: $0.hasKey) }
         for (id, name) in catalogue where !linkable.contains(where: { $0.id.value == id || $0.name == name }) {
             linkable.append(ProviderChoice(id: .init(id), name: name))
         }
-        return .needsProvider(linkable)
+        return linkable
+    }
+
+    /// What the provider step offers a person who comes back to it for another key or another provider.
+    public func providers() async throws -> [ProviderChoice] {
+        var read: [ProviderChoice] = []
+        try await taken { read = TiloSource.linkable(beside: try await self.engine.modelProviders()) }
+        return read
     }
 
     public func choose(_ model: ModelChoice.ID, for work: WorkKind) async throws {
