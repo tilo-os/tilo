@@ -446,11 +446,6 @@ paths = [
 ]
 
 [[allow]]
-reason = "The name a device's stored workspace entry of version 5 gives its join log: bytes devices hold, read and written by that name until the entry has a new version."
-words = ["ledger"]
-identifiers = ["join_ledger"]
-
-[[allow]]
 reason = "A size raise names the t run that measured it."
 words = ["run"]
 paths = ["tools/perf/tapp-size-budget/raises/*", "tools/perf/runtime-size-budget/raises/*"]

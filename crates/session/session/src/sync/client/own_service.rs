@@ -79,6 +79,31 @@ pub(super) async fn open(
     Ok(own.install(Arc::new(service)))
 }
 
+/// Note the links out of the workspaces this device holds, as its own service lists them: they
+/// were made before this session, and whoever redeems one dials this device
+/// ([`Engine::invitations_open`]).
+pub(super) async fn note_open_links(engine: &Arc<Engine>) {
+    for workspace in engine.workspaces() {
+        let named = workspace.to_string();
+        if !engine.is_holder(&named) {
+            continue;
+        }
+        let Some(asked) = engine.ask_holder(
+            workspace,
+            tilo_workspace_service::workspaces::INVITATIONS,
+            serde_json::Map::new(),
+        ) else {
+            return;
+        };
+        match asked.await {
+            Ok(listed) => engine.note_invitations(workspace, &listed),
+            Err(error) => {
+                tracing::warn!(%error, %named, "the links out of a workspace were not listed");
+            }
+        }
+    }
+}
+
 /// This device's key service, as its workspace service asks it for a workspace's keys.
 struct DeviceGroupKeys {
     keys: KeyProvider,

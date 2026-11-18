@@ -237,6 +237,9 @@ pub struct Engine {
     /// Where a workspace this device makes is founded: its own workspace service, once it is open
     /// ([`Self::serve_founding`]).
     founder: std::sync::OnceLock<Arc<dyn Founder>>,
+    /// When the links out of each workspace lapse, as its holder lists them: a joiner redeeming
+    /// one dials this device, which stays dialable while one is open ([`Self::invitations_open`]).
+    open_links: std::sync::Mutex<std::collections::BTreeMap<WorkspaceId, Vec<u64>>>,
 }
 
 /// One holder of a workspace, as a member's device reads it off the holder's
@@ -521,6 +524,7 @@ impl Engine {
             kept: std::sync::Mutex::default(),
             service_root: None,
             founder: std::sync::OnceLock::new(),
+            open_links: std::sync::Mutex::default(),
         }
     }
 
@@ -1905,16 +1909,48 @@ impl Engine {
         }))
     }
 
-    /// Whether this device holds a link into a workspace that still admits someone: a person who
-    /// redeems it dials this device, so its relays stay up until the link is taken back or lapses.
+    /// Whether this device holds a workspace whose link still admits someone: a person who
+    /// redeems it dials this device, which stays dialable until the link is taken back or lapses.
     #[must_use]
-    #[cfg(target_os = "linux")]
     pub fn invitations_open(&self, now: SystemTime) -> bool {
-        self.workspaces().into_iter().any(|workspace| {
-            self.owner
-                .pending_invitations(workspace, now)
-                .is_ok_and(|pending| !pending.is_empty())
-        })
+        let now = now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |since| since.as_nanos());
+        let open: Vec<WorkspaceId> = self
+            .open_links
+            .lock_recover()
+            .iter()
+            .filter(|(_, lapses)| lapses.iter().any(|lapses| u128::from(*lapses) > now))
+            .map(|(workspace, _)| *workspace)
+            .collect();
+        let own = self.identity.device_cert.device_public_key;
+        open.into_iter()
+            .any(|workspace| self.holder_of(workspace) == Some(own))
+    }
+
+    /// Note the links into `workspace` its holder's list names, each open until it lapses: in
+    /// place of what was noted before.
+    pub fn note_invitations(&self, workspace: WorkspaceId, listed: &serde_json::Value) {
+        let lapses = listed
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|link| {
+                link.get("expires_at_ns")
+                    .and_then(serde_json::Value::as_u64)
+            })
+            .collect();
+        self.open_links.lock_recover().insert(workspace, lapses);
+    }
+
+    /// Note the link into `workspace` that is open until `until`: one more beside the ones its
+    /// holder listed.
+    pub fn note_link(&self, workspace: WorkspaceId, until: u64) {
+        self.open_links
+            .lock_recover()
+            .entry(workspace)
+            .or_default()
+            .push(until);
     }
 
     /// Put the workspace a join is installing into on this device's layout: an enrollment only
@@ -2162,6 +2198,29 @@ mod tests {
 
             assert!(!engine.may_delete(WorkspaceId::new()));
         }
+    }
+
+    /// A link out of a workspace this device holds keeps it dialable for whoever redeems it, and
+    /// only until the link lapses.
+    #[test]
+    fn a_link_out_of_a_held_workspace_keeps_this_device_dialable_until_it_lapses() {
+        let state = tempfile::tempdir().expect("a state directory");
+        let (identity, _) = identity(DeviceCapabilities::member());
+        let engine = engine(state.path(), identity);
+        let workspace = founded(&engine);
+        let now = tilo_clock::wall();
+        assert!(!engine.invitations_open(now), "no link is out");
+
+        let lapses = tilo_clock::unix_now_ns().saturating_add(60_000_000_000);
+        engine.note_link(workspace, lapses);
+        assert!(engine.invitations_open(now), "one is");
+        assert!(!engine.invitations_open(now + std::time::Duration::from_secs(120)));
+
+        let listed = serde_json::json!([{ "expires_at_ns": lapses }]);
+        engine.note_invitations(workspace, &listed);
+        assert!(engine.invitations_open(now), "its holder lists it too");
+        engine.note_invitations(workspace, &serde_json::json!([]));
+        assert!(!engine.invitations_open(now), "the holder lists none");
     }
 
     /// A machine copied from a device, before the workspace admits it, reads what the copy holds,

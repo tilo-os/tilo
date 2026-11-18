@@ -687,6 +687,12 @@ async fn listening(
     if ready.send(Ok((publisher, addr, reachability))).is_err() {
         return None;
     }
+    // The links out of the workspaces this device holds were made before this session, and its
+    // service kept them: whoever redeems one dials this device (`Engine::invitations_open`).
+    if let (true, Some(engine)) = (opened, engine) {
+        let noting = Arc::clone(engine);
+        tokio::spawn(async move { super::own_service::note_open_links(&noting).await });
+    }
     Some(Listening {
         endpoint,
         actor,

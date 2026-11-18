@@ -440,7 +440,6 @@ mod tests {
             effect_receipts: BTreeMap::new(),
             shortcut_change: None,
             effect_history_root: None,
-            join_log: crate::join_log::JoinLog::default(),
             join_admissions: BTreeMap::new(),
         };
         let mut record = NativeAuthorityStorage {
