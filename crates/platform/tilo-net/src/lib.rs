@@ -182,6 +182,27 @@ pub mod http {
         builder
     }
 
+    /// [`blocking_client`] for a caller that keeps its requests off some
+    /// addresses: for every name it dials only the addresses `lookup` answers,
+    /// in the one lookup the connection itself makes
+    /// ([`crate::ClientBuilder::lookup`]), and it takes no proxy from the
+    /// environment, which would resolve a name behind that lookup. An address
+    /// written into a URL is not looked up: its caller asks
+    /// [`crate::address::asked_as_written`] before it sends anything there.
+    #[cfg(feature = "blocking")]
+    pub fn blocking_client_looking(lookup: crate::Lookup) -> reqwest::blocking::ClientBuilder {
+        blocking_client()
+            .dns_resolver(std::sync::Arc::new(crate::native::http::Looked(lookup)))
+            .no_proxy()
+    }
+
+    /// What a client's own lookup said when it refused the name a request was
+    /// for, read from that request's `error`: nothing was sent.
+    #[must_use]
+    pub fn refused_by_lookup(error: &(dyn std::error::Error + 'static)) -> Option<String> {
+        crate::native::http::refused(error)
+    }
+
     /// Resolution for Tilo's clients: a name under `localhost` is this machine's
     /// ([`crate::loopback_name`]), whoever the machine's resolver is, and every
     /// other name is the system resolver's, as reqwest's own is.

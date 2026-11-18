@@ -316,6 +316,10 @@ async fn a_telling_takes_no_password_and_nothing_that_makes_the_account_writable
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_address_that_is_not_https_or_is_inside_is_refused_before_anybody_is_asked() {
     let hers = Hers::new().await;
+    // The shared harness keeps its calendar server on this machine, so its
+    // operator lets the server call its own network. This test is of a
+    // server that calls public addresses alone, as a server does by default.
+    hers.workspaces.call_private_model_addresses(false);
     let (scout, keeper) = (on_turn(&hers.ada, &hers.workspace, SCOUT), hers.keeper());
     let turn = hers.turn(&scout, &keeper, None);
     for (address, words) in [

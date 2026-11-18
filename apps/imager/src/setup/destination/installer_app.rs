@@ -1218,6 +1218,8 @@ impl InstallerApp {
             disk_major_minor: disk.map_or_else(String::new, |disk| disk.major_minor.clone()),
             disk_wwn: disk.map_or_else(String::new, |disk| disk.wwn.clone()),
             disk_serial: disk.map_or_else(String::new, |disk| disk.serial.clone()),
+            // The interactive install leaves disk unlock to the image's own default.
+            unlock: String::new(),
             alongside_root: root.map_or_else(String::new, |partition| partition.name.clone()),
             alongside_root_partuuid: root
                 .map_or_else(String::new, |partition| partition.part_uuid.clone()),

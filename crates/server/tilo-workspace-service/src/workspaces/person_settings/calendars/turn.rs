@@ -126,6 +126,7 @@ impl Workspaces {
         if !turn.may_take(&using.workspace, target) {
             return Err(ActionError::NotPermitted);
         }
+        let reach = self.inner.models.mail_reach();
         match action {
             LIST => answer(&Ok::<_, String>(Listed {
                 accounts: accounts
@@ -135,11 +136,13 @@ impl Workspaces {
             })),
             ENTRIES => {
                 let asked: SpanAsked = argument(request, "a span to read")?;
-                answer(&off_thread(move || entries(&root, &accounts, &asked, FRESH_MS)).await)
+                answer(
+                    &off_thread(move || entries(&root, &reach, &accounts, &asked, FRESH_MS)).await,
+                )
             }
             FREE => {
                 let asked: FreeAsked = argument(request, "a span to find free time in")?;
-                answer(&off_thread(move || free(&root, &accounts, &asked)).await)
+                answer(&off_thread(move || free(&root, &reach, &accounts, &asked)).await)
             }
             _ => Err(ActionError::UnknownAction),
         }

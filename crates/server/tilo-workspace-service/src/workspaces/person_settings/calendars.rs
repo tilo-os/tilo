@@ -57,7 +57,8 @@ use calendar_model::model::Event;
 use calendar_model::spans::{FreeAsked, SpanAsked};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tilo_account_probe::{AccountTester as _, LiveAccountTester, local_http_allowed};
+use tilo_account_probe::imap::Reach;
+use tilo_account_probe::{AccountTester as _, FindingAccountTester, local_http_allowed};
 use tilo_actions::remote::person_accounts;
 use tilo_actions::remote::person_asking::{ActionName, Asked, Thing};
 use tilo_actions::remote::person_vault::ItemRef;
@@ -439,14 +440,17 @@ fn server_of(server_url: &str) -> Result<Url, String> {
 }
 
 /// A connection that signs in to `account`'s server and follows no
-/// redirect, so the sign-in reaches that server alone.
-fn client(account: &Account, password: &str) -> Result<(DavClient, Url), String> {
+/// redirect, so the sign-in reaches that server alone. It goes only where
+/// `reach` lets it, judged at the connection itself: what the server's name
+/// answered when the account was added decides nothing now.
+fn client(account: &Account, password: &str, reach: &Reach) -> Result<(DavClient, Url), String> {
     let server = server_of(&account.server_url)?;
     let client = DavClient::new(&tilo_dav::Options {
         user_agent: None,
         timeout: std::time::Duration::from_secs(20),
         connect_timeout: Some(std::time::Duration::from_secs(8)),
         redirects: tilo_dav::Redirects::Refuse,
+        lookup: Some(reach.lookup()),
     })
     .map_err(|_| "could not start the secure connection".to_owned())?
     .with_credentials(Credentials::new(
@@ -466,8 +470,8 @@ fn on_server(server: &Url, address: &str) -> Result<Url, String> {
 
 /// Pull every calendar of `account` into `kept`: what changed since the
 /// last pull where the server tells, everything where it does not.
-fn pull(account: &Account, password: &str, kept: &mut Kept) -> Result<(), String> {
-    let (client, server) = client(account, password)?;
+fn pull(account: &Account, password: &str, kept: &mut Kept, reach: &Reach) -> Result<(), String> {
+    let (client, server) = client(account, password, reach)?;
     let wanted: BTreeSet<&str> = account
         .calendars
         .iter()
@@ -550,10 +554,10 @@ fn pull(account: &Account, password: &str, kept: &mut Kept) -> Result<(), String
 
 /// Ask `account`'s server now and keep what it answers. A pull that does
 /// not end leaves the copy as it was and says why with it.
-fn sync(root: &Path, account: &Account) -> Result<(), String> {
+fn sync(root: &Path, reach: &Reach, account: &Account) -> Result<(), String> {
     let mut kept = read_kept(root, &account.id);
-    let pulled =
-        password_of(root, &account.id).and_then(|password| pull(account, &password, &mut kept));
+    let pulled = password_of(root, &account.id)
+        .and_then(|password| pull(account, &password, &mut kept, reach));
     match &pulled {
         Ok(()) => {
             kept.synced_at_ms = now_ms();
@@ -602,8 +606,9 @@ fn account_id(username: &str, server: &Url) -> String {
 }
 
 /// Add an account once its server answered the sign-in with the calendars
-/// it holds: the password into the vault, the account into the store.
-fn add(root: &Path, adding: Add) -> Result<AccountView, String> {
+/// it holds: the password into the vault, the account into the store. Its
+/// server is asked within `reach`, as it is at every later read.
+fn add(root: &Path, reach: &Reach, adding: Add) -> Result<AccountView, String> {
     let username = adding.username.trim().to_owned();
     if username.is_empty() || adding.password.is_empty() {
         return Err("A calendar account has a user name and a password".into());
@@ -618,7 +623,7 @@ fn add(root: &Path, adding: Add) -> Result<AccountView, String> {
             .any(|kept| kept.id == id && kept.read_only);
     let mut asked = accounts::Account::new(accounts::AccountId::from(id.clone()), TYPE_ID);
     asked.config = serde_json::json!({ "server_url": server.as_str(), "username": username });
-    let found = LiveAccountTester
+    let found = FindingAccountTester(reach.clone())
         .discover_calendars(&asked, &accounts::Secret::password(adding.password.clone()))?;
     let calendars = found
         .into_iter()
@@ -659,13 +664,18 @@ fn add(root: &Path, adding: Add) -> Result<AccountView, String> {
         .ok_or_else(|| "the account was kept but did not read back".to_owned())?;
     // What it holds now; a server that is slow to answer is asked again
     // by the first read.
-    let _ = sync(root, &account);
+    let _ = sync(root, reach, &account);
     Ok(view(root, &account))
 }
 
 /// Add an account with the sign-in the vault item `adding` names keeps:
 /// a login that belongs to the server's own origin, and to nothing else.
-fn add_with_item(root: &Path, adding: AddWithItem, by: &str) -> Result<AccountView, String> {
+fn add_with_item(
+    root: &Path,
+    reach: &Reach,
+    adding: AddWithItem,
+    by: &str,
+) -> Result<AccountView, String> {
     let server = server_of(&adding.server_url)?;
     let place =
         accounts::vault_items::Place::parse(server.as_str()).map_err(|error| error.to_string())?;
@@ -682,6 +692,7 @@ fn add_with_item(root: &Path, adding: AddWithItem, by: &str) -> Result<AccountVi
         .unwrap_or_else(|| std::mem::take(&mut sign_in.username));
     add(
         root,
+        reach,
         Add {
             server_url: adding.server_url,
             username,
@@ -710,10 +721,10 @@ fn remove(root: &Path, account: &str) -> Result<Listed, String> {
 /// Bring the copies of `accounts` up to date when they are older than a
 /// reader should be answered from. A server that does not answer leaves
 /// its copy, with why.
-fn freshen(root: &Path, accounts: &[Account], fresh_ms: i64) {
+fn freshen(root: &Path, reach: &Reach, accounts: &[Account], fresh_ms: i64) {
     for account in accounts {
         if now_ms().saturating_sub(read_kept(root, &account.id).synced_at_ms) > fresh_ms {
-            let _ = sync(root, account);
+            let _ = sync(root, reach, account);
         }
     }
 }
@@ -731,11 +742,12 @@ fn bounded_notes(notes: &str) -> String {
 
 fn entries(
     root: &Path,
+    reach: &Reach,
     accounts: &[Account],
     asked: &SpanAsked,
     fresh_ms: i64,
 ) -> Result<Value, String> {
-    freshen(root, accounts, fresh_ms);
+    freshen(root, reach, accounts, fresh_ms);
     let held = held(root, accounts);
     let events: Vec<&Event> = held.iter().map(|held| &held.event).collect();
     let mut answered = asked.answer(&events)?;
@@ -767,8 +779,13 @@ fn entries(
     Ok(value)
 }
 
-fn free(root: &Path, accounts: &[Account], asked: &FreeAsked) -> Result<Value, String> {
-    freshen(root, accounts, FRESH_MS);
+fn free(
+    root: &Path,
+    reach: &Reach,
+    accounts: &[Account],
+    asked: &FreeAsked,
+) -> Result<Value, String> {
+    freshen(root, reach, accounts, FRESH_MS);
     let held = held(root, accounts);
     let events: Vec<&Event> = held.iter().map(|held| &held.event).collect();
     serde_json::to_value(asked.answer(&events)?).map_err(|error| error.to_string())
@@ -778,6 +795,7 @@ fn free(root: &Path, accounts: &[Account], asked: &FreeAsked) -> Result<Value, S
 /// `Ok(false)` when the server holds something else there than expected.
 fn write(
     root: &Path,
+    reach: &Reach,
     account: &Account,
     url: &str,
     ics: String,
@@ -788,7 +806,7 @@ fn write(
     if account.read_only {
         return Err(READ_ONLY.into());
     }
-    let (client, server) = client(account, &password_of(root, &account.id)?)?;
+    let (client, server) = client(account, &password_of(root, &account.id)?, reach)?;
     let response = client
         .put(
             on_server(&server, url)?,
@@ -911,11 +929,16 @@ struct Planned {
 /// What putting the event `invitation` describes into a calendar comes to:
 /// created under the invitation's own identity, so the same invitation
 /// again finds it. Nothing is written yet.
-fn planned(root: &Path, accounts: &[Account], invitation: &Invitation) -> Result<Planned, String> {
+fn planned(
+    root: &Path,
+    reach: &Reach,
+    accounts: &[Account],
+    invitation: &Invitation,
+) -> Result<Planned, String> {
     let calendar_model::ics::Invitation { event, cancels } =
         calendar_model::ics::invitation(&invitation.ics)?;
     let (account, calendar) = writable(accounts, invitation.calendar.as_deref())?;
-    let _ = sync(root, account);
+    let _ = sync(root, reach, account);
     let existing = held(root, std::slice::from_ref(account))
         .into_iter()
         .find(|held| held.event.id == event.id);
@@ -975,7 +998,7 @@ fn planned(root: &Path, accounts: &[Account], invitation: &Invitation) -> Result
 /// Write what `planned` comes to on its calendar's server, and answer what
 /// was made of the invitation. An entry that is no longer what was read
 /// when it was planned is not written over.
-fn carry_out(root: &Path, planned: Planned) -> Result<Value, String> {
+fn carry_out(root: &Path, reach: &Reach, planned: Planned) -> Result<Value, String> {
     let Planned {
         account,
         entry,
@@ -990,7 +1013,7 @@ fn carry_out(root: &Path, planned: Planned) -> Result<Value, String> {
             if account.read_only {
                 return Err(READ_ONLY.into());
             }
-            let (client, server) = client(&account, &password_of(root, &account.id)?)?;
+            let (client, server) = client(&account, &password_of(root, &account.id)?, reach)?;
             let matching = found.etag.as_deref().unwrap_or("*");
             // The server answers nobody for its person: where they were
             // invited, declining is theirs to say.
@@ -1029,6 +1052,7 @@ fn carry_out(root: &Path, planned: Planned) -> Result<Value, String> {
             };
             if !write(
                 root,
+                reach,
                 &account,
                 &found.url,
                 text,
@@ -1039,14 +1063,21 @@ fn carry_out(root: &Path, planned: Planned) -> Result<Value, String> {
             "updated"
         }
         Change::Create(url) => {
-            if !write(root, &account, &url, text, Precondition::IfNoneMatchAny)? {
+            if !write(
+                root,
+                reach,
+                &account,
+                &url,
+                text,
+                Precondition::IfNoneMatchAny,
+            )? {
                 return Err("The entry changed on its server meanwhile: ask again".into());
             }
             "created"
         }
     };
     if made != "unchanged" {
-        let _ = sync(root, &account);
+        let _ = sync(root, reach, &account);
     }
     Ok(serde_json::json!({ "entry": entry, "made": made }))
 }
@@ -1055,10 +1086,11 @@ fn carry_out(root: &Path, planned: Planned) -> Result<Value, String> {
 /// whose calendar it is: their asking is their word.
 fn add_invitation(
     root: &Path,
+    reach: &Reach,
     accounts: &[Account],
     invitation: &Invitation,
 ) -> Result<Value, String> {
-    carry_out(root, planned(root, accounts, invitation)?)
+    carry_out(root, reach, planned(root, reach, accounts, invitation)?)
 }
 
 /// Keep that the agent `by` put in the entry `entry` of `account`, as the
@@ -1292,7 +1324,12 @@ struct Filing {
 /// What filing the entry `asked` names under its categories comes to, in
 /// the text its server holds: every other line of the entry stays as the
 /// server has it. Nothing is written yet.
-fn filing(root: &Path, accounts: &[Account], asked: &Categories) -> Result<Filing, String> {
+fn filing(
+    root: &Path,
+    reach: &Reach,
+    accounts: &[Account],
+    asked: &Categories,
+) -> Result<Filing, String> {
     if asked.categories.len() > calendar_model::model::MAX_CATEGORIES {
         return Err("an entry has at most 32 categories".into());
     }
@@ -1302,7 +1339,7 @@ fn filing(root: &Path, accounts: &[Account], asked: &Categories) -> Result<Filin
         .map(|named| calendar_model::model::category(named))
         .collect::<Option<Vec<String>>>()
         .ok_or("a category is a few words of at most 64 characters")?;
-    freshen(root, accounts, FRESH_MS);
+    freshen(root, reach, accounts, FRESH_MS);
     let held = held(root, accounts)
         .into_iter()
         .find(|held| held.event.id.to_string() == asked.entry)
@@ -1382,7 +1419,7 @@ fn filed(filing: &Filing, by: &PutIn) -> Result<Judged, String> {
 
 /// Write what `filing` comes to on its calendar's server. An entry that is
 /// no longer what was read when it was planned is not written over.
-fn file(root: &Path, filing: Filing) -> Result<Value, String> {
+fn file(root: &Path, reach: &Reach, filing: Filing) -> Result<Value, String> {
     let Filing {
         account,
         entry,
@@ -1393,17 +1430,29 @@ fn file(root: &Path, filing: Filing) -> Result<Value, String> {
         ..
     } = filing;
     let matching = etag.as_deref().unwrap_or("*");
-    if !write(root, &account, &url, text, Precondition::IfMatch(matching))? {
+    if !write(
+        root,
+        reach,
+        &account,
+        &url,
+        text,
+        Precondition::IfMatch(matching),
+    )? {
         return Err("The entry changed on its server meanwhile: ask again".into());
     }
-    let _ = sync(root, &account);
+    let _ = sync(root, reach, &account);
     Ok(serde_json::json!({ "entry": entry, "categories": categories }))
 }
 
 /// File the entry `asked` names under its categories, for the person whose
 /// calendar it is: their asking is their word.
-fn set_categories(root: &Path, accounts: &[Account], asked: &Categories) -> Result<Value, String> {
-    file(root, filing(root, accounts, asked)?)
+fn set_categories(
+    root: &Path,
+    reach: &Reach,
+    accounts: &[Account],
+    asked: &Categories,
+) -> Result<Value, String> {
+    file(root, reach, filing(root, reach, accounts, asked)?)
 }
 
 /// Do `work`, which asks servers, off the threads that answer requests.
@@ -1475,8 +1524,9 @@ impl Workspaces {
         }
         let asked = SpanAsked::between_ms(from_ms, to_ms)
             .ok_or_else(|| "a time no calendar reaches".to_owned())?;
+        let reach = self.inner.models.mail_reach();
         off_thread(move || {
-            let mut read = entries(&root, &accounts, &asked, TIMES_FRESH_MS)?;
+            let mut read = entries(&root, &reach, &accounts, &asked, TIMES_FRESH_MS)?;
             match read.get_mut("entries").map(Value::take) {
                 Some(Value::Array(occurrences)) => Ok(occurrences),
                 _ => Ok(Vec::new()),
@@ -1501,7 +1551,8 @@ impl Workspaces {
             request,
             "a calendar account names its server and the vault item that is its password",
         )?;
-        let kept = off_thread(move || add_with_item(&root, adding, &by)).await;
+        let reach = self.inner.models.mail_reach();
+        let kept = off_thread(move || add_with_item(&root, &reach, adding, &by)).await;
         if kept.is_ok() {
             self.person_settings_changed();
         }
@@ -1598,8 +1649,10 @@ impl Workspaces {
         let reading = root.clone();
         let by = assistant.putting();
         let asking = by.clone();
+        let reach = self.inner.models.mail_reach();
+        let reaching = reach.clone();
         let read = off_thread(move || {
-            let planned = planned(&reading, &accounts, &invitation)?;
+            let planned = planned(&reading, &reaching, &accounts, &invitation)?;
             let own = own_addresses(&reading, &planned.account);
             let judged = judged(&planned, &own, &asking)?;
             Ok((planned, judged))
@@ -1630,7 +1683,7 @@ impl Workspaces {
         let creates = matches!(planned.change, Change::Create(_));
         let made = off_thread(move || {
             let (account, entry) = (planned.account.clone(), planned.entry.clone());
-            let made = carry_out(&root, planned)?;
+            let made = carry_out(&root, &reach, planned)?;
             // What it put in is its own to bring up to date and take out.
             if creates {
                 note_put_in(&root, &account, &entry, by);
@@ -1661,8 +1714,10 @@ impl Workspaces {
     ) -> Result<Value, ActionError> {
         let reading = root.clone();
         let by = assistant.putting();
+        let reach = self.inner.models.mail_reach();
+        let reaching = reach.clone();
         let read = off_thread(move || {
-            let filing = filing(&reading, &accounts, &asked)?;
+            let filing = filing(&reading, &reaching, &accounts, &asked)?;
             let judged = filed(&filing, &by)?;
             Ok((filing, judged))
         })
@@ -1689,7 +1744,7 @@ impl Workspaces {
                 stays
             }
         };
-        let made = off_thread(move || file(&root, filing)).await;
+        let made = off_thread(move || file(&root, &reach, filing)).await;
         // What went ahead unasked is counted, for its person to see.
         if let (Ok(_), Some(permission)) = (&made, &stays) {
             self.permission_used(&assistant.person, permission);
@@ -1718,11 +1773,12 @@ impl Workspaces {
         let listed = |root: &Path, accounts: &[Account]| Listed {
             accounts: accounts.iter().map(|account| view(root, account)).collect(),
         };
+        let reach = self.inner.models.mail_reach();
         match action.as_str() {
             LIST => answer(&Ok::<_, String>(listed(&root, &accounts))),
             ADD => {
                 let adding: Add = argument(request, "a calendar account to add")?;
-                let kept = off_thread(move || add(&root, adding)).await;
+                let kept = off_thread(move || add(&root, &reach, adding)).await;
                 if kept.is_ok() {
                     self.person_settings_changed();
                 }
@@ -1748,7 +1804,7 @@ impl Workspaces {
                         .iter()
                         .filter(|account| asked.account.as_ref().is_none_or(|id| *id == account.id))
                     {
-                        sync(&root, account)?;
+                        sync(&root, &reach, account)?;
                     }
                     Ok(listed(&root, &accounts))
                 });
@@ -1756,19 +1812,21 @@ impl Workspaces {
             }
             ENTRIES => {
                 let asked: SpanAsked = argument(request, "a span to read")?;
-                answer(&off_thread(move || entries(&root, &accounts, &asked, FRESH_MS)).await)
+                answer(
+                    &off_thread(move || entries(&root, &reach, &accounts, &asked, FRESH_MS)).await,
+                )
             }
             FREE => {
                 let asked: FreeAsked = argument(request, "a span to find free time in")?;
-                answer(&off_thread(move || free(&root, &accounts, &asked)).await)
+                answer(&off_thread(move || free(&root, &reach, &accounts, &asked)).await)
             }
             ADD_INVITATION => {
                 let asked: Invitation = argument(request, "an invitation to add")?;
                 match assistant {
                     // Their own asking is their word.
-                    None => {
-                        answer(&off_thread(move || add_invitation(&root, &accounts, &asked)).await)
-                    }
+                    None => answer(
+                        &off_thread(move || add_invitation(&root, &reach, &accounts, &asked)).await,
+                    ),
                     Some(assistant) => {
                         Box::pin(self.assistant_adds(root, accounts, asked, &assistant, caller))
                             .await
@@ -1779,9 +1837,9 @@ impl Workspaces {
                 let asked: Categories = argument(request, "an entry and its categories")?;
                 match assistant {
                     // Their own asking is their word.
-                    None => {
-                        answer(&off_thread(move || set_categories(&root, &accounts, &asked)).await)
-                    }
+                    None => answer(
+                        &off_thread(move || set_categories(&root, &reach, &accounts, &asked)).await,
+                    ),
                     Some(assistant) => {
                         Box::pin(self.assistant_files(root, accounts, asked, &assistant, caller))
                             .await

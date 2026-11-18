@@ -97,6 +97,19 @@ impl Reach {
         asking.block_on(self.addresses(named)).is_ok()
     }
 
+    /// What a client that makes its own connections asks where a server is,
+    /// within this reach ([`tilo_dav::Options::lookup`]): the same one
+    /// look-up, judged the same, and whether only the public internet is
+    /// reached asked anew at every connection.
+    #[must_use]
+    pub fn lookup(&self) -> Lookup {
+        let reach = self.clone();
+        Arc::new(move |named: String| {
+            let reach = reach.clone();
+            Box::pin(async move { reach.addresses(&named).await })
+        })
+    }
+
     /// The addresses to connect to for `named`, from one look-up: under
     /// [`Self::public`] every one of them judged, and all of them or none.
     async fn addresses(&self, named: &str) -> std::io::Result<Vec<IpAddr>> {

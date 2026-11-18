@@ -179,12 +179,7 @@ impl Session {
                             focus.as_ref(),
                             None,
                         );
-                        (
-                            present.workspace,
-                            present.session.0,
-                            present.agent.clone(),
-                            face,
-                        )
+                        (present.workspace, present.session.0, present.agent, face)
                     })
                     .collect()
             });

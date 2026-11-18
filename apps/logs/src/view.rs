@@ -115,7 +115,7 @@ fn severity_options() -> Vec<(String, String)> {
     Priority::ALL
         .iter()
         .rev()
-        .map(|p| (p.level().to_string(), p.threshold_label().to_owned()))
+        .map(|p| (p.level().to_string(), p.threshold_label()))
         .collect()
 }
 
@@ -133,12 +133,8 @@ fn journal_table() -> DataTable<JournalRow> {
         ColumnDef::new("time", "Time", ColumnWidth::Auto)
             .with_kind(TextKind::Numeric)
             .with_text(|row: &JournalRow| row.time.clone()),
-        ColumnDef::new("level", "Level", ColumnWidth::Auto).with_badge(|row: &JournalRow| {
-            (
-                row.priority.long().to_owned(),
-                crate::model::tone(row.priority),
-            )
-        }),
+        ColumnDef::new("level", "Level", ColumnWidth::Auto)
+            .with_badge(|row: &JournalRow| (row.priority.long(), crate::model::tone(row.priority))),
         ColumnDef::new("unit", "Unit", ColumnWidth::Auto)
             .with_text(|row: &JournalRow| row.unit.clone())
             .priority(1),

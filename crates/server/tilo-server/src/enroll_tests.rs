@@ -433,6 +433,28 @@ fn payload(root: &ed25519_dalek::SigningKey) -> ResponsePayload {
     }
 }
 
+/// The certificate `root`'s person signs for `device`.
+fn root_signed(
+    root: &ed25519_dalek::SigningKey,
+    device: [u8; 32],
+    label: &str,
+    capabilities: DeviceCapabilities,
+    issued_at_ns: u64,
+) -> DeviceCert {
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: device,
+        device_label: label.into(),
+        capabilities,
+        issued_at_ns,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    sign_device_cert(&mut cert, root).unwrap();
+    cert
+}
+
 /// A server's enrollment answers with the person's own store beside its
 /// certificate: the machine keeps that list in its identity root, where the
 /// devices it may ask at boot come from with no session of theirs running.
@@ -444,17 +466,13 @@ fn a_home_peer_keeps_the_persons_devices_from_its_enrollment() {
     let user = root.verifying_key().to_bytes();
     let identity_id = hex::encode(user);
     let issuer = ed25519_dalek::SigningKey::from_bytes(&[32; 32]);
-    let mut issuer_cert = DeviceCert {
-        user_public_key: user,
-        device_public_key: issuer.verifying_key().to_bytes(),
-        device_label: "The laptop".into(),
-        capabilities: DeviceCapabilities::primary(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut issuer_cert, &root).unwrap();
+    let issuer_cert = root_signed(
+        &root,
+        issuer.verifying_key().to_bytes(),
+        "The laptop",
+        DeviceCapabilities::primary(),
+        1,
+    );
     let now = now_ns().unwrap();
     let token = tilo_user_identity::mint_enrollment_token(
         user,
@@ -480,17 +498,7 @@ fn a_home_peer_keeps_the_persons_devices_from_its_enrollment() {
     };
     let prepared = prepare_join(&token_text, options).unwrap();
     let machine = prepared.device.verifying_key().to_bytes();
-    let mut cert = DeviceCert {
-        user_public_key: user,
-        device_public_key: machine,
-        device_label: "NAS".into(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: now,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, &root).unwrap();
+    let cert = root_signed(&root, machine, "NAS", DeviceCapabilities::member(), now);
     let home_peer = fs::full_replica::HomePeerSet {
         status_file: PathBuf::from("/var/lib/tilo/full-replica/status.json"),
         workspaces: Vec::new(),
@@ -504,7 +512,7 @@ fn a_home_peer_keeps_the_persons_devices_from_its_enrollment() {
         public_identity_json: None,
         fleet_json: Some(fleet_document(
             &identity_id,
-            vec![issuer_cert, cert.clone()],
+            vec![issuer_cert, cert],
             Vec::new(),
         )),
         home_peers_json: Some(b"[]".to_vec()),

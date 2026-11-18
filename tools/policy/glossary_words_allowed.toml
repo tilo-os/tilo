@@ -263,6 +263,7 @@ paths = [
     "apps/chat/*",
     "apps/tl/chat/*",
     "crates/agent/agent-session/tests/workspace_actions/carried_names.rs",
+    "crates/agent/agent-session/tests/workspace_actions/held_roles.rs",
     "crates/sdk/ui-core/src/mentions.rs",
     "crates/session/session/src/mentions.rs",
 ]
@@ -916,6 +917,7 @@ paths = [
     "crates/server/tilo-workspace-service/src/workspaces/hosted_use.rs",
     "crates/server/tilo-workspace-service/src/workspaces/actions/host/turn_delegation_tests.rs",
     "crates/server/tilo-workspace-service/src/workspaces/actions/host/mail_reach_tests.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/actions/host/calendar_reach_tests.rs",
 ]
 
 [[allow]]
