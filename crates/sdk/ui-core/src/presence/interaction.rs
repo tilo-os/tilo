@@ -345,25 +345,6 @@ impl PresenceCtx {
         before != self.interactions.len()
     }
 
-    /// Current, non-expired interactions for a resource. App-native renderers
-    /// use this to project text ranges, cells, objects, rows, and timelines.
-    pub fn interactions_for_resource(
-        &self,
-        resource_id: &str,
-        now: Instant,
-    ) -> Vec<&SemanticInteraction> {
-        let mut entries = self
-            .interactions
-            .values()
-            .filter(|entry| entry.visible_at(now) && entry.interaction.resource.id == resource_id)
-            .collect::<Vec<_>>();
-        sort_entries(&mut entries);
-        entries
-            .into_iter()
-            .map(|entry| &entry.interaction)
-            .collect()
-    }
-
     /// Say that this frame paints `invocation`'s exact place: the characters
     /// a write landed in, or the row it names. The activity rail then leaves
     /// the invocation out, so one action is not named twice on one frame.
