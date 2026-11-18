@@ -262,7 +262,8 @@ impl PeerOutbox<'_> {
                         seq,
                         encryption,
                     )
-                    .with_claims(envelope.claims.clone()),
+                    .with_claims(envelope.claims.clone())
+                    .with_governance(&self.peer.governance_heads()?),
                 ))
             })
             .collect()

@@ -646,7 +646,7 @@ fn numbered(
         let mut request = kept.clone();
         let CommitOperation::Document {
             app,
-            document: record,
+            document,
             envelope,
             ..
         } = &mut request.operation
@@ -657,10 +657,19 @@ fn numbered(
             return Err("native local publication signer differs from selected device".into());
         }
         if let Some(signed) = signed {
+            // A write signed before the turn (an app's, signed by the identity service) names the
+            // governance this owner admits it under, and is signed again for it; one the document
+            // holds already is a retry, kept as it was taken.
+            if !matches!(
+                live.lookup_exact_local_document(app, document, envelope, now),
+                Ok(Some(_))
+            ) {
+                envelope.name_governance(&live.governance_heads()?);
+            }
             **envelope = live
-                .sequenced_local_document(app, record, (**envelope).clone(), now)?
+                .sequenced_local_document(app, document, (**envelope).clone(), now)?
                 .0;
-            let before = taken.entry((app.clone(), record.clone())).or_insert(0);
+            let before = taken.entry((app.clone(), document.clone())).or_insert(0);
             if envelope.seq <= *before {
                 envelope.seq = before.checked_add(1).ok_or("sequence exhausted")?;
             }
