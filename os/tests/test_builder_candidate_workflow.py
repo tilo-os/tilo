@@ -65,6 +65,8 @@ class BuilderCandidates(unittest.TestCase):
             script.write_text(wrapper.read_text())
             (root / 'tools/ci/package_features.py').write_text(
                 (ROOT / 'tools/ci/package_features.py').read_text())
+            (root / 'tools/ci/handed.sh').write_text(
+                (ROOT / 'tools/ci/handed.sh').read_text())
             bin_dir = root / 'bin'
             bin_dir.mkdir()
             uname = bin_dir / 'uname'
