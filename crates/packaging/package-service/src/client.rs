@@ -338,6 +338,13 @@ impl BlockingClient {
         Self::from_connected_fd(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) })
     }
 
+    /// No transport carries the service off unix, so no session hands one off there: every
+    /// caller sees the reason instead of selecting the call by target.
+    #[cfg(not(unix))]
+    pub fn from_service() -> Result<Self, String> {
+        Err("the package service needs a session this platform has none of".to_owned())
+    }
+
     /// Open an explicitly owned connection (a test service).
     #[cfg(unix)]
     pub fn from_connected_fd(fd: std::os::fd::OwnedFd) -> Result<Self, String> {
