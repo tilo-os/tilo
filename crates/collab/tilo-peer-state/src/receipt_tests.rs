@@ -698,9 +698,13 @@ tilo_test_env::scenario! {
     // bot allowed it may, is refused by every receiver.
     {
         let (mut peer, key, guest) = workspace_with(Role::Editor);
-        let impostor = tilo_actions::ActionInvoker::person("guest").with_appearance(Some(
-            tilo_actions::Appearance::new("Owner", None, None).unwrap(),
-        ));
+        // The change names the person whose device signed it: an invoker this
+        // one verified, which is what lets a receiver decide the change as
+        // that person's.
+        let guest_person = hex::encode(guest.user_public_key);
+        let impostor = tilo_actions::ActionInvoker::person(guest_person.clone()).with_appearance(
+            Some(tilo_actions::Appearance::new("Owner", None, None).unwrap()),
+        );
         let edited = guest_write_by(
             &peer,
             &key,
@@ -715,7 +719,7 @@ tilo_test_env::scenario! {
             &key,
             |doc| doc.put(ROOT, "value", "y").unwrap(),
             edit_value(),
-            tilo_actions::ActionInvoker::person("guest"),
+            tilo_actions::ActionInvoker::person(guest_person),
         );
         receive(&mut peer, &guest, plain).expect("an editor's own edit is admitted");
     }
