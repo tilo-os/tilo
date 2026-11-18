@@ -99,7 +99,7 @@ promote_target_uki() {\n''' + body + '\n}\npromote_target_uki "$FIXTURE_ESP"\n'
             self.assertIn('$SERVER_DESTINATION" -eq 0 ] && [ "$PASSWORD_IS_HASH" -eq 0 ]',
                           SOURCE)
         with self.subTest(phase="firstboot_refuses_a_seed_on_the_server_image"):
-            self.assertIn('if [ "$(cat /usr/lib/tilo/image-flavour 2>/dev/null || true)" = server ]; then',
+            self.assertIn('if [ "$(cat "${TILO_IMAGE_FLAVOUR_FILE:-/usr/lib/tilo/image-flavour}" 2>/dev/null || true)" = server ]; then',
                           firstboot)
             self.assertIn('the Tilo Server image has no login account; refusing $CONF', firstboot)
             self.assertLess(

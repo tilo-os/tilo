@@ -645,7 +645,7 @@ if grep -Fq 'SERVER_DESTINATION=1' "$backend" \
   stage_installed_firstboot_runtime / "$DEPLOY_ETC"' "$backend" \
    && grep -Fq 'rm -f "$DEPLOY_ETC/tilo/install-user.conf"' "$backend" \
    && ! grep -Fq -- '--user "$USERNAME"' "$backend" \
-   && grep -Fq '[ "$(cat /usr/lib/tilo/image-flavour 2>/dev/null || true)" = server ]' "$firstboot_user"; then
+   && grep -Fq '[ "$(cat "${TILO_IMAGE_FLAVOUR_FILE:-/usr/lib/tilo/image-flavour}" 2>/dev/null || true)" = server ]' "$firstboot_user"; then
   ok "a server destination installs the server image without a login account"
 else
   bad "the server destination can seed or launch a login account on a headless image"

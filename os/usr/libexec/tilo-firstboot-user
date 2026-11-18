@@ -73,7 +73,7 @@ FULL_NAME_CONF=/etc/tilo/install-user-full-name
 # login; its identity comes from enrollment. Its image says so, and a
 # credential seed reaching it from anywhere else is refused rather than
 # turned into an account nobody asked for.
-if [ "$(cat /usr/lib/tilo/image-flavour 2>/dev/null || true)" = server ]; then
+if [ "$(cat "${TILO_IMAGE_FLAVOUR_FILE:-/usr/lib/tilo/image-flavour}" 2>/dev/null || true)" = server ]; then
   if [ -e "$CONF" ] || [ -L "$CONF" ]; then
     echo "tilo-firstboot-user: the Tilo Server image has no login account; refusing $CONF" >&2
     shred -u -- "$CONF" 2>/dev/null || rm -f -- "$CONF"
