@@ -44,7 +44,7 @@ impl Workspaces {
         &self,
         (workspace, governor): (&str, &DeviceCert),
         (app, name): (&str, &str),
-        genesis: Option<automerge::AutoCommit>,
+        genesis: Option<Box<automerge::AutoCommit>>,
         change: impl FnOnce(&mut automerge::AutoCommit) -> Result<R, String>,
     ) -> Result<R, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
@@ -93,7 +93,10 @@ impl Workspaces {
                 };
                 (document, Some(heads))
             }
-            None => (genesis.unwrap_or_default(), None),
+            None => (
+                genesis.map_or_else(automerge::AutoCommit::new, |start| *start),
+                None,
+            ),
         };
         let result = change(&mut document)?;
         if automerge::transaction::Transactable::pending_ops(&document) != 0 {

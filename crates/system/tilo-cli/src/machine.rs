@@ -114,13 +114,13 @@ pub struct AddArgs {
 pub fn serve(cmd: MachineCmd) -> Result<std::process::ExitCode> {
     match cmd {
         MachineCmd::Add(add) => plan_and_mint(&add),
-        MachineCmd::List => ask(LIST_MACHINES, Vec::new()),
+        MachineCmd::List => ask(LIST_MACHINES, &[]),
         MachineCmd::Show {
             plan,
             installer_url,
         } => ask(
             SHOW_MACHINE,
-            vec![
+            &[
                 format!("plan={}", plan.trim()),
                 format!("installer_url={installer_url}"),
             ],
@@ -129,7 +129,7 @@ pub fn serve(cmd: MachineCmd) -> Result<std::process::ExitCode> {
 }
 
 /// Ask the local session to do `action`, printing what it answers.
-fn ask(action: &str, words: Vec<String>) -> Result<std::process::ExitCode> {
+fn ask(action: &str, words: &[String]) -> Result<std::process::ExitCode> {
     let sockets = crate::desktop::sockets();
     let mut stdout = std::io::stdout();
     let mut stderr = std::io::stderr();
@@ -137,7 +137,7 @@ fn ask(action: &str, words: Vec<String>) -> Result<std::process::ExitCode> {
         out: &mut stdout,
         err: &mut stderr,
     };
-    let code = front::run(&sockets, action, &words, &Spelling::tilo(), &mut io);
+    let code = front::run(&sockets, action, words, &Spelling::tilo(), &mut io);
     std::io::Write::flush(&mut stdout)?;
     Ok(std::process::ExitCode::from(code))
 }
@@ -224,7 +224,7 @@ fn plan_and_mint(add: &AddArgs) -> Result<std::process::ExitCode> {
         format!("token_file={}", token_file.display()),
         format!("installer_url={}", add.installer_url),
     ];
-    let code = ask(PLAN_MACHINE, words)?;
+    let code = ask(PLAN_MACHINE, &words)?;
     if code != std::process::ExitCode::SUCCESS {
         return Ok(code);
     }

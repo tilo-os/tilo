@@ -1208,7 +1208,7 @@ pub async fn apply_on(
     // A device that writes the document before the workspace's copy of it
     // reached it starts from the same genesis every other device does, so the
     // two writes merge into one document rather than competing for its root.
-    let start = genesis(workspace)?;
+    let start = Box::new(genesis(workspace)?);
     let applied = Box::pin(workspaces.author_workspace_document_from(
         (workspace, &cert),
         SERVERS,

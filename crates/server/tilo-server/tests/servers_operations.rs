@@ -210,9 +210,17 @@ async fn person_with_a_server() -> Fixture {
         state.path().to_path_buf(),
     )];
     // The person's own device makes the Servers workspace when it is first
-    // needed; the server is taken in among their servers from there.
+    // needed, enters the server among their servers there, and hands it the
+    // workspace as it hands a server any workspace its entry names.
     servers::founded(desktop.host.workspaces()).await.unwrap();
     servers::admit(
+        desktop.host.workspaces(),
+        &nas.cert,
+        &server.host.node_addr(),
+    )
+    .await
+    .unwrap();
+    servers::take_in(
         desktop.host.workspaces(),
         &nas.cert,
         &server.host.node_addr(),
