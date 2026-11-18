@@ -133,18 +133,28 @@ impl ResourceApp for LauncherShell {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::tilo_resource::{EffectDecl, Resource as _, declaration_spec};
 
+    /// The actions a script or an agent addresses search by are published under the
+    /// names they have always had, and none of them edits a shared field.
     #[test]
-    fn opening_and_typing_change_only_what_the_launcher_shows() {
-        let open = LauncherEffect::OpenSearch {
-            scope: None,
-            query: None,
-        };
-        assert_eq!(open.id(), "open-search");
-        let choose = LauncherEffect::Choose {
-            row: None,
-            how: None,
-        };
-        assert_eq!(choose.id(), "choose");
+    fn the_search_actions_are_published_by_name_and_change_no_document() {
+        let mut actions: Vec<ui::tilo_actions::ActionSpec> = Vec::new();
+        actions.extend(<Launcher>::declarations().iter().map(declaration_spec));
+        actions.extend(
+            LauncherEffect::declarations()
+                .iter()
+                .map(EffectDecl::spec_of::<LauncherEffect>),
+        );
+        for id in ["open-search", "search", "filter", "choose"] {
+            let spec = actions
+                .iter()
+                .find(|action| action.id == id)
+                .unwrap_or_else(|| panic!("the launcher publishes `{id}`"));
+            assert!(
+                spec.contract.field.is_none(),
+                "`{id}` edits no shared field"
+            );
+        }
     }
 }
