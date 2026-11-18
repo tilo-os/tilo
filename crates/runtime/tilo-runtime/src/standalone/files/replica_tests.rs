@@ -74,14 +74,10 @@ async fn server(state: &Path, operator: &SigningKey) -> tilo_server::Server {
             ..DeviceCapabilities::member()
         },
     );
-    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
-        .relay_mode(iroh::RelayMode::Disabled)
-        .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
-        .unwrap()
-        .bind()
-        .await
-        .unwrap();
+    // On the endpoint the other tests here dial through: a server handed an
+    // endpoint waits for it to name where it is reached, which an endpoint
+    // naming nowhere holds for the whole wait.
+    let endpoint = test_server::endpoint(iroh::SecretKey::from_bytes(&key.to_bytes())).await;
     tilo_server::Server::start_on_endpoint_with_protocols(
         tilo_server::ServerConfig {
             state_root: state.join("state"),
