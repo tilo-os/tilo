@@ -340,15 +340,17 @@ class PrePushLintTests(unittest.TestCase):
         self.assertTrue([call for call in self.calls() if "-p fixture-web" in call],
                         "the member whose section changed was not linted")
 
-    def test_a_profile_change_for_every_member_refuses_the_push(self):
+    def test_a_profile_change_for_every_member_lints_every_member(self):
         # A setting at the profile's own level is how every member is built,
-        # and nothing in the tree lints all of them here.
+        # so every member is linted, and the page with them.
         self.write("Cargo.toml", WORKSPACE + '\n[profile.release]\nstrip = "symbols"\n')
         self.commit("chore: strip every member")
         result = self.push()
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("only a workspace-wide lint", result.stderr)
-        self.assertEqual(self.calls(), [])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("the whole workspace is linted", result.stderr)
+        for member in ("fixture-native", "fixture-web"):
+            self.assertTrue([call for call in self.calls() if f"-p {member}" in call],
+                            f"{member} was not linted")
 
     def test_the_lint_gets_the_features_the_workspace_builds_with(self):
         # A member's code behind a feature no default build enables is compiled
