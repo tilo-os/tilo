@@ -652,12 +652,16 @@ public struct Supervision: Equatable, Sendable {
         public var name: String
         public var added: Date
         public var commands: Int
+        /// Whether nobody is signed in to it: its person never did, or the service no longer
+        /// takes their sign-in. It offers nothing until they are.
+        public var needsSignIn: Bool
 
-        public init(id: ID, name: String, added: Date, commands: Int) {
+        public init(id: ID, name: String, added: Date, commands: Int, needsSignIn: Bool = false) {
             self.id = id
             self.name = name
             self.added = added
             self.commands = commands
+            self.needsSignIn = needsSignIn
         }
     }
 

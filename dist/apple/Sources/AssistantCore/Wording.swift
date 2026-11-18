@@ -177,9 +177,13 @@ public struct Wording: Sendable {
         return Line(first: model, second: W.modelNote.said)
     }
 
-    /// "Name · added 17 Nov · 23 commands"
+    /// "Name · added 17 Nov · 23 commands", or "Name · added 17 Nov · sign-in needed": one that
+    /// nobody is signed in to offers nothing until they are, and the line says that for a count.
     public func said(_ connection: Supervision.Connection) -> String {
-        W.connectionLine.said(["name": connection.name, "date": day(connection.added), "count": String(connection.commands)])
+        guard !connection.needsSignIn else {
+            return W.connectionSignIn.said(["name": connection.name, "date": day(connection.added)])
+        }
+        return W.connectionLine.said(["name": connection.name, "date": day(connection.added), "count": String(connection.commands)])
     }
 
     /// "Name · typed 17 Nov · used today"

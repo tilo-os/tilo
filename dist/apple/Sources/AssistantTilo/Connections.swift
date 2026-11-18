@@ -103,6 +103,16 @@ struct Connected {
         Set(addedSeen.filter { !$0.value }.keys)
     }
 
+    /// The assistant view's line of each, newest first: its name as the service gives it (the
+    /// site of its address where it gives none, as `site` says it), when it was added, how many
+    /// commands it offers.
+    static func lines(of listed: [PersonConnection], site: (String) -> String) -> [Supervision.Connection] {
+        listed.reversed().map { kept in
+            Supervision.Connection(id: .init(kept.id), name: kept.name.isEmpty ? site(kept.address) : kept.name,
+                                   added: kept.added, commands: kept.commands.count, needsSignIn: kept.needsSignIn)
+        }
+    }
+
     /// The card of what `message` asks, and whether their server's list is to be asked again
     /// for it: once, where the question says the service was added and the list as last read
     /// does not hold it. Somebody answered on another device, then.
