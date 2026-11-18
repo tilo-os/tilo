@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Add prefer-dynamic only to the selected application binaries and the shared
-# runtime dylib. App-local code is optimized for size so independently
+# runtime dylib. App-local code (TILO_THIN_BIN_CRATES: each app's crates and
+# the libraries beside it that only it links) is optimized for size so independently
 # distributed tapps stay below the application size ceiling; the shared runtime
 # remains speed-optimized.
 # Cargo invokes this as RUSTC_WORKSPACE_WRAPPER, so third-party dependencies and
