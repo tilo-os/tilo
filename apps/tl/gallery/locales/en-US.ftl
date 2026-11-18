@@ -458,6 +458,9 @@ d-czoytffw-last = Last
 
 d-czoytffw-change = Change
 
+d-iuku5llk = Seed
+    .doc = A gallery that has never been opened opens filled: the platform applies this once, on the gallery's first start, as it applies every migration.
+
 d-dfbggpjv = Show examples
     .doc = What the gallery shows the day it is opened with nothing in it: one document of every group, the same shape the scenarios stage for a check, so a person meets the components rather than an empty window.
 

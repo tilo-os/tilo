@@ -1,3 +1,9 @@
+/// A gallery that has never been opened opens filled: the platform applies this once, on the
+/// gallery's first start, as it applies every migration.
+migration action seed(g: Gallery) {
+    show_examples(g)
+}
+
 /// What the gallery shows the day it is opened with nothing in it: one document of every group,
 /// the same shape the scenarios stage for a check, so a person meets the components rather than
 /// an empty window. Each group's page reads its document from the root.

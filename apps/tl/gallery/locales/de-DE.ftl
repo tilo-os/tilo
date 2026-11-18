@@ -866,6 +866,9 @@ d-6iv3za2p = Zurückgenommen
 d-czoytffw = Änderung geöffnet
     .doc = Notiert die Änderung, die der Verlauf geöffnet hat, in der Antwort der Seite.
 
+d-iuku5llk = Füllen
+    .doc = Eine Galerie, die noch nie geöffnet wurde, öffnet sich gefüllt: Die Plattform wendet dies einmal an, beim ersten Start der Galerie, wie jede Migration.
+
 d-dfbggpjv = Beispiele zeigen
     .doc = Was die Galerie am Tag ihres Öffnens ohne Inhalt zeigt: ein Dokument jeder Gruppe, dieselbe Form, die die Szenarien für eine Prüfung aufbauen, damit ein Mensch die Komponenten trifft statt ein leeres Fenster.
 
