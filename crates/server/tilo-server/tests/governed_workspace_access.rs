@@ -49,7 +49,7 @@ fn carries(bytes: &[u8], marker: &[u8]) -> bool {
 /// Nothing of the refused change reaches `client` within [`QUIET`]: the
 /// workspace publishes the removal itself, and that is not the change.
 async fn refused_change_is_unseen(client: &ServerClient, marker: &[u8]) -> bool {
-    let deadline = tokio::time::Instant::now() + QUIET;
+    let deadline = tokio::time::Instant::now().checked_add(QUIET).unwrap();
     while let Ok(Some(envelope)) = tokio::time::timeout_at(deadline, client.recv()).await {
         if let Envelope::Delta { delta, .. } = &envelope {
             assert!(
@@ -235,8 +235,6 @@ async fn governed_access_removes_a_live_person_without_widening_other_workspaces
                 {
                     break Some(answer);
                 }
-                // The person's listing changes with the removal.
-                Some(Envelope::PersonalList { .. }) => {}
                 None => break None,
                 Some(_) => {}
             }

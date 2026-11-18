@@ -71,8 +71,9 @@ async fn round_trip(client: &ServerClient, what: &str) {
     loop {
         match recv_reply(client, what).await {
             Envelope::Pong => return,
-            Envelope::Ready { .. } | Envelope::WorkspaceBootstrap { .. } => {}
-            Envelope::Delta { .. } => {}
+            Envelope::Ready { .. }
+            | Envelope::WorkspaceBootstrap { .. }
+            | Envelope::Delta { .. } => {}
             other => panic!("{what}: unexpected envelope {other:?}"),
         }
     }

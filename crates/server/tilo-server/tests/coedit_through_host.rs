@@ -392,9 +392,8 @@ async fn a_pinged_host_answers_and_resets_the_silence() {
     // A held workspace sends its own state before it is ready.
     tilo_test_env::within("Ready timeout", async {
         loop {
-            match session.recv().await.expect("the session stays open") {
-                Inbound::Ready { .. } => break,
-                _ => {}
+            if let Inbound::Ready { .. } = session.recv().await.expect("the session stays open") {
+                break;
             }
         }
     })
