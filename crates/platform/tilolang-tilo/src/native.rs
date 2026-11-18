@@ -336,10 +336,14 @@ impl<'a> NativeReads<'a> {
         {
             return Ok(resource.to_owned());
         }
-        let published = self.published(app)?;
-        self.calls
-            .children(app, &published)?
-            .iter()
+        // A chain stands at the top of its app's tree, beside the document rather than under
+        // it: what the app lists there under the resource's kind is the resource, and what its
+        // document lists under it is read too (a kind an app keeps inside its document).
+        let top = self.calls.children(app, "")?;
+        let published = self.published_in(app, &top)?;
+        let below = self.calls.children(app, &published)?;
+        top.iter()
+            .chain(below.iter())
             .find(|row| row.get("kind").and_then(Json::as_str) == Some(resource))
             .and_then(|row| row.get("id"))
             .and_then(Json::as_str)
@@ -587,21 +591,24 @@ impl<'a> NativeReads<'a> {
         self.rows_in(app, &self.listing(app, ty)?, ty)
     }
 
-    /// What the app's directory lists under its document, for a read of the type `ty`: the
-    /// document's own listing, and the listing of each part it keeps beside it (a tracker's
+    /// What the app's directory lists beside its document, for a read of the type `ty`: the
+    /// document's own listing, and the listing of each resource it keeps beside it (a tracker's
     /// issues, in the parts of a chain) that holds resources of `ty` — every part, for the
-    /// document's own type, whose collections they fill.
+    /// document's own type, whose collections they fill. A chain stands at the top of its app's
+    /// tree, beside the document rather than under it, so both what the document lists under it
+    /// and the app's other top-level resources are read.
     fn listing(&self, app: &str, ty: &str) -> Result<Listing, String> {
         let document = self.document_name(app)?;
         let (root, _) = self.root(app)?;
-        let published = self.published(app)?;
+        let top = self.calls.children(app, "")?;
+        let published = self.published_in(app, &top)?;
         let mut own = Vec::new();
         let mut beside = Vec::new();
-        for row in self.calls.children(app, &published)? {
-            // What the app keeps beside its document is listed under it as a resource of its own
-            // kind: its items are the document's too, held by the document's id as the
-            // document's own are.
-            let within = keyed(&row).is_some_and(|key| key.starts_with(&format!("{document}/")));
+        let below = self.calls.children(app, &published)?;
+        // What the app keeps beside its document is listed as a resource of its own kind: its
+        // items are the document's too, held by the document's id as the document's own are.
+        for row in &below {
+            let within = keyed(row).is_some_and(|key| key.starts_with(&format!("{document}/")));
             if !within
                 && let Some(kind) = row.get("kind").and_then(Json::as_str)
                 && let Some(kind_root) = self.kind_root(app, kind)
@@ -612,7 +619,22 @@ impl<'a> NativeReads<'a> {
                 }
                 continue;
             }
-            own.push(row);
+            own.push(row.clone());
+        }
+        // A chain stands at the top of its app's tree, beside the document rather than under
+        // it: what the app lists there of another kind is a part kept beside the document too.
+        for row in &top {
+            if row.get("id").and_then(Json::as_str) == Some(published.as_str()) {
+                continue;
+            }
+            if let Some(kind) = row.get("kind").and_then(Json::as_str)
+                && let Some(kind_root) = self.kind_root(app, kind)
+                && let Some(id) = row.get("id").and_then(Json::as_str)
+                && (ty == root.id || ty == kind_root.id || holds_type(kind_root, ty, 0))
+                && !beside.iter().any(|(under, _, _)| under == id)
+            {
+                beside.push((id.to_owned(), kind.to_owned(), kind_root));
+            }
         }
         let mut parts = vec![Part {
             under: published.clone(),
