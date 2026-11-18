@@ -83,8 +83,8 @@ impl Session {
     fn start_service(&mut self) {
         let service = self
             .command(service())
-            .args(["serve", "--identity-root"])
-            .arg(self.path("identity"))
+            .arg("serve")
+            .env("TILO_IDENTITY_ROOT", self.path("identity"))
             .stdout(Stdio::null())
             .spawn_locked()
             .expect("the service binary starts");

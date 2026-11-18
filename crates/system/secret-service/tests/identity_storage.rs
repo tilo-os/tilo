@@ -99,8 +99,8 @@ impl Bus {
     fn service_command(&self, device: &str) -> Command {
         let mut command = self.command(service());
         command
-            .args(["serve", "--identity-root"])
-            .arg(self.path(device))
+            .arg("serve")
+            .env("TILO_IDENTITY_ROOT", self.path(device))
             .stdout(Stdio::null());
         command
     }
@@ -609,6 +609,26 @@ fn ownership_child() {
             assert_stored_key_signs(&record, 6);
             assert!(!dumpable(), "the client turned dumpable again");
         }
+        // The session of a development account: its identity root is the
+        // `TILO_IDENTITY_ROOT` the store was started with, and it keeps its
+        // workspaces' master key in the store as the MLS vault does.
+        "session-vault" => {
+            let root = child_env("TILO_IDENTITY_ROOT");
+            load_device_key_like_the_compositor(&root);
+            let store = tilo_secrets::SecretStore::for_app("so.tilo.collaboration.mls");
+            let options = tilo_secrets::PutOptions {
+                label: Some("Tilo MLS key".into()),
+            };
+            store
+                .put_blocking("mls-master", &[9; 32], options)
+                .expect("the store keeps the session's key");
+            let kept = store
+                .get_blocking("mls-master")
+                .expect("the store answers the session")
+                .expect("the session's key is kept");
+            assert_eq!(kept.expose(), &[9; 32]);
+            assert!(!dumpable(), "the client turned dumpable again");
+        }
         "serve" => serve_with_this_binary_as_portal_host(),
         // The control: dumpable, so the store names it by its executable,
         // the portal host's, and answers without a proof.
@@ -661,6 +681,7 @@ impl Bus {
             .args(["--exact", CHILD_TEST, "--nocapture", "--test-threads=1"])
             .env(CHILD, role)
             .env(CHILD_DEVICE, self.path(device))
+            .env("TILO_IDENTITY_ROOT", self.path(device))
             .env(CHILD_IDENTITIES, self.path("identities"))
             .env(CHILD_RUN, self.path("run"))
             .stdout(Stdio::null());
@@ -732,7 +753,16 @@ fn a_client_holding_the_device_key_keeps_its_identity_key_out_of_files_though_th
         "a key the Secret Service holds was also written to a file"
     );
 
-    // 4. The store restarts under the still-running client and forgets
+    // 4. A development account's session reads its device key from the
+    //    identity root its environment names, as the store does: the store
+    //    answers it, and keeps the key its workspaces are sealed under.
+    let session = bus.child("session-vault", "device-a").wait().unwrap();
+    assert!(
+        session.success(),
+        "the store refused the session: {session}"
+    );
+
+    // 5. The store restarts under the still-running client and forgets
     //    every proof: the client proves again and reads its key.
     bus.stop_service();
     bus.start_service_without_capabilities("device-a");

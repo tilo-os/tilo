@@ -23,14 +23,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Serve org.freedesktop.secrets on the session bus.
-    Serve {
-        /// Where the device identity lives instead of `/var/lib/tilo`, and
-        /// where one is created when absent. Only development builds have
-        /// this: a release build reads the machine's one identity.
-        #[cfg(debug_assertions)]
-        #[arg(long, hide = true)]
-        identity_root: Option<std::path::PathBuf>,
-    },
+    Serve,
     /// Whether the store is open, and what it imported.
     Status,
     /// The applications that use the store.
@@ -68,10 +61,7 @@ async fn main() -> ExitCode {
         .init();
     let cli = Cli::parse();
     let outcome = match cli.command {
-        #[cfg(debug_assertions)]
-        Command::Serve { identity_root } => serve(identity_root).await,
-        #[cfg(not(debug_assertions))]
-        Command::Serve {} => serve(None).await,
+        Command::Serve => serve().await,
         Command::Status => status().await,
         Command::Apps { action } => apps(action).await,
         Command::ResealDevice => reseal_device(),
@@ -90,18 +80,37 @@ fn uid() -> u32 {
     rustix::process::geteuid().as_raw()
 }
 
-async fn serve(identity_root: Option<std::path::PathBuf>) -> Result<(), String> {
+/// The device identity the store is sealed under and checks callers'
+/// proofs against: the machine's one.
+///
+/// A build with developer overrides follows `TILO_IDENTITY_ROOT` instead, where
+/// the person's session reads its device key when it names one (a
+/// development account's private test identity), and creates the device key
+/// there when absent. The session proves the key it read from that root
+/// (`tilo_secrets::arm_device_proof`); a store on the machine's identity
+/// would refuse every proof of it, and with them the session's own keys.
+#[cfg_attr(
+    not(any(debug_assertions, feature = "dev-overrides")),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "only a build with developer overrides creates an identity, which can fail"
+    )
+)]
+fn device_identity() -> Result<IdentityPaths, String> {
+    #[cfg(any(debug_assertions, feature = "dev-overrides"))]
+    if let Some(root) = std::env::var_os("TILO_IDENTITY_ROOT").filter(|root| !root.is_empty()) {
+        let paths = IdentityPaths::under(root);
+        tilo_user_identity::persist::load_or_create_device_key(&paths)
+            .map_err(|e| format!("development identity: {e}"))?;
+        return Ok(paths);
+    }
+    Ok(IdentityPaths::default_system())
+}
+
+async fn serve() -> Result<(), String> {
     let dir = tilo_secret_service::data_dir().ok_or("no home directory")?;
     let uid = uid();
-    let paths = match identity_root {
-        Some(root) => {
-            let paths = IdentityPaths::under(root);
-            tilo_user_identity::persist::load_or_create_device_key(&paths)
-                .map_err(|e| format!("development identity: {e}"))?;
-            paths
-        }
-        None => IdentityPaths::default_system(),
-    };
+    let paths = device_identity()?;
     let keys = DeviceIdentityKey::new(paths, dir.join("salt"), &uid.to_string());
     let store = Arc::new(Store::new(dir.join("vault.tseal"), Box::new(keys)));
     match store.locked() {

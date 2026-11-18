@@ -14,7 +14,7 @@
 # production code everywhere except for the pieces below:
 #
 #   * The components that declare `dev_features` in os/components.toml (the
-#     compositor and the runtime host today) are rebuilt as release builds with
+#     compositor, the runtime host and the secret store today) are rebuilt as release builds with
 #     those features. The dev-only components (`dev-*` layers), such as
 #     tilo-vmd, are built alongside them. The cargo arguments and the install both come from
 #     os/scripts/install-components.py --dev, so this file names no binary.

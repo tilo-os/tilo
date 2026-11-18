@@ -16,6 +16,13 @@ path = "src/lib.rs"
 name = "tilo-secret-service"
 path = "src/main.rs"
 
+[features]
+# The store follows `TILO_IDENTITY_ROOT`, the session's identity root, rather
+# than the machine's identity: a development account's session runs on a
+# private test identity and proves that one. A production image never builds
+# it (tools/policy/check_dev_overrides_contract.py).
+dev-overrides = []
+
 [dependencies]
 tilo-paths.workspace = true
 # The vault's at-rest envelope, the store key derivation and the Secret
