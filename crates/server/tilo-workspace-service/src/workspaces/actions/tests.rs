@@ -332,6 +332,20 @@ async fn an_invitation_lasts_the_seconds_the_desktop_asked() {
     server.shutdown().await;
 }
 
+/// The workspace's open invitations, as its owner lists them.
+macro_rules! invitations {
+    ($governing:expr, $workspace_id:expr, $owner:expr, $workspace:expr) => {
+        invoke(
+            $governing,
+            $workspace_id,
+            &caller($owner),
+            request($workspace, INVITATIONS, json!({})),
+        )
+        .await
+        .unwrap()
+    };
+}
+
 #[tokio::test]
 async fn invitations_run_through_the_workspaces_own_methods() {
     let dir = tempfile::tempdir().unwrap();
@@ -363,14 +377,7 @@ async fn invitations_run_through_the_workspaces_own_methods() {
         workspaces.pending(&workspace, &owner).await.unwrap().len(),
         pending.len()
     );
-    let listed = invoke(
-        &governing,
-        workspace_id,
-        &caller(&owner),
-        request(&workspace, INVITATIONS, json!({})),
-    )
-    .await
-    .unwrap();
+    let listed = invitations!(&governing, workspace_id, &owner, &workspace);
     assert!(
         listed
             .as_array()
@@ -389,14 +396,7 @@ async fn invitations_run_through_the_workspaces_own_methods() {
     )
     .await
     .unwrap();
-    let listed = invoke(
-        &governing,
-        workspace_id,
-        &caller(&owner),
-        request(&workspace, INVITATIONS, json!({})),
-    )
-    .await
-    .unwrap();
+    let listed = invitations!(&governing, workspace_id, &owner, &workspace);
     let listed_owners = listed
         .as_array()
         .unwrap()

@@ -557,8 +557,16 @@ impl WorkspaceService {
                 "a host admitting anyone governs no workspaces".into(),
             ));
         }
-        let (sessions, governed) =
-            HostSessions::open(cfg, identity, endpoint, true, channels, |_, server| server).await?;
+        // Opening the sessions is a large future; whoever awaits a service holds a pointer.
+        let (sessions, governed) = Box::pin(HostSessions::open(
+            cfg,
+            identity,
+            endpoint,
+            true,
+            channels,
+            |_, server| server,
+        ))
+        .await?;
         let Some(Governed {
             workspaces,
             actions,
