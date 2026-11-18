@@ -623,8 +623,12 @@ public struct Supervision: Equatable, Sendable {
     }
 
     public struct Usage: Equatable, Sendable {
-        public var messagesToday: Int
-        public var tokensToday: Int
+        /// What the assistant wrote today, as the person's server counted it. Nil where their
+        /// server keeps no such count: the view says so then, and shows no number.
+        public var messagesToday: Int?
+        /// The tokens of the day's model calls, as the person's server counted them. Nil where
+        /// their server keeps no such count.
+        public var tokensToday: Int?
         /// Spent today, in millionths of the currency.
         public var spentTodayMicros: Int
         /// The most it may spend in a day. Nil for no limit.
@@ -632,7 +636,7 @@ public struct Supervision: Equatable, Sendable {
         /// The currency's sign as the person reads it: "$".
         public var currency: String
 
-        public init(messagesToday: Int = 0, tokensToday: Int = 0, spentTodayMicros: Int = 0,
+        public init(messagesToday: Int? = nil, tokensToday: Int? = nil, spentTodayMicros: Int = 0,
                     dailyLimitMicros: Int? = nil, currency: String = "$") {
             self.messagesToday = messagesToday
             self.tokensToday = tokensToday

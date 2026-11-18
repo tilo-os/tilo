@@ -161,6 +161,8 @@ public final class TiloSource: AssistantSource {
     private let taskList = Told<[AssistantTask]>([])
     private let automationList = Told<[Automation]>([])
     private let supervisionNow = Told<Supervision>(Supervision())
+    /// The assistant's day as the assistant view says it, and the clock it is read by.
+    let assistantDay = AssistantDay()
     private let setups = Told<Setup>(.unknown)
     private var choices: [ModelChoice] = []
     private var listening: [Task<Void, Never>] = []
@@ -1732,11 +1734,12 @@ public final class TiloSource: AssistantSource {
                 }
             }
             agents.set(listed.sorted { $0.started > $1.started })
-            // What the assistant itself spent today, and the most it may.
+            // What the assistant itself used today, as its server counted it, and the most it may spend.
             if let record = all.first(where: { $0["id"]?.string == assistant }) {
-                seen.usage.spentTodayMicros = Int(record["spent"]?["cost_micros"]?.number ?? 0)
-                seen.usage.dailyLimitMicros = record["spend_limit_micros"]?.number.map { Int($0) }
+                seen.usage = assistantDay.usage(of: record, before: seen.usage)
                 seen.isOn = TiloSource.variant(record["state"]) == "active"
+                // A day turns with nothing written anywhere: what was counted is read again then.
+                assistantDay.atNextDay { [weak self] in await self?.survey(.records) }
             }
             if again { await look() }
         }

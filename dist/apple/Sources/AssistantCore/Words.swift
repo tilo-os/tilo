@@ -53,6 +53,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     case assistantView = "assistant-view", assistantOn = "assistant-on", assistantPaused = "assistant-paused"
     case pause, resume, model, modelNote = "model-note", noModel = "no-model", noModelNote = "no-model-note", change
     case messagesToday = "messages-today", tokensToday = "tokens-today", ofLimit = "of-limit", spentToday = "spent-today"
+    case notCounted = "not-counted"
     case connections, connectionLine = "connection-line", logins, loginLine = "login-line", loginUsed = "login-used"
     case usedToday = "used-today", usedYesterday = "used-yesterday", usedOn = "used-on"
     case managerLine = "manager-line", moreCount = "more-count", open
@@ -211,6 +212,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .tokensToday: "Tokens today"
         case .ofLimit: "Of {limit} a day"
         case .spentToday: "Spent today"
+        case .notCounted: "Not counted yet"
         case .connections: "Connections"
         case .connectionLine: "{name} · added {date} · {count} commands"
         case .logins: "Logins"

@@ -90,19 +90,23 @@ public struct SupervisionView: View {
         let spent = wording.spent(usage)
         // At the largest text sizes each figure has a line of its own: three beside each other break in mid-word.
         let row = textSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
-            : AnyLayout(HStackLayout(alignment: .top, spacing: 10))
+            : AnyLayout(HStackLayout(alignment: .lastTextBaseline, spacing: 10))
         return row {
-            figure(String(usage.messagesToday), AssistantWords.messagesToday.said)
-            figure(wording.tokens(usage.tokensToday), AssistantWords.tokensToday.said)
+            figure(wording.messages(usage), AssistantWords.messagesToday.said, counted: usage.messagesToday != nil)
+            figure(wording.tokens(usage), AssistantWords.tokensToday.said, counted: usage.tokensToday != nil)
             figure(spent.first, spent.second ?? "")
         }
         .padding(.vertical, 10)
         .overlay(alignment: .bottom) { Rectangle().fill(Token.line).frame(height: 1) }
     }
 
-    private func figure(_ figure: String, _ name: String) -> some View {
+    /// One figure of the day over what it counts. Where the person's server counts none, the
+    /// words that say so stand in the figure's place as a sentence stands: nothing there reads
+    /// as a number.
+    private func figure(_ figure: String, _ name: String, counted: Bool = true) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(figure).font(.tilo(19, .semibold, relativeTo: .title3)).monospacedDigit().foregroundStyle(Token.ink)
+            Text(figure).font(counted ? .tilo(19, .semibold, relativeTo: .title3) : .body14).monospacedDigit()
+                .foregroundStyle(counted ? Token.ink : Token.ink2)
             Text(name).font(.small125).foregroundStyle(Token.ink2)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
