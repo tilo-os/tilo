@@ -16,8 +16,9 @@
 //! fold, and a page that opened the chat took them in first and then refused the fold as covering
 //! writes it did not hold, so the chat never read for it.
 //!
-//! The point the host stops at, and how, is drawn at random each round; `TILO_CHAT_RESTART_SEED`
-//! repeats a round, `TILO_CHAT_RESTART_ROUNDS` runs more of them.
+//! The point the host stops at, and how, is drawn from a seed, so a round repeats exactly: a test
+//! uses [`SEEDS`], and `TILO_CHAT_RESTART_SEED` with `TILO_CHAT_RESTART_ROUNDS` explores others.
+//! Every failure names the seed it happened under.
 
 #![allow(
     clippy::unwrap_used,
@@ -277,6 +278,28 @@ async fn unread(host: &TestHost, workspace: &str) -> Vec<((String, String), Stri
         .unread
 }
 
+/// Wait until everything `server` keeps reads whole, and answer what does not.
+///
+/// A start replays what it kept, and a write it has to let go while it waits
+/// for something is replayed again on a turn of its own, so what it keeps reads
+/// whole a moment after it answers, not necessarily by the time it does. A
+/// loaded node makes the moment longer, not different: the bound is the shared
+/// hang bound.
+async fn until_whole(seed: u64, server: &TestHost, workspace: &str, when: &str) {
+    let deadline = Instant::now() + tilo_test_env::hang_bound();
+    loop {
+        let unread = unread(server, workspace).await;
+        if unread.is_empty() {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "seed {seed}: {when} the host holds records that do not read whole: {unread:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 /// Wait until the host's compactor ran `rounds` more rounds, or a while passed.
 async fn folds(host: &TestHost, since: u64, rounds: u64, within: Duration) {
     let compactor = host.server.compactor();
@@ -288,13 +311,14 @@ async fn folds(host: &TestHost, since: u64, rounds: u64, within: Duration) {
 
 /// Wait until `page` reads `route` whole, holding every key of `keys`.
 async fn reads_whole(
+    seed: u64,
     page: &Link,
     route: &DocumentRoute,
     keys: &BTreeSet<String>,
     what: &str,
     (host, workspace, workspace_id): (&TestHost, &str, WorkspaceId),
 ) {
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + tilo_test_env::hang_bound();
     loop {
         let read =
             page.engine()
@@ -307,14 +331,14 @@ async fn reads_whole(
             }
             assert!(
                 Instant::now() < deadline,
-                "{what}: the chat's {:?} reads without {:?}",
+                "seed {seed}: {what}: the chat's {:?} reads without {:?}",
                 route.document,
                 keys.difference(&has).collect::<Vec<_>>()
             );
         } else {
             if Instant::now() >= deadline {
                 eprintln!(
-                    "CHAT-RESTART history of {:?}:\n{}\npage: {}\nfailures: {:?}",
+                    "CHAT-RESTART seed={seed} history of {:?}:\n{}\npage: {}\nfailures: {:?}",
                     route.document,
                     history(host, workspace, workspace_id, route).await,
                     page.status().key_state,
@@ -323,7 +347,7 @@ async fn reads_whole(
             }
             assert!(
                 Instant::now() < deadline,
-                "{what}: the chat's {:?} never read whole: {:?}",
+                "seed {seed}: {what}: the chat's {:?} never read whole: {:?}",
                 route.document,
                 read.map(|read| matches!(read, ResourceReading::Pending))
             );
@@ -336,6 +360,7 @@ async fn reads_whole(
 async fn round(seed: u64) {
     let mut draw = Draw(seed | 1);
     let began = Instant::now();
+    eprintln!("CHAT-RESTART seed={seed} starting");
     let (owner, _) = UserIdentity::generate("Owner", 1);
     let host_device = enrol(
         &owner,
@@ -418,12 +443,8 @@ async fn round(seed: u64) {
             folds(&host, rounds, 1, Duration::from_secs(4)).await;
         }
     }
-    folds(&host, rounds_before, 1, Duration::from_secs(60)).await;
-    let unread_before = unread(&host, &lounge.workspace).await;
-    assert!(
-        unread_before.is_empty(),
-        "seed {seed}: before the restart the host holds records that do not read whole: {unread_before:?}"
-    );
+    folds(&host, rounds_before, 1, tilo_test_env::hang_bound()).await;
+    until_whole(seed, &host, &lounge.workspace, "before the restart").await;
 
     // The host stops: closed, or dropped as a process killed is, after a pause drawn at random
     // (the posts still on their way land, or do not).
@@ -445,7 +466,9 @@ async fn round(seed: u64) {
     }
     tokio::time::sleep(Duration::from_millis(200)).await;
 
+    eprintln!("CHAT-RESTART seed={seed} restarting the server");
     let host = start_workspace_host_relaying(&owner, &host_device, state.path(), false, true).await;
+    eprintln!("CHAT-RESTART seed={seed} restarted");
     for route in [&chat, &part] {
         let twice = covered_twice(&host, lounge.workspace_id, route).await;
         assert!(
@@ -455,11 +478,8 @@ async fn round(seed: u64) {
             route.document
         );
     }
-    let unread_after = unread(&host, &lounge.workspace).await;
-    assert!(
-        unread_after.is_empty(),
-        "seed {seed}: after the restart the host holds records that do not read whole: {unread_after:?}"
-    );
+    until_whole(seed, &host, &lounge.workspace, "after the restart").await;
+    eprintln!("CHAT-RESTART seed={seed} nothing left unread");
 
     // Members come back and post on; the host folds again; a newcomer reads the chat whole.
     let mut members = Vec::new();
@@ -489,6 +509,7 @@ async fn round(seed: u64) {
     }
     for member in &members {
         reads_whole(
+            seed,
             &member.page,
             &chat,
             &acknowledged[0],
@@ -497,6 +518,7 @@ async fn round(seed: u64) {
         )
         .await;
         reads_whole(
+            seed,
             &member.page,
             &part,
             &acknowledged[1],
@@ -514,12 +536,16 @@ async fn round(seed: u64) {
         members[by].post(route, is_part, &key, true).await;
         acknowledged[usize::from(is_part)].insert(key);
     }
-    folds(&host, rounds_after, 1, Duration::from_secs(60)).await;
-    let unread_later = unread(&host, &lounge.workspace).await;
-    assert!(
-        unread_later.is_empty(),
-        "seed {seed}: posting on after the restart, the host holds records that do not read whole: {unread_later:?}"
-    );
+    eprintln!("CHAT-RESTART seed={seed} posted on; folding");
+    folds(&host, rounds_after, 1, tilo_test_env::hang_bound()).await;
+    eprintln!("CHAT-RESTART seed={seed} folded after the restart");
+    until_whole(
+        seed,
+        &host,
+        &lounge.workspace,
+        "posting on after the restart,",
+    )
+    .await;
     let newcomer = arrive(
         page_host(&host),
         &host_device.cert,
@@ -535,6 +561,7 @@ async fn round(seed: u64) {
             .unwrap();
     }
     reads_whole(
+        seed,
         &newcomer,
         &chat,
         &acknowledged[0],
@@ -543,6 +570,7 @@ async fn round(seed: u64) {
     )
     .await;
     reads_whole(
+        seed,
         &newcomer,
         &part,
         &acknowledged[1],
@@ -557,22 +585,53 @@ async fn round(seed: u64) {
     eprintln!("CHAT-RESTART seed={seed} whole after {:?}", began.elapsed());
 }
 
+/// The seeds a test uses. Each draws a different point and way for the host to
+/// stop: killed with five posts still on their way and a fold already made,
+/// closed the same way, and closed with every post acknowledged and no fold
+/// before the stop. Together they cover the interleavings a random seed used
+/// to sample, and a test repeats exactly.
+const SEEDS: &[u64] = &[9, 49, 363];
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_chat_reads_whole_after_its_host_restarts_mid_stream() {
-    let rounds: u64 = std::env::var("TILO_CHAT_RESTART_ROUNDS")
-        .ok()
-        .and_then(|rounds| rounds.parse().ok())
-        .unwrap_or(2);
-    let first: u64 = std::env::var("TILO_CHAT_RESTART_SEED")
+    let explored: Option<(u64, u64)> = std::env::var("TILO_CHAT_RESTART_SEED")
         .ok()
         .and_then(|seed| seed.parse().ok())
-        .unwrap_or_else(|| {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos() as u64
+        .map(|first| {
+            let rounds = std::env::var("TILO_CHAT_RESTART_ROUNDS")
+                .ok()
+                .and_then(|rounds| rounds.parse().ok())
+                .unwrap_or(2);
+            (first, rounds)
         });
-    for n in 0..rounds {
-        round(first.wrapping_add(n.wrapping_mul(0x9e37_79b9_7f4a_7c15))).await;
+    let seeds: Vec<u64> = explored.map_or_else(
+        || SEEDS.to_vec(),
+        |(first, rounds)| {
+            (0..rounds)
+                .map(|n| first.wrapping_add(n.wrapping_mul(0x9e37_79b9_7f4a_7c15)))
+                .collect()
+        },
+    );
+    for seed in seeds {
+        // Each round keeps a task of its own, so a failure names the seed
+        // behind it whichever assertion or fixture it came from.
+        match tokio::spawn(round(seed)).await {
+            Ok(()) => {}
+            Err(error) => match error.try_into_panic() {
+                Ok(payload) => {
+                    let message = payload
+                        .downcast_ref::<String>()
+                        .cloned()
+                        .or_else(|| {
+                            payload
+                                .downcast_ref::<&str>()
+                                .map(|text| (*text).to_owned())
+                        })
+                        .unwrap_or_else(|| "the round panicked".to_owned());
+                    panic!("seed {seed}: {message}");
+                }
+                Err(error) => panic!("seed {seed}: the round did not finish: {error}"),
+            },
+        }
     }
 }
