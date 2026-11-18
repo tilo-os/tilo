@@ -1,7 +1,6 @@
-//! Every governance change says who wrote it and when. A change nobody stamps carries
-//! automerge's zero time, and the workspace document's actor is a device's key, or the one a server
-//! writes a workspace it keeps with: neither names a member, and the history then reads "Unknown
-//! member" and 1970.
+//! A governance change says who wrote it and when by itself: its actor is the writing device, whose
+//! certificate among the workspace's own rows names the person it belongs to, and its time is the
+//! second it was made. Nothing writes either again as a change message.
 use super::*;
 use automerge::Change;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
@@ -27,19 +26,25 @@ fn device(root: &SigningKey, seed: u8) -> (SigningKey, DeviceCert) {
     (key, cert)
 }
 
-/// Each change's time, and the person its entry names.
-fn stamps(changes: &[Vec<u8>]) -> Vec<(i64, Option<String>)> {
+/// Each change's time, and the person the workspace's rows certify its actor for.
+fn stamps(peer: &StatePeer, changes: &[Vec<u8>]) -> Vec<(i64, Option<String>)> {
+    let now = SystemTime::UNIX_EPOCH
+        .checked_add(Duration::from_secs(MADE_AT))
+        .unwrap();
     changes
         .iter()
         .map(|bytes| {
             let change = Change::from_bytes(bytes.clone()).unwrap();
-            let entry = change
-                .message()
-                .and_then(tilo_actions::ActionContext::from_change_message);
-            let person = entry
-                .as_ref()
-                .and_then(|entry| entry.acting().and_then(|acting| acting.person_id()))
-                .map(str::to_owned);
+            assert_eq!(
+                change.message(),
+                None,
+                "a governance change writes no message"
+            );
+            let actor = change.actor_id().to_bytes().try_into().unwrap();
+            let person = peer
+                .certificate(&actor, now)
+                .ok()
+                .map(|cert| hex::encode(cert.user_public_key));
             (change.timestamp(), person)
         })
         .collect()
@@ -74,9 +79,9 @@ tilo_test_env::scenario! {
         // The workspace the seed made: its creation and its naming are someone's changes too.
         let seeded = peer.workspace_changes_since(&[]);
         assert!(!seeded.is_empty(), "the seed wrote the workspace");
-        for (time, person) in stamps(&seeded) {
+        for (time, person) in stamps(&peer, &seeded) {
             assert_eq!(time, i64::try_from(MADE_AT).unwrap(), "a governance change is stamped when it is made");
-            assert_eq!(person.as_deref(), Some(founder.as_str()), "the founder's change names them");
+            assert_eq!(person.as_deref(), Some(founder.as_str()), "the founder's device is certified for them");
         }
         let heads = peer.workspace_heads().unwrap();
         let renaming = SystemTime::UNIX_EPOCH
@@ -92,9 +97,9 @@ tilo_test_env::scenario! {
             "the rename, and the operation recording what it moved"
         );
         let renamed_at = i64::try_from(MADE_AT + 60).unwrap();
-        for (time, person) in stamps(&written) {
+        for (time, person) in stamps(&peer, &written) {
             assert_eq!(time, renamed_at, "the rename's own time");
-            assert_eq!(person.as_deref(), Some(founder.as_str()), "the renamer's change names them");
+            assert_eq!(person.as_deref(), Some(founder.as_str()), "the renamer's device is certified for them");
         }
     }
 }

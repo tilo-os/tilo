@@ -72,14 +72,13 @@ impl StatePeer {
             self.core.exact_admissions.check(&admitted).map_err(err)?;
         }
         if let Some(coverage) = coverage {
-            let author = self.governance_author(key, now);
             let doc = self
                 .core
                 .workspace_doc
                 .as_deref_mut()
                 .ok_or("missing workspace governance")?;
             crate::coverage::put(doc, coverage)?;
-            crate::state::commit_governance(doc, author.as_ref(), crate::state::now_secs(now));
+            crate::state::commit_governance(doc, crate::state::now_secs(now));
         }
         self.receive(key.device_public_key(), message.clone(), now)?;
         Ok(message)
@@ -276,7 +275,6 @@ impl StatePeer {
                 }
             }
         }
-        let author = self.governance_author(key, now);
         let existing = match receipts_at {
             Some(_) => crate::durability::entries(
                 self.core
@@ -318,7 +316,7 @@ impl StatePeer {
             None if !coverages.is_empty() => crate::coverage::put_all(workspace, coverages)?,
             None => {}
         }
-        crate::state::commit_governance(workspace, author.as_ref(), crate::state::now_secs(now));
+        crate::state::commit_governance(workspace, crate::state::now_secs(now));
         for message in &messages {
             self.receive(key.device_public_key(), message.clone(), now)?;
         }

@@ -36,11 +36,7 @@ pub fn workspace_seed(
     doc.apply_incoming(changes).map_err(err)?;
     doc.put(ROOT, "name", name).map_err(err)?;
     doc.put(ROOT, "desktop_counter_v1", 1_u64).map_err(err)?;
-    super::commit_governance(
-        &mut doc,
-        Some(&authority.user_public_key),
-        super::now_secs(now),
-    );
+    super::commit_governance(&mut doc, super::now_secs(now));
     Ok(SeedState {
         workspace_changes: doc
             .get_changes(&[])
@@ -149,7 +145,7 @@ pub fn seed_workspace_at(
         )
         .map_err(err)?;
     }
-    super::commit_governance(&mut doc, Some(&authority.user_public_key), unix_secs);
+    super::commit_governance(&mut doc, unix_secs);
     Ok(doc
         .get_changes(&[])
         .into_iter()
