@@ -28,12 +28,12 @@ fn bound(
     arguments: serde_json::Map<String, serde_json::Value>,
 ) -> Option<ActionBinding<()>> {
     let spec = SPEC.actions.iter().find(|spec| spec.id == action)?;
-    ActionBinding::static_json(&SPEC, spec, arguments).ok()
+    ActionBinding::static_json(&*SPEC, spec, arguments).ok()
 }
 
 fn bound_text(action: &str, param: &'static str) -> Option<ActionBinding<String>> {
     let spec = SPEC.actions.iter().find(|spec| spec.id == action)?;
-    ActionBinding::new(&SPEC, spec, move |value: String| {
+    ActionBinding::new(&*SPEC, spec, move |value: String| {
         arguments([(param, value)])
     })
     .ok()
@@ -52,7 +52,7 @@ pub fn package(item: &StoreItem, action: ActionKind) -> Option<ActionBinding<()>
     };
     if let Some((code, reason)) = item.unavailable_action(action) {
         let spec = effect.bound().unavailable(code, reason);
-        ActionBinding::static_json(&SPEC, &spec, effect.arguments()).ok()
+        ActionBinding::static_json(&*SPEC, &spec, effect.arguments()).ok()
     } else {
         self::effect(&effect)
     }
@@ -106,7 +106,7 @@ pub fn view() -> Option<ActionBinding<usize>> {
             }
             .id()
     })?;
-    ActionBinding::new(&SPEC, spec, move |index: usize| {
+    ActionBinding::new(&*SPEC, spec, move |index: usize| {
         arguments([(
             "view",
             crate::app::VIEWS
@@ -158,7 +158,7 @@ pub fn add_remote(
             .id()
     })?;
     let (name, url) = (name.clone(), url.clone());
-    ActionBinding::new(&SPEC, spec, move |()| {
+    ActionBinding::new(&*SPEC, spec, move |()| {
         arguments([
             ("name", name.with(Clone::clone)),
             ("url", url.with(Clone::clone)),

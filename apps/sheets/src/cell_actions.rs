@@ -8,9 +8,11 @@
 
 use std::collections::HashMap;
 
+use ui::tilo_resource::Id;
+
 use crate::model::{Addr, CellFormat, CellValue, addr_to_a1, format_value, parse_number};
 use crate::resource::{CellWrite, range_label};
-use crate::workbook::SheetSnapshot;
+use crate::workbook::{SheetSnapshot, Workbook};
 
 /// The most cells one part of a read answers, as the record's own read and a file's.
 pub const MAX_READ_CELLS: usize = crate::resource::MAX_READ_CELLS;
@@ -28,21 +30,46 @@ pub struct SearchableCell {
 /// calculated, a formula without a format of its own shown in its
 /// operands' (a sum of amounts is an amount).
 pub fn shown_cells(snap: &SheetSnapshot) -> Vec<SearchableCell> {
-    shown(snap, false)
+    let values = crate::calc::recalculate_snapshot(snap);
+    shown_between(snap, &values, None, false)
 }
 
 /// [`shown_cells`], and the cells a formula spills into (`=UNIQUE(A2:A9)`
 /// fills the cells below it): they hold no input of their own and show what
 /// the formula computed for them.
 pub fn shown_cells_and_spills(snap: &SheetSnapshot) -> Vec<SearchableCell> {
-    shown(snap, true)
+    let values = crate::calc::recalculate_snapshot(snap);
+    shown_between(snap, &values, None, true)
 }
 
-fn shown(snap: &SheetSnapshot, spills: bool) -> Vec<SearchableCell> {
-    let values = crate::calc::recalculate_snapshot(snap);
+/// [`shown_cells_and_spills`] of the cells of `snap` from `start` to `end` alone, whose cells
+/// compute `values`: what a read of a range answers, without reading the rest of the sheet.
+pub fn cells_between<S: std::hash::BuildHasher>(
+    snap: &SheetSnapshot,
+    values: &HashMap<Addr, CellValue, S>,
+    start: Addr,
+    end: Addr,
+) -> Vec<SearchableCell> {
+    shown_between(snap, values, Some((start, end)), true)
+}
+
+/// The cells of `snap` that compute `values`, within `bounds` when there are any, with what each
+/// shows.
+fn shown_between<S: std::hash::BuildHasher>(
+    snap: &SheetSnapshot,
+    values: &HashMap<Addr, CellValue, S>,
+    bounds: Option<(Addr, Addr)>,
+    spills: bool,
+) -> Vec<SearchableCell> {
+    let within = |&(col, row): &Addr| {
+        bounds.is_none_or(|((left, top), (right, bottom))| {
+            (left..=right).contains(&col) && (top..=bottom).contains(&row)
+        })
+    };
     let mut cells = snap
         .raw
         .iter()
+        .filter(|(addr, _)| within(addr))
         .map(|(&(col, row), raw)| {
             let fmt = snap.fmt.get(&(col, row)).copied().unwrap_or_else(|| {
                 raw.strip_prefix('=')
@@ -66,7 +93,7 @@ fn shown(snap: &SheetSnapshot, spills: bool) -> Vec<SearchableCell> {
             values
                 .iter()
                 .filter(|(addr, value)| {
-                    !snap.raw.contains_key(*addr) && **value != CellValue::Empty
+                    within(addr) && !snap.raw.contains_key(*addr) && **value != CellValue::Empty
                 })
                 .map(|(&(col, row), value)| {
                     let fmt = snap
@@ -170,38 +197,102 @@ pub fn sort_writes(
     writes
 }
 
-/// What a range of the sheet holds, as values: numbers as numbers and dates as ISO text, with
+/// The cells `start..=end` of sheet `id` as a snapshot of those cells alone, and what each
+/// computes: a literal is its own value, and the formula engine is asked only when a formula of
+/// the sheet could reach the range, by its own cell or by spilling into one.
+///
+/// A range therefore costs what its cells do, not what the sheet does: the one pass it makes
+/// over the sheet looks for a formula and stops at the first.
+pub fn cells_of(
+    book: &Workbook,
+    id: &Id,
+    start: Addr,
+    end: Addr,
+) -> (SheetSnapshot, HashMap<Addr, CellValue>) {
+    let Some(sheet) = book.sheet(id) else {
+        return (SheetSnapshot::default(), HashMap::new());
+    };
+    // A formula's value, and what it spills into, may lie anywhere on the sheet; without one,
+    // no cell of the range reads another, so the range is read as it is.
+    if !sheet.cells.any(|cell| cell.raw.is_formula()) {
+        let mut snap = SheetSnapshot {
+            name: sheet.name.0.clone(),
+            hidden: sheet.hidden,
+            ..SheetSnapshot::default()
+        };
+        for row in start.1..=end.1 {
+            for col in start.0..=end.0 {
+                let addr = (col, row);
+                let Some(cell) = sheet.cell_at_place((col, row)) else {
+                    continue;
+                };
+                if !cell.raw.is_empty() {
+                    snap.raw.insert(addr, cell.raw.text().to_owned());
+                }
+                if cell.format != CellFormat::General {
+                    snap.fmt.insert(addr, cell.format);
+                }
+                if cell.bold {
+                    snap.bold.insert(addr);
+                }
+            }
+        }
+        let values = snap
+            .raw
+            .iter()
+            .filter_map(|(&addr, raw)| {
+                let value = crate::calc::literal(raw);
+                (value != CellValue::Empty).then_some((addr, value))
+            })
+            .collect();
+        return (snap, values);
+    }
+    let Some(full) = book.snapshot_of(id) else {
+        return (SheetSnapshot::default(), HashMap::new());
+    };
+    let values = crate::calc::recalculate_snapshot(&full);
+    (full, values)
+}
+
+/// What a range of sheet `id` holds, as values: numbers as numbers and dates as ISO text, with
 /// the formulas, formats and bold cells by reference. `range` is every used cell when none, the
 /// cells a formula spills into among them. A range of more than [`MAX_READ_CELLS`] cells
 /// answers in parts of whole rows: `from` is the row a part starts at, as the sheet numbers it,
 /// and the answer's `next` the row to read on from, beside the whole range as `of`. With
 /// `shown`, what each cell shows comes beside its value.
 ///
+/// A range reads the cells it names, not the whole sheet: see [`cells_of`].
+///
 /// # Errors
-/// A range that is none, and a `from` outside the range.
+/// A range that is none, a `from` outside the range, and a sheet the workbook has not.
 pub fn read(
-    snap: &SheetSnapshot,
+    book: &Workbook,
+    id: &Id,
     range: Option<&str>,
     from: Option<u32>,
     shown: bool,
 ) -> Result<serde_json::Value, String> {
-    let values = crate::calc::recalculate_snapshot(snap);
-    let (start, end) = if let Some(range) = range {
-        crate::resource::parse_range(range)
-            .ok_or_else(|| format!("`{range}` is not a cell or range such as A1:D6"))?
+    let (start, end, whole) = if let Some(range) = range {
+        let (start, end) = crate::resource::parse_range(range)
+            .ok_or_else(|| format!("`{range}` is not a cell or range such as A1:D6"))?;
+        (start, end, None)
     } else {
+        let snap = book
+            .snapshot_of(id)
+            .ok_or_else(|| "no such sheet".to_owned())?;
+        let values = crate::calc::recalculate_snapshot(&snap);
         let spilled = values
             .iter()
             .filter(|(_, value)| **value != CellValue::Empty)
             .map(|(addr, _)| *addr);
-        snap.raw
+        let end = snap
+            .raw
             .keys()
             .chain(snap.bold.iter())
             .copied()
             .chain(spilled)
-            .fold(((0, 0), (0, 0)), |(_, end), (col, row)| {
-                ((0, 0), (end.0.max(col), end.1.max(row)))
-            })
+            .fold((0, 0), |end, (col, row)| (end.0.max(col), end.1.max(row)));
+        ((0, 0), end, Some((snap, values)))
     };
     let first = if let Some(row) = from {
         row.checked_sub(1)
@@ -222,7 +313,9 @@ pub fn read(
         .saturating_add(1);
     let most_rows = u32::try_from((MAX_READ_CELLS / width).max(1)).unwrap_or(u32::MAX);
     let last = end.1.min(first.saturating_add(most_rows.saturating_sub(1)));
-    let mut content = range_content_of(snap, &values, (start.0, first), (end.0, last), shown);
+    let (snap, values) =
+        whole.unwrap_or_else(|| cells_of(book, id, (start.0, first), (end.0, last)));
+    let mut content = range_content_of(&snap, &values, (start.0, first), (end.0, last), shown);
     if (first, last) != (start.1, end.1)
         && let Some(fields) = content.as_object_mut()
     {
@@ -303,11 +396,6 @@ fn shown_format(snap: &SheetSnapshot, addr: Addr) -> CellFormat {
             .and_then(|body| crate::calc::infer_result_format(body, &snap.fmt))
             .unwrap_or(CellFormat::General)
     })
-}
-
-fn range_content(snap: &SheetSnapshot, start: Addr, end: Addr) -> serde_json::Value {
-    let values = crate::calc::recalculate_snapshot(snap);
-    range_content_of(snap, &values, start, end, false)
 }
 
 /// The cells `start..=end` of `snap`, whose cells compute `values`, as a read answers them;
@@ -559,8 +647,8 @@ pub fn answer(
         .or_else(|| changes.iter().find_map(|patch| sheet_of(&props(patch))))?;
     let sheet_key = ui::tilo_resource::Id::from_raw(sheet_id.clone());
     let sheet = workbook.sheet(&sheet_key)?;
-    let snap = workbook.snapshot_of(&sheet_key)?;
     let (start, end) = if action == "delete-rows" {
+        let snap = workbook.snapshot_of(&sheet_key)?;
         let used = snap.raw.keys().chain(snap.bold.iter()).copied();
         used.fold(((0, 0), (0, 0)), |(_, end), (col, row)| {
             ((0, 0), (end.0.max(col), end.1.max(row)))
@@ -581,7 +669,7 @@ pub fn answer(
             // A change that wrote no cell, as a sheet made with none: the sheet itself, so
             // its maker has its id.
             return Some(serde_json::json!({
-                "sheet": snap.name,
+                "sheet": sheet.name.0,
                 "item": sheet_id,
                 "rows": [],
                 "seen": workbook.seen(),
@@ -606,7 +694,9 @@ pub fn answer(
         end.1
             .min(start.1.saturating_add(shown_rows.saturating_sub(1))),
     );
-    let mut content = range_content(&snap, start, shown_end);
+    // The answer reads the cells the change wrote, not the sheet around them.
+    let (snap, values) = cells_of(&workbook, &sheet_key, start, shown_end);
+    let mut content = range_content_of(&snap, &values, start, shown_end, false);
     if let Some(fields) = content.as_object_mut() {
         // The sheet's id, so a sheet just made is addressed without a read.
         fields.insert("item".into(), sheet_id.into());

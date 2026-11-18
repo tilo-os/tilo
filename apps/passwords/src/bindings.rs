@@ -22,7 +22,7 @@ static VAULT: LazyLock<ResourceSpec> = LazyLock::new(|| {
 /// A control invoking `effect`, which names the item it acts on.
 pub(crate) fn effect(effect: &PasswordsEffect) -> Option<ActionBinding<()>> {
     let spec = VAULT.actions.iter().find(|spec| spec.id == effect.id())?;
-    ActionBinding::static_json(&VAULT, spec, effect.arguments()).ok()
+    ActionBinding::static_json(&*VAULT, spec, effect.arguments()).ok()
 }
 
 #[cfg(test)]

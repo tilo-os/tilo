@@ -30,7 +30,7 @@ pub(crate) fn remove_favorite() -> Option<ActionBinding<String>> {
         .actions
         .iter()
         .find(|spec| spec.id == FilesEffect::REMOVE_FAVORITE.id())?;
-    ActionBinding::fallible(&WINDOW, spec, |row: String| {
+    ActionBinding::fallible(&*WINDOW, spec, |row: String| {
         Ok(FilesEffect::RemoveFavorite { path: place(&row)? }.arguments())
     })
     .ok()
@@ -41,7 +41,7 @@ pub(crate) fn move_favorite() -> Option<ActionBinding<(String, NavDrop)>> {
         .actions
         .iter()
         .find(|spec| spec.id == FilesEffect::MOVE_FAVORITE.id())?;
-    ActionBinding::fallible(&WINDOW, spec, |(row, drop): (String, NavDrop)| {
+    ActionBinding::fallible(&*WINDOW, spec, |(row, drop): (String, NavDrop)| {
         let (before, beside) = match drop {
             NavDrop::Before(beside) => (true, beside),
             NavDrop::After(beside) => (false, beside),
