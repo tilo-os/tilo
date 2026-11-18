@@ -8,7 +8,13 @@
 //! source's engine is the one it starts with. An engine of the active source means the on-screen
 //! keyboard does not run: one input method owns the seat. It also serves X11 clients, one workspace
 //! display at a time.
+//!
+//! A kept launch's X11 programs show on a display of the launch's own, which admits only the
+//! keeper's cookie, so the session writes an authority file the engine reads: every kept display's
+//! cookie in one file, which `xcb_connect` picks from by the display it is asked for.
 
+use std::io::Write as _;
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
@@ -69,6 +75,14 @@ const CONTROLLER_INTERFACE: &str = "org.fcitx.Fcitx.Controller1";
 const XIM_TRIES: u32 = 100;
 const XIM_RETRY: Duration = Duration::from_millis(100);
 
+/// How often the engine is asked again for a display it refused: it still holds the connection of
+/// a server that just stopped, and a new one on the same number starts at once.
+const XIM_REFUSED_TRIES: u32 = 10;
+
+/// The authority file the engine reads: the cookie of each kept display, so it can connect to a
+/// display that admits only the keeper's own.
+const AUTHORITY: &str = "Xauthority";
+
 /// Whether the active source is an engine this image can run, so the seat is an input method's and
 /// not the on-screen keyboard's.
 pub(crate) fn composes(source: &str) -> bool {
@@ -85,6 +99,14 @@ fn installed(engine: InputMethodEngine) -> bool {
     Path::new(PROGRAM).is_file() && engine.is_installed()
 }
 
+/// An X11 display X11 programs show on, as the engine is asked to serve it: the display's name
+/// and, for a kept launch's own display, the cookie file that lets a client onto it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Served {
+    pub(crate) display: String,
+    pub(crate) authority: Option<PathBuf>,
+}
+
 /// The engine's run for one person, as the session's loop keeps it.
 #[derive(Default)]
 pub(crate) struct InputMethod {
@@ -99,9 +121,9 @@ pub(crate) struct InputMethod {
     /// stops accepting them.
     display: Option<tilo_compositor::SurfaceDisplay>,
     /// The displays whose Xwayland servers run, which the engine serves.
-    x11: Vec<String>,
-    /// The displays the engine was already asked to serve.
-    opened: Vec<String>,
+    x11: Vec<Served>,
+    /// The displays the engine was already asked to serve, with the cookie each was served with.
+    opened: Vec<Served>,
 }
 
 #[derive(Default)]
@@ -120,14 +142,42 @@ enum Run {
 
 impl InputMethod {
     /// The displays whose Xwayland servers run, which the engine serves once it runs.
-    pub(crate) fn serve_x11(&mut self, displays: Vec<String>) {
+    pub(crate) fn serve_x11(&mut self, displays: Vec<Served>) {
         if self.x11 == displays {
             return;
         }
         // A display whose server stopped is served again when the next client starts one there,
-        // even though the number is the same.
+        // even though the number is the same: the cookie that admits it may be another's.
         self.opened.retain(|open| displays.contains(open));
         self.x11 = displays;
+        // The engine reads this file when it connects to a display, so it is written before the
+        // engine is asked to serve the display.
+        self.write_authority();
+    }
+
+    /// Write the engine's authority file: one cookie for each kept display served now.
+    fn write_authority(&self) {
+        let Some(path) = authority_file() else {
+            return;
+        };
+        let mut contents = Vec::new();
+        for served in &self.x11 {
+            let Some(authority) = &served.authority else {
+                continue;
+            };
+            match std::fs::read(authority) {
+                Ok(cookie) => contents.extend_from_slice(&cookie),
+                Err(error) => tracing::warn!(
+                    display = %served.display,
+                    path = %authority.display(),
+                    %error,
+                    "a kept display's cookie was not read: the input method cannot serve it"
+                ),
+            }
+        }
+        if let Err(error) = write_authority_file(&path, &contents) {
+            tracing::warn!(path = %path.display(), %error, "the input method's X authority was not written");
+        }
     }
 
     /// Follow the active input source: run the engine it names, on a display of the engine's own,
@@ -250,6 +300,9 @@ impl InputMethod {
                 return;
             }
         }
+        // The engine may be asked for a display at any moment after this: the file it reads for
+        // the kept displays' cookies is there before it starts.
+        self.write_authority();
         let mut command = Command::new(&launch.program);
         command
             .args(&launch.args)
@@ -295,14 +348,15 @@ impl InputMethod {
     /// Ask the engine, over the session bus, to serve each X11 display the session's X11 apps show
     /// on and it does not serve yet. Runs off the loop: the engine answers after its X handshake.
     fn open_x11(&mut self, runtime: &tokio::runtime::Runtime) {
-        let pending: Vec<String> = self
+        let pending: Vec<Served> = self
             .x11
             .iter()
             .filter(|served| !self.opened.contains(served))
             .cloned()
             .collect();
-        for number in pending {
-            self.opened.push(number.clone());
+        for served in pending {
+            let number = served.display.clone();
+            self.opened.push(served);
             runtime.spawn(async move {
                 match ask_x11(number.clone()).await {
                     Ok(()) => tracing::info!(x11_display = %number, "the input method serves the X11 display"),
@@ -319,17 +373,32 @@ impl crate::Session {
     /// Follow the composing input method of the active input source: run its engine while a source
     /// names one, and serve every display whose Xwayland server runs from it.
     pub(crate) fn follow_input_method(&mut self) {
-        let running = self
+        let mut running: Vec<Served> = self
             .compositor
             .x11_displays()
             .map(|displays| {
                 displays
                     .running()
                     .into_iter()
-                    .map(|number| format!(":{number}"))
+                    .map(|number| Served {
+                        display: format!(":{number}"),
+                        authority: None,
+                    })
                     .collect()
             })
             .unwrap_or_default();
+        // A kept launch shows its X11 programs on a display of its own, which admits only the
+        // keeper's cookie: the engine serves those too.
+        if let Some(apps) = &self.shared.launch {
+            running.extend(
+                apps.kept_x11()
+                    .into_iter()
+                    .map(|(display, authority)| Served {
+                        display,
+                        authority: Some(authority),
+                    }),
+            );
+        }
         self.input_method.serve_x11(running);
         self.input_method.follow(
             &mut self.compositor,
@@ -351,6 +420,29 @@ impl Drop for InputMethod {
 /// regenerated on every start.
 fn config_directory() -> Option<PathBuf> {
     Some(tilo_paths::login::session_dir(std::env::var_os("XDG_RUNTIME_DIR"))?.join("input-method"))
+}
+
+/// The authority file the engine reads, in the session's directory.
+fn authority_file() -> Option<PathBuf> {
+    Some(config_directory()?.join(AUTHORITY))
+}
+
+/// Write `contents` at `path` as this user's alone, all at once: the engine reads it as it
+/// connects, and a half-written file would refuse a display.
+fn write_authority_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temporary = path.with_extension("new");
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&temporary)?;
+    file.write_all(contents)?;
+    drop(file);
+    std::fs::rename(&temporary, path)
 }
 
 /// The XKB layout the engine's own key symbols stand on: the first layout of the source list, as
@@ -409,6 +501,11 @@ fn launch(engine: InputMethodEngine, layout: &str, display: &Path, directory: &P
             ("WAYLAND_DISPLAY".into(), display.display().to_string()),
             ("XDG_CONFIG_HOME".into(), config_home),
             ("XDG_SESSION_TYPE".into(), "wayland".into()),
+            // The cookies of the kept displays it serves: it reads this file when it connects.
+            (
+                "XAUTHORITY".into(),
+                directory.join(AUTHORITY).display().to_string(),
+            ),
         ],
         inherit: INHERITED_ENV.to_vec(),
         files: vec![
@@ -423,6 +520,7 @@ fn launch(engine: InputMethodEngine, layout: &str, display: &Path, directory: &P
 async fn ask_x11(display: String) -> Result<(), zbus::Error> {
     let bus = zbus::Connection::session().await?;
     let mut tries = 0;
+    let mut refused = 0;
     loop {
         match bus
             .call_method(
@@ -443,6 +541,12 @@ async fn ask_x11(display: String) -> Result<(), zbus::Error> {
                 tries = tries.saturating_add(1);
                 tokio::time::sleep(XIM_RETRY).await;
             }
+            // A display it still holds the connection of, whose server just stopped: the next one
+            // on the same number is served once it let go.
+            Err(zbus::Error::MethodError(..)) if refused < XIM_REFUSED_TRIES => {
+                refused = refused.saturating_add(1);
+                tokio::time::sleep(XIM_RETRY).await;
+            }
             Err(error) => return Err(error),
         }
     }
@@ -451,6 +555,103 @@ async fn ask_x11(display: String) -> Result<(), zbus::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The controller a stand-in engine answers: the displays it was asked to serve.
+    struct Controller {
+        served: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[zbus::interface(name = "org.fcitx.Fcitx.Controller1")]
+    impl Controller {
+        fn open_x11_connection(&self, name: &str) {
+            self.served.lock().expect("the calls").push(name.to_owned());
+        }
+    }
+
+    /// A kept launch's display is served to the engine with the cookie the keeper wrote, a session
+    /// that follows an in-place restart serves the adopted keeper's display again, and the
+    /// display leaves the engine's file once the keeper ends. The engine is a stand-in on a bus of
+    /// the test's own: nothing here reaches this machine's session bus.
+    #[test]
+    fn a_kept_displays_cookie_reaches_the_engine_and_a_surviving_keeper_is_served_again() {
+        use std::sync::{Arc, Mutex};
+
+        let mut env = tilo_test_env::ScopedEnv::new();
+        let home = tempfile::tempdir().expect("a directory");
+        env.set("XDG_RUNTIME_DIR", home.path());
+        let bus = tilo_test_env::PrivateBus::start();
+        env.set("DBUS_SESSION_BUS_ADDRESS", bus.address());
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("tilo-input-method-test")
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let served = Arc::new(Mutex::new(Vec::new()));
+        let engine = runtime.block_on(async {
+            let connection = zbus::Connection::session().await.expect("the test's bus");
+            connection
+                .object_server()
+                .at(
+                    "/controller",
+                    Controller {
+                        served: Arc::clone(&served),
+                    },
+                )
+                .await
+                .expect("the controller");
+            connection
+                .request_name(BUS_NAME)
+                .await
+                .expect("the engine's name");
+            connection
+        });
+        let asked = || served.lock().expect("the calls").len();
+
+        let keeper = home.path().join("keeper");
+        std::fs::create_dir_all(&keeper).expect("the keeper's directory");
+        let cookie = keeper.join("Xauthority");
+        tilo_files::native::x11_authority::write(&cookie, 91, &[7; 16])
+            .expect("the keeper's cookie");
+        let merged = home
+            .path()
+            .join("tilo-session")
+            .join("input-method")
+            .join(AUTHORITY);
+        let display = Served {
+            display: ":91".into(),
+            authority: Some(cookie.clone()),
+        };
+
+        let mut first = InputMethod::default();
+        first.serve_x11(vec![display.clone()]);
+        first.open_x11(&runtime);
+        tilo_test_env::wait_for("the engine is asked for the display", || {
+            (asked() >= 1).then_some(())
+        });
+        assert_eq!(
+            std::fs::read(&merged).expect("the engine's authority file"),
+            std::fs::read(&cookie).expect("the keeper's cookie"),
+            "the engine reads the cookie of the display it was asked for"
+        );
+
+        // The keeper ends: the display leaves what the session serves, and the engine's file.
+        first.serve_x11(Vec::new());
+        assert_eq!(
+            std::fs::read(&merged).expect("the engine's authority file"),
+            Vec::<u8>::new()
+        );
+
+        // The session that follows a restart adopts the keeper and serves its display again.
+        let mut second = InputMethod::default();
+        second.serve_x11(vec![display]);
+        second.open_x11(&runtime);
+        tilo_test_env::wait_for("the engine is asked for the display again", || {
+            (asked() >= 2).then_some(())
+        });
+        assert_eq!(asked(), 2, "each session asked once");
+        drop(engine);
+    }
 
     fn profile_of(files: &[(PathBuf, String)]) -> &str {
         let (path, body) = files
@@ -508,6 +709,11 @@ mod tests {
             assert!(
                 launch.inherit.contains(&"DBUS_SESSION_BUS_ADDRESS"),
                 "the engine serves X11 displays over the session bus"
+            );
+            assert!(
+                launch.env.iter().any(|(name, value)| name == "XAUTHORITY"
+                    && value.ends_with("tilo-session/input-method/Xauthority")),
+                "the engine reads the cookies of the kept displays it serves"
             );
 
             let profile = profile_of(&launch.files);

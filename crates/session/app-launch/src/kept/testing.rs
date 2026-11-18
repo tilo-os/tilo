@@ -62,8 +62,10 @@ pub fn keeper_program(path: &Path, test: &str) -> io::Result<()> {
 
 /// Write at `path` a stand-in for the launcher a kept app starts through: it starts the keeper
 /// it is handed, in the directory and as the launch it is handed, with `app` as the app's command
-/// line followed by what it was handed after `--` (a Windows program's sandbox), asks the keeper
-/// for an X11 display when handed `--x11`, and takes no other argument into account. What it was handed is kept for [`launcher_handed`].
+/// line followed by what it was handed after `--` (a Windows program's sandbox), and takes no
+/// other argument into account. What it was handed is kept for [`launcher_handed`]. Like the real
+/// launcher, it asks the keeper for an X11 display when the launch is given one
+/// (`--x11-display`).
 ///
 /// # Errors
 /// The program could not be written.
@@ -73,8 +75,8 @@ pub fn launcher_program(path: &Path, app: &[String]) -> io::Result<()> {
         path,
         &format!(
             "for a in \"$@\"; do printf '%s\\000' \"$a\"; done > {}\n\
-             while [ $# -gt 0 ]; do case \"$1\" in --keeper) k=$2; shift;; --keep-in) d=$2; shift;; --keep-as) l=$2; shift;; --x11) x=--x11;; --) shift; break;; esac; shift; done\n\
-             exec \"$k\" --dir \"$d\" --launch \"$l\" $x -- {} \"$@\"",
+             while [ $# -gt 0 ]; do case \"$1\" in --keeper) k=$2; shift;; --keep-in) d=$2; shift;; --keep-as) l=$2; shift;; --x11-display) [ -n \"$2\" ] && x=--x11; shift;; --) shift; break;; esac; shift; done\n\
+             exec \"$k\" $x --dir \"$d\" --launch \"$l\" -- {} \"$@\"",
             quoted(&handed_at(path).to_string_lossy()),
             app.join(" ")
         ),
