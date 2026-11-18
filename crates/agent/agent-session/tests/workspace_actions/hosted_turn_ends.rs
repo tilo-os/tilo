@@ -2,9 +2,9 @@
 //! the turn it read about may have ended. What a look read before an answer begins nothing a
 //! second time: a message is asked of its model once, the message its person writes next gets
 //! a turn of its own, and a turn is told its conversation as it stands when it begins, with
-//! the answer before it. A look cannot be stopped between its reading and its entering, so
-//! these tests are that look themselves: they read the turns the workspace owes and enter a
-//! turn's place with what they read only later.
+//! the answer before it. The first tests are that look themselves: they read the turns the
+//! workspace owes and enter a turn's place with what they read only later. Where the look's
+//! own entering is what matters, a test takes the look's two steps one at a time.
 use super::*;
 
 /// Whether the turn of `request` began with what its person wrote as `words`.
@@ -379,5 +379,89 @@ async fn a_turn_is_told_its_conversation_as_it_stands_when_it_begins() {
         "told the answer that was written before it began: {}",
         words[1]
     );
+    page.peer.close();
+}
+
+/// A look reads while her first message is owed, and enters only once that message is answered
+/// and a turn on her next one is at work: the look's two steps, taken one at a time. What it
+/// read is older than what the turn that goes there answers now, and that turn takes nothing
+/// of it. Her second message keeps its answer, her first answer stands as it was written, and
+/// no model is asked a third time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_look_overtaken_by_the_next_turn_hands_that_turn_nothing() {
+    team!(root, browser, actions, workspaces, workspace, page, person);
+    let written = (&root, &browser);
+    let first = write_to_agent(
+        &actions,
+        &workspaces,
+        &workspace,
+        written,
+        "plan the launch",
+    )
+    .await;
+    let (asked, hold) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Hold::default()));
+    let _opens = Opens(Arc::clone(&hold));
+    // The model waits before it answers its second call: the one her second message's turn asks.
+    let agents = worked(
+        &workspaces,
+        &actions,
+        waits(
+            vec![says("The launch is planned."), says("The cake is ordered.")],
+            1,
+            &asked,
+            &hold,
+        ),
+    );
+
+    // A look reads: her first message is the turn. It does not enter yet.
+    let overtaken = agents.read_look(&workspace).await.unwrap();
+
+    // Another look answers her first message.
+    agents.look(&workspace).await.unwrap();
+    let planned = ended(&workspaces, &workspace, &first).await;
+    assert_eq!(planned.text, "The launch is planned.");
+
+    // She writes again, and the turn on that message is at work.
+    let second = write_to_agent(
+        &actions,
+        &workspaces,
+        &workspace,
+        written,
+        "also order the cake",
+    )
+    .await;
+    agents.look(&workspace).await.unwrap();
+    until("the turn on her second message asks its model", || {
+        asked.lock().unwrap().len() == 2
+    })
+    .await;
+
+    // The first look enters only now, with what it read before both.
+    let current = agents.enter_look(&workspace, overtaken).await;
+    hold.open();
+
+    let ordered = ended(&workspaces, &workspace, &second).await;
+    assert_eq!(
+        ordered.text, "The cake is ordered.",
+        "her second message keeps its answer"
+    );
+    let after = ended(&workspaces, &workspace, &first).await;
+    assert_eq!(
+        (after.text.as_str(), end_of(&after)),
+        (planned.text.as_str(), end_of(&planned)),
+        "her first answer stands as it was written"
+    );
+    let requests = asked.lock().unwrap().clone();
+    let words: Vec<String> = requests.iter().map(said_in).collect();
+    assert_eq!(
+        requests.len(),
+        2,
+        "one model call for each of her messages: {words:?}"
+    );
+    assert!(
+        !current,
+        "what the look read was overtaken, so a look reads again"
+    );
+    let _ = person;
     page.peer.close();
 }
