@@ -51,6 +51,7 @@ for spec in "os/Containerfile:$REPO" \
             "os/Containerfile.installer:$REPO/os" \
             "os/Containerfile.test:$REPO/os" \
             "os/Containerfile.host:$REPO" \
+            "os/Containerfile.host-base:$REPO" \
             "os/Containerfile.dev:$REPO" \
             "os/Containerfile.dev-installer-base:$REPO"; do
   file="${spec%%:*}"; ctx="${spec#*:}"

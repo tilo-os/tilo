@@ -634,3 +634,24 @@ paths = ["crates/session/session/tests/windows_compat.rs"]
 reason = "t's name for this check and the image it tests, the console of the VM it boots the image in, and the boot-assessment runner's own variable naming the unit it breaks: names those tools give them, not Tilo concepts."
 words = ["host", "run", "record", "subject"]
 paths = ["tools/ci/host-assurance.sh"]
+
+[[allow]]
+# The server OS image's established names: Containerfile.host, image-host,
+# test-image-host, host-binaries, host-build.sh, host-base.sh and
+# host-assurance-x86_64. They name the machine running workspaces' VMs, which
+# the glossary calls the server now, and the names are what the tree's checks
+# and files already answer to; renaming them is a tree-wide change of its own.
+reason = "The server OS image's established file and check names."
+words = ["host"]
+paths = [
+    "t.toml",
+    "docs/release-pipeline.md",
+    "os/Containerfile.host",
+    "os/Containerfile.host-base",
+    "os/build-host.sh",
+    "os/dev/derive-rpm-package-set.py",
+    "os/tests/containerfile_sources.sh",
+    "tools/ci/publish/host-base.sh",
+    "tools/ci/publish/host-build.sh",
+    "tools/signing/release_trust.py",
+]

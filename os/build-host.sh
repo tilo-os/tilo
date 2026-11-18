@@ -6,10 +6,11 @@
 #   ./os/build-host.sh                   # image + disk
 #   ./os/build-host.sh --container-only  # image only
 #
-# It runs the same two steps CI runs (tools/ci/publish/host-build.sh, over the
-# programs server-binaries.sh host compiles) rather than a second recipe of its
-# own, so a local build and a published one are the same image. The disk step is
-# os/dev/disk-image.sh, which the installer and every other Tilo disk uses.
+# It takes the same steps CI takes (tools/ci/publish/host-base.sh, then
+# host-build.sh over the programs server-binaries.sh host compiles) rather than
+# a second recipe of its own, so a local build and a published one are the same
+# image. The disk step is os/dev/disk-image.sh, which the installer and every
+# other Tilo disk uses.
 #
 # usage: see above.
 set -euo pipefail
@@ -36,15 +37,18 @@ fi
 echo "--- Step 1: the server's programs ---"
 bash "$PROJECT_DIR/tools/ci/publish/server-binaries.sh" host "$OUT/binaries"
 
-echo "--- Step 2: the image ---"
-bash "$PROJECT_DIR/tools/ci/publish/host-build.sh" "$snapshot" "$OUT/rpms" "$OUT/binaries" "$OUT/image"
+echo "--- Step 2: the base ---"
+bash "$PROJECT_DIR/tools/ci/publish/host-base.sh" "$snapshot" "$OUT/rpms" "$OUT/base"
+
+echo "--- Step 3: the image ---"
+bash "$PROJECT_DIR/tools/ci/publish/host-build.sh" "$OUT/binaries" "$OUT/base" "$OUT/image"
 
 if [ "$container_only" = 1 ]; then
   echo "=== Image only: $OUT/image/image.oci.tar ==="
   exit 0
 fi
 
-echo "--- Step 3: the disk image ---"
+echo "--- Step 4: the disk image ---"
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/account.env"
 image=$(podman pull -q "oci-archive:$OUT/image/image.oci.tar")

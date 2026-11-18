@@ -12,76 +12,28 @@
 #
 # Nothing here compiles: t builds every program (tools/ci/publish/
 # server-binaries.sh, the checks host-binaries) and this build lays them out on
-# the same mirrored Fedora bootc base and the same frozen RPM snapshot the
-# desktop image uses (tools/ci/publish/host-build.sh). Its context is what the
-# image copies and nothing else, so a one-crate change moves one file in it.
+# the base os/Containerfile.host-base is (the mirrored Fedora bootc base and the
+# frozen RPM snapshot the desktop image uses, with Firecracker), in
+# tools/ci/publish/host-build.sh. Only the changed programs and the files that
+# name them are in this layer, so a one-crate change moves one file in it.
 #
 # The guest OS inside each workspace VM is not here: the service fetches the
 # rootfs Firecracker boots, pinned by digest in os/hosted-guest-snapshot.env and
 # signed with the release key.
 # ============================================================================
 
-# ---- Frozen RPM repo + mirrored base (cross-time reproducibility) ----------
-ARG BASE_REF
-ARG RPMS_REF
-FROM ${RPMS_REF} AS rpms
-
-# Firecracker and its jailer, from the release os/external-assets pins.
-FROM scratch AS external-assets
-COPY --from=github-assets / /
-
-# ---- Runtime image ---------------------------------------------------------
-FROM ${BASE_REF}
-
-# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
-ARG RPMS_REF
-# What a server runs, from the frozen snapshot: time sync, firewall, fuse for the
-# filesystem replica, certificates for iroh relays, the network manager, and the
-# VM host's programs — passt is pasta (each VM's network), skopeo fetches the
-# guest, xfsprogs makes a state disk, libcap gives the jail helper what it needs,
-# util-linux's setpriv drops to the service's uid, tar unpacks the member
-# identity, and gzip unpacks the Firecracker release below, which is a tarball.
-# Its disk is encrypted, so it also carries the early-boot half of that: LUKS and
-# the TPM tools the unlock helper drives, and iproute for the NetworkManager the
-# initramfs brings up when another of the owner's devices releases its half.
-# Then the base's desktop pieces leave: the SSH server, its clients and the VPN
-# plugins (a server is reached at its console and through Tilo's own transport),
-# the image-signing tools, git, fwupd and the modem manager. mokutil stays,
-# because the base's shim requires it and removing it breaks a protected package.
-RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
-        chrony \
-        cryptsetup \
-        firewalld \
-        fuse3 \
-        ca-certificates \
-        iproute \
-        NetworkManager \
-        NetworkManager-wifi \
-        tpm2-tools \
-        wpa_supplicant \
-        curl grep gzip libcap passt sed shadow-utils skopeo tar util-linux xfsprogs \
-    && dnf clean all \
-    && installed="$(rpm -qa --qf '%{NAME}\n')" \
-    && printf '%s\n' "$installed" | awk '/^(openssl|sbsigntools|efitools|pesign|nss-tools|gnutls-utils|git|git-core|openvpn|NetworkManager-openvpn|openssh|openssh-clients|openssh-server|ModemManager|fwupd)$/' \
-           | xargs -r dnf --disablerepo='*' remove -y \
-    && installed="$(rpm -qa --qf '%{NAME}\n')" \
-    && ! printf '%s\n' "$installed" | grep -Eq '^(openssl|sbsigntools|efitools|pesign|nss-tools|gnutls-utils|git|git-core|openvpn|NetworkManager-openvpn|openssh|openssh-clients|openssh-server|ModemManager|fwupd)$' \
-    && dnf clean all
+# ---- Programs on the cached base -------------------------------------------
+# The base is host-base's build: the package set, the runtime packages and
+# Firecracker, which change only when the snapshot or the base does. This layer
+# is built from it in seconds.
+ARG HOST_BASE=localhost/tilo-host-base:latest
+FROM ${HOST_BASE}
 
 ARG SOURCE_REVISION
 LABEL org.opencontainers.image.title="Tilo server" \
       org.opencontainers.image.description="A headless Tilo machine that serves workspaces and their VMs" \
       org.opencontainers.image.source="https://code.tilo.so/tilo/tilo" \
       org.opencontainers.image.revision="${SOURCE_REVISION}"
-
-ARG FIRECRACKER_ASSET=firecracker-v1.17.0-x86_64.tgz
-RUN --mount=type=bind,from=external-assets,source=/,target=/assets,ro \
-    mkdir /tmp/fc \
-    && tar -xzf "/assets/${FIRECRACKER_ASSET}" -C /tmp/fc \
-    && install -m 0755 /tmp/fc/release-v1.17.0-x86_64/firecracker-v1.17.0-x86_64 /usr/local/bin/firecracker \
-    && install -m 0755 /tmp/fc/release-v1.17.0-x86_64/jailer-v1.17.0-x86_64 /usr/local/bin/jailer \
-    && rm -rf /tmp/fc \
-    && firecracker --version | head -1 | grep -qx 'Firecracker v1.17.0'
 
 # ---- Programs ---------------------------------------------------------------
 # Host image ships the server, the authenticated filesystem replica and the enroll
