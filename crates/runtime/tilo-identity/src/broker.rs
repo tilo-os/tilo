@@ -1595,8 +1595,16 @@ params = []
             );
             let document_id = "record-1";
             let now = std::time::SystemTime::now();
+            // Real changes: one that does not read is refused, since who made
+            // it cannot be told.
+            let changes = {
+                use automerge::transaction::Transactable as _;
+                let mut doc = automerge::AutoCommit::new();
+                doc.put(automerge::ROOT, "body", "hello").expect("write");
+                doc.save_after(&[])
+            };
             let mut op = SignedOp::new_unsigned(
-                DocumentMutation::Incremental(b"automerge changes".to_vec())
+                DocumentMutation::Incremental(changes)
                     .encode()
                     .expect("typed mutation"),
                 document_artifact_id("so.tilo.notes", &workspace_id, document_id),
