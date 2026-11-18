@@ -1133,11 +1133,19 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         asked
     }
 
+    /// Whether this API starts programs: only then is `tilo`, the tool for them, offered, and a
+    /// listing written the way they write it.
+    pub(crate) const fn starts_programs(&self) -> bool {
+        self.task_hosts.is_some()
+    }
+
     /// How the task's programs write what a listing shows, when this API runs programs: each
     /// action as it is called and each type by its name ([`ProgramForms`]). `None` for an API
     /// that runs none, whose listing names actions as the API's own tools take them.
     pub(super) async fn program_forms(&self) -> Option<ProgramForms> {
-        self.task_hosts.as_ref()?;
+        if !self.starts_programs() {
+            return None;
+        }
         // optional-decode: a listing names actions by their ids when the catalogue is not there
         self.catalogue()
             .await
