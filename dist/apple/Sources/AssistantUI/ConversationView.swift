@@ -62,7 +62,7 @@ public struct ConversationView: View {
                             Text(problem).font(.small125).foregroundStyle(Token.you).frame(maxWidth: .infinity)
                         }
                       }
-                      Color.clear.frame(height: 14).id("end")
+                      Color.clear.frame(height: Measure.columnFoot).id("end")
                     }
                     .frame(maxWidth: Measure.column)
                     .padding(.horizontal, Measure.columnGutter)
@@ -70,6 +70,10 @@ public struct ConversationView: View {
                     .frame(minHeight: space.size.height, alignment: .bottom)
                 }
                 .defaultScrollAnchor(.bottom)
+                // What scrolls out under the bar above or the field below leaves softly: no piece is
+                // cut flat there, its round corners made square.
+                .overlay(alignment: .top) { EdgeFade(edge: .top) }
+                .overlay(alignment: .bottom) { EdgeFade(edge: .bottom) }
                 .onChange(of: rows.last?.id) {
                     withAnimation(.easeOut(duration: 0.2)) { reader.scrollTo("end", anchor: .bottom) }
                 }

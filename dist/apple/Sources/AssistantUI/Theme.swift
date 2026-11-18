@@ -73,6 +73,11 @@ public enum Measure {
     public static let panel: CGFloat = 340
     public static let column: CGFloat = 700
     public static let columnGutter: CGFloat = 24
+    /// What stays free under a conversation's last piece: `.col`'s `padding-bottom`.
+    public static let columnFoot: CGFloat = 14
+    /// How deep a conversation's ends fade into the ground where pieces scroll out: as deep as
+    /// what stays free under the last piece, so nothing that is at rest stands under a fade.
+    public static let edgeFade: CGFloat = columnFoot
     public static let bubbleWidth: CGFloat = 500
     public static let bubbleRadius: CGFloat = 14
     public static let rowRadius: CGFloat = 8
