@@ -70,7 +70,7 @@ pub(crate) fn dispatching<P: Chained>(
                 .map(|member| Box::new(member.clone()) as Box<dyn Any>)
                 .collect();
             let invoker = super::super::resources::acting(&grouping_me);
-            match state.try_apply_group(&members, &invoker)? {
+            match state.apply_group(&members, &invoker)? {
                 Write::Done(written, _) => {
                     state.wrote(&invoker, written, true);
                     Ok(())

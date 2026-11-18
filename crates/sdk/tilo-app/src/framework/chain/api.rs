@@ -67,7 +67,7 @@ impl ResourceApi for ChainState {
         match (self.part().decode)(action)? {
             part::Decoded::Group(group) => {
                 let created = match self
-                    .try_apply_group(&group, invoker)
+                    .apply_group(&group, invoker)
                     .map_err(|error| error.to_string())?
                 {
                     Write::Done(_, created) => created,

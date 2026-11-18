@@ -9,8 +9,10 @@
 use std::rc::Rc;
 
 use notes::actions;
+use notes::notebook::page_id;
 use notes::{NoteList, Notebook, PageId, Pages, Workspace};
 use ui::framework::Chain;
+use ui::tilo_resource::Invoke;
 
 /// The notes as one window holds them, each action carried out as the window
 /// carries it out.
@@ -120,4 +122,92 @@ fn tree_operations_keep_shape_and_order() {
         );
         assert_eq!(Pages::of(&notebook.parts()).len(), 1);
     }
+}
+
+#[test]
+fn an_imported_tree_sent_as_import_then_move_groups_keeps_its_parents() {
+    use ui::framework::PartLimits;
+    use ui::tilo_resource::Resource as _;
+    // A part holds two notes, so the second import group starts the next part
+    // and the moves below span both.
+    let _parts = PartLimits::scoped(2, usize::MAX);
+    let notebook = notes();
+    let collection = PageId::new_v4();
+    let alpha = PageId::new_v4();
+    let beta = PageId::new_v4();
+    let gamma = PageId::new_v4();
+    let import = |note: PageId, title: &str, markdown: &str| {
+        Invoke::apply(&actions::import_markdown_action(
+            Some(note),
+            title,
+            markdown,
+            Vec::new(),
+        ))
+        .unwrap()
+    };
+    // As a migration sends it: the pages are imported in groups first, then
+    // nested under their parents in one group of moves.
+    let _ = notebook
+        .invoke(&Invoke::group([
+            import(collection, "Collection", ""),
+            import(alpha, "Alpha", "alpha body"),
+        ]))
+        .unwrap();
+    let _ = notebook
+        .invoke(&Invoke::group([
+            import(beta, "Beta", "beta body"),
+            import(gamma, "Gamma", "gamma body"),
+        ]))
+        .unwrap();
+    // A move names the note it changes, so the engine sends it to the part
+    // holding that note; an import makes a new one.
+    assert_eq!(
+        NoteList::action_item(&actions::move_page_action(beta, Some(alpha), None)),
+        Some(page_id(beta)),
+        "a move names its note"
+    );
+    assert_eq!(
+        NoteList::action_item(&actions::import_markdown_action(
+            Some(gamma),
+            "Gamma",
+            "gamma body",
+            Vec::new()
+        )),
+        None,
+        "an import makes a note"
+    );
+    let _ = notebook
+        .invoke(&Invoke::group([
+            Invoke::apply(&actions::move_page_action(alpha, Some(collection), None)).unwrap(),
+            Invoke::apply(&actions::move_page_action(beta, Some(alpha), None)).unwrap(),
+            Invoke::apply(&actions::move_page_action(gamma, Some(beta), None)).unwrap(),
+        ]))
+        .unwrap();
+
+    let parts = notebook.parts();
+    assert!(
+        parts.len() > 1,
+        "the notes span more than one part: {}",
+        parts.len()
+    );
+    let pages = Pages::of(&parts);
+    let parent = |page: PageId| pages.parent_of(&page_id(page)).cloned();
+    assert_eq!(parent(alpha), Some(page_id(collection)));
+    assert_eq!(parent(beta), Some(page_id(alpha)));
+    assert_eq!(parent(gamma), Some(page_id(beta)));
+    assert_eq!(
+        pages
+            .children(None)
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>(),
+        vec![page_id(collection)],
+        "only the collection is at the top"
+    );
+    assert_eq!(
+        pages
+            .children(Some(&page_id(collection)))
+            .map(|(_, page)| page.title.as_str())
+            .collect::<Vec<_>>(),
+        ["Alpha"]
+    );
 }

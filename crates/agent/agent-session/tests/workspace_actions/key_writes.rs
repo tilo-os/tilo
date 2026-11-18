@@ -534,3 +534,102 @@ async fn comments_kept(on_server: &OnServer, workspace: &str) -> usize {
         })
         .sum()
 }
+
+/// A migration's tree, as an importer sends it: one group of `import-markdown`
+/// makes a collection page and the documents under it, and a second group of
+/// `move-note` nests them. The workspace must keep the tree, not a flat list:
+/// a group that answers ok and changes nothing loses a customer's data.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_imported_tree_sent_as_import_then_move_groups_is_kept_nested() {
+    let on_server = api_on_server(ISSUER).await;
+    let api = Arc::clone(&on_server.api);
+    let (_root, token) = person(&on_server, "Ada").await;
+    let key = Key { api: &api, token };
+    let (status, made) = key
+        .post("/v1/workspaces", &json!({"name": "Company"}), &[])
+        .await;
+    assert_eq!(status, 201, "{made}");
+    let workspace = made["id"].as_str().unwrap().to_owned();
+    let base = format!("/v1/workspaces/{workspace}");
+    key.did(&format!("{base}/resources/notes/actions/open"), &json!({}))
+        .await;
+    let notebook = format!("{base}/resources/notes/Notes/actions");
+
+    // As a migration sends it: a collection page, over a hundred documents
+    // with pages of text, two deep, all imported in one group.
+    let id = || uuid::Uuid::new_v4().to_string();
+    let collection = id();
+    let docs: Vec<String> = (0..103).map(|_| id()).collect();
+    let body = |index: usize| {
+        format!(
+            "# Document {index}\n\n{}",
+            format!("Paragraph of document {index}, written to be moved. ").repeat(80)
+        )
+    };
+    let import = |note: &str, title: &str, markdown: &str| {
+        json!({"action": "import-markdown", "args": {
+            "title": title, "markdown": markdown, "images": [], "note": note, "origin": null,
+        }})
+    };
+    let mut imports = vec![import(&collection, "Collection", "")];
+    for (index, note) in docs.iter().enumerate() {
+        imports.push(import(note, &format!("Doc {index}"), &body(index)));
+    }
+    let answered = key
+        .did(&format!("{notebook}/group"), &json!({"actions": imports}))
+        .await;
+    assert_eq!(answered["status"], "ok", "{answered}");
+
+    let move_note = |page: &str, parent: &str| json!({"action": "move-note", "args": {"page": page, "parent": parent, "before": null}});
+    let mut moves = vec![move_note(&docs[0], &collection)];
+    for (index, page) in docs.iter().enumerate().skip(1) {
+        let parent = if index % 2 == 0 {
+            &collection
+        } else if index % 3 == 0 {
+            &docs[0]
+        } else {
+            &docs[index - 1]
+        };
+        moves.push(move_note(page, parent));
+    }
+    let answered = key
+        .did(&format!("{notebook}/group"), &json!({"actions": moves}))
+        .await;
+    assert_eq!(answered["status"], "ok", "{answered}");
+
+    // What each document sits under: the collection page has none, the first
+    // under the collection, and every other under the one before or the
+    // collection, as the moves named.
+    let mut expected = vec![(collection.clone(), None)];
+    for (index, page) in docs.iter().enumerate() {
+        let parent = if index == 0 {
+            Some(collection.clone())
+        } else if index % 2 == 0 {
+            Some(collection.clone())
+        } else if index % 3 == 0 {
+            Some(docs[0].clone())
+        } else {
+            Some(docs[index - 1].clone())
+        };
+        expected.push((page.clone(), parent));
+    }
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let kept = parents_kept(&on_server, &workspace).await;
+        if expected.iter().all(|(note, _)| kept.contains_key(note)) {
+            for (note, parent) in &expected {
+                assert_eq!(
+                    kept[note].as_deref(),
+                    parent.as_deref(),
+                    "note {note} sits under {parent:?} as imported"
+                );
+            }
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the workspace never kept the imported notes: {kept:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}

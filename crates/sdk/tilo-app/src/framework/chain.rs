@@ -83,13 +83,14 @@ mod part;
 mod place;
 mod reading;
 mod shares;
+mod waiting;
 
 use super::made::Made;
 use dispatching::detached_dispatch;
 pub(crate) use dispatching::dispatching;
-pub(crate) use reading::PastPart;
 use listing::{Listing, Page};
 use part::{HeldPart, PartType, live_of};
+pub(crate) use reading::PastPart;
 use reading::{ChainRead, offer_nested_reads, parse_read_cursor, read_cursor, read_spec};
 use shares::Written;
 
@@ -534,14 +535,6 @@ thread_local! {
     static ASKED: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
-/// An action that waits for the part it changes to arrive, as the record
-/// of them keeps it: `id` names its entry there.
-struct Unsent {
-    id: String,
-    action: Box<dyn Any>,
-    invoker: ActionInvoker,
-}
-
 /// What became of an action applied to the part it changes.
 enum Write {
     /// Written into the parts named first, creating the item resources
@@ -573,28 +566,6 @@ impl ChainCore {
         {
             tracing::warn!(kind = self.part.kind, %error, "a write waiting for its part cannot be shown");
         }
-    }
-
-    /// Keep `action`, an action's JSON, invoked by `invoker`, with the
-    /// waiting actions, after the others. Its entry there.
-    fn keep_unsent(&self, action: &[u8], invoker: &ActionInvoker) -> Result<String, ActionError> {
-        if !self.open_unsent(true) {
-            return Err(ActionError::Refused(PART_ARRIVING.into()));
-        }
-        let action: serde_json::Value =
-            serde_json::from_slice(action).map_err(ActionError::Encode)?;
-        let entry = serde_json::to_string(&(action, invoker)).map_err(ActionError::Encode)?;
-        let chain = self.chain.as_str().to_owned();
-        self.edit_unsent(move |doc| {
-            let list = match doc.get(ROOT, chain.as_str())? {
-                Some((Value::Object(ObjType::List), list)) => list,
-                _ => doc.put_object(ROOT, chain.as_str(), ObjType::List)?,
-            };
-            doc.insert(&list, doc.length(&list), entry)?;
-            let kept = doc.get(&list, doc.length(&list).saturating_sub(1))?;
-            Ok(kept.map(|(_, id)| id.to_string()).unwrap_or_default())
-        })
-        .map_err(ActionError::Refused)
     }
 
     /// What part `index` publishes: its head (`head`) and its children
@@ -1732,29 +1703,6 @@ impl ChainState {
         moved
     }
 
-    /// Apply the actions that wait for their part, in order, while their part
-    /// is here: what is still on its way waits on, and the ones after it too.
-    /// Each leaves the list of them once written or refused.
-    fn apply_pending(&self) {
-        // Writing one refreshes the chain, which comes back here.
-        if self.draining.replace(true) {
-            return;
-        }
-        for entry in self.unsent() {
-            let written = match self.try_apply(&*entry.action, &entry.invoker) {
-                Ok(Write::Arriving) => break,
-                Ok(Write::Done(written, _)) => Ok(written.last()),
-                Err(error) => Err(error),
-            };
-            self.core.forget_unsent(&entry.id);
-            answer(self.part().kind, &entry.id, written);
-        }
-        self.draining.set(false);
-        if self.follow_unsent() {
-            self.core.moved();
-        }
-    }
-
     /// Apply `action`, a `P::Action` invoked by `invoker`, to the part it
     /// changes: read against the app's resource ([`Chained::prepare`]),
     /// checked against what they may do in the workspace, attributed to them
@@ -1836,53 +1784,6 @@ impl ChainState {
         let unwritten = self.read_unwritten(&self.unsent());
         *self.unwritten.borrow_mut() = (heads, unwritten);
         true
-    }
-
-    fn read_unwritten(&self, unsent: &[Unsent]) -> Option<Rc<dyn Any>> {
-        if unsent.is_empty() {
-            return None;
-        }
-        let part = self.part();
-        let mut doc = ui_core::automerge::AutoCommit::new();
-        (part.initialize)(&mut doc).ok()?;
-        let base = (self.base)();
-        // As held, without a refresh: this is read while one runs.
-        let parts = (part.typed)(&self.held());
-        for entry in unsent {
-            let Ok(Some(action)) =
-                (part.prepare)(&[&*entry.action], &*base, &*parts, &entry.invoker)
-                    .map(|mut prepared| prepared.pop())
-            else {
-                continue;
-            };
-            let Ok((action, encoded)) = (part.written)(&*action) else {
-                continue;
-            };
-            self.core
-                .show_unsent(&mut doc, action, encoded, &entry.invoker);
-        }
-        (part.state)(&doc)
-    }
-
-    /// The actions waiting for a part of this chain, oldest first.
-    fn unsent(&self) -> Vec<Unsent> {
-        let part = self.part();
-        self.core
-            .unsent()
-            .into_iter()
-            .filter_map(|(id, action, invoker)| {
-                let action = (part.from_json)(action)
-                    .map_err(|error| {
-                        tracing::warn!(kind = part.kind, %error, "a waiting write does not read");
-                    })
-                    .ok()?;
-                Some(Unsent {
-                    id,
-                    action,
-                    invoker,
-                })
-            })
-            .collect()
     }
 
     /// Write `action` into its part now, as [`Self::apply_as`], or say the
@@ -2050,6 +1951,39 @@ impl ChainState {
             written.push(0);
         }
         Ok(Write::Done(Written(written), created))
+    }
+
+    /// Apply `group` — several actions invoked as one — as the part (or
+    /// parts) they change: one change per part, one step. While a part it
+    /// changes is on its way from the workspace, the whole group waits for
+    /// it, as one action does ([`Self::apply_as`]), and is written once it
+    /// arrives. A group answered `ok` while nothing was written would be
+    /// writes lost without a word.
+    fn apply_group(
+        &self,
+        group: &[Box<dyn Any>],
+        invoker: &ActionInvoker,
+    ) -> Result<Write, ActionError> {
+        // Behind the ones already waiting: actions are applied in the order asked.
+        if group.is_empty() || self.unsent().is_empty() {
+            match self.try_apply_group(group, invoker)? {
+                Write::Done(written, created) => return Ok(Write::Done(written, created)),
+                Write::Arriving => {}
+            }
+        }
+        if group.is_empty() {
+            return Ok(Write::Done(
+                Written::one(self.head().unwrap_or(0)),
+                Vec::new(),
+            ));
+        }
+        tracing::debug!(
+            kind = self.part().kind,
+            members = group.len(),
+            "a group waits for the part it changes"
+        );
+        self.core.keep_unsent_group(group, invoker)?;
+        Ok(Write::Arriving)
     }
 
     /// Whether `invoker` may change this chain by `action`, refused as the
@@ -2523,7 +2457,7 @@ impl<P: Chained> Chain<P> {
             let invoker = super::resources::acting(me);
             return self
                 .state
-                .try_apply_group(&members, &invoker)
+                .apply_group(&members, &invoker)
                 .map(|written| match written {
                     Write::Done(written, _) => {
                         let index = written.last();

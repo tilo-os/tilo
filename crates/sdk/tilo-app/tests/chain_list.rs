@@ -378,6 +378,44 @@ fn a_write_while_its_part_is_on_its_way_lands_once_the_part_arrived() {
     assert!(chain.unwritten().is_none(), "nothing waits any more");
 }
 
+/// Several actions invoked as one, on a device whose head is still on its
+/// way: the whole group waits for the part, shows as being sent, and lands
+/// once it arrives. A group answered `ok` while nothing was written is a
+/// write lost without a word: an import that answers ok and keeps nothing.
+#[test]
+fn a_group_while_its_part_is_on_its_way_lands_once_the_part_arrived() {
+    let _parts = small_parts();
+    let written = |text: &str| LogPart::WRITE.with(log_part::Write { text: text.into() });
+    let theirs = Rc::new(durable_store::MemoryStore::new());
+    let writer = device_keeping(&theirs);
+    let writing = chain_in(&writer, "ada");
+    writing.invoke(&written("one")).unwrap();
+    let ours = Rc::new(durable_store::MemoryStore::new());
+    let reader = device_keeping(&ours);
+    reader.ask_workspace_for_missing();
+    let chain = chain_in(&reader, "bo");
+    let group = Invoke::group([written("two"), written("three")]);
+    assert_eq!(
+        chain.invoke(&group).unwrap(),
+        None,
+        "the group waits for the head"
+    );
+    assert!(chain.parts().is_empty(), "nothing was started in its place");
+    assert_eq!(
+        sending(&chain),
+        ["two", "three"],
+        "the whole group shows as what waits to be sent"
+    );
+
+    part_arrives(&theirs, &ours, &reader);
+    let lines: Vec<String> = texts(&chain.parts())
+        .into_iter()
+        .map(|(_, text)| text)
+        .collect();
+    assert_eq!(lines, ["one", "two", "three"]);
+    assert!(chain.unwritten().is_none(), "nothing waits any more");
+}
+
 /// What the writer wrote reaches the reader's device: the workspace's part
 /// kept in its copy of the app's records.
 fn part_arrives(
