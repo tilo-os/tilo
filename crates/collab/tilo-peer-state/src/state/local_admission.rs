@@ -93,11 +93,15 @@ impl StatePeer {
             return Ok((envelope, false));
         };
         // A sequence another write of this device took (a compaction it made since) is numbered
-        // past, as any it is under.
-        match self.lookup_exact_local_document(app, record, &envelope, now) {
-            Ok(Some(_)) => return Ok((envelope, false)),
-            Ok(None) | Err(super::AdmissionError::ConflictingSequence) => {}
-            Err(error) => return Err(error.to_string()),
+        // past, as any it is under. A write drafted in this turn and not signed yet (a write of
+        // this device came in meanwhile: one of the device's other connections sent it) is a
+        // copy of nothing admitted: it is numbered past and signed then.
+        if collab_types::verify_op(&envelope).is_ok() {
+            match self.lookup_exact_local_document(app, record, &envelope, now) {
+                Ok(Some(_)) => return Ok((envelope, false)),
+                Ok(None) | Err(super::AdmissionError::ConflictingSequence) => {}
+                Err(error) => return Err(error.to_string()),
+            }
         }
         envelope.seq = collab_types::next_unordered_document_sequence(now)
             .max(floor.checked_add(1).ok_or("sequence exhausted")?);

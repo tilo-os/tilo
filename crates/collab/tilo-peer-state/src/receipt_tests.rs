@@ -912,3 +912,41 @@ fn upgraded_write(
         own: None,
     }
 }
+
+/// A write this device drafted, not signed yet, under a write the same device
+/// sent meanwhile on another of its connections: numbered past that write to
+/// be signed then, never refused for the signature it does not carry yet.
+#[test]
+fn an_unsigned_draft_under_a_write_its_device_sent_meanwhile_is_numbered_past_it() {
+    let (mut peer, guest_key, guest) = workspace_with(Role::Editor);
+    let drafted = guest_write(
+        &peer,
+        &guest_key,
+        |doc| doc.put(ROOT, "value", "drafted").unwrap(),
+        edit_value(),
+        None,
+    );
+    let sent = guest_write(
+        &peer,
+        &guest_key,
+        |doc| doc.put(ROOT, "value", "sent").unwrap(),
+        edit_value(),
+        None,
+    );
+    receive(&mut peer, &guest, sent).expect("the other connection's write");
+    let NeighbourMsg::AppDocument {
+        app_id,
+        document_id,
+        mut envelope,
+        ..
+    } = drafted
+    else {
+        panic!("a document write")
+    };
+    envelope.signature = collab_types::Signature::from_bytes([0; 64]);
+    let (numbered, again) = peer
+        .sequenced_local_document(&app_id, &document_id, *envelope, now())
+        .expect("numbered past, not refused");
+    assert!(again, "signed again under its new number");
+    assert!(numbered.seq > 1, "past the write sent meanwhile");
+}
