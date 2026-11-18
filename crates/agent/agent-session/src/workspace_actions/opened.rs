@@ -270,7 +270,7 @@ impl Worker {
 
     /// The app and record an open of an app in `request` shows, when the
     /// record is one the workspace may already hold.
-    fn opened_resource(&self, request: &InvokeRequest) -> Option<(String, String)> {
+    pub(super) fn opened_resource(&self, request: &InvokeRequest) -> Option<(String, String)> {
         let target = &request.target;
         if let Some((_, app)) = application_provider(&target.provider) {
             return (target.address.action == APPLICATION_OPEN_ACTION).then(|| {

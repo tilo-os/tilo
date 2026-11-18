@@ -1408,3 +1408,78 @@ async fn a_refused_renewal_leaves_the_sealed_write_in_ownership_as_it_was() {
 
 /// A change chunk that makes Automerge's decoder panic in the isolated worker.
 const CRASHING_CHANGE: &str = "856f4a83a9cba9c000ba020210a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a110b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2014707c716356b85249314a37e0cdff282bd05e090ed2b18595c18a1969a410cbf0701050305130623024006430456020e0106020a110613081527210e230f3403420d560f571080010d81010583010502007e010002017e7f027f0802027f010401800002017f02020002010407000607007f01000603017f0403067f0b000b02000001000a7d00070000017f0561667465720201637d056974656d73016d0374626c0301787f03726f7700037f046465657002007f0105007f0102007d010001720d76077c7b037e07007c02047d040a030102017c0502000605017f0002017d850118140300031402167d001602000000000000f83f05040102037270717e000104007f0203007f0103007c010001007c0a7f000103";
+
+/// A write drafted in an owner turn, not signed yet, under a write the same
+/// device sent meanwhile on another of its connections, as a device's app
+/// publishes the document it opens: numbered past that write, signed then and
+/// saved, its document as it wrote it.
+#[tokio::test]
+async fn a_draft_under_a_write_its_device_sent_meanwhile_is_saved() {
+    for whole in [false, true] {
+        let joined = enrolled();
+        let author = member().verifying_key().to_bytes();
+        let drafted = joined
+            .owner
+            .with_current(joined.workspace, |view| {
+                let mut chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
+                let before = chat.get_heads();
+                chat.put(ROOT, "topic", "drafted before").unwrap();
+                chat.commit_edit("fixture", "topic");
+                let mutation = if whole {
+                    collab_types::DocumentMutation::Snapshot(chat.save())
+                } else {
+                    collab_types::DocumentMutation::Incremental(chat.save_after(&before))
+                };
+                let envelope = view.peer().draft_write(
+                    (APP, ""),
+                    &mutation.encode().map_err(|error| error.to_string())?,
+                    None,
+                    author,
+                    0,
+                    joined.now,
+                )?;
+                Ok(OwnerCommitRequest {
+                    workspace: WORKSPACE.into(),
+                    operation: CommitOperation::Document {
+                        app: APP.into(),
+                        document: String::new(),
+                        envelope: Box::new(envelope),
+                        own: None,
+                    },
+                })
+            })
+            .unwrap();
+        let sent = edit_with(
+            &joined.owner,
+            joined.workspace,
+            joined.now,
+            "sent meanwhile",
+        );
+        joined.owner.commit_document(sent, joined.now).unwrap();
+
+        joined
+            .owner
+            .write(
+                joined.workspace,
+                |_| Ok(vec![drafted.clone()]),
+                &member(),
+                joined.now,
+            )
+            .await
+            .unwrap_or_else(|refusal| panic!("whole {whole}: {refusal}"));
+        joined
+            .owner
+            .with_current(joined.workspace, |view| {
+                let chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
+                assert!(
+                    chat.get_all(ROOT, "topic")
+                        .unwrap()
+                        .iter()
+                        .any(|(value, _)| value.as_str() == Some("drafted before")),
+                    "whole {whole}: the drafted write is in the document"
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
+}

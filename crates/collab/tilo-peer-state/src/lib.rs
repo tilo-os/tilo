@@ -31,6 +31,8 @@ mod admission_tests;
 #[cfg(test)]
 mod receipt_tests;
 #[cfg(test)]
+mod removed_names_tests;
+#[cfg(test)]
 mod shared_desktop_tests;
 #[cfg(test)]
 tilo_automerge_isolate::test_worker!();

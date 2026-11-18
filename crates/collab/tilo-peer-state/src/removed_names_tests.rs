@@ -1,0 +1,60 @@
+//! Names the workspace keeps for nobody it holds.
+
+use crate::TransportOrigin;
+use crate::admission_tests::{add_editor, seeded};
+
+/// A person the workspace names goes with their name: removed, no name stays
+/// for nobody the workspace holds, so its security basis, which every
+/// device's write reads, stays readable. A name for nobody that a merge
+/// leaves (the person named while they were removed) is dropped by the next
+/// device that publishes governance.
+#[test]
+fn a_removed_persons_name_goes_with_them() {
+    let (mut peer, authority_key, delegate_key, _, now) = seeded();
+    let (_, root) = add_editor(&mut peer, &authority_key, now);
+    assert!(
+        peer.governance_mut()
+            .name_person(root, "Ada", &authority_key, now)
+            .unwrap()
+    );
+    let mut named = peer.clone();
+    assert!(
+        peer.governance_mut()
+            .remove_member(root, &authority_key, now)
+            .unwrap()
+    );
+    peer.security_basis()
+        .unwrap()
+        .expect("the basis reads after a removal");
+
+    // Another device of the workspace's names them on a copy that has not heard
+    // of the removal, and the two merge.
+    assert!(
+        named
+            .governance_mut()
+            .name_person(root, "Ada Lovelace", &delegate_key, now)
+            .unwrap()
+    );
+    let origin = TransportOrigin::ServerDelta(delegate_key.verifying_key().to_bytes());
+    peer.receive_from(origin, named.workspace_message(), now)
+        .expect("the naming merges");
+    assert!(
+        peer.security_basis().unwrap().is_err(),
+        "the merge names nobody the workspace holds"
+    );
+    assert!(
+        peer.governance_mut()
+            .drop_names_of_nobody(&authority_key, now)
+            .unwrap()
+    );
+    peer.security_basis()
+        .unwrap()
+        .expect("the basis reads once the name is dropped");
+    assert!(
+        !peer
+            .governance_mut()
+            .drop_names_of_nobody(&authority_key, now)
+            .unwrap(),
+        "nothing is left to drop"
+    );
+}

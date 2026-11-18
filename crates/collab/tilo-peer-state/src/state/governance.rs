@@ -1129,6 +1129,52 @@ impl PeerGovernanceMut<'_> {
         }
         self.peer.write_governance(doc, &before, key, now)
     }
+    /// Drop each name the workspace keeps for nobody it holds: a key that is no
+    /// admitted device's, not the owner's and no member's. A removal leaves
+    /// none ([`Self::remove_member`]), but a person naming themselves while
+    /// they are removed, on another device, merges into one; such a name makes
+    /// the workspace's security basis unreadable, and every device's next
+    /// write with it. A device that publishes governance drops them first.
+    /// Whether the workspace changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a name needs dropping and `key`'s device may not
+    /// change governance, or governance cannot be updated.
+    pub fn drop_names_of_nobody(
+        self,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        let Some(held) = self.peer.core.workspace_doc.as_ref() else {
+            return Ok(false);
+        };
+        let owner = hex::encode(self.peer.core.owner);
+        let members = crate::members::replay_declared(held).members;
+        let identities = held.identities();
+        let nobody: Vec<String> = held
+            .policy()
+            .names
+            .keys()
+            .filter(|named| {
+                **named != owner
+                    && !identities.contains_key(*named)
+                    && !members.contains_key(*named)
+            })
+            .cloned()
+            .collect();
+        if nobody.is_empty() {
+            return Ok(false);
+        }
+        let mut doc = held.clone();
+        let peers = governed_map(&doc, "peers")?;
+        let before = doc.get_heads();
+        doc.set_actor(self.peer.workspace_actor_of(key));
+        for named in &nobody {
+            doc.delete(&peers, named.as_str()).map_err(err)?;
+        }
+        self.peer.write_governance(doc, &before, key, now)
+    }
     /// Rewrite each administrator's grant still in the shape workspaces held
     /// before [`tilo_action_policy::roles::administrator_grant`] (on the
     /// workspace's resource, where the Editor's own Deny outranked it) to that
@@ -1288,7 +1334,9 @@ impl PeerGovernanceMut<'_> {
         // Removing a member takes every grant naming them with them; someone
         // who is no member loses the grants that still name them.
         let changes: Vec<Change> = if policy.members.contains_key(&person) {
-            vec![Change::RemoveMember { person }]
+            vec![Change::RemoveMember {
+                person: person.clone(),
+            }]
         } else {
             policy
                 .grants
@@ -1302,6 +1350,7 @@ impl PeerGovernanceMut<'_> {
         }
         let before = doc.get_heads();
         doc.set_actor(self.peer.workspace_actor_of(key));
+        let mut gone = vec![person];
         // Someone who leaves takes their own devices off the workspace with
         // them: the rows that admit a device go, so no key of theirs stays
         // named here. Another person's devices stay until whoever may remove
@@ -1324,6 +1373,17 @@ impl PeerGovernanceMut<'_> {
                 .collect();
             for device in own {
                 doc.delete(&identities, device.as_str()).map_err(err)?;
+                gone.push(device);
+            }
+        }
+        // The names kept for whom the workspace no longer holds go with them: the
+        // person's own, under their root, and their devices' whose rows went. A
+        // name for nobody the workspace holds makes its security basis
+        // unreadable, and every device's next write with it.
+        let peers = governed_map(&doc, "peers")?;
+        for named in gone {
+            if doc.get(&peers, named.as_str()).map_err(err)?.is_some() {
+                doc.delete(&peers, named.as_str()).map_err(err)?;
             }
         }
         self.peer.write_membership(

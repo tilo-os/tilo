@@ -174,7 +174,8 @@ impl Worker {
     ) -> (Performed, Option<Unsaved>, Option<Box<About>>) {
         let performed = self.perform(workspace_id, caller, request);
         self.note_written(request.invocation);
-        let (outcome, unsaved) = self.saved(workspace_id, performed);
+        let opens = self.opened_resource(request).is_some();
+        let (outcome, unsaved) = self.saved(workspace_id, performed, opens);
         let about = self
             .log()
             .entries
