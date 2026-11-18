@@ -44,6 +44,7 @@ pub(crate) enum SendToAction {
     /// Sends the words and what they carry to whom it names, as a person's send-to box does: the
     /// conversation with them opens or continues in Chat, carrying the items. A recipient is a new
     /// agent, an agent, a person or a conversation, by its id, or by its name alone to be found.
+    #[effect(kind = "outside")]
     #[effect(job)]
     Send {
         #[param("Who it goes to: kind new-agent, agent, person or conversation, by id or name")]

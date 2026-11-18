@@ -99,6 +99,7 @@ pub struct App {
 #[effect(operation = "so.tilo.uninstall")]
 pub enum UninstallEffect {
     /// Uninstall it, and what it saved when the question offers that
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         icon = "trash",

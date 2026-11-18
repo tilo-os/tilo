@@ -33,6 +33,7 @@ pub enum CaptureEffect {
     ///
     /// On the kind of capture `mode` names, as the person's own chord opens
     /// it; on the last kind used when left out.
+    #[effect(kind = "outside")]
     #[effect(own_device, attended, icon = "camera")]
     Open {
         /// What to capture: a screenshot, a recording or a picture in a
@@ -41,6 +42,7 @@ pub enum CaptureEffect {
         mode: Option<ui::floating_surface::CaptureStudioProtocolMode>,
     },
     /// Take a screenshot
+    #[effect(kind = "outside")]
     #[effect(own_device, attended, icon = "camera")]
     Screenshot {
         /// What is captured: `display`, `window` or `region`
@@ -51,6 +53,7 @@ pub enum CaptureEffect {
         window: Option<String>,
     },
     /// Record the screen
+    #[effect(kind = "outside")]
     #[effect(own_device, attended, icon = "circle-dot")]
     Record {
         /// What is recorded: `display`, `window` or `region`
@@ -61,17 +64,21 @@ pub enum CaptureEffect {
         window: Option<String>,
     },
     /// Stop recording
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "square")]
     StopRecording,
     /// Pause recording
     ///
     /// What is recorded skips the time; the file goes on from where it was.
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "pause")]
     PauseRecording,
     /// Resume recording
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "play")]
     ResumeRecording,
     /// Save the last half minute
+    #[effect(kind = "outside")]
     #[effect(own_device, attended, icon = "history")]
     SaveReplay,
 }

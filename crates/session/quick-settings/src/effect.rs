@@ -19,6 +19,7 @@ use crate::i18n::t;
 #[effect(operation = "so.tilo.quick-settings.device")]
 pub enum QsEffect {
     /// Turn Wi-Fi on or off.
+    #[effect(kind = "outside")]
     #[effect(
         label = "qs-action-set-wifi",
         own_device,
@@ -31,6 +32,7 @@ pub enum QsEffect {
         on: bool,
     },
     /// Turn Wi-Fi off when it is on, and on when it is off.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         label = "qs-wifi",
@@ -39,12 +41,14 @@ pub enum QsEffect {
     )]
     ToggleWifi,
     /// Connect or disconnect the wired network.
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent, keywords = "ethernet, cable")]
     SetWired {
         #[param("Whether the wired network is connected")]
         on: bool,
     },
     /// Turn Bluetooth on or off.
+    #[effect(kind = "outside")]
     #[effect(
         label = "qs-action-set-bluetooth",
         own_device,
@@ -57,6 +61,7 @@ pub enum QsEffect {
         on: bool,
     },
     /// Turn Bluetooth off when it is on, and on when it is off.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         label = "qs-bluetooth",
@@ -65,6 +70,7 @@ pub enum QsEffect {
     )]
     ToggleBluetooth,
     /// Turn airplane mode on or off.
+    #[effect(kind = "outside")]
     #[effect(
         label = "qs-action-set-airplane-mode",
         own_device,
@@ -78,6 +84,7 @@ pub enum QsEffect {
     },
     /// Turn airplane mode off when it is on, and on when it is off: every
     /// wireless radio goes off with it.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         label = "qs-airplane-mode",
@@ -86,6 +93,7 @@ pub enum QsEffect {
     )]
     ToggleAirplaneMode,
     /// Turn mobile data on or off.
+    #[effect(kind = "outside")]
     #[effect(
         label = "qs-mobile-data",
         own_device,
@@ -97,6 +105,7 @@ pub enum QsEffect {
         on: bool,
     },
     /// Turn night light on or off.
+    #[effect(kind = "outside")]
     #[effect(
         label = "qs-night-light",
         own_device,
@@ -108,6 +117,7 @@ pub enum QsEffect {
         on: bool,
     },
     /// Turn Do Not Disturb on or off.
+    #[effect(kind = "outside")]
     #[effect(
         label = "qs-do-not-disturb",
         own_device,
@@ -119,6 +129,7 @@ pub enum QsEffect {
         on: bool,
     },
     /// Lock or unlock the screen's rotation.
+    #[effect(kind = "outside")]
     #[effect(
         label = "qs-rotation-lock",
         own_device,
@@ -130,6 +141,7 @@ pub enum QsEffect {
         locked: bool,
     },
     /// Choose the power mode.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -142,6 +154,7 @@ pub enum QsEffect {
         mode: crate::PowerProfile,
     },
     /// Turn a VPN on or off.
+    #[effect(kind = "outside")]
     #[effect(
         label = "qs-action-set-vpn",
         own_device,
@@ -156,6 +169,7 @@ pub enum QsEffect {
         on: bool,
     },
     /// Set the screen brightness.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -169,6 +183,7 @@ pub enum QsEffect {
     },
     /// Make the screen brighter by a step: the display the person works on,
     /// when there are several.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         label = "qs-action-brighter",
@@ -178,6 +193,7 @@ pub enum QsEffect {
     BrightnessUp,
     /// Make the screen dimmer by a step: the display the person works on,
     /// when there are several.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         label = "qs-action-dimmer",
@@ -186,6 +202,7 @@ pub enum QsEffect {
     )]
     BrightnessDown,
     /// Set one display's brightness.
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent, keywords = "monitor, backlight, dim")]
     SetDisplayBrightness {
         #[param("The display, by connector (such as `DP-2`)")]
@@ -194,6 +211,7 @@ pub enum QsEffect {
         level: f64,
     },
     /// Set the volume.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -206,6 +224,7 @@ pub enum QsEffect {
         level: f64,
     },
     /// Turn the volume up by a step.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         label = "qs-action-louder",
@@ -214,6 +233,7 @@ pub enum QsEffect {
     )]
     VolumeUp,
     /// Turn the volume down by a step.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         label = "qs-action-quieter",
@@ -222,12 +242,14 @@ pub enum QsEffect {
     )]
     VolumeDown,
     /// Mute or unmute the sound.
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent, icon = "volume-x", keywords = "sound, silence")]
     SetMuted {
         #[param("Whether the sound is muted")]
         muted: bool,
     },
     /// Unmute the sound when it is muted, and mute it when it is not.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         label = "qs-action-mute-toggle",
@@ -236,12 +258,14 @@ pub enum QsEffect {
     )]
     ToggleMuted,
     /// Play sound through an output.
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent, keywords = "speakers, headphones, audio")]
     RouteSound {
         #[param("The output's audio node")]
         node: u32,
     },
     /// Set the microphone's level.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -254,6 +278,7 @@ pub enum QsEffect {
         level: f64,
     },
     /// Mute or unmute the microphone.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -265,6 +290,7 @@ pub enum QsEffect {
         muted: bool,
     },
     /// Unmute the microphone when it is muted, and mute it when it is not.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         icon = "mic-off",
@@ -273,6 +299,7 @@ pub enum QsEffect {
     ToggleInputMuted,
     /// Play (or record) one application's stream through an output (or
     /// input), or release it to follow the default.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -286,6 +313,7 @@ pub enum QsEffect {
         device: Option<u32>,
     },
     /// Set one application's volume.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -299,6 +327,7 @@ pub enum QsEffect {
         level: f64,
     },
     /// Mute or unmute one application.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -312,18 +341,21 @@ pub enum QsEffect {
         muted: bool,
     },
     /// Join a Wi-Fi network that needs no password typed.
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     JoinWifi {
         #[param("The network's name")]
         network: String,
     },
     /// Ask for a protected Wi-Fi network's password.
+    #[effect(kind = "outside")]
     #[effect(own_device, audience = "people")]
     AskWifiPassword {
         #[param("The network's name")]
         network: String,
     },
     /// Join a protected Wi-Fi network with its password.
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     ConnectWifi {
         #[param("The network's name")]
@@ -332,16 +364,20 @@ pub enum QsEffect {
         password: String,
     },
     /// Stop asking for a Wi-Fi password.
+    #[effect(kind = "outside")]
     #[effect(own_device, audience = "people")]
     CancelWifiPassword,
     /// Ask for the name and password of a network that broadcasts no name.
+    #[effect(kind = "outside")]
     #[effect(own_device, audience = "people", icon = "wifi")]
     AskHiddenNetwork,
     /// Stop asking for a hidden network's name and password.
+    #[effect(kind = "outside")]
     #[effect(own_device, audience = "people")]
     CancelHiddenNetwork,
     /// Join a network that broadcasts no name, by the name and password
     /// typed for it.
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     ConnectHiddenWifi {
         #[param("The network's name")]
@@ -351,6 +387,7 @@ pub enum QsEffect {
     },
     /// Join a saved network by itself whenever it is in reach, or wait to be
     /// asked.
+    #[effect(kind = "outside")]
     #[effect(
         label = "qs-wifi-autoconnect",
         own_device,
@@ -367,6 +404,7 @@ pub enum QsEffect {
     /// Forget a saved network, so this machine joins it only when asked and
     /// its password must be typed again: the profile and the password it
     /// keeps go.
+    #[effect(kind = "outside")]
     #[effect(
         label = "qs-wifi-forget",
         own_device,
@@ -379,18 +417,21 @@ pub enum QsEffect {
         profile: String,
     },
     /// Connect a paired Bluetooth accessory.
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     ConnectBluetooth {
         #[param("The accessory's address")]
         address: String,
     },
     /// Disconnect a Bluetooth accessory.
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     DisconnectBluetooth {
         #[param("The accessory's address")]
         address: String,
     },
     /// Look for Bluetooth devices in reach, or stop looking.
+    #[effect(kind = "outside")]
     #[effect(
         label = "qs-bluetooth-look",
         own_device,
@@ -405,6 +446,7 @@ pub enum QsEffect {
     /// Pair the Bluetooth device at this address: `BlueZ` bonds with it,
     /// trusting it and connecting it. What it asks to compare is a question
     /// its pairing agent asks the person.
+    #[effect(kind = "outside")]
     #[effect(
         label = "qs-bluetooth-pair",
         own_device,
@@ -417,6 +459,7 @@ pub enum QsEffect {
     },
     /// Forget a Bluetooth device, so that it must be paired again from
     /// scratch: its bond, its keys and its trust go.
+    #[effect(kind = "outside")]
     #[effect(
         label = "qs-bluetooth-forget",
         own_device,
@@ -429,6 +472,7 @@ pub enum QsEffect {
         address: String,
     },
     /// Move a Bluetooth accessory to another of your devices.
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     HandOffBluetooth {
         #[param("The accessory's address")]
@@ -437,6 +481,7 @@ pub enum QsEffect {
         device: String,
     },
     /// Act on a row of the Devices section.
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     PressDevice {
         #[param("The row")]
@@ -445,12 +490,14 @@ pub enum QsEffect {
         part: crate::RowPart,
     },
     /// Paste a copy from the clipboard history.
+    #[effect(kind = "outside")]
     #[effect(own_device, keywords = "clipboard history")]
     PasteCopy {
         #[param("The copy")]
         copy: String,
     },
     /// Pin or unpin a copy in the clipboard history.
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     PinCopy {
         #[param("The copy")]
@@ -461,16 +508,19 @@ pub enum QsEffect {
     /// Remove a copy from the clipboard history. It goes at a press, as a
     /// notification is dismissed: the history is a convenience, not a
     /// record anyone keeps.
+    #[effect(kind = "outside")]
     #[effect(label = "qs-clipboard-remove", own_device)]
     RemoveCopy {
         #[param("The copy")]
         copy: String,
     },
     /// Clear the clipboard history, keeping pinned copies.
+    #[effect(kind = "outside")]
     #[effect(label = "qs-clipboard-clear-history", own_device)]
     ClearClipboard,
     /// Show the notification centre over the shell: the panel's notifications
     /// row opens the one list, where they are read and answered.
+    #[effect(kind = "outside")]
     #[effect(
         label = "qs-notifications",
         own_device,
@@ -479,6 +529,7 @@ pub enum QsEffect {
     )]
     ShowCentre,
     /// Show a control on the panel.
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     ShowControl {
         #[param(
@@ -487,12 +538,14 @@ pub enum QsEffect {
         control: String,
     },
     /// Take a control off the panel.
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     HideControl {
         #[param("The control, as Show control names it")]
         control: String,
     },
     /// Move a control to another place on the panel.
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     MoveControl {
         #[param("The control, as Show control names it")]
@@ -501,28 +554,35 @@ pub enum QsEffect {
         before: Option<String>,
     },
     /// Put the panel's controls back as they were at first.
+    #[effect(kind = "outside")]
     #[effect(label = "qs-edit-reset", own_device)]
     ResetControls,
     /// Put away why the last press did not reach the device or the session
     /// refused it.
+    #[effect(kind = "outside")]
     #[effect(label = "qs-refused-dismiss", own_device)]
     DismissRefusal,
     /// Open Settings, at a page when one is named.
+    #[effect(kind = "outside")]
     #[effect(label = "qs-tile-settings", own_device, keywords = "preferences")]
     OpenSettings {
         #[param("A Settings link, such as `settings://network`; empty for Settings itself")]
         link: String,
     },
     /// Lock the screen.
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     LockScreen,
     /// Show the power menu: sleep, restart, shut down.
+    #[effect(kind = "outside")]
     #[effect(own_device, audience = "people")]
     PowerMenu,
     /// Play or pause what plays.
+    #[effect(kind = "outside")]
     #[effect(own_device, keywords = "music, media, resume, pause music")]
     PlayPause,
     /// Go back to the previous track.
+    #[effect(kind = "outside")]
     #[effect(
         label = "qs-now-playing-previous",
         own_device,
@@ -530,6 +590,7 @@ pub enum QsEffect {
     )]
     PreviousTrack,
     /// Skip to the next track.
+    #[effect(kind = "outside")]
     #[effect(
         label = "qs-now-playing-next",
         own_device,
@@ -537,12 +598,14 @@ pub enum QsEffect {
     )]
     NextTrack,
     /// Go to a point in what plays.
+    #[effect(kind = "outside")]
     #[effect(label = "qs-now-playing-seek", own_device, idempotent)]
     Seek {
         #[param("How far into the song, from 0 to 1")]
         fraction: f64,
     },
     /// Steer another of the running players.
+    #[effect(kind = "outside")]
     #[effect(label = "qs-now-playing-player", own_device, idempotent)]
     ChoosePlayer {
         #[param("The player, as the now-playing card lists it")]
@@ -550,12 +613,14 @@ pub enum QsEffect {
     },
     /// Play the sound somewhere else: this computer, one of the person's
     /// devices or speaker groups.
+    #[effect(kind = "outside")]
     #[effect(own_device, keywords = "cast, speaker, airplay, output")]
     ChooseOutput {
         #[param("The destination, as the now-playing card lists it")]
         output: String,
     },
     /// Show the app that plays what is playing.
+    #[effect(kind = "outside")]
     #[effect(own_device, keywords = "music, media, player, app, open")]
     OpenPlaying {
         #[param("The app that plays it, by its id")]
@@ -563,6 +628,7 @@ pub enum QsEffect {
     },
     /// Continue here what another of the person's devices handed over, at
     /// the point it stopped.
+    #[effect(kind = "outside")]
     #[effect(own_device, keywords = "handoff, continue, resume, another device")]
     ResumePlayback {
         #[param("The handoff, as the card lists it")]

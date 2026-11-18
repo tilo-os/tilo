@@ -13,15 +13,18 @@ use crate::{Service, Services, Started, Worker, decode, offer, reading, unavaila
 #[effect(operation = "test.lamp", catalogue = "tests/locales")]
 enum Lamp {
     /// Turn the lamp on or off.
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     SetOn {
         #[param("Whether it is on")]
         on: bool,
     },
     /// Dim the lamp.
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Dim,
     /// Smash the lamp.
+    #[effect(kind = "outside")]
     #[effect(own_device, destructive)]
     Smash,
 }

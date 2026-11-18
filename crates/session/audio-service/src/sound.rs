@@ -197,6 +197,7 @@ pub struct Profile {
 #[effect(operation = "so.tilo.audio.sound")]
 pub enum SoundAction {
     /// Set the volume.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -208,9 +209,11 @@ pub enum SoundAction {
         level: f64,
     },
     /// Turn the volume up by a step.
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "volume-2", keywords = "louder, volume up, lauter")]
     VolumeUp,
     /// Turn the volume down by a step.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         icon = "volume-1",
@@ -218,15 +221,18 @@ pub enum SoundAction {
     )]
     VolumeDown,
     /// Mute or unmute the sound.
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent, icon = "volume-x", keywords = "sound, silence")]
     SetMuted {
         #[param("Whether the sound is muted")]
         muted: bool,
     },
     /// Unmute the sound when it is muted, and mute it when it is not.
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "volume-x", keywords = "mute, unmute, stumm")]
     ToggleMuted,
     /// Play sound through an output.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         row,
@@ -239,6 +245,7 @@ pub enum SoundAction {
         node: u32,
     },
     /// Record sound from an input.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         row,
@@ -251,6 +258,7 @@ pub enum SoundAction {
         node: u32,
     },
     /// Mute or unmute the microphone.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -262,6 +270,7 @@ pub enum SoundAction {
         muted: bool,
     },
     /// Unmute the microphone when it is muted, and mute it when it is not.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         icon = "mic-off",
@@ -269,6 +278,7 @@ pub enum SoundAction {
     )]
     ToggleInputMuted,
     /// Set the microphone's level.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -281,6 +291,7 @@ pub enum SoundAction {
     },
     /// Play (or record) one application's stream through an output (or
     /// input), or release it to follow the default.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -294,6 +305,7 @@ pub enum SoundAction {
         device: Option<u32>,
     },
     /// Set one application's volume.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -307,6 +319,7 @@ pub enum SoundAction {
         level: f64,
     },
     /// Mute or unmute one application.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -321,6 +334,7 @@ pub enum SoundAction {
     },
     /// Use another profile of a sound card (high fidelity, a headset's
     /// microphone).
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,

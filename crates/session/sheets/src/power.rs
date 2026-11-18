@@ -43,6 +43,7 @@ impl Power {}
 #[effect(operation = "so.tilo.power.session")]
 pub enum PowerEffect {
     /// Lock
+    #[effect(kind = "outside")]
     #[effect(
         label = "power-lock",
         own_device,
@@ -51,6 +52,7 @@ pub enum PowerEffect {
     )]
     Lock,
     /// Log out
+    #[effect(kind = "outside")]
     #[effect(
         label = "power-logout",
         own_device,
@@ -59,6 +61,7 @@ pub enum PowerEffect {
     )]
     LogOut,
     /// Switch user
+    #[effect(kind = "outside")]
     #[effect(
         label = "power-switch-user",
         own_device,
@@ -66,6 +69,7 @@ pub enum PowerEffect {
     )]
     SwitchUser,
     /// Suspend
+    #[effect(kind = "outside")]
     #[effect(
         label = "power-suspend",
         own_device,
@@ -73,6 +77,7 @@ pub enum PowerEffect {
     )]
     Suspend,
     /// Restart
+    #[effect(kind = "outside")]
     #[effect(
         label = "power-restart",
         own_device,
@@ -81,6 +86,7 @@ pub enum PowerEffect {
     )]
     Restart,
     /// Shut down
+    #[effect(kind = "outside")]
     #[effect(
         label = "power-shut-down",
         own_device,

@@ -186,6 +186,7 @@ const AUTOSTART_PREFIX: &str = "portal:autostart:";
 #[effect(operation = "so.tilo.portal.autostart")]
 pub enum AutostartEffect {
     /// Stop the app starting at login
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Remove,
 }

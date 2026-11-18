@@ -29,18 +29,21 @@ impl Banners {}
 #[effect(operation = "so.tilo.notification-banners")]
 pub enum BannerEffect {
     /// Open notification
+    #[effect(kind = "outside")]
     #[effect(own_device, attended, icon = "bell")]
     Open {
         #[param("The banner to open; the newest when left out")]
         banner: Option<String>,
     },
     /// Close notification
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "x")]
     Dismiss {
         #[param("The banner to close; the newest when left out")]
         banner: Option<String>,
     },
     /// Choose on notification
+    #[effect(kind = "outside")]
     #[effect(own_device, attended)]
     Act {
         #[param("The banner; the newest when left out")]
@@ -49,6 +52,7 @@ pub enum BannerEffect {
         choice: String,
     },
     /// Reply to notification
+    #[effect(kind = "outside")]
     #[effect(own_device, attended)]
     Reply {
         #[param("The banner; the newest when left out")]
@@ -57,6 +61,7 @@ pub enum BannerEffect {
         text: String,
     },
     /// Snooze notification
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Snooze {
         #[param("The banner; the newest when left out")]
@@ -66,18 +71,21 @@ pub enum BannerEffect {
     #[effect(view, own_device)]
     FocusNewest,
     /// Read notification in full
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Read {
         #[param("The banner; the newest when left out")]
         banner: Option<String>,
     },
     /// Answer call
+    #[effect(kind = "outside")]
     #[effect(own_device, attended, icon = "phone")]
     AnswerCall {
         #[param("The call's banner; the ringing call when left out")]
         banner: Option<String>,
     },
     /// Decline call
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     DeclineCall {
         #[param("The call's banner; the ringing call when left out")]

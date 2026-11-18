@@ -292,12 +292,16 @@ impl FeedbackDraft {}
 #[effect(operation = "feedback.compose")]
 pub enum FeedbackEffect {
     /// Inspect exactly what will leave this device.
+    #[effect(kind = "outside")]
     Review,
     /// Approve the displayed review and durably queue it.
+    #[effect(kind = "outside")]
     Submit,
     /// Retry the immutable report and read its durable delivery status.
+    #[effect(kind = "outside")]
     Retry,
     /// Hide a span in the already-masked review.
+    #[effect(kind = "outside")]
     Redact {
         #[param("Reviewed field key")]
         key: String,
@@ -307,10 +311,13 @@ pub enum FeedbackEffect {
         end: usize,
     },
     /// Remove the screenshot from the review.
+    #[effect(kind = "outside")]
     RemoveScreenshot,
     /// Leave the recording out of the review.
+    #[effect(kind = "outside")]
     RemoveRecording,
     /// Show a span the review hid, or hide it again.
+    #[effect(kind = "outside")]
     Toggle {
         #[param("Which hidden span, by its place in the review")]
         index: usize,

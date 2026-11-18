@@ -764,6 +764,7 @@ impl Service for Served {
 #[effect(operation = "so.tilo.session.clipboard")]
 pub(crate) enum ClipboardAction {
     /// Put a copy back on the clipboard and paste it into the app in front
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Paste {
         /// The copy's key, as the history's rows carry it
@@ -771,6 +772,7 @@ pub(crate) enum ClipboardAction {
         copy: String,
     },
     /// Keep a copy at the front of the history, or let it go with the rest
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Pin {
         /// The copy's key, as the history's rows carry it
@@ -781,6 +783,7 @@ pub(crate) enum ClipboardAction {
         pinned: bool,
     },
     /// Remove one copy from the history
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Remove {
         /// The copy's key, as the history's rows carry it
@@ -788,9 +791,11 @@ pub(crate) enum ClipboardAction {
         copy: String,
     },
     /// Clear the history, keeping what the person pinned
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Clear,
     /// Put text on the clipboard, as if it had been copied
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Copy {
         /// The text to copy
@@ -798,6 +803,7 @@ pub(crate) enum ClipboardAction {
         text: String,
     },
     /// Paste the copied files into a folder, as a copy, or a move after a cut
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     PasteFiles {
         /// The folder to paste them into

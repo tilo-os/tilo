@@ -35,6 +35,7 @@ const GRANT_PREFIX: &str = "portal:restore:";
 #[effect(operation = "so.tilo.portal.restore")]
 pub enum GrantEffect {
     /// Forget the remembered share
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Forget,
 }

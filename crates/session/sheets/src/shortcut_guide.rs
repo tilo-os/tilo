@@ -44,12 +44,14 @@ impl ShortcutGuide {}
 #[effect(operation = "so.tilo.shortcut-guide.edit")]
 pub enum GuideEffect {
     /// Change a shortcut: the next chord pressed becomes its keys
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Listen {
         #[param("The shortcut to change, by its id")]
         action: String,
     },
     /// Put a pair of shortcuts back to their default keys
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Reset {
         #[param("The first shortcut of the pair, by its id")]

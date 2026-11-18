@@ -95,33 +95,42 @@ impl LockScreen {}
 #[effect(operation = "so.tilo.lock.screen")]
 pub enum LockEffect {
     /// Type the password
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     TypePassword {
         #[param(secret, "The password field's whole value")]
         password: String,
     },
     /// Unlock with the password typed
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Unlock,
     /// Switch to the next keyboard layout
+    #[effect(kind = "outside")]
     #[effect(own_device, keywords = "keyboard, layout, language, input")]
     NextLayout,
     /// Ask for the on-screen keyboard
+    #[effect(kind = "outside")]
     #[effect(own_device, keywords = "keyboard, on-screen, accessibility, touch")]
     ShowKeyboard,
     /// Play or pause what is playing
+    #[effect(kind = "outside")]
     #[effect(own_device, keywords = "music, media, pause, resume")]
     PlayPause,
     /// Play the next song
+    #[effect(kind = "outside")]
     #[effect(own_device, keywords = "music, media, skip")]
     NextTrack,
     /// Play the previous song
+    #[effect(kind = "outside")]
     #[effect(own_device, keywords = "music, media, skip")]
     PreviousTrack,
     /// Suspend the computer
+    #[effect(kind = "outside")]
     #[effect(label = "power-suspend", own_device, keywords = "sleep, standby")]
     Suspend,
     /// Restart the computer
+    #[effect(kind = "outside")]
     #[effect(
         label = "power-restart",
         own_device,
@@ -130,6 +139,7 @@ pub enum LockEffect {
     )]
     Restart,
     /// Shut the computer down
+    #[effect(kind = "outside")]
     #[effect(
         label = "power-shut-down",
         own_device,
@@ -138,6 +148,7 @@ pub enum LockEffect {
     )]
     ShutDown,
     /// The screen has finished leaving: the lock may lift
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Dissolved,
 }

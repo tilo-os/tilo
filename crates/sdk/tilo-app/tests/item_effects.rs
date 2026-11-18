@@ -27,6 +27,7 @@ pub struct Queries {
 #[effect(operation = "test.queries.effect", catalogue = "tests/locales")]
 pub enum QueryEffect {
     /// Run a saved query.
+    #[effect(kind = "outside")]
     #[effect(row, item = queries)]
     Run {
         #[param("The query")]

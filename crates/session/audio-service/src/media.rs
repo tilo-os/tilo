@@ -146,6 +146,7 @@ pub fn token_of(resource: &str) -> Option<&str> {
 #[effect(operation = "so.tilo.audio.player")]
 pub enum PlayerAction {
     /// Play or pause.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         row,
@@ -154,6 +155,7 @@ pub enum PlayerAction {
     )]
     PlayPause,
     /// Skip to the next track.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         row,
@@ -162,6 +164,7 @@ pub enum PlayerAction {
     )]
     Next,
     /// Go back to the previous track.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         row,
@@ -188,6 +191,7 @@ impl PlayerAction {
 #[effect(operation = "so.tilo.audio.media")]
 pub enum MediaAction {
     /// Play when paused, pause when playing.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         icon = "play",
@@ -195,15 +199,19 @@ pub enum MediaAction {
     )]
     PlayPause,
     /// Skip to the next track.
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "skip-forward", keywords = "skip")]
     Next,
     /// Go back to the previous track.
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "skip-back", keywords = "back")]
     Previous,
     /// Stop playing.
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "square", keywords = "halt")]
     Stop,
     /// Go to a point in what plays.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -217,6 +225,7 @@ pub enum MediaAction {
     },
     /// Continue here the session another of the person's devices hands
     /// over.
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "play", keywords = "handoff, continue, resume")]
     Resume {
         /// The handoff's request, 32 hex digits.

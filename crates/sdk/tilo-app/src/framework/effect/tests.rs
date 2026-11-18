@@ -23,9 +23,11 @@ impl Probe {
 #[effect(operation = "test.probe.effects", catalogue = "tests/locales")]
 enum Work {
     /// Count until cancelled.
+    #[effect(kind = "outside")]
     #[effect(cancellable)]
     Count,
     /// Answer at once.
+    #[effect(kind = "outside")]
     Ping,
 }
 

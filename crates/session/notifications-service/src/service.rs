@@ -62,15 +62,18 @@ pub fn notification_resource(id: u32) -> String {
 #[effect(operation = "so.tilo.session.notification")]
 pub enum NotificationEffect {
     /// Close the notification
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Close,
     /// Invoke one of the notification's actions
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Invoke {
         #[param("The key of one of the notification's actions")]
         action: String,
     },
     /// Reply to the notification
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Reply {
         #[param("The reply")]
@@ -83,6 +86,7 @@ pub enum NotificationEffect {
 #[effect(operation = "so.tilo.session.notification-schedules")]
 pub enum SchedulesEffect {
     /// Schedule a notification
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Schedule {
         #[param("The app the notification is from, by its id")]
@@ -115,9 +119,11 @@ pub enum SchedulesEffect {
 #[effect(operation = "so.tilo.session.notification-schedule")]
 pub enum ScheduleEffect {
     /// Cancel the scheduled notification
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Cancel,
     /// Dismiss the snoozed alarm
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     DismissSnooze,
 }
@@ -127,6 +133,7 @@ pub enum ScheduleEffect {
 #[effect(operation = "so.tilo.session.priority-contacts")]
 pub enum PriorityContactsEffect {
     /// Mark as priority contact
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Mark {
         #[param("The contact's id")]
@@ -143,6 +150,7 @@ pub enum PriorityContactsEffect {
 #[effect(operation = "so.tilo.session.priority-contact")]
 pub enum PriorityContactEffect {
     /// Unmark as priority contact
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Unmark,
 }

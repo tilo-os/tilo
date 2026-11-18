@@ -84,6 +84,7 @@ impl Default for Watched {
 #[effect(operation = "so.tilo.portal.inhibition")]
 pub enum InhibitionEffect {
     /// End the app's hold
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     End,
 }

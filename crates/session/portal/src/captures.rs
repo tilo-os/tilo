@@ -32,6 +32,7 @@ const PORTAL_TARGET: &str = "portal";
 #[effect(operation = "so.tilo.portal.capture")]
 pub enum CaptureEffect {
     /// Stop capturing
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Stop,
 }

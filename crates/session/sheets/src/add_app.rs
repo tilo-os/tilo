@@ -84,6 +84,7 @@ impl Offer {
 #[effect(operation = "so.tilo.add-app")]
 pub enum AddAppEffect {
     /// Add this program to your apps
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         icon = "plus",
@@ -94,6 +95,7 @@ pub enum AddAppEffect {
         move_to_applications: Option<bool>,
     },
     /// Do not add it, and do not ask about this file again
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,

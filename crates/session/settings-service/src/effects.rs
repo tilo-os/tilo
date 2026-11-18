@@ -8,15 +8,18 @@ use tilo_resource::Effect;
 #[effect(operation = "so.tilo.settings.setting")]
 pub enum SettingEffect {
     /// Turn the setting on when it is off, off when it is on.
+    #[effect(kind = "outside")]
     #[effect(row, icon = "toggle-right")]
     Switch,
     /// Set the setting to one of the few values it holds.
+    #[effect(kind = "outside")]
     #[effect(row, idempotent)]
     Choose {
         #[param("The value, as the setting stores it in JSON")]
         value: String,
     },
     /// Set the setting to a value.
+    #[effect(kind = "outside")]
     #[effect(row, idempotent)]
     Set {
         #[param("The value")]

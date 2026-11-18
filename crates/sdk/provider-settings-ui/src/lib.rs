@@ -104,6 +104,7 @@ fn chosen_model(
 #[effect(operation = "settings.effect")]
 pub enum ProviderEffect {
     /// Reload the authoritative profiles and credential status.
+    #[effect(kind = "outside")]
     #[effect(job, label = "agent-provider-refresh")]
     RefreshProviders,
     /// The providers that can be added, each with its `preset` name, what
@@ -113,6 +114,7 @@ pub enum ProviderEffect {
     /// Add a provider from a known one, which fills its name, endpoint,
     /// protocol and key header; its key and model are set afterwards. Add
     /// the same one again for a second account.
+    #[effect(kind = "outside")]
     #[effect(job)]
     AddProvider {
         #[param(
@@ -123,6 +125,7 @@ pub enum ProviderEffect {
     /// Ask the provider which models it offers, with its stored key or
     /// sign-in: shows whether the connection works, and answers the models
     /// to choose from with what each can do.
+    #[effect(kind = "outside")]
     #[effect(job, row, returns, label = "agent-test-connection")]
     ListProviderModels {
         #[param("The provider's id")]
@@ -130,6 +133,7 @@ pub enum ProviderEffect {
     },
     /// Make one model the one agents use from this provider: one it listed,
     /// or any other id.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent)]
     SetProviderModel {
         #[param("The provider's id")]
@@ -138,6 +142,7 @@ pub enum ProviderEffect {
         model: String,
     },
     /// Speak another protocol to a provider.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent)]
     SetProviderProtocol {
         #[param("The provider's id")]
@@ -146,6 +151,7 @@ pub enum ProviderEffect {
         protocol: String,
     },
     /// Offer a provider to agents, or stop offering it.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent)]
     SetProviderEnabled {
         #[param("The provider's id")]
@@ -153,6 +159,7 @@ pub enum ProviderEffect {
         on: bool,
     },
     /// Name a provider, where it is, and the model agents use from it.
+    #[effect(kind = "outside")]
     #[effect(job, row)]
     SetProviderDetails {
         #[param("The provider's id")]
@@ -165,6 +172,7 @@ pub enum ProviderEffect {
         model: Option<String>,
     },
     /// Set this model's request allowance; omit both values to restore defaults.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent)]
     SetModelRequestLimits {
         provider: String,
@@ -179,6 +187,7 @@ pub enum ProviderEffect {
     /// Say what one model can do, over what its provider's list or Tilo's
     /// table of model families says; omit both to let them decide again.
     /// An agent plans only with a model that calls tools.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent)]
     SetModelCapabilities {
         #[param("The provider's id")]
@@ -191,6 +200,7 @@ pub enum ProviderEffect {
         tool_calling: Option<bool>,
     },
     /// Make a provider the one agents use unless told otherwise.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent, label = "agent-use-default")]
     SetDefaultProvider {
         #[param("The provider's id")]
@@ -198,6 +208,7 @@ pub enum ProviderEffect {
     },
     /// Choose the model one agent plans with; omit both to let it use the
     /// default again.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
     SetAgentModel {
         #[param("The agent's id")]
@@ -209,6 +220,7 @@ pub enum ProviderEffect {
     },
     /// Choose the model each kind of interaction runs on; omit both to let
     /// that kind follow the default again.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
     SetInteractionModel {
         #[param("`one_shot`, `task`, `subtask`, `request`, `classifier` or `dictation`")]
@@ -219,6 +231,7 @@ pub enum ProviderEffect {
         model: Option<String>,
     },
     /// Remove a provider.
+    #[effect(kind = "outside")]
     #[effect(job, row, destructive, label = "agent-remove-provider")]
     RemoveProvider {
         #[param("The provider's id")]

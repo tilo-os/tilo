@@ -120,6 +120,7 @@ pub(crate) struct OfferedStyles {
 pub(crate) enum TrayEffect {
     /// Open or close the running application's tray item `key`: its window, or its menu when the
     /// item is one
+    #[effect(kind = "outside")]
     #[effect(row, label = "session-tray-open")]
     OpenTrayItem { key: String },
 }
@@ -129,6 +130,7 @@ pub(crate) enum TrayEffect {
 #[effect(operation = "so.tilo.session.agents")]
 pub(crate) enum AgentsEffect {
     /// End one agent session: its connection closes and its presence leaves the bar.
+    #[effect(kind = "outside")]
     #[effect(label = "session-agents-stop", audience = "people")]
     StopAgent {
         #[param("The agent session, by its key")]
@@ -147,6 +149,7 @@ pub const SWITCHER_SCOPES: [&str; 2] = ["workspace", "app"];
 pub(crate) enum InviteEffect {
     /// The invitations this device's person made into a workspace that can still be
     /// redeemed, in the words the workspace's host lists them by
+    #[effect(kind = "outside")]
     Invitations {
         /// The workspace, by its key; the one in front when absent
         #[param("The workspace, by its key; the one in front when absent")]
@@ -154,6 +157,7 @@ pub(crate) enum InviteEffect {
     },
     /// Make an invitation into a workspace from this device: the link to hand to whoever is
     /// being invited, which their device joins with
+    #[effect(kind = "outside")]
     IssueInvitation {
         /// The part the invitation brings them in at: `viewer`, `commenter`, `editor`,
         /// `moderator` or `administrator`; editor when absent
@@ -180,6 +184,7 @@ pub(crate) enum InviteEffect {
     /// Open the invite sheet on a workspace: where a link into it is made, the part it brings
     /// someone in at picked and the links that still work taken back. An app shares what it shows
     /// by asking this, so it offers the one sheet the bar's invite button opens.
+    #[effect(kind = "outside")]
     ShowInvite {
         /// The workspace, by its key; the one in front when absent
         #[param("The workspace, by its key; the one in front when absent")]
@@ -188,12 +193,15 @@ pub(crate) enum InviteEffect {
     /// Show how an agent or another computer connects as the person: the setup their own card's
     /// "Connect an agent or computer" opens. An app that lists what acts as them offers adding to
     /// it this way.
+    #[effect(kind = "outside")]
     ShowConnect,
     /// Open the Add a device sheet: the link a new device of the person's becomes one of theirs,
     /// shown as a code its camera reads. An app that lists what acts as the person offers adding
     /// to it this way.
+    #[effect(kind = "outside")]
     ShowPairDevice,
     /// Cancel the invitation `invite` of a workspace: its link admits nobody from now on
+    #[effect(kind = "outside")]
     CancelInvitation {
         /// The invitation's id, 64 hex characters, as listing invitations reports it
         #[param("The invitation's id, 64 hex characters, as listing invitations reports it")]

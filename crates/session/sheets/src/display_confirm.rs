@@ -43,12 +43,15 @@ impl DisplayConfirm {}
 #[effect(operation = "so.tilo.display-confirm.answer")]
 pub enum ConfirmEffect {
     /// Keep the display change
+    #[effect(kind = "outside")]
     #[effect(label = "display-confirm-keep", own_device, attended)]
     Keep,
     /// Revert the display change
+    #[effect(kind = "outside")]
     #[effect(label = "display-confirm-revert", own_device, idempotent)]
     Revert,
     /// Keep the display change and stop asking about its tool
+    #[effect(kind = "outside")]
     #[effect(own_device, attended)]
     KeepAndTrust,
 }

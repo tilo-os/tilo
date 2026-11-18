@@ -224,14 +224,18 @@ pub enum MailEffect {
     #[effect(returns, kind = "read")]
     Count,
     /// Fetch new mail.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     Fetch { from: String },
     /// Connect to the server.
+    #[effect(kind = "outside")]
     Connect,
     /// Promise an answer without starting anything.
+    #[effect(kind = "outside")]
     #[effect(job)]
     Stall,
     /// Settle an external receipt as the original caller.
+    #[effect(kind = "outside")]
     #[effect(job)]
     Receipt,
     /// A read receipt cannot authorize a document edit.
@@ -862,9 +866,11 @@ fn delayed_receipt_completion_cannot_exceed_its_original_read_admission() {
 #[effect(operation = "test.tally.effects", catalogue = "tests/locales")]
 pub enum TallyEffect {
     /// Tally.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     Tally,
     /// Count a row.
+    #[effect(kind = "outside")]
     Count {
         #[param("How much the row counts")]
         by: u32,
@@ -1322,6 +1328,7 @@ impl Widget for Counter {
 #[effect(operation = "test.counter.effects", catalogue = "tests/locales")]
 pub enum CounterEffect {
     /// Count.
+    #[effect(kind = "outside")]
     Count {
         #[param("How much to count")]
         by: u32,
@@ -1373,6 +1380,7 @@ impl ResourceApp for CounterApp {
 #[effect(operation = "test.hosted-counter.effects", catalogue = "tests/locales")]
 pub enum HostedCounterEffect {
     /// Count off the UI thread.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     CountLater {
         #[param("How much to count")]
@@ -1526,8 +1534,10 @@ impl Widget for Mounting {
 #[effect(operation = "test.mounting.effects", catalogue = "tests/locales")]
 pub enum MountingEffect {
     /// Mount the child window.
+    #[effect(kind = "outside")]
     OpenChild,
     /// Let the child window go.
+    #[effect(kind = "outside")]
     CloseChild,
 }
 
@@ -1617,12 +1627,15 @@ impl ResourceApp for MirrorApp {
 #[effect(operation = "test.mailbox.files", catalogue = "tests/locales")]
 pub enum FileEffect {
     /// Import a message from a file.
+    #[effect(kind = "outside")]
     #[effect(job)]
     Import,
     /// Export what was fetched to a file.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     Export,
     /// Sync with a device that is busy.
+    #[effect(kind = "outside")]
     #[effect(job)]
     SyncDevice,
 }
@@ -2011,9 +2024,11 @@ fn a_job_nobody_invoked_says_how_far_it_is_until_it_ends() {
 #[effect(operation = "test.mailbox.device", catalogue = "tests/locales")]
 pub enum DeviceEffect {
     /// Choose a mail folder on this computer.
+    #[effect(kind = "outside")]
     #[effect(attended)]
     ChooseFolder,
     /// Empty the mail folder on this computer.
+    #[effect(kind = "outside")]
     #[effect(destructive)]
     EmptyLocalFolder,
 }
@@ -2046,6 +2061,7 @@ impl ResourceApp for FolderApp {
 #[effect(operation = "test.mailbox.disks", catalogue = "tests/locales")]
 pub enum DiskEffect {
     /// Erase a disk.
+    #[effect(kind = "outside")]
     #[effect(risk = "erase_risk")]
     Erase { disk: String },
 }
