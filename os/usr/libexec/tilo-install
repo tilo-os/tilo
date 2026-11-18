@@ -1937,19 +1937,13 @@ fi
 # read this initial_session.  A power loss can therefore at worst show the
 # normal greeter; it cannot strand the installed account in permanent
 # autologin.
+install -d -m 0755 "$DEPLOY_ETC/greetd"
+GREETD_CONFIG="$DEPLOY_ETC/greetd/config.toml"
+GREETD_CONFIG_TMP="$(mktemp "$DEPLOY_ETC/greetd/.config.toml.XXXXXX")"
+install -m 0644 /usr/share/tilo/greetd-config.toml "$GREETD_CONFIG_TMP"
 if [ "$SERVER_DESTINATION" -eq 0 ]; then
-  install -d -m 0755 "$DEPLOY_ETC/greetd"
-  GREETD_CONFIG="$DEPLOY_ETC/greetd/config.toml"
-  GREETD_CONFIG_TMP="$(mktemp "$DEPLOY_ETC/greetd/.config.toml.XXXXXX")"
-  install -m 0644 /usr/share/tilo/greetd-config.toml "$GREETD_CONFIG_TMP"
   printf '\n[initial_session]\ncommand = "/usr/libexec/tilo-session --backend drm"\nuser = "%s"\n' \
     "$USERNAME" >> "$GREETD_CONFIG_TMP"
-  # DEPLOY_ETC is reached through a transient /run mount. SELinux therefore
-  # cannot infer the eventual /etc pathname while we are offline and otherwise
-  # gives this file var_run_t. Enforcing greetd (xdm_t) then refuses to read its
-  # own configuration on the first installed boot. Copy the label from the
-  # correctly labelled live /etc counterpart; only the contents differ.
-  chcon --reference=/etc/greetd/config.toml "$GREETD_CONFIG_TMP"
   AUTOLOGIN_PENDING="$DEPLOY_ETC/tilo/firstboot-autologin-pending"
   AUTOLOGIN_PENDING_TMP="$(mktemp "$DEPLOY_ETC/tilo/.firstboot-autologin.XXXXXX")"
   chmod 0600 "$AUTOLOGIN_PENDING_TMP"
@@ -1961,9 +1955,15 @@ if [ "$SERVER_DESTINATION" -eq 0 ]; then
   # unambiguous instruction to restore normal authentication on the next boot.
   sync -f "$AUTOLOGIN_PENDING" 2>/dev/null || sync
   sync -f "$DEPLOY_ETC/tilo" 2>/dev/null || sync
-  mv -f -- "$GREETD_CONFIG_TMP" "$GREETD_CONFIG"
-  sync -f "$DEPLOY_ETC/greetd" 2>/dev/null || sync
 fi
+# DEPLOY_ETC is reached through a transient /run mount. SELinux therefore
+# cannot infer the eventual /etc pathname while we are offline and otherwise
+# gives this file var_run_t. Enforcing greetd (xdm_t) then refuses to read its
+# own configuration on the first installed boot. Copy the label from the
+# correctly labelled live /etc counterpart; only the contents differ.
+chcon --reference=/etc/greetd/config.toml "$GREETD_CONFIG_TMP"
+mv -f -- "$GREETD_CONFIG_TMP" "$GREETD_CONFIG"
+sync -f "$DEPLOY_ETC/greetd" 2>/dev/null || sync
 rm -f "$DEPLOY_ETC/sudoers.d/tilo-installer"
 # Release media mask sshd, while an explicit diagnostic image may enable it.
 # Neither live-only state belongs on the installed system; the base Tilo image

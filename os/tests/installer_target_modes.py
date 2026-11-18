@@ -88,8 +88,14 @@ promote_target_uki() {\n''' + body + '\n}\npromote_target_uki "$FIXTURE_ESP"\n'
         with self.subTest(phase="no_credential_seed_or_login_session_is_written"):
             self.assertIn('if [ "$SERVER_DESTINATION" -eq 0 ]; then\n'
                           '  stage_installed_firstboot_runtime / "$DEPLOY_ETC"', SOURCE)
-            self.assertIn('if [ "$SERVER_DESTINATION" -eq 0 ]; then\n'
-                          '  install -d -m 0755 "$DEPLOY_ETC/greetd"', SOURCE)
+            # The shipped greeter config replaces the live installer's in both
+            # cases; only a desktop target gets the one-boot account session.
+            self.assertNotIn('if [ "$SERVER_DESTINATION" -eq 0 ]; then\n'
+                             '  install -d -m 0755 "$DEPLOY_ETC/greetd"', SOURCE)
+            self.assertIn('install -m 0644 /usr/share/tilo/greetd-config.toml "$GREETD_CONFIG_TMP"\n'
+                          'if [ "$SERVER_DESTINATION" -eq 0 ]; then', SOURCE)
+            self.assertNotIn('firstboot-autologin-pending', SOURCE.split(
+                'install -m 0644 /usr/share/tilo/greetd-config.toml "$GREETD_CONFIG_TMP"', 1)[0])
             self.assertIn('rm -f "$DEPLOY_ETC/tilo/install-user.conf"', SOURCE)
             # The server's store belongs to the image's own service account.
             self.assertIn('[ "$SERVER_DESTINATION" -eq 0 ] || STORE_OWNER=tilo-server', SOURCE)
