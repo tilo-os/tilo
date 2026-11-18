@@ -26,7 +26,7 @@ use ui::framework::LiveRow;
 use ui::lock::MutexRecover as _;
 #[cfg(test)]
 use ui::tilo_actions::{ActionKind, ConfirmationPolicy, ExecutionMode, OperationKind, ResultSpec};
-use ui::tilo_actions::{Availability, ResourceSpec};
+use ui::tilo_actions::{Availability, Exports as _};
 use ui::time::{Duration, Instant, UNIX_EPOCH};
 use ui::widget::DrawChild;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
@@ -317,12 +317,12 @@ fn retry_row(may_pass: bool) -> LiveRow {
 }
 
 fn failure_state(title: String, detail: String, may_pass: bool) -> EmptyState {
-    let row = retry_row(may_pass).into_resource();
+    let row = retry_row(may_pass);
     let state = EmptyState::error(title, detail)
         .with_icon(ui::icons::Icon::FolderOpen)
-        .with_action(row.label.clone())
+        .with_action(row.exported().label.clone())
         .with_action_id(RETRY_ROW);
-    match row.actions.first().and_then(|action| {
+    match row.operations().first().and_then(|action| {
         ui::tilo_actions::ActionBinding::static_json(&row, action, serde_json::Map::new()).ok()
     }) {
         Some(binding) => state.on_action(binding),
@@ -7407,13 +7407,6 @@ impl FilesState {
         actions
     }
 
-    fn live_filesystem_extras(&self) -> Vec<ResourceSpec> {
-        self.published_live_rows()
-            .into_iter()
-            .map(ui::framework::LiveRow::into_resource)
-            .collect()
-    }
-
     pub(crate) fn published_live_rows(&self) -> Vec<ui::framework::LiveRow> {
         let mut rows: Vec<LiveRow> = published_place_resources(&self.favorites());
         rows.extend(published_template_resources(self.available_templates()));
@@ -8137,26 +8130,32 @@ impl FilesState {
 
 impl FilesState {
     #[cfg(test)]
-    pub(crate) fn published_rows(&self) -> Vec<ResourceSpec> {
-        self.live_filesystem_extras()
+    pub(crate) fn published_rows(&self) -> Vec<ui::tilo_actions::ResourceSpec> {
+        self.published_live_rows()
+            .into_iter()
+            .map(ui::framework::LiveRow::into_resource)
+            .collect()
     }
 
-    pub(crate) fn published_row(&self, id: &str) -> Option<ResourceSpec> {
-        fn find(resource: &ResourceSpec, id: &str) -> Option<ResourceSpec> {
-            if resource.id.as_str() == id {
-                return Some(resource.clone());
+    pub(crate) fn published_row(&self, id: &str) -> Option<LiveRow> {
+        fn find(row: &LiveRow, id: &str) -> Option<LiveRow> {
+            if row.id() == id {
+                return Some(row.clone());
             }
-            resource.children.iter().find_map(|child| find(child, id))
+            row.exported()
+                .children
+                .iter()
+                .find_map(|child| find(&LiveRow::from_resource(child.clone()), id))
         }
         if let Some(found) = self
-            .live_filesystem_extras()
+            .published_live_rows()
             .iter()
-            .find_map(|resource| find(resource, id))
+            .find_map(|row| find(row, id))
         {
             return Some(found);
         }
         self.entry_by_resource_id(id)
-            .map(|entry| self.entry_resource(entry).into_resource())
+            .map(|entry| self.entry_resource(entry))
             .or_else(|| {
                 self.places_search
                     .resource(id)
@@ -8170,7 +8169,7 @@ impl FilesState {
             .or_else(|| {
                 self.folder_failure()
                     .filter(|_| id == RETRY_ROW)
-                    .map(|(failure, _)| retry_row(failure.may_pass()).into_resource())
+                    .map(|(failure, _)| retry_row(failure.may_pass()))
             })
     }
 }

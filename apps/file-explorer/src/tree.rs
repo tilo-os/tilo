@@ -723,10 +723,9 @@ impl TreeBrowser {
     fn handoff(app: &str, label: &str) -> Option<ActionEmitter<String>> {
         let spec =
             ApplicationLaunch::content_spec(app, "open", label, &t("files-tree-open-detail"));
-        let resource = ui::framework::LiveRow::new(format!("{app}.app"), "applications.app", label)
-            .operation(spec.clone())
-            .into_resource();
-        let binding = ActionBinding::new(&resource, &spec, |hash: String| {
+        let row = ui::framework::LiveRow::new(format!("{app}.app"), "applications.app", label)
+            .operation(spec.clone());
+        let binding = ActionBinding::new(&row, &spec, |hash: String| {
             let mut arguments = serde_json::Map::new();
             arguments.insert("content_hash".into(), serde_json::Value::String(hash));
             arguments

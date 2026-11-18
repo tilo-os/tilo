@@ -7,7 +7,6 @@ use std::sync::{Arc, RwLock};
 use sha2::{Digest as _, Sha256};
 
 use ui::framework::LiveRow;
-use ui::tilo_actions::ResourceSpec;
 use ui::tilo_resource::SearchEntry;
 
 use crate::favorites::Favorite;
@@ -92,7 +91,7 @@ impl PlacesSearch {
         true
     }
 
-    pub(crate) fn resource(&self, id: &str) -> Option<ResourceSpec> {
+    pub(crate) fn resource(&self, id: &str) -> Option<LiveRow> {
         let favorite = self
             .snapshot
             .read()
@@ -103,15 +102,13 @@ impl PlacesSearch {
             .1
             .clone();
         Some(
-            LiveRow::new(id, "files.place", favorite.label)
-                .operation(crate::effects::row_action(
-                    &crate::effects::FilesEffect::OpenItem {
-                        item: id.to_owned(),
-                    },
-                    OPEN_ACTION,
-                    crate::i18n::CATALOG.t("files-shortcuts-open"),
-                ))
-                .into_resource(),
+            LiveRow::new(id, "files.place", favorite.label).operation(crate::effects::row_action(
+                &crate::effects::FilesEffect::OpenItem {
+                    item: id.to_owned(),
+                },
+                OPEN_ACTION,
+                crate::i18n::CATALOG.t("files-shortcuts-open"),
+            )),
         )
     }
 
@@ -216,18 +213,16 @@ impl CollaborativeResourceSearch {
             .cloned()
     }
 
-    pub(crate) fn resource(&self, id: &str) -> Option<ResourceSpec> {
+    pub(crate) fn resource(&self, id: &str) -> Option<LiveRow> {
         let record = self.snapshot.read().ok()?.records.get(id)?.clone();
         Some(
-            LiveRow::new(id, "files.record", record.name)
-                .operation(crate::effects::row_action(
-                    &crate::effects::FilesEffect::Reveal {
-                        record: record.document_id.to_string(),
-                    },
-                    REVEAL_ACTION,
-                    crate::i18n::CATALOG.t("files-reveal"),
-                ))
-                .into_resource(),
+            LiveRow::new(id, "files.record", record.name).operation(crate::effects::row_action(
+                &crate::effects::FilesEffect::Reveal {
+                    record: record.document_id.to_string(),
+                },
+                REVEAL_ACTION,
+                crate::i18n::CATALOG.t("files-reveal"),
+            )),
         )
     }
 }
@@ -279,18 +274,18 @@ impl RemoteAccountSearch {
         true
     }
 
-    pub(crate) fn resource(&self, id: &str) -> Option<ResourceSpec> {
+    pub(crate) fn resource(&self, id: &str) -> Option<LiveRow> {
         let account = self.snapshot.read().ok()?.accounts.get(id)?.clone();
         Some(
-            LiveRow::new(id, "files.remote-account", account.label)
-                .operation(crate::effects::row_action(
+            LiveRow::new(id, "files.remote-account", account.label).operation(
+                crate::effects::row_action(
                     &crate::effects::FilesEffect::AccountDetails {
                         account: account.id.to_string(),
                     },
                     REMOTE_ACCOUNT_OPEN_ACTION,
                     crate::i18n::CATALOG.t("files-remote-details"),
-                ))
-                .into_resource(),
+                ),
+            ),
         )
     }
 }
@@ -386,12 +381,12 @@ mod tests {
             let hit = source(search.entries()).search("import").pop().unwrap();
             let resource = search.resource(&hit.anchor()).unwrap();
             assert_eq!(
-                resource.id.as_str(),
+                resource.id(),
                 crate::remote_accounts::resource_id(&account.id)
             );
             assert!(
                 resource
-                    .actions
+                    .operations()
                     .iter()
                     .any(|action| action.id == REMOTE_ACCOUNT_OPEN_ACTION)
             );
@@ -603,7 +598,7 @@ mod tests {
                     .expect("the omitted account is materialized exactly");
                 assert!(
                     resource
-                        .actions
+                        .operations()
                         .iter()
                         .any(|spec| spec.id == REMOTE_ACCOUNT_OPEN_ACTION),
                     "the anchored row opens the account"

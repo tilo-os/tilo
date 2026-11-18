@@ -2725,9 +2725,10 @@ mod command_path_tests {
             .state()
             .published_row(&id)
             .expect("an exact current-folder entry resolves on demand");
-        assert_eq!(resolved.id.as_str(), id);
-        assert!(resolved.actions.iter().any(|action| action.id == "open"));
-        assert!(resolved.actions.iter().any(|action| action.id == "copy"));
+        assert_eq!(resolved.id(), id);
+        let ops = resolved.operations();
+        assert!(ops.iter().any(|action| action.id == "open"));
+        assert!(ops.iter().any(|action| action.id == "copy"));
     }
 
     fn every_exported_local_file_handler_is_declared_for_the_broker() {
@@ -4359,7 +4360,7 @@ mod command_path_tests {
             .published_row(&hit.anchor())
             .expect("late resource materializes exactly for this anchor");
         assert!(
-            row.actions
+            row.operations()
                 .iter()
                 .any(|spec| spec.id == crate::search_provider::REVEAL_ACTION),
             "the anchored row reveals the resource"

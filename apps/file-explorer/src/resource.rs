@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 #[cfg(feature = "samples")]
 use ui::framework::Fixture;
-use ui::framework::{EffectAnswer, Effected, FileHistory, LiveRow, Publishes, ResourceApp, ViewCx};
+use ui::framework::{EffectAnswer, Effected, FileHistory, Publishes, ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 use ui::storage::{Scope, SettingsSchema};
 use ui::tilo_resource::{
@@ -1175,7 +1175,7 @@ fn files_view(cx: &ViewCx<FileExplorer>, mut window: FileExplorerWidget) -> Elem
     cx.publishing(
         Publishes::new()
             .live_rows(move || rows.borrow().published_live_rows())
-            .live_row(move |id| row.borrow().published_row(id).map(LiveRow::from_resource))
+            .live_row(move |id| row.borrow().published_row(id))
             .row_edits(move |row| edits.borrow().entry_declarations(row))
             .search_entries(move || entries.borrow().search_entries_shown())
             .process_intents(move || intents.borrow_mut().take_process_intent()),
