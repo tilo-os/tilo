@@ -104,6 +104,14 @@ public final class TiloSource: AssistantSource {
     /// the device is paired again or its person signs out: the way in says why it stands there.
     private static let resetKey = "TiloLiveReset"
     private var wasReset = false
+    /// Kept from the moment a device where the person is signed in approved this one until the
+    /// device is its person's here, another link is taken or it is signed out: the workspace
+    /// it was let into, and when. The store holds the device that was approved, so the app's
+    /// next start goes on as that device, whatever stopped it, and pairs nothing a second time.
+    private static let approvedKey = "TiloLiveApproved"
+    /// The join that was approved and has not made this device its person's yet.
+    private var approved: (route: String, at: Date)?
+    private let approvals = Told<Date?>(nil)
     /// Whether the person's Tilo answers and does not let this device in (`joinStops()`).
     private let joins = Told<Bool>(false)
 
@@ -235,6 +243,10 @@ public final class TiloSource: AssistantSource {
             closedKey = closedKeys?.read()
         }
         wasReset = defaults.bool(forKey: TiloSource.resetKey)
+        if let kept = defaults.array(forKey: TiloSource.approvedKey) as? [String], kept.count == 2, let at = TimeInterval(kept[1]) {
+            approved = (kept[0], Date(timeIntervalSinceReferenceDate: at))
+            approvals.set(approved?.at)
+        }
         sessions.set(sessionNow)
         let engine = engine
         listening = [
@@ -258,8 +270,13 @@ public final class TiloSource: AssistantSource {
         // workspace changed. Its other moments stay: they are what it reads at where a page
         // tells nothing this way.
         follows.follow(Followed(app: "so.tilo.tasks")) { [weak self] in await self?.readTasks() }
-        // A device that was paired before comes back as itself.
-        if let route = defaults.string(forKey: TiloSource.routeKey) { try? engine.open(route: route) }
+        // A device that was paired before comes back as itself. So does one that was approved
+        // and stopped before it got in: its store holds that device, and nothing is paired again.
+        if let route = defaults.string(forKey: TiloSource.routeKey) ?? approved?.route {
+            try? engine.open(route: route)
+            // Its first word is that it is on its way in, never the plain way in.
+            sessions.set(sessionNow)
+        }
     }
 
     deinit {
@@ -272,6 +289,18 @@ public final class TiloSource: AssistantSource {
     public nonisolated func reach() -> AsyncStream<Reach> { reaches.stream() }
     public nonisolated func pairingEnded() -> AsyncStream<String?> { endings.stream() }
     public nonisolated func pairingEndedDetails() -> AsyncStream<String?> { endingDetails.stream() }
+    public nonisolated func joinApproved() -> AsyncStream<Date?> { approvals.stream() }
+
+    /// Go on as the device that was approved: its workspace's page is asked for again, as the
+    /// device the store holds. Nothing is paired a second time, and what the try before ended
+    /// with is said no more.
+    public func goOn() async {
+        guard person == nil, let approved else { return }
+        endings.set(nil)
+        endingDetails.set(nil)
+        try? engine.open(route: defaults.string(forKey: TiloSource.routeKey) ?? approved.route)
+        tell()
+    }
 
     public func pair(with link: PairingLink) async throws {
         // A sign-in begins. Whatever key this device still keeps is not the next person's: a
@@ -284,6 +313,8 @@ public final class TiloSource: AssistantSource {
             soughtOwn = false
             try engine.pair(with: link.url)
             pairsNow = true
+            // Another link is taken: what was approved before is gone on with no more.
+            forgetApproval()
         } catch {
             // Of a link it refuses the app says where the link is from, by name and port, and
             // nothing else: what the link carries to pair with is shown, kept and written nowhere.
@@ -323,7 +354,7 @@ public final class TiloSource: AssistantSource {
     /// again. Its key stays in its store, as at a sign-out.
     private func lost() {
         // Only a device that was somebody's here is told at its way in that its workspace is gone.
-        mark(reset: wasReset || person != nil || defaults.string(forKey: TiloSource.routeKey) != nil)
+        mark(reset: wasReset || person != nil || defaults.string(forKey: TiloSource.routeKey) != nil || approved != nil)
         forget()
         engine.leave()
         tell()
@@ -345,6 +376,7 @@ public final class TiloSource: AssistantSource {
         forgetClosedKey()
         defaults.removeObject(forKey: TiloSource.routeKey)
         defaults.removeObject(forKey: TiloSource.personKey)
+        forgetApproval()
         naming?.cancel()
         naming = nil
         person = nil
@@ -461,8 +493,9 @@ public final class TiloSource: AssistantSource {
 
     /// A pairing that ends before this device is anybody's puts it back at its way in. What
     /// the page said of it, a refused link or a page that could not go on, is kept for the way
-    /// in to say, until another link is taken or the device is in. A device that is its
-    /// person's already stands at no way in, and is told nothing here.
+    /// in to say, until another link is taken or the device is in. So is what stops a device
+    /// that was approved before and goes on as itself. A device that is its person's already
+    /// stands at no way in, and is told nothing here.
     private func sayEnding(_ state: TiloEngine.State) {
         switch state {
         case .open:
@@ -470,7 +503,7 @@ public final class TiloSource: AssistantSource {
             endings.set(nil)
             endingDetails.set(nil)
         case .refused(let why), .failed(let why):
-            guard pairsNow, person == nil else { return }
+            guard pairsNow || approved != nil, person == nil else { return }
             endingDetails.set(why.isEmpty || engine.stopDetails.isEmpty ? nil : engine.stopDetails)
             endings.set(why.isEmpty ? nil : why)
         case .away, .arriving, .asking, .pairing, .gone:
@@ -481,11 +514,31 @@ public final class TiloSource: AssistantSource {
     /// A page may say its sentence first and show the details under it a moment later: they
     /// are said when they come, while the way in still says that sentence.
     private func sayEndingDetails() {
-        guard pairsNow, person == nil else { return }
+        guard pairsNow || approved != nil, person == nil else { return }
         switch engine.state {
         case .refused, .failed: endingDetails.set(engine.stopDetails.isEmpty ? nil : engine.stopDetails)
         default: break
         }
+    }
+
+    /// The page that pairs got past its join: a device where its person is signed in approved
+    /// this one. Kept from that moment, with when it was: whatever stops the page after it,
+    /// the app's next start goes on as the device its store holds.
+    private func keepApproval() {
+        guard pairsNow, person == nil, approved == nil, let route = engine.letInto else { return }
+        let at = Date()
+        approved = (route, at)
+        // The seconds a date holds itself: what the next start reads back is this date to the last bit.
+        defaults.set([route, String(at.timeIntervalSinceReferenceDate)], forKey: TiloSource.approvedKey)
+        approvals.set(at)
+    }
+
+    /// The device is its person's, another link is taken, or it is signed out: no approved join
+    /// waits to get in.
+    private func forgetApproval() {
+        approved = nil
+        defaults.removeObject(forKey: TiloSource.approvedKey)
+        approvals.set(nil)
     }
 
     private func stood(_ state: TiloEngine.State) async {
@@ -494,6 +547,7 @@ public final class TiloSource: AssistantSource {
             lost()
             return
         }
+        keepApproval()
         sayEnding(state)
         // The page is in, and her assistant is looked for next. It is said before the word that
         // Tilo answers, so that the window's one sentence stands from its opening until the
@@ -634,6 +688,8 @@ public final class TiloSource: AssistantSource {
         let known = Person(id: .init(root), name: row?["name"]?.string ?? person?.name ?? "", workspace: workspace)
         person = known
         defaults.set([root, known.name, known.workspace], forKey: TiloSource.personKey)
+        // The device is its person's here: it comes back as theirs, and waits to get in no more.
+        forgetApproval()
     }
 
     /// Ask for Chat's own row of the person beside everything else, for ten seconds. When it

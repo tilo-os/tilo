@@ -98,6 +98,17 @@ enum Screens {
         halted.pairingEnded = "Couldn’t open Tilo. It stopped while joining. Try again. If it stops again, copy the technical details below."
         halted.pairingEndedDetails = "Cause: loading\nStopped at: join\nError: The page could not join.\nPage build: 0.1.13"
         await add("phone-way-in-stopped", halted)
+        // A device that was approved and stopped before it got in: the way in says so and goes
+        // on as that device, and while its try is in work it says that Tilo is opening.
+        var approved = MemorySource.Content()
+        approved.session = .signedOut
+        approved.joinApproved = Drawing.now.addingTimeInterval(-240)
+        approved.pairingEnded = "Tilo draws with WebGPU. This browser has it, but offered this page no graphics adapter."
+        await add("phone-way-in-approved", approved)
+        var goesOn = MemorySource.Content()
+        goesOn.session = .pairing
+        goesOn.joinApproved = Drawing.now.addingTimeInterval(-240)
+        await add("phone-way-in-goes-on", goesOn)
         await add("phone-empty", empty)
         // The start, from the app's opening until the main chat stands: one sentence over the field.
         var starting = empty
@@ -154,6 +165,17 @@ enum Screens {
         halted.pairingEnded = "Couldn’t open Tilo. It stopped while joining. Try again. If it stops again, copy the technical details below."
         halted.pairingEndedDetails = "Cause: loading\nStopped at: join\nError: The page could not join.\nPage build: 0.1.13"
         screens.append(Screen(name: "way-in-stopped", size: window, view: rooted(await model(halted), scheme) { MacWindow() }))
+        // A device that was approved and stopped before it got in: the way in says so and goes
+        // on as that device, and while its try is in work it says that Tilo is opening.
+        var approved = MemorySource.Content()
+        approved.session = .signedOut
+        approved.joinApproved = Drawing.now.addingTimeInterval(-240)
+        approved.pairingEnded = "Tilo draws with WebGPU. This browser has it, but offered this page no graphics adapter."
+        screens.append(Screen(name: "way-in-approved", size: window, view: rooted(await model(approved), scheme) { MacWindow() }))
+        var goesOn = MemorySource.Content()
+        goesOn.session = .pairing
+        goesOn.joinApproved = Drawing.now.addingTimeInterval(-240)
+        screens.append(Screen(name: "way-in-goes-on", size: window, view: rooted(await model(goesOn), scheme) { MacWindow() }))
         // The first run: what Tilo asks before it pairs, and the provider step in the main chat.
         var asked = MemorySource.Content()
         asked.session = .asked(Drawing.pairingAsk)
