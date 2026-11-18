@@ -23,7 +23,7 @@ use iroh::protocol::Router;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use tilo_identity::identity_store::HostIdentity;
+use tilo_identity::identity_store::DeviceIdentity;
 use tilo_peer_state::direct::{DIRECT_ALPN, DirectSync};
 use tilo_peer_state::join::invitations::IssueInvitationRequest;
 use tilo_peer_state::join::{self, Role};
@@ -274,7 +274,7 @@ async fn joins(joiner: &Desktop, invitation: String, with: &Desktop) {
             service,
             joiner.key.verifying_key().to_bytes(),
         ),
-        HostIdentity::kept(joiner.cert.clone(), joiner.key.clone()),
+        DeviceIdentity::kept(joiner.cert.clone(), joiner.key.clone()),
         join::WorkspaceId::parse(WORKSPACE).expect("a workspace topic"),
         None,
         invitation,
@@ -299,7 +299,7 @@ async fn enters_as_member(joiner: &Desktop, with: &Desktop) {
             service,
             joiner.key.verifying_key().to_bytes(),
         ),
-        HostIdentity::kept(joiner.cert.clone(), joiner.key.clone()),
+        DeviceIdentity::kept(joiner.cert.clone(), joiner.key.clone()),
         joiner.owner.clone(),
         workspace(),
         testing::own_host_hint_here(workspace(), &with.cert, &with.key),

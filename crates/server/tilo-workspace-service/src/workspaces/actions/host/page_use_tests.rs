@@ -19,7 +19,7 @@ use tilo_actions::remote::Caller;
 use tilo_actions::remote::person_vault::{self, FillPage, ItemRef};
 use tilo_user_identity::DeviceCert;
 
-use super::super::HostWorkspaceActions as Service;
+use super::super::ServiceWorkspaceActions as Service;
 use super::super::tests::{admit, caller, governed};
 use super::vault_tests::{ask, files_holding};
 use crate::workspaces::hosted_use::{
