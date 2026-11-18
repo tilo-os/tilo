@@ -20,7 +20,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     case showReplyOne = "show-reply-one", showReplyMany = "show-reply-many", hideReplies = "hide-replies"
     case noReplies = "no-replies", conversation, you, waitsForAnswer = "waits-for-answer"
     case readyOne = "ready-one", readyMany = "ready-many", seeAllTasks = "see-all-tasks"
-    case youChose = "you-chose", answering, earlier
+    case youChose = "you-chose", answering, notTakenUp = "not-taken-up", earlier
     case nothingYet = "nothing-yet", nothingYetBody = "nothing-yet-body"
     case liveThing = "live-thing", attachment
     // The first run, in the main chat.
@@ -119,6 +119,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .seeAllTasks: "See all tasks"
         case .youChose: "You chose {answer}"
         case .answering: "Writing"
+        case .notTakenUp: "Tilo has not taken this up yet."
         case .earlier: "Show earlier"
         case .nothingYet: "Nothing here yet"
         case .nothingYetBody: "Write to your assistant below."

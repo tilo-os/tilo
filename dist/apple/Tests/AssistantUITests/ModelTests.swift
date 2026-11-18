@@ -295,6 +295,71 @@ final class ModelTests: XCTestCase {
         model.begin("Something else: ")
         XCTAssertEqual(model.drafts[.main]?.text, "Morning rundown: ")
     }
+
+    func testAMessageNoTurnTakesUpInTimeGetsOneQuietLineWhichGoesWhenTheTurnBegins() async throws {
+        let source = Drawing.source()
+        let model = AssistantModel(source: source)
+        model.takeUpPatience = .milliseconds(150)
+        model.start()
+        try await until { model.conversation(.main).isLoaded }
+        model.drafts[.main] = Draft(text: "Are you there?")
+        model.send(in: .main)
+        try await until { model.conversation(.main).items.count == Drawing.mainChat.count + 1 }
+        XCTAssertFalse(model.isNotTakenUp(.main), "the line stood before any time had passed")
+        try await until { model.isNotTakenUp(.main) }
+        XCTAssertEqual(AssistantWords.notTakenUp.said, "Tilo has not taken this up yet.")
+        // The turn begins: the line goes, and does not come back while or after the answer is written.
+        source.setAnswering(true)
+        try await until { !model.isNotTakenUp(.main) }
+        source.post(Item(id: "there", at: Date(), .message(Message(.assistant, "I am."))))
+        source.setAnswering(false)
+        try await until { model.conversation(.main).items.count == Drawing.mainChat.count + 2 }
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertFalse(model.isNotTakenUp(.main))
+    }
+
+    func testAMessageATurnTakesUpInTimeGetsNoLineAndNeitherDoesOneThatIsAnsweredAtOnce() async throws {
+        let source = Drawing.source()
+        let model = AssistantModel(source: source)
+        model.takeUpPatience = .milliseconds(200)
+        model.start()
+        try await until { model.conversation(.main).isLoaded }
+        // A turn takes her message up before the time is over, and is still at work when it is.
+        model.drafts[.main] = Draft(text: "One.")
+        model.send(in: .main)
+        try await until { model.conversation(.main).items.count == Drawing.mainChat.count + 1 }
+        source.setAnswering(true)
+        try await Task.sleep(for: .milliseconds(450))
+        XCTAssertFalse(model.isNotTakenUp(.main), "a message a turn is at work on was said not to be taken up")
+        // The turn ends without a word of its own: nothing is said of the message then either.
+        source.setAnswering(false)
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertFalse(model.isNotTakenUp(.main))
+        // An answer that comes whole, with no word that it was being written, is the turn as well.
+        model.drafts[.main] = Draft(text: "Two.")
+        model.send(in: .main)
+        try await until { model.conversation(.main).items.count == Drawing.mainChat.count + 2 }
+        source.post(Item(id: "two", at: Date(), .message(Message(.assistant, "Two it is."))))
+        try await Task.sleep(for: .milliseconds(450))
+        XCTAssertFalse(model.isNotTakenUp(.main))
+    }
+
+    func testWhatSheWritesAgainBeginsTheWaitAnewAndTheLineStandsUnderHerNewestMessage() async throws {
+        let source = Drawing.source()
+        let model = AssistantModel(source: source)
+        model.takeUpPatience = .milliseconds(300)
+        model.start()
+        try await until { model.conversation(.main).isLoaded }
+        model.drafts[.main] = Draft(text: "One.")
+        model.send(in: .main)
+        try await until { model.isNotTakenUp(.main) }
+        // She writes again: the line goes with the wait for the message before, and comes again after its time.
+        model.drafts[.main] = Draft(text: "Two.")
+        model.send(in: .main)
+        try await until { model.conversation(.main).items.count == Drawing.mainChat.count + 2 }
+        XCTAssertFalse(model.isNotTakenUp(.main))
+        try await until { model.isNotTakenUp(.main) }
+    }
 }
 
 /// The drawing's signs and colours, as the views are given them.

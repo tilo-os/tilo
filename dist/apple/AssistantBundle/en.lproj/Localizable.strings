@@ -39,6 +39,7 @@
 "see-all-tasks" = "See all tasks";
 "you-chose" = "You chose {answer}";
 "answering" = "Writing";
+"not-taken-up" = "Tilo has not taken this up yet.";
 "earlier" = "Show earlier";
 "nothing-yet" = "Nothing here yet";
 "nothing-yet-body" = "Write to your assistant below.";
