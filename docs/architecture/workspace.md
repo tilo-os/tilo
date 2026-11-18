@@ -273,39 +273,13 @@ where they live, and activating one brings it here.
 **A file is a resource whose identity is a path.** History, sharing and
 permissions have one implementation, and the file case is not privileged.
 
-### Resources shown as files
+### The folder holds files
 
-The workspace's folder (its Files document, the tree every member mounts) also
-shows records that are not files of their own. Each note of the workspace's
-notebook is `Notes/<title>.md` there, so an agent, a script or any program
-reads and writes notes as plain files. There is one copy of each note: **the
-note document is the source of truth and the file is its projection.** The
-file's node in the tree names the document it projects and what the two last
-read as (`Namespace::set_projection`), and the workspace's host keeps them in
-step. It holds both documents and runs app actions
-(`agent-session/src/workspace_actions/notes_folder.rs`), and every write
-to either document starts a pass.
-
-- A note made or changed in Notes is written into its file as the host's own
-  change of the tree. A renamed note renames its file.
-- A write to the file through a mounted folder, by an agent or another
-  program, becomes Notes' own `write-note` action, which changes only the
-  paragraphs that differ. It runs as the writer of the file's newest version:
-  the person whose device signed it, and the agent session that wrote for
-  them. Notes' History names them as for any other edit.
-- Deleting the file runs Notes' own undoable `delete` as whoever deleted it.
-  If the delete is undone, the file comes back from the trash. A note deleted
-  in Notes sends its file to the trash.
-
-What the host writes reads as agreed, so its own writes never come back to it
-as changes. A pass that fails (the workspace not open yet as the host starts,
-a note's change refused) is tried again after a wait that doubles up to five
-minutes, and every workspace that holds a notebook gets a pass as the host
-starts, so a write that landed while the host was down still reaches its note
-or file. If both the note and its file changed since they last agreed, the
-note wins and the file is rewritten from it. Notes nested under other notes
-are flat files in `Notes/`, and the note's title names its file: a file
-renamed in the folder takes its note's title back.
+The workspace's folder (its Files document, the tree every member mounts)
+holds files and nothing else. App records such as notes or issues are not
+shown there as files: an agent or a script reaches them through the app's
+actions (`tilo ls`, `tilo read`, `tilo do`, or the same over MCP), and a
+Markdown file put in the folder stays a file, which Notes can open.
 
 ## People
 

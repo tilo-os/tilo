@@ -1182,7 +1182,20 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             } => Ok(Ok(self
                 .resolve_published(parsed, app_id, provider, true, forms)
                 .await?)),
-            AppRef::Installed { opens, .. } => Ok(Err(Self::not_running_note(&parsed.app, opens))),
+            // Reading what an installed app holds starts it without a window, as an action on
+            // it does: a path names the app's resources, not one of its processes.
+            AppRef::Installed {
+                app_id,
+                opens: true,
+            } => {
+                let provider = self.started_provider(&app_id, None).await?;
+                Ok(Ok(self
+                    .resolve_published(parsed, app_id, provider, true, forms)
+                    .await?))
+            }
+            AppRef::Installed { opens: false, .. } => {
+                Ok(Err(Self::not_running_note(&parsed.app, false)))
+            }
         }
     }
 

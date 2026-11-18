@@ -650,6 +650,30 @@ fn listing_rows(listed: &Value) -> String {
             text(row, "kind")
         );
     }
+    // What can be done to it, a line each as `tilo_ls` writes them: `#rename(title)  Rename
+    // note`, a `?` marking what may be left out.
+    for action in listed
+        .get("actions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let params: Vec<String> = action
+            .get("params")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .map(|param| {
+                let optional = param.get("required").and_then(Value::as_bool) != Some(true);
+                format!("{}{}", text(param, "name"), if optional { "?" } else { "" })
+            })
+            .collect();
+        let _ = write!(said, "\n#{}({})", text(action, "id"), params.join(", "));
+        let label = text(action, "label");
+        if !label.is_empty() {
+            let _ = write!(said, "  {label}");
+        }
+    }
     said
 }
 
@@ -2805,6 +2829,20 @@ mod tests {
             assert_eq!(
                 listing_text(&rows_only, "jane-doe", None),
                 "notes  (notes.notebook)\nnotes/Notebook  Notebook  notes.notebook"
+            );
+            // Its actions follow, so the listing says what can be done there.
+            let with_actions = serde_json::json!({"path": "notes/Plan", "kind": "notes.page",
+                "rows": [],
+                "actions": [
+                    {"id": "rename", "label": "Rename note",
+                        "params": [{"name": "title", "required": true}]},
+                    {"id": "move-note", "label": "Move note",
+                        "params": [{"name": "parent", "required": false}]},
+                    {"id": "delete", "label": "Delete note", "params": []}]});
+            assert_eq!(
+                listing_text(&with_actions, "jane-doe", None),
+                "notes/Plan  (notes.page)\n#rename(title)  Rename note\n\
+                 #move-note(parent?)  Move note\n#delete()  Delete note"
             );
             // A listing that goes on says which command reads it on, whether
             // its lines came with the answer or the command built them.

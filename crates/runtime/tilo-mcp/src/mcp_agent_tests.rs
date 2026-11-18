@@ -1382,9 +1382,10 @@ tilo_test_env::scenario! {
                 text,
                 "apps\nnotes  Notes  running\nsheets  Sheets  installed"
             );
+            // Listing it starts it without a window, as one of its actions would.
             let (text, _) = tool(&agent(&host), "tilo_ls", json!({"path": "sheets"})).await;
             assert!(
-                text.contains("installed but not running") && !text.contains("may not open"),
+                text.starts_with("sheets  (so.tilo.sheets)\n") && !text.contains("may not open"),
                 "{text}"
             );
             let (text, _) = tool(&agent(&host), "tilo_do", json!({"path": "sheets#open"})).await;
@@ -1406,7 +1407,7 @@ tilo_test_env::scenario! {
         run(async {
             let (text, failed) = tool(&agent(&host), "tilo_ls", json!({"path": "spreadsheets"})).await;
             assert!(
-                !failed && text.contains("installed but not running"),
+                !failed && text.starts_with("spreadsheets  (so.tilo.sheets)\n"),
                 "{text}"
             );
             let (text, failed) = tool(
@@ -1446,10 +1447,11 @@ tilo_test_env::scenario! {
         let host = Notes::new(false);
         run(async {
             let server = agent(&host);
+            // Listing it starts it without a window and lists what it holds.
             let (text, failed) = tool(&server, "tilo_ls", json!({"path": "notes"})).await;
             assert!(!failed, "{text}");
             assert!(
-                text.contains("installed but not running") && text.contains("notes#open"),
+                text.starts_with("notes  (so.tilo.notes)\n") && text.contains("Todo/  notes.page"),
                 "{text}"
             );
             let (text, failed) = tool(&server, "tilo_do", json!({"path": "notes#open"})).await;
