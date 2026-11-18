@@ -603,7 +603,7 @@ default = false
 [[check]]
 name = "test-packaged-model"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "TILO_APP_MODELS=\"$CARGO_TARGET_DIR/app-models\" cargo test --locked -p tilo-workspace-service -p workspace-unify --lib packaged_model -- --ignored && TILO_APP_MODELS=\"$CARGO_TARGET_DIR/app-models\" cargo test --locked -p tilo-agent-session --test it an_agent_applies_a_packaged\n"
+run = "TILO_APP_MODELS=\"$CARGO_TARGET_DIR/app-models\" cargo test --locked -p tilo-workspace-service -p workspace-unify --lib packaged_model -- --ignored && TILO_APP_MODELS=\"$CARGO_TARGET_DIR/app-models\" cargo test --locked -p tilo-agent-session --test it an_agent_applies_a_packaged -- --ignored\n"
 needs = ["app-models"]
 
 [[check]]

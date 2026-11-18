@@ -209,10 +209,6 @@ async fn a_workspaces_own_key_runs_commands_unasked_only_while_its_person_lets_i
     Box::pin(own_key_runs_unasked_only_while_let()).await;
 }
 
-#[allow(
-    clippy::large_futures,
-    reason = "one story, polled once from the heap by its test"
-)]
 async fn own_key_runs_unasked_only_while_let() {
     let on_server = Box::pin(api_on_server_shelled(ISSUER)).await;
     let api = Arc::clone(&on_server.api);
@@ -417,10 +413,6 @@ async fn a_branch_runs_its_own_keys_commands_unasked_and_goes_on_apart() {
     Box::pin(branch_runs_unasked_and_goes_on_apart()).await;
 }
 
-#[allow(
-    clippy::large_futures,
-    reason = "one story, polled once from the heap by its test"
-)]
 async fn branch_runs_unasked_and_goes_on_apart() {
     let on_server = Box::pin(api_on_server_shelled(ISSUER)).await;
     let api = Arc::clone(&on_server.api);

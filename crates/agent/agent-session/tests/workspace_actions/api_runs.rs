@@ -118,10 +118,6 @@ async fn an_invocation_is_taken_back_after_a_reconnect_and_a_restart() {
     Box::pin(taken_back_after_a_restart()).await;
 }
 
-#[allow(
-    clippy::large_futures,
-    reason = "one story, polled once from the heap by its test"
-)]
 async fn taken_back_after_a_restart() {
     let on_server = Box::pin(api_on_server_shelled(ISSUER)).await;
     let (ada, token) = backend(&on_server).await;
@@ -204,10 +200,6 @@ async fn keys_reading_a_workspace_list_its_runs_newest_first_also_after_a_restar
     Box::pin(every_run_listed()).await;
 }
 
-#[allow(
-    clippy::large_futures,
-    reason = "one story, polled once from the heap by its test"
-)]
 async fn every_run_listed() {
     let on_server = Box::pin(api_on_server_shelled(ISSUER)).await;
     let api = Arc::clone(&on_server.api);
