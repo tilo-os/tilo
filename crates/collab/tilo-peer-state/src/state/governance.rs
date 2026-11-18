@@ -71,14 +71,18 @@ impl PeerGovernance<'_> {
             .workspace_doc
             .as_ref()
             .ok_or("workspace governance missing")?;
-        // One policy, shared by every device's access.
+        // One policy, shared by every device's access, and the grants its
+        // person approved, walked once for all of them: walking the
+        // workspace's certificates per device made admitting one cost more
+        // the more devices the workspace had.
         let policy = std::sync::Arc::new(doc.workspace_policy(&self.peer.core.workspace).clone());
+        let approved = self.peer.approved_keys(now);
         Ok(devices
             .iter()
             .copied()
             .filter_map(|device| {
                 self.peer
-                    .member_with(device, std::sync::Arc::clone(&policy), now)
+                    .member_with(device, std::sync::Arc::clone(&policy), &approved, now)
                     .ok()
                     .map(|member| (device, member))
             })
@@ -87,6 +91,30 @@ impl PeerGovernance<'_> {
     /// Current governed access, derived from the workspace's member set: its
     /// members by their roots, and the devices of theirs it lists now.
     ///
+    /// [`Self::access_of`], and how many times deriving it walked the
+    /// workspace's certificates and grants: the tests hold that to one walk
+    /// however many devices the workspace names, a count that does not pass by
+    /// waiting longer.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::access_of`].
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn access_of_with_walks(
+        self,
+        devices: &[[u8; 32]],
+        now: SystemTime,
+    ) -> Result<
+        (
+            std::collections::BTreeMap<[u8; 32], tilo_action_policy::MemberAccess>,
+            u64,
+        ),
+        String,
+    > {
+        let (access, walks) = super::authority::walks::taken(|| self.access_of(devices, now));
+        Ok((access?, walks))
+    }
+
     /// A person is a member by their root, whatever devices of theirs the
     /// workspace lists now: a page's certificate lasts an hour and its row
     /// goes with it, and a person whose last page expired, or whose browser

@@ -16,6 +16,29 @@ const KEY_NOT_APPROVED: &str = ". This key is not approved for this workspace, o
      was revoked: the person types `tilo keys create \"<name>\"` and approves the new key in \
      their Tilo tab (on their own computer, `tilo login` again)";
 
+/// How much work deriving access did on this thread, for the tests that hold
+/// it to one walk of the workspace's certificates and grants however many
+/// devices it covers: a count that cannot pass by waiting longer.
+#[cfg(any(test, feature = "test-support"))]
+pub(super) mod walks {
+    use std::cell::Cell;
+
+    thread_local! {
+        static GRANT_WALKS: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(super) fn count() {
+        GRANT_WALKS.with(|walks| walks.set(walks.get().saturating_add(1)));
+    }
+
+    /// What `derive` did, and how many walks it took.
+    pub(in crate::state) fn taken<T>(derive: impl FnOnce() -> T) -> (T, u64) {
+        GRANT_WALKS.with(|walks| walks.set(0));
+        let value = derive();
+        (value, GRANT_WALKS.with(Cell::get))
+    }
+}
+
 /// `person`'s access under `policy`, held to the foreign-device bound on a
 /// `foreign` device and to `delegate`'s bound on a delegate's.
 fn access_of(
@@ -371,10 +394,11 @@ impl StatePeer {
         &self,
         source: [u8; 32],
         policy: std::sync::Arc<WorkspacePolicy>,
+        approved: &[tilo_action_policy::Grant],
         now: SystemTime,
     ) -> Result<MemberAccess, MembershipError> {
         let (person, foreign, delegate) = self.member_of(&source, now)?;
-        Ok(access_of(policy, person, foreign, delegate).granted(self.approved_keys(now)))
+        Ok(access_of(policy, person, foreign, delegate).granted(approved.iter().cloned()))
     }
     /// Who the device `source` is at `now`, apart from the workspace's policy:
     /// its person, whether its device is foreign, and the delegation it holds.
@@ -787,6 +811,8 @@ impl StatePeer {
     /// nothing about it: every device that holds the workspace reads the
     /// same grants, and the person and the signer still bound the agent.
     pub(crate) fn approved_keys(&self, now: SystemTime) -> Vec<tilo_action_policy::Grant> {
+        #[cfg(any(test, feature = "test-support"))]
+        walks::count();
         let workspace = &self.core.workspace;
         let grants = self.governance().workspace_grants();
         let now_ms = now_ns(now) / 1_000_000;

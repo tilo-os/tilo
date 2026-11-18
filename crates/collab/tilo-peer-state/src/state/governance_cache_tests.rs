@@ -68,6 +68,68 @@ fn governor_and_replica(records: usize) -> (StatePeer, StatePeer, SigningKey, Sy
     (governor, replica, a, now)
 }
 
+/// The governor whose workspace names `devices` devices of its owner, and
+/// their keys.
+fn governor_with_devices(devices: u8) -> (StatePeer, Vec<[u8; 32]>, SystemTime) {
+    let root = SigningKey::from_bytes(&[5; 32]);
+    let now = SystemTime::UNIX_EPOCH
+        .checked_add(Duration::from_secs(2000))
+        .unwrap();
+    let roster: Vec<(SigningKey, DeviceCert)> =
+        (1..=devices).map(|seed| device(&root, seed)).collect();
+    let certs: Vec<DeviceCert> = roster.iter().map(|(_, cert)| cert.clone()).collect();
+    let keys: Vec<[u8; 32]> = roster
+        .iter()
+        .map(|(key, _)| key.verifying_key().to_bytes())
+        .collect();
+    let (authority, authority_cert) = &roster[0];
+    let mut governor = StatePeer::new(
+        WORKSPACE,
+        authority_cert.clone(),
+        certs.clone(),
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    governor
+        .install_seed(
+            SeedState {
+                workspace_changes: seed_workspace(WORKSPACE, authority_cert, &certs).unwrap(),
+                documents: Vec::new(),
+            },
+            authority,
+            now,
+        )
+        .unwrap();
+    (governor, keys, now)
+}
+
+/// Deriving every device's access walks the workspace's certificates and
+/// grants once, however many devices it names: a device admitted into a
+/// workspace of hundreds cost more than one admitted into a small one.
+#[test]
+fn deriving_every_devices_access_walks_the_certificates_once() {
+    let mut measured = Vec::new();
+    for devices in [3_u8, 40] {
+        let (governor, keys, now) = governor_with_devices(devices);
+        let (access, walks) = governor
+            .governance()
+            .access_of_with_walks(&keys, now)
+            .unwrap();
+        assert_eq!(
+            access.len(),
+            usize::from(devices),
+            "every device's access is derived"
+        );
+        measured.push(walks);
+    }
+    assert_eq!(
+        measured,
+        [1, 1],
+        "one walk of the certificates and grants served every device, small workspace or large"
+    );
+}
+
 #[test]
 fn authorize_document_decodes_capabilities_at_most_once_per_document_state() {
     const MESSAGES: usize = 10;
