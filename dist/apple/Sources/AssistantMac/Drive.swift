@@ -45,6 +45,7 @@ import WebKit
 ///   {"do": "show-live", "item": "…"}                  as the place of a piece's live thing does when it comes to
 ///                                                    the front: it says whether the thing loaded
 ///   {"do": "live-text", "item": "…"}                  what a live document of the word processor reads as now
+///   {"do": "sign-out"}                               as "Sign out of this device" does: the device is nobody's here
 ///   {"do": "models"}   {"do": "state"}   {"do": "quit"}
 /// Of each reply that grew it says, once its writing has ended, when it drew the first change
 /// of its words and when the last, in milliseconds, and how many it drew ("grew"): what a
@@ -476,6 +477,11 @@ final class AssistantDrive {
         case "make-assistant":
             model.makeAssistant()
             AssistantDrive.say(["asked": "make-assistant"])
+        case "sign-out":
+            // As "Sign out of this device" under the person's name does. What follows is said as
+            // the window would draw it: the way in, with nobody signed in.
+            model.signOut()
+            AssistantDrive.say(["asked": "sign-out"])
         case "choose":
             guard let chosen = step["model"]?.string else { AssistantDrive.say(["error": "choose takes model"]); return }
             model.choose(.init(chosen))

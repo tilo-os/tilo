@@ -626,6 +626,18 @@ public final class TiloEngine: NSObject {
             // and what is said is the page's own sentence.
             state = .failed(status.isEmpty ? "Tilo's page cannot draw on this device" : status)
         case "failed":
+            // A page whose join stopped otherwise than by its server's refusal names its entry
+            // `failed`, asks its site what became of the workspace it remembers, and names its
+            // failure screen's case after that. Where that case is that the workspace is no
+            // longer there, a device that was let in before stands where one does that its
+            // server refused. The page says it once (at its next load it has forgotten the
+            // workspace), so the load that waits is called off.
+            if !pairs, TiloEngine.gone(failure: failure, status: status) {
+                retrying?.cancel()
+                retrying = nil
+                state = .gone(status)
+                return
+            }
             stopped(status)
         default:
             // The page's question stands before anything else is asked of anyone.
