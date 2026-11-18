@@ -366,3 +366,9 @@ test-scale-log-rename = Rename the log
 test-scale-log-entries = Entries
 test-scale-log-entries-add = Add entries
 test-scale-log-entries-say = Change what an entry says
+
+## crates/sdk/tilo-app/src/framework/chain/tests.rs
+test-chain-api-log = Log
+test-chain-api-log-rename = Rename the log
+test-chain-api-log-part = Lines
+test-chain-api-log-part-write = Write a line

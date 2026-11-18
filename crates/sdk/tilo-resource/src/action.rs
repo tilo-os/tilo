@@ -234,7 +234,9 @@ thread_local! {
     static MINTED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-fn note_minted(id: &str) {
+/// Note `id` among the ids the action applying on this thread minted, for
+/// whichever caller answers what it made.
+pub(crate) fn note_minted(id: &str) {
     MINTED.with(|minted| minted.borrow_mut().push(id.to_owned()));
 }
 

@@ -96,6 +96,9 @@ use reading::{ChainRead, offer_nested_reads, parse_read_cursor, read_cursor, rea
 use shares::Written;
 use tree::nest;
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) use place::ItemIndex;
 pub use place::{PART_BYTES, PART_ITEMS, PartLimits, placed};
 
@@ -1011,6 +1014,8 @@ impl ChainCore {
             .store
             .with_history(&id, |doc, history| {
                 let before = doc.get_heads();
+                // Nothing minted by whatever ran before belongs to this write.
+                drop(tilo_resource::take_minted());
                 let writer = ui_core::bound_dispatch::document_writer(&invoker.acting.by, doc);
                 let applied = tilo_actions::apply_local_with_context(
                     doc,
@@ -1020,11 +1025,13 @@ impl ChainCore {
                     context,
                 )
                 .map(|envelope| {
+                    // What it minted, a group's members' together, in order.
+                    let minted = tilo_resource::take_minted();
                     written(doc, &before);
                     ui_core::bound_dispatch::minted_items(
                         doc,
                         self.part.kind,
-                        &[],
+                        &minted,
                         &envelope,
                         &before,
                     )

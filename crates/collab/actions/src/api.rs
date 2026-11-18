@@ -29,6 +29,18 @@ use crate::resource::{
 };
 use serde::{Deserialize, Serialize};
 
+/// The code a resource answers a write with when what it changes is still on
+/// its way from the workspace: nothing was made, and the same call under the
+/// same invocation is asked again once that is here.
+pub const NOT_READY: &str = "not_ready";
+
+/// What such a write says in words, beside [`NOT_READY`]. A resource answers
+/// it as the whole reason its operation failed, and the toolkit turns that
+/// reason into [`ApiError::Unavailable`] with [`NOT_READY`]: a caller is told
+/// to ask again, never that a write made nothing.
+pub const NOT_READY_REASON: &str = "what this changes has not arrived from the workspace yet; ask \
+     again";
+
 /// The stable address of one exported operation: which resource, which
 /// action. Both halves are the app's own ids — no screen position, no
 /// list index — so the same address names the same operation across

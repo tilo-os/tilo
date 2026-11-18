@@ -126,6 +126,21 @@ impl std::fmt::Display for BoundActionError {
     }
 }
 impl std::error::Error for BoundActionError {}
+
+/// Why a resource's operation failed, as the API answers it: a resource that
+/// says what an action changes has not arrived yet
+/// ([`tilo_actions::api::NOT_READY_REASON`]) answers a refusal whose caller
+/// asks again, rather than a failure that says nothing was made.
+fn operation_failure(reason: String) -> tilo_actions::ApiError {
+    if reason == tilo_actions::api::NOT_READY_REASON {
+        return tilo_actions::ApiError::Unavailable {
+            code: tilo_actions::api::NOT_READY.to_owned(),
+            reason,
+        };
+    }
+    tilo_actions::ApiError::Failed(reason)
+}
+
 /// The unchanged domain enum groups Unavailable failures.
 pub(crate) fn api_error_code(error: &tilo_actions::ApiError) -> &str {
     if let tilo_actions::ApiError::Unavailable { code, .. } = error
@@ -2966,7 +2981,7 @@ pub(crate) fn execute_resource_operation(
                     path,
                 )
             })
-            .map_err(tilo_actions::ApiError::Failed)?
+            .map_err(operation_failure)?
             .ok_or_else(|| tilo_actions::ApiError::Unknown(address.clone()))?
         };
         match &started {

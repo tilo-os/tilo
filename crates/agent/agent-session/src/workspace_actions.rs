@@ -76,6 +76,7 @@ mod listing;
 mod member;
 mod opened;
 mod opened_file;
+mod part_wait;
 mod placed;
 mod publish;
 mod reads;
@@ -113,6 +114,7 @@ use collab_types::DocumentMutation;
 use invocation_log::InvocationLog;
 use jobs::Jobs;
 use keys::{Keys, catalogue_keys};
+use part_wait::Invoked;
 use publish::Unsaved;
 use run_context::{caller_context, said_invocation_title};
 use tilo_actions::InteractionPhase;
@@ -2533,20 +2535,24 @@ impl Worker {
         let arguments = descriptor.bind_prompt_text(arguments);
         let confirmed = self.confirmed_here(workspace_id, caller, request, &descriptor);
         let holder = self.holder_of(&route);
-        let mounted = self.mounted.get_mut(&holder).ok_or_else(unknown_action)?;
         let context = caller_context(caller, request);
         let running = timing_start();
-        let output = mounted
-            .app
-            .invoke_in(
-                context.as_ref(),
-                appearance.as_ref(),
-                &target.address,
-                &arguments,
-                confirmed,
+        let output = self
+            .invoke_on(
+                workspace_id,
+                &holder,
+                keys.needs(),
+                &Invoked {
+                    address: &target.address,
+                    arguments: &arguments,
+                    context: context.as_ref(),
+                    appearance: appearance.as_ref(),
+                    confirmed,
+                },
             )
             .map_err(|error| api_outcome(&error))?;
         timing_done("action.call", running);
+        let mounted = self.mounted.get_mut(&holder).ok_or_else(unknown_action)?;
         // Where the action left its actor, for the API that shows it
         // working: the text it wrote, the item it acted on.
         let left_at = mounted.app.presence().map(bounded::placed);
