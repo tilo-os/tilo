@@ -929,6 +929,7 @@ fn main() -> ExitCode {
             let cli: ActionCli = parse_with(ActionCli::command().bin_name(&invoked), args);
             Ok(desktop::run_action(
                 cli.cmd,
+                false,
                 &tilo_control::front::Spelling::standalone(),
             ))
         }
@@ -985,7 +986,8 @@ fn app_open(args: &[OsString], spelling: &tilo_control::front::Spelling) -> Resu
 
 /// `tilo do`: in the hosted workspace `-w` names, else on this desktop. A
 /// `-w` or `--json` after the action lands in its options, and is taken out.
-/// `--json` answers the same typed shape here and in a hosted workspace.
+/// Both answer the one typed shape of Tilo's API, said by one renderer
+/// ([`tilo_control::front::say`]).
 fn run_do(
     reach: api::Reach<'_>,
     mut workspace: Option<String>,
@@ -1005,10 +1007,7 @@ fn run_do(
     args.retain(|arg| arg != "--json");
     let reach = api::Reach { json, ..reach };
     let Some(workspace) = workspace else {
-        if json {
-            return desktop::do_json(&action, &args, spelling);
-        }
-        return desktop::run_action(desktop::ActionCmd::Run { action, args }, spelling);
+        return desktop::run_action(desktop::ActionCmd::Run { action, args }, json, spelling);
     };
     hosted::act(reach, &workspace, &action, &args)
 }
@@ -1203,7 +1202,7 @@ fn workspace_or_entered(cli: &Cli) -> Result<Option<String>> {
 
 /// `tilo actions [filter]`: every action this desktop offers, as the palette lists them.
 fn list_actions(filter: Vec<String>, spelling: &tilo_control::front::Spelling) -> ExitCode {
-    desktop::run_action(desktop::ActionCmd::List { filter }, spelling)
+    desktop::run_action(desktop::ActionCmd::List { filter }, false, spelling)
 }
 
 /// `tilo login` where no tab approves this computer: one that holds the person's identity, or one
@@ -1294,7 +1293,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         | Cmd::Invocations { .. }
         | Cmd::Sdk { .. } => bail!("run_hosted answers the hosted commands"),
         Cmd::Open { app, items } => Ok(desktop::run_open(&app, &items, &spelling)),
-        Cmd::Action { cmd } => Ok(desktop::run_action(cmd, &spelling)),
+        Cmd::Action { cmd } => Ok(desktop::run_action(cmd, cli.json, &spelling)),
         Cmd::Actions { filter } => Ok(list_actions(filter, &spelling)),
         Cmd::Server { cmd } => server::serve(cmd),
         Cmd::Machine { cmd } => machine::serve(cmd),

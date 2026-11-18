@@ -137,7 +137,7 @@ fn ask(action: &str, words: &[String]) -> Result<std::process::ExitCode> {
         out: &mut stdout,
         err: &mut stderr,
     };
-    let code = front::run(&sockets, action, words, &Spelling::tilo(), &mut io);
+    let code = front::run(&sockets, action, words, false, &Spelling::tilo(), &mut io);
     std::io::Write::flush(&mut stdout)?;
     Ok(std::process::ExitCode::from(code))
 }

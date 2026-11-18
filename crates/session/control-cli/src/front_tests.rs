@@ -228,13 +228,6 @@ fn arguments_follow_the_schema_with_sentences_that_say_what_it_takes() {
         bind_args(volume, &words(&["--level=3", "--mode", "medium"])).expect_err("not a choice"),
         "mode must be quiet or loud, not “medium”."
     );
-    assert_eq!(
-        bind_args(volume, &words(&["--json", r#"{"level": 7}"#])).expect("raw JSON"),
-        serde_json::json!({"level": 7})
-            .as_object()
-            .cloned()
-            .unwrap_or_default()
-    );
     let terminal = &actions[0];
     assert_eq!(
         bind_args(terminal, &words(&["now"])).expect_err("takes nothing"),
@@ -331,10 +324,10 @@ fn do_validates_then_invokes_through_a_control_socket() {
     let sockets = [ControlSocket::Named(socket.path.clone())];
     let spelling = Spelling::tilo();
 
-    let done = ran(|io| run(&sockets, "new terminal", &[], &spelling, io));
+    let done = ran(|io| run(&sockets, "new terminal", &[], false, &spelling, io));
     assert_eq!(
         (done.code, done.out.as_str()),
-        (0, "done\n"),
+        (0, "ok\ndone\n"),
         "{}",
         done.err
     );
@@ -349,6 +342,7 @@ fn do_validates_then_invokes_through_a_control_socket() {
             &sockets,
             "rename-note",
             &["Groceries".into()],
+            false,
             &spelling,
             io,
         )
@@ -366,13 +360,14 @@ fn do_validates_then_invokes_through_a_control_socket() {
             &sockets,
             "set-volume",
             &["level=loud".into()],
+            false,
             &spelling,
             io,
         )
     });
     assert_eq!(refused.code, 1);
     assert_eq!(refused.err, "level must be a whole number, not “loud”.\n");
-    let ambiguous = ran(|io| run(&sockets, "rename", &["x".into()], &spelling, io));
+    let ambiguous = ran(|io| run(&sockets, "rename", &["x".into()], false, &spelling, io));
     assert_eq!(ambiguous.code, 1);
     assert!(
         ambiguous.err.contains("tilo do rename-report-md")
@@ -415,7 +410,7 @@ fn do_json_answers_the_typed_shape_the_api_answers() {
     let sockets = [ControlSocket::Named(socket.path.clone())];
     let spelling = Spelling::tilo();
 
-    let answered = ran(|io| do_json(&sockets, "new terminal", &[], &spelling, io));
+    let answered = ran(|io| run(&sockets, "new terminal", &[], true, &spelling, io));
     assert_eq!(answered.code, 0, "{}", answered.err);
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&answered.out).expect("one JSON answer"),
@@ -426,6 +421,59 @@ fn do_json_answers_the_typed_shape_the_api_answers() {
         1,
         "the typed answer is the one invocation's, not a second call"
     );
+}
+
+/// Options typed without a schema to bind them read as JSON where they parse,
+/// else as text: one reading for an action this desktop names by its address
+/// and one a hosted workspace does.
+#[test]
+fn loose_options_are_json_where_they_parse() {
+    assert_eq!(
+        arguments(&[
+            "name=Jane Doe".into(),
+            "count=3".into(),
+            "--ok=true".into(),
+            "edit={\"op\":\"set\"}".into()
+        ])
+        .expect("every word is name=value"),
+        serde_json::json!({"name": "Jane Doe", "count": 3, "ok": true, "edit": {"op": "set"}})
+            .as_object()
+            .cloned()
+            .unwrap_or_default()
+    );
+    assert_eq!(
+        arguments(&["nothing".into()]).expect_err("no name"),
+        "Write “nothing” as name=value."
+    );
+}
+
+/// An answer reads the same wherever the action ran: how it stands and where,
+/// what it answered, what it made, and its links.
+#[test]
+fn an_action_answer_says_what_ran_and_where_it_is() {
+    let done = serde_json::json!({"status": "ok", "path": "notes#open",
+        "invocation": "inv-1", "link": "https://tilo.sh/#/w/x/notes/Todo"});
+    assert_eq!(
+        answer_text(&done),
+        "ok notes#open\nhttps://tilo.sh/#/w/x/notes/Todo"
+    );
+    // What it made or changed, as a path the next command takes as it is: the
+    // answer an agent's create prints is not lost.
+    let created = serde_json::json!({"status": "ok", "path": "tasks#create",
+        "resources": ["tasks.tracker/issues/7"], "result": {"id": 7}});
+    assert_eq!(
+        answer_text(&created),
+        "ok tasks#create\n{\"id\":7}\n-> tasks.tracker/issues/7"
+    );
+    let pending = serde_json::json!({"status": "pending", "invocation": "inv-2",
+        "path": "pdf-viewer#import-pdf-content", "ask": {"url": "https://tilo.sh/approve/1"}});
+    assert_eq!(
+        answer_text(&pending),
+        "pending inv-2: it waits for you, at https://tilo.sh/approve/1 \
+         (pdf-viewer#import-pdf-content)"
+    );
+    let running = serde_json::json!({"status": "pending", "invocation": "inv-3"});
+    assert_eq!(answer_text(&running), "pending inv-3: still going");
 }
 
 /// From inside an app — the Terminal app and what runs in it — the admin
@@ -455,7 +503,7 @@ fn inside_a_sandboxed_app_actions_list_and_run_through_the_mcp_server() {
     );
     assert!(listed.out.contains("\nApps\n"), "{}", listed.out);
 
-    let done = ran(|io| run(&sockets, "new-terminal-window", &[], &spelling, io));
+    let done = ran(|io| run(&sockets, "new-terminal-window", &[], false, &spelling, io));
     assert_eq!(done.code, 0, "{}", done.err);
     assert_eq!(agent.invocations().len(), 1, "run through the MCP server");
     assert!(
