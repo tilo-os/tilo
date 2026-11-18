@@ -219,31 +219,24 @@ tilo_test_env::scenario! {
 }
 
 /// Change the one effect receipt `path`'s record holds to what `rewrite`
-/// answers for its id and its stored receipt.
+/// answers for its id and its stored receipt, where the record keeps it now.
 fn rewrite_stored_receipt(
     path: &std::path::Path,
     rewrite: impl FnOnce(&mut String, &mut serde_json::Value) -> (String, serde_json::Value),
 ) {
-    let (part, bytes) = document_on_disk(path)
-        .into_iter()
-        .find(|(_, bytes)| {
-            serde_json::from_slice::<serde_json::Value>(bytes)
-                .is_ok_and(|record| record.get("effect_receipts").is_some())
-        })
-        .expect("the record's part that holds its effect receipts");
-    let mut record: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    let receipts = record["effect_receipts"]
-        .as_object_mut()
-        .expect("the effect receipts the record holds");
-    let (mut id, mut receipt) = receipts
-        .iter()
-        .next()
-        .map(|(id, receipt)| (id.clone(), receipt.clone()))
-        .expect("a stored receipt");
-    let (new_id, new_receipt) = rewrite(&mut id, &mut receipt);
-    receipts.remove(&id);
-    receipts.insert(new_id, new_receipt);
-    std::fs::write(&part, serde_json::to_vec(&record).unwrap()).unwrap();
+    crate::owner::file_store::change_stored(path, |record| {
+        let receipts = record["effect_receipts"]
+            .as_object_mut()
+            .expect("the effect receipts the record holds");
+        let (mut id, mut receipt) = receipts
+            .iter()
+            .next()
+            .map(|(id, receipt)| (id.clone(), receipt.clone()))
+            .expect("a stored receipt");
+        let (new_id, new_receipt) = rewrite(&mut id, &mut receipt);
+        receipts.remove(&id);
+        receipts.insert(new_id, new_receipt);
+    });
 }
 
 /// A receipt of a new invocation by the person `by` is a device of.
