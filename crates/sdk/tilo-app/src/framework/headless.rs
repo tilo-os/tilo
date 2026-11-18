@@ -1938,13 +1938,15 @@ impl<A: ResourceApp> HeadlessApp<A> {
         id: &str,
         arguments: serde_json::Value,
     ) -> Result<Option<serde_json::Value>, tilo_actions::ApiError> {
-        let mut ambient = tilo_actions::ActionContext::default();
-        ambient.group = Some(tilo_actions::WorkGroup {
-            id: session.to_owned(),
-            label: None,
-            kind: ui_core::history_source::steps::AGENT_SESSION.to_owned(),
-            declared_id: None,
-        });
+        let ambient = tilo_actions::ActionContext {
+            group: Some(tilo_actions::WorkGroup {
+                id: session.to_owned(),
+                label: None,
+                kind: ui_core::history_source::steps::AGENT_SESSION.to_owned(),
+                declared_id: None,
+            }),
+            ..tilo_actions::ActionContext::default()
+        };
         self.call_within(Some(&ambient), id, arguments)
     }
 
