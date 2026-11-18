@@ -70,8 +70,10 @@ fn a_device_beyond_the_lan_is_driven_over_the_peer_network() {
         "board".into(),
         VmEntry {
             hypervisor: "device".into(),
-            // TEST-NET-1: never answers, so the device is not on this network.
-            ssh: Some("root@192.0.2.1:22".into()),
+            // A port nothing listens on: ssh refuses at once, as a machine that took the
+            // device's recorded address does, so the device is not on this network and
+            // every route here is the peer network's.
+            ssh: Some("root@127.0.0.1:1".into()),
             peer: Some(PeerRoute {
                 device: "dd22".into(),
                 endpoint: "ee11".into(),
