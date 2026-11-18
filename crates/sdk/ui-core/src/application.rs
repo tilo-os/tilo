@@ -1450,12 +1450,7 @@ impl AppComponent {
                 // notebook's notes) are saved as the record is: one still
                 // being written, or failed, is the window's to say, and its
                 // retry retries them too.
-                let parts: Vec<_> = binding
-                    .records
-                    .open_resources()
-                    .into_iter()
-                    .filter(|held| held.id.chain_part().is_some())
-                    .collect();
+                let parts = binding.chain_parts();
                 if root.take_save_retry() {
                     for id in std::iter::once(&binding.checkout.id)
                         .chain(parts.iter().map(|part| &part.id))
@@ -1478,35 +1473,7 @@ impl AppComponent {
                 for text in &said {
                     root.record_said(text);
                 }
-                let mut status = binding.records.save_status(&binding.checkout.id).ok()?;
-                if status == crate::resource::ResourceSaveStatus::Saving {
-                    binding
-                        .records
-                        .wake_on_save_progress(&binding.checkout.id, std::sync::Arc::clone(&wake));
-                    status = binding.records.save_status(&binding.checkout.id).ok()?;
-                }
-                for part in &parts {
-                    if matches!(status, crate::resource::ResourceSaveStatus::Failed(_)) {
-                        break;
-                    }
-                    match binding.records.save_status(&part.id) {
-                        Ok(failed @ crate::resource::ResourceSaveStatus::Failed(_)) => {
-                            status = failed
-                        }
-                        Ok(crate::resource::ResourceSaveStatus::Saving) => {
-                            binding
-                                .records
-                                .wake_on_save_progress(&part.id, std::sync::Arc::clone(&wake));
-                            if binding.records.save_status(&part.id).ok()
-                                == Some(crate::resource::ResourceSaveStatus::Saving)
-                                && status == crate::resource::ResourceSaveStatus::Saved
-                            {
-                                status = crate::resource::ResourceSaveStatus::Saving;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
+                let status = binding.sampled_save_status(&parts, &wake).ok()?;
                 root.resource_save_status(status.clone());
                 Some((status, !refusals.is_empty() || !said.is_empty()))
             })
