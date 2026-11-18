@@ -732,15 +732,14 @@ impl Server {
             // A server of the person's own takes part in their admin workspace,
             // whose record of their servers says what it should be.
             if enrolled_server {
-                // The person's first server makes it; a later one asks an
-                // earlier one, as its enrollment named them, to take it in.
+                // The person's own devices make it when they first need it; a
+                // server that came later asks an earlier one, as its
+                // enrollment named them, to take it in.
                 let earlier = earlier_servers(&cfg.identity_root, &identity.device_cert)?;
                 if crate::servers::holds_admin(governed).await {
                     crate::servers::enroll(governed, &endpoint.addr()).await
                 } else if earlier.is_empty() {
-                    crate::servers::found(governed, &endpoint.addr())
-                        .await
-                        .map(drop)
+                    Ok(())
                 } else {
                     push_background_task(
                         &background_tasks,

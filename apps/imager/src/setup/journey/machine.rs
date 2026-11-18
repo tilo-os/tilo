@@ -274,14 +274,16 @@ impl Waiting {
 }
 
 /// Make the plan `choices` describes for the computer named `name`, mint its
-/// single-use token and keep both where this computer's plans live. `system`
-/// is this computer's identity and `home_peers` the registry its token names
-/// the person's devices from.
+/// single-use token and write it to a file only this account reads. The plan
+/// itself is written into the person's Servers workspace through the running
+/// session, so every one of their devices reads it there. `system` is this
+/// computer's identity and `home_peers` the registry its token names the
+/// person's devices from.
 ///
 /// # Errors
 ///
-/// This computer holds no identity that may admit a device, or the plan or
-/// its files cannot be written.
+/// This computer holds no identity that may admit a device, no session is
+/// running, the plan is refused, or its token file cannot be written.
 #[cfg(target_os = "linux")]
 pub(super) fn create(
     choices: &Choices,
@@ -290,31 +292,39 @@ pub(super) fn create(
 ) -> Result<Created, String> {
     let local = crate::handoff::local_identity_from_env()?;
     let (token, named) = install_plan::mint(local.system, local.home_peers)?;
-    let plan = choices.install(name).plan(&install_plan::new_id(), named)?;
-    let stored = install_plan::store(local.identity_dir, &plan, &token, None)?;
+    let id = install_plan::new_id();
+    let plan = choices.install(name).plan(&id, named)?;
+    let token_file = install_plan::plans_dir(local.identity_dir).join(format!("{id}.token"));
+    let label = if plan.name.is_empty() {
+        plan.destination.as_str()
+    } else {
+        plan.name.as_str()
+    };
+    install_plan::host::plan(&plan, label, &token_file, installer_url)?;
+    install_plan::store_token(local.identity_dir, &id, &token, Some(&token_file))?;
     let commands = plan::commands(
         &plan,
         installer_url.trim_end_matches('/'),
-        &stored.token_file.display().to_string(),
+        &token_file.display().to_string(),
         std::env::consts::ARCH,
     );
     Ok(Created {
         plan,
-        token_file: stored.token_file,
+        token_file,
         commands,
     })
 }
 
 /// The computers this person planned and has not installed, each with what it
-/// still asks answered against the hardware it reported beside its plan.
+/// still asks answered against the hardware it reported.
 #[cfg(target_os = "linux")]
 pub(super) fn waiting(installer_url: &str) -> Vec<Waiting> {
     let Ok(local) = crate::handoff::local_identity_from_env() else {
         return Vec::new();
     };
     let mut waiting = Vec::new();
-    for plan in install_plan::waiting(local.identity_dir).unwrap_or_default() {
-        let hardware = install_plan::read_hardware(local.identity_dir, &plan.plan);
+    for planned in install_plan::host::waiting().unwrap_or_default() {
+        let plan = planned.plan;
         let token_file =
             install_plan::plans_dir(local.identity_dir).join(format!("{}.token", plan.plan));
         let commands = plan::commands(
@@ -327,8 +337,8 @@ pub(super) fn waiting(installer_url: &str) -> Vec<Waiting> {
             name: plan.name.clone(),
             destination: destination_label(&plan.destination),
             plan: plan.plan.clone(),
-            disk_answer: disk_answer(&plan, hardware.as_ref()),
-            questions: questions(&plan, hardware.as_ref()),
+            disk_answer: disk_answer(&plan, &planned.drives),
+            questions: questions(&plan, &planned.drives),
             expires_in_hours: hours_left(plan.token.expires_at_ns).unwrap_or(0),
             commands,
         });
@@ -336,15 +346,16 @@ pub(super) fn waiting(installer_url: &str) -> Vec<Waiting> {
     waiting
 }
 
-/// What `plan` still asks, each with the hardware fact that answers it.
-pub(super) fn questions(plan: &Plan, hardware: Option<&install_plan::Hardware>) -> Vec<Question> {
+/// What `plan` still asks, each with the hardware fact that answers it:
+/// `drives` are the ones the computer reported, empty until it has.
+pub(super) fn questions(plan: &Plan, drives: &[plan::Drive]) -> Vec<Question> {
     let mut questions = Vec::new();
     for choice in plan.open_choices() {
         let text = match choice {
             "name" => crate::setup::strings::t("installer-plan-answer-name"),
             "network" => crate::setup::strings::t("installer-plan-answer-network"),
-            "disk" => match hardware {
-                Some(report) => match plan::choose(&plan.disk, &report.drives) {
+            "disk" => match drives.is_empty() {
+                false => match plan::choose(&plan.disk, drives) {
                     plan::Choice::Drive(drive) => {
                         let size = ui::format::size(drive.bytes);
                         crate::setup::strings::t_args(
@@ -360,7 +371,7 @@ pub(super) fn questions(plan: &Plan, hardware: Option<&install_plan::Hardware>) 
                         &[("reason", reason.as_str().into())],
                     ),
                 },
-                None => crate::setup::strings::t("installer-plan-answer-disk"),
+                true => crate::setup::strings::t("installer-plan-answer-disk"),
             },
             "unlock" => crate::setup::strings::t("installer-plan-answer-unlock"),
             "updates" => crate::setup::strings::t("installer-plan-answer-updates"),
@@ -375,15 +386,11 @@ pub(super) fn questions(plan: &Plan, hardware: Option<&install_plan::Hardware>) 
 /// What `plan` will take on a computer that reported `hardware`: the drive its
 /// disk rule picks, or why the question stays open. `None` when the plan made
 /// its disk choice and no report answers it.
-pub(super) fn disk_answer(
-    plan: &Plan,
-    hardware: Option<&install_plan::Hardware>,
-) -> Option<String> {
-    if plan.disk.kind.is_empty() {
+pub(super) fn disk_answer(plan: &Plan, drives: &[plan::Drive]) -> Option<String> {
+    if plan.disk.kind.is_empty() || drives.is_empty() {
         return None;
     }
-    let report = hardware?;
-    Some(match plan::choose(&plan.disk, &report.drives) {
+    Some(match plan::choose(&plan.disk, drives) {
         plan::Choice::Drive(drive) => {
             let size = ui::format::size(drive.bytes);
             crate::setup::strings::t_args(
@@ -449,32 +456,30 @@ pub(super) fn examples() -> Vec<Waiting> {
         },
     )
     .expect("the example plan is one a machine reads");
-    let hardware = install_plan::Hardware {
-        drives: vec![
-            plan::Drive {
-                model: "Samsung SSD 990".to_owned(),
-                identity: "S6XXNJ0T".to_owned(),
-                bytes: 2_000_398_934_016,
-                holds_data: true,
-                boots: true,
-            },
-            plan::Drive {
-                model: "WDC WD40EFZX".to_owned(),
-                identity: "WD-WX12D80L".to_owned(),
-                bytes: 4_000_787_030_016,
-                holds_data: false,
-                boots: false,
-            },
-        ],
-    };
+    let drives = vec![
+        plan::Drive {
+            model: "Samsung SSD 990".to_owned(),
+            identity: "S6XXNJ0T".to_owned(),
+            bytes: 2_000_398_934_016,
+            holds_data: true,
+            boots: true,
+        },
+        plan::Drive {
+            model: "WDC WD40EFZX".to_owned(),
+            identity: "WD-WX12D80L".to_owned(),
+            bytes: 4_000_787_030_016,
+            holds_data: false,
+            boots: false,
+        },
+    ];
     [cupboard, spare]
         .into_iter()
         .map(|plan| Waiting {
             name: plan.name.clone(),
             destination: destination_label(&plan.destination),
             plan: plan.plan.clone(),
-            disk_answer: disk_answer(&plan, Some(&hardware)),
-            questions: questions(&plan, Some(&hardware)),
+            disk_answer: disk_answer(&plan, &drives),
+            questions: questions(&plan, &drives),
             expires_in_hours: 18,
             commands: commands_for(
                 &plan,

@@ -40,6 +40,8 @@ use crate::workspaces::authority::WorkspaceOp;
 use crate::workspaces::{IssueInvitationRequest, WorkspaceSummary, Workspaces};
 use tilo_server_protocol::WorkspaceId;
 
+mod machine;
+
 /// The host's own operations.
 pub(super) const HOST: Publisher = Publisher {
     provider: HOST_ACTIONS_PROVIDER,
@@ -59,7 +61,7 @@ const OWNER_ROLE: &str = "owner";
 
 /// The host's operations in catalogue order, each with the
 /// [`ServiceOperation`] it is.
-const HOST_VERBS: [(Verb, ServiceOperation); 12] = [
+const HOST_VERBS: [(Verb, ServiceOperation); 16] = [
     (
         Verb {
             id: CREATE_WORKSPACE,
@@ -180,7 +182,117 @@ const HOST_VERBS: [(Verb, ServiceOperation); 12] = [
         },
         ServiceOperation::UnhostWorkspace,
     ),
+    (
+        Verb {
+            id: PLAN_MACHINE,
+            label: "Plan a machine",
+            check: PLAN_MACHINE,
+            kind: roles::GOVERNANCE_KIND,
+            params: plan_machine_params,
+        },
+        ServiceOperation::PlanMachine,
+    ),
+    (
+        Verb {
+            id: LIST_MACHINES,
+            label: "List the machines you planned",
+            check: LIST_MACHINES,
+            kind: ActionKind::Read,
+            params: Vec::new,
+        },
+        ServiceOperation::ListMachines,
+    ),
+    (
+        Verb {
+            id: SHOW_MACHINE,
+            label: "Show a machine you planned",
+            check: SHOW_MACHINE,
+            kind: ActionKind::Read,
+            params: machine_params,
+        },
+        ServiceOperation::ShowMachine,
+    ),
+    (
+        Verb {
+            id: ADMIT_MACHINE,
+            label: "Take a planned machine in",
+            check: ADMIT_MACHINE,
+            kind: roles::GOVERNANCE_KIND,
+            params: admit_machine_params,
+        },
+        ServiceOperation::AdmitMachine,
+    ),
 ];
+
+/// Plan a machine: the plan document the person's window or command wrote,
+/// under the name the person sees it by, and where the token file it names is
+/// written, for the command it answers.
+pub(super) const PLAN_MACHINE: &str = "machine.plan";
+/// The machines the person planned and has not installed.
+pub(super) const LIST_MACHINES: &str = "machine.list";
+/// One of them, by its plan.
+pub(super) const SHOW_MACHINE: &str = "machine.show";
+/// Take a machine that enrolled with a plan's token into its entry under its
+/// device key.
+pub(super) const ADMIT_MACHINE: &str = "machine.admit";
+
+fn plan_machine_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required(
+            "plan",
+            ParamType::Text,
+            "The plan document, as the command or the window wrote it (JSON).",
+        ),
+        ActionParam::required(
+            "label",
+            ParamType::Text,
+            "The name you see the machine by, 1 to 80 bytes.",
+        ),
+        ActionParam::required(
+            "token_file",
+            ParamType::Text,
+            "Where the token file the medium carries is, which the answer names.",
+        ),
+        ActionParam::optional(
+            "installer_url",
+            ParamType::Text,
+            "Where the installer is served, for the command the answer prints.",
+        ),
+    ]
+}
+
+fn machine_params() -> Vec<ActionParam> {
+    vec![ActionParam::required(
+        "plan",
+        ParamType::Text,
+        "The plan's id, as listing the machines prints it.",
+    )]
+}
+
+fn admit_machine_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required(
+            "device",
+            ParamType::Text,
+            "The machine's device key, 64 lowercase hex characters.",
+        ),
+        ActionParam::required(
+            "nonce",
+            ParamType::Text,
+            "The token's nonce, 32 lowercase hex characters.",
+        ),
+        ActionParam::optional(
+            "drives",
+            ParamType::Text,
+            "The drives the machine reported, as JSON; none when it has not reported.",
+        ),
+        ActionParam::optional(
+            "ask",
+            ParamType::Text,
+            "The choices the machine asks about, choice to reason, as JSON.",
+        ),
+    ]
+}
 
 fn workspace_params() -> Vec<ActionParam> {
     vec![ActionParam::required(
@@ -461,6 +573,10 @@ impl Workspaces {
 
     /// Run the host operation `request` names as `device`, the certificate
     /// the server's handshake verified for the caller.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one dispatch table for the host's operations, each a line or two"
+    )]
     pub(super) async fn host_invoke(
         &self,
         device: &DeviceCert,
@@ -561,6 +677,14 @@ impl Workspaces {
             }
             ServiceOperation::HostWorkspace | ServiceOperation::UnhostWorkspace => {
                 self.serving_invoke(device, operation, &args, now).await
+            }
+            ServiceOperation::PlanMachine
+            | ServiceOperation::ListMachines
+            | ServiceOperation::ShowMachine
+            | ServiceOperation::AdmitMachine => {
+                self.authorize(device, None, WorkspaceOp::Host(operation), now)
+                    .map_err(|error| refused(&error))?;
+                Box::pin(machine::invoke(self, operation, &args)).await
             }
             _ => Err(ActionCallError::UnknownAction),
         }

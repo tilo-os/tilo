@@ -20,15 +20,31 @@ impl Workspaces {
     /// Refuses other certificates, stale ownership, incomplete records, sealed
     /// ones whose channel this server does not take part in, failed changes or
     /// oversized publication.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the governor record stays locked through durable signed publication"
-    )]
     pub async fn author_workspace_document<R>(
         &self,
         workspace: &str,
         governor: &DeviceCert,
-        (app, record): (&str, &str),
+        (app, name): (&str, &str),
+        change: impl FnOnce(&mut automerge::AutoCommit) -> Result<R, String>,
+    ) -> Result<R, CollaborationError> {
+        self.author_workspace_document_from((workspace, governor), (app, name), None, change)
+            .await
+    }
+
+    /// [`Self::author_workspace_document`] of a document this workspace holds
+    /// none of yet, started from `genesis` instead of nothing: a document
+    /// whose first change every device makes alike (a
+    /// [`tilo_resource::genesis`]), so two devices that each write it before
+    /// they see one another write one document and not two competing roots.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the governor record stays locked through durable signed publication"
+    )]
+    pub async fn author_workspace_document_from<R>(
+        &self,
+        (workspace, governor): (&str, &DeviceCert),
+        (app, name): (&str, &str),
+        genesis: Option<automerge::AutoCommit>,
         change: impl FnOnce(&mut automerge::AutoCommit) -> Result<R, String>,
     ) -> Result<R, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
@@ -55,11 +71,11 @@ impl Workspaces {
             .workspace()
             .check_workspace_administration(governor.device_public_key, system_time(now))?;
         let keys = self
-            .sealing_keys(&governed, app, record)
+            .sealing_keys(&governed, app, name)
             .await
             .map_err(CollaborationError::new)?;
         let existing = governed
-            .readable_document(app, record)
+            .readable_document(app, name)
             .await
             .map_err(CollaborationError::new)?;
         let (mut document, heads) = match existing {
@@ -70,14 +86,14 @@ impl Workspaces {
                     Some(_) => document.get_heads(),
                     None => governed
                         .peer()
-                        .plaintext_complete_heads(app, record)
+                        .plaintext_complete_heads(app, name)
                         .ok_or_else(|| {
                             CollaborationError::new("record is not complete plaintext")
                         })?,
                 };
                 (document, Some(heads))
             }
-            None => (automerge::AutoCommit::new(), None),
+            None => (genesis.unwrap_or_default(), None),
         };
         let result = change(&mut document)?;
         if automerge::transaction::Transactable::pending_ops(&document) != 0 {
@@ -90,7 +106,7 @@ impl Workspaces {
         let published = publish_authored(
             &mut candidate,
             keys.as_ref(),
-            (app, record),
+            (app, name),
             (&mut document, heads),
             (&self.inner.host.key, system_time(now)),
         )?;
@@ -101,7 +117,7 @@ impl Workspaces {
         governed.commit(candidate, &self.inner.host.key, system_time(now), |_, _| {
             Ok(collaboration)
         })?;
-        governed.absorb_desktop((app, record), &mut document);
+        governed.absorb_desktop((app, name), &mut document);
         self.settle(&mut governed).await?;
         Ok(result)
     }

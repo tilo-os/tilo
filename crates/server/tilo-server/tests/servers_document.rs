@@ -368,9 +368,19 @@ async fn servers_enrolled_one_after_another_share_one_admin_workspace() {
     let admin = admin_workspace_id(&alice.user_pk);
     let [first, second, third] = [&hosts[0], &hosts[1], &hosts[2]];
 
-    servers::found(first.host.workspaces(), &first.host.node_addr())
-        .await
-        .unwrap();
+    // One of the person's own devices makes it when it is first needed, and
+    // the first server is entered in it: no server founds it.
+    servers::founded(first.host.workspaces()).await.unwrap();
+    servers::apply(
+        first.host.workspaces(),
+        Servers::ENROLL_SERVER.with((
+            hex::encode(devices[0].device_pubkey()),
+            devices[0].cert.device_label.clone(),
+            serde_json::to_string(&first.host.node_addr()).unwrap(),
+        )),
+    )
+    .await
+    .unwrap();
     // The second asks the first, the third the second: any server holding the
     // workspace takes a later one in.
     for (asked, asking, device) in [(first, second, &devices[1]), (second, third, &devices[2])] {
@@ -451,4 +461,79 @@ async fn servers_enrolled_one_after_another_share_one_admin_workspace() {
         3,
         "one document names every server"
     );
+}
+
+/// A device that was handed the Servers workspace writes its own entry before
+/// the document reached it. Both writes start from the same genesis, so the
+/// two copies merge into one document holding both entries, rather than one
+/// device's copy winning and taking the other's entry with it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_device_that_writes_before_the_document_arrives_keeps_every_entry() {
+    let alice = TestUser::fresh("Alice");
+    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
+    let desktop = alice.enrol("desktop", DeviceCapabilities::member());
+    let holder = serve_on(&alice, &laptop, WorkSetting::own_person()).await;
+    let late = serve_on(&alice, &desktop, WorkSetting::own_person()).await;
+
+    // The person's own device makes the workspace when it is first needed, and
+    // the first machine is planned in it.
+    servers::founded(holder.host.workspaces()).await.unwrap();
+    servers::apply(
+        holder.host.workspaces(),
+        Servers::ENROLL_SERVER.with((
+            hex::encode(laptop.device_pubkey()),
+            "laptop".into(),
+            serde_json::to_string(&holder.host.node_addr()).unwrap(),
+        )),
+    )
+    .await
+    .unwrap();
+
+    // The other device is handed the workspace: its governance first, and the
+    // document over the replication after it.
+    servers::take_in(
+        holder.host.workspaces(),
+        &desktop.cert,
+        &late.host.node_addr(),
+    )
+    .await
+    .unwrap();
+    tilo_test_env::within("the other device to hold the workspace", async {
+        while !servers::holds_admin(late.host.workspaces()).await {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+
+    // It writes its own server there at once, before the document it knows
+    // nothing of has arrived.
+    servers::apply(
+        late.host.workspaces(),
+        Servers::ENROLL_SERVER.with((
+            hex::encode(desktop.device_pubkey()),
+            "desktop".into(),
+            serde_json::to_string(&late.host.node_addr()).unwrap(),
+        )),
+    )
+    .await
+    .unwrap();
+
+    // Once the copies meet, both devices read one document naming both.
+    tilo_test_env::within("both entries to reach both devices", async {
+        loop {
+            let mut counted = Vec::new();
+            for hosted in [&holder, &late] {
+                counted.push(
+                    servers::read(hosted.host.workspaces())
+                        .await
+                        .map_or(0, |servers| servers.servers.len()),
+                );
+            }
+            if counted == [2, 2] {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
 }

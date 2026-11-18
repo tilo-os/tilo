@@ -7908,6 +7908,8 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-clock",
+ "tilo-control",
+ "tilo-endpoint-reachability",
  "tilo-server-protocol",
  "tilo-user-identity",
 ]
@@ -21781,6 +21783,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "install-plan",
  "install-profile-model",
  "iroh",
  "iroh-base",

@@ -636,6 +636,9 @@ paths = [
     "crates/session/session/Cargo.toml",
     "crates/session/session/src/enrollment.rs",
     "crates/session/session/src/enrollment_tests.rs",
+    "crates/session/install-plan/src/lib.rs",
+    "crates/session/install-plan/src/host.rs",
+    "crates/server/tilo-server/tests/machines.rs",
 ]
 
 [[allow]]
@@ -847,4 +850,28 @@ paths = [
     "crates/session/session/tests/network_unlock_enrolment.rs",
     "crates/system/tilo-auth/src/sibling/enrol.rs",
     "crates/system/tilo-auth/tests/peer_enrol.rs",
+]
+
+[[allow]]
+reason = "The server tests' fixture hands a device's own workspace service as `Hosted`, whose field is its `.host`: the test names what the fixture names, and no new use of the word is meant."
+words = ["host"]
+paths = ["crates/server/tilo-server/tests/machines.rs"]
+
+[[allow]]
+reason = "`tilo-control`'s own verb for doing one action, which the command calls by its name."
+words = ["run"]
+identifiers = ["run"]
+paths = ["crates/system/tilo-cli/src/machine.rs"]
+
+[[allow]]
+reason = "The host's own action provider (`tilo.host`) and the session that answers it: the verb host, and the person's own device whose workspace service keeps their workspaces. These files name that provider and the service it belongs to."
+words = ["host"]
+paths = [
+    "apps/imager/src/setup/journey/machine.rs",
+    "crates/server/tilo-workspace-service/src/service_authority.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/actions/host.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/actions/host/machine.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/actions/server.rs",
+    "crates/session/install-plan/src/host.rs",
+    "crates/session/install-plan/src/lib.rs",
 ]

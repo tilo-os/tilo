@@ -16,6 +16,9 @@ tilo_automerge_isolate::test_worker!();
 #[path = "common/mod.rs"]
 mod common;
 
+#[path = "machines.rs"]
+mod machines;
+
 #[path = "anti_entropy_recovers_lost_delta.rs"]
 mod anti_entropy_recovers_lost_delta;
 #[path = "auth_reject.rs"]

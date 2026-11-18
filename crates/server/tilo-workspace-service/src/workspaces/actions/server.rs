@@ -302,3 +302,49 @@ impl Workspaces {
             })
     }
 }
+
+/// Take a machine that enrolled with a plan's token into its entry, under its
+/// device key: what the person's device that approves the machine does, so the
+/// holders hand it their Servers workspace and it reads its plan there. The
+/// drives and questions it reported ride along when the caller has them; the
+/// machine's own report updates the same entry once it holds the workspace.
+pub(super) const MACHINE_ADMIT: &str = "machine.admit";
+
+impl Workspaces {
+    /// [`MACHINE_ADMIT`]: one of the person's own devices admits a machine it
+    /// approved into the machine's waiting entry in their Servers workspace.
+    pub(super) async fn machine_admit(
+        &self,
+        call: super::GovernanceCall<'_>,
+    ) -> Result<serde_json::Value, ActionCallError> {
+        // The Servers workspace is the person's own: no other member admits a
+        // machine into it.
+        if call.device.user_public_key != self.inner.host.cert.user_public_key {
+            return Err(ActionCallError::UnknownAction);
+        }
+        let device = call.args.required_text("device")?.to_owned();
+        let nonce = call.args.required_text("nonce")?.to_owned();
+        let drives = call.args.text("drives")?.unwrap_or("[]").to_owned();
+        let ask = call
+            .args
+            .text("ask")?
+            .map_or_else(String::new, str::to_owned);
+        Box::pin(servers::apply_on(
+            self,
+            call.workspace,
+            servers::Servers::BEGIN_INSTALL.with((device, nonce, drives, ask)),
+        ))
+        .await
+        .map_err(|error| refused(&error))?;
+        Ok(serde_json::json!({ "admitted": true }))
+    }
+}
+
+/// The governance check `action` is held to, when it is one this file serves:
+/// taking a planned machine in is the person's own devices' own, decided in
+/// its handler, so it is no verb the catalogue offers.
+pub(super) fn check_of(action: &str) -> Option<&'static str> {
+    (action == MACHINE_ADMIT)
+        .then_some("")
+        .or_else(|| super::check_of(action))
+}

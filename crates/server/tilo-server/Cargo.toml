@@ -315,6 +315,7 @@ rcgen.workspace = true
 # keeps them building on their own, rather than only when another crate in the
 # same build turns it on.
 tilo-workspace-service = { path = "../tilo-workspace-service", features = ["test-support", "agents"] }
+install-plan = { path = "../../session/install-plan" }
 tilo-desktop-model = { path = "../../session/desktop-model" }
 tokio = { workspace = true, features = ["test-util"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }

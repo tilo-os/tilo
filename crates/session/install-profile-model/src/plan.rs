@@ -225,6 +225,31 @@ pub struct Drive {
     pub boots: bool,
 }
 
+/// A planned machine as its person's devices and the installer read it: the
+/// plan document itself, the drives its machine reported since it enrolled,
+/// and the questions it asked that no device settled yet.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WaitingPlan {
+    /// The same document the machine installs from.
+    pub plan: Plan,
+    /// The drives the machine reported, by their identity.
+    pub drives: Vec<Drive>,
+    /// The choices it asked about, each with the reason it could not settle
+    /// it.
+    pub asks: Vec<Question>,
+}
+
+/// A choice a machine asked about, and why it could not settle it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Question {
+    /// The choice, one of [`OPEN_CHOICES`].
+    pub choice: String,
+    /// Why the machine could not settle it, for the person to read.
+    pub reason: String,
+}
+
 /// What a rule picked on this machine's real hardware.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Choice<'a> {
