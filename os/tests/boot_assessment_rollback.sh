@@ -120,6 +120,15 @@ as_root() {
 }
 
 boot_id() { guest 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null | tr -d '\r\n'; }
+# The console is shared with everything else on the machine, and this harness
+# reads values from it: a server that is not paired prints its pairing prompt
+# there on every attempt, and a line that lands inside a read is read as part
+# of it. Quiet the boot's own writers, as the check that drives a machine with
+# no sshd has to.
+quiet_console() {
+  as_root 'dmesg -n 1; systemctl cat tilo-server-firstboot.service >/dev/null 2>&1 && systemctl stop tilo-server-firstboot.service' \
+    >/dev/null 2>&1 || true
+}
 booted_digest() {
   guest 'tr " " "\n" < /proc/cmdline | sed -n "s/^composefs=//p"' 2>/dev/null | tr -d '\r\n'
 }
@@ -175,18 +184,27 @@ wait_reachable() {  # OLD-BOOT-ID [TIMEOUT [UNLOCK]]
 reboot_guest() {
   local old="$1" new
   as_root 'systemctl reboot' >/dev/null 2>&1 || true
-  if new="$(wait_reachable "$old")"; then printf '%s\n' "$new"; return 0; fi
+  if new="$(wait_reachable "$old")"; then quiet_console; printf '%s\n' "$new"; return 0; fi
   [ -n "$RESET" ] || return 1
   printf '      no answer within %ss; power-cycling with RESET\n' "$BOOT_TIMEOUT" >&2
   bash -c "$RESET" >&2 || return 1
-  wait_reachable "$old"
+  new="$(wait_reachable "$old")" || return 1
+  quiet_console
+  printf '%s\n' "$new"
 }
 
 # tilo-boot-health's verdict for this boot: good, failed, or not-assessed (the
 # boot loader did not count this boot, so boot-complete.target never asked).
 health_verdict() {
   local deadline=$(( $(date +%s) + HEALTH_TIMEOUT )) state result counted
-  counted="$(as_root 'test -e /sys/firmware/efi/efivars/LoaderBootCountPath-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f && echo yes || echo no' | tr -d '\r\n')"
+  # A token rather than the bare word: the console carries other writers' lines
+  # too, and anything they add must not change which answer was read.
+  counted="$(as_root 'test -e /sys/firmware/efi/efivars/LoaderBootCountPath-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f && echo __counted_yes__ || echo __counted_no__')"
+  case "$counted" in
+    *__counted_yes__*) counted=yes ;;
+    *__counted_no__*) counted=no ;;
+    *) counted=unknown ;;
+  esac
   while [ "$(date +%s)" -lt "$deadline" ]; do
     state="$(guest 'systemctl show -p ActiveState --value tilo-boot-health.service' 2>/dev/null | tr -d '\r\n')"
     result="$(guest 'systemctl show -p Result --value tilo-boot-health.service' 2>/dev/null | tr -d '\r\n')"
@@ -253,6 +271,7 @@ boot_entries_pass() {
 # --- 0. what is booted ----------------------------------------------------------
 step "the booted deployment"
 [ -n "$(boot_id)" ] || fail "RUNNER cannot reach the guest"
+quiet_console
 A_DIGEST="$(booted_digest)"
 [[ "$A_DIGEST" =~ ^[[:xdigit:]]{128}$ ]] || fail "no composefs= identity on the kernel command line; this is not a bootc composefs boot"
 A_ENTRY="$(current_entry)"

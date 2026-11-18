@@ -175,8 +175,10 @@ for _ in $(seq 1 60); do console 'true' >/dev/null 2>&1 && break; sleep 2; done
 console 'true' >/dev/null || die 'the installed disk never answered at its console'
 # Keep the console to the runner: kernel messages — auditd's lines among them,
 # one per sudo call — interleave mid-line with the marker it reads, and a marker
-# split that way waits out the command's whole deadline.
-as_root 'dmesg -n 1' >/dev/null 2>&1 || true
+# split that way waits out the command's whole deadline. An unpaired server also
+# prints its pairing prompt here on every attempt, and a line that lands inside
+# a read is read as part of it: this machine is never paired by this check.
+as_root 'dmesg -n 1; systemctl stop tilo-server-firstboot.service' >/dev/null 2>&1 || true
 
 say 'the machine serves'
 # What is up: multi-user reached, the hosted-VM service bound its socket, the API
@@ -248,8 +250,14 @@ ok 'the update image is on the machine'
 # What the boot itself recorded as its verdict, printed before the rollback
 # check reads it: a check that fails on it says what the boot loader's boot
 # left, not only that something did.
-as_root 'systemctl show -p ActiveState -p Result tilo-boot-health.service tilo-server-health.service' \
-  2>&1 | tee "$out/boot-verdict.txt" > /dev/console || true 
+as_root 'echo "--- cmdline"; cat /proc/cmdline
+         echo "--- boot count"; test -e /sys/firmware/efi/efivars/LoaderBootCountPath-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f && echo present || echo absent
+         echo "--- entries"; ls /boot/loader/entries /boot/efi/loader/entries 2>&1
+         echo "--- health"; systemctl show -p ActiveState -p Result -p ConditionResult tilo-boot-health.service tilo-server-health.service
+         echo "--- boot-complete"; systemctl list-dependencies --reverse --plain boot-complete.target 2>&1 | head -12
+         echo "--- cycles"; journalctl -b --no-pager 2>/dev/null | grep -i "ordering cycle\|deleted to break" | head -12
+         echo "--- bootctl"; bootctl status --no-pager 2>&1 | sed -n "1,20p"' \
+  2>&1 | tee "$out/boot-verdict.txt" > /dev/console || true
 
 RUNNER='./os/tests/serial_runner.sh' SUDO_PASS="$TILO_PASS" FAULT=server \
   SUBJECT_UNIT=tilo-server-health.service \
