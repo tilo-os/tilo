@@ -160,7 +160,8 @@ fn words(verb: &str) -> String {
 /// `json`, a stored value of the type `ty` of `meta`'s package, as a reading holds it: a
 /// collection as the list of its items in their order, each with its id; an enum as its case's
 /// name, with the values the case carries where it carries any ([`case`]); a map as its
-/// entries by key ([`entries`]); a record as its declared fields under their names.
+/// entries by key ([`entries`]); an actor as the actor it is ([`actor`]); a record as its
+/// declared fields under their names.
 fn normal(meta: &PackageMeta, ty: &str, json: &Json) -> Json {
     let ty = ty.trim();
     if ty == "RichText" {
@@ -184,6 +185,9 @@ fn normal(meta: &PackageMeta, ty: &str, json: &Json) -> Json {
             });
             return Json::Array(items.collect());
         }
+    }
+    if ty == "Actor" {
+        return actor(json);
     }
     if let Some(inner) = wrapped(ty, "Map") {
         return entries(meta, inner, json);
@@ -257,6 +261,24 @@ fn entries(meta: &PackageMeta, inner: &str, json: &Json) -> Json {
         .iter()
         .map(|(key, value)| (key.clone(), normal(meta, inner, value)));
     Json::Object(read.collect())
+}
+
+/// `json`, a stored actor, as a reading holds one: under `actor`. An actor is stored whole as
+/// one text of JSON, an actor's own or a member's, which a surface declares as an actor too.
+/// What is neither is handed on as it is.
+fn actor(json: &Json) -> Json {
+    let written = json
+        .as_str()
+        .and_then(|text| serde_json::from_str::<Json>(text).ok());
+    let held = written.as_ref().unwrap_or(json);
+    let who = serde_json::from_value::<tilo_actions::Actor>(held.clone())
+        .ok()
+        .or_else(|| {
+            serde_json::from_value::<tilo_actions::MemberId>(held.clone())
+                .ok()
+                .map(tilo_actions::Actor::Member)
+        });
+    who.map_or_else(|| json.clone(), |who| serde_json::json!({ "actor": who }))
 }
 
 /// The type `wrap<...>` wraps.

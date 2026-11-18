@@ -2,17 +2,28 @@
 //! workspace, and that none of it reaches a viewer who may not read the app.
 
 use serde_json::{Value as Json, json};
+use tilo_actions::{Actor, MemberId};
 use ui::written_view::ViewState as _;
 
 use super::{TestWorkspace, ada, shown_reading, texts};
 
 const SHEETS: &str = "so.tilo.sheets";
+const TERMINAL: &str = "so.tilo.terminal";
 
 /// A workbook of Sheets with the remarks `remarks`, each its words and the name of who made it,
 /// as a read answers what Sheets stores: a collection is its items by id, each under its place,
 /// and who made a remark is a case that carries a value, its name under `$variant` beside the
 /// value under the number the case gives it.
 fn workbook(remarks: &[(&str, &str)]) -> Json {
+    let made: Vec<(&str, Json)> = remarks
+        .iter()
+        .map(|(words, by)| (*words, json!({ "$variant": "named", "0": by })))
+        .collect();
+    workbook_by(&made)
+}
+
+/// [`workbook`], each remark with who made it as Sheets stores that.
+fn workbook_by(remarks: &[(&str, Json)]) -> Json {
     let mut stored = serde_json::Map::new();
     for (at, (words, by)) in remarks.iter().enumerate() {
         stored.insert(
@@ -22,7 +33,7 @@ fn workbook(remarks: &[(&str, &str)]) -> Json {
                     "sheet": "s1",
                     "area": { "top": "1", "left": "A", "bottom": "1", "right": "A" },
                 },
-                "author": { "$variant": "named", "0": by },
+                "author": by,
                 "date": "2026-11-18",
                 "text": words,
                 "body": [],
@@ -147,6 +158,77 @@ fn a_map_stays_unread_by_a_viewer_who_may_not_read_the_app() {
     assert!(
         texts(&surface).is_empty(),
         "no key and no value of the map is shown: {:?}",
+        texts(&surface)
+    );
+    assert!(workspace.invoked().is_empty());
+}
+
+/// Someone who neither wrote the view nor looks at it.
+fn cy() -> MemberId {
+    MemberId::person("cy")
+}
+
+/// Who holds the terminal's session, by name.
+const HOLDER: &str = "view holder() {\n    match terminal.session.holder {\n        .some(who) => text(who.name()),\n        .none => text(\"free\"),\n    }\n}";
+
+/// Each remark of the workbook: who made it, by name, then its words.
+const AUTHORS: &str = "view authors() {\n    for c in sheets.workbook.comments {\n        match c.author {\n            .member(who) => text(who.name()),\n            .named(name) => text(name),\n        }\n        text(c.text)\n    }\n}";
+
+#[test]
+fn an_actor_reaches_a_view_from_a_field_and_from_a_case_that_carries_one() {
+    // A field that holds an actor, stored whole as one text of JSON: who holds the terminal's
+    // session.
+    let holder = serde_json::to_string(&Actor::Member(cy())).unwrap_or_default();
+    let workspace = TestWorkspace::default();
+    workspace.write(TERMINAL, json!({ "holder": holder }));
+    let (mut surface, state) = shown_reading(HOLDER, ada(), &["terminal"], &workspace);
+    assert_eq!(
+        texts(&surface),
+        ["cy"],
+        "the session's holder, by name: {:?}",
+        surface.nodes("error")
+    );
+    workspace.write(TERMINAL, json!({ "holder": null }));
+    surface.turn();
+    assert_eq!(texts(&surface), ["free"]);
+    assert!(state.refused().is_empty());
+
+    // A case that carries an actor: a remark a member made, stored as the member alone, beside
+    // one by someone only named.
+    let member = serde_json::to_string(&cy()).unwrap_or_default();
+    let workspace = TestWorkspace::default();
+    workspace.write(
+        SHEETS,
+        workbook_by(&[
+            (
+                "Check the sum",
+                json!({ "$variant": "member", "0": member }),
+            ),
+            ("Done", json!({ "$variant": "named", "0": "Ada" })),
+        ]),
+    );
+    let (surface, _) = shown_reading(AUTHORS, ada(), &["sheets"], &workspace);
+    assert_eq!(
+        texts(&surface),
+        ["cy", "Check the sum", "Ada", "Done"],
+        "who made each remark, a member by name: {:?}",
+        surface.nodes("error")
+    );
+    assert!(workspace.invoked().is_empty(), "reading sends nothing");
+}
+
+#[test]
+fn an_actor_stays_unread_by_a_viewer_who_may_not_read_the_app() {
+    let holder = serde_json::to_string(&Actor::Member(cy())).unwrap_or_default();
+    let workspace = TestWorkspace::default();
+    workspace.write(TERMINAL, json!({ "holder": holder }));
+    workspace.refuse(TERMINAL);
+    let (mut surface, state) = shown_reading(HOLDER, ada(), &["terminal"], &workspace);
+    surface.turn();
+    assert_eq!(state.refused(), ["Terminal"]);
+    assert!(
+        !texts(&surface).iter().any(|text| text.contains("cy")),
+        "nobody is said to hold the session: {:?}",
         texts(&surface)
     );
     assert!(workspace.invoked().is_empty());
