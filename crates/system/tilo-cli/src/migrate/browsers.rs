@@ -158,7 +158,7 @@ fn pieces(bundle: &ImportBundle) -> Result<Vec<ImportBundle>> {
     let rows: usize = bundle
         .chunks
         .iter()
-        .map(|chunk| chunk.bookmarks.len() + chunk.history.len())
+        .map(|chunk| chunk.bookmarks.len().saturating_add(chunk.history.len()))
         .sum();
     if rows <= ROWS_PER_CALL {
         return Ok(vec![bundle.clone()]);

@@ -1224,19 +1224,7 @@ pub(crate) async fn upload_all(
     progress.told(0, total);
     // What the workspace already holds needs no upload.
     let hashes: Vec<String> = files.iter().map(hash_of).collect::<Result<_>>()?;
-    let mut held = vec![false; count];
-    for (at, asks) in hashes.chunks(HAVE_HASHES).enumerate() {
-        let answered = client
-            .have_contents(workspace, asks)
-            .await
-            .context("asking which files the workspace already holds")?;
-        for (offset, present) in answered.into_iter().enumerate() {
-            let index = at.saturating_mul(HAVE_HASHES).saturating_add(offset);
-            if let Some(held_here) = held.get_mut(index) {
-                *held_here = present;
-            }
-        }
-    }
+    let held = already_held(client, workspace, &hashes).await?;
     let mut contents: Vec<Option<String>> = (0..count).map(|_| None).collect();
     let mut done = 0_u64;
     let mut smalls: Vec<Vec<usize>> = Vec::new();
@@ -1300,20 +1288,71 @@ pub(crate) async fn upload_all(
         }
     }
     // A file larger than one many-files call goes up in pieces, a few at a time.
-    let listing = &files;
-    let mut big = futures_util::stream::iter(larges)
-        .map(|index| {
-            let files = listing;
-            async move {
-                let file = files
-                    .get(index)
-                    .ok_or_else(|| anyhow!("a file went missing"))?;
-                let put = client
-                    .upload_file(workspace, &file.path, &mut |_, _| {})
-                    .await
-                    .with_context(|| format!("uploading {}", file.name))?;
-                anyhow::Ok((index, text(&put, "content").to_owned(), file_size(file)))
+    send_larges(
+        client,
+        workspace,
+        &files,
+        larges,
+        &mut contents,
+        &mut progress,
+        total,
+    )
+    .await?;
+    progress.done();
+    drop(sending);
+    let mut uploaded = Vec::with_capacity(count);
+    for (index, file) in files.into_iter().enumerate() {
+        let content = contents
+            .get_mut(index)
+            .and_then(Option::take)
+            .ok_or_else(|| anyhow!("no content reference was answered for {}", file.name))?;
+        uploaded.push((file, content));
+    }
+    Ok(uploaded)
+}
+
+/// Which of the `hashes` the workspace already holds: the files they name
+/// need no upload.
+async fn already_held(client: &Client, workspace: &str, hashes: &[String]) -> Result<Vec<bool>> {
+    let mut held = vec![false; hashes.len()];
+    for (at, asks) in hashes.chunks(HAVE_HASHES).enumerate() {
+        let answered = client
+            .have_contents(workspace, asks)
+            .await
+            .context("asking which files the workspace already holds")?;
+        for (offset, present) in answered.into_iter().enumerate() {
+            let index = at.saturating_mul(HAVE_HASHES).saturating_add(offset);
+            if let Some(held_here) = held.get_mut(index) {
+                *held_here = present;
             }
+        }
+    }
+    Ok(held)
+}
+
+/// Send the files too large for a many-files call, each on its own, a few at a
+/// time.
+async fn send_larges(
+    client: &Client,
+    workspace: &str,
+    files: &[Uploading],
+    larges: Vec<usize>,
+    contents: &mut [Option<String>],
+    progress: &mut Progress,
+    total: u64,
+) -> Result<()> {
+    use futures_util::StreamExt as _;
+    let mut done = 0_u64;
+    let mut big = futures_util::stream::iter(larges)
+        .map(|index| async move {
+            let file = files
+                .get(index)
+                .ok_or_else(|| anyhow!("a file went missing"))?;
+            let put = client
+                .upload_file(workspace, &file.path, &mut |_, _| {})
+                .await
+                .with_context(|| format!("uploading {}", file.name))?;
+            anyhow::Ok((index, text(&put, "content").to_owned(), file_size(file)))
         })
         .buffer_unordered(UPLOADS_AT_ONCE);
     while let Some(sent) = big.next().await {
@@ -1324,18 +1363,7 @@ pub(crate) async fn upload_all(
         done = done.saturating_add(len);
         progress.told(done.min(total), total);
     }
-    progress.done();
-    drop(sending);
-    drop(big);
-    let mut uploaded = Vec::with_capacity(count);
-    for (index, file) in files.into_iter().enumerate() {
-        let content = contents
-            .get_mut(index)
-            .and_then(Option::take)
-            .ok_or_else(|| anyhow!("no content reference was answered for {}", file.name))?;
-        uploaded.push((file, content));
-    }
-    Ok(uploaded)
+    Ok(())
 }
 
 /// `uploaded` in as few batches as the workspace takes: each a whole run and

@@ -17,7 +17,7 @@
 //! A file the workspace has at its place with the same size is already there: starting again copies
 //! only what is new or changed, and a stopped migration resumes.
 
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -26,6 +26,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use serde_json::{Value, json};
+
+use crate::peer::size;
 
 use super::Lander;
 use super::state::{Item, Place, Review};
@@ -167,7 +169,7 @@ fn walk_local(
 
 /// `tilo migrate review home`: the familiar folders and the other visible folders of `home`, and
 /// any folder chosen by its path before. The familiar ones are chosen until the person chooses.
-pub fn review(home: &Path, kept: Option<&Review>) -> Result<Review> {
+pub fn review(home: &Path, kept: Option<&Review>) -> Review {
     let mut items = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     for folder in migration_sources::known_folders::discover() {
@@ -206,13 +208,13 @@ pub fn review(home: &Path, kept: Option<&Review>) -> Result<Review> {
             }
         }
     }
-    Ok(Review {
+    Review {
         source: HOME.to_owned(),
         title: format!("Folders in {}", home.display()),
         handle: home.display().to_string(),
         items,
         unreadable: Vec::new(),
-    })
+    }
 }
 
 /// The key a review lists the folder `path` under: its name in `home`, or its whole path.
@@ -368,7 +370,12 @@ pub fn land(
             Sink::Folder(root) => copy_into(tree, &entries, root, place, lander)?,
             Sink::Upload(under) => upload(tree, &entries, under, place, lander)?,
         };
-        let failed = std::mem::take(&mut *counts.failed.lock().unwrap_or_else(|e| e.into_inner()));
+        let failed = std::mem::take(
+            &mut *counts
+                .failed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
         total_bytes = total_bytes.saturating_add(counts.bytes.load(Ordering::Relaxed));
         total_files = total_files.saturating_add(counts.copied.load(Ordering::Relaxed));
         if !failed.is_empty() {
@@ -386,11 +393,19 @@ pub fn land(
         }
         lander.note(&format!("folder:{}", item.key))?;
     }
-    let seconds = started.elapsed().as_secs_f64().max(0.001);
+    let elapsed = started.elapsed();
+    // The rate in whole bytes a second: a size to read, not a float's rounding of one.
+    let millis = elapsed.as_millis().max(1);
+    let per_second = u128::from(total_bytes)
+        .saturating_mul(1000)
+        .checked_div(millis)
+        .and_then(|rate| u64::try_from(rate).ok())
+        .unwrap_or(u64::MAX);
     lander.say(&format!(
-        "{total_files} files, {} in {seconds:.1} s ({}/s)",
+        "{total_files} files, {} in {:.1} s ({}/s)",
         size(total_bytes),
-        size((total_bytes as f64 / seconds) as u64)
+        elapsed.as_secs_f64(),
+        size(per_second)
     ));
     Ok(())
 }
@@ -466,36 +481,7 @@ fn copy_into(
                 while !stop.load(Ordering::Relaxed) {
                     let at = next.fetch_add(1, Ordering::Relaxed);
                     let Some(entry) = entries.get(at) else { break };
-                    let to = root.join(&entry.path);
-                    if std::fs::metadata(&to).is_ok_and(|meta| meta.len() == entry.size) {
-                        counts.already.fetch_add(1, Ordering::Relaxed);
-                        continue;
-                    }
-                    let copied = to
-                        .parent()
-                        .map_or(Ok(()), std::fs::create_dir_all)
-                        .map_err(anyhow::Error::from)
-                        .and_then(|()| tree.copy_to(entry, &to));
-                    match copied {
-                        Ok(()) => {
-                            if let Some(modified) = entry.modified
-                                && let Ok(file) = std::fs::File::options().write(true).open(&to)
-                            {
-                                let _ = file.set_modified(modified);
-                            }
-                            if let Ok(mut list) = written.lock() {
-                                let _ = writeln!(list, "{}\t{}", entry.size, to.display());
-                            }
-                            counts.copied.fetch_add(1, Ordering::Relaxed);
-                            counts.bytes.fetch_add(entry.size, Ordering::Relaxed);
-                        }
-                        Err(error) => {
-                            let _ = std::fs::remove_file(&to);
-                            if let Ok(mut failed) = counts.failed.lock() {
-                                failed.push(format!("{}: {error:#}", entry.path));
-                            }
-                        }
-                    }
+                    copy_one(tree, entry, root, &counts, &written);
                 }
             });
         }
@@ -536,12 +522,53 @@ fn copy_into(
     )?;
     written
         .into_inner()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .flush()?;
     if stop.load(Ordering::Relaxed) {
         return Err(super::Stopped.into());
     }
     Ok(counts)
+}
+
+/// Copy `entry` under `root`, unless a file of its size is there already, and note in `written`
+/// what it wrote so `undo` removes it.
+fn copy_one(
+    tree: &dyn Tree,
+    entry: &Entry,
+    root: &Path,
+    counts: &Counts,
+    written: &Mutex<std::io::BufWriter<std::fs::File>>,
+) {
+    let to = root.join(&entry.path);
+    if std::fs::metadata(&to).is_ok_and(|meta| meta.len() == entry.size) {
+        counts.already.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+    let copied = to
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .map_err(anyhow::Error::from)
+        .and_then(|()| tree.copy_to(entry, &to));
+    match copied {
+        Ok(()) => {
+            if let Some(modified) = entry.modified
+                && let Ok(file) = std::fs::File::options().write(true).open(&to)
+            {
+                let _ = file.set_modified(modified);
+            }
+            if let Ok(mut list) = written.lock() {
+                let _ = writeln!(list, "{}\t{}", entry.size, to.display());
+            }
+            counts.copied.fetch_add(1, Ordering::Relaxed);
+            counts.bytes.fetch_add(entry.size, Ordering::Relaxed);
+        }
+        Err(error) => {
+            let _ = std::fs::remove_file(&to);
+            if let Ok(mut failed) = counts.failed.lock() {
+                failed.push(format!("{}: {error:#}", entry.path));
+            }
+        }
+    }
 }
 
 /// Upload `entries` into the workspace's tree under `under`: bytes first, then the tree takes
@@ -637,7 +664,7 @@ pub fn undo_written(place: &Place, source: &str, invocation: &str) -> Result<Opt
     let others = written_by_others(place, source, invocation);
     let mut removed = 0_usize;
     let mut root: Option<PathBuf> = None;
-    let mut folders = BTreeMap::new();
+    let mut folders = BTreeSet::new();
     for line in text.lines() {
         let Some((size, path)) = line.split_once('\t') else {
             continue;
@@ -663,35 +690,21 @@ pub fn undo_written(place: &Place, source: &str, invocation: &str) -> Result<Opt
                 {
                     break;
                 }
-                folders.insert((usize::MAX - at.components().count(), at.clone()), ());
+                folders.insert((
+                    usize::MAX.saturating_sub(at.components().count()),
+                    at.clone(),
+                ));
                 dir = at.parent().map(Path::to_path_buf);
             }
         }
     }
     // Deepest first, so a folder whose folders emptied goes too; a folder that holds anything
     // else stays.
-    for ((_, dir), ()) in folders {
+    for (_, dir) in folders {
         let _ = std::fs::remove_dir(&dir);
     }
     std::fs::remove_file(&list)?;
     Ok(Some(removed))
-}
-
-/// `bytes` as a person reads a size.
-#[must_use]
-pub fn size(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1000.0 && unit + 1 < UNITS.len() {
-        value /= 1000.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
-    }
 }
 
 /// Where a migration of `source` lands: the workspace's folder here when it is mounted, uploads

@@ -585,8 +585,7 @@ async fn every_paragraph_a_visitors_agent_was_told_it_wrote_reaches_their_open_n
     let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
-    let server = McpServer::new(actions, workspace.clone(), person)
-        .with_agent_session("session-9");
+    let server = McpServer::new(actions, workspace.clone(), person).with_agent_session("session-9");
     // One call as `tilo mcp` serves it.
     let call = async |name: &str, arguments: Value| {
         let request = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
@@ -729,8 +728,7 @@ async fn an_agents_window_lands_on_the_layout_a_page_wrote_after_the_service_joi
     let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
-    let server = McpServer::new(actions, workspace.clone(), person)
-        .with_agent_session("session-3");
+    let server = McpServer::new(actions, workspace.clone(), person).with_agent_session("session-3");
     // The service joins the workspace to answer the agent's first look.
     let (apps, failed) = super::agent_mcp::tool(&server, "tilo_ls", json!({})).await;
     assert!(!failed, "{apps}");

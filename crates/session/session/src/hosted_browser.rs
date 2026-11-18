@@ -1748,7 +1748,8 @@ mod tests {
         tilo_workspace_service::apps::collab_app_broker::PublishedSurface {
             peer_id,
             app_id: app.to_owned(),
-            route: tilo_workspace_service::apps::route::CrdtRoute::app(app, workspace).on_resource(SHOWN),
+            route: tilo_workspace_service::apps::route::CrdtRoute::app(app, workspace)
+                .on_resource(SHOWN),
             actions: Vec::new(),
             live,
         }

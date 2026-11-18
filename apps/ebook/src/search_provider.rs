@@ -628,7 +628,7 @@ impl BookSearch {
         let place = Ebook::book_place(&row, &marks);
         let mut resource = Derived::find(std::slice::from_ref(&place), id)?;
         resource.children.clear();
-        Some(Found::Place(resource))
+        Some(Found::Place(Box::new(resource)))
     }
 }
 
@@ -636,7 +636,7 @@ impl BookSearch {
 /// library publishes for a book or an annotation, document edits and all.
 enum Found {
     Row(LiveRow),
-    Place(ResourceSpec),
+    Place(Box<ResourceSpec>),
 }
 
 impl BookSearch {
@@ -645,7 +645,7 @@ impl BookSearch {
     pub(crate) fn resolve(&self, id: &str) -> Option<LiveRow> {
         self.found(id).map(|found| match found {
             Found::Row(row) => row,
-            Found::Place(place) => LiveRow::from_resource(place),
+            Found::Place(place) => LiveRow::from_resource(*place),
         })
     }
 
@@ -655,7 +655,7 @@ impl BookSearch {
     pub(crate) fn resolve_published(&self, id: &str) -> Option<ResourceSpec> {
         self.found(id).map(|found| match found {
             Found::Row(row) => row.into_resource(),
-            Found::Place(place) => place,
+            Found::Place(place) => *place,
         })
     }
 

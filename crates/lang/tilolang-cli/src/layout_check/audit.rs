@@ -596,6 +596,10 @@ fn interactive(role: ui::a11y::Role) -> bool {
     )
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one independent fact about where the walk stands"
+)]
 struct Walk<'a> {
     viewport: Rect,
     beyond: bool,
@@ -981,6 +985,10 @@ impl Walk<'_> {
         });
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one node's checks, each a rule of the layout audit, in the order they apply"
+    )]
     fn visit(
         &mut self,
         node: &InspectionNode,

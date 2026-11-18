@@ -4,7 +4,7 @@
 //! The sources are the Tilo OS installer's, read by the same code ([`migration_sources`], the
 //! cloud providers Files mounts, the browser readers), listed in one table
 //! ([`registry::SOURCES`]): folders on this computer, its browsers and Thunderbird, a mail account,
-//! Google Drive, OneDrive, Dropbox, iCloud Drive, Nextcloud and WebDAV, and Outline, Linear and
+//! Google Drive, `OneDrive`, Dropbox, iCloud Drive, Nextcloud and `WebDAV`, and Outline, Linear and
 //! Forgejo. Each step is a command of its own, so an agent can show the person what a source
 //! holds before anything moves:
 //!
@@ -60,18 +60,18 @@ use workspace::{Invocation, Workspace};
 pub enum MigrateCmd {
     /// Every source, what it holds here, and how to connect the ones that need it.
     Sources,
-    /// Connect a source that needs signing in: Google Drive, OneDrive and Dropbox in the browser
-    /// (the link is opened or printed, and this finishes by itself); iCloud, Nextcloud, WebDAV,
+    /// Connect a source that needs signing in: Google Drive, `OneDrive` and Dropbox in the browser
+    /// (the link is opened or printed, and this finishes by itself); iCloud, Nextcloud, `WebDAV`,
     /// a mail account (IMAP), Outline, Linear and Forgejo with a password or key typed at a hidden
     /// prompt (or read from --key-file). It is kept in this computer's vault and never printed.
     Connect {
         /// gdrive, onedrive, dropbox, icloud, nextcloud, webdav, mail, outline, linear or forgejo.
         service: String,
-        /// The address: a Nextcloud or WebDAV server, Outline's site, Linear's API when not its
+        /// The address: a Nextcloud or `WebDAV` server, Outline's site, Linear's API when not its
         /// own, the Forgejo repository or owner whose issues come over.
         #[arg(long)]
         url: Option<String>,
-        /// The account: a mail address, an Apple ID, a Nextcloud or WebDAV user name.
+        /// The account: a mail address, an Apple ID, a Nextcloud or `WebDAV` user name.
         #[arg(long)]
         login: Option<String>,
         /// A file holding the key or password, which the person made.
@@ -233,7 +233,7 @@ pub fn run_into(cmd: MigrateCmd, json: bool, target: &Target) -> Result<ExitCode
             let mut review = match named.engine {
                 // A folder chosen by its path is reviewed with it.
                 Engine::Folders => {
-                    let mut review = files::review(&home, place.review(&source)?.as_ref())?;
+                    let mut review = files::review(&home, place.review(&source)?.as_ref());
                     files::add_paths(&home, &mut review, &mut items)?;
                     review
                 }
@@ -351,7 +351,7 @@ fn review(place: &Place, home: &Path, source: &str, profile: Option<&str>) -> Re
     let named = registry::named(source)?;
     let source = named.key.to_owned();
     match named.engine {
-        Engine::Folders => return files::review(home, place.review(&source)?.as_ref()),
+        Engine::Folders => return Ok(files::review(home, place.review(&source)?.as_ref())),
         Engine::Cloud => return clouds::review(place, named),
         Engine::Browsers => {
             let mut review = browsers::review(home);
@@ -389,49 +389,70 @@ fn sources(place: &Place, home: &Path) -> Value {
     let connected = services::sources();
     let mut found = Vec::new();
     for source in registry::SOURCES {
-        let mut row = json!({"source": source.key, "title": source.title});
+        let mut row = serde_json::Map::new();
+        row.insert("source".to_owned(), json!(source.key));
+        row.insert("title".to_owned(), json!(source.title));
         match source.engine {
             Engine::Thunderbird => match migration_sources::thunderbird::discover(home) {
                 Ok(profiles) if !profiles.is_empty() => {
                     let accounts: usize =
                         profiles.iter().map(|profile| profile.accounts.len()).sum();
-                    row["here"] = json!(format!(
-                        "{} profile(s), {accounts} account(s)",
-                        profiles.len()
-                    ));
-                    row["next"] = json!("tilo migrate review thunderbird");
+                    row.insert(
+                        "here".to_owned(),
+                        json!(format!(
+                            "{} profile(s), {accounts} account(s)",
+                            profiles.len()
+                        )),
+                    );
+                    row.insert("next".to_owned(), json!("tilo migrate review thunderbird"));
                 }
-                Ok(_) => row["unavailable"] = json!("no Thunderbird profile on this computer"),
-                Err(why) => row["unavailable"] = json!(why),
+                Ok(_) => {
+                    row.insert(
+                        "unavailable".to_owned(),
+                        json!("no Thunderbird profile on this computer"),
+                    );
+                }
+                Err(why) => {
+                    row.insert("unavailable".to_owned(), json!(why));
+                }
             },
             Engine::Service => {
-                let service = connected
-                    .iter()
-                    .find(|service| service["source"] == source.key);
+                let service = connected.iter().find(|service| {
+                    service.get("source").and_then(Value::as_str) == Some(source.key)
+                });
                 match service
                     .and_then(|service| service.get("next"))
                     .and_then(Value::as_str)
                 {
                     Some(next) if next.contains("review") => {
-                        row["here"] =
-                            service.map_or(Value::Null, |service| service["title"].clone());
-                        row["next"] = json!(next);
+                        let here = service
+                            .and_then(|service| service.get("title"))
+                            .cloned()
+                            .unwrap_or(Value::Null);
+                        row.insert("here".to_owned(), here);
+                        row.insert("next".to_owned(), json!(next));
                     }
-                    _ => row["next"] = json!(source.connect_command()),
+                    _ => {
+                        row.insert("next".to_owned(), json!(source.connect_command()));
+                    }
                 }
             }
             Engine::Cloud => {
-                row["next"] = if place.path(source.key, "account.json").is_file() {
+                let next = if place.path(source.key, "account.json").is_file() {
                     json!(format!("tilo migrate review {}", source.key))
                 } else {
                     json!(source.connect_command())
                 };
+                row.insert("next".to_owned(), next);
             }
             Engine::Folders | Engine::Browsers => {
-                row["next"] = json!(format!("tilo migrate review {}", source.key));
+                row.insert(
+                    "next".to_owned(),
+                    json!(format!("tilo migrate review {}", source.key)),
+                );
             }
         }
-        found.push(row);
+        found.push(Value::Object(row));
     }
     json!({"sources": found, "reviewed": reviewed})
 }
@@ -477,21 +498,7 @@ fn start(place: &Place, home: &Path, source: &str, json: bool, target: &Target) 
         Engine::Folders | Engine::Cloud => files::summary(&review, named.title),
         Engine::Browsers => browsers::summary(&review),
     };
-    let run = Invocation {
-        id: format!(
-            "migrate-{source}-{}",
-            hex::encode(rand::random::<[u8; 6]>())
-        ),
-        title,
-    };
-    journal.state = RunState::Running;
-    journal.pid = Some(std::process::id());
-    journal.run = Some(run.title.clone());
-    journal.run_id = Some(run.id.clone());
-    journal.brought.clear();
-    journal.already_there = 0;
-    journal.failure = None;
-    place.keep_journal(source, &journal)?;
+    let run = begin(place, source, &mut journal, title)?;
     // Files are written into the workspace's folder here when it has one; only uploads need the
     // workspace's session.
     let sink = match named.engine {
@@ -509,13 +516,7 @@ fn start(place: &Place, home: &Path, source: &str, json: bool, target: &Target) 
     };
     let sink = match sink.transpose() {
         Ok(sink) => sink,
-        Err(error) => {
-            journal.state = RunState::Failed;
-            journal.pid = None;
-            journal.failure = Some(format!("{error:#}"));
-            place.keep_journal(source, &journal)?;
-            return Err(error);
-        }
+        Err(error) => return failed(place, source, &mut journal, error),
     };
     let connected = match &sink {
         Some(files::Sink::Folder(_)) => Ok(Box::new(workspace::Offline) as Box<dyn Workspace>),
@@ -523,13 +524,7 @@ fn start(place: &Place, home: &Path, source: &str, json: bool, target: &Target) 
     };
     let mut held = match connected {
         Ok(held) => held,
-        Err(error) => {
-            journal.state = RunState::Failed;
-            journal.pid = None;
-            journal.failure = Some(format!("{error:#}"));
-            place.keep_journal(source, &journal)?;
-            return Err(error);
-        }
+        Err(error) => return failed(place, source, &mut journal, error),
     };
     let mut progress = |line: &str| {
         if !json {
@@ -578,6 +573,41 @@ fn start(place: &Place, home: &Path, source: &str, json: bool, target: &Target) 
     place.keep_journal(source, &journal)?;
     let landed = in_workspace(place, source, &journal)?;
     Ok(status_of(source, &review, &journal, landed))
+}
+
+/// The invocation `title` names, starting now: the journal says it is going and brings nothing yet.
+fn begin(place: &Place, source: &str, journal: &mut Journal, title: String) -> Result<Invocation> {
+    let invocation = Invocation {
+        id: format!(
+            "migrate-{source}-{}",
+            hex::encode(rand::random::<[u8; 6]>())
+        ),
+        title,
+    };
+    journal.state = RunState::Running;
+    journal.pid = Some(std::process::id());
+    journal.run = Some(invocation.title.clone());
+    journal.run_id = Some(invocation.id.clone());
+    journal.brought.clear();
+    journal.already_there = 0;
+    journal.failure = None;
+    place.keep_journal(source, journal)?;
+    Ok(invocation)
+}
+
+/// Give up before anything is brought: the journal says it failed and why, and the error
+/// goes to the caller.
+fn failed<T>(
+    place: &Place,
+    source: &str,
+    journal: &mut Journal,
+    error: anyhow::Error,
+) -> Result<T> {
+    journal.state = RunState::Failed;
+    journal.pid = None;
+    journal.failure = Some(format!("{error:#}"));
+    place.keep_journal(source, journal)?;
+    Err(error)
 }
 
 /// How many of a source's items the workspace has: Thunderbird's journal counts them, a service

@@ -56,7 +56,7 @@ fn texts(node: &UiNode, out: &mut Vec<String>) {
 }
 
 /// Do the packages' migrations once over this workspace, as its window does when it opens.
-fn migrate(replica: &mut Replica) -> usize {
+fn migrate(replica: &Replica) -> usize {
     replica.host.migrate()
 }
 
@@ -74,7 +74,7 @@ fn a_migration_that_calls_an_action_fills_a_fresh_root_and_a_second_open_changes
     assert!(shown(&replica).is_empty(), "a fresh root shows nothing yet");
     replica.commit();
 
-    assert_eq!(migrate(&mut replica), 1, "the first start fills the root");
+    assert_eq!(migrate(&replica), 1, "the first start fills the root");
     replica.commit();
     assert_eq!(
         shown(&replica),
@@ -82,12 +82,12 @@ fn a_migration_that_calls_an_action_fills_a_fresh_root_and_a_second_open_changes
         "the root the action filled"
     );
 
-    assert_eq!(migrate(&mut replica), 0, "it happened once");
+    assert_eq!(migrate(&replica), 0, "it happened once");
     assert_eq!(replica.commit(), 0, "and made no change");
     let ids = packages[0].ids.clone();
-    let mut peer = Replica::new("peer", replica.doc.fork(), &[(GALLERY, ids.as_str())]).0;
+    let peer = Replica::new("peer", replica.doc.fork(), &[(GALLERY, ids.as_str())]).0;
     assert_eq!(
-        migrate(&mut peer),
+        migrate(&peer),
         0,
         "a peer opening it afterwards changes nothing"
     );

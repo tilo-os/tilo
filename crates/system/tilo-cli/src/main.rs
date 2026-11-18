@@ -1118,6 +1118,10 @@ fn list_actions(filter: Vec<String>, spelling: &tilo_control::front::Spelling) -
     desktop::run_action(desktop::ActionCmd::List { filter }, spelling)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per command, side by side, so the dispatch reads in one place"
+)]
 fn run(cli: Cli) -> Result<ExitCode> {
     let spelling = tilo_control::front::Spelling::tilo();
     if let Cmd::Login {

@@ -71,8 +71,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
-    let server = McpServer::new(actions, WORKSPACE.into(), person)
-        .with_agent_session("session-1");
+    let server = McpServer::new(actions, WORKSPACE.into(), person).with_agent_session("session-1");
 
     let listed = ask(
         &server,
@@ -334,8 +333,7 @@ async fn an_app_an_agent_opens_reaches_the_persons_layout() {
     let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
-    let server = McpServer::new(actions, WORKSPACE.into(), person)
-        .with_agent_session("session-1");
+    let server = McpServer::new(actions, WORKSPACE.into(), person).with_agent_session("session-1");
 
     agent_opens_notes(&server, &mut browser).await;
 }
@@ -488,8 +486,7 @@ impl Guest {
         let person = hex::encode(guest.verifying_key().to_bytes());
         let actions =
             SessionActions::new(&agent.peer, agent.workspace, lounge.cert.device_public_key);
-        let server = McpServer::new(actions, cluster, person)
-            .with_agent_session("session-guest");
+        let server = McpServer::new(actions, cluster, person).with_agent_session("session-guest");
         Self {
             browser,
             server,
@@ -989,8 +986,7 @@ async fn leaves_who_is_here(ending: Ending) {
         .await
         .expect("the computer's session is the agent's run");
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
-    let server = McpServer::new(actions, WORKSPACE.into(), person)
-        .with_agent_session("session-1");
+    let server = McpServer::new(actions, WORKSPACE.into(), person).with_agent_session("session-1");
     let (_, failed) = tool(&server, "tilo_ls", json!({})).await;
     assert!(!failed, "the agent lists the workspace");
     let deadline = tilo_test_env::hang_deadline();
@@ -1263,8 +1259,7 @@ async fn an_agent_is_present_waiting_as_soon_as_it_connects() {
     }
 
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
-    let server = McpServer::new(actions, WORKSPACE.into(), person)
-        .with_agent_session("session-0");
+    let server = McpServer::new(actions, WORKSPACE.into(), person).with_agent_session("session-0");
     let (_, failed) = tool(&server, "tilo_ls", json!({})).await;
     assert!(!failed, "the agent lists the workspace");
     let asked = Instant::now();
@@ -1374,8 +1369,7 @@ async fn an_agents_writes_answer_without_waiting_out_a_timeout() {
     let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
-    let server = McpServer::new(actions, WORKSPACE.into(), person)
-        .with_agent_session("session-1");
+    let server = McpServer::new(actions, WORKSPACE.into(), person).with_agent_session("session-1");
     // Reads warm the agent's session up; what is timed below is the writes.
     let (apps, failed) = tool(&server, "tilo_ls", json!({})).await;
     assert!(!failed, "{apps}");

@@ -966,82 +966,7 @@ pub fn login_held(
             });
     let site = site_origin(site)?;
     let runtime = runtime()?;
-    let (key, device) = runtime.block_on(async {
-        let origin = home_host(&Origin::new(&http(), &site)).await?;
-        let server = Origin::new(&http(), &origin);
-        let info = https::host_info(&server).await.map_err(|error| {
-            debug_why("asking the site's server", &error);
-            anyhow!(UNREACHED)
-        })?;
-        let dialed = info
-            .address
-            .as_ref()
-            .map(tilo_server_client::Host::published)
-            .ok_or_else(|| anyhow!("{origin} takes no device connections"))?;
-        let key = SigningKey::from_bytes(&rand::random());
-        let label = label(&agent.name, &hostname());
-        let cert = held_device_cert(person, &key, &label)?;
-        let user = person.user();
-        let unentered = PairingLink::parse(&format!(
-            "{site}/#/@{}/w/{}?pair={user}",
-            host_of(&origin),
-            uuid::Uuid::nil()
-        ))
-        .map_err(|error| anyhow!(error))?;
-        let signed = SignIn {
-            link: unentered,
-            agent: agent.name.clone(),
-            label: label.clone(),
-            host: dialed,
-            cert: cert.clone(),
-            host_cert: info.host_cert.clone(),
-        };
-        let session = Entered::connect(&signed, Arc::new(key.clone()));
-        let chosen = async {
-            session
-                .connected()
-                .await
-                .map_err(|refusal| anyhow!("{refusal}"))?;
-            let mut list = session
-                .personal_list(
-                    &tilo_server_session::workspaces::WorkspaceLabels::new(),
-                    None,
-                )
-                .await
-                .map_err(|refusal| anyhow!("{refusal}"))?;
-            // The person's list of devices takes this key in, as when a tab approves one.
-            list.devices
-                .push(tilo_server_session::workspaces::PersonalDevice {
-                    cert: cert.clone(),
-                    name: None,
-                    revoked: false,
-                    browser: None,
-                    agent: Some(agent.name.clone()),
-                    last_active_ms: None,
-                    online: false,
-                });
-            session
-                .keep_personal(&list)
-                .await
-                .map_err(|refusal| anyhow!("{refusal}"))?;
-            choose_workspace(&list.workspaces, workspace)
-        }
-        .await;
-        session.close();
-        let (id, name) = chosen?;
-        let device = Device {
-            site: format!("{site}/"),
-            host_origin: origin,
-            workspace: id,
-            workspace_name: Some(name),
-            user,
-            agent: agent.name.clone(),
-            label,
-            cert: hex::encode(postcard::to_allocvec(&cert)?),
-            host_cert: hex::encode(postcard::to_allocvec(&info.host_cert)?),
-        };
-        anyhow::Ok((key, device))
-    })?;
+    let (key, device) = runtime.block_on(held_device(person, &agent, &site, workspace))?;
     let dir = device_dir()?;
     store(&dir, &key, &device)?;
     println!(
@@ -1086,6 +1011,91 @@ pub fn login_held(
     println!();
     println!("{}", next_steps(&agent, &tools, &tilo));
     Ok(ExitCode::SUCCESS)
+}
+
+/// The device key and the device entry of a login here: the site's server lets this device
+/// connect, the person's list of devices takes its key in, and the device enters `workspace` by
+/// name or id, else the person's own workspace there.
+async fn held_device(
+    person: &crate::identity::Person,
+    agent: &agent::Agent,
+    site: &str,
+    workspace: Option<&str>,
+) -> Result<(SigningKey, Device)> {
+    let origin = home_host(&Origin::new(&http(), site)).await?;
+    let server = Origin::new(&http(), &origin);
+    let info = https::host_info(&server).await.map_err(|error| {
+        debug_why("asking the site's server", &error);
+        anyhow!(UNREACHED)
+    })?;
+    let dialed = info
+        .address
+        .as_ref()
+        .map(tilo_server_client::Host::published)
+        .ok_or_else(|| anyhow!("{origin} takes no device connections"))?;
+    let key = SigningKey::from_bytes(&rand::random());
+    let label = label(&agent.name, &hostname());
+    let cert = held_device_cert(person, &key, &label)?;
+    let user = person.user();
+    let unentered = PairingLink::parse(&format!(
+        "{site}/#/@{}/w/{}?pair={user}",
+        host_of(&origin),
+        uuid::Uuid::nil()
+    ))
+    .map_err(|error| anyhow!(error))?;
+    let signed = SignIn {
+        link: unentered,
+        agent: agent.name.clone(),
+        label: label.clone(),
+        host: dialed,
+        cert: cert.clone(),
+        host_cert: info.host_cert.clone(),
+    };
+    let session = Entered::connect(&signed, Arc::new(key.clone()));
+    let chosen = async {
+        session
+            .connected()
+            .await
+            .map_err(|refusal| anyhow!("{refusal}"))?;
+        let mut list = session
+            .personal_list(
+                &tilo_server_session::workspaces::WorkspaceLabels::new(),
+                None,
+            )
+            .await
+            .map_err(|refusal| anyhow!("{refusal}"))?;
+        // The person's list of devices takes this key in, as when a tab approves one.
+        list.devices
+            .push(tilo_server_session::workspaces::PersonalDevice {
+                cert: cert.clone(),
+                name: None,
+                revoked: false,
+                browser: None,
+                agent: Some(agent.name.clone()),
+                last_active_ms: None,
+                online: false,
+            });
+        session
+            .keep_personal(&list)
+            .await
+            .map_err(|refusal| anyhow!("{refusal}"))?;
+        choose_workspace(&list.workspaces, workspace)
+    }
+    .await;
+    session.close();
+    let (id, name) = chosen?;
+    let device = Device {
+        site: format!("{site}/"),
+        host_origin: origin,
+        workspace: id,
+        workspace_name: Some(name),
+        user,
+        agent: agent.name.clone(),
+        label,
+        cert: hex::encode(postcard::to_allocvec(&cert)?),
+        host_cert: hex::encode(postcard::to_allocvec(&info.host_cert)?),
+    };
+    Ok((key, device))
 }
 
 /// A member device certificate for `key`, signed by the person's root.

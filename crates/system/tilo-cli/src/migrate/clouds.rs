@@ -1,12 +1,12 @@
-//! Cloud drives as migration sources: Google Drive, OneDrive, Dropbox, iCloud Drive, Nextcloud
-//! and any WebDAV server, read through the providers Files mounts them with
+//! Cloud drives as migration sources: Google Drive, `OneDrive`, Dropbox, iCloud Drive, Nextcloud
+//! and any `WebDAV` server, read through the providers Files mounts them with
 //! ([`tilo_fs::cloud::providers`]) and copied by the files engine ([`super::files`]).
 //!
 //! Connecting one makes the same account the installer and Settings make
 //! ([`account_credentials::CredentialStore`]): Google, Microsoft and Dropbox sign in in the
 //! person's browser (one link, which `connect` opens or prints, and which finishes by itself
 //! when they approve), iCloud with the Apple ID, its password and the code Apple sends, and a
-//! WebDAV or Nextcloud server with a password (an app password, for Nextcloud). The account's
+//! `WebDAV` or Nextcloud server with a password (an app password, for Nextcloud). The account's
 //! secret is sealed in this computer's vault and never printed; the account is kept for import
 //! only, so it does not become a synced drive of its own.
 
@@ -181,7 +181,7 @@ fn icloud(
         .map_err(|error| anyhow!("{error}"))
 }
 
-/// A WebDAV or Nextcloud account, checked by listing its files before it is kept.
+/// A `WebDAV` or Nextcloud account, checked by listing its files before it is kept.
 fn password_account(
     source: &Source,
     type_id: &str,
@@ -215,14 +215,14 @@ fn password_account(
         bail!("nothing was typed");
     }
     let mut account = Account::new(AccountId::new(uuid::Uuid::new_v4().to_string()), type_id);
-    account.display_name = source.title.to_owned();
+    source.title.clone_into(&mut account.display_name);
     account.config = json!({"server_url": server, "username": username, "use_files": true});
     cloud_types::set_files_mode(&mut account.config, FilesMode::Import);
     let checked = open_with(
         &account,
         Arc::new(cloud_source::StaticCredential(
             cloud_source::Credential::Basic {
-                username: username.clone(),
+                username,
                 password: password.clone(),
             },
         )),
@@ -357,7 +357,7 @@ impl Drive {
                 let format = cloud_source::materialize::preferred_export(document).ok()?;
                 self.exports
                     .lock()
-                    .unwrap_or_else(|e| e.into_inner())
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .insert(item.id.as_str().to_owned(), format.clone());
                 Some(format!("{}.{}", safe_name(&item.name), format.extension))
             }
@@ -450,7 +450,7 @@ impl Tree for Drive {
         let export = self
             .exports
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&entry.id)
             .cloned();
         let download = match export {
@@ -475,7 +475,11 @@ pub fn review(place: &Place, named: &'static Source) -> Result<Review> {
     let kept = place.review(named.key)?;
     let mut items = Vec::new();
     let mut unreadable = Vec::new();
-    let budget = REVIEW_FOLDERS / drive.top.len().max(1);
+    // Each top-level entry gets an equal share of the folders a review lists; a drive with no
+    // top-level entry at all gets them all.
+    let budget = REVIEW_FOLDERS
+        .checked_div(drive.top.len())
+        .unwrap_or(REVIEW_FOLDERS);
     for top in &drive.top {
         let Some(name) = drive.name_of(top) else {
             unreadable.push(format!("{} can't be exported", top.name));
@@ -492,7 +496,7 @@ pub fn review(place: &Place, named: &'static Source) -> Result<Review> {
             counts: format!(
                 "{}files, {}",
                 if partial { "or more " } else { "" },
-                files::size(bytes)
+                crate::peer::size(bytes)
             ),
             within: None,
             chosen: kept
