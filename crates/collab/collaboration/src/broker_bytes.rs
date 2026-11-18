@@ -180,7 +180,9 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             meter.add_product(report.mutation_hashes.capacity(), 32);
             if let Some(group) = &report.group {
                 meter.string_capacity(&group.id);
-                meter.string_capacity(&group.label);
+                if let Some(label) = &group.label {
+                    meter.string_capacity(label);
+                }
                 meter.string_capacity(&group.kind);
             }
         }

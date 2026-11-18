@@ -66,73 +66,61 @@ pub struct Caller {
     // The name an agent goes by, from the key its person certified for it
     // (`Self::named`): presentation only, what History names it by.
     pub(super) agent_name: Option<String>,
+    // What the person asked the agent to do, in a line (`Self::asked`): what
+    // its session is labelled by. Never its name.
+    pub(super) asked: Option<String>,
     // What the agent's own record bounds it to on its turn (`Self::on_turn`), narrowing the
     // grants a delegated agent acts with; empty follows the default.
     pub(super) bound: Vec<tilo_action_policy::Rule>,
 }
 
 impl Caller {
-    /// A remote device whose certificate the transport verified to chain to
-    /// `user_public_key`.
-    #[must_use]
-    pub fn authenticated(user_public_key: [u8; 32], device_public_key: [u8; 32]) -> Self {
+    /// `acting`, as the provider admitted it (`keys`: the user and device keys a transport
+    /// verified, if any), with nothing more said of it yet.
+    fn admitted(acting: Acting, keys: Option<([u8; 32], [u8; 32])>) -> Self {
         Self {
-            acting: Acting::person(hex::encode(user_public_key)),
-            user_public_key: Some(user_public_key),
-            device_public_key: Some(device_public_key),
+            acting,
+            user_public_key: keys.map(|(user, _)| user),
+            device_public_key: keys.map(|(_, device)| device),
             workspace: None,
             execution: None,
             session_delegated: false,
             within: within::Within::NONE,
             turn: None,
             agent_name: None,
+            asked: None,
             bound: Vec::new(),
         }
+    }
+
+    /// A remote device whose certificate the transport verified to chain to
+    /// `user_public_key`.
+    #[must_use]
+    pub fn authenticated(user_public_key: [u8; 32], device_public_key: [u8; 32]) -> Self {
+        Self::admitted(
+            Acting::person(hex::encode(user_public_key)),
+            Some((user_public_key, device_public_key)),
+        )
     }
 
     /// A person on a connection the provider admitted itself, by the id that
     /// admission established.
     #[must_use]
     pub fn local_person(person: impl Into<tilo_action_policy::PersonId>) -> Self {
-        Self {
-            acting: Acting::person(person.into()),
-            user_public_key: None,
-            device_public_key: None,
-            workspace: None,
-            execution: None,
-            session_delegated: false,
-            within: within::Within::NONE,
-            turn: None,
-            agent_name: None,
-            bound: Vec::new(),
-        }
+        Self::admitted(Acting::person(person.into()), None)
     }
 
     /// A delegated agent on a connection the provider admitted itself.
     #[must_use]
     pub fn local_agent(agent_id: impl Into<String>) -> Self {
-        Self {
-            acting: Acting::agent(agent_id.into()),
-            user_public_key: None,
-            device_public_key: None,
-            workspace: None,
-            execution: None,
-            session_delegated: false,
-            within: within::Within::NONE,
-            turn: None,
-            agent_name: None,
-            bound: Vec::new(),
-        }
+        Self::admitted(Acting::agent(agent_id.into()), None)
     }
 
     /// An installed bot on a connection the provider admitted itself, by its
     /// installation: software, never a person, whatever its id spells.
     #[must_use]
     pub fn local_bot(installation: impl Into<String>) -> Self {
-        Self {
-            acting: Acting::bot(installation.into()),
-            ..Self::local_agent(String::new())
-        }
+        Self::admitted(Acting::bot(installation.into()), None)
     }
 
     /// An application on a connection the provider admitted itself, by the
@@ -141,18 +129,7 @@ impl Caller {
     /// behind it, it holds nothing.
     #[must_use]
     pub fn local_app(app_id: impl Into<String>) -> Self {
-        Self {
-            acting: Acting::person("").in_app(app_id.into()),
-            user_public_key: None,
-            device_public_key: None,
-            workspace: None,
-            execution: None,
-            session_delegated: false,
-            within: within::Within::NONE,
-            turn: None,
-            agent_name: None,
-            bound: Vec::new(),
-        }
+        Self::admitted(Acting::person("").in_app(app_id.into()), None)
     }
 
     /// A remote agent device whose certificate the transport verified to
@@ -165,19 +142,10 @@ impl Caller {
         user_public_key: [u8; 32],
         device_public_key: [u8; 32],
     ) -> Self {
-        Self {
-            acting: Acting::agent(agent_id.into())
-                .acting_for(Acting::person(hex::encode(user_public_key))),
-            user_public_key: Some(user_public_key),
-            device_public_key: Some(device_public_key),
-            workspace: None,
-            execution: None,
-            session_delegated: false,
-            within: within::Within::NONE,
-            turn: None,
-            agent_name: None,
-            bound: Vec::new(),
-        }
+        Self::admitted(
+            Acting::agent(agent_id.into()).acting_for(Acting::person(hex::encode(user_public_key))),
+            Some((user_public_key, device_public_key)),
+        )
     }
 
     /// An agent acting inside a turn: `person`'s message in `turn`'s
@@ -192,17 +160,11 @@ impl Caller {
         person: impl Into<tilo_action_policy::PersonId>,
         turn: tilo_action_policy::turn::Turn,
     ) -> Self {
+        let acting = Acting::agent(agent_id.into()).acting_for(Acting::person(person.into()));
         Self {
-            acting: Acting::agent(agent_id.into()).acting_for(Acting::person(person.into())),
-            user_public_key: None,
-            device_public_key: None,
-            workspace: None,
-            execution: None,
             session_delegated: true,
-            within: within::Within::NONE,
             turn: Some(turn),
-            agent_name: None,
-            bound: Vec::new(),
+            ..Self::admitted(acting, None)
         }
     }
 
@@ -215,19 +177,11 @@ impl Caller {
         user_public_key: [u8; 32],
         device_public_key: [u8; 32],
     ) -> Self {
-        Self {
-            acting: Acting::bot(installation.into())
+        Self::admitted(
+            Acting::bot(installation.into())
                 .acting_for(Acting::person(hex::encode(user_public_key))),
-            user_public_key: Some(user_public_key),
-            device_public_key: Some(device_public_key),
-            workspace: None,
-            execution: None,
-            session_delegated: false,
-            within: within::Within::NONE,
-            turn: None,
-            agent_name: None,
-            bound: Vec::new(),
-        }
+            Some((user_public_key, device_public_key)),
+        )
     }
 
     /// Give an already admitted connection its own execution scope. The provider
@@ -336,6 +290,22 @@ impl Caller {
         self
     }
 
+    /// An agent caller working on `request`, the words of the person that
+    /// started its session (their message, what they sent it): its first line,
+    /// trimmed and bounded, labels the session ([`Self::agent_session`]). A
+    /// blank request leaves the session without a label.
+    #[must_use]
+    pub fn asked(mut self, request: &str) -> Self {
+        self.asked = crate::context::one_line(request, crate::context::MAX_LABEL_CHARS);
+        self
+    }
+
+    /// What an agent caller is called: its name ([`Self::named`]), else its id.
+    #[must_use]
+    pub fn agent_called(&self) -> Option<&str> {
+        self.agent_name().or_else(|| self.acting.agent_id())
+    }
+
     /// The name an agent caller goes by ([`Self::named`]).
     #[must_use]
     pub fn agent_name(&self) -> Option<&str> {
@@ -380,6 +350,7 @@ impl Caller {
             session_delegated: false,
             turn: None,
             agent_name: None,
+            asked: None,
             bound: Vec::new(),
             ..self.clone()
         })
@@ -465,15 +436,15 @@ impl Caller {
         tilo_action_policy::roles::agent_grants(workspace, agent, person, bound)
     }
 
-    /// The run this caller's actions are part of, as the provider that admitted it
-    /// says: an agent (or a key it holds) in an execution the provider minted for
-    /// its connection works in one run, named by the name the provider knows for
-    /// it. History groups the run's changes, Activity lists it and undo takes
-    /// it back whole, whatever the client says of itself. `None` for anyone
-    /// else.
+    /// The session this caller's actions are part of, as the provider that
+    /// admitted it says: an agent (or a key it holds) in an execution the
+    /// provider minted for its connection works in one session, labelled by
+    /// what it was asked ([`Self::asked`]). History groups the session's
+    /// changes, Activity lists it and undo takes it back whole, whatever the
+    /// client says of itself. `None` for anyone else.
     #[must_use]
     pub fn agent_session(&self) -> Option<crate::WorkGroup> {
-        let agent = self.acting.agent_id()?;
+        self.acting.agent_id()?;
         let id = match &self.acting.agent_session {
             Some(session) => session.as_str().to_owned(),
             None => format!(
@@ -484,9 +455,8 @@ impl Caller {
         };
         Some(crate::WorkGroup {
             id,
-            label: self.agent_name().unwrap_or(agent).to_owned(),
+            label: self.asked.clone(),
             kind: crate::context::AGENT_SESSION_GROUP.to_owned(),
-            title: None,
             declared_id: None,
         })
     }

@@ -207,6 +207,30 @@ pub fn start_kept(
     spawn_kept(&cmd, x11, keep)
 }
 
+/// The arguments a keeper is handed for `command`: its directory and launch name, `--x11` when it
+/// serves the app an X11 display, then the command behind `--`. `windows-program --print-keeper`
+/// prints exactly these, so a test can hold the session's command line against the real launcher
+/// without starting anything.
+#[must_use]
+pub fn keeper_args(
+    keep: &Keep,
+    x11: bool,
+    command: &[std::ffi::OsString],
+) -> Vec<std::ffi::OsString> {
+    let mut args: Vec<std::ffi::OsString> = vec![
+        "--dir".into(),
+        keep.dir.clone().into_os_string(),
+        "--launch".into(),
+        keep.launch.clone().into(),
+    ];
+    if x11 {
+        args.push("--x11".into());
+    }
+    args.push("--".into());
+    args.extend(command.iter().cloned());
+    args
+}
+
 /// Start `cmd` behind the keeper `keep` names, with exactly the environment `cmd` sets, and answer
 /// how the app ended as the keeper recorded it (the keeper's own status when it recorded nothing:
 /// the app never started).
@@ -218,20 +242,12 @@ fn spawn_kept(cmd: &Command, x11: bool, keep: &Keep) -> Result<ExitStatus, HostE
         source,
     };
     let program = cmd.get_program().to_owned();
-    let args: Vec<std::ffi::OsString> = cmd.get_args().map(ToOwned::to_owned).collect();
+    let command: Vec<std::ffi::OsString> = std::iter::once(program)
+        .chain(cmd.get_args().map(ToOwned::to_owned))
+        .collect();
     let mut keeper = Command::new(&keep.keeper);
     keeper
-        .arg("--dir")
-        .arg(&keep.dir)
-        .arg("--launch")
-        .arg(&keep.launch);
-    if x11 {
-        keeper.arg("--x11");
-    }
-    keeper
-        .arg("--")
-        .arg(program)
-        .args(args)
+        .args(keeper_args(keep, x11, &command))
         .env_clear()
         .envs(
             cmd.get_envs()

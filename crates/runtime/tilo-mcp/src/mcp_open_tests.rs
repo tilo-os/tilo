@@ -2634,7 +2634,7 @@ impl ActionProvider for FilesShown {
 /// What an agent's `files#read-text` of `file` answers on `device`, and where it was read.
 fn read_by_name(device: &FilesShown, file: &str) -> (String, Vec<String>) {
     let tools = McpServer::for_agent(device.clone(), "workspace".into(), "claude-code", "ada")
-        .with_agent_session("mcp:test", "MCP agent");
+        .with_agent_session("mcp:test");
     let asked = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": {"name": "tilo_do",
             "arguments": {"path": "files#read-text", "args": {"file": file}}}});

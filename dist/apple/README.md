@@ -331,6 +331,15 @@ of Chat publishes, and nothing is made. No setting names an agent. What is in th
 said in the main chat (`AssistantSource.setup()`): that the assistant is being set up, or
 the server's own sentence where it refused, with Try again.
 
+**The first seconds.** Whether the person's Tilo answers has three values (`Reach`). It is not
+known from the start until a first try to get in has ended; the window then says "Waiting
+for Tilo" in its quiet hand and nothing of a failure. "Tilo cannot be reached right now" is
+said only after a try that failed, and goes the moment a later try gets in. No count of
+seconds ends a try: its page's own word does, or the network's failure. A message sent in
+those first seconds waits for the try to end and for the assistant to be found, and goes out
+then; where the try fails it is back in the field with the reason, as any message that did
+not go through.
+
 **The provider step.** While no provider of the person's has a key, the main chat says so
 and offers the step: the person picks a provider and types a key of their own into the
 protected field, the one field of the app a secret is typed into (`ProtectedField`), and

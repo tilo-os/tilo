@@ -143,7 +143,9 @@ fn bounded_receipt_context(
         .filter(|value| !value.is_empty());
     if let Some(group) = &mut context.group {
         group.id = bounded_receipt_text(&group.id, 160);
-        group.label = bounded_receipt_text(&group.label, 200);
+        if let Some(label) = &mut group.label {
+            *label = bounded_receipt_text(label, 200);
+        }
         group.kind = bounded_receipt_text(&group.kind, 160);
     }
     for facet in &mut context.facets {

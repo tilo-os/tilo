@@ -82,7 +82,12 @@ the machinery `tilo device swap` uses on a development machine:
    A Windows program in a Wine capsule is one of these launches: the
    compatibility service has the desktop start its sandbox behind a keeper
    (`tilo-launcher windows-program`), and the service the new desktop starts
-   lists it open again, can quit it, and reports its end. A keeper started by an
+   lists it open again, can quit it, and reports its end. A Proton program is
+   one too, on an X display of the keeper's own: UMU-Proton carries no Wayland
+   driver, so the keeper gives its sandbox that display's socket and authority
+   file and the program's window opens through Xwayland. A program of the
+   Windows appliance is not: its RAIL or SPICE presentation is a process of the
+   desktop's own and ends with it. A keeper started by an
    older desktop that speaks another version of its interface cannot be shown:
    the new desktop counts it as a launch (tiers, memory watch, ended at
    logout), starts no second copy of its app, and offers to restart it, which
@@ -95,6 +100,15 @@ the machinery `tilo device swap` uses on a development machine:
    (`crates/session/app-keeper/src/wire.rs`, "The part that never changes").
    Keepers from before that rule close the connection and end their app 5
    minutes after their desktop went.
+
+   The tab a Windows program stood in opens it again after any start, not only
+   after an in-place restart. The session keeps the window class a program
+   showed under with its entry and the workspace whose tab it stood in
+   (`tilo/windows-compat/window-identities.json`), and after a start asks the
+   service as itself to open that entry there; the service checks the entry
+   still exists and the workspace is one this desktop serves, then plans it as
+   it plans a manager's launch. An entry removed meanwhile leaves the tab saying
+   it is not installed.
 5. A restarted unit that fails, or a desktop that does not become usable again
    within 60 s, puts the previous layer back, restarts the same parts again and
    marks the update failed; it then applies with the next restart of the

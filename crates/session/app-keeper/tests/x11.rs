@@ -52,12 +52,20 @@ pub struct X {
 /// Connect to the keeper's display as its app would, with the cookie its keeper wrote, or with
 /// none, while the rig runs: `None` when the server refused.
 fn connect(rig: &mut Rig, with_cookie: bool) -> Option<RustConnection> {
-    let display = rig
-        .keeper
-        .x11_display()
-        .expect("the keeper binds a display");
-    let authority = std::fs::read(rig.dir.path().join("keeper").join("Xauthority"))
-        .expect("the keeper wrote the display's cookie");
+    let dir = rig.dir.path().join("keeper");
+    connect_in(rig, &dir, with_cookie)
+}
+
+/// Connect to the display of the keeper whose directory is `dir`, as its app would.
+fn connect_in(rig: &mut Rig, dir: &std::path::Path, with_cookie: bool) -> Option<RustConnection> {
+    let display: u32 = std::fs::read_to_string(dir.join("x11"))
+        .expect("the keeper binds a display")
+        .trim()
+        .trim_start_matches(':')
+        .parse()
+        .expect("a display number");
+    let authority =
+        std::fs::read(dir.join("Xauthority")).expect("the keeper wrote the display's cookie");
     let cookie = authority[authority.len() - 16..].to_vec();
     let socket = format!("/tmp/.X11-unix/X{display}");
     let (sender, receiver) = std::sync::mpsc::channel();
@@ -92,9 +100,69 @@ fn connect(rig: &mut Rig, with_cookie: bool) -> Option<RustConnection> {
     }
 }
 
+/// A window at `at` of `size` in `colour` on `conn`'s display, mapped: a toplevel of `class`, or
+/// an override-redirect one (a menu) when `class` is `None`.
+pub fn create_window(
+    conn: &RustConnection,
+    root: Window,
+    class: Option<&str>,
+    at: (i16, i16),
+    size: (u16, u16),
+    colour: u32,
+) -> Window {
+    let window = conn.generate_id().expect("id");
+    conn.create_window(
+        x11rb::COPY_DEPTH_FROM_PARENT,
+        window,
+        root,
+        at.0,
+        at.1,
+        size.0,
+        size.1,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        x11rb::COPY_FROM_PARENT,
+        &CreateWindowAux::new()
+            .background_pixel(colour)
+            .override_redirect(u32::from(class.is_none()))
+            .event_mask(EventMask::STRUCTURE_NOTIFY),
+    )
+    .expect("window");
+    if let Some(class) = class {
+        conn.change_property8(
+            PropMode::REPLACE,
+            window,
+            AtomEnum::WM_CLASS,
+            AtomEnum::STRING,
+            format!("{}\0{class}\0", class.to_lowercase()).as_bytes(),
+        )
+        .expect("class");
+        conn.change_property8(
+            PropMode::REPLACE,
+            window,
+            AtomEnum::WM_NAME,
+            AtomEnum::STRING,
+            b"An X11 window",
+        )
+        .expect("title");
+    }
+    conn.map_window(window).expect("map");
+    conn.flush().expect("flush");
+    window
+}
+
 impl X {
     pub fn start() -> Self {
-        let mut rig = Rig::with_x11();
+        Self::on(Rig::with_x11())
+    }
+
+    /// A rig whose desktop two keepers show on, and this launch's X client of one of them.
+    pub fn start_pair() -> Self {
+        Self::on(Rig::with_x11_pair())
+    }
+
+    /// The X client of `rig`'s own keeper.
+    fn on(mut rig: Rig) -> Self {
         let x11 = connect(&mut rig, true).expect("the X client connects with the cookie");
         let root = x11.setup().roots[0].root;
         Self {
@@ -117,6 +185,14 @@ impl X {
             .atom
     }
 
+    /// The other keeper's display, a client of it: its connection and root window.
+    pub fn second_display(&mut self) -> (RustConnection, Window) {
+        let dir = self.rig.dir.path().join("other-keeper");
+        let x11 = connect_in(&mut self.rig, &dir, true).expect("the second X client connects");
+        let root = x11.setup().roots[0].root;
+        (x11, root)
+    }
+
     /// A window at `at` of `size` in `colour`, mapped: a toplevel of `class`, or an
     /// override-redirect one (a menu) when `class` is `None`.
     pub fn window(
@@ -126,48 +202,7 @@ impl X {
         size: (u16, u16),
         colour: u32,
     ) -> Window {
-        let window = self.x11.generate_id().expect("id");
-        self.x11
-            .create_window(
-                x11rb::COPY_DEPTH_FROM_PARENT,
-                window,
-                self.root,
-                at.0,
-                at.1,
-                size.0,
-                size.1,
-                0,
-                WindowClass::INPUT_OUTPUT,
-                x11rb::COPY_FROM_PARENT,
-                &CreateWindowAux::new()
-                    .background_pixel(colour)
-                    .override_redirect(u32::from(class.is_none()))
-                    .event_mask(EventMask::STRUCTURE_NOTIFY),
-            )
-            .expect("window");
-        if let Some(class) = class {
-            self.x11
-                .change_property8(
-                    PropMode::REPLACE,
-                    window,
-                    AtomEnum::WM_CLASS,
-                    AtomEnum::STRING,
-                    format!("{}\0{class}\0", class.to_lowercase()).as_bytes(),
-                )
-                .expect("class");
-            self.x11
-                .change_property8(
-                    PropMode::REPLACE,
-                    window,
-                    AtomEnum::WM_NAME,
-                    AtomEnum::STRING,
-                    b"An X11 window",
-                )
-                .expect("title");
-        }
-        self.x11.map_window(window).expect("map");
-        self.x11.flush().expect("flush");
-        window
+        create_window(&self.x11, self.root, class, at, size, colour)
     }
 
     /// Answer the last ping read, as a program does: the message goes back to the root.
@@ -343,6 +378,39 @@ fn a_display_left_by_a_killed_launch_goes_to_one_of_those_taking_it_at_once() {
     }
 }
 
+/// The pid of the X server serving `number`: the `xwayland-satellite` this test process started.
+fn server_pid(number: u32) -> Option<u32> {
+    let wanted = format!(":{number}");
+    for entry in std::fs::read_dir("/proc").ok()? {
+        let entry = entry.ok()?;
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let Ok(cmdline) = std::fs::read(entry.path().join("cmdline")) else {
+            continue;
+        };
+        let args: Vec<&[u8]> = cmdline.split(|byte| *byte == 0).collect();
+        if args
+            .first()
+            .is_some_and(|arg| arg.ends_with(b"xwayland-satellite"))
+            && args.get(1).is_some_and(|arg| *arg == wanted.as_bytes())
+        {
+            return Some(pid);
+        }
+    }
+    None
+}
+
+fn signal(pid: u32, signal: libc::c_int) {
+    // SAFETY: kill takes a pid and a signal number.
+    let sent = unsafe { libc::kill(libc::pid_t::try_from(pid).unwrap(), signal) };
+    assert_eq!(sent, 0, "the signal reaches {pid}");
+}
+
 tilo_test_env::scenario! {
     fn an_x11_program_of_a_kept_launch_lives_on_the_keepers_display;
 
@@ -380,6 +448,49 @@ tilo_test_env::scenario! {
         let (_, _, w, _) = x.shown("Kept-X11");
         assert_eq!(w, 200, "and shows again on the next desktop");
         x.x11.get_input_focus().expect("ask").reply().expect("on the same connection");
+    }
+
+    phase an_x_programs_server_ending_takes_its_windows_and_nothing_else;
+    {
+        tilo_test_env::require_capability!(XServer, servers(), "the keeper's X server");
+        let mut x = X::start();
+        let number = x.rig.keeper.x11_display().expect("a display");
+        let dir = x.rig.dir.path().join("keeper");
+        x.window(Some("Ending"), (0, 0), (200, 150), BLUE);
+        x.shown("Ending");
+        assert!(dir.join("x11-server").is_file(), "the server is named while it serves");
+        // The server crashes, as Xwayland does when a program kills it.
+        let pid = server_pid(number).expect("the server is up");
+        signal(pid, libc::SIGKILL);
+        let started = Instant::now();
+        while !x.rig.windows().is_empty() {
+            x.rig.settle(&mut []);
+            assert!(
+                started.elapsed() < Duration::from_secs(20),
+                "the window never left: {:?}",
+                x.rig.windows()
+            );
+        }
+        assert!(
+            !dir.join("x11-server").exists(),
+            "a display whose server ended is not named as one to serve"
+        );
+        assert_eq!(x.rig.keeper.describe().fault, None, "the launch goes on");
+
+        // The next client starts a fresh server on the same display, as it would after a crash.
+        let second = connect(&mut x.rig, true).expect("the next X client connects");
+        let root = second.setup().roots[0].root;
+        create_window(&second, root, Some("Again"), (0, 0), (160, 120), BLUE);
+        let started = Instant::now();
+        while !x.rig.windows().iter().any(|(app_id, _, _)| app_id.as_deref() == Some("Again")) {
+            x.rig.settle(&mut []);
+            assert!(
+                started.elapsed() < Duration::from_secs(20),
+                "the next window never showed: {:?}",
+                x.rig.windows()
+            );
+        }
+        assert!(dir.join("x11-server").is_file(), "and the new server is named");
     }
 
     phase its_icon_reaches_the_desktop_follows_changes_and_survives_a_restart;

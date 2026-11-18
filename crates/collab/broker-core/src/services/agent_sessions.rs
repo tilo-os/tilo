@@ -144,4 +144,6 @@ pub struct AgentTurn {
     pub attempt: u32,
     /// What the agent is asked, without what it may spend.
     pub request: runtime_collab::TurnRequest,
+    /// The person's own words, else what they sent the agent: what its session is labelled by.
+    pub asked: String,
 }

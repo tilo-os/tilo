@@ -569,8 +569,7 @@ impl Drop for Running<'_> {
 ///
 /// The name is part of a durable invocation owner and of the delegation the
 /// broker re-verifies, so it carries the whole run id rather than a prefix of
-/// it: two runs must never share an agent. Anything shown to people labels
-/// it separately ([`agent_label`]).
+/// it: two runs must never share an agent.
 #[must_use]
 pub fn agent_id(caller: &Caller) -> String {
     let run = caller
@@ -579,17 +578,6 @@ pub fn agent_id(caller: &Caller) -> String {
         .simple()
         .to_string();
     format!("mcp-{run}")
-}
-
-/// What people are shown for [`agent_id`]: its kind and the start of its run,
-/// which is enough to tell concurrent agents apart in a crowd.
-#[must_use]
-pub fn agent_label(agent: &str) -> String {
-    let agent = agent.strip_prefix("agent:").unwrap_or(agent);
-    match agent.strip_prefix("mcp-") {
-        Some(run) => format!("mcp-{}", run.get(..12).unwrap_or(run)),
-        None => agent.to_owned(),
-    }
 }
 
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
@@ -1296,19 +1284,19 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             self.devices.is_some(),
         )
     }
-    /// Attribute every invocation of this connection to one agent run, so
+    /// Attribute every invocation of this connection to one agent session, so
     /// history, undo and activity tell concurrent agents apart. Provenance
-    /// only: authority stays the profile actor's.
+    /// only: authority stays the profile actor's. A connection is asked
+    /// nothing, so the session has no label of its own.
     #[must_use]
-    pub fn with_agent_session(mut self, id: impl Into<String>, label: impl Into<String>) -> Self {
+    pub fn with_agent_session(mut self, id: impl Into<String>) -> Self {
         *self
             .agent_session
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tilo_actions::WorkGroup {
             id: id.into(),
-            label: label.into(),
+            label: None,
             kind: "agent-session".into(),
-            title: None,
             declared_id: None,
         });
         self
@@ -1517,25 +1505,15 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             None | Some(Value::Null) => None,
             Some(session) => Some(continued_session(session)?),
         };
-        let label: String = params
-            .pointer("/clientInfo/name")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-            .unwrap_or("MCP agent")
-            .chars()
-            .filter(|character| !character.is_control())
-            .take(64)
-            .collect();
+        // A connection is asked nothing when it opens: its session has no label of its own.
         let run = {
             let mut run = self.agent_session.lock_recover();
             if run.is_none() || continued.is_some() {
-                let label = run.take().map_or(label, |run| run.label);
+                let label = run.take().and_then(|run| run.label);
                 *run = Some(tilo_actions::WorkGroup {
                     id: continued.unwrap_or_else(|| format!("mcp:{}", uuid::Uuid::new_v4())),
                     label,
                     kind: "agent-session".into(),
-                    title: None,
                     declared_id: None,
                 });
             }

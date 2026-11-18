@@ -534,14 +534,15 @@ impl Worker {
     /// done only once the host holds it.
     pub(super) fn saving(&mut self, workspace_id: WorkspaceId) -> Saving {
         let handed = std::mem::take(&mut self.handed);
-        // Asked of the workspaces the request wrote to and of no other: the service's one
-        // session carries every workspace's writes, and a write that waits in another
-        // workspace says nothing about these.
         let workspaces: Vec<WorkspaceId> = handed.keys().copied().collect();
         let written: Vec<Written> = handed.into_values().flatten().collect();
         if written.is_empty() {
             return Saving::Saved;
         }
+        // Asked of the documents the request wrote and of no other: the service's one session
+        // carries every workspace's writes, and a write that waits beside these, in another
+        // workspace or for another document of this one, says nothing about them.
+        let documents: Vec<DocumentRoute> = written.iter().map(Written::route).collect();
         let saved = match self
             .workspaces
             .get(&workspace_id)
@@ -549,7 +550,7 @@ impl Worker {
             .and_then(|workspace| {
                 workspace
                     .peer
-                    .barrier_of(&workspaces)
+                    .barrier_of_documents(&documents)
                     .map_err(|closed| closed.to_string())
             }) {
             Ok(saved) => saved,
@@ -601,10 +602,11 @@ impl Worker {
     /// invocation handed to the session, without holding the job.
     pub(super) fn watch_handed(&mut self) {
         for (workspace_id, written) in std::mem::take(&mut self.handed) {
+            let documents: Vec<DocumentRoute> = written.iter().map(Written::route).collect();
             let Some(saved) = self
                 .workspaces
                 .get(&workspace_id)
-                .and_then(|workspace| workspace.peer.barrier_of(&[workspace_id]).ok())
+                .and_then(|workspace| workspace.peer.barrier_of_documents(&documents).ok())
             else {
                 continue;
             };

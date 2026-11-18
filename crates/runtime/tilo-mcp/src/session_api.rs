@@ -261,14 +261,7 @@ pub enum HelloError {
 }
 
 fn bounded_text(value: Option<&serde_json::Value>) -> Option<String> {
-    let text: String = value
-        .and_then(serde_json::Value::as_str)?
-        .trim()
-        .chars()
-        .filter(|character| !character.is_control())
-        .take(MAX_CLIENT_NAME)
-        .collect();
-    (!text.is_empty()).then_some(text)
+    tilo_actions::context::one_line(value?.as_str()?, MAX_CLIENT_NAME)
 }
 
 /// The request a client may send before `initialize` to learn whether the
@@ -594,7 +587,7 @@ where
     let run = format!("server-{}", uuid::Uuid::new_v4().simple());
     let server = crate::McpServer::for_agent(provider, workspace, &agent, &person)
         .agent_named(&name)
-        .with_agent_session(run, agent);
+        .with_agent_session(run);
     let server = std::sync::Arc::new(server.with_task_hosts(tasks).with_devices(devices));
     let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
     if let Some(reply) = runtime

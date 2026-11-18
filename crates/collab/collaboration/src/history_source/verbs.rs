@@ -626,7 +626,9 @@ fn recorded(context: &tilo_actions::ActionContext, out: &mut serde_json::Map<Str
         out.insert("actor".into(), actor);
     }
     if let Some(group) = &context.group {
-        out.insert("title".into(), group.label.clone().into());
+        if let Some(label) = &group.label {
+            out.insert("title".into(), label.clone().into());
+        }
         out.insert("group".into(), group.id.clone().into());
         out.insert("group_kind".into(), group.kind.clone().into());
     }
@@ -726,7 +728,7 @@ pub struct HistoryVersion {
     pub action: String,
     /// The entry the change recorded: who did it, for whom, and what.
     pub entry: Option<tilo_actions::ActionContext>,
-    /// Who did it: the person's handle, or the agent invocation's label.
+    /// Who did it: the person's handle, or the agent's name.
     pub author: String,
     /// The group that made it, when an agent did: what `undo` takes as
     /// `invocation` to take the whole of it back.
@@ -760,7 +762,7 @@ pub fn recent(doc: &AutoCommit, last: usize, words: &dyn HistoryWords) -> Vec<Hi
                 change: steps::short(&version.hash),
                 action: sentence(version, words),
                 entry: version.context.clone(),
-                author: run.map_or_else(|| by(version), |group| group.label.clone()),
+                author: by(version),
                 invocation: run.map(|group| group.id.clone()),
                 time_ms: version.time_ms,
                 undone: undone.contains(&version.hash.to_string()),

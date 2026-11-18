@@ -5,7 +5,7 @@
 # App ↔ shell: what an app and the session shell say on the shell-ui
 # connection the launcher hands the app.
 name = "shell-ui"
-version = 35
+version = 36
 version_const = "crates/sdk/ui-core/src/floating_surface.rs:FLOATING_SURFACE_PROTOCOL_VERSION"
 encoding = "json"
 served_to_apps = true
@@ -770,8 +770,7 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "WorkGroup.declared_id" = "Option<String> optional"
 "WorkGroup.id" = "String"
 "WorkGroup.kind" = "String"
-"WorkGroup.label" = "String"
-"WorkGroup.title" = "Option<String> optional"
+"WorkGroup.label" = "Option<String> optional"
 "WorkspaceSync" = "struct"
 "WorkspaceSync.cannot_keep_writes" = "bool optional"
 "WorkspaceSync.state" = "WorkspaceSyncState"

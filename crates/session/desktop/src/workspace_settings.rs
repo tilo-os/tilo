@@ -433,19 +433,20 @@ const FALLBACK_CHOICE: GrantChoice = GrantChoice {
 /// binds and by the filesystem alike.
 const WORKSPACE_FILES_PATH: &str = "/var/workspace";
 
-/// The lifetimes the composer offers at `now_ms`, longest first: the ones every prompt offers.
-/// Its picker has no time to pick, so it leaves out the timed one.
+/// The lifetimes the composer offers, longest first: the ones every prompt offers that the
+/// workspace keeps. A one-use or session answer is the asking device's, never the workspace's;
+/// the person picks the day and time an `until` one ends.
 #[must_use]
-pub fn offered_lifetimes(now_ms: u64) -> Vec<Lifetime> {
-    Lifetime::offered(now_ms)
+pub fn offered_lifetimes() -> Vec<Lifetime> {
+    Lifetime::offered(0)
         .into_iter()
         .rev()
-        .filter(|lifetime| !matches!(lifetime, Lifetime::Until(_)))
+        .filter(|lifetime| lifetime.is_durable())
         .collect()
 }
 
 /// The lifetime the composer starts on.
-pub const DEFAULT_LIFETIME: &str = "session";
+pub const DEFAULT_LIFETIME: &str = "always";
 
 /// The in-flight grant the Permissions tab's composer is composing. Holds indices rather than
 /// resolved values so a subject leaving the workspace can't leave a dangling reference —
@@ -462,7 +463,7 @@ impl Default for GrantDraft {
         Self {
             subject_index: 0,
             choice_index: 0,
-            lifetime: Lifetime::Session,
+            lifetime: Lifetime::UntilRevoked,
         }
     }
 }
@@ -486,8 +487,7 @@ impl GrantDraft {
 }
 
 /// What the composer's choices are named by where a view asks for the grant: whom it is for
-/// (`member:…` , `agent:…` or `app:…` ), the permission's key, and the lifetime's
-/// [`Lifetime::key`].
+/// (`member:…` , `agent:…` or `app:…` ) and the permission's key.
 #[must_use]
 pub fn grant_subject_key(entry: &GrantSubject) -> Option<String> {
     let kind = match entry.kind {
@@ -508,24 +508,26 @@ pub fn grant_choices() -> Vec<(&'static str, String)> {
         .collect()
 }
 
-/// The composer's lifetimes at `now_ms` as (key, label), in picker order.
+/// The composer's lifetimes as (key, label), in picker order.
 #[must_use]
-pub fn lifetime_choices(now_ms: u64) -> Vec<(&'static str, String)> {
-    offered_lifetimes(now_ms)
+pub fn lifetime_choices() -> Vec<(&'static str, String)> {
+    offered_lifetimes()
         .into_iter()
         .map(|lifetime| (lifetime.key(), lifetime_label(lifetime)))
         .collect()
 }
 
 /// The draft a view asked for: the subject `subject` (`member:…`, `agent:…` or `app:…` ), the
-/// permission `permission` and the expiry `expiry` , as the composer stands. `None` when the
-/// workspace holds no such subject, so a grant for someone who left is never made for someone else.
+/// permission `permission` , lasting until revoked or until `until` (Unix milliseconds), as the
+/// composer stands at `now_ms`. `None` when the workspace holds no such subject, so a grant for
+/// someone who left is never made for someone else, and for an end already past.
 #[must_use]
 pub fn draft_for(
     ws: &Workspace,
     subject: &str,
     permission: &str,
-    lifetime: &str,
+    until: Option<u64>,
+    now_ms: u64,
 ) -> Option<GrantDraft> {
     let subject_index = grant_subjects(ws)
         .iter()
@@ -533,9 +535,10 @@ pub fn draft_for(
     let choice_index = GRANT_CHOICES
         .iter()
         .position(|choice| choice.key == permission)?;
-    let lifetime = offered_lifetimes(tilo_clock::unix_now_ms())
-        .into_iter()
-        .find(|candidate| candidate.key() == lifetime)?;
+    let lifetime = until.map_or(Lifetime::UntilRevoked, Lifetime::Until);
+    if !lifetime.is_live_at(Some(now_ms)) {
+        return None;
+    }
     Some(GrantDraft {
         subject_index,
         choice_index,
@@ -1650,20 +1653,32 @@ mod permissions_tests {
     }
 
     #[test]
-    fn the_composer_offers_the_durations_every_prompt_offers() {
-        let keys: Vec<_> = lifetime_choices(0)
-            .into_iter()
-            .map(|(key, _)| key)
-            .collect();
-        assert_eq!(keys, ["always", "session", "once"]);
-        assert!(keys.contains(&DEFAULT_LIFETIME));
+    fn the_composer_offers_what_the_workspace_keeps() {
+        let keys: Vec<_> = lifetime_choices().into_iter().map(|(key, _)| key).collect();
+        assert_eq!(
+            keys,
+            ["always", "until"],
+            "only what the workspace keeps: never once or this session"
+        );
+        assert_eq!(keys[0], DEFAULT_LIFETIME);
         let ws = ws_with_grants();
-        let permission = GRANT_CHOICES[0].key;
-        let draft = draft_for(&ws, "app:firefox", permission, "always").expect("a draft");
+        // One Firefox does not hold yet, so the grant is not merged into a longer one.
+        let permission = "microphone";
+        let draft = draft_for(&ws, "app:firefox", permission, None, 10).expect("a draft");
         assert_eq!(draft.lifetime, Lifetime::UntilRevoked);
+        let draft = draft_for(&ws, "app:firefox", permission, Some(20), 10).expect("a draft");
+        assert_eq!(draft.lifetime, Lifetime::Until(20));
         assert!(
-            draft_for(&ws, "app:firefox", permission, "forever").is_none(),
-            "a lifetime the composer does not offer composes nothing"
+            draft_for(&ws, "app:firefox", permission, Some(10), 10).is_none(),
+            "an end already past composes nothing"
+        );
+        let mut granted = ws;
+        apply_grant_draft(&mut granted, &OWNER.to_string(), &draft).expect("the owner grants");
+        assert!(
+            granted
+                .sandbox
+                .iter()
+                .any(|cap| cap.lifetime == Lifetime::Until(20))
         );
     }
 
@@ -1903,7 +1918,7 @@ mod permissions_tests {
             }
 
             let mut ws = ws_with_grants();
-            let draft = draft_for(&ws, "app:firefox", "microphone", "always").expect("a draft");
+            let draft = draft_for(&ws, "app:firefox", "microphone", None, 0).expect("a draft");
             let mut ws2 = ws.clone();
             apply_grant_draft(&mut ws2, &OWNER.to_string(), &draft).expect("owner grants");
             ws = ws2;
@@ -1917,7 +1932,7 @@ mod permissions_tests {
         phase a_grant_set_reads_back_as_the_grants_the_workspace_holds;
         {
             let mut ws = ws_with_grants();
-            let draft = draft_for(&ws, "app:firefox", "microphone", "always").expect("a draft");
+            let draft = draft_for(&ws, "app:firefox", "microphone", None, 0).expect("a draft");
             let edit = apply_grant_draft(&mut ws, &OWNER.to_string(), &draft).expect("owner grants");
             assert_eq!(edit.sandbox_granted.len(), 1);
             let rows = listed(&ws);

@@ -52,9 +52,8 @@ impl tilo_api::session::Here for Desktop {
             tilo_mcp::McpServer::for_person(api, workspace.to_owned(), person)
                 .with_work_group(tilo_actions::WorkGroup {
                     id: session.to_owned(),
-                    label: label.to_owned(),
+                    label: Some(label.to_owned()),
                     kind: "api".into(),
-                    title: None,
                     declared_id: None,
                 })
                 .with_task_hosts(Some(person_tasks(&self.services))),

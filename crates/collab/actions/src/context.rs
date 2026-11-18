@@ -353,9 +353,8 @@ impl ActionContext {
     ) -> Self {
         self.group = Some(WorkGroup {
             id: id.into(),
-            label: label.into(),
+            label: Some(label.into()),
             kind: kind.into(),
-            title: None,
             declared_id: None,
         });
         self
@@ -1255,6 +1254,25 @@ mod wire {
     }
 }
 
+/// The longest label of a work group, in characters ([`one_line`]).
+pub const MAX_LABEL_CHARS: usize = 96;
+
+/// `text` as one line people read: its first line with words on it, without
+/// control characters, at most `max` characters, trimmed. `None` when it holds
+/// no words.
+#[must_use]
+pub fn one_line(text: &str, max: usize) -> Option<String> {
+    let line: String = text
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())?
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(max)
+        .collect();
+    nonempty(&line)
+}
+
 fn nonempty(value: &str) -> Option<String> {
     let trimmed = value.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_string())
@@ -1562,14 +1580,14 @@ pub fn names_a_session(kind: &str) -> bool {
 pub struct WorkGroup {
     /// Stable key shared by every action in the work unit.
     pub id: String,
-    pub label: String,
+    /// What the work is called, for people to read: an issue's title, what an
+    /// agent session was asked to do, or the title the agent gave its work
+    /// ("Fill Jane's application"). Never the group itself, which a host
+    /// decides on its own. `None` when nothing says so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     /// Open vocabulary: `issue`, `task`, `agent-run`, `session`, …
     pub kind: String,
-    /// What the caller itself called the work, when it named it: the title
-    /// an agent gave its run ("Fill Jane's application"). Words for people
-    /// to read, never the group itself, which a host may decide on its own.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
     /// The id the caller itself gave the work, when it named one: the run an
     /// agent says each of its calls is a step of. A host's own [`Self::id`]
     /// may span several of them (every call of one connection), so this is

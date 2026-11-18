@@ -368,6 +368,9 @@ struct WindowsProgramArgs {
     /// What the session names this launch, handed to the keeper as given (`--launch`).
     #[arg(long)]
     keep_as: String,
+    /// Print the keeper's arguments and exit without starting anything.
+    #[arg(long)]
+    print_keeper: bool,
     /// The sandbox's command line.
     #[arg(last = true, required = true)]
     command: Vec<std::ffi::OsString>,
@@ -394,6 +397,13 @@ fn windows_program(args: &WindowsProgramArgs) -> ExitCode {
                 "--".into(),
             ],
         );
+    }
+    if args.print_keeper {
+        println!("keeper : {}", args.keeper.display());
+        for arg in launcher::host::keeper_args(&keep, args.x11, &command) {
+            println!("\t{}", arg.to_string_lossy());
+        }
+        return ExitCode::SUCCESS;
     }
     match launcher::host::start_kept(&args.app_id, &args.name, &command, args.x11, &keep) {
         Ok(status) => {
@@ -1510,6 +1520,40 @@ mod host_launch_tests {
         };
         assert_eq!(args.app_id, "so.tilo.windows.probe");
         assert!(!args.x11);
+        assert_eq!(
+            args.command,
+            ["/usr/bin/bwrap", "--unshare-all", "--", "/usr/bin/wine"]
+        );
+
+        // A Proton program asks for a display of its keeper's with `--x11`, and `--print-keeper`
+        // is the launcher's own: it prints the keeper's arguments and starts nothing.
+        let parsed = Cli::try_parse_from([
+            "tilo-launcher",
+            "windows-program",
+            "--app-id",
+            "so.tilo.windows.probe",
+            "--name",
+            "Probe",
+            "--x11",
+            "--keeper",
+            "/usr/libexec/tilo-app-keeper",
+            "--keep-in",
+            "/tmp/kept/1",
+            "--keep-as",
+            "{}",
+            "--print-keeper",
+            "--",
+            "/usr/bin/bwrap",
+            "--unshare-all",
+            "--",
+            "/usr/bin/wine",
+        ])
+        .expect("the session's launch of an X11 Windows program parses");
+        let Cmd::WindowsProgram(args) = parsed.cmd else {
+            panic!("a Windows program's launch is not windows-program");
+        };
+        assert!(args.x11);
+        assert!(args.print_keeper);
         assert_eq!(
             args.command,
             ["/usr/bin/bwrap", "--unshare-all", "--", "/usr/bin/wine"]

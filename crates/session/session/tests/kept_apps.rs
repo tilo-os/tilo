@@ -712,6 +712,139 @@ fn a_kept_launchs_own_x11_display_is_served_to_the_input_method() {
     let _x11 = x11;
 }
 
+/// The X program behind a kept launch can lose its server, as Xwayland does when its programs are
+/// killed: its windows leave the desktop, and the session goes on stepping.
+#[test]
+fn a_kept_x_programs_server_ending_closes_its_windows_and_the_session_goes_on() {
+    tilo_test_env::require_capability!(XServer, x_servers(), "the keeper's X server");
+    let _settled = ui::motion::testing::settled();
+    let rig = Rig::keeping_x11(&["Only"]);
+    let mut first = rig.desktop(false);
+    rig.launch(&first);
+    shown_and_told(&rig, &mut first, &["Only"]);
+    let dir = crate::common::wait_for(&mut first.session, "the keeper names its display", |_| {
+        testing::described(&rig.root)
+            .into_iter()
+            .find_map(|(dir, _)| fs::read_to_string(dir.join("x11")).ok().map(|_| dir))
+    });
+    // An X program of the launch: its client starts the keeper's server, and maps a window.
+    let x11 = connect_to_kept_display(&dir);
+    x_window(&x11, "Dying");
+    // The X program's window, as the desktop shows it: by its class, which the keeper passes on as
+    // the window's app id.
+    let shows_the_x_window = |session: &mut tilo_session::Session| {
+        session.compositor().windows().iter().any(|(info, _)| {
+            info.app_id
+                .as_deref()
+                .is_some_and(|id| id.eq_ignore_ascii_case("dying"))
+                || info
+                    .title
+                    .as_deref()
+                    .is_some_and(|title| title.contains("Dying"))
+        })
+    };
+    crate::common::wait_for(
+        &mut first.session,
+        "the X program's window shows",
+        |session| shows_the_x_window(session).then_some(()),
+    );
+    let number = fs::read_to_string(dir.join("x11")).expect("the display");
+    let number: u32 = number
+        .trim()
+        .trim_start_matches(':')
+        .parse()
+        .expect("a number");
+    let pid = x11_server(number).expect("the server is up");
+    signal(pid, libc::SIGKILL);
+    crate::common::wait_for(
+        &mut first.session,
+        "the X program's window leaves",
+        |session| (!shows_the_x_window(session)).then_some(()),
+    );
+    // The launch outlives both its server and the desktop: a restart takes it back, and its
+    // program's next client finds a fresh server on the same display.
+    first.end(Teardown::InPlaceRestart);
+    let mut second = rig.desktop(true);
+    shown_and_told(&rig, &mut second, &["Only"]);
+    let next = connect_to_kept_display(&dir);
+    x_window(&next, "Dying");
+    crate::common::wait_for(
+        &mut second.session,
+        "the X program's window shows again",
+        |session| shows_the_x_window(session).then_some(()),
+    );
+    let pid = x11_server(number).expect("the fresh server is up");
+    signal(pid, libc::SIGKILL);
+    crate::common::wait_for(
+        &mut second.session,
+        "the X program's window leaves again",
+        |session| (!shows_the_x_window(session)).then_some(()),
+    );
+    second.end(Teardown::Logout);
+    drop((x11, next));
+}
+
+/// An X11 program of `x11`'s client: a 200×150 window of the class `class`, mapped.
+fn x_window(x11: &x11rb::rust_connection::RustConnection, class: &str) {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::{ConnectionExt as _, CreateWindowAux, WindowClass};
+    use x11rb::wrapper::ConnectionExt as _;
+
+    let root = x11.setup().roots[0].root;
+    let window = x11.generate_id().expect("a window id");
+    x11.create_window(
+        x11rb::COPY_DEPTH_FROM_PARENT,
+        window,
+        root,
+        0,
+        0,
+        200,
+        150,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        x11rb::COPY_FROM_PARENT,
+        &CreateWindowAux::new().background_pixel(0x0000_00ff),
+    )
+    .expect("the window");
+    x11.change_property8(
+        x11rb::protocol::xproto::PropMode::REPLACE,
+        window,
+        x11rb::protocol::xproto::AtomEnum::WM_CLASS,
+        x11rb::protocol::xproto::AtomEnum::STRING,
+        format!("{}\0{class}\0", class.to_lowercase()).as_bytes(),
+    )
+    .expect("its class");
+    x11.map_window(window).expect("map");
+    x11.flush().expect("flush");
+}
+
+/// The pid of the server on display `number`: `xwayland-satellite :N`.
+fn x11_server(number: u32) -> Option<u32> {
+    let wanted = format!(":{number}");
+    for entry in fs::read_dir("/proc").ok()? {
+        let entry = entry.ok()?;
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let Ok(cmdline) = fs::read(entry.path().join("cmdline")) else {
+            continue;
+        };
+        let args: Vec<&[u8]> = cmdline.split(|byte| *byte == 0).collect();
+        if args
+            .first()
+            .is_some_and(|arg| arg.ends_with(b"xwayland-satellite"))
+            && args.get(1).is_some_and(|arg| *arg == wanted.as_bytes())
+        {
+            return Some(pid);
+        }
+    }
+    None
+}
+
 /// The X servers a keeper can start here, so a machine without them skips the test.
 fn x_servers() -> Result<(), String> {
     let path = std::env::var_os("PATH").unwrap_or_default();

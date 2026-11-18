@@ -30,7 +30,7 @@ async fn computer_agent(
         &id,
         &person,
     )
-    .with_agent_session("session-laptop".to_owned(), NAME);
+    .with_agent_session("session-laptop".to_owned());
     (agent, server)
 }
 

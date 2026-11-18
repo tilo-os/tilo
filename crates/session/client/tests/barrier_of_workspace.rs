@@ -10,6 +10,10 @@
 //!
 //! Nor did anything say why the change stayed unconfirmed: the session says which document
 //! it keeps writes of and what they wait for, to whoever asks of that workspace.
+//!
+//! Nor is a workspace answered all or nothing: whoever asks of the documents they wrote is
+//! answered for those, so a change that waits for its document keeps no write to another
+//! document of its workspace from being confirmed.
 
 #![allow(
     clippy::unwrap_used,
@@ -27,7 +31,8 @@ use tilo_test_env::within;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use super::support::{
-    WORKSPACE, enrol, in_workspace, route, start_peer, wait_keyed, workspace, written,
+    WORKSPACE, enrol, in_workspace, route, start_host as start_server, start_peer, wait_keyed,
+    workspace, written,
 };
 
 /// The person's second workspace, where a write waits.
@@ -63,7 +68,7 @@ async fn a_write_one_workspace_holds_keeps_no_other_workspaces_write_from_being_
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let server = super::support::start_host(
+    let server = start_server(
         &root,
         &server_device,
         state.path(),
@@ -177,6 +182,144 @@ async fn a_write_one_workspace_holds_keeps_no_other_workspaces_write_from_being_
         .expect("the server has every write");
     assert_eq!(
         kept(&page, &[elsewhere, workspace()]).await,
+        Vec::new(),
+        "nothing is kept once the document landed and the change went"
+    );
+    for peer in [founder, page] {
+        peer.close();
+    }
+}
+
+/// One workspace is answered for each of its documents by itself, where it is asked so: a
+/// change that waits for its document keeps no write to another document of that workspace from
+/// being confirmed, and is itself confirmed neither by its own document, nor with the other,
+/// nor by its workspace, until its document lands.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_write_one_document_holds_keeps_no_other_documents_write_from_being_confirmed() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let server_device = enrol(&root, "home-server", DeviceCapabilities::member());
+    let browser = enrol(&root, "browser", DeviceCapabilities::member());
+    let laptop = enrol(&root, "laptop", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let server = start_server(
+        &root,
+        &server_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let page = start_peer(
+        server.iroh(),
+        browser.cert.clone(),
+        server_device.cert.clone(),
+        browser.key.clone(),
+    );
+    page.join_placed(WORKSPACE, "Workspace").unwrap();
+    in_workspace(&page, workspace()).await;
+
+    // A change to a document nobody founded yet: the page holds its keys and no document, so
+    // the change waits for it.
+    let waiting = DocumentRoute {
+        app_id: "so.tilo.notes".into(),
+        cluster_id: WORKSPACE.into(),
+        document: "note-2".into(),
+    };
+    page.send(Cmd::OpenRoute(waiting.clone())).unwrap();
+    wait_keyed(&page, &waiting).await;
+    let mut unfounded = AutoCommit::new();
+    let founding = write(&mut unfounded, "founded");
+    let mut copy = unfounded.clone();
+    page.write(waiting.clone(), &write(&mut copy, "written early"))
+        .unwrap();
+
+    // A note of the same workspace, written after it, is confirmed for its own document.
+    let beside = route();
+    page.send(Cmd::OpenRoute(beside.clone())).unwrap();
+    wait_keyed(&page, &beside).await;
+    let mut note = AutoCommit::new();
+    page.write(beside.clone(), &write(&mut note, "first"))
+        .unwrap();
+    within(
+        "a write to be confirmed while a change to another document of its workspace waits",
+        page.barrier_of_documents(std::slice::from_ref(&beside))
+            .unwrap(),
+    )
+    .await
+    .expect("the session answers")
+    .expect("the server has the write beside the change that waits");
+    assert_eq!(
+        kept(&page, &[workspace()])
+            .await
+            .iter()
+            .map(|kept| (&kept.route, &kept.waits))
+            .collect::<Vec<_>>(),
+        [(&waiting, &Waits::Document)],
+        "the workspace keeps the change that waits, and nothing of the document beside it"
+    );
+
+    // The change that waits is confirmed neither by its own document, nor with the other, nor
+    // by its workspace: each was asked before a later write beside it, which is confirmed again.
+    let own = page
+        .barrier_of_documents(std::slice::from_ref(&waiting))
+        .unwrap();
+    let both = page
+        .barrier_of_documents(&[beside.clone(), waiting.clone()])
+        .unwrap();
+    let whole = page.barrier_of(&[workspace()]).unwrap();
+    page.write(beside.clone(), &write(&mut note, "second"))
+        .unwrap();
+    within(
+        "a later write beside the change that waits to be confirmed",
+        page.barrier_of_documents(std::slice::from_ref(&beside))
+            .unwrap(),
+    )
+    .await
+    .expect("the session answers")
+    .expect("the server has the later write beside it");
+    assert_eq!(
+        own.try_recv(),
+        Err(TryRecvError::Empty),
+        "a change that waits for its document is not said to be saved, asked of its document"
+    );
+    assert_eq!(
+        both.try_recv(),
+        Err(TryRecvError::Empty),
+        "nor asked of its document together with one whose writes the server has"
+    );
+    assert_eq!(
+        whole.try_recv(),
+        Err(TryRecvError::Empty),
+        "nor asked of its workspace"
+    );
+
+    // Another device founds the document; the change goes once it lands, and only then is it
+    // confirmed, however it was asked.
+    let founder = start_peer(
+        server.iroh(),
+        laptop.cert.clone(),
+        server_device.cert.clone(),
+        laptop.key.clone(),
+    );
+    founder.join_placed(WORKSPACE, "Workspace").unwrap();
+    in_workspace(&founder, workspace()).await;
+    written(&founder, &waiting, &founding).await;
+    within(
+        "the change to be confirmed by its document once that landed",
+        own,
+    )
+    .await
+    .expect("the session answers")
+    .expect("the server has the change");
+    within("both documents to be confirmed", both)
+        .await
+        .expect("the session answers")
+        .expect("the server has the writes to both");
+    within("the workspace to be confirmed", whole)
+        .await
+        .expect("the session answers")
+        .expect("the server has every write to the workspace");
+    assert_eq!(
+        kept(&page, &[workspace()]).await,
         Vec::new(),
         "nothing is kept once the document landed and the change went"
     );

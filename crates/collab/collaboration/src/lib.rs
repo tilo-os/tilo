@@ -2038,9 +2038,8 @@ mod local_document_report_tests {
                 purpose: Some("private context".into()),
                 group: Some(tilo_actions::WorkGroup {
                     id: "private-group".into(),
-                    label: "Private work".into(),
+                    label: Some("Private work".into()),
                     kind: "issue".into(),
-                    title: None,
                     declared_id: None,
                 }),
                 source_invocation: Some(tilo_actions::InvocationId(uuid::Uuid::from_bytes(

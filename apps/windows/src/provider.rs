@@ -67,9 +67,17 @@ pub trait CompatibilityProvider: Send {
     fn take_notice(&mut self) -> Option<String> {
         None
     }
+    /// Whether the notice [`Self::take_notice`] gave is about something that went wrong.
+    fn notice_is_error(&self) -> bool {
+        false
+    }
     fn take_operation_result(&mut self) -> Option<Result<String, String>> {
         None
     }
+    /// Stage what a capture's `scenario` shows in the sample catalogue: a program that ended, a
+    /// program of the appliance, a name longer than a row holds. The service behind a window
+    /// stages nothing.
+    fn stage(&mut self, _scenario: &str) {}
     fn set_route_override(&mut self, app_id: &str, route: Route) -> Result<(), String>;
     /// Removes a user route override.
     fn reset_route_override(&mut self, app_id: &str) -> Result<(), String>;
@@ -333,6 +341,27 @@ impl CompatibilityProvider for SampleProvider {
         app.status = AppStatus::Ready;
         Ok(())
     }
+    fn stage(&mut self, scenario: &str) {
+        match scenario {
+            "closed" | "ended-with-error" | "ended-overview" | "could-not-open" => {
+                if let Some(app) = self.catalogue.app_mut("cyberpunk-2077") {
+                    app.status = AppStatus::Ready;
+                }
+            }
+            "vm-running" => {
+                if let Some(app) = self.catalogue.app_mut("visual-studio") {
+                    app.status = AppStatus::Running;
+                }
+            }
+            "long-name" => {
+                if let Some(app) = self.catalogue.app_mut("adobe-reader") {
+                    app.name = "Adobe Acrobat Reader (continuous release) 64-bit".into();
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn remove_launcher(&mut self, app_id: &str) -> Result<(), String> {
         self.catalogue.apps.retain(|app| app.id != app_id);
         Ok(())
@@ -423,6 +452,10 @@ pub struct LiveProvider {
     refresh_pending: bool,
     next_refresh: Instant,
     notice: Option<String>,
+    /// Whether the notice the last list brought is about something that went wrong.
+    notice_error: bool,
+    /// The entry the person ended here: its end is what they asked for, and needs no sentence.
+    stopping: Option<String>,
     operation_result: Option<Result<String, String>>,
     pending_vm_install: Option<(File, String)>,
     pending_vm_install_confirmation: Option<VmInstallConfirmation>,
@@ -459,6 +492,8 @@ impl LiveProvider {
             refresh_pending: true,
             next_refresh: ui::time::now() + REFRESH_INTERVAL,
             notice: None,
+            notice_error: false,
+            stopping: None,
             operation_result: None,
             pending_vm_install: None,
             pending_vm_install_confirmation: None,
@@ -477,8 +512,23 @@ impl LiveProvider {
                         vm_uninstallation,
                         ended,
                     } = *listed;
-                    if let Some(end) = ended.last() {
-                        self.notice = Some(ended_notice(end));
+                    // The person's own Quit is shown by the app no longer being open, not by a
+                    // sentence about what they just did.
+                    let asked = self
+                        .stopping
+                        .as_deref()
+                        .and_then(|stopping| ended.iter().find(|end| end.entry_id == stopping));
+                    if asked.is_some() {
+                        self.stopping = None;
+                    }
+                    if let Some(end) = ended
+                        .iter()
+                        .rev()
+                        .find(|end| self.stopping.as_deref() != Some(end.entry_id.as_str()))
+                        && let Some(notice) = ended_notice(end)
+                    {
+                        self.notice = Some(notice);
+                        self.notice_error = true;
                     }
                     self.cached = catalogue_from_managed(
                         applications,
@@ -499,12 +549,26 @@ impl LiveProvider {
                     self.refresh_pending = false;
                     self.next_refresh = ui::time::now() + REFRESH_INTERVAL;
                     self.notice = Some(detail);
+                    self.notice_error = false;
                 }
-                WorkerEvent::Notice(detail) => self.notice = Some(detail),
+                WorkerEvent::Notice(detail) => {
+                    self.notice = Some(detail);
+                    self.notice_error = false;
+                }
                 WorkerEvent::Operation(result) => {
-                    self.notice = Some(match &result {
+                    let said = match &result {
                         Ok(detail) | Err(detail) => detail.clone(),
-                    });
+                    };
+                    // An operation that says nothing is one the window already shows: a program
+                    // the person ended is no longer open, which is the whole answer, and the line
+                    // that said it was still being ended goes with it.
+                    if said.is_empty() {
+                        self.notice = None;
+                        self.notice_error = false;
+                    } else {
+                        self.notice = Some(said);
+                        self.notice_error = result.is_err();
+                    }
                     self.operation_result = Some(result);
                 }
                 WorkerEvent::VmInstallConfirmation {
@@ -514,6 +578,7 @@ impl LiveProvider {
                 } => {
                     self.pending_vm_install = Some((source, source_name));
                     self.notice = Some(confirmation.detail.clone());
+                    self.notice_error = false;
                     let confirmation = VmInstallConfirmation {
                         display_name: confirmation.display_name,
                         detail: confirmation.detail,
@@ -694,7 +759,9 @@ impl CompatibilityProvider for LiveProvider {
         if application.status != AppStatus::Running {
             return Err("This application is not running.".to_string());
         }
-        self.send(WorkerCommand::Stop(app_id.to_string()))
+        self.send(WorkerCommand::Stop(app_id.to_string()))?;
+        self.stopping = Some(app_id.to_owned());
+        Ok(())
     }
 
     fn remove_launcher(&mut self, app_id: &str) -> Result<(), String> {
@@ -712,6 +779,10 @@ impl CompatibilityProvider for LiveProvider {
     fn take_notice(&mut self) -> Option<String> {
         self.drain();
         self.notice.take()
+    }
+
+    fn notice_is_error(&self) -> bool {
+        self.notice_error
     }
 
     fn take_operation_result(&mut self) -> Option<Result<String, String>> {
@@ -941,14 +1012,26 @@ fn launched(response: Result<ProtocolResponse, SessionError>, started: &str) -> 
     }
 }
 
-/// What the manager says of a program that ended.
-fn ended_notice(end: &ProgramEnd) -> String {
-    let name = &end.display_name;
+/// What the manager says of a program that ended, when it is worth a sentence: a program that
+/// opened and closed says nothing, since the list already shows it is no longer open. A program
+/// that stopped by itself says what happened, with the status the person can quote; one that never
+/// opened says why in the program's own words.
+pub(crate) fn ended_notice(end: &ProgramEnd) -> Option<String> {
+    let name = end.display_name.clone();
     match (&end.error, end.success, end.exit_code) {
-        (Some(error), _, _) => format!("{name} could not open: {error}"),
-        (None, true, _) => format!("{name} closed."),
-        (None, false, Some(code)) => format!("{name} closed with status {code}."),
-        (None, false, None) => format!("{name} was ended."),
+        (Some(error), _, _) => Some(crate::strings::format_all(
+            "windows-ended-could-not-open",
+            &[("app", name), ("reason", error.clone())],
+        )),
+        (None, false, Some(code)) => Some(crate::strings::format_all(
+            "windows-ended-with-error",
+            &[("app", name), ("status", code.to_string())],
+        )),
+        (None, false, None) => Some(crate::strings::format_all(
+            "windows-ended-stopped",
+            &[("app", name)],
+        )),
+        (None, true, _) => None,
     }
 }
 
@@ -967,7 +1050,7 @@ fn operation(response: Result<ProtocolResponse, SessionError>) -> WorkerEvent {
         Ok(ProtocolResponse::VmVendorUninstallation { uninstallation }) => {
             Ok(uninstallation.detail)
         }
-        Ok(ProtocolResponse::Stopped { .. }) => Ok("The application was ended.".into()),
+        Ok(ProtocolResponse::Stopped { .. }) => Ok(String::new()),
         Ok(ProtocolResponse::LauncherRemoved { .. }) => {
             Ok("Launcher removed; the installed application and its data were kept.".into())
         }
@@ -1628,6 +1711,8 @@ mod tests {
                 refresh_pending: true,
                 next_refresh: ui::time::now() + REFRESH_INTERVAL,
                 notice: None,
+                notice_error: false,
+                stopping: None,
                 operation_result: None,
                 pending_vm_install: None,
                 pending_vm_install_confirmation: None,
@@ -1655,6 +1740,8 @@ mod tests {
             refresh_pending: true,
             next_refresh: ui::time::now() + REFRESH_INTERVAL,
             notice: None,
+            notice_error: false,
+            stopping: None,
             operation_result: None,
             pending_vm_install: None,
             pending_vm_install_confirmation: Some(VmInstallConfirmation {
@@ -1724,8 +1811,9 @@ mod tests {
         assert_ne!(app.status, AppStatus::Running);
         assert_eq!(
             provider.take_notice().as_deref(),
-            Some("Probe closed with status 3.")
+            Some("Probe stopped with an error (status 3).")
         );
+        assert!(provider.notice_is_error(), "an error is said as one");
         assert!(provider.stop("probe").is_err(), "nothing is open to end");
     }
 }

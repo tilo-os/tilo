@@ -120,7 +120,7 @@ const RUN_STEPS_COUNTED: usize = 50;
 /// An agent session whose steps are in effect, as a refusal names it.
 struct InvocationInEffect {
     id: String,
-    label: String,
+    label: Option<String>,
     steps: usize,
 }
 
@@ -128,7 +128,7 @@ struct InvocationInEffect {
 /// recently active first: what the caller may have meant to undo.
 fn runs_in_effect(doc: &mut AutoCommit, scope: &Scope) -> Vec<InvocationInEffect> {
     let versions = tilo_resource::history::versions(doc);
-    let mut candidates: Vec<(String, String)> = Vec::new();
+    let mut candidates: Vec<(String, Option<String>)> = Vec::new();
     for version in versions.iter().rev().take(RUNS_LOOKED_AT) {
         let Some(group) = version
             .context
@@ -180,9 +180,14 @@ fn nothing_to_undo(doc: &mut AutoCommit, scope: &Scope) -> String {
                 ""
             };
             let noun = if run.steps == 1 { "step" } else { "steps" };
+            let asked = run
+                .label
+                .as_ref()
+                .map(|label| format!(" for {label:?}"))
+                .unwrap_or_default();
             format!(
-                "{:?} by {} ({}{more} {noun}): undo {{\"invocation\": {:?}, \"steps\": {}}}",
-                run.id, run.label, run.steps, run.id, run.steps
+                "{:?}{asked} ({}{more} {noun}): undo {{\"invocation\": {:?}, \"steps\": {}}}",
+                run.id, run.steps, run.id, run.steps
             )
         })
         .collect();

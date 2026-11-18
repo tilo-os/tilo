@@ -1635,10 +1635,15 @@ impl ActivityTimeline {
             let Some(context) = entry.context.as_ref() else {
                 continue;
             };
-            if let Some(group) = context.group.as_ref().filter(|group| {
-                group.kind.eq_ignore_ascii_case("workspace") && !group.label.trim().is_empty()
-            }) {
-                let label = group.label.trim().to_string();
+            if let Some(label) = context
+                .group
+                .as_ref()
+                .filter(|group| group.kind.eq_ignore_ascii_case("workspace"))
+                .and_then(|group| group.label.as_deref())
+                .map(str::trim)
+                .filter(|label| !label.is_empty())
+            {
+                let label = label.to_owned();
                 if !workspaces.contains(&label) {
                     workspaces.push(label);
                 }

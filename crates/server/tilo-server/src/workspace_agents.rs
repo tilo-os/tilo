@@ -118,8 +118,6 @@ const IDLE: Duration = Duration::from_secs(60);
 /// The most times one look reads what a workspace owes: it reads again where a turn began or
 /// went on under what it read ([`going::Reading`]).
 const READINGS: usize = 3;
-/// The most model turns one ask takes before the agent stops and says so.
-const MOST_TURNS: usize = 24;
 /// How long one model turn may take.
 const TURN_TIME: Duration = Duration::from_secs(180);
 /// The most tokens one model answer may take.
@@ -496,6 +494,8 @@ pub struct Turn {
     pub cause: String,
     /// What the person asked, in words.
     pub request: String,
+    /// What they asked, as a person reads it: what the agent's session is labelled by.
+    pub asked: String,
     /// What the turn asks its agent to take into its conversation's summary while it answers
     /// ([`chat::recall::told`]): none for most turns, and for every issue.
     pub fold: Option<runtime_collab::recall::Fold>,
@@ -971,6 +971,7 @@ impl HostAgents {
                     conversation: summons.address(),
                     cause: summons.message.to_string(),
                     request: told.instruction,
+                    asked: chat::summons::asked_words(message),
                     fold: told.fold,
                     typed: summons.typed,
                     line: None,
@@ -991,6 +992,7 @@ impl HostAgents {
                     conversation: summons.address(),
                     cause: summons.message.to_string(),
                     request: String::new(),
+                    asked: String::new(),
                     fold: None,
                     typed: summons.typed,
                     line: None,
@@ -1068,6 +1070,7 @@ impl HostAgents {
                 conversation: tasks_model::issue_resource(&ask.issue),
                 cause: ask.cause.clone(),
                 request,
+                asked: issue.title.clone(),
                 fold: None,
                 typed: true,
                 line: None,
@@ -1685,6 +1688,7 @@ impl TurnScope {
             .delegated_to(turn.agent.id.0.clone())
             .named(&turn.agent.name)
             .in_agent_session(session)
+            .asked(&turn.asked)
             .on_turn(
                 tilo_action_policy::turn::Turn::new(turn.conversation.clone(), turn.cause.clone()),
                 turn.agent.turn_rules(&self.workspace),
@@ -2127,7 +2131,8 @@ async fn invoke_at(
 }
 
 /// Work on `turn` with the host's model through the agent's tools until the model answers, the
-/// budget is spent, the turns run out or its person stops it: how it ended, and what it cost.
+/// budget is spent or its person stops it: how it ended, and what it cost. It asks its model for
+/// as long as the model calls tools; nothing here counts those asks to end the turn.
 /// What its person wrote since reaches it at each step ([`going::Going::take`]): `turn` and
 /// `reply` are then the newest of it, where the answer goes.
 async fn work(
@@ -2170,7 +2175,11 @@ async fn work(
     let mut cost = 0u64;
     let key = format!("{}:{}", turn.agent.id.0, turn.cause);
     let mut asked_for_words = false;
-    for round in 0..MOST_TURNS {
+    // `round` names each ask of the model; it ends nothing.
+    let mut asks = 0usize;
+    loop {
+        let round = asks;
+        asks = asks.saturating_add(1);
         if going.stopped() {
             return (Outcome::Cancelled, cost);
         }
@@ -2229,12 +2238,6 @@ async fn work(
         };
         messages.push(results);
     }
-    (
-        Outcome::Stopped(
-            "I stopped after many steps without finishing. Tell me how to go on.".to_owned(),
-        ),
-        cost,
-    )
 }
 
 /// Take into the turn what its person wrote since its last step: the model is told it, the

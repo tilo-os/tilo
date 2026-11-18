@@ -146,7 +146,7 @@ impl Sessions {
             return;
         };
         let event = narration::Narrated {
-            agent: &session.label,
+            agent: caller.agent_called().unwrap_or_default(),
             invocation,
             app: &record.app,
             action: &target.address,
@@ -208,7 +208,7 @@ impl Sessions {
         // minted, which closes with it.
         let lease = caller.execution_lease()?;
         let voice = self.by_session.entry(session.id).or_insert_with(|| Voice {
-            label: session.label,
+            label: caller.agent_called().unwrap_or_default().to_owned(),
             colour: colour_of(caller),
             activity: None,
             focus: None,

@@ -1132,7 +1132,7 @@ impl LocalDocumentActionReport {
             return Err("local document report exceeds byte budget".into());
         }
         if let Some(group) = &self.group {
-            for field in [&group.id, &group.label, &group.kind] {
+            for field in [&group.id, &group.kind].into_iter().chain(&group.label) {
                 if field.is_empty() || field.len() > 4096 || field.chars().any(char::is_control) {
                     return Err("invalid local document report group".into());
                 }

@@ -15,7 +15,6 @@ use std::time::Duration;
 use tilo_compositor::{Compositor, LayoutRect, OutputConfig, WindowInfo, WindowPolicy as _};
 
 use tilo_desktop_model::TileContent;
-use tilo_desktop_policy::DesktopPolicy;
 use tilo_session_core::surface::ShellSurface as _;
 use tilo_shell_surface::{ShellDesktop, desktop};
 
@@ -345,7 +344,7 @@ fn an_x11_window_is_a_tab_of_its_class_that_retitles_and_reopens() {
     );
 
     assert!(
-        host.with_policy(DesktopPolicy::reopen_closed),
+        host.with_policy(|policy| policy.reopen_closed_of("Thunderbird")),
         "the newest close is undone"
     );
     // The desktop carries the command out on its next pass, as it does for the

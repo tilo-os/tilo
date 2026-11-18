@@ -445,18 +445,19 @@ pub fn group_entries(
             .iter()
             .any(|named| run_start < named.end && run_end > named.start);
         if !overlaps_named {
-            // An agent session is titled by what it did, as derived bands are: the label it
-            // carries is what the session was called, which says who ran it at best.
+            // An agent session is titled by what it did, as derived bands are; what it was asked,
+            // or the title it gave its work, is its work title.
             let agent_session = group.kind == tilo_actions::context::AGENT_SESSION_GROUP;
             resolved.push(Placed {
                 id: format!("action-group:{}", group.id),
                 label: if agent_session {
                     String::new()
                 } else {
-                    group.label.clone()
+                    group.label.clone().unwrap_or_default()
                 },
                 work_title: agent_session
-                    .then(|| group.title.clone().unwrap_or_else(|| group.label.clone()))
+                    .then(|| group.label.clone())
+                    .flatten()
                     .filter(|title| !title.trim().is_empty()),
                 persisted: false,
                 named_by: None,

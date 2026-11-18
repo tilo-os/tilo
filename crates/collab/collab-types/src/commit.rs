@@ -61,8 +61,9 @@ pub struct CommitAuthor {
 pub struct CommitGroup {
     /// The run's id, shared by every change it made.
     pub id: String,
-    /// Its label, as history names it.
-    pub label: String,
+    /// Its label, as history names it, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     /// Its kind (`agent-run`, `task-run`, `command-run`, …).
     pub kind: String,
 }
@@ -603,7 +604,7 @@ mod tests {
             Some(uuid::Uuid::from_u128(9)),
             Some(CommitGroup {
                 id: "run-1".to_owned(),
-                label: "Alex".to_owned(),
+                label: Some("Rename the task".to_owned()),
                 kind: "agent-session".to_owned(),
             }),
             vec![part("tasks", "a", 1), part("tasks", "b", 2)],
@@ -996,9 +997,8 @@ mod tests {
                 )),
                 group: Some(tilo_actions::WorkGroup {
                     id: "run-1".to_owned(),
-                    label: "Alex".to_owned(),
+                    label: Some("Rename the task".to_owned()),
                     kind: "agent-session".to_owned(),
-                    title: None,
                     declared_id: None,
                 }),
                 invoker: Some(tilo_actions::ActionInvoker::person("alice")),
@@ -1017,7 +1017,7 @@ mod tests {
             let run = commit.run.as_ref().expect("the run it ran in");
             assert_eq!(run.id, "run-1");
             assert_eq!(run.kind, "agent-session");
-            assert_eq!(run.label, "Alex");
+            assert_eq!(run.label.as_deref(), Some("Rename the task"));
             assert_eq!(
                 WorkspaceCommit::decode(&commit.encode()).as_ref(),
                 Ok(&commit),

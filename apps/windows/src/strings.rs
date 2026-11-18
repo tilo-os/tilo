@@ -41,6 +41,9 @@ mod tests {
             "windows-resume-appliance",
             "windows-shutdown-appliance",
             "windows-connect-for-activation",
+            "windows-ended-with-error",
+            "windows-ended-could-not-open",
+            "windows-ended-stopped",
         ] {
             assert_ne!(t(key), key, "missing Fluent key: {key}");
         }

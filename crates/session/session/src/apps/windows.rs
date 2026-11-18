@@ -5,7 +5,15 @@
 use tilo_app_launch::{Kind, Planned};
 
 use super::Apps;
-use crate::windows_compat::{Ask, Launch};
+use crate::windows_compat::{ASKED_PREFIX, Ask, Launch, Reopen};
+
+/// A saved tab's Windows program the service was asked for, and has not answered yet.
+pub(super) struct Waiting {
+    answer: compat_service::ReopenAnswer,
+    tab: u64,
+    app: String,
+    name: String,
+}
 
 impl Apps {
     /// Start and end what the compatibility service asked for since the last pass.
@@ -28,6 +36,28 @@ impl Apps {
                 Ask::Stop(id) => self.state.borrow().spawner.end_one(id),
             }
         }
+        self.follow_saved_windows_programs();
+    }
+
+    /// The saved tabs' programs the service answered since the last pass: one it would not open
+    /// is handed to the restore, which says so in the tab.
+    fn follow_saved_windows_programs(&self) {
+        let display = self.windows_display();
+        let mut state = self.state.borrow_mut();
+        state.windows_waits.retain(|waiting| {
+            let Some(outcome) = waiting.answer.take() else {
+                return true;
+            };
+            if let Err(why) = outcome {
+                tracing::warn!(
+                    app = %waiting.app,
+                    %why,
+                    "a saved tab's Windows program did not open"
+                );
+                display.refused(waiting.tab, waiting.app.clone(), waiting.name.clone());
+            }
+            false
+        });
     }
 
     /// Start `launch` behind the keeper `handed` was reserved for, through the launcher's
@@ -92,6 +122,89 @@ impl Apps {
         for kept in adopted.iter().filter(|kept| !kept.launch.service) {
             display.take_back(kept.id, &kept.launch, None);
         }
+    }
+
+    /// Whether a Windows program of this session has a window from the last pass whose class is
+    /// not known: what makes the pass read the compositor's windows.
+    pub(crate) fn windows_wanted(&self) -> bool {
+        let state = self.state.borrow();
+        state
+            .launched
+            .values()
+            .any(|launch| launch.pid.is_some() && launch.asked.strip_prefix(ASKED_PREFIX).is_some())
+    }
+
+    /// Note the window class each Windows program's window showed under, so a saved tab of it
+    /// reopens the same program after a reboot.
+    pub(crate) fn note_windows_identities(&self, windows: &[(u32, String)]) {
+        let seen: Vec<(String, String, String)> = {
+            let state = self.state.borrow();
+            let Some(launches) = &state.launches else {
+                return;
+            };
+            let mut seen = Vec::new();
+            for (pid, app) in windows {
+                // The process the window descends from: the launch it was started as.
+                let Some(started) = launches.launch_of(*pid) else {
+                    continue;
+                };
+                let Some(launch) = state
+                    .launched
+                    .values()
+                    .find(|launch| launch.pid == Some(started))
+                else {
+                    continue;
+                };
+                let Some(entry) = launch.asked.strip_prefix(ASKED_PREFIX) else {
+                    continue;
+                };
+                seen.push((launch.workspace.clone(), app.clone(), entry.to_owned()));
+            }
+            seen
+        };
+        if seen.is_empty() {
+            return;
+        }
+        let display = self.windows_display();
+        for (workspace, app, entry) in seen {
+            display.seen_window(&workspace, &app, &entry);
+        }
+    }
+
+    /// How a saved tab's entry `entry` can be reopened: ready, waiting for the service to read
+    /// what it can open, or gone from it.
+    pub(crate) fn windows_reopened(&self, entry: &str) -> Reopen {
+        self.windows_display().reopened(entry)
+    }
+
+    /// Open the saved tab `tab`'s entry `entry` in `workspace`, as the program of the class `app`
+    /// it stood under: the service starts it on the same route a manager's launch takes, and the
+    /// tab says so if it cannot.
+    pub(crate) fn start_saved_windows_program(
+        &self,
+        entry: &str,
+        workspace: &str,
+        tab: u64,
+        app: &str,
+        name: &str,
+    ) -> Result<(), String> {
+        let display = self.windows_display();
+        let wake = self.state.borrow().wake.clone();
+        let answer = display
+            .ask_reopen(entry, workspace, wake)
+            .ok_or_else(|| "this session starts no Windows programs".to_owned())?;
+        self.state.borrow_mut().windows_waits.push(Waiting {
+            answer,
+            tab,
+            app: app.to_owned(),
+            name: name.to_owned(),
+        });
+        Ok(())
+    }
+
+    /// The saved tabs' programs the service would not open since the last pass.
+    pub(crate) fn take_windows_refused(&self) -> Vec<crate::windows_compat::Refused> {
+        self.windows_display().take_refused()
     }
 
     /// Keep each Windows program behind a keeper from now on, as the session keeps its other apps.

@@ -1314,9 +1314,8 @@ tilo_test_env::scenario! {
         let tidy = shortcut("tidy", vec![list()]);
         let parent = tilo_actions::context::WorkGroup {
             id: "task-run-7".into(),
-            label: "Sort the inbox".into(),
+            label: Some("Sort the inbox".into()),
             kind: "task".into(),
-            title: None,
             declared_id: None,
         };
         let report = block_on(run(
