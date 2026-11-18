@@ -235,6 +235,7 @@ words = ["channel"]
 paths = [
     "apps/chat/*",
     "apps/tl/chat/*",
+    "crates/agent/agent-session/tests/workspace_actions/carried_names.rs",
     "crates/sdk/ui-core/src/mentions.rs",
     "crates/session/session/src/mentions.rs",
 ]
