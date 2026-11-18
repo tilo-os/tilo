@@ -251,14 +251,16 @@ impl PresenceCtx {
 }
 
 /// The item the words a write names stand under, where they are an item of its own inside it (a
-/// comment in an issue's thread, its block `<issue>/<comment>`): a view showing the item but not
-/// the words shows the write on the item.
-pub(crate) fn written_under(anchor: &tilo_actions::InteractionAnchor) -> Option<&str> {
-    let tilo_actions::InteractionAnchor::Text { ranges, .. } = anchor else {
+/// comment in an issue's thread, its block `<issue>/<comment>`) or the item it wrote in (a note it
+/// made): a view showing the item but not the words shows the write on the item.
+pub(crate) fn written_under(interaction: &SemanticInteraction) -> Option<String> {
+    let tilo_actions::InteractionAnchor::Text { ranges, .. } = &interaction.anchor else {
         return None;
     };
-    let (item, _) = ranges.first()?.block.split_once('/')?;
-    (!item.is_empty()).then_some(item)
+    match ranges.first()?.block.split_once('/') {
+        Some((item, _)) => (!item.is_empty()).then(|| item.to_owned()),
+        None => super::interaction::acted_item(interaction),
+    }
 }
 
 /// The characters an invocation writes into the text `text` of block `block` (in `region`, when

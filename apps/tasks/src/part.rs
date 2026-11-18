@@ -1703,7 +1703,7 @@ fn reference_parts(reference: &str) -> Vec<String> {
     {
         parts.push(last.to_owned());
     }
-    if let Some(form) = tilo_resource::items::item_form_of(reference)
+    if let Some(form) = ui::tilo_actions::item_form_of(reference)
         && let Some(last) = form.rsplit('/').next()
     {
         parts.push(last.to_owned());

@@ -58,7 +58,7 @@ const LOCUS_FLASH: f32 = 0.22;
 /// Where an app's activity cards stand in `viewport` when nothing of the app is in the way: a
 /// column rising from its bottom-right corner, where a toast stands, each a card's width and
 /// height, the shape and spacing the app draws them with
-/// ([`PresenceCtx::interaction_card_layout`]).
+/// ([`PresenceCtx::interaction_card_layout_excluding`]).
 ///
 /// A host that stands cards of its own over a window ([`crate::control_hints`]) reads the same
 /// slots: a card placed by the toolkit and one the app draws never cover each other.
@@ -214,7 +214,13 @@ impl PresenceCtx {
         if let Some(current) = self.interactions.get(&interaction.invocation) {
             let same_identity = current.interaction.actor == interaction.actor
                 && current.interaction.action == interaction.action
-                && current.interaction.resource == interaction.resource
+                && same_or_made_in(
+                    (
+                        &current.interaction.resource.id,
+                        &current.interaction.resource.kind,
+                    ),
+                    &interaction.resource,
+                )
                 && current.interaction.group == interaction.group;
             if !same_identity
                 || interaction.sequence <= current.interaction.sequence
@@ -355,6 +361,21 @@ impl PresenceCtx {
     pub fn note_placed(&self, invocation: InvocationId) {
         if let Some(entry) = self.interactions.get(&invocation) {
             entry.placed.set(true);
+        }
+    }
+
+    /// Name each step on an item by what its app publishes for that item now, through
+    /// `label_of`: a rename, or a note made a moment ago, reads by its current name rather
+    /// than the one the step began with.
+    pub(crate) fn relabel_items(&mut self, label_of: &dyn Fn(&str) -> Option<String>) {
+        for entry in self.interactions.values_mut() {
+            let id = tilo_actions::logical_resource_id(&entry.interaction.resource.id);
+            if let Some(label) = acted_item(&entry.interaction)
+                .and_then(|_| label_of(&id))
+                .filter(|label| !label.trim().is_empty())
+            {
+                entry.interaction.resource.label = label;
+            }
         }
     }
 
@@ -671,7 +692,7 @@ impl PresenceCtx {
         if matches!(
             interaction.anchor,
             tilo_actions::InteractionAnchor::ListItems { .. }
-        ) || written_under(&interaction.anchor).is_some()
+        ) || written_under(interaction).is_some()
         {
             return self.interaction_status_label_written(interaction);
         }
@@ -704,21 +725,7 @@ impl PresenceCtx {
         interaction: &SemanticInteraction,
         doing: &str,
     ) -> String {
-        // The adjacent shared identity mark already distinguishes an Agent.
-        // Do not append another role to names such as "Release Notes Agent".
-        let actor = roster_name(self, interaction).map_or_else(
-            || {
-                crate::i18n::widget_format(
-                    if interaction.actor.is_person() {
-                        "interaction-member"
-                    } else {
-                        "interaction-agent"
-                    },
-                    &[],
-                )
-            },
-            str::to_owned,
-        );
+        let actor = actor_label(self, interaction);
         // The phase shows through the mark's fade; only a phase that needs a
         // person — waiting, failed, cancelled — says so in words, because a
         // failure must not read as an ordinary mark.
@@ -739,16 +746,6 @@ impl PresenceCtx {
                 &[("name", actor.into()), ("doing", doing.into())],
             ),
         }
-    }
-
-    /// Lay out the generic app-level fallback without overlap. At most three
-    /// rows are shown; excess activity is summarized on the last row.
-    pub fn interaction_card_layout(
-        &self,
-        viewport: Rect,
-        now: Instant,
-    ) -> Vec<InteractionCardPlacement> {
-        self.interaction_card_layout_excluding(viewport, now, &[], &[])
     }
 
     /// Lay out fallback cards without duplicating invocations whose exact
@@ -1234,36 +1231,48 @@ fn phase_color(phase: &InteractionPhase, theme: &Theme, actor: Color) -> Color {
     }
 }
 
-/// What the roster calls the actor of `interaction`: a member by the name it gives them, an
-/// automation by the group it runs in. A raw id is no name.
-fn roster_name<'a>(
-    presence: &'a PresenceCtx,
-    interaction: &'a SemanticInteraction,
-) -> Option<&'a str> {
-    match interaction.actor.member_id() {
-        Some(member) => presence
-            .names
-            .get(member)
-            .and_then(|name| crate::history_source::human_label(name, member.id())),
-        None => interaction.group.as_ref().map(|group| group.label.as_str()),
-    }
+/// The item a step acts on, where its resource is one (`<kind>/<field>/<item>`): what a row
+/// showing that item names. A step that made an item names it once it landed.
+pub(crate) fn acted_item(interaction: &SemanticInteraction) -> Option<String> {
+    let id = tilo_actions::logical_resource_id(&interaction.resource.id);
+    tilo_actions::stable_item_address(&id)?;
+    id.rsplit_once('/').map(|(_, item)| item.to_owned())
 }
 
+/// Whether `update` names what `current` named: the same resource, or the item a step on the
+/// resource made there, which it names once it landed. Its label is the app's to say
+/// ([`PresenceCtx::relabel_items`]), so it is no part of what the step acts on.
+pub(super) fn same_or_made_in(
+    (id, kind): (&str, &str),
+    update: &tilo_actions::ActionResource,
+) -> bool {
+    let made = tilo_actions::stable_item_address(&tilo_actions::logical_resource_id(&update.id));
+    (id == update.id && kind == update.kind)
+        || (made.is_some_and(|made| {
+            made.rsplit_once(':')
+                .is_some_and(|(made, _)| made == update.kind)
+        }) && update
+            .kind
+            .strip_prefix(kind)
+            .is_some_and(|field| field.starts_with('.')))
+}
+
+/// What the roster calls the actor of `interaction`, by the one rule for a member's name
+/// ([`PresenceCtx::member_label`]); an automation by the group it runs in. A roster that knows a
+/// member only by its key gives no name: a raw id is none, so it says what kind of member acts.
 fn actor_label(presence: &PresenceCtx, interaction: &SemanticInteraction) -> String {
-    let roster_name = roster_name(presence, interaction);
-    // A roster that knows a member only by its key names it by that key; a
-    // raw hex id is no name, so the card says what kind of member acts
-    // instead.
-    match (interaction.actor.member_id(), roster_name) {
-        (Some(member), Some(name)) => presence.member_label(member, name),
-        (None, name) => crate::i18n::widget_format(
+    let Some(member) = interaction.actor.member_id() else {
+        let name = interaction.group.as_ref().map(|group| group.label.clone());
+        return crate::i18n::widget_format(
             "member-shortcut",
             &[("name", name.unwrap_or_default().into())],
-        ),
-        (Some(member), None) if !member.is_person() => {
-            crate::i18n::widget_format("interaction-agent", &[])
-        }
-        (Some(_), None) => crate::i18n::widget_format("interaction-member", &[]),
+        );
+    };
+    let named = presence.names.get(member);
+    match named.and_then(|name| crate::history_source::human_label(name, member.id())) {
+        Some(name) => presence.member_label(member, name),
+        None if member.is_person() => crate::i18n::widget_format("interaction-member", &[]),
+        None => crate::i18n::widget_format("interaction-agent", &[]),
     }
 }
 
@@ -1335,6 +1344,26 @@ pub(crate) mod tests {
         let mut action = interaction(invocation, 1, phase);
         action.resource.id = target.into();
         action
+    }
+
+    /// A step that made a note names it once it landed, by the title its app gives it now.
+    #[test]
+    fn a_step_on_an_item_reads_by_the_items_name_now() {
+        let (mut presence, at) = (PresenceCtx::empty(), crate::time::now());
+        let mut made = interaction(7, 1, InteractionPhase::Applying);
+        (made.resource.id, made.resource.kind) = ("doc:notebook".into(), "notes.pages".into());
+        presence.apply_interaction_at(made.clone(), at).unwrap();
+        (made.sequence, made.phase) = (2, InteractionPhase::Committed);
+        (made.resource.id, made.resource.kind) =
+            ("notes.pages/pages/p2".into(), "notes.pages.pages".into());
+        assert!(presence.apply_interaction_at(made.clone(), at).unwrap());
+        for title in ["Packing list", "Packing for Monday"] {
+            presence.relabel_items(&|id| (id == "notes.pages/pages/p2").then(|| title.into()));
+            assert!(card_detail(&presence.visible_interactions(at)[0], 0).ends_with(title));
+        }
+        // An item of another resource is no landing of this step.
+        (made.sequence, made.resource.id) = (3, "tasks.tracker/issues/p2".into());
+        assert!(!presence.apply_interaction_at(made, at).unwrap());
     }
 
     #[test]
@@ -1846,7 +1875,7 @@ pub(crate) mod tests {
                     someone.actor = tilo_actions::Acting::person(format!("agent-{id}"));
                     presence.apply_interaction_at(someone, at).unwrap();
                 }
-                let cards = presence.interaction_card_layout(Rect::new(0.0, 0.0, 800.0, 600.0), at);
+                let cards = presence.interaction_card_layout_excluding(Rect::new(0.0, 0.0, 800.0, 600.0), at, &[], &[]);
                 assert_eq!(cards.len(), 3);
                 assert_eq!(cards[2].additional, 2);
                 for pair in cards.windows(2) {
@@ -1886,7 +1915,7 @@ pub(crate) mod tests {
         let at = crate::time::now();
         let cards = |presence: &PresenceCtx, now| {
             presence
-                .interaction_card_layout(Rect::new(0.0, 0.0, 800.0, 600.0), now)
+                .interaction_card_layout_excluding(Rect::new(0.0, 0.0, 800.0, 600.0), now, &[], &[])
                 .len()
         };
         let mut presence = PresenceCtx::empty();
@@ -1920,14 +1949,18 @@ pub(crate) mod tests {
         read.action.step = Some(StepKind::Read);
         presence.apply_interaction_at(read, at).unwrap();
         assert!(
-            presence.interaction_card_layout(viewport, at).is_empty(),
+            presence
+                .interaction_card_layout_excluding(viewport, at, &[], &[])
+                .is_empty(),
             "a read changes nothing on the page: no card stands for it"
         );
         let mut rename = interaction(72, 1, InteractionPhase::Applying);
         rename.actor = Acting::agent("other");
         presence.apply_interaction_at(rename, at).unwrap();
         assert_eq!(
-            presence.interaction_card_layout(viewport, at).len(),
+            presence
+                .interaction_card_layout_excluding(viewport, at, &[], &[])
+                .len(),
             1,
             "work nothing on the page shows keeps its card"
         );

@@ -1768,8 +1768,7 @@ impl PresenceCtx {
                 let belongs_here = match &key {
                     PresenceKey::Resource { app, id, kind } => {
                         self.surface.as_deref() == Some(app.as_str())
-                            && update.resource.id == *id
-                            && update.resource.kind == *kind
+                            && interaction::same_or_made_in((id, kind), &update.resource)
                             && update
                                 .action
                                 .app

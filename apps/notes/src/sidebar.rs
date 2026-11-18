@@ -610,8 +610,10 @@ impl PageSidebar {
                 let title = row.title.as_str();
                 let page = *page;
                 let more_wanted = Rc::clone(&row_wanted);
-                let mut list_row =
-                    ListRow::new(format!("note-{page}"), title).depth(depths.depth(&page));
+                let mut list_row = ListRow::new(format!("note-{page}"), title)
+                    .item(page.to_string())
+                    .edits("title")
+                    .depth(depths.depth(&page));
                 // The row's "+" presses the notebook's `new-child` on this
                 // note: a person's press and an agent's invocation are the
                 // same action, so the presence marker lands on the control.
