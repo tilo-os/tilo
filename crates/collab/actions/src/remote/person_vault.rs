@@ -1,7 +1,7 @@
 //! What a person keeps to sign in with, kept where their workspace runs.
 //!
 //! A login, a key, a code generator's seed, an ssh key or a plain value such
-//! as a card number is an item of the person's own vault on the host that
+//! as a card number is an item of the person's own vault on the server that
 //! runs their workspace, bound to where it belongs: a site, a service, a
 //! server. Only the person's own device
 //! adds one, lists them or removes one; an agent's request is refused. A
@@ -11,7 +11,7 @@
 //!
 //! What an agent holds is a reference ([`ItemRef`]): the address of an item,
 //! which is not its secret. An action that needs a secret takes one as a
-//! parameter ([`item_param`]). Whatever signs in resolves it on the host,
+//! parameter ([`item_param`]). Whatever signs in resolves it on the server,
 //! where the secret is used, and only at a place the item belongs to; each
 //! use is remembered with when, where, for whom and what for ([`USES`]),
 //! never with what was handed.
@@ -45,6 +45,13 @@ pub const USES: &str = "uses";
 /// without its person being asked again. Answers what the item remembers
 /// then, as an [`ItemUses`].
 pub const TAKE_BACK: &str = "take-back";
+
+/// The use that fills a field of a web page from an item, by reference
+/// ([`FillPage`]): the action a leave names it by ([`use_word`]) and a
+/// narrowed agent's rule names. No catalogue offers it by itself
+/// ([`use_rows`]): whoever holds the page's window takes it for the turn
+/// that asked, with the site the window's engine says the page is at.
+pub const FILL_PAGE: &str = "fill-page";
 
 /// The kind of resource a reference is the address of: what a parameter that
 /// takes a secret by reference names as its resource kind.
@@ -477,10 +484,103 @@ pub fn use_rows() -> Vec<CatalogueRow> {
 /// for every other action.
 #[must_use]
 pub fn use_of(target: &RemoteActionTarget) -> Option<crate::ActionDescriptor> {
+    if *target == page_target() {
+        return page_use();
+    }
     use_rows().into_iter().find_map(|row| {
         let action = row.action?;
         (row.provider == target.provider && action.address == target.address).then_some(action)
     })
+}
+
+/// What [`FILL_PAGE`] names: the site the page is at, the item and why.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FillPage {
+    /// The site the page is at: its origin, as its window's engine says it.
+    pub site: String,
+    /// The item, by its reference.
+    pub item: ItemRef,
+    /// Why whoever asks says it needs the item; empty when it gave none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reason: String,
+}
+
+/// Where [`FILL_PAGE`] is addressed.
+#[must_use]
+pub fn page_target() -> RemoteActionTarget {
+    RemoteActionTarget {
+        provider: PROVIDER.to_owned(),
+        address: ActionAddress::new(RESOURCE, FILL_PAGE),
+    }
+}
+
+/// [`FILL_PAGE`] as a person is shown it when they are asked first: the
+/// site, and the item withheld.
+#[must_use]
+pub fn page_use() -> Option<crate::ActionDescriptor> {
+    use crate::{ActionParam, ParamType};
+    use_row(
+        (PROVIDER, RESOURCE, "Vault"),
+        (FILL_PAGE, "Fill page field from vault"),
+        format!(
+            "Fill a field of a web page from an item your person's vault keeps for that page's \
+             site: a login's password, a code generator's code of this moment, or a kept \
+             value. You never hold what the item keeps. {ASKED_FIRST}"
+        ),
+        vec![
+            ActionParam::required(
+                "site",
+                ParamType::Text,
+                "The site the page is at, as its window's engine names it.",
+            ),
+            item_param("item", REFERENCE),
+            ActionParam::optional("reason", ParamType::Text, REASON),
+        ],
+    )
+    .action
+}
+
+/// What a turn names when it asks for a field of the page in its workspace's Browser window
+/// to be filled ([`FILL_PAGE`], as [`fill_row`] offers it): the field, the item and why. The
+/// site is not the turn's to name: the window's engine says where its page is.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FillField {
+    /// The field, by its reference in the page's outline.
+    pub element: String,
+    /// The item, by its reference.
+    pub item: ItemRef,
+    /// Why whoever asks says it needs the item; empty when it gave none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reason: String,
+}
+
+/// [`FILL_PAGE`] as a turn is offered it by whoever can hand the fill to its workspace's
+/// Browser window: the turn names the field and the item, and the window names the site.
+#[must_use]
+pub fn fill_row() -> CatalogueRow {
+    use crate::{ActionParam, ParamType};
+    use_row(
+        (PROVIDER, RESOURCE, "Vault"),
+        (FILL_PAGE, "Fill page field from vault"),
+        format!(
+            "Fill a field of the page in this workspace's Browser window from an item your \
+             person's vault keeps for that page's site: a login's password, a code generator's \
+             code of this moment, or a kept value. You name the field as the page's outline \
+             names it and the item by its reference, and you never hold what the item keeps. \
+             {ASKED_FIRST}"
+        ),
+        vec![
+            ActionParam::required(
+                "element",
+                ParamType::Text,
+                "The field, by its reference in the page's outline.",
+            ),
+            item_param("item", REFERENCE),
+            ActionParam::optional("reason", ParamType::Text, REASON),
+        ],
+    )
 }
 
 /// The word a leave names the use `target` by
@@ -952,6 +1052,57 @@ mod tests {
                 "secret": "hunter2",
             }))
             .is_err()
+        );
+    }
+
+    /// A page's field filled from an item is a use a leave and a rule can
+    /// name and a person can be shown, and no catalogue offers it.
+    #[test]
+    fn filling_a_page_is_a_use_no_catalogue_offers() {
+        let target = page_target();
+        assert_eq!(use_word(&target), "tilo.vault/fill-page");
+        let shown = use_of(&target).expect("a person is shown what it is");
+        assert_eq!(shown.address, target.address);
+        assert!(shown.params.iter().any(takes_item));
+        assert!(
+            use_rows()
+                .iter()
+                .all(|row| row.action.as_ref().map(|action| &action.address)
+                    != Some(&target.address)),
+            "no turn is offered it by a listing"
+        );
+        let fill: FillPage = serde_json::from_value(serde_json::json!({
+            "site": "https://example.test",
+            "item": format!("vault.item:{}", "0".repeat(32)),
+        }))
+        .unwrap();
+        assert_eq!(fill.site, "https://example.test");
+        assert!(fill.reason.is_empty());
+    }
+
+    /// What a turn is offered names the field and the item by reference, and never the site:
+    /// where the page is, is its window's to say.
+    #[test]
+    fn a_turn_names_the_field_and_the_item_and_never_the_site() {
+        let row = fill_row();
+        assert_eq!(row.provider, PROVIDER);
+        let offered = row.action.expect("the row offers the fill");
+        assert_eq!(offered.address, page_target().address);
+        assert_eq!(offered.params.len(), 3);
+        assert!(offered.params.iter().any(takes_item));
+        let item = format!("vault.item:{}", "0".repeat(32));
+        let named: FillField =
+            serde_json::from_value(serde_json::json!({"element": "d1e5", "item": item})).unwrap();
+        assert_eq!(named.element, "d1e5");
+        assert!(named.reason.is_empty());
+        assert!(
+            serde_json::from_value::<FillField>(serde_json::json!({
+                "element": "d1e5",
+                "item": item,
+                "site": "https://example.test",
+            }))
+            .is_err(),
+            "a turn that names a site is not read"
         );
     }
 }

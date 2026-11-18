@@ -533,7 +533,8 @@ pub struct HostAgents {
     /// What the people's assistants find to do on their own, which a turn's tools reach too.
     initiative: Option<Initiative>,
     /// The Browser windows this server places for its workspaces, where it places any: a
-    /// turn's open of Browser has its window placed there ([`turn_browser`]).
+    /// turn's open of Browser has its window placed there ([`turn_browser`]), and a turn has
+    /// a field of its workspace's page filled there from its person's vault.
     browsers: Option<Arc<crate::hosted_browser::HostedBrowsers>>,
 }
 
@@ -568,8 +569,9 @@ impl HostAgents {
     }
 
     /// These agents, whose turns reach the Browser windows `browsers` places: a turn's open of
-    /// Browser has its window placed in the turn's workspace. With `None` such an open is
-    /// refused in words that say this server has no machine for a window.
+    /// Browser has its window placed in the turn's workspace, and a turn has a field of the
+    /// page in its workspace's window filled from its person's vault by reference. With `None`
+    /// such an open is refused in words that say this server has no machine for a window.
     #[must_use]
     pub fn placing(mut self, browsers: Option<Arc<crate::hosted_browser::HostedBrowsers>>) -> Self {
         self.browsers = browsers;

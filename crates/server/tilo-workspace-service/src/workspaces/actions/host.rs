@@ -1064,6 +1064,8 @@ mod mail_turn_tests;
 #[cfg(test)]
 mod own_tests;
 #[cfg(test)]
+mod page_use_tests;
+#[cfg(test)]
 mod personal_tests;
 #[cfg(test)]
 mod telling_tests;

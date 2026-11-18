@@ -79,6 +79,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 mod environment_device;
+mod turn_fills;
+
+pub use turn_fills::{FILL_PAGE_ITEM, Release, Releasing, TurnFill};
 
 use crate::WorkspaceId;
 use crate::certification::CertificationProtocol;
@@ -503,6 +506,9 @@ pub struct HostedBrowsers {
     /// How long a page action's question waits for the person
     /// ([`ANSWER_WAIT`]).
     answer_wait: Duration,
+    /// The fills of a page's field this server handed to windows for the turns it carries
+    /// out itself ([`turn_fills`]).
+    turn_fills: turn_fills::TurnFills,
 }
 
 #[allow(
@@ -530,6 +536,7 @@ impl HostedBrowsers {
             next_waiter: AtomicU64::new(0),
             reconnect: RECONNECT,
             answer_wait: ANSWER_WAIT,
+            turn_fills: turn_fills::TurnFills::default(),
         }
     }
 
@@ -725,6 +732,11 @@ impl HostedBrowsers {
             && let Some(answered) = self.environment_asked(workspace_id, caller, request)
         {
             return Some(answered);
+        }
+        // What a window says of a fill this server handed it for one of its own turns is
+        // taken here: nobody on a connection asked for it.
+        if let Some(taken) = self.fill_answered(workspace_id, caller, message) {
+            return Some(taken);
         }
         // What the window offers is read from the window: a listing of its
         // provider is handed to the device holding it, as its page actions
@@ -957,7 +969,7 @@ impl HostedBrowsers {
                 let update = entry.stage.state(receipt.invocation);
                 drop(handed);
                 if ran {
-                    self.meter.record(&workspace, &self.account);
+                    self.counted(&workspace);
                 }
                 // The caller's own invocation was answered with "accepted,
                 // it waits": what ran is told to it as the state it follows,
@@ -986,6 +998,11 @@ impl HostedBrowsers {
                 None
             }
         }
+    }
+
+    /// Count one page action a window of `workspace` says it carried out.
+    fn counted(&self, workspace: &str) {
+        self.meter.record(workspace, &self.account);
     }
 
     /// Ask the person `caller` acts for whether `request` — a page action of

@@ -55,15 +55,21 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Lines {
 }
 
 pub(super) fn logged() -> Lines {
-    let lines = Lines::default();
-    let subscriber = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
-        .with_ansi(false)
-        .with_writer(lines.clone())
-        .finish();
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("the test process's only subscriber");
-    lines
+    // One for the process: a second test in it reads the same lines.
+    static LINES: std::sync::OnceLock<Lines> = std::sync::OnceLock::new();
+    LINES
+        .get_or_init(|| {
+            let lines = Lines::default();
+            let subscriber = tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::TRACE)
+                .with_ansi(false)
+                .with_writer(lines.clone())
+                .finish();
+            tracing::subscriber::set_global_default(subscriber)
+                .expect("the test process's only subscriber");
+            lines
+        })
+        .clone()
 }
 
 /// Every file under `dir` whose bytes hold `needle`.
@@ -117,7 +123,7 @@ impl Hosted {
     }
 
     /// [`Self::start`], on a server that places its workspaces' Browser windows through
-    /// `browsers`, where it is handed any.
+    /// `browsers`, where it is handed any: the assistant's turns reach those windows.
     pub(super) async fn start_placing(
         browsers: Option<Arc<tilo_server::hosted_browser::HostedBrowsers>>,
     ) -> Self {
@@ -642,6 +648,10 @@ mod reworded;
 /// Which device of its person a turn acts as beside the device the server placed for a window.
 #[path = "hosted_placed_window.rs"]
 mod placed_window;
+
+/// A field of a web page filled from the person's vault, by a turn on their server.
+#[path = "hosted_page_fill.rs"]
+mod page_fill;
 
 /// The same server, person and assistant, using a service the person connected.
 #[path = "hosted_connections.rs"]

@@ -14,6 +14,9 @@
 //!   page's share ([`tilo_workspace_service::workspaces::Workspaces::share_resource`]),
 //!   after checking the window's id was minted under the asking device's own
 //!   salt: a confined device shares its own windows and nobody else's.
+//!
+//! What a Browser window asks for a field it fills from a vault item is answered beside these,
+//! where the fill was handed to it ([`super::turn_fills`]).
 
 use tilo_action_policy::share::ShareAccess;
 use tilo_actions::ActionOutput;
@@ -53,6 +56,11 @@ impl HostedBrowsers {
         request: &InvokeRequest,
     ) -> Option<crate::app_serving::Routing> {
         let action = environment_device::action_of(&request.target)?.to_owned();
+        // The text of a vault item for a field its window fills is decided where the fill was
+        // handed over, and answered for the Browser's own device alone.
+        if action == environment_device::USE_ITEM {
+            return self.item_asked(workspace_id, caller, request);
+        }
         let message = RemoteActionMessage::Invoke(request.clone());
         let refused = |error: ActionCallError| super::answered_with(&message, error);
         let Some(asked) = self.asking_device(workspace_id, caller) else {
