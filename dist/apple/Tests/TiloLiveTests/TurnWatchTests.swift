@@ -46,6 +46,18 @@ final class TurnWatchTests: XCTestCase {
         watch.read(work: reply.work, words: reply.words, of: "m1", began: began, going: reply.going, now: now)
     }
 
+    func testATurnAsChatKeepsItWithTheReplyIsReadStepByStepInOrderWithHowEachEnded() throws {
+        var watch = TurnWatch()
+        let work = try XCTUnwrap(JSON(text: try KeptTurn.work()))
+        let read = watch.read(work: work, words: "", of: "m1", began: began, going: true, now: began)
+        let turn = try XCTUnwrap(read, "a reply whose turn took three steps says nothing of its turn")
+        XCTAssertEqual(turn.now, .step("Append paragraph: word-processor"))
+        XCTAssertEqual(turn.steps.map(\.words),
+                       ["List: word-processor", "Append paragraph: word-processor", "Append paragraph: word-processor"])
+        XCTAssertEqual(turn.steps.map(\.outcome), [.done, .done, .failed])
+        XCTAssertEqual(turn.steps.map(\.took), [nil, nil, nil], "a step Chat keeps no time of, and this device never saw going, was given a time")
+    }
+
     func testAToolsBareNameIsNoWordsAndAStepsWordsAreSaidWithWhatItIsAbout() throws {
         var watch = TurnWatch()
         let bare = read(&watch, try reply(state: doing("tilo_read")), now: began)
