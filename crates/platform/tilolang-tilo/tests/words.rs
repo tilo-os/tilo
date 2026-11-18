@@ -286,14 +286,12 @@ fn a_packages_catalogues_all_load() {
 /// leave the whole file unread, and the app would show its source words in every language.
 #[test]
 fn every_apps_catalogue_parses() {
-    let apps = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl");
+    let apps = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");
+    let mut catalogues = Vec::new();
+    catalogue_directories(&apps, &mut catalogues);
     let mut read = 0;
-    for app in std::fs::read_dir(&apps).expect("the apps read") {
-        let locales = app.expect("an app").path().join("locales");
-        let Ok(files) = std::fs::read_dir(&locales) else {
-            continue;
-        };
-        for file in files {
+    for locales in catalogues {
+        for file in std::fs::read_dir(&locales).expect("the catalogues read") {
             let path = file.expect("a catalogue").path();
             if path.extension().is_none_or(|extension| extension != "ftl") {
                 continue;
@@ -308,7 +306,21 @@ fn every_apps_catalogue_parses() {
             read += 1;
         }
     }
-    assert!(read >= 9, "an app ships a catalogue ({read} read)");
+    assert!(read >= 100, "an app ships a catalogue ({read} read)");
+}
+
+/// The `locales` directories under `dir`, wherever an app keeps them.
+fn catalogue_directories(dir: &Path, found: &mut Vec<std::path::PathBuf>) {
+    for entry in std::fs::read_dir(dir).expect("the apps read") {
+        let path = entry.expect("an app directory").path();
+        if path.is_dir() {
+            if path.file_name().is_some_and(|name| name == "locales") {
+                found.push(path);
+            } else {
+                catalogue_directories(&path, found);
+            }
+        }
+    }
 }
 
 /// The words a drawn window shows, in the order the tree holds them: every text of a node and of
