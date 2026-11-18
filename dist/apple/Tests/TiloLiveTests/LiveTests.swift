@@ -19,7 +19,7 @@ final class LiveThingTests: XCTestCase {
     }
 
     func testEverySentenceOfALiveThingsPlaceHasItsWords() {
-        for words in [LiveWords.loading, .offline, .failed, .showLive, .openInTilo, .tryAgain] {
+        for words in [LiveWords.loading, .offline, .failed, .showLive, .openInTilo, .tryAgain, .notOffered] {
             XCTAssertFalse(words.english.isEmpty)
             XCTAssertTrue(words.rawValue.hasPrefix("live-"))
             // Without a catalogue the sentence reads as written.

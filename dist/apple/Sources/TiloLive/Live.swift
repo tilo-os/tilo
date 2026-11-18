@@ -62,6 +62,7 @@ enum LiveWords: String {
     case showLive = "live-show"
     case openInTilo = "live-open-in-tilo"
     case tryAgain = "live-try-again"
+    case notOffered = "live-not-offered"
 
     var english: String {
         switch self {
@@ -71,6 +72,7 @@ enum LiveWords: String {
         case .showLive: "Show live"
         case .openInTilo: "Open in Tilo"
         case .tryAgain: "Try again"
+        case .notOffered: "This Tilo cannot show this yet"
         }
     }
 
@@ -92,13 +94,25 @@ public final class LiveStage: ObservableObject {
         case live
         /// The device is not connected to the person's Tilo.
         case offline
-        /// Tilo's own sentence, or none.
+        /// Tilo's own refusal as it came, or none: for a program's log, never for a person.
         case failed(String)
+    }
+
+    /// Why a thing is not shown, for the words its place says. Tilo's own refusal names
+    /// addresses and actions and is no sentence for a person: the place says one of these,
+    /// in the app's words.
+    public enum Trouble: Equatable, Sendable {
+        /// The person's Tilo does not offer this yet. Asking again changes nothing.
+        case notOffered
+        /// It was asked for and did not come this time.
+        case notShown
     }
 
     public let engine: TiloEngine
     @Published public private(set) var front: LiveThing.ID?
     @Published public private(set) var states: [LiveThing.ID: State] = [:]
+    /// Why each thing that failed is not shown.
+    @Published public private(set) var troubles: [LiveThing.ID: Trouble] = [:]
     @Published public private(set) var pictures: [LiveThing.ID: LivePlatformImage] = [:]
     /// The size each thing's content asks for, as its mount in Tilo's page said it last.
     @Published public private(set) var sizes: [LiveThing.ID: CGSize] = [:]
@@ -151,6 +165,7 @@ public final class LiveStage: ObservableObject {
         }
         if let before = front, before != thing.id { await sleep(before) }
         states[thing.id] = .loading
+        troubles[thing.id] = nil
         do {
             try await engine.show(live: thing.id, what)
             mounted.removeAll { $0 == thing.id }
@@ -162,12 +177,28 @@ public final class LiveStage: ObservableObject {
                 mounted.removeFirst()
                 await engine.close(live: oldest)
             }
-        } catch TiloEngine.Problem.refused(_, let reason) {
+        } catch TiloEngine.Problem.refused(let code, let reason) {
+            troubles[thing.id] = await offered(thing, refusedAs: code) ? .notShown : .notOffered
             states[thing.id] = .failed(reason)
         } catch TiloEngine.Problem.notOpen {
             states[thing.id] = .offline
         } catch {
+            troubles[thing.id] = .notShown
             states[thing.id] = .failed("")
+        }
+    }
+
+    /// Whether the person's Tilo offers what it just refused to show. A site older than views
+    /// in messages answers that it knows no such action, and so does one that offers them
+    /// while the Chat mounted for the view does not hold the message yet. They are told apart
+    /// by what Chat's own page offers of the message: the action that opens its view, or none.
+    private func offered(_ thing: LiveThing, refusedAs code: String) async -> Bool {
+        guard code == "unknown_action", case .messageView(let message, _) = thing.content else { return true }
+        let listed = (try? await engine.actions()) ?? []
+        return listed.contains { action in
+            guard action["view"]?["id"]?.string == "view", let opens = action["view"]?["open_action"]?.string else { return false }
+            return opens == action["address"]?["action"]?.string
+                && (action["address"]?["resource"]?.string ?? "").hasSuffix("/messages/\(message)")
         }
     }
 
@@ -312,14 +343,39 @@ public struct TiloLiveView: View {
     private let thing: LiveThing
     private let size: Size
     private let openInTilo: (() -> Void)?
+    private let says: Says?
 
-    /// - Parameter openInTilo: opens the same thing in Tilo itself. It is offered when the
-    ///   thing cannot be shown here.
-    public init(_ thing: LiveThing, on stage: LiveStage, size: Size = .compact, openInTilo: (() -> Void)? = nil) {
+    /// The app's own sentence for why a thing is not shown, in its person's language.
+    public typealias Says = @MainActor (LiveStage.Trouble) -> String
+
+    /// - Parameters:
+    ///   - openInTilo: opens the same thing in Tilo itself. It is offered when the thing cannot
+    ///     be shown here.
+    ///   - says: the app's sentences for a thing that is not shown. Without them the place
+    ///     says this package's own.
+    public init(_ thing: LiveThing, on stage: LiveStage, size: Size = .compact, openInTilo: (() -> Void)? = nil,
+                says: Says? = nil) {
         self.thing = thing
         self.stage = stage
         self.size = size
         self.openInTilo = openInTilo
+        self.says = says
+    }
+
+    /// What a place says of a thing that could not be shown, and whether it offers to ask again.
+    struct Unshown: Equatable {
+        var sentence: String
+        var asksAgain: Bool
+    }
+
+    /// The words under the name of a thing that could not be shown: the app's sentence for
+    /// why, or this package's own, and never Tilo's refusal as it came. Asking again is
+    /// offered only where another ask can be answered otherwise.
+    @MainActor static func unshown(_ thing: LiveThing, on stage: LiveStage, says: Says?) -> Unshown? {
+        guard case .failed = stage.state(of: thing) else { return nil }
+        let trouble = stage.troubles[thing.id] ?? .notShown
+        let own = trouble == .notOffered ? LiveWords.notOffered : LiveWords.failed
+        return Unshown(sentence: says?(trouble) ?? own.said, asksAgain: trouble == .notShown)
     }
 
     public var body: some View {
@@ -375,9 +431,11 @@ public struct TiloLiveView: View {
                 case .offline:
                     Text(LiveWords.offline.said).foregroundStyle(.secondary)
                     Button(LiveWords.tryAgain.said) { Task { await stage.bring(thing) } }
-                case .failed(let why):
-                    Text(why.isEmpty ? LiveWords.failed.said : why).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                    Button(LiveWords.tryAgain.said) { Task { await stage.bring(thing) } }
+                case .failed:
+                    if let unshown = Self.unshown(thing, on: stage, says: says) {
+                        Text(unshown.sentence).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                        if unshown.asksAgain { Button(LiveWords.tryAgain.said) { Task { await stage.bring(thing) } } }
+                    }
                 }
                 if let openInTilo, state != .loading, state != .asleep {
                     Button(LiveWords.openInTilo.said, action: openInTilo)

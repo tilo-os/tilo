@@ -45,6 +45,8 @@
 "nothing-yet-body" = "Write to your assistant below.";
 "live-thing" = "Live view";
 "attachment" = "Attachment";
+"view-not-offered" = "This Tilo cannot show views in messages yet";
+"live-not-shown" = "Tilo could not show this";
 "finding-assistant" = "Setting up your assistant";
 "making-workspace" = "Tilo is making your workspace. The first time, this can take a few minutes.";
 "needs-provider" = "No model provider is linked yet, so your assistant cannot answer. Choose a provider and type your own key for it below.";
