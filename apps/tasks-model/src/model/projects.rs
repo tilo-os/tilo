@@ -42,7 +42,7 @@ impl Tracker {
     /// The refusal of a project the tracker does not have.
     #[must_use]
     pub fn no_area() -> Refusal {
-        Refusal::new("This project no longer exists")
+        Refusal::new(tilo_resource::word!("tasks-project-gone").read())
     }
 
     fn area_mut(&mut self, area: &Id) -> Result<&mut TrackerArea, Refusal> {
@@ -65,7 +65,7 @@ impl Tracker {
         let asked = reference.trim();
         if asked.is_empty() {
             return Err(Refusal::new(
-                "name the project or area, by its id or its name",
+                tilo_resource::word!("tasks-name-project-or-area").read(),
             ));
         }
         let by_id = |candidate: &str| {
@@ -90,10 +90,14 @@ impl Tracker {
             [id] => return Ok((*id).clone()),
             [_, ..] => {
                 let ids: Vec<&str> = named.iter().map(|id| id.as_str()).collect();
-                return Err(Refusal::new(format!(
-                    "more than one project or area is named {asked}; name it by its id: {}",
-                    ids.join(", ")
-                )));
+                return Err(Refusal::new(
+                    tilo_resource::word!(
+                        "tasks-areas-ambiguous",
+                        asked = asked.to_owned(),
+                        ids = ids.join(", ")
+                    )
+                    .read(),
+                ));
             }
             [] => {}
         }
@@ -105,15 +109,20 @@ impl Tracker {
             .collect();
         let more = self.areas.len().saturating_sub(shown.len());
         let holds = if shown.is_empty() {
-            "none yet".to_owned()
+            tilo_resource::word!("tasks-areas-none").read()
         } else if more > 0 {
-            format!("{} and {more} more", shown.join(", "))
+            tilo_resource::word!("tasks-areas-more", shown = shown.join(", "), more = more).read()
         } else {
             shown.join(", ")
         };
-        Err(Refusal::new(format!(
-            "no project or area named {asked}; projects and areas: {holds}"
-        )))
+        Err(Refusal::new(
+            tilo_resource::word!(
+                "tasks-areas-not-found",
+                asked = asked.to_owned(),
+                holds = holds
+            )
+            .read(),
+        ))
     }
 
     /// What the resource holds: the projects and areas.
@@ -153,7 +162,9 @@ impl Tracker {
     ) -> Result<(), Refusal> {
         let id = cx.id();
         if self.areas.contains(&id) {
-            return Err(Refusal::new("That project exists already"));
+            return Err(Refusal::new(
+                tilo_resource::word!("tasks-project-exists").read(),
+            ));
         }
         let area = TrackerArea {
             id: id.clone(),
@@ -171,7 +182,9 @@ impl Tracker {
     pub fn rename_area(&mut self, area: &Id, name: NonBlank) -> Result<(), Refusal> {
         let target = self.area_mut(area)?;
         if name.chars().count() > crate::model::tracker_area::MAX_NAME_CHARS {
-            return Err(Refusal::new("A project's name fits on a line"));
+            return Err(Refusal::new(
+                tilo_resource::word!("tasks-name-one-line").read(),
+            ));
         }
         target.name = name.into_string();
         Ok(())

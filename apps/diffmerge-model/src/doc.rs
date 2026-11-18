@@ -50,7 +50,7 @@ impl Comparison {
 
     pub fn title(&self) -> String {
         if self.left_label.0.is_empty() && self.right_label.0.is_empty() {
-            "Comparison".into()
+            tilo_resource::word!("diffmerge-comparison").read()
         } else {
             format!("{} ↔ {}", self.left_label.0, self.right_label.0)
         }
@@ -95,11 +95,11 @@ pub fn file_name(label: &str) -> &str {
 pub fn merge_title(ours: &str, theirs: &str) -> String {
     let (ours_name, theirs_name) = (file_name(ours), file_name(theirs));
     if ours.is_empty() && theirs.is_empty() {
-        "Merged result".to_string()
+        tilo_resource::word!("merge-title-empty").read()
     } else if ours_name == theirs_name {
-        format!("Merge of {ours_name}")
+        tilo_resource::word!("merge-title", name = ours_name).read()
     } else {
-        format!("Merge of {ours_name} and {theirs_name}")
+        tilo_resource::word!("merge-title-pair", ours = ours_name, theirs = theirs_name).read()
     }
 }
 

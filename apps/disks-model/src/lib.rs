@@ -27,7 +27,9 @@ impl Disks {
             .values()
             .any(|name| name.0.trim().is_empty() || name.0.trim() != name.0)
         {
-            return Err(Refusal::new("a drive's name is not blank and not padded"));
+            return Err(Refusal::new(
+                tilo_resource::word!("disks-drive-name-invalid").read(),
+            ));
         }
         Ok(())
     }

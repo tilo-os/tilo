@@ -148,8 +148,11 @@ impl Firewall {
             .zones
             .iter()
             .map(|zone| {
-                SearchEntry::new(zone.kind.title(), format!("{} rules", zone.rules.len()))
-                    .anchored(format!("firewall.zone:{}", zone.kind.name()))
+                SearchEntry::new(
+                    zone.kind.title(),
+                    tilo_resource::word!("firewall-zone-rules", count = zone.rules.len()).read(),
+                )
+                .anchored(format!("firewall.zone:{}", zone.kind.name()))
             })
             .collect()
     }

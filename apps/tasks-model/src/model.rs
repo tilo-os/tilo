@@ -32,9 +32,9 @@ pub use asks::{Asked, IssueAsk, agent_asks, agent_asks_at, waiting_for};
 pub use effect::{NOTE_KIND, NOTES, TasksEffect};
 pub use goal::Area;
 pub use issue::{
-    ASSIGNEE_FORMS, Attachment, Issue, Link, MAX_ATTACHMENT_NAME_CHARS, MAX_ESTIMATE,
-    MAX_MESSAGE_CHARS, MAX_TITLE_CHARS, Message, MessageKind, NewIssue, Priority, Status,
-    agent_assignee, checked_assignee, outside_assignee, person_assignee,
+    Attachment, Issue, Link, MAX_ATTACHMENT_NAME_CHARS, MAX_ESTIMATE, MAX_MESSAGE_CHARS,
+    MAX_TITLE_CHARS, Message, MessageKind, NewIssue, Priority, Status, agent_assignee,
+    assignee_forms, checked_assignee, outside_assignee, person_assignee,
 };
 pub use many::{ListedIssue, MAX_MANY};
 pub use projects::{Tracker, tracker};

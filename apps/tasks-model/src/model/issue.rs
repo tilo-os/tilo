@@ -450,38 +450,52 @@ impl Issue {
     fn valid(&self) -> Result<(), Refusal> {
         let title = self.title.trim();
         if title.is_empty() {
-            return Err(Refusal::new("an issue has a title"));
+            return Err(Refusal::new(
+                tilo_resource::word!("tasks-issue-needs-title").read(),
+            ));
         }
         if title.chars().count() > MAX_TITLE_CHARS {
-            return Err(Refusal::new("an issue's title fits on a line"));
+            return Err(Refusal::new(
+                tilo_resource::word!("tasks-issue-title-one-line").read(),
+            ));
         }
         if self.labels.len() > MAX_LABELS {
-            return Err(Refusal::new("an issue carries at most 32 labels"));
+            return Err(Refusal::new(
+                tilo_resource::word!("tasks-label-limit", max = MAX_LABELS).read(),
+            ));
         }
         if self.labels.iter().any(|label| label.trim().is_empty()) {
-            return Err(Refusal::new("a label has a name"));
+            return Err(Refusal::new(
+                tilo_resource::word!("tasks-label-needs-name").read(),
+            ));
         }
         if let Some(assignee) = &self.assignee
             && assignee_parts(&assignee.0).is_none()
         {
-            return Err(Refusal::new(ASSIGNEE_FORMS));
+            return Err(Refusal::new(assignee_forms()));
         }
         if self
             .estimate
             .is_some_and(|estimate| estimate > MAX_ESTIMATE)
         {
-            return Err(Refusal::new("an estimate is at most 1000 points"));
+            return Err(Refusal::new(
+                tilo_resource::word!("tasks-estimate-limit", max = MAX_ESTIMATE).read(),
+            ));
         }
         if let Some(area) = &self.area
             && !area.names_a_resource()
         {
-            return Err(Refusal::new("a goal is a resource of the workspace"));
+            return Err(Refusal::new(
+                tilo_resource::word!("tasks-goal-needs-resource").read(),
+            ));
         }
         if self
             .priority
             .is_some_and(|priority| !(1..=4).contains(&priority))
         {
-            return Err(Refusal::new("a priority is 1 (most urgent) to 4"));
+            return Err(Refusal::new(
+                tilo_resource::word!("tasks-priority-range").read(),
+            ));
         }
         Ok(())
     }
@@ -558,7 +572,9 @@ const OUTSIDE_PREFIX: &str = "outside:";
 
 /// What an assignee may be, as a refusal says it: a person's root key, an
 /// `agent:<id>`, or `outside:<name>` for someone not in the workspace yet.
-pub const ASSIGNEE_FORMS: &str = "an assignee is a person's root key, agent:<id>, or outside:<name> for someone not in the workspace yet";
+pub fn assignee_forms() -> String {
+    tilo_resource::word!("tasks-assignee-forms").read()
+}
 
 /// What an assignee value names.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -603,7 +619,7 @@ pub fn checked_assignee(assignee: Option<String>) -> Result<Option<Atom>, Refusa
         return Ok(None);
     };
     if assignee_parts(&assignee).is_none() {
-        return Err(Refusal::new(ASSIGNEE_FORMS));
+        return Err(Refusal::new(assignee_forms()));
     }
     Ok(Some(Atom(assignee)))
 }
