@@ -515,6 +515,13 @@ struct Asks {
     sub: sub_agents::Owed,
 }
 
+/// What the first step of a look read of a workspace: what it owes its agents, and where the
+/// server's turns stood when the reading began. The look's second step enters with it.
+pub struct LookRead {
+    reading: going::Reading,
+    asks: Asks,
+}
+
 /// The agents a host runs for the workspaces it governs.
 #[derive(Clone)]
 pub struct HostAgents {
@@ -684,6 +691,18 @@ impl HostAgents {
         workspace: &str,
         past: Option<&(String, Ask)>,
     ) -> Result<bool, String> {
+        let read = self.read_look(workspace).await?;
+        Ok(self.enter_past(workspace, read, past).await)
+    }
+
+    /// The first step of a look: what `workspace` owes, read once what its people answered and
+    /// what its coding agents said is settled. [`Self::enter_look`] acts on it. A look takes
+    /// both steps at once ([`Self::look`]); whoever must stand between the two, as a test of
+    /// what a look does with a reading that a turn has overtaken, takes them one at a time.
+    ///
+    /// # Errors
+    /// What the workspace owes could not be read.
+    pub async fn read_look(&self, workspace: &str) -> Result<LookRead, String> {
         // What its people answered about what its agents asked them first.
         self.settle_asks(workspace).await;
         // What a coding agent's harness said, and a stop for it, with no turn of it going.
@@ -694,6 +713,23 @@ impl HostAgents {
         // something newer than what this look reads.
         let reading = self.going.reading();
         let asks = self.asks(workspace).await?;
+        Ok(LookRead { reading, asks })
+    }
+
+    /// The second step of a look: begin every turn `read` holds whose place is free, and hand
+    /// the others to the turns that go there. Whether what was read was still current wherever
+    /// it was handed on: where it was not, a look reads again.
+    pub async fn enter_look(&self, workspace: &str, read: LookRead) -> bool {
+        self.enter_past(workspace, read, None).await
+    }
+
+    /// [`Self::enter_look`], leaving out the ask `past` names ([`Self::look_past`]).
+    async fn enter_past(
+        &self,
+        workspace: &str,
+        LookRead { reading, asks }: LookRead,
+        past: Option<&(String, Ask)>,
+    ) -> bool {
         // An answer wakes whoever asked: written once under the question's own key.
         self.wake_answered(workspace, asks.answered);
         let is_past = |turn: &Turn| {
@@ -770,7 +806,7 @@ impl HostAgents {
             }
         }
         self.carry(workspace, asks.sub).await;
-        Ok(current)
+        current
     }
 
     /// Look at `workspace` once a turn ended on `past`: its place is free, so what waited for
