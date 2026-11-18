@@ -328,3 +328,7 @@ async fn a_persons_own_assistant_lists_their_other_workspaces_while_its_workspac
         page.peer.close();
     }
 }
+
+/// The same list on a server that keeps people's own workspaces.
+#[path = "hosted_across_kept.rs"]
+mod kept;
