@@ -1,7 +1,15 @@
 //! Written views (`tilolang::written`): a `view` declaration someone writes, with every
 //! installed app in scope by its name and no `use`.
 
-use crate::common::{todo_meta, validate};
+use crate::common::{compile_with, todo_meta, validate};
+
+/// A package with a named root, as another app publishes one.
+const NOTES: &str = "app so.tilo.notes \"Notes\"\ntype Note {\n    title: Text\n    pinned: Bool = false\n}\ntype Notebook {\n    notes: Collection<Note>\n}\nroot notebook: Notebook\ndefault view notebook for Notebook\nview notebook(nb: Notebook) {\n    for n in nb.notes {\n        text(n.title)\n    }\n}\n";
+
+/// A view that names the notebook alone, and one that names one notebook by its id.
+const ALONE: &str =
+    "view titles() {\n    for n in notes.notebook.notes {\n        text(n.title)\n    }\n}";
+const BY_ID: &str = "view titles() {\n    for n in @notes.Notebook:uuid:0f2b1c00-0000-4000-8000-000000000001.notes {\n        text(n.title)\n    }\n}";
 
 fn written(src: &str) -> Result<tilolang::CompiledView, Vec<tilolang::Diagnostic>> {
     tilolang::compile_view_definition(src, "ada", &[todo_meta()])
@@ -81,5 +89,38 @@ tilo_test_env::scenario! {
         // An app the workspace does not have is not in scope.
         let missing = written("view c(x: board.Card) {\n    text(x.title)\n}").unwrap_err();
         assert!(missing.iter().all(|d| d.line == 1), "{missing:#?}");
+    }
+
+    phase a_kind_kept_for_each_document_is_named_by_its_id_and_never_alone;
+    {
+        let mut notes = compile_with(NOTES, &[]).expect("notes").meta;
+        let view = |source: &str, notes: &tilolang::PackageMeta| {
+            tilolang::compile_view_definition(source, "ada", std::slice::from_ref(notes))
+        };
+        // The workspace's notebook: named alone it is that one.
+        view(ALONE, &notes).unwrap_or_else(|d| panic!("{d:#?}"));
+
+        // A package that keeps a notebook for each document keeps none for the workspace:
+        // named alone it is none of them, and the fault ends with the form that works.
+        notes.each_document = vec!["notebook".to_owned()];
+        let alone = view(ALONE, &notes).unwrap_err();
+        let said: Vec<&str> = alone.iter().map(|d| d.code.as_str()).collect();
+        assert_eq!(said, ["E142"], "{alone:#?}");
+        let fault = &alone[0];
+        assert!(fault.line == 2 && fault.file.is_none(), "{fault:#?}");
+        assert!(
+            fault
+                .message
+                .starts_with("`notes.notebook` alone names no notebook"),
+            "{fault:#?}"
+        );
+        assert!(
+            fault.message.ends_with(
+                "write `@notes.Notebook:<its id>` where this says `notes.notebook`"
+            ),
+            "{fault:#?}"
+        );
+        // One of them, by its id, is read as before.
+        view(BY_ID, &notes).unwrap_or_else(|d| panic!("{d:#?}"));
     }
 }

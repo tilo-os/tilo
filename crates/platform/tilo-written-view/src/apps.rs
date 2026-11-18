@@ -33,6 +33,10 @@ pub(crate) struct App {
     pub(crate) module: ModuleHash,
     /// The record it keeps for the workspace, when it keeps one a view reads.
     pub(crate) root: Option<Root>,
+    /// Whether the app keeps a document for each window (a workbook, a session) and none for
+    /// the workspace, as the app itself declares ([`app_fleet::windows_hold_documents`]): a view
+    /// names one of them by its own id, and [`Self::root`] says only what such a document is.
+    pub(crate) each_document: bool,
     verbs: Vec<Verb>,
 }
 
@@ -57,7 +61,17 @@ impl App {
     /// The app `id` that people call `title`, from its surface file.
     pub(crate) fn of(id: &str, title: &str, surface: &str) -> Result<Self, String> {
         let named = written(id);
-        let meta = catalogue::published_document(&named, title, surface)?;
+        let mut meta = catalogue::published_document(&named, title, surface)?;
+        // An app that keeps a document for each window keeps none for the workspace: its
+        // package says so, and a view that names the kind alone is told how one is named.
+        let each_document = app_fleet::windows_hold_documents(id);
+        if each_document {
+            meta.each_document = meta
+                .named_roots
+                .iter()
+                .map(|root| root.name.clone())
+                .collect();
+        }
         let verbs = catalogue::parse_surfaces(surface)?
             .into_iter()
             .flat_map(|surface| surface.verbs)
@@ -80,6 +94,7 @@ impl App {
             alias: named.rsplit('.').next().unwrap_or(&named).to_owned(),
             module: ModuleHash::of_bytes(&meta.to_json_bytes()),
             root,
+            each_document,
             verbs,
             meta,
         })
@@ -389,13 +404,15 @@ pub(crate) fn named(source: &str, listed: &[String]) -> Vec<Rc<App>> {
     })
 }
 
-/// Whether `source` names the record `app` keeps for the workspace (`tasks.tracker`).
+/// Whether `source` names the record `app` keeps for the workspace (`tasks.tracker`). An app
+/// that keeps a document for each window keeps none.
 pub(crate) fn reads_record(app: &App, source: &str) -> bool {
-    app.root.as_ref().is_some_and(|root| {
-        dotted(source)
-            .iter()
-            .any(|(name, member)| *name == app.alias && *member == root.name)
-    })
+    !app.each_document
+        && app.root.as_ref().is_some_and(|root| {
+            dotted(source)
+                .iter()
+                .any(|(name, member)| *name == app.alias && *member == root.name)
+        })
 }
 
 /// Every `name.member` in `source`, as written.

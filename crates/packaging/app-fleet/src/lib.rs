@@ -95,6 +95,17 @@ pub fn windows_are_own(package_id: &str) -> bool {
         .any(|own| own.eq_ignore_ascii_case(&app))
 }
 
+/// Whether each window of `package_id` shows a document of its own (a workbook, a terminal's
+/// session), as the app itself declares (`ResourceApp::WINDOW_RESOURCE`). Such an app keeps none
+/// for the workspace: one of its documents is named by its own id.
+#[must_use]
+pub fn windows_hold_documents(package_id: &str) -> bool {
+    let app = canonical(package_id);
+    generated::DOCUMENT_WINDOWS
+        .iter()
+        .any(|held| held.eq_ignore_ascii_case(&app))
+}
+
 /// Whose a record of a kind is ([`scope`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scope {
@@ -137,6 +148,10 @@ mod tests {
         assert_eq!(scope("so.tilo.sheets", "sheets.workbook"), Scope::Workspace);
         assert!(windows_are_own("so.tilo.mail") && windows_are_own("dev.tilo.settings"));
         assert!(!windows_are_own("so.tilo.chat"));
+        assert!(windows_hold_documents("so.tilo.sheets"));
+        assert!(windows_hold_documents("dev.tilo.terminal"));
+        assert!(!windows_hold_documents("so.tilo.tasks"));
+        assert!(!windows_hold_documents("so.tilo.notes"));
         let calendar = metadata("so.tilo.calendar").expect("Calendar is in the fleet");
         assert!(
             calendar
