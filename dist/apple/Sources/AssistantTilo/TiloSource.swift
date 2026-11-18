@@ -648,22 +648,28 @@ public final class TiloSource: AssistantSource {
     /// asked, and a busy server takes minutes over it. The page has said whose device this is,
     /// so she is signed in from here on. The window goes on saying that it waits for Tilo, and
     /// once the ask has been out for `makingAfter` the main chat says that her server is making
-    /// her workspace. Her name and the rest come as the way in goes on.
+    /// her workspace: the first time only, at the start of a device that keeps no person yet.
+    /// At a later start nothing is made, however long her server takes over its answer, and
+    /// nothing is said of a making. Her name and the rest come as the way in goes on.
     private func ownAsked(of root: String) async -> String? {
+        let first = person == nil
         if person == nil {
             person = Person(id: .init(root), name: "", workspace: "")
             tell()
         }
         guard mainChat == .assistant, assistant == nil else { return (try? await engine.ownWorkspace())?.route }
         setups.set(.findingAssistant)
-        let patience = makingAfter
-        let slow = Task { [weak self] in
-            try? await Task.sleep(for: patience)
-            guard !Task.isCancelled, let self, self.setups.now == .findingAssistant else { return }
-            self.setups.set(.makingWorkspace)
+        var slow: Task<Void, Never>?
+        if first {
+            let patience = makingAfter
+            slow = Task { [weak self] in
+                try? await Task.sleep(for: patience)
+                guard !Task.isCancelled, let self, self.setups.now == .findingAssistant else { return }
+                self.setups.set(.makingWorkspace)
+            }
         }
         let own = (try? await engine.ownWorkspace())?.route
-        slow.cancel()
+        slow?.cancel()
         if setups.now == .makingWorkspace { setups.set(.findingAssistant) }
         return own
     }

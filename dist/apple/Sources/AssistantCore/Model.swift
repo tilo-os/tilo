@@ -85,6 +85,7 @@ public enum Setup: Equatable, Sendable {
     case findingAssistant
     /// As `findingAssistant`, where their server has been making their own workspace for a
     /// while: the first time it is asked for, that can take minutes, and the main chat says so.
+    /// Only the start of a device that keeps no person yet says it: a later start makes nothing.
     case makingWorkspace
     /// The person keeps no assistant, and one is being made for them: the first time. Only
     /// then does the main chat say that their assistant is being set up.
