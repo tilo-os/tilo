@@ -40,12 +40,17 @@ impl ContentPuts for SessionPuts {
                 contents.push(put.finish()?);
                 continue;
             }
-            if bytes_in_group.saturating_add(bytes.len()) > MAX_PUT_MANY_BYTES && !group.is_empty()
-            {
+            // A step carries at most so many bytes and so many files: the
+            // device refuses a larger one.
+            let full = bytes_in_group.saturating_add(bytes.len()) > MAX_PUT_MANY_BYTES
+                || files_in_group >= MAX_PUT_MANY_FILES;
+            if full && !group.is_empty() {
                 send_group(self, &mut group, &mut contents)?;
                 bytes_in_group = 0;
+                files_in_group = 0;
             }
             bytes_in_group = bytes_in_group.saturating_add(bytes.len());
+            files_in_group = files_in_group.saturating_add(1);
             group.push(hex::encode(bytes));
         }
         if !group.is_empty() {
