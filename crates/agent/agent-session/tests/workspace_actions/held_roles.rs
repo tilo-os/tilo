@@ -92,7 +92,7 @@ async fn a_commenter_comments_and_a_moderator_makes_a_channel_by_the_role_the_wo
                 &member,
                 &request(
                     &tasks,
-                    comment.address.clone(),
+                    comment.address,
                     json(serde_json::json!({"text": "Looks good"})),
                 ),
             );
@@ -130,7 +130,7 @@ async fn a_commenter_comments_and_a_moderator_makes_a_channel_by_the_role_the_wo
         None => {
             let names: Vec<String> = listing
                 .iter()
-                .map(|action| action.address.action.to_string())
+                .map(|action| action.address.action.clone())
                 .collect();
             wrong.push(format!(
                 "a moderator is not listed a new channel; listed: {names:?}"
