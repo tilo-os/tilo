@@ -304,6 +304,14 @@ code the release's link drops. What remains over the budget is the toolkit's
 own widget and SDK code measured above, and the budget rises by that
 remainder (`raises/painter-interpreter-in-its-engine.toml`).
 
+The runtime still linked the interpreter: a doc link to its crate in `part_paint/wasm.rs`
+loaded the crate, and a Rust dylib links every crate its build loads. Without the link the
+runtime is 160,471,104 bytes in t's app-sizes-x86_64 (r12dbaf39e5) against 162,919,248
+(`wasmi`, `wasmi_ir`, `wasmi_core` and `wasmparser` left, 1.3 MB of named code). Typst's
+plugins are wasm too, so the interpreter is an engine of its own,
+`libtilo_wasm_engine.so`, which `libtilo_typst_engine.so` and
+`libtilo_theme_painter_engine.so` chain on: the bundle holds one copy.
+
 `libtilo_settings_engine.so` grew 4.8 MB of named code over the same period
 (9.6 -> 14.4 MB; 13.6 MB shipped, 3.4 MB over its budget of 10.2): the SDK the
 panes are written against, 3.1 MB (`tilo_app` 0.58 -> 1.38 MB, `tilo_resource`

@@ -408,6 +408,7 @@ members = [
     "crates/runtime/engines/spotify",
     "crates/runtime/engines/timezone",
     "crates/runtime/engines/typst",
+    "crates/runtime/engines/wasm",
     "crates/runtime/engines/youtube",
     "crates/runtime/runtime-fs",
     "crates/runtime/tilo-fs-client",

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "The interpreter a theme's painter set loaded from wasm runs on (wasmi) as an engine library beside the shared runtime: libtilo_theme_painter_engine.so, which the toolkit opens the first time a theme names a set."
+description = "A theme's painter sets loaded from wasm, as an engine library beside the shared runtime on the wasm engine's interpreter: libtilo_theme_painter_engine.so, which the toolkit opens the first time a theme names a set."
 
 # A runtime engine the toolkit opens on first use rather than one an app names
 # DT_NEEDED: `part_paint` loads it through tilo-engine-loader the first time a
@@ -38,6 +38,8 @@ thin = [
     "tilo-ui/lazy-painter",
     "dep:tilo-theme-sdk",
     "dep:tilo-theme-painter-wasm",
+    "dep:tilo-wasm-engine",
+    "tilo-wasm-engine/thin",
     "dep:wat",
     "dep:workspace-hack",
 ]
@@ -51,6 +53,8 @@ tilo-ui = { path = "../../../sdk/ui-core", optional = true, default-features = f
 tilo-theme-sdk = { version = "0.1.0", path = "../../../sdk/theme-sdk", optional = true }
 # The interpreter.
 tilo-theme-painter-wasm = { version = "0.1.0", path = "../../../sdk/theme-painter-wasm", optional = true }
+# The interpreter itself, which the Typst engine loads too.
+tilo-wasm-engine = { path = "../wasm", optional = true }
 # The check's painter module, written as WAT in its binary.
 wat = { version = "1", optional = true }
 # Optional like everything else: an empty build must not link the hack's whole

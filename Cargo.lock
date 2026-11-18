@@ -22284,6 +22284,7 @@ dependencies = [
  "tilo-theme-painter-wasm",
  "tilo-theme-sdk",
  "tilo-ui",
+ "tilo-wasm-engine",
  "wat",
  "workspace-hack",
 ]
@@ -22378,6 +22379,7 @@ dependencies = [
  "comemo",
  "runtime-dylib",
  "tilo-highlight-engine",
+ "tilo-wasm-engine",
  "typst",
  "typst-assets",
  "typst-layout",
@@ -22853,6 +22855,15 @@ dependencies = [
  "tilo-image-codec",
  "tilo-paths",
  "toml 1.0.6+spec-1.1.0",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-wasm-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "wasmi",
  "workspace-hack",
 ]
 
