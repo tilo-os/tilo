@@ -2733,14 +2733,11 @@ pub struct AppBrokerState {
     /// action the person has not let it take. Nobody, until the host
     /// installs its sheet: such a request is then refused.
     app_action_consent: RwLock<Option<Arc<dyn crate::apps::app_actions::AppActionConsentPrompter>>>,
-    /// The grant questions on screen ([`app_consent::ConsentKey`]): one at a
-    /// time for each action an app asks for, so an app cannot bury the person
-    /// in sheets, while the two apps one action of it changes are asked about
-    /// in turn.
-    app_action_consent_pending: Mutex<std::collections::BTreeSet<app_consent::ConsentKey>>,
-    /// The app actions the person let an app take for this session alone,
-    /// which their settings do not keep.
-    app_consent_session: Mutex<std::collections::BTreeSet<app_consent::ConsentKey>>,
+    /// The grant questions on screen, by the grant each would give: one at
+    /// a time for each action an app asks for, so an app cannot bury the
+    /// person in sheets, while the two apps one action of it changes are
+    /// asked about in turn.
+    app_action_consent_pending: Mutex<std::collections::BTreeSet<tilo_action_policy::GrantId>>,
     /// Bumped whenever a pending or completed invocation changes, so hosts
     /// can refresh retained invocation projections exactly when needed and
     /// a waiter on a running invocation wakes when it may have moved.
@@ -3508,7 +3505,6 @@ impl AppBrokerState {
                 app_resource_kinds: RwLock::new(services.app_resource_kinds.clone()),
                 app_action_consent: RwLock::new(None),
                 app_action_consent_pending: Mutex::default(),
-                app_consent_session: Mutex::default(),
                 invocation_generation: tokio::sync::watch::Sender::new(0),
                 execution_activity: ActivityBus::default(),
                 admission_lock: Mutex::new(()),

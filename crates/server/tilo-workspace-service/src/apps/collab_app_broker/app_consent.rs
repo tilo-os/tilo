@@ -3,22 +3,27 @@
 //!
 //! An app reaches its own actions and records with its person's authority
 //! ([`AppBrokerState::app_api`]). Another app's action it takes only as the
-//! person let it: an answer kept in their settings (`settings_store::app_consent`),
-//! given once on the sheet the host draws ([`AppActionConsentPrompter`]).
-//! Until they answer, the request is refused. Nobody present means nobody to
-//! ask: the request is refused without a sheet, with the reason. So is a
-//! call outside any workspace, on a device that keeps no answers, or for an
-//! action nobody offers the person.
+//! workspace's grants naming the app say ([`Grantee::App`]), decided as an
+//! agent's are. Where none answers, the person is asked on the sheet the host
+//! draws ([`AppActionConsentPrompter`]), the sheet an agent's question uses;
+//! "Always" gives the grant in the workspace, where it shows under Apps in
+//! Privacy & Security and is revoked like any other. Until they answer, the
+//! request is refused. Nobody present means nobody to ask: the request is
+//! refused without a sheet, with the reason. So is a call outside any
+//! workspace, or for an action nobody offers the person.
 
 use crate::apps::BrokerError;
 use std::sync::Arc;
 
+use tilo_action_policy::agent_answers::{AnswerScope, answer_grant};
+use tilo_action_policy::{Answer, Basis, Grant, Grantee, Lifetime};
 use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest, RemoteActionMessage};
 
 use super::AppBrokerState;
 use super::action_provider::{ConnectionActionProvider, RowScope};
 use crate::apps::app_actions::{
-    AppActionAnswer, AppActionConsent, AppActionConsentPrompter, AppActionConsentRequest,
+    APP_ACTION_ASK, AppActionAnswer, AppActionConsent, AppActionConsentPrompter,
+    AppActionConsentRequest,
 };
 
 /// What happens to an application's invocation before it is served.
@@ -31,21 +36,10 @@ pub(crate) enum ConsentStep {
     Ask(Box<PendingConsent>),
 }
 
-/// Which app wants which app's action.
-pub(crate) type ConsentKey = settings_store::app_consent::Consent;
-
-fn key_of(request: &AppActionConsentRequest) -> ConsentKey {
-    ConsentKey::new(
-        &request.app_id,
-        &request.target_app,
-        &request.resource,
-        &request.action,
-    )
-}
-
-/// A consent question on screen.
+/// A consent question on screen, and the grant "Always" gives.
 pub(crate) struct PendingConsent {
     request: AppActionConsentRequest,
+    grant: Grant,
     answer: tokio::sync::oneshot::Receiver<AppActionAnswer>,
 }
 
@@ -61,25 +55,24 @@ impl AppBrokerState {
     /// own identity on a connection `person` admitted.
     ///
     /// The person is asked only for an action the catalogue offers them, in a
-    /// workspace this machine governs, that this app was not let take before:
-    /// in their settings, or for this session. Without a person, a workspace
-    /// or a place to keep the answer, nobody can let it, and it is refused.
+    /// workspace this machine governs, that no grant of the workspace lets
+    /// the app take or keeps it from. Without a person or a workspace, nobody
+    /// can let it, and it is refused.
     pub(crate) fn app_action_consent(
         &self,
         person: &Caller,
         app_id: &str,
         request: &InvokeRequest,
     ) -> ConsentStep {
-        let consent = match self.consent_question(person, app_id, request) {
-            Ok(Some(consent)) => consent,
+        let (consent, grant) = match self.consent_question(person, app_id, request) {
+            Ok(Some(question)) => question,
             Ok(None) => return ConsentStep::Serve,
             Err(refused) => return ConsentStep::Refuse(refused),
         };
-        let key = key_of(&consent);
         let Ok(mut pending) = self.app_action_consent_pending.lock() else {
             return ConsentStep::Refuse(ActionCallError::NotPermitted);
         };
-        if pending.contains(&key) {
+        if pending.contains(&grant.id) {
             return ConsentStep::Refuse(ActionCallError::NotPermitted);
         }
         let prompter = self
@@ -90,21 +83,23 @@ impl AppBrokerState {
         let Some(answer) = prompter.and_then(|prompter| prompter.ask(consent.clone())) else {
             return ConsentStep::Refuse(ActionCallError::NotPermitted);
         };
-        pending.insert(key);
+        pending.insert(grant.id.clone());
         ConsentStep::Ask(Box::new(PendingConsent {
             request: consent,
+            grant,
             answer,
         }))
     }
 
-    /// The question to put to the person: `None` when the call needs none,
-    /// `Err` with what to tell the app when nobody can answer it.
+    /// The question to put to the person, and the grant answering it for
+    /// good: `None` when the call needs none, `Err` with what to tell the app
+    /// when nobody can answer it or a grant keeps the app from it.
     fn consent_question(
         &self,
         person: &Caller,
         app_id: &str,
         request: &InvokeRequest,
-    ) -> Result<Option<AppActionConsentRequest>, ActionCallError> {
+    ) -> Result<Option<(AppActionConsentRequest, Grant)>, ActionCallError> {
         let refused = |reason: &str| ActionCallError::Refused {
             reason: reason.to_owned(),
         };
@@ -131,18 +126,26 @@ impl AppBrokerState {
         {
             return Ok(None);
         }
-        let settings = self.services.settings.as_deref().ok_or_else(|| {
-            refused("this device keeps no answers for one app taking another app's action")
-        })?;
         let address = &action.address;
-        let key = ConsentKey::new(app_id, &target_app, &address.resource, &address.action);
-        if settings_store::app_consent::allows(settings, &key)
-            || self
-                .app_consent_session
-                .lock()
-                .is_ok_and(|held| held.contains(&key))
-        {
-            return Ok(None);
+        let need = action.contract.need();
+        let grant = answer_grant(
+            workspace,
+            Grantee::app(app_id),
+            (
+                &AnswerScope::action(&target_app, &action.resource_kind, &address.action),
+                need.kind,
+            ),
+            Answer::Allow,
+            Grantee::person(person_id),
+        );
+        match self.app_answer(workspace, app_id, &target_app, &action)? {
+            Some(Answer::Allow) => return Ok(None),
+            Some(Answer::Deny) => {
+                return Err(refused(
+                    "this workspace does not let this app take that app's action",
+                ));
+            }
+            Some(Answer::Ask) | None => {}
         }
         let contract = &action.contract;
         // What the call would run with, field by field, so the person sees what it changes.
@@ -153,26 +156,68 @@ impl AppBrokerState {
             _ => None,
         }
         .filter(|draft| !draft.fields.is_empty());
-        Ok(Some(AppActionConsentRequest {
-            handle: format!("app-action:{}", request.invocation.0),
-            workspace: workspace.to_string(),
-            person: person_id.to_owned(),
-            app_id: app_id.to_string(),
-            agent_session: None,
-            target_app,
-            resource: action.address.resource.clone(),
-            action: action.address.action.clone(),
-            resource_label: action.resource_label.clone(),
-            action_label: action.action_label.clone(),
-            risk: contract.risk,
-            needs_confirmation: contract.advertised_confirmation()
-                != tilo_actions::ConfirmationPolicy::None
-                || contract.risk.requires_confirmation(),
-            confirming: false,
-            moderation: None,
-            scope: None,
-            draft,
-        }))
+        Ok(Some((
+            AppActionConsentRequest {
+                handle: format!("{APP_ACTION_ASK}{}", request.invocation.0),
+                workspace: workspace.to_string(),
+                person: person_id.to_owned(),
+                app_id: app_id.to_string(),
+                agent_session: None,
+                target_app,
+                resource: action.address.resource.clone(),
+                action: action.address.action.clone(),
+                resource_label: action.resource_label.clone(),
+                action_label: action.action_label.clone(),
+                risk: contract.risk,
+                needs_confirmation: contract.advertised_confirmation()
+                    != tilo_actions::ConfirmationPolicy::None
+                    || contract.risk.requires_confirmation(),
+                confirming: false,
+                moderation: None,
+                scope: None,
+                draft,
+            },
+            grant,
+        )))
+    }
+
+    /// What the grants of `workspace` naming app `app_id` answer for its use
+    /// of `action`, which `target_app` offers: `None` where none does.
+    fn app_answer(
+        &self,
+        workspace: &str,
+        app_id: &str,
+        target_app: &str,
+        action: &tilo_actions::ActionDescriptor,
+    ) -> Result<Option<Answer>, ActionCallError> {
+        let unavailable = |reason: String| ActionCallError::Unavailable { reason };
+        let need = action.contract.need();
+        let now = tilo_clock::unix_now();
+        self.membership
+            .as_ref()
+            .ok_or_else(|| unavailable("workspace authority unavailable".into()))?
+            .decide_in_workspace(workspace, |held| {
+                let held = held?;
+                let node = tilo_actions::action_node(
+                    &held.node(),
+                    target_app,
+                    &action.resource_kind,
+                    &action.address.resource,
+                    need.field.as_deref(),
+                    &action.address.action,
+                );
+                let decision = held.policy.party_of(Grantee::app(app_id)).decide(
+                    &node,
+                    need.kind,
+                    &tilo_desktop_model::context_at(now),
+                );
+                Some(match decision.basis {
+                    Basis::NoGrant => None,
+                    _ => Some(decision.answer),
+                })
+            })
+            .map_err(unavailable)?
+            .ok_or_else(|| unavailable("workspace no longer hosted".into()))
     }
 
     /// The action `request` asks for, and the app that offers it, as the
@@ -207,37 +252,40 @@ impl AppBrokerState {
     /// The question `consent` asked is off the screen.
     fn finish_app_action_consent(&self, consent: &PendingConsent) {
         if let Ok(mut pending) = self.app_action_consent_pending.lock() {
-            pending.remove(&key_of(&consent.request));
+            pending.remove(&consent.grant.id);
         }
     }
 
-    /// Keep the answer `answer` gives as the person who gave it: in their
-    /// settings for as long as they say, or for this session alone. `Err`
-    /// with what to tell them when it could not be kept.
-    fn keep_app_action_consent(
+    /// Keep the answer `answer` gives as the person who gave it: a grant in
+    /// the workspace for as long as they say, none for this call alone.
+    /// `Err` with what to tell them when it could not be kept.
+    async fn keep_app_action_consent(
         &self,
         consent: &PendingConsent,
         answer: AppActionConsent,
     ) -> Result<(), String> {
-        let settings = self
-            .services
-            .settings
-            .as_deref()
-            .ok_or_else(|| "this device keeps no answers".to_owned())?;
-        let key = key_of(&consent.request);
-        match answer {
+        let lifetime = match answer {
             // The call it was given for, and no other.
-            AppActionConsent::Once | AppActionConsent::Deny => Ok(()),
-            AppActionConsent::Session => self
-                .app_consent_session
-                .lock()
-                .map(|mut held| {
-                    held.insert(key);
-                })
-                .map_err(|_| "this session's answers are unreadable".to_owned()),
-            AppActionConsent::Always => settings_store::app_consent::allow(settings, &key)
-                .map_err(|error| format!("the answer could not be saved: {error}")),
-        }
+            AppActionConsent::Once | AppActionConsent::Deny => return Ok(()),
+            AppActionConsent::Session => {
+                Lifetime::Session(tilo_desktop_model::session_id().to_owned())
+            }
+            AppActionConsent::Always => Lifetime::UntilRevoked,
+        };
+        let grants = self
+            .services
+            .workspace_grants
+            .as_ref()
+            .filter(|grants| grants.may_record(&consent.request.workspace, &consent.request.person))
+            .ok_or_else(|| "this device cannot give grants in this workspace".to_owned())?;
+        grants
+            .record(
+                &consent.request,
+                consent.grant.clone().with_lifetime(lifetime),
+                answer,
+            )
+            .await
+            .map(drop)
     }
 }
 
@@ -270,7 +318,10 @@ pub(super) fn serve_after_consent(
                 refuse(&message, ActionCallError::NotPermitted)
             }
             Ok(answer) => {
-                if let Err(reason) = state.keep_app_action_consent(&consent, answer.consent) {
+                if let Err(reason) = state
+                    .keep_app_action_consent(&consent, answer.consent)
+                    .await
+                {
                     refuse(&message, ActionCallError::Refused { reason })
                 } else {
                     // Answered at admission, as before waits existed: an answer

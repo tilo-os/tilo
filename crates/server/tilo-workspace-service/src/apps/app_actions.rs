@@ -5,11 +5,12 @@
 //! invoke other apps' actions. The declaration is a ceiling, never a grant:
 //! using another app's action still needs the person's own answer.
 //!
-//! When an app reaches for an action of another app nobody let it take, the
-//! person who admitted its connection is asked first — on a sheet the host
-//! draws ([`AppActionConsentPrompter`]) — instead of refusing silently. The
-//! answer is kept in their settings (`settings_store::app_consent`). Nobody
-//! present means nobody to ask: the request is refused without a sheet.
+//! When an app reaches for an action of another app no grant of the workspace
+//! lets it take, the person who admitted its connection is asked first — on
+//! a sheet the host draws ([`AppActionConsentPrompter`]) — instead of
+//! refusing silently. "Always" is a grant to the app in the workspace
+//! ([`tilo_action_policy::Grantee::App`]). Nobody present means nobody to
+//! ask: the request is refused without a sheet.
 
 pub use tilo_broker_core::access::{
     AppActionAccess, AppActionAccessResolver, AppResourceKindsResolver, nothing_declared,
@@ -19,6 +20,10 @@ use tokio::sync::oneshot;
 
 /// What the handle of a question an agent session asks begins with.
 pub const AGENT_SESSION_ASK: &str = "agent-session-ask:";
+
+/// What the handle of a question whether an app may take another app's
+/// action begins with.
+pub const APP_ACTION_ASK: &str = "app-action:";
 
 /// What the person is asked.
 #[derive(Clone, Debug, PartialEq, Eq)]

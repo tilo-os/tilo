@@ -27,7 +27,6 @@ use crate::device_read::Reading;
 use crate::effects::SettingsEffect;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use settings_store::desktop_control::TabGrantEntry;
 
 crate::effects::effect_family!(PermissionsEffect => answer);
 
@@ -62,12 +61,6 @@ pub enum PermissionsEffect {
         #[param("The application identity the secret store recorded")]
         app: String,
     },
-    /// Stop a terminal tab controlling the desktop beyond its workspace.
-    #[effect(job)]
-    StopDesktopControl {
-        #[param("The grant, as the desktop listed it")]
-        grant: String,
-    },
 }
 
 pub(crate) fn answer(
@@ -82,20 +75,6 @@ pub(crate) fn answer(
         }
         PermissionsEffect::ForgetSecrets { app: id } => {
             secret_command(app, cx, vec!["apps".into(), "forget".into(), id])
-        }
-        PermissionsEffect::StopDesktopControl { grant } => {
-            let reader = Arc::clone(&area(app).ok_or_else(crate::area::missing)?.reader);
-            Ok(app.job(
-                cx,
-                move || reader.stop_desktop_control(&grant),
-                |app: &SettingsApp, done: Result<(), String>, _| {
-                    area(app)
-                        .ok_or_else(crate::area::missing)?
-                        .reading
-                        .refresh();
-                    done.map(|()| Effected::done())
-                },
-            ))
         }
         PermissionsEffect::OpenWorkspacePrivacy => {
             if !app.reaches_devices() {
@@ -147,8 +126,6 @@ trait PermissionsReader: Send + Sync {
     fn device_security(&self) -> DeviceSecurity;
     fn secret_apps(&self) -> Result<Vec<SecretApp>, String>;
     fn secret_command(&self, args: &[String]) -> Result<(), String>;
-    fn desktop_control(&self) -> Vec<TabGrantEntry>;
-    fn stop_desktop_control(&self, grant: &str) -> Result<(), String>;
     fn workspace_state(&self) -> Option<String>;
 }
 
@@ -176,19 +153,6 @@ impl PermissionsReader for SystemPermissions {
         command_output(SECRET_SERVICE, &args).map(|_| ())
     }
 
-    fn desktop_control(&self) -> Vec<TabGrantEntry> {
-        crate::device_read::off_ui_thread();
-        settings_store::desktop_control::DesktopControlSnapshot::load()
-            .map(|snapshot| snapshot.tabs)
-            .unwrap_or_default()
-    }
-
-    fn stop_desktop_control(&self, grant: &str) -> Result<(), String> {
-        settings_store::desktop_control::StopRequest::request(grant)
-            .map(|_| ())
-            .map_err(|error| error.to_string())
-    }
-
     fn workspace_state(&self) -> Option<String> {
         crate::device_read::off_ui_thread();
         load_text()
@@ -197,7 +161,6 @@ impl PermissionsReader for SystemPermissions {
 
 struct SamplePermissions {
     secrets: Mutex<Vec<SecretApp>>,
-    desktop_control: Mutex<Vec<TabGrantEntry>>,
 }
 
 impl Default for SamplePermissions {
@@ -219,13 +182,6 @@ impl Default for SamplePermissions {
                     items: 1,
                 },
             ]),
-            desktop_control: Mutex::new(vec![TabGrantEntry {
-                id: "4242:17".into(),
-                app: "so.tilo.terminal".into(),
-                app_label: "Terminal".into(),
-                tab: "claude".into(),
-                workspace: "Home".into(),
-            }]),
         }
     }
 }
@@ -288,45 +244,13 @@ impl PermissionsReader for SamplePermissions {
         Ok(())
     }
 
-    fn desktop_control(&self) -> Vec<TabGrantEntry> {
-        crate::device_read::off_ui_thread();
-        self.desktop_control
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
-    }
-
-    fn stop_desktop_control(&self, grant: &str) -> Result<(), String> {
-        crate::device_read::off_ui_thread();
-        let mut tabs = self
-            .desktop_control
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let before = tabs.len();
-        tabs.retain(|tab| tab.id != grant);
-        let stopped = tabs.len() < before;
-        drop(tabs);
-        if stopped {
-            Ok(())
-        } else {
-            Err(format!("no tab grant `{grant}`"))
-        }
-    }
-
     fn workspace_state(&self) -> Option<String> {
         crate::device_read::off_ui_thread();
-        let caps = [
-            (
-                "so.tilo.terminal",
-                Scope::Device("desktop-control".into()),
-                Access::Write,
-            ),
-            (
-                "so.tilo.camera",
-                Scope::Device("camera".into()),
-                Access::Read,
-            ),
-        ]
+        let caps = [(
+            "so.tilo.camera",
+            Scope::Device("camera".into()),
+            Access::Read,
+        )]
         .map(|(app, scope, access)| {
             CapOverride::grant(Grantee::person("local"), scope, access).through(app)
         });
@@ -342,9 +266,7 @@ struct PermissionsReading {
     privacy: os_actions::PrivacyStatus,
     security: DeviceSecurity,
     secrets: Result<Vec<SecretApp>, String>,
-    desktop_control: Vec<TabGrantEntry>,
     workspace_access: Option<Vec<WsGrants>>,
-    app_actions: Vec<AppGrants>,
 }
 
 impl PermissionsReading {
@@ -353,9 +275,7 @@ impl PermissionsReading {
             privacy: reader.privacy(),
             security: reader.device_security(),
             secrets: reader.secret_apps(),
-            desktop_control: reader.desktop_control(),
             workspace_access: workspace_access(reader.workspace_state().as_deref()),
-            app_actions: consent_views(&settings_store::app_consent::ANSWERS.get()),
         }
     }
 }
@@ -363,10 +283,6 @@ impl PermissionsReading {
 pub struct PermissionsArea {
     reader: Arc<dyn PermissionsReader>,
     reading: Reading<PermissionsReading>,
-    /// Whether the desktop's live "this tab" grants are watched while the
-    /// page is shown: not for a capture's sample device.
-    watches: bool,
-    desktop_control_watch: std::cell::RefCell<std::rc::Weak<crate::watch::Watched>>,
     shown: LocalState<u64>,
     seen: std::cell::Cell<u64>,
 }
@@ -378,10 +294,7 @@ impl PermissionsArea {
         } else {
             Arc::new(SamplePermissions::default())
         };
-        Self {
-            watches: cx.devices,
-            ..Self::over(reader)
-        }
+        Self::over(reader)
     }
 
     fn over(reader: Arc<dyn PermissionsReader>) -> Self {
@@ -391,42 +304,15 @@ impl PermissionsArea {
             reader,
             seen: std::cell::Cell::new(reading.revision()),
             reading,
-            watches: false,
-            desktop_control_watch: std::cell::RefCell::default(),
             shown: LocalState::new(0),
         }
     }
 
     fn poll(&self) {
-        if self
-            .desktop_control_watch
-            .borrow()
-            .upgrade()
-            .is_some_and(|watch| watch.take())
-        {
-            self.reading.refresh();
-        }
         let revision = self.reading.revision();
         if self.seen.replace(revision) != revision {
             self.shown.set(self.shown.get().wrapping_add(1));
         }
-    }
-
-    fn watch_desktop_control(&self) -> Option<std::rc::Rc<crate::watch::Watched>> {
-        if !self.watches {
-            return None;
-        }
-        Some(crate::watch::shared(
-            &mut self.desktop_control_watch.borrow_mut(),
-            || {
-                let snapshot: Vec<PathBuf> = settings_store::desktop_control::snapshot_path()
-                    .into_iter()
-                    .collect();
-                let watch = crate::watch::Watched::files(&snapshot);
-                let _ = watch.take();
-                watch
-            },
-        ))
     }
 }
 
@@ -510,45 +396,6 @@ fn secrets_card(cx: &ViewCx<Settings>, apps: &Result<Vec<SecretApp>, String>) ->
         }
     }
     section(&title, rows(body))
-}
-
-fn desktop_control_card(cx: &ViewCx<Settings>, tabs: &[TabGrantEntry]) -> SettingsSection {
-    let mut body: Vec<Item> = vec![note(&t("perm-desktop-control-intro"))];
-    if tabs.is_empty() {
-        body.push(note(&t("perm-desktop-control-none")));
-    }
-    for tab in tabs {
-        let title = t_args(
-            "perm-desktop-control-tab",
-            &[
-                ("app", tab.app_label.clone().into()),
-                ("tab", tab.tab.clone().into()),
-            ],
-        );
-        let mut details = vec![t("perm-desktop-control-until-closes")];
-        if !tab.workspace.is_empty() {
-            details.push(t_args(
-                "perm-desktop-control-workspace",
-                &[("workspace", tab.workspace.clone().into())],
-            ));
-        }
-        let stop = cx.actions().bind_effect_invocation(
-            Button::new(
-                &format!("desktop-control-stop:{}", tab.id),
-                &t("perm-desktop-control-stop"),
-            ),
-            &SettingsEffect::from(PermissionsEffect::StopDesktopControl {
-                grant: tab.id.clone(),
-            }),
-        );
-        body.push(row(Box::new(thing_row(
-            &format!("desktop-control:{}", tab.id),
-            &title,
-            &details,
-            Some(Box::new(stop)),
-        ))));
-    }
-    section(&t("perm-desktop-control-title"), rows(body))
 }
 
 fn state_path() -> Option<PathBuf> {
@@ -689,7 +536,6 @@ enum Tint {
     Screen,
     Remote,
     Network,
-    AppAction,
 }
 
 impl Tint {
@@ -702,13 +548,12 @@ impl Tint {
             Tint::Screen => Icon::ScreenShare,
             Tint::Remote => Icon::MousePointer2,
             Tint::Network => Icon::Globe,
-            Tint::AppAction => Icon::AppWindow,
         }
     }
 
     fn tone(self) -> StatusTone {
         match self {
-            Tint::Files | Tint::Screen | Tint::AppAction => StatusTone::Info,
+            Tint::Files | Tint::Screen => StatusTone::Info,
             Tint::Camera | Tint::Microphone | Tint::Remote => StatusTone::Warning,
             Tint::Network => StatusTone::Success,
         }
@@ -760,9 +605,7 @@ fn kind_shown(english: &str) -> String {
         "Microphone" => "perm-kind-mic",
         "Screen sharing" => "perm-kind-screen",
         "Remote control" => "perm-kind-remote",
-        "Desktop control" => "perm-kind-desktop-control",
-        "Network" => "perm-kind-network",
-        _ => "perm-kind-action",
+        _ => "perm-kind-network",
     })
 }
 
@@ -793,9 +636,6 @@ fn cap_view(cap: &CapOverride) -> Option<CapView> {
         Scope::Device(d) if d == "remote-desktop" => {
             ("Remote control", t("perm-inject-input"), Tint::Remote)
         }
-        Scope::Device(d) if d == "desktop-control" => {
-            ("Desktop control", t("perm-desktop-control"), Tint::Remote)
-        }
         Scope::NetHost(h) => {
             let detail = if h == "*" {
                 t("perm-any-host")
@@ -812,38 +652,6 @@ fn cap_view(cap: &CapOverride) -> Option<CapView> {
         expiry,
         tint,
     })
-}
-
-/// One app's answers for the other apps' actions it may use, as the person
-/// gave them on the sheet.
-fn consent_views(consents: &[settings_store::app_consent::Consent]) -> Vec<AppGrants> {
-    let mut by_app: std::collections::BTreeMap<String, Vec<CapView>> =
-        std::collections::BTreeMap::new();
-    for consent in consents {
-        by_app
-            .entry(consent.app.clone())
-            .or_default()
-            .push(CapView {
-                kind: "App action",
-                detail: t_args(
-                    "perm-action-detail",
-                    &[
-                        ("action", consent.action.as_str().into()),
-                        ("resource", consent.resource.as_str().into()),
-                        ("app", consent.target_app.as_str().into()),
-                    ],
-                ),
-                expiry: "Always",
-                tint: Tint::AppAction,
-            });
-    }
-    by_app
-        .into_iter()
-        .map(|(app, mut caps)| {
-            caps.sort_by(|a, b| a.kind.cmp(b.kind).then(a.detail.cmp(&b.detail)));
-            AppGrants { app, caps }
-        })
-        .collect()
 }
 
 /// Project the whole state document into per-workspace, per-app grants,
@@ -918,10 +726,8 @@ fn app_block(grants: &AppGrants) -> Vec<Item> {
 pub(crate) fn view(cx: &ViewCx<Settings>, app: &std::rc::Rc<SettingsApp>) -> Option<Element> {
     let held = area(app)?;
     held.reading.refresh();
-    let watch = held.watch_desktop_control();
     let reading = held.reading.clone();
     let grants = cx.switch(&held.shown, move |cx, _| {
-        let _watched = &watch;
         let shown = reading.get();
         let workspace_access = shown.as_ref().map_or(Grants::Reading, |reading| {
             Grants::Read(reading.workspace_access.as_deref())
@@ -1087,17 +893,11 @@ fn panel(
         panel.push(active_privacy_use_card(&reading.privacy));
         panel.push(device_security_card(&reading.security));
         panel.push(secrets_card(cx, &reading.secrets));
-        panel.push(desktop_control_card(cx, &reading.desktop_control));
     } else {
         panel.push(reading_card("perm-privacy-hardware"));
         panel.push(reading_card("perm-active-use"));
         panel.push(reading_card("perm-device-security"));
         panel.push(reading_card("perm-secrets-title"));
-        panel.push(reading_card("perm-desktop-control-title"));
-    }
-    if let Some(reading) = reading.filter(|reading| !reading.app_actions.is_empty()) {
-        let body: Vec<Item> = reading.app_actions.iter().flat_map(app_block).collect();
-        panel.push(section(&t("perm-app-actions-title"), rows(body)));
     }
     panel.push(workspace_grants_intro_card(cx));
 
@@ -1127,7 +927,6 @@ mod tests {
 
     struct Fixed {
         secrets: Result<Vec<SecretApp>, String>,
-        tabs: Vec<TabGrantEntry>,
         state: Option<String>,
     }
 
@@ -1135,7 +934,6 @@ mod tests {
         fn state(state: Option<&str>) -> Self {
             Self {
                 secrets: Ok(Vec::new()),
-                tabs: Vec::new(),
                 state: state.map(str::to_owned),
             }
         }
@@ -1152,12 +950,6 @@ mod tests {
             self.secrets.clone()
         }
         fn secret_command(&self, _: &[String]) -> Result<(), String> {
-            Ok(())
-        }
-        fn desktop_control(&self) -> Vec<TabGrantEntry> {
-            self.tabs.clone()
-        }
-        fn stop_desktop_control(&self, _: &str) -> Result<(), String> {
             Ok(())
         }
         fn workspace_state(&self) -> Option<String> {
@@ -1302,46 +1094,6 @@ mod tests {
         assert!(said.contains(&t("perm-secrets-unavailable")), "{said:#?}");
     }
 
-    #[test]
-    fn each_tab_that_controls_the_desktop_is_listed_with_stop() {
-        let sample = SamplePermissions::default();
-        let tab = sample.desktop_control().remove(0);
-        let mut app = window_over(Arc::new(sample));
-        let stop = format!("desktop-control-stop:{}", tab.id);
-        let mut labels = Vec::new();
-        button_labels(
-            with_id(app.harness().root_widget(), &stop).expect("the tab's Stop"),
-            &mut labels,
-        );
-        assert_eq!(labels, vec![t("perm-desktop-control-stop")]);
-        let joined = said(&mut app).join(" | ");
-        let named = t_args(
-            "perm-desktop-control-tab",
-            &[("app", "Terminal".into()), ("tab", "claude".into())],
-        );
-        let from = t_args(
-            "perm-desktop-control-workspace",
-            &[("workspace", "Home".into())],
-        );
-        assert!(joined.contains(&named), "{joined}");
-        assert!(
-            joined.contains(&t("perm-desktop-control-until-closes")),
-            "{joined}"
-        );
-        assert!(joined.contains(&from), "{joined}");
-
-        app.harness().click_named(&stop).unwrap();
-        let none = t("perm-desktop-control-none");
-        assert!(
-            app.harness()
-                .wait_until(tilo_test_env::hang_bound(), |harness| harness
-                    .inspection_json()
-                    .is_ok_and(|frame| frame.contains(&none))),
-            "a stopped tab is gone"
-        );
-        assert!(with_id(app.harness().root_widget(), &stop).is_none());
-    }
-
     struct StalledReader(Arc<crate::stall::Stall>);
 
     impl StalledReader {
@@ -1366,14 +1118,6 @@ mod tests {
         fn secret_command(&self, args: &[String]) -> Result<(), String> {
             self.wait();
             SamplePermissions::default().secret_command(args)
-        }
-        fn desktop_control(&self) -> Vec<TabGrantEntry> {
-            self.wait();
-            SamplePermissions::default().desktop_control()
-        }
-        fn stop_desktop_control(&self, grant: &str) -> Result<(), String> {
-            self.wait();
-            SamplePermissions::default().stop_desktop_control(grant)
         }
         fn workspace_state(&self) -> Option<String> {
             self.wait();
@@ -1402,7 +1146,7 @@ mod tests {
         assert!(!frame.contains(&t("perm-firewall-firewalld")), "{frame}");
         assert!(!frame.contains("binary:/usr/bin/chromium"), "{frame}");
         assert!(!frame.contains(&t("perm-unavailable-title")), "{frame}");
-        assert!(!frame.contains(&t("perm-desktop-control")), "{frame}");
+        assert!(!frame.contains(&t("perm-capture-video")), "{frame}");
 
         check.release();
         assert!(
@@ -1411,7 +1155,7 @@ mod tests {
                     .inspection_json()
                     .is_ok_and(|frame| frame.contains(&t("perm-firewall-firewalld"))
                         && frame.contains("binary:/usr/bin/chromium")
-                        && frame.contains(&t("perm-desktop-control"))
+                        && frame.contains(&t("perm-capture-video"))
                         && !frame.contains(&t("perm-reading")))),
             "what the device reports is shown"
         );
@@ -1543,29 +1287,8 @@ mod tests {
                 Some("Remote control")
             );
             assert_eq!(
-                g(Scope::Device("desktop-control".into()), Access::Write),
-                Some("Desktop control")
-            );
-            assert_eq!(
                 g(Scope::NetHost("*".into()), Access::Write),
                 Some("Network")
-            );
-            let action = consent_views(&[settings_store::app_consent::Consent::new(
-                "so.tilo.shortcuts",
-                "so.tilo.agent",
-                "agent.transform:freeform",
-                "freeform",
-            )]);
-            assert_eq!(action.len(), 1);
-            assert_eq!(action[0].app, "so.tilo.shortcuts");
-            let cap = &action[0].caps[0];
-            assert_eq!(cap.kind, "App action");
-            assert!(
-                cap.detail.contains("freeform")
-                    && cap.detail.contains("agent.transform:freeform")
-                    && cap.detail.contains("so.tilo.agent"),
-                "{}",
-                cap.detail
             );
             let rw = cap_view(
                 &CapOverride::grant(

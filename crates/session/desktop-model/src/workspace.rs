@@ -303,33 +303,43 @@ impl Workspace {
             .collect()
     }
 
-    /// Whether app `app_id` may act on this desktop beyond its own window at
-    /// `now`: a live [`Capability::DesktopControl`] grant of this
-    /// workspace's.
-    pub fn holds_desktop_control_at(&self, app_id: &str, now: u64) -> bool {
-        self.sandbox.iter().any(|cap| {
-            cap.names_app(app_id)
-                && cap.effect == Effect::Grant
-                && cap.is_live_at(Some(now))
-                && matches!(
-                    Capability::from_capability(cap),
-                    Some(Capability::DesktopControl { .. })
-                )
-        })
+    /// The grant letting app `app_id` use the desktop's actions beyond its
+    /// own workspace (`tilo action` typed in a terminal), given by `by`: an
+    /// action grant naming the app, on the desktop's own node.
+    #[must_use]
+    pub fn desktop_control_grant(&self, app_id: &str, by: Grantee) -> Grant {
+        Grant::new(
+            format!("desktop-control:{app_id}"),
+            Grantee::app(app_id),
+            self.node().app(crate::commands::APP_ID),
+            KindSet::ALL,
+            Answer::Allow,
+            by,
+        )
     }
 
-    /// Take back app `app_id`'s desktop control: every
-    /// [`Capability::DesktopControl`] grant of its, whatever its lifetime.
-    /// Whether there was one.
+    /// Whether app `app_id` may act on this desktop beyond its own window at
+    /// `now`: what the workspace's grants naming the app answer for the
+    /// desktop's own actions.
+    pub fn holds_desktop_control_at(&self, app_id: &str, now: u64) -> bool {
+        self.policy
+            .party_of(Grantee::app(app_id))
+            .decide(
+                &self.node().app(crate::commands::APP_ID),
+                ActionKind::Undoable,
+                &context_at(now),
+            )
+            .answer
+            == Answer::Allow
+    }
+
+    /// Take back app `app_id`'s desktop control: every grant naming it on the
+    /// desktop's actions, whatever its lifetime. Whether there was one.
     pub fn stop_desktop_control(&mut self, app_id: &str) -> bool {
+        let node = self.node().app(crate::commands::APP_ID);
+        let app = Grantee::app(app_id);
         !self
-            .revoke_sandbox_matching(|cap| {
-                cap.names_app(app_id)
-                    && matches!(
-                        Capability::from_capability(cap),
-                        Some(Capability::DesktopControl { .. })
-                    )
-            })
+            .revoke_grants_matching(|grant| grant.grantee == app && grant.node == node)
             .is_empty()
     }
 

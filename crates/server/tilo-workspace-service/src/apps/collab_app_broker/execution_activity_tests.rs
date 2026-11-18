@@ -1726,8 +1726,8 @@ async fn a_sheet_closed_unanswered_answers_the_agent_unavailable_not_declined() 
 }
 
 /// One app takes another app's action only as a person lets it. With nobody
-/// to ask, no workspace, nowhere to keep the answer or no such action offered,
-/// the call is refused with what to say, never served unasked.
+/// to ask, no workspace, no sheet or no such action offered, the call is
+/// refused with what to say, never served unasked.
 #[tokio::test]
 async fn an_app_taking_another_apps_action_nobody_can_allow_is_refused() {
     use super::app_consent::ConsentStep;
@@ -1749,5 +1749,9 @@ async fn an_app_taking_another_apps_action_nobody_can_allow_is_refused() {
     unoffered.target.address = tilo_actions::ActionAddress::new("test:block-a", "erase");
     let unknown = ActionCallError::UnknownAction.to_string();
     assert_eq!(refusal(&person, &unoffered), unknown);
-    assert!(refusal(&person, &request()).contains("keeps no answers"));
+    assert_eq!(
+        refusal(&person, &request()),
+        ActionCallError::NotPermitted.to_string(),
+        "no grant and no sheet to ask on"
+    );
 }

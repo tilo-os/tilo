@@ -485,3 +485,8 @@ reason = "the variant is renamed from `LegacyLaunch` to `LinuxVmLaunch` because 
 file = "crates/agent/agent-session/src/worker/proto.rs"
 enum = "Mode"
 reason = "the picture slot served only the planner's own reads of pictures, which went with it once agent members work through the MCP tools; a mode travels on the pipe between a host and the worker processes it starts from its own binary, and nothing keeps it"
+
+[[break]]
+file = "crates/session/desktop-model/src/capability.rs"
+enum = "Capability"
+reason = "desktop control is an action grant naming the app on the desktop's own actions, no longer a sandbox capability; a `Capability` is what an app asks for and no byte of one is kept, and a stored sandbox grant of the old desktop-control device reads as nothing"

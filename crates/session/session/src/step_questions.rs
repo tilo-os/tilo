@@ -20,7 +20,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tilo_service::{Question, Questions};
 use tilo_workspace_service::apps::app_actions::{
-    AGENT_SESSION_ASK, AppActionAnswer, AppActionConsent, AppActionConsentPrompter,
+    AGENT_SESSION_ASK, APP_ACTION_ASK, AppActionAnswer, AppActionConsent, AppActionConsentPrompter,
     AppActionConsentRequest,
 };
 
@@ -28,9 +28,6 @@ use crate::agent_sessions::AgentSessions;
 
 /// The kind the session's sheet reads an agent session's or an app's question as.
 pub(crate) const KIND: &str = "session.step-question";
-
-/// What a question whether an app may take another app's action is named by.
-const APP_ACTION: &str = "app-action:";
 
 /// The sheet's choices, as the answer names them.
 pub(crate) const ALLOW_ONCE: usize = 0;
@@ -183,7 +180,7 @@ fn question(request: &AppActionConsentRequest) -> Question {
         may_allow_agent: if agent_asks {
             request.scope.is_some()
         } else {
-            request.handle.starts_with(APP_ACTION)
+            request.handle.starts_with(APP_ACTION_ASK)
         },
     };
     Question {

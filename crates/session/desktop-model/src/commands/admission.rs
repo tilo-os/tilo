@@ -105,8 +105,6 @@ pub fn check_owned(command: &DesktopCommand, owned: impl Fn(u64) -> bool) -> Res
         | DesktopCommand::ClaimNamespace { .. }
         | DesktopCommand::SavePreset { .. }
         | DesktopCommand::AssignPreset { .. }
-        | DesktopCommand::GrantAppAction { .. }
-        | DesktopCommand::RevokeAppAction { .. }
         | DesktopCommand::SetLayout { .. } => Ok(()),
     }
 }

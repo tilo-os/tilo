@@ -13,8 +13,7 @@ use tilo_desktop_model::width::{
     WIDTH_NARROW_PERMILLE, WIDTH_NORMAL_PERMILLE, WIDTH_WIDE_PERMILLE,
 };
 use tilo_desktop_model::{
-    Capability, Display, GRANT_ALWAYS, IdMinter, Layout, TabId, TileContent, WindowWidth,
-    Workspace, WorkspaceId,
+    Display, IdMinter, Layout, TabId, TileContent, WindowWidth, Workspace, WorkspaceId,
 };
 use ui::widget::TabHolder;
 use ui::window_share::OpenWindow;
@@ -1502,13 +1501,9 @@ fn stopping_desktop_control_takes_the_grant_back() {
     let route = first_route(&handle);
     assert!(row(&handle.window_menu(route.tab), STOP_DESKTOP_CONTROL).is_none());
     let mut tree = handle.read(Clone::clone);
-    tree.workspaces[0].grant_app(
-        "ada",
-        "so.tilo.app0",
-        &Capability::DesktopControl {
-            scope: GRANT_ALWAYS,
-        },
-    );
+    let control = tree.workspaces[0]
+        .desktop_control_grant("so.tilo.app0", tilo_action_policy::Grantee::person("ada"));
+    tree.workspaces[0].grant(control);
     handle.replace_tree(tree);
     let rows = handle.window_menu(route.tab);
     let stop = row(&rows, STOP_DESKTOP_CONTROL).expect("the app controls the desktop");

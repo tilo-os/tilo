@@ -206,20 +206,15 @@ tilo_test_env::scenario! {
     }
 
     phase a_windows_desktop_control_ends_when_it_is_taken_back;
-    // Desktop control is read and taken back by the app that holds it, and an
-    // app's other grants are none of its business.
+    // Desktop control is an action grant naming the app that holds it, read
+    // and taken back for that app alone; its other grants stay.
     {
         const TERMINAL: &str = "org.example.terminal";
         let mut ws = Workspace::new(WorkspaceId::from_u128(1), "Work");
         assert!(!ws.holds_desktop_control_at(TERMINAL, NOW));
         assert!(!ws.stop_desktop_control(TERMINAL), "nothing to take back");
-        ws.grant_app(
-            "ada",
-            TERMINAL,
-            &Capability::DesktopControl {
-                scope: GRANT_ALWAYS,
-            },
-        );
+        let control = ws.desktop_control_grant(TERMINAL, tilo_action_policy::Grantee::person("ada"));
+        ws.grant(control);
         ws.grant_app(
             "ada",
             TERMINAL,

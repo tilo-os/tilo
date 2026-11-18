@@ -191,25 +191,6 @@ pub enum DesktopCommand {
         subject: String,
         expires_unix: u64,
     },
-    /// Let application `app` use `action` on `target_app`'s `resource` here, for
-    /// `lifetime` `always` (a hosted workspace has no session to end a
-    /// `session` grant with). Only a native owner applies it, with the
-    /// caller's authority over workspace governance.
-    GrantAppAction {
-        app: String,
-        target_app: String,
-        resource: String,
-        action: String,
-        lifetime: String,
-    },
-    /// Take back every grant letting `app` use `action` on `target_app`'s
-    /// `resource`, as for [`Self::GrantAppAction`].
-    RevokeAppAction {
-        app: String,
-        target_app: String,
-        resource: String,
-        action: String,
-    },
     /// Move window group `group`, whole, from whichever strip of the
     /// workspace holds it into strip `strip`, before group `before` or at
     /// the end. A move within one strip is a reorder. Appended last:
@@ -266,8 +247,6 @@ impl DesktopCommand {
                 | Self::ClaimNamespace { .. }
                 | Self::SavePreset { .. }
                 | Self::AssignPreset { .. }
-                | Self::GrantAppAction { .. }
-                | Self::RevokeAppAction { .. }
                 | Self::ReopenClosed { .. }
         )
     }
@@ -806,10 +785,7 @@ pub fn apply_command(
         | DesktopCommand::RetiredDeleteShortcut { .. } => {
             return Err("shortcut commands are retired".into());
         }
-        DesktopCommand::SavePreset { .. }
-        | DesktopCommand::AssignPreset { .. }
-        | DesktopCommand::GrantAppAction { .. }
-        | DesktopCommand::RevokeAppAction { .. } => {
+        DesktopCommand::SavePreset { .. } | DesktopCommand::AssignPreset { .. } => {
             return Err("only the workspace's native owner applies this command".into());
         }
         DesktopCommand::OpenApp { .. } => {

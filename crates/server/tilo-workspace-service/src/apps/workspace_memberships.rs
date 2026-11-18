@@ -60,9 +60,6 @@ impl AppBrokerState {
             | WorkspaceMembershipCommand::RetiredRemoveAgent { .. } => {
                 return Err(tilo_peer_state::workspace_membership::RETIRED_AGENT_MEMBERSHIP.into());
             }
-            WorkspaceMembershipCommand::RetiredGrantAppAuthorship { .. } => {
-                return Err(tilo_peer_state::workspace_membership::RETIRED_APP_AUTHORSHIP.into());
-            }
             WorkspaceMembershipCommand::Grant { grant } => {
                 let argument = format!(
                     "{}{}",

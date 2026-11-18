@@ -219,9 +219,29 @@ pub fn capability_allows(cap: &CapOverride, apps: &dyn AppDirectory) -> String {
 }
 
 /// What one grant means, said as a person reads it: "Notes: reading and undoable changes allowed,
-/// outside effects ask first". Where it says "everything", the grant covers every kind.
+/// outside effects ask first". Where it says "everything", the grant covers every kind. An app's
+/// answer to use another app says which: "Use “post” in Chat".
 pub fn grant_allows(grant: &tilo_action_policy::Grant, apps: &dyn AppDirectory) -> String {
-    grant_set_sentence(std::slice::from_ref(grant), apps)
+    use tilo_action_policy::agent_answers::AnswerScope;
+    let used = AnswerScope::of_node(&grant.node).filter(|_| {
+        grant.grantee.app_id().is_some() && grant.answer == tilo_action_policy::Answer::Allow
+    });
+    match used {
+        Some(AnswerScope::App { app }) => t_args(
+            "workspace-settings-allows-use",
+            &[("what", app_display_name(apps, &app).into())],
+        ),
+        Some(AnswerScope::Kind { app, kind: action } | AnswerScope::Action { app, action, .. }) => {
+            t_args(
+                "workspace-settings-allows-action",
+                &[
+                    ("action", action.into()),
+                    ("app", app_display_name(apps, &app).into()),
+                ],
+            )
+        }
+        None => grant_set_sentence(std::slice::from_ref(grant), apps),
+    }
 }
 
 /// A grant set as people and agents talk about it: one sentence per grant — where it applies, then
@@ -780,7 +800,9 @@ pub fn remove_member(
 fn grantee_is_person(grantee: &Grantee, user: &UserId) -> bool {
     match grantee {
         Grantee::Member(MemberId::Person(id)) => id == user,
-        Grantee::Member(MemberId::Agent(_) | MemberId::Bot(_)) | Grantee::Role(_) => false,
+        Grantee::Member(MemberId::Agent(_) | MemberId::Bot(_))
+        | Grantee::Role(_)
+        | Grantee::App(_) => false,
     }
 }
 
@@ -900,13 +922,10 @@ impl Listed<'_> {
 
 /// The section a sandbox capability is listed in: the app whose sandbox it is, else its grantee's.
 fn classify_capability(cap: &CapOverride) -> GrantSubject {
-    if let Some(app) = &cap.app {
-        return GrantSubject {
-            kind: SubjectKind::App,
-            id: app.as_str().to_owned(),
-        };
+    match &cap.app {
+        Some(app) => classify_grantee(&Grantee::app(app.as_str())),
+        None => classify_grantee(&cap.grantee),
     }
-    classify_grantee(&cap.grantee)
 }
 
 /// The section a grantee is listed in.
@@ -919,6 +938,10 @@ fn classify_grantee(grantee: &Grantee) -> GrantSubject {
         Grantee::Member(MemberId::Agent(id) | MemberId::Bot(id)) => GrantSubject {
             kind: SubjectKind::Agent,
             id: id.clone(),
+        },
+        Grantee::App(app) => GrantSubject {
+            kind: SubjectKind::App,
+            id: app.clone(),
         },
         Grantee::Role(role) => GrantSubject {
             kind: SubjectKind::Role,

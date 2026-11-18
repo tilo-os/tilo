@@ -465,6 +465,7 @@ workspace-settings-allows-use = Use { $what }
 workspace-settings-allows-reach = Reach { $what }
 workspace-settings-allows-edit = Edit { $what }
 workspace-settings-allows-view = View { $what }
+workspace-settings-allows-action = Use “{ $action }” in { $app }
 workspace-settings-subject-foreign-device = devices that are not their own
 workspace-settings-expiry-once = Once
 workspace-settings-expiry-session = Session

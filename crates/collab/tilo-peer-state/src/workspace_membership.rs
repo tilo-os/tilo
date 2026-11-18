@@ -252,10 +252,6 @@ pub const RETIRED_TASK_GRANTS: &str =
 pub const RETIRED_AGENT_MEMBERSHIP: &str =
     "agent membership by preset is retired; an agent is a chat.agent record";
 
-/// Why a retired app authorship command is refused.
-pub const RETIRED_APP_AUTHORSHIP: &str =
-    "app authorship is retired; an app acts as the person running it";
-
 /// The preset an agent was admitted with, as workspaces hold it. Admission by
 /// preset is retired ([`WorkspaceMembershipCommand::RetiredAddAgent`]): this
 /// reads what a workspace holds and decides nothing.
@@ -282,11 +278,6 @@ pub enum WorkspaceMembershipCommand {
     /// Retired with admission by preset, as [`Self::RetiredAddAgent`].
     #[serde(rename = "RemoveAgent")]
     RetiredRemoveAgent { agent: String },
-    /// Retired with app authorship: an app acts as the person running it, so
-    /// no grant makes it one. It keeps the commands after it at their encoded
-    /// positions, still reads where workspaces hold it, and is refused.
-    #[serde(rename = "GrantAppAuthorship")]
-    RetiredGrantAppAuthorship { app: String },
     /// Retired with workspace tasks: an issue's grants are ordinary grants. It
     /// keeps the commands after it at their encoded positions, still reads
     /// where workspaces hold it, and is refused.
@@ -357,8 +348,7 @@ pub enum WorkspaceMembershipCommand {
 }
 
 /// A change to the workspace's own settings: its name, its saved grant sets and
-/// their assignment, the actions its apps may use of each other, its apps'
-/// sandbox capabilities and its saved shortcuts.
+/// their assignment, its apps' sandbox capabilities and its saved shortcuts.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum SettingsChange {
     /// Name the workspace `name`.
@@ -372,13 +362,6 @@ pub enum SettingsChange {
         subject: tilo_action_policy::Grantee,
         lifetime: tilo_action_policy::Lifetime,
     },
-    /// Retired with app consent in the person's settings: an app's use of
-    /// another app's action is no workspace change. Both keep the settings
-    /// after them at their encoded positions, still read where a workspace
-    /// holds them, and are refused.
-    GrantAppAction(AppAction),
-    /// Retired with [`Self::GrantAppAction`], as it is.
-    RevokeAppAction(AppAction),
     /// Record a sandbox capability for the workspace's apps.
     GrantSandbox {
         capability: collab_types::caps::CapOverride,
@@ -392,17 +375,6 @@ pub enum SettingsChange {
     /// takes people by invitation only, and how many requests it keeps
     /// ([`tilo_action_policy::EntryPolicy`]).
     Entry(tilo_action_policy::EntryPolicy),
-}
-
-/// What a retired app-action setting named: `action` on `target_app`'s
-/// resource `resource`, used by `app`. A workspace's stored settings still
-/// read it and decide nothing by it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AppAction {
-    pub app: String,
-    pub target_app: String,
-    pub resource: String,
-    pub action: String,
 }
 
 /// The name a workspace is founded with, trimmed: none, which every reader
@@ -435,7 +407,6 @@ impl WorkspaceMembershipCommand {
         match self {
             Self::RetiredAddAgent { .. }
             | Self::RetiredRemoveAgent { .. }
-            | Self::RetiredGrantAppAuthorship { .. }
             | Self::RetiredGrantForTask { .. }
             | Self::RetiredRevokeForTask { .. }
             | Self::Grant { .. }
@@ -471,9 +442,6 @@ impl WorkspaceMembershipCommand {
             Self::RetiredAddAgent { .. } | Self::RetiredRemoveAgent { .. }
         ) {
             return Err(RETIRED_AGENT_MEMBERSHIP.into());
-        }
-        if let Self::RetiredGrantAppAuthorship { .. } = self {
-            return Err(RETIRED_APP_AUTHORSHIP.into());
         }
         if let Self::InstallBot(install) = self {
             install.installation.validate()?;
@@ -523,9 +491,6 @@ impl WorkspaceMembershipCommand {
                 SettingsChange::Rename { name } => valid_workspace_name(name).map(drop),
                 SettingsChange::SavePreset { preset } => {
                     preset.validate().map_err(|error| error.to_string())
-                }
-                SettingsChange::GrantAppAction(_) | SettingsChange::RevokeAppAction(_) => {
-                    Err(RETIRED_APP_AUTHORSHIP.to_owned())
                 }
                 SettingsChange::Entry(entry) => entry
                     .clone()
@@ -687,10 +652,6 @@ mod tests {
                     vec![0x01, 0x01, b'a'],
                 ),
                 (
-                    WorkspaceMembershipCommand::RetiredGrantAppAuthorship { app: "x".into() },
-                    vec![0x02, 0x01, b'x'],
-                ),
-                (
                     WorkspaceMembershipCommand::RetiredGrantForTask {
                         task: "t".into(),
                         node: TreePath::workspace("r"),
@@ -698,7 +659,7 @@ mod tests {
                         answer: Answer::Allow,
                     },
                     [
-                        &[0x03, 0x01, b't', 0x0b][..],
+                        &[0x02, 0x01, b't', 0x0b][..],
                         b"workspace:r",
                         &[0x01, 0x00, 0x02],
                     ]
@@ -709,17 +670,17 @@ mod tests {
                         task: "t".into(),
                         grant: GrantId::new("g"),
                     },
-                    vec![0x04, 0x01, b't', 0x01, b'g'],
+                    vec![0x03, 0x01, b't', 0x01, b'g'],
                 ),
                 (
                     WorkspaceMembershipCommand::Revoke {
                         grant: GrantId::new("g"),
                     },
-                    vec![0x06, 0x01, b'g'],
+                    vec![0x05, 0x01, b'g'],
                 ),
                 (
                     WorkspaceMembershipCommand::WithdrawBotRequest { entry: "e".into() },
-                    vec![0x0f, 0x01, b'e'],
+                    vec![0x0e, 0x01, b'e'],
                 ),
             ];
             for (command, golden) in cases {
@@ -741,7 +702,7 @@ mod tests {
         // workspace's.
         {
             let held = [
-                0x03, 0x01, b't', 0x0b, b'w', b'o', b'r', b'k', b's', b'p', b'a', b'c', b'e', b':',
+                0x02, 0x01, b't', 0x0b, b'w', b'o', b'r', b'k', b's', b'p', b'a', b'c', b'e', b':',
                 b'r', 0x01, 0x00, 0x02,
             ];
             let command = postcard::from_bytes::<WorkspaceMembershipCommand>(&held).unwrap();
@@ -762,7 +723,7 @@ mod tests {
     #[test]
     fn a_retired_command_reads_and_is_refused() {
         let grant_for_task = [
-            &[0x03, 0x01, b't', 0x0b][..],
+            &[0x02, 0x01, b't', 0x0b][..],
             b"workspace:r",
             &[0x01, 0x00, 0x02],
         ]
@@ -779,18 +740,13 @@ mod tests {
                 RETIRED_AGENT_MEMBERSHIP,
             ),
             (
-                "grant app authorship",
-                [0x02, 0x01, b'x'].as_slice(),
-                RETIRED_APP_AUTHORSHIP,
-            ),
-            (
                 "grant for task",
                 grant_for_task.as_slice(),
                 RETIRED_TASK_GRANTS,
             ),
             (
                 "revoke for task",
-                [0x04, 0x01, b't', 0x01, b'g'].as_slice(),
+                [0x03, 0x01, b't', 0x01, b'g'].as_slice(),
                 RETIRED_TASK_GRANTS,
             ),
         ] {

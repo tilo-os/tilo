@@ -394,6 +394,82 @@ fn workspace_settings_gives_and_revokes_a_permission() {
     );
 }
 
+/// What a grant's raw path starts with, which a row a person reads never shows.
+const WORKSPACE_WORD: &str = "workspace ";
+
+/// An app's grant to take another app's action, given on the sheet that asked: the Permissions tab
+/// lists it under Apps, named as the person knows the app, and its Revoke takes it back.
+#[test]
+fn workspace_settings_lists_an_apps_grant_under_apps_and_revokes_it() {
+    use tilo_action_policy::agent_answers::{AnswerScope, answer_grant};
+    use tilo_action_policy::{ActionKind, Answer, Grantee};
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    own_workspace(&session, &[]);
+    let notes = Grantee::app("so.tilo.notes");
+    let mut tree = session.handle().read(Clone::clone);
+    let workspace = tree.active_workspace_mut().expect("a workspace in front");
+    let grant = answer_grant(
+        &workspace.id().to_string(),
+        notes.clone(),
+        (
+            &AnswerScope::action("so.tilo.chat", "chat.conversation", "post"),
+            ActionKind::Undoable,
+        ),
+        Answer::Allow,
+        Grantee::person(PERSON),
+    );
+    workspace.grant(grant);
+    session.handle().replace_tree(tree);
+    invoke(&mut session, CHROME_RESOURCE, "workspace-settings");
+    session.step(Duration::from_millis(1)).unwrap();
+    let mut app = sheet(&session);
+    show_tab(
+        &mut session,
+        &mut app,
+        &WorkspaceSettingsEffect::ShowTab {
+            tab: "permissions".to_owned(),
+        },
+    );
+    let apps = tilo_desktop_surface::i18n::t("workspace-settings-section-apps");
+    let section = session
+        .workspace_settings()
+        .expect("workspace settings")
+        .settings()
+        .permissions
+        .sections
+        .into_iter()
+        .find(|section| section.title == apps)
+        .expect("the tab lists apps' permissions");
+    let [given] = section.permissions.as_slice() else {
+        panic!("one app permission: {:?}", section.permissions);
+    };
+    assert!(
+        !given.holder.contains("so.tilo"),
+        "the app is named as the person knows it: {}",
+        given.holder
+    );
+    assert!(
+        given.detail.contains("“post”") && !given.detail.contains(WORKSPACE_WORD),
+        "the row says which action of which app, not the grant's path: {}",
+        given.detail
+    );
+    capture(&mut app, "workspace-settings-app-grant");
+
+    press(&mut app, &format!("ws-permission-revoke-{}", given.key));
+    press(&mut app, "ws-settings-decision.primary");
+    settle(&mut session, &mut app);
+    let left = session.handle().read(|tree| {
+        tree.active_workspace()
+            .expect("a workspace")
+            .policy
+            .grants_of(&notes)
+            .count()
+    });
+    assert_eq!(left, 0, "the workspace no longer lets Notes post to Chat");
+}
+
 /// The answer the review shows for changes in `app`, by its place among Allow, Ask first and Deny,
 /// and whether the agent's bound sets the app's answers.
 fn changes_answer(session: &Session, app: &str) -> (usize, bool) {

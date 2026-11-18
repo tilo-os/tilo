@@ -83,10 +83,11 @@ tilo_test_env::scenario! {
             (Grantee::agent("a"), &[0x00, 0x01, 0x01, b'a']),
             (Grantee::bot("b"), &[0x00, 0x02, 0x01, b'b']),
             (Grantee::role(Role::Editor), &[0x01, 0x02]),
+            (Grantee::app("n"), &[0x02, 0x01, b'n']),
         ];
         for (grantee, golden) in cases {
             match grantee {
-                Grantee::Member(_) | Grantee::Role(_) => stored_as!(grantee, golden),
+                Grantee::Member(_) | Grantee::Role(_) | Grantee::App(_) => stored_as!(grantee, golden),
             }
         }
     }

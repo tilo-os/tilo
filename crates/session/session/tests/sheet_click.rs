@@ -153,6 +153,66 @@ fn a_click_on_allow_once_at_its_reported_place_allows_the_step() {
     );
 }
 
+/// Write what the session shows where a person can look at it, when shots are asked for:
+/// `TILO_SURFACE_SHOTS` names where they go.
+fn capture(session: &mut Session, name: &str) {
+    let Some(directory) = std::env::var_os("TILO_SURFACE_SHOTS").map(std::path::PathBuf::from)
+    else {
+        return;
+    };
+    let frame = session
+        .compositor()
+        .screenshot("HEADLESS-1")
+        .expect("a frame of the session");
+    let pixels = image::RgbaImage::from_raw(frame.width, frame.height, frame.rgba)
+        .expect("the frame's pixels fill it");
+    std::fs::create_dir_all(&directory).expect("the directory for shots");
+    pixels
+        .save(directory.join(format!("{name}.png")))
+        .expect("the shot");
+}
+
+/// An app asking to take another app's action is asked on the sheet an agent's step is, and "Always
+/// allow" there answers with the lasting grant.
+#[test]
+fn a_click_on_always_allow_answers_an_apps_question_with_the_grant() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, questions) = session_at(1440, 900);
+    let mut asked = questions.ask(Question {
+        handle: "app-action:sheet-click".into(),
+        kind: STEP_QUESTION.to_owned(),
+        app_id: Some("so.tilo.notes".into()),
+        label: "so.tilo.notes".into(),
+        details: json!({
+            "agent": "so.tilo.notes",
+            "target": "so.tilo.chat",
+            "action": "Post a message",
+            "resource": "General",
+            "fields": [["Message", "The meeting notes are ready"]],
+            "risk": "low",
+            "may_allow_agent": true
+        }),
+    });
+    crate::common::wait_for(&mut session, "the app's question", |session| {
+        session
+            .portal()
+            .and_then(tilo_sheets::portal::PortalState::dialog)
+            .map(|_| ())
+    });
+    settled(&mut session);
+    capture(&mut session, "app-asks-to-use-another-app");
+    let (x, y, w, h) = where_shown(&session, "Always allow");
+    click(&mut session, (x + w / 2.0, y + h / 2.0));
+    let answer = crate::common::wait_for(&mut session, "the app's answer", |_| {
+        (&mut asked).now_or_never()
+    });
+    assert_eq!(
+        answer.expect("allowed, not declined").choice,
+        Some(1),
+        "always allow is the sheet's lasting answer"
+    );
+}
+
 /// An Enter the person was already pressing when the question came up answers nothing: its press
 /// began before the sheet was shown, so it is not their answer to it. The next press, made with
 /// the sheet in sight, answers as any press does.
