@@ -439,7 +439,7 @@ impl State {
 impl State {
     pub(crate) fn merge_remote_committed(
         &mut self,
-        mutation: &collab_types::DocumentMutation,
+        incoming: crate::collaboration::Incoming<'_>,
     ) -> Result<Option<bool>, crate::history_mode::routes::RemoteApplyError> {
         if self.doc.pending_ops() != 0
             || !same_frontier(self.undo.last_heads(), &self.doc.base_heads())
@@ -447,7 +447,7 @@ impl State {
             return Ok(None);
         }
         let before = self.doc.get_heads();
-        let changed = crate::history_mode::routes::merge_committed(&mut self.doc, mutation)?;
+        let changed = crate::history_mode::routes::merge_committed(&mut self.doc, incoming)?;
         if changed {
             self.undo.rebase(&mut self.doc);
             // The owner that served this history holds it: the next primary delta must

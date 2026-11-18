@@ -426,15 +426,19 @@ impl HistoryOwner {
     /// Merge a peer's `mutation` into the record.
     pub(crate) fn merge_remote(
         &self,
-        mutation: &collab_types::DocumentMutation,
+        mut incoming: crate::collaboration::Incoming<'_>,
         outer: &mut AutoCommit,
     ) -> Result<super::routes::MergedRemote, super::routes::RemoteApplyError> {
         self.validate()
             .map_err(|error| super::routes::RemoteApplyError::Unavailable(error.to_string()))?;
         let (store, checkout) = self.store_checkout();
-        let merged = crate::bound_dispatch::merge_remote_owned_document(store, checkout, mutation)?;
+        let merged = crate::bound_dispatch::merge_remote_owned_document(
+            store,
+            checkout,
+            incoming.reborrow(),
+        )?;
         if merged.changed.is_none() && self.close_named_step(outer) {
-            return crate::bound_dispatch::merge_remote_owned_document(store, checkout, mutation);
+            return crate::bound_dispatch::merge_remote_owned_document(store, checkout, incoming);
         }
         Ok(merged)
     }

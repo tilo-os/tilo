@@ -30,7 +30,7 @@ impl App {
             // Changes apply only to an owner holding their base; one that
             // does not makes the reader read the document whole.
             let mut lacks_base = false;
-            let result = read.with_mutation(|mutation| {
+            let result = read.with_incoming(|mut incoming| {
                 let workspace_route = self
                     .collaboration
                     .workspace_manager
@@ -57,11 +57,11 @@ impl App {
                         return Ok(None);
                     }
                     let before = workspace.document().base_heads();
-                    match mutation {
-                        collab_types::DocumentMutation::Snapshot(bytes) => {
-                            workspace.merge_snapshot(bytes)
+                    match incoming {
+                        crate::collaboration::Incoming::Whole(loaded) => {
+                            workspace.merge_loaded(loaded)
                         }
-                        collab_types::DocumentMutation::Incremental(bytes) => {
+                        crate::collaboration::Incoming::Changes(bytes) => {
                             workspace.load_incremental(bytes).map(|_| ())
                         }
                     }
@@ -96,7 +96,7 @@ impl App {
                         Err(_) => return Ok(None),
                     }
                     let applied = owner
-                        .merge_remote(mutation, &mut self.state.doc)
+                        .merge_remote(incoming, &mut self.state.doc)
                         .map_err(|e| e.to_string())?;
                     // Committed history is already held by the owner that
                     // served it, so it is counted as held here too: never
@@ -125,7 +125,7 @@ impl App {
                     }
                     let merged = self
                         .state
-                        .merge_remote_committed(mutation)
+                        .merge_remote_committed(incoming.reborrow())
                         .map_err(|e| e.to_string())?;
                     if merged.is_some() {
                         return Ok(merged);
@@ -136,7 +136,7 @@ impl App {
                     self.commit_action();
                     return self
                         .state
-                        .merge_remote_committed(mutation)
+                        .merge_remote_committed(incoming)
                         .map_err(|e| e.to_string());
                 }
                 Ok(None)

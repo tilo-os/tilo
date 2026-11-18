@@ -588,16 +588,17 @@ impl CommittedDocument {
     }
     pub fn applied(&self) {
         self.merged.store(true, Ordering::Release);
+        // The owner holds what it was loaded for.
+        *self.data.whole.lock_recover() = None;
         // A permit is kept when the reader is not waiting yet, so a merge
         // between its check and its wait is never missed.
         self.merge_wake.notify_one();
     }
     /// Take this capture into `document`, the owner's copy of the route's
-    /// document, merged with whatever the owner made meanwhile: acknowledged
-    /// once merged ([`Self::applied`]), so the reader confirms it and the
-    /// route opens again. A whole document was loaded as it arrived, off the
-    /// owner's thread ([`Captured::whole`]), so the owner does work only for
-    /// what it adds; changes since a revision are what is new already.
+    /// document, merged with whatever the owner made meanwhile
+    /// ([`Self::with_incoming`]): acknowledged once merged
+    /// ([`Self::applied`]), so the reader confirms it and the route opens
+    /// again.
     /// Changes the owner holds no base of, or cannot read, are refused
     /// ([`Self::refuse`]) and said why: the reader reads the document whole
     /// instead. A whole document that could not be read is refused the same
@@ -605,8 +606,9 @@ impl CommittedDocument {
     /// document and the route goes on publishing it. `None` when nothing was
     /// merged, else whether the document gained anything.
     pub fn take_into(&self, document: &mut automerge::AutoCommit) -> Option<bool> {
-        use tilo_automerge::ApplyIncoming as _;
-        if !self.is_current() {
+        // Taken once: the same read delivered again after it merged brings
+        // nothing new.
+        if !self.is_current() || self.merged.load(Ordering::Acquire) {
             return None;
         }
         if !self.applies_to(document) {
@@ -614,33 +616,45 @@ impl CommittedDocument {
             self.refuse();
             return None;
         }
-        let merged = if self.is_whole() {
-            // Taken once: the same capture delivered again after it merged
-            // brings nothing new.
-            let Some(whole) = self.data.whole.lock_recover().take() else {
-                return None;
-            };
-            whole.and_then(|loaded| {
-                document
-                    .take_loaded(loaded)
-                    .map_err(|error| error.to_string())
-            })
-        } else {
-            document
-                .load_incoming(&self.data.bytes.lock_recover())
-                .map(|applied| applied > 0)
+        match self.with_incoming(|incoming| {
+            incoming
+                .merge_into(document)
                 .map_err(|error| error.to_string())
-        };
-        match merged {
-            Ok(gained) => {
+        }) {
+            Ok(Ok(gained)) => {
                 self.applied();
                 Some(gained)
             }
-            Err(error) => {
+            Ok(Err(error)) | Err(error) => {
                 tracing::warn!(%error, whole = self.is_whole(), "committed history refused: the owner cannot read it");
                 self.refuse();
                 None
             }
+        }
+    }
+    /// Hand what this read brought to `apply`: a whole document as it was
+    /// loaded when it arrived ([`Captured::whole`]), changes as they are.
+    ///
+    /// # Errors
+    ///
+    /// The route's read was replaced, or the whole document could not be
+    /// read.
+    pub fn with_incoming<T>(
+        &self,
+        apply: impl FnOnce(crate::Incoming<'_>) -> T,
+    ) -> Result<T, String> {
+        if !self.is_current() {
+            return Err("committed capture route replaced".into());
+        }
+        if self.base.is_some() {
+            return Ok(apply(crate::Incoming::Changes(
+                &self.data.bytes.lock_recover(),
+            )));
+        }
+        match &mut *self.data.whole.lock_recover() {
+            Some(Ok(loaded)) => Ok(apply(crate::Incoming::Whole(loaded))),
+            Some(Err(error)) => Err(error.clone()),
+            None => Err("the committed document was taken in already".into()),
         }
     }
     /// A current capture of `bytes`: the changes since `base`, or the whole
@@ -676,9 +690,9 @@ impl CommittedDocument {
 struct Captured {
     bytes: std::sync::Mutex<Vec<u8>>,
     /// A whole document's bytes, loaded as they arrived, off the owner's
-    /// thread ([`Captured::load`]): what [`CommittedDocument::take_into`]
-    /// takes, or why they could not be read. `None` for changes since a
-    /// revision, and once taken.
+    /// thread ([`Captured::load`]): what its owner merges
+    /// ([`CommittedDocument::with_incoming`]), or why they could not be read.
+    /// `None` for changes since a revision, and once merged.
     whole: std::sync::Mutex<Option<Result<automerge::AutoCommit, String>>>,
     _reservation: ByteReservation,
 }

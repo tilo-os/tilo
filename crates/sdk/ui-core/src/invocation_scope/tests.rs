@@ -304,7 +304,7 @@ tilo_test_env::scenario! {
             remote.set_actor(automerge::ActorId::from(b"remote-admitted".as_slice()));
             remote.put(ROOT, "remote", true).unwrap();
             remote.get_heads();
-            let incoming = collab_types::DocumentMutation::Incremental(remote.save_after(&before));
+            let incoming = remote.save_after(&before);
             if unscoped_local {
                 fixture
                     .store
@@ -317,7 +317,10 @@ tilo_test_env::scenario! {
             assert_eq!(
                 fixture
                     .owner
-                    .merge_remote(&incoming, &mut automerge::AutoCommit::new())
+                    .merge_remote(
+                        crate::collaboration::Incoming::Changes(&incoming),
+                        &mut automerge::AutoCommit::new()
+                    )
                     .unwrap()
                     .changed,
                 Some(true)

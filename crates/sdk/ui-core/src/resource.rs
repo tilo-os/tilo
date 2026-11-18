@@ -403,7 +403,12 @@ impl ResourceSet {
         if self.active.is_none() && !state.doc.base_heads().is_empty() {
             // Existing, finished local work is merged, never replaced. An open
             // local transaction was refused above without forcing a commit.
-            if !matches!(state.merge_remote_committed(mutation), Ok(Some(_))) {
+            if !matches!(
+                crate::history_mode::routes::with_mutation(mutation, |incoming| {
+                    state.merge_remote_committed(incoming)
+                }),
+                Ok(Some(_))
+            ) {
                 return false;
             }
             return self.checkout(state, workspace, want);

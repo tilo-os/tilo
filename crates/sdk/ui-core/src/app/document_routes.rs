@@ -483,7 +483,10 @@ impl App {
     fn drain_document_routes_after_refresh(&mut self) {
         let mut changed = self.document_routes.merge_owned(&mut self.state.doc);
         while let Some(mutation) = self.document_routes.primary.front() {
-            match self.state.merge_remote_committed(mutation) {
+            let state = &mut self.state;
+            match crate::history_mode::routes::with_mutation(mutation, |incoming| {
+                state.merge_remote_committed(incoming)
+            }) {
                 Ok(Some(applied)) => {
                     self.document_routes.primary.pop_applied();
                     changed |= applied;
@@ -945,7 +948,9 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
                     }
                     _ => None,
                 };
-                match owner.merge_remote(mutation, outer) {
+                match crate::history_mode::routes::with_mutation(mutation, |incoming| {
+                    owner.merge_remote(incoming, outer)
+                }) {
                     Ok(merged) => {
                         // The route delivered these changes, so they are never
                         // published back on it; this app's own unsent changes

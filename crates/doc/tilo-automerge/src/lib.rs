@@ -64,14 +64,14 @@ pub trait ApplyIncoming {
 
     /// Take in `loaded`, a whole document another thread loaded, with work
     /// proportional to what it adds: a document that holds nothing yet
-    /// becomes it (under its own actor and author), and one that holds some
-    /// of it gains only the changes it lacks. Whether the document gained
-    /// anything.
+    /// becomes it (under its own actor and author, leaving `loaded` empty),
+    /// and one that holds some of it gains only the changes it lacks. Whether
+    /// the document gained anything.
     ///
     /// # Errors
     ///
     /// As [`Self::merge_incoming`].
-    fn take_loaded(&mut self, loaded: AutoCommit) -> Result<bool, AutomergeError>;
+    fn take_loaded(&mut self, loaded: &mut AutoCommit) -> Result<bool, AutomergeError>;
 
     fn receive_incoming_sync(
         &mut self,
@@ -128,7 +128,7 @@ impl ApplyIncoming for AutoCommit {
         merged
     }
 
-    fn take_loaded(&mut self, mut loaded: AutoCommit) -> Result<bool, AutomergeError> {
+    fn take_loaded(&mut self, loaded: &mut AutoCommit) -> Result<bool, AutomergeError> {
         let theirs = loaded.get_heads();
         // Closes an open transaction first, as every other apply path does.
         if self.get_missing_deps(&theirs).is_empty() {
@@ -137,12 +137,13 @@ impl ApplyIncoming for AutoCommit {
         if self.is_empty() && self.text_encoding() == loaded.text_encoding() {
             // Nothing to merge with: rebuilding every change into this
             // document would cost what loading it did.
-            loaded.set_actor(self.get_actor().clone());
-            loaded.set_author(self.get_author().cloned());
-            *self = loaded;
+            let mut adopted = std::mem::take(loaded);
+            adopted.set_actor(self.get_actor().clone());
+            adopted.set_author(self.get_author().cloned());
+            *self = adopted;
             return Ok(true);
         }
-        self.merge_incoming(&mut loaded)?;
+        self.merge_incoming(loaded)?;
         Ok(true)
     }
 
@@ -306,7 +307,7 @@ mod tests {
         let actor = empty.get_actor().clone();
         assert!(
             empty
-                .take_loaded(AutoCommit::load(&bytes).unwrap())
+                .take_loaded(&mut AutoCommit::load(&bytes).unwrap())
                 .unwrap()
         );
         assert_eq!(empty.get_heads(), workspace.get_heads());
@@ -314,7 +315,11 @@ mod tests {
 
         // One that holds all of it gains nothing.
         let mut same = workspace.fork();
-        assert!(!same.take_loaded(AutoCommit::load(&bytes).unwrap()).unwrap());
+        assert!(
+            !same
+                .take_loaded(&mut AutoCommit::load(&bytes).unwrap())
+                .unwrap()
+        );
 
         // One that holds part of it, and a change of its own, keeps both.
         let mut owner = workspace.fork();
@@ -325,7 +330,7 @@ mod tests {
         let actor = owner.get_actor().clone();
         assert!(
             owner
-                .take_loaded(AutoCommit::load(&workspace.save()).unwrap())
+                .take_loaded(&mut AutoCommit::load(&workspace.save()).unwrap())
                 .unwrap()
         );
         assert!(owner.get(ROOT, "mine").unwrap().is_some());
