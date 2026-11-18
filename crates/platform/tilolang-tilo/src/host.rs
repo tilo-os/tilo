@@ -1517,6 +1517,7 @@ impl Host {
             ty: ty.to_owned(),
             app: AppId::from(app),
             fields: Vec::new(),
+            text_defaults: Vec::new(),
         };
         let root = self.inner.store.create_with_id(&record, &id)?;
         // A root made now has its package's migrations behind it: what a package fills its first
