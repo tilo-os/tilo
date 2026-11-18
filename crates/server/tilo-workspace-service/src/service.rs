@@ -24,6 +24,7 @@ use tilo_user_identity::{DeviceCert, RevocationList, verify_device_cert_at};
 
 use tokio::sync::Mutex as AsyncMutex;
 
+use crate::Reaching;
 use crate::app_serving::AppActionServer;
 use crate::client::{ClientError, ServerClient};
 use crate::handshake::{EndpointTrust, HandshakeError, LiveIdentity};
@@ -54,6 +55,11 @@ pub struct HostConfig {
     pub apps: Option<Arc<dyn AppActionServer>>,
     /// Classifies co-edit bodies for every workspace the host opens.
     pub shell_payloads: Arc<dyn crate::payloads::ShellPayloads>,
+    /// Whether the endpoint a server serves its workspaces on names where it is
+    /// reached. Opening it waits for that name so no workspace learns an address
+    /// it would have to rename; an endpoint that will never name one says so
+    /// here, rather than making every open wait for it.
+    pub reaching: Reaching,
     /// What a server's operator answered for the folder that keeps the keys
     /// of people's sealed stores apart from `state_root`: one a copy or a
     /// backup of the state does not take along, so that such a copy opens
@@ -78,6 +84,7 @@ impl HostConfig {
             max_workspace_grants: None,
             apps: None,
             shell_payloads: crate::payloads::neighbour(),
+            reaching: Reaching::ByRelay,
             people_keys: None,
         }
     }
@@ -252,6 +259,10 @@ impl HostSessions {
                 );
             }
         }
+        // No workspace this server keeps is opened with an address it would
+        // have to rename: the endpoint names where it is reached first, when it
+        // will at all.
+        cfg.reaching.awaited(&endpoint).await;
         let workspaces = crate::workspaces::Workspaces::open(
             sessions.workspace_services(&cfg, &identity, endpoint, revocations, channels),
             cfg.state_root.join("workspaces"),

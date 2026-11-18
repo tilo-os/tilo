@@ -264,6 +264,7 @@ async fn open_host(
             revocations: RevocationList::new(),
         },
         endpoint,
+        tilo_server::Reaching::OnItsOwn,
         Vec::new(),
     )
     .await

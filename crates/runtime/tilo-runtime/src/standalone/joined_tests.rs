@@ -105,29 +105,6 @@ fn ns(at: SystemTime) -> u64 {
     .unwrap()
 }
 
-/// `starting`, a host or a relay starting on one of these fixtures'
-/// endpoints, awaited past its wait for a relay. Each starts only after its
-/// endpoint had `tilo_endpoint_reachability::RELAY_WAIT` to reach a relay
-/// (`tilo_workspace_service::workspaces::Workspaces::open`, `tilo_server`'s start), and
-/// these endpoints have none to reach. A test on a runtime whose clock it can
-/// hold holds it over the start: the same whole wait runs on that clock, which
-/// passes it when nothing else can run instead of five seconds later. The
-/// clock runs again before anything else of the test does.
-async fn past_the_server_wait<T>(starting: impl std::future::Future<Output = T>) -> T {
-    let held = matches!(
-        tokio::runtime::Handle::current().runtime_flavor(),
-        tokio::runtime::RuntimeFlavor::CurrentThread
-    );
-    if held {
-        tokio::time::pause();
-    }
-    let started = starting.await;
-    if held {
-        tokio::time::resume();
-    }
-    started
-}
-
 async fn local_endpoint(key: &SigningKey) -> iroh::Endpoint {
     iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
@@ -180,21 +157,24 @@ impl Joined {
         workspace: WorkspaceId,
     ) -> (Arc<Self>, tempfile::TempDir) {
         let (joined, directory) = Self::test_empty().await;
-        let host = past_the_server_wait(Box::pin(
-            tilo_workspace_service::service::WorkspaceService::open(
-                tilo_workspace_service::service::HostConfig::new(
+        let host = Box::pin(tilo_workspace_service::service::WorkspaceService::open(
+            tilo_workspace_service::service::HostConfig {
+                // These fixtures' endpoints name no address anywhere:
+                // nothing will, so opening does not wait for one.
+                reaching: tilo_workspace_service::Reaching::OnItsOwn,
+                ..tilo_workspace_service::service::HostConfig::new(
                     directory.path().join("workspace-host"),
                     tilo_server_protocol::WorkSetting::none(),
-                ),
-                tilo_workspace_service::service::HostIdentity {
-                    user_public_key: joined.identity.device_cert.user_public_key,
-                    device_signing_key: native_key(&joined.identity),
-                    device_cert: joined.identity.device_cert.clone(),
-                    revocations: RevocationList::new(),
-                },
-                joined.endpoint(),
-                None,
-            ),
+                )
+            },
+            tilo_workspace_service::service::HostIdentity {
+                user_public_key: joined.identity.device_cert.user_public_key,
+                device_signing_key: native_key(&joined.identity),
+                device_cert: joined.identity.device_cert.clone(),
+                revocations: RevocationList::new(),
+            },
+            joined.endpoint(),
+            None,
         ))
         .await
         .unwrap();
@@ -265,36 +245,35 @@ impl HostedWorkspace {
             serving: tilo_peer_state::direct::Serving::new(),
         };
         let join = JoinService(hosted.clone());
-        let server = past_the_server_wait(Box::pin(
-            tilo_server::Server::start_on_endpoint_with_protocols(
-                tilo_server::ServerConfig {
-                    state_root: server_root.clone(),
-                    identity_root: dir.join("server-identity"),
-                    full_replica_status: dir.join("replica/status.json"),
-                    home_peer_bundle: dir.join("home-peer.toml"),
-                    trust_policy: tilo_server::TrustPolicy::AllowList {
-                        users: vec![hex::encode(governor.user_public_key)],
-                    },
-                    ..Default::default()
+        let server = Box::pin(tilo_server::Server::start_on_endpoint_with_protocols(
+            tilo_server::ServerConfig {
+                state_root: server_root.clone(),
+                identity_root: dir.join("server-identity"),
+                full_replica_status: dir.join("replica/status.json"),
+                home_peer_bundle: dir.join("home-peer.toml"),
+                trust_policy: tilo_server::TrustPolicy::AllowList {
+                    users: vec![hex::encode(governor.user_public_key)],
                 },
-                tilo_server::daemon::ServerIdentity {
-                    user_public_key: governor.user_public_key,
-                    device_signing_key: host_key,
-                    device_cert: host.clone(),
-                    revocations: RevocationList::new(),
-                },
-                server.clone(),
-                vec![
-                    (
-                        WORKSPACE_JOIN_ALPN.to_vec(),
-                        Box::new(WorkspaceJoinProtocol::new(join)) as Box<dyn DynProtocolHandler>,
-                    ),
-                    (
-                        tilo_peer_state::direct::DIRECT_ALPN.to_vec(),
-                        Box::new(hosted.serving.clone()) as Box<dyn DynProtocolHandler>,
-                    ),
-                ],
-            ),
+                ..Default::default()
+            },
+            tilo_server::daemon::ServerIdentity {
+                user_public_key: governor.user_public_key,
+                device_signing_key: host_key,
+                device_cert: host.clone(),
+                revocations: RevocationList::new(),
+            },
+            server.clone(),
+            tilo_workspace_service::Reaching::OnItsOwn,
+            vec![
+                (
+                    WORKSPACE_JOIN_ALPN.to_vec(),
+                    Box::new(WorkspaceJoinProtocol::new(join)) as Box<dyn DynProtocolHandler>,
+                ),
+                (
+                    tilo_peer_state::direct::DIRECT_ALPN.to_vec(),
+                    Box::new(hosted.serving.clone()) as Box<dyn DynProtocolHandler>,
+                ),
+            ],
         ))
         .await
         .unwrap();

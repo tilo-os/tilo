@@ -428,9 +428,9 @@ async fn host_on(
 
 /// Wait until `endpoint` names `home` as the relay it is reached through.
 ///
-/// A host waits at its opening for its endpoint to name a relay
-/// ([`super::await_relay`]), so no workspace learns an address the host must
-/// rename, and gives up after iroh's net report timeout. An endpoint that has
+/// A server waits at its opening for its endpoint to name where it is
+/// reached ([`tilo_endpoint_reachability::Reaching`]), so no workspace learns
+/// an address it must rename, and gives up after iroh's net report timeout. An endpoint that has
 /// no relay to reach waits that whole bound out: five seconds for every host a
 /// test opens. This package's tests give the fixture's endpoint a server on this
 /// machine's loopback instead, as a host on a network has one, and the host

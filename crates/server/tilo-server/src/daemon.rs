@@ -36,6 +36,7 @@ use crate::transport::{
 };
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_server_protocol::WorkspaceId;
+use tilo_workspace_service::Reaching;
 
 #[derive(serde::Deserialize)]
 struct FullReplicaStatusProof {
@@ -361,8 +362,9 @@ impl Server {
         Box::pin(Self::start_inner(
             cfg,
             identity,
-            Some(relay_mode),
+            Some(relay_mode.clone()),
             None,
+            reaching_of(&relay_mode),
             Vec::new(),
             Servers::desktop(None),
             Arc::new(tilo_clock::SystemClock),
@@ -380,6 +382,10 @@ impl Server {
     /// [`Self::shutdown`] closes the router and invokes every additional
     /// handler's shutdown hook.
     ///
+    /// `reaching` says whether that endpoint names where it is reached: the
+    /// workspaces this server opens wait for that name, and an endpoint whose
+    /// relays are off ([`Reaching::OnItsOwn`]) names none.
+    ///
     /// # Errors
     ///
     /// Returns [`ServerError::ProtocolRegistration`] if an ALPN is empty,
@@ -389,6 +395,7 @@ impl Server {
         cfg: ServerConfig,
         identity: ServerIdentity,
         endpoint: Endpoint,
+        reaching: Reaching,
         protocols: Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>,
     ) -> Result<Self, ServerError> {
         Box::pin(Self::start_inner(
@@ -396,6 +403,7 @@ impl Server {
             identity,
             None,
             Some(endpoint),
+            reaching,
             protocols,
             Servers::desktop(None),
             Arc::new(tilo_clock::SystemClock),
@@ -444,6 +452,7 @@ impl Server {
             identity,
             None,
             None,
+            Reaching::ByRelay,
             Vec::new(),
             Servers::desktop(app_serving),
             Arc::new(tilo_clock::SystemClock),
@@ -464,8 +473,9 @@ impl Server {
         Box::pin(Self::start_inner(
             cfg,
             identity,
-            Some(relay_mode),
+            Some(relay_mode.clone()),
             None,
+            reaching_of(&relay_mode),
             Vec::new(),
             Servers::desktop(app_serving),
             Arc::new(tilo_clock::SystemClock),
@@ -489,6 +499,7 @@ impl Server {
             identity,
             None,
             None,
+            Reaching::ByRelay,
             Vec::new(),
             Servers::desktop(None),
             replica_clock,
@@ -508,6 +519,7 @@ impl Server {
         identity: ServerIdentity,
         relay_mode: Option<iroh::RelayMode>,
         endpoint: Option<Endpoint>,
+        reaching: Reaching,
         additional_protocols: Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>,
         servers: Servers,
         replica_clock: Arc<dyn Clock>,
@@ -585,9 +597,6 @@ impl Server {
                 (_, relay_mode) => (None, relay_mode),
             },
         };
-        // A host told to use no relay never reaches one: waiting for it below
-        // would only hold every start back by the whole wait.
-        let relayless = endpoint.is_none() && matches!(relay_mode, Some(iroh::RelayMode::Disabled));
         let endpoint = match endpoint {
             Some(endpoint) => endpoint,
             None => bind_endpoint(&cfg, &identity.device_signing_key, relay_mode).await?,
@@ -618,17 +627,15 @@ impl Server {
         // endpoint knows only once it has connected to one. The workspaces opened
         // below name it straight away, and a host that has none yet names it when
         // it makes its first, so wait for the relay before serving either.
-        if !relayless {
-            let addr = tilo_workspace_service::workspaces::await_relay(&endpoint).await;
-            if let Some(url) = &reached_through
-                && addr.relay_urls().next().is_none()
-            {
-                return Err(ServerError::Iroh(format!(
-                    "the packet relay at {url}, which this server is to be reached through, did \
-                     not answer: no one could reach the server. Check that the URL names a packet \
-                     relay this computer reaches (tilo.sh's is https://live-eu1.tilo.sh)"
-                )));
-            }
+        reaching.awaited(&endpoint).await;
+        if let Some(url) = &reached_through
+            && endpoint.addr().relay_urls().next().is_none()
+        {
+            return Err(ServerError::Iroh(format!(
+                "the packet relay at {url}, which this server is to be reached through, did \
+                 not answer: no one could reach the server. Check that the URL names a packet \
+                 relay this computer reaches (tilo.sh's is https://live-eu1.tilo.sh)"
+            )));
         }
         let (sessions, governed) = crate::service::HostSessions::open(
             crate::service::HostConfig {
@@ -636,6 +643,7 @@ impl Server {
                 work: cfg.work.clone(),
                 trust_policy: cfg.trust_policy.clone(),
                 max_workspace_grants: cfg.max_workspace_grants,
+                reaching,
                 apps: app_serving.clone(),
                 shell_payloads,
                 // The folder its operator names for the keys of people's
@@ -1129,6 +1137,16 @@ async fn spawn_packet_relay(
         .parse()
         .map_err(|error| ServerError::Iroh(format!("packet relay URL: {error}")))?;
     Ok((server, url))
+}
+
+/// Whether an endpoint bound with `relay_mode` names where it is reached: one
+/// told to use no relay never does, and everything else is expected to.
+fn reaching_of(relay_mode: &iroh::RelayMode) -> Reaching {
+    if matches!(relay_mode, iroh::RelayMode::Disabled) {
+        Reaching::OnItsOwn
+    } else {
+        Reaching::ByRelay
+    }
 }
 
 /// Bind the server protocol with a domain-separated transport key. This is one
