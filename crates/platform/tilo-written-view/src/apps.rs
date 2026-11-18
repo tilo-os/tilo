@@ -156,6 +156,9 @@ fn words(verb: &str) -> String {
 /// name; a record as its declared fields under their names.
 fn normal(meta: &PackageMeta, ty: &str, json: &Json) -> Json {
     let ty = ty.trim();
+    if ty == "RichText" {
+        return rich_text(json);
+    }
     if let Some(inner) = wrapped(ty, "Option") {
         return if json.is_null() {
             Json::Null
@@ -322,4 +325,132 @@ fn dotted(source: &str) -> Vec<(String, String)> {
     }
     close(&mut word, &mut before, &mut after_dot);
     pairs
+}
+
+/// `json`, a rich text as a read answers it, as a reading holds one: `{"rich": [paragraphs]}`.
+///
+/// A read says a rich text's body as the list of its paragraphs in their order under `blocks`,
+/// each with its id, its kind, its words, its attributes and the paragraphs it holds. The
+/// order is the read's: nothing is ordered here. What is no such answer (a text kept as a
+/// string, a value that is a rich text to a reading already) is handed on as it is.
+fn rich_text(json: &Json) -> Json {
+    match json.get("blocks") {
+        Some(Json::Array(paragraphs)) if json.get("rich").is_none() => {
+            let paragraphs: Vec<Json> = paragraphs.iter().map(paragraph).collect();
+            serde_json::json!({ "rich": paragraphs })
+        }
+        _ => json.clone(),
+    }
+}
+
+/// One paragraph of a read as the language's rich text keeps one. Its inline marks are no part
+/// of a read, so it has none here.
+fn paragraph(read: &Json) -> Json {
+    let said = |key: &str| read.get(key).and_then(Json::as_str).unwrap_or_default();
+    let attrs: Map<String, Json> = read
+        .get("attrs")
+        .and_then(Json::as_object)
+        .into_iter()
+        .flatten()
+        .filter_map(|(name, value)| Some((name.clone(), attribute(value)?)))
+        .collect();
+    let children: Vec<Json> = read
+        .get("children")
+        .and_then(Json::as_array)
+        .into_iter()
+        .flatten()
+        .map(paragraph)
+        .collect();
+    serde_json::json!({
+        "id": said("id"),
+        "kind": said("kind"),
+        "text": said("text"),
+        "marks": [],
+        "attrs": attrs,
+        "children": children,
+    })
+}
+
+/// A paragraph's attribute as the language's rich text keeps one: under the kind of value it
+/// is. `None` for what is no attribute's value.
+fn attribute(value: &Json) -> Option<Json> {
+    match value {
+        Json::Bool(flag) => Some(serde_json::json!({ "Bool": flag })),
+        Json::String(text) => Some(serde_json::json!({ "Str": text })),
+        Json::Number(number) if number.is_i64() => Some(serde_json::json!({ "Int": number })),
+        Json::Number(number) => Some(serde_json::json!({ "Float": number.as_f64()? })),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilolang_tilo::runtime::value::{Value, from_json};
+
+    const WRITER: &str = "so.tilo.word-processor";
+
+    /// The word processor as a view names it, from the surface this build carries.
+    fn writer() -> App {
+        let surface = app_fleet::surface(WRITER).expect("the word processor ships its surface");
+        App::of(WRITER, "Word Processor", surface).expect("its surface reads as a package")
+    }
+
+    #[test]
+    fn a_documents_body_reaches_a_view_as_its_paragraphs_in_the_order_the_read_says() {
+        // A document of the word processor as a read answers it: the body's paragraphs a list
+        // in their order, each with the id it is kept under (here not in the order of the ids).
+        let read = serde_json::json!({
+            "body": {
+                "schema": "tilo.richtext",
+                "blocks": [
+                    {"id": "p2", "kind": "heading", "text": "A poem", "attrs": {"level": 1}},
+                    {"id": "p3", "kind": "paragraph", "text": "Roses are red", "attrs": {}},
+                    {"id": "p1", "kind": "list_item", "text": "and so are you",
+                     "attrs": {"ordered": false, "indent": 1.5, "style": "body"},
+                     "children": [{"id": "c1", "kind": "paragraph", "text": "(held)"}]},
+                ],
+                "styles": {},
+            },
+        });
+        let reading = writer().reading(&read);
+        let body = match from_json(&reading["body"]) {
+            Ok(Value::Rich(body)) => body,
+            other => panic!("the body is a rich text to a view, not {other:?}: {reading}"),
+        };
+        assert_eq!(
+            body.written_text(),
+            "A poem\nRoses are red\nand so are you",
+            "the words, a line a paragraph, in the read's order"
+        );
+        let said: Vec<(&str, &str)> = body
+            .blocks
+            .iter()
+            .map(|paragraph| (paragraph.id.as_str(), paragraph.kind.as_str()))
+            .collect();
+        assert_eq!(
+            said,
+            [("p2", "heading"), ("p3", "paragraph"), ("p1", "list_item")]
+        );
+        // A paragraph keeps its attributes and what it holds.
+        assert_eq!(
+            reading["body"]["rich"][0]["attrs"],
+            serde_json::json!({"level": {"Int": 1}})
+        );
+        assert_eq!(body.blocks[2].children[0].text, "(held)");
+        assert_eq!(body.blocks[2].attrs.len(), 3);
+    }
+
+    #[test]
+    fn a_body_that_is_no_list_of_paragraphs_is_handed_on_as_it_is() {
+        // A text kept as a string, and a value that is a rich text to a reading already.
+        for body in [
+            serde_json::json!("plain words"),
+            serde_json::json!({"rich": [{"id": "", "kind": "paragraph", "text": "as it is",
+                "marks": [], "attrs": {}, "children": []}]}),
+        ] {
+            let reading = writer().reading(&serde_json::json!({ "body": body }));
+            assert_eq!(reading["body"], body);
+        }
+    }
 }
