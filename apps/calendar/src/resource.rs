@@ -1461,7 +1461,13 @@ impl calendar::NewEvent {
 #[cfg(test)]
 mod tests;
 
-ui::reach_tests!(CalendarShell);
+// Each capture scenario publishes its own set of actions, and driving every
+// one through the window takes a while: four tests ask a quarter of the
+// scenarios each, running beside one another.
+ui::reach_tests!(
+    CalendarShell,
+    shares: [share_0, share_1, share_2, share_3]
+);
 
 #[cfg(test)]
 mod agent_disclosure_tests {
