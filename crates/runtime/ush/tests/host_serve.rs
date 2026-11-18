@@ -120,10 +120,7 @@ fn allows_last_as_long_as_the_person_said_and_only_the_shell_records_them() {
             let (response, _, _) = ask(&socket, Some(TERMINAL_APP_ID), "person");
             assert!(matches!(response, ServeResponse::HostNotAllowed { .. }));
 
-            assert_eq!(
-                allow(&socket, None, Lifetime::Once),
-                ServeResponse::Allowed
-            );
+            assert_eq!(allow(&socket, None, Lifetime::Once), ServeResponse::Allowed);
             let (response, fd, _first) = ask(&socket, Some(TERMINAL_APP_ID), "person");
             assert!(
                 matches!(response, ServeResponse::Session { .. }),
@@ -155,7 +152,10 @@ fn allows_last_as_long_as_the_person_said_and_only_the_shell_records_them() {
                 "a session's allow is never written to disk"
             );
 
-            assert_eq!(allow(&socket, None, Lifetime::UntilRevoked), ServeResponse::Allowed);
+            assert_eq!(
+                allow(&socket, None, Lifetime::UntilRevoked),
+                ServeResponse::Allowed
+            );
             assert!(
                 HostPolicy::load(&HostPolicy::path(&store))
                     .allows_host_shell(TERMINAL_APP_ID, None)
