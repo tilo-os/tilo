@@ -154,6 +154,7 @@ members = [
     "apps/notes",
     "apps/osk",
     "apps/passwords",
+    "apps/passwords-model",
     "apps/pdf-viewer",
     "apps/photos",
     "apps/print-centre",
