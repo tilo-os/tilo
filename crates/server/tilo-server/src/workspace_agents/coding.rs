@@ -699,7 +699,9 @@ impl super::HostAgents {
                 Vec::new()
             };
             for next in came {
-                reply.went_on().await;
+                if let Err(why) = reply.went_on().await {
+                    return Outcome::Failed(why);
+                }
                 *turn = next;
                 *reply = scope.reply(turn);
                 reply.taken().await;
