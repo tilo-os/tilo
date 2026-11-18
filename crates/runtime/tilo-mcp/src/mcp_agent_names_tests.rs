@@ -42,8 +42,10 @@ async fn an_app_is_one_app_however_a_model_spells_its_name() {
     // The installed one is found by every spelling, and what a call on it reaches is it.
     for spelled in WRITER {
         let (text, failed) = tool(&server, "tilo_ls", json!({"path": spelled})).await;
+        // A listing of an installed app starts it and lists it: what is listed is the word
+        // processor, however its name was spelled.
         assert!(
-            !failed && text.contains("installed but not running"),
+            !failed && text.contains("(so.tilo.word-processor)"),
             "{spelled}: {text}"
         );
         let before = opened(&notes);
