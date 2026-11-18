@@ -481,8 +481,17 @@ const WRITER: &str = "so.tilo.word-processor";
 
 /// A view over the word processor, the last part of whose id is two words: a view writes it
 /// with `_`, since no name in a view holds `-`.
-const POEM: &str = "view poem() {\n    text(word_processor.document.body.text)\n}";
-const ADDS: &str = "view adds() {\n    button(\"Add a line\", on: word_processor.append_paragraph(word_processor.document, \"More\"))\n}";
+/// The word processor keeps a text for each document: the view names one by its id.
+fn poem() -> String {
+    format!("view poem() {{\n    text(@word_processor.Document:{LETTER}.body.text)\n}}")
+}
+
+/// A view whose control adds a line to that text.
+fn adds() -> String {
+    format!(
+        "view adds() {{\n    button(\"Add a line\", on: word_processor.append_paragraph(@word_processor.Document:{LETTER}, \"More\"))\n}}"
+    )
+}
 
 /// The word processor's document of the workspace with the body `lines`, in the form the
 /// view's runtime reads a rich text from: its paragraphs in their order, under `rich`.
@@ -507,8 +516,13 @@ fn written(lines: &[&str]) -> Json {
 #[test]
 fn a_view_reads_an_app_whose_id_holds_a_hyphen_by_the_name_a_view_can_write() {
     let workspace = TestWorkspace::default();
-    workspace.write(WRITER, written(&["The tide comes in on quiet feet"]));
-    let (mut surface, state) = shown_reading(POEM, ada(), &["word_processor"], &workspace);
+    workspace.write_named(
+        WRITER,
+        LETTER,
+        written(&["The tide comes in on quiet feet"]),
+    );
+    let (mut surface, state) = shown_reading(&poem(), ada(), &["word_processor"], &workspace);
+    surface.turn();
     assert!(
         surface.nodes("error").is_empty(),
         "the view names the word processor: {:?}",
@@ -522,8 +536,9 @@ fn a_view_reads_an_app_whose_id_holds_a_hyphen_by_the_name_a_view_can_write() {
     assert_eq!(texts(&surface), ["The tide comes in on quiet feet"]);
 
     // A line is written in the word processor: the view shows both, in their order.
-    workspace.write(
+    workspace.write_named(
         WRITER,
+        LETTER,
         written(&[
             "The tide comes in on quiet feet",
             "and leaves again before the light",
@@ -540,7 +555,7 @@ fn a_view_reads_an_app_whose_id_holds_a_hyphen_by_the_name_a_view_can_write() {
 #[test]
 fn what_such_a_view_asks_is_sent_to_the_app_under_its_own_id() {
     let workspace = TestWorkspace::default();
-    let (mut surface, state) = shown_reading(ADDS, bo(), &["word_processor"], &workspace);
+    let (mut surface, state) = shown_reading(&adds(), bo(), &["word_processor"], &workspace);
     let buttons = surface.nodes("ui.Button");
     assert_eq!(buttons.len(), 1, "the view shows its control");
     surface.press(&buttons[0].0);
@@ -550,7 +565,7 @@ fn what_such_a_view_asks_is_sent_to_the_app_under_its_own_id() {
     let (app, resource, verb, arguments) = &invoked[0];
     assert_eq!(
         (app.as_str(), resource.as_str(), verb.as_str()),
-        (WRITER, "word-processor.document", "append-paragraph")
+        (WRITER, LETTER, "append-paragraph")
     );
     assert_eq!(arguments.get("text"), Some(&json!("More")));
 }
@@ -583,4 +598,43 @@ fn a_view_reads_one_document_of_an_app_named_by_its_id_and_follows_it() {
     surface.turn();
     assert_eq!(texts(&surface), ["Dear Ada,\nthe tide is in."]);
     assert!(state.refused().is_empty());
+}
+
+const SHEETS: &str = "so.tilo.sheets";
+
+/// One workbook of Sheets, by the id the tool that made it answered with.
+const BOOK: &str = "uuid:0269b8fa-6c1b-4e0e-9d57-5431099af597";
+
+/// Sheets keeps a workbook for each document and none for the workspace: this names none.
+const REMARKS: &str =
+    "view remarks() {\n    for c in sheets.workbook.comments {\n        text(c.text)\n    }\n}";
+
+#[test]
+fn a_kind_an_app_keeps_for_each_document_named_alone_does_not_compile_and_says_how_one_is_named() {
+    let workspace = TestWorkspace::default();
+    // A workbook is there under its own id, as Sheets keeps every one.
+    workspace.write_named(SHEETS, BOOK, json!({ "comments": {} }));
+    let (mut surface, state) = shown_reading(REMARKS, ada(), &["sheets"], &workspace);
+    surface.turn();
+    let said = texts(&surface).join("\n");
+    assert_eq!(
+        surface.nodes("error").len(),
+        1,
+        "the view's place holds a fault, not an empty card: {said:?}"
+    );
+    assert!(
+        said.contains("sheets.workbook"),
+        "the fault names what the view wrote: {said}"
+    );
+    assert!(
+        said.contains("@sheets.Workbook:"),
+        "and says how one workbook is named: {said}"
+    );
+    assert!(
+        workspace.0.borrow().asked.is_empty(),
+        "nothing is asked of Sheets for a view that names no workbook: {:?}",
+        workspace.0.borrow().asked
+    );
+    assert!(state.refused().is_empty() && state.unread().is_empty());
+    assert!(workspace.invoked().is_empty(), "reading sends nothing");
 }

@@ -177,7 +177,30 @@ impl Checker<'_> {
                         .iter()
                         .find(|t| t.key.app == import.app && t.id == *ty_id)
                 {
-                    return Self::root_ref(&info.key.app, &info.id, &info.key);
+                    let read = Self::root_ref(&info.key.app, &info.id, &info.key);
+                    // A kind the package keeps one of for each document: named alone it is
+                    // none of them.
+                    let each = import
+                        .each_document
+                        .contains(&name.name)
+                        .then(|| info.key.name.clone());
+                    let Some(ty) = each else {
+                        return read;
+                    };
+                    let alias = path.join(".");
+                    let (root, thing) = (&name.name, name.name.replace('_', " "));
+                    self.err(
+                        "E142",
+                        e.span,
+                        format!(
+                            "`{alias}.{root}` alone names no {thing}: `{alias}` keeps one `{ty}` \
+                             for each document and none for the workspace. Name the one you \
+                             mean by its id, the last part of the link the tool that made or \
+                             listed it answered with: write `@{alias}.{ty}:<its id>` where this \
+                             says `{alias}.{root}`"
+                        ),
+                    );
+                    return Ex::error();
                 }
                 // `agent.me`: the person the session acts for, where a package names it.
                 if let Some(ex) = self.agent_me_field(base, &name.name) {

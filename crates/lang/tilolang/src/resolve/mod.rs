@@ -36,6 +36,9 @@ pub struct Import {
     pub roots: Vec<String>,
     /// Its named roots (`root notes: Notes`) and their type ids: `alias.notes` reaches one.
     pub named_roots: Vec<(String, String)>,
+    /// The names among them of which the package keeps one for each document and none for the
+    /// workspace: `alias.name` alone names none of them.
+    pub each_document: Vec<String>,
     /// The ids the package was published under before: `use` and a full path under one of them name
     /// it.
     pub previously: Vec<String>,
@@ -165,6 +168,7 @@ impl Env {
                 app: self.app.clone(),
                 roots: Vec::new(),
                 named_roots: Vec::new(),
+                each_document: Vec::new(),
                 previously: Vec::new(),
             });
             return;
@@ -251,6 +255,7 @@ impl Env {
             app: crate::toolkit::UI_APP.to_string(),
             roots: Vec::new(),
             named_roots: Vec::new(),
+            each_document: Vec::new(),
             previously: Vec::new(),
         });
         self.toolkit = Some(crate::toolkit::catalogue());
@@ -280,6 +285,7 @@ impl Env {
                 .iter()
                 .map(|r| (r.name.clone(), r.ty.clone()))
                 .collect(),
+            each_document: meta.each_document.clone(),
             previously: meta.previously.clone(),
         });
         // The package's `template view`s: a caller elsewhere writes `alias.name(...)` with a block,

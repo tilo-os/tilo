@@ -45,14 +45,20 @@ fn workbook_by(remarks: &[(&str, Json)]) -> Json {
     json!({ "comments": stored })
 }
 
-/// Each remark of the workbook: who made it, then its words.
-const REMARKS: &str = "view remarks() {\n    for c in sheets.workbook.comments {\n        match c.author {\n            .member(_) => text(\"a member\"),\n            .named(name) => text(name),\n        }\n        text(c.text)\n    }\n}";
+/// Each remark of the workbook [`BOOK`]: who made it, then its words. Sheets keeps a workbook
+/// for each document, so the view names the one it means.
+fn remarks() -> String {
+    format!(
+        "view remarks() {{\n    for c in @sheets.Workbook:{BOOK}.comments {{\n        match c.author {{\n            .member(_) => text(\"a member\"),\n            .named(name) => text(name),\n        }}\n        text(c.text)\n    }}\n}}"
+    )
+}
 
 #[test]
 fn a_case_that_carries_a_value_reaches_a_view_with_its_value() {
     let workspace = TestWorkspace::default();
-    workspace.write(SHEETS, workbook(&[("Check the sum", "Ada")]));
-    let (mut surface, state) = shown_reading(REMARKS, ada(), &["sheets"], &workspace);
+    workspace.write_named(SHEETS, BOOK, workbook(&[("Check the sum", "Ada")]));
+    let (mut surface, state) = shown_reading(&remarks(), ada(), &["sheets"], &workspace);
+    surface.turn();
     assert_eq!(
         texts(&surface),
         ["Ada", "Check the sum"],
@@ -61,8 +67,9 @@ fn a_case_that_carries_a_value_reaches_a_view_with_its_value() {
     );
 
     // Someone adds a remark in Sheets: the view follows, case and value.
-    workspace.write(
+    workspace.write_named(
         SHEETS,
+        BOOK,
         workbook(&[("Check the sum", "Ada"), ("Done", "Bo")]),
     );
     surface.turn();
@@ -75,9 +82,9 @@ fn a_case_that_carries_a_value_reaches_a_view_with_its_value() {
 #[test]
 fn a_case_and_its_value_stay_unread_by_a_viewer_who_may_not_read_the_app() {
     let workspace = TestWorkspace::default();
-    workspace.write(SHEETS, workbook(&[("Check the sum", "Ada")]));
+    workspace.write_named(SHEETS, BOOK, workbook(&[("Check the sum", "Ada")]));
     workspace.refuse(SHEETS);
-    let (mut surface, state) = shown_reading(REMARKS, ada(), &["sheets"], &workspace);
+    let (mut surface, state) = shown_reading(&remarks(), ada(), &["sheets"], &workspace);
     surface.turn();
     assert_eq!(state.refused(), ["Sheets"]);
     assert!(
@@ -168,11 +175,16 @@ fn cy() -> MemberId {
     MemberId::person("cy")
 }
 
-/// Who holds the terminal's session, by name.
-const HOLDER: &str = "view holder() {\n    match terminal.session.holder {\n        .some(who) => text(who.name()),\n        .none => text(\"free\"),\n    }\n}";
+/// One session of the terminal, by its id.
+const SESSION: &str = "uuid:5d0c7a52-91e3-4a6f-8b1e-2f9c3d4e5a60";
 
-/// Each remark of the workbook: who made it, by name, then its words.
-const AUTHORS: &str = "view authors() {\n    for c in sheets.workbook.comments {\n        match c.author {\n            .member(who) => text(who.name()),\n            .named(name) => text(name),\n        }\n        text(c.text)\n    }\n}";
+/// Who holds the terminal's session [`SESSION`], by name. The terminal keeps a session for each
+/// window, so the view names the one it means.
+fn who_holds() -> String {
+    format!(
+        "view holder() {{\n    match @terminal.Session:{SESSION}.holder {{\n        .some(who) => text(who.name()),\n        .none => text(\"free\"),\n    }}\n}}"
+    )
+}
 
 #[test]
 fn an_actor_reaches_a_view_from_a_field_and_from_a_case_that_carries_one() {
@@ -180,15 +192,16 @@ fn an_actor_reaches_a_view_from_a_field_and_from_a_case_that_carries_one() {
     // session.
     let holder = serde_json::to_string(&Actor::Member(cy())).unwrap_or_default();
     let workspace = TestWorkspace::default();
-    workspace.write(TERMINAL, json!({ "holder": holder }));
-    let (mut surface, state) = shown_reading(HOLDER, ada(), &["terminal"], &workspace);
+    workspace.write_named(TERMINAL, SESSION, json!({ "holder": holder }));
+    let (mut surface, state) = shown_reading(&who_holds(), ada(), &["terminal"], &workspace);
+    surface.turn();
     assert_eq!(
         texts(&surface),
         ["cy"],
         "the session's holder, by name: {:?}",
         surface.nodes("error")
     );
-    workspace.write(TERMINAL, json!({ "holder": null }));
+    workspace.write_named(TERMINAL, SESSION, json!({ "holder": null }));
     surface.turn();
     assert_eq!(texts(&surface), ["free"]);
     assert!(state.refused().is_empty());
@@ -197,8 +210,9 @@ fn an_actor_reaches_a_view_from_a_field_and_from_a_case_that_carries_one() {
     // one by someone only named.
     let member = serde_json::to_string(&cy()).unwrap_or_default();
     let workspace = TestWorkspace::default();
-    workspace.write(
+    workspace.write_named(
         SHEETS,
+        BOOK,
         workbook_by(&[
             (
                 "Check the sum",
@@ -207,7 +221,8 @@ fn an_actor_reaches_a_view_from_a_field_and_from_a_case_that_carries_one() {
             ("Done", json!({ "$variant": "named", "0": "Ada" })),
         ]),
     );
-    let (surface, _) = shown_reading(AUTHORS, ada(), &["sheets"], &workspace);
+    let (mut surface, _) = shown_reading(&authors_of_the_book(), ada(), &["sheets"], &workspace);
+    surface.turn();
     assert_eq!(
         texts(&surface),
         ["cy", "Check the sum", "Ada", "Done"],
@@ -221,9 +236,9 @@ fn an_actor_reaches_a_view_from_a_field_and_from_a_case_that_carries_one() {
 fn an_actor_stays_unread_by_a_viewer_who_may_not_read_the_app() {
     let holder = serde_json::to_string(&Actor::Member(cy())).unwrap_or_default();
     let workspace = TestWorkspace::default();
-    workspace.write(TERMINAL, json!({ "holder": holder }));
+    workspace.write_named(TERMINAL, SESSION, json!({ "holder": holder }));
     workspace.refuse(TERMINAL);
-    let (mut surface, state) = shown_reading(HOLDER, ada(), &["terminal"], &workspace);
+    let (mut surface, state) = shown_reading(&who_holds(), ada(), &["terminal"], &workspace);
     surface.turn();
     assert_eq!(state.refused(), ["Terminal"]);
     assert!(
