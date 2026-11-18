@@ -88,7 +88,8 @@ mod publication;
 mod workspace_grants;
 pub use workspace_grants::workspace_grants_of;
 mod work_delegations;
-pub use work_delegations::work_delegations_of;
+pub(crate) use work_delegations::rows_kept as work_delegation_rows_kept;
+pub use work_delegations::{DelegatedWork, work_delegations_of};
 mod keeping_devices;
 pub use keeping_devices::{
     WORKSPACE_KEEPING_DEVICES_KEY, holder_role, keeping_device_keys_of, keeping_devices_of,

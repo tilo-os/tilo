@@ -1360,6 +1360,14 @@ fn a_withdrawn_delegation_stays_withdrawn_whoever_writes_its_first_form_back() {
         let mut holder = holder.clone();
         let changes = delegation_written_straight(&holder, writer, &first);
         let taken = take_workspace_changes(&mut holder, writer, changes);
+        // The batch reached the holder and is refused for what it does: a
+        // test that passed because nothing was delivered would say nothing.
+        assert!(
+            taken
+                .as_ref()
+                .is_err_and(|refusal| refusal.contains("moved back")),
+            "written back by {who}: {taken:?}"
+        );
         if live(&holder) {
             broken.push(format!(
                 "written back by {who} ({taken:?}): the withdrawn delegation is read live again"
@@ -1389,4 +1397,315 @@ fn a_withdrawn_delegation_stays_withdrawn_whoever_writes_its_first_form_back() {
         }
     }
     assert!(broken.is_empty(), "{broken:#?}");
+}
+
+/// A member's delegation of their work to a server, withdrawn again, as the
+/// copies of the workspace hold it.
+struct Withdrawn {
+    /// The owner's copy while the delegation was live.
+    before: StatePeer,
+    /// The owner's copy with the withdrawal.
+    after: StatePeer,
+    /// A holder that took the delegation and then its withdrawal in.
+    holder: StatePeer,
+    guest_key: SigningKey,
+    guest: DeviceCert,
+    owner_key: SigningKey,
+    server_key: SigningKey,
+    server: DeviceCert,
+    /// The delegation as the member first signed it.
+    first: collab_types::work_delegation::WorkDelegation,
+}
+
+impl Withdrawn {
+    fn made() -> Self {
+        let (mut peer, guest_key, guest) = workspace_with(Role::Editor);
+        let owner_key = SigningKey::from_bytes(&[2; 32]);
+        let (server_key, server) = named_server(&mut peer, &owner_key);
+        let first = delegating(
+            &guest_key,
+            guest.user_public_key,
+            server.device_public_key,
+            APP,
+        );
+        let mut holder = peer.clone();
+        let delegated = workspace_changes(&mut peer, |copy| {
+            let written = copy
+                .workspace_mut()
+                .author_work_delegation(&first, &guest_key, now());
+            assert_eq!(written, Ok(true), "the member delegates");
+        });
+        take_workspace_changes(&mut holder, guest.device_public_key, delegated).unwrap();
+        let before = peer.clone();
+        let withdrawn = workspace_changes(&mut peer, |copy| {
+            let written = copy.workspace_mut().revoke_work_delegation(
+                &server.device_public_key,
+                &guest.user_public_key,
+                &guest_key,
+                now(),
+            );
+            assert_eq!(written, Ok(true), "the member withdraws");
+        });
+        take_workspace_changes(&mut holder, guest.device_public_key, withdrawn).unwrap();
+        Self {
+            before,
+            after: peer,
+            holder,
+            guest_key,
+            guest,
+            owner_key,
+            server_key,
+            server,
+            first,
+        }
+    }
+
+    /// What the member's work on the server is on `copy` now.
+    fn work(&self, copy: &StatePeer) -> crate::DelegatedWork {
+        copy.workspace().delegated_work(
+            &self.server.device_public_key,
+            &self.guest.user_public_key,
+            now(),
+        )
+    }
+
+    /// Whether `copy` takes the server's write of the member's work.
+    fn server_works(&self, copy: &StatePeer) -> bool {
+        let invoker = the_servers_invoker(
+            &hex::encode(self.guest.user_public_key),
+            self.server.device_public_key,
+        );
+        let work = server_write(copy, &self.server_key, 1, "set by the server", invoker);
+        receive(&mut copy.clone(), &self.server, work).is_ok()
+    }
+
+    fn owner_device(&self) -> [u8; 32] {
+        self.owner_key.verifying_key().to_bytes()
+    }
+}
+
+/// Every change of `peer`'s workspace document: a base and what was written
+/// on it.
+fn whole_workspace(peer: &StatePeer) -> Vec<Vec<u8>> {
+    peer.admitted_workspace()
+        .unwrap()
+        .clone()
+        .get_changes(&[])
+        .into_iter()
+        .map(|change| change.raw_bytes().to_vec())
+        .collect()
+}
+
+/// A withdrawal stays where its first form arrives beside it, written by a
+/// device that had not seen it, and where the governor sends a base made
+/// before it; a base made with it is taken as any base is.
+#[test]
+fn a_withdrawal_stays_beside_its_first_form_and_under_a_base() {
+    use crate::DelegatedWork;
+    let case = Withdrawn::made();
+    assert!(
+        case.server_works(&case.before),
+        "the server works while it is live"
+    );
+    assert!(matches!(
+        case.work(&case.holder),
+        DelegatedWork::Withdrawn { .. }
+    ));
+
+    // Written on a copy that had not taken the withdrawal in, the first form
+    // is no move back: it is taken in beside the withdrawal and changes
+    // nothing.
+    let mut holder = case.holder.clone();
+    let beside = delegation_written_straight(&case.before, case.owner_device(), &case.first);
+    assert_eq!(
+        take_workspace_changes(&mut holder, case.owner_device(), beside),
+        Ok(())
+    );
+    assert!(
+        matches!(case.work(&holder), DelegatedWork::Withdrawn { .. }),
+        "the withdrawal stands over the form beside it"
+    );
+    assert!(
+        !case.server_works(&holder),
+        "the server takes none of the member's work"
+    );
+
+    // The governor's base, made of its copy before the withdrawal, moves the
+    // row back for a holder of the withdrawal: refused whole.
+    let mut stale = case.before.clone();
+    assert_eq!(stale.rebase_workspace(), Ok(true));
+    let mut holder = case.holder.clone();
+    let taken = take_workspace_changes(&mut holder, case.owner_device(), whole_workspace(&stale));
+    assert!(
+        taken
+            .as_ref()
+            .is_err_and(|refusal| refusal.contains("moved back")),
+        "{taken:?}"
+    );
+    assert!(matches!(
+        case.work(&holder),
+        DelegatedWork::Withdrawn { .. }
+    ));
+
+    // Its base made with the withdrawal is taken, and the withdrawal with it.
+    let mut current = case.after.clone();
+    assert_eq!(current.rebase_workspace(), Ok(true));
+    let mut holder = case.holder.clone();
+    assert_eq!(
+        take_workspace_changes(&mut holder, case.owner_device(), whole_workspace(&current)),
+        Ok(())
+    );
+    assert!(matches!(
+        case.work(&holder),
+        DelegatedWork::Withdrawn { .. }
+    ));
+    assert!(!case.server_works(&holder));
+}
+
+/// Only the member's own devices say what their delegation is: another
+/// person's device cannot withdraw it in their name; their own device signs
+/// it again to live on, and never once it was withdrawn; and one that came to
+/// its end is told apart from one withdrawn and from work never given.
+#[test]
+fn only_the_members_own_devices_say_what_their_delegation_is() {
+    use crate::DelegatedWork;
+    let case = Withdrawn::made();
+    let (server, person) = (case.server.device_public_key, case.guest.user_public_key);
+
+    // The owner's device signs a withdrawal in the member's name and writes it
+    // over their live delegation. It is no form of the member's, so the row
+    // would hold none of theirs: refused.
+    let mut live = case.before.clone();
+    let forged = delegating(&case.owner_key, person, server, APP)
+        .revoked(&case.owner_key, case.first.issued_at_ns.saturating_add(1))
+        .unwrap();
+    let changes = delegation_written_straight(&live, case.owner_device(), &forged);
+    let taken = take_workspace_changes(&mut live, case.owner_device(), changes);
+    assert!(
+        taken
+            .as_ref()
+            .is_err_and(|refusal| refusal.contains("cannot be erased")),
+        "{taken:?}"
+    );
+    assert!(matches!(case.work(&live), DelegatedWork::Live(_)));
+
+    // The member's device signs the live delegation again: the same giving,
+    // seven days from now.
+    let renew = |copy: &mut StatePeer| {
+        copy.workspace_mut()
+            .renew_work_delegations(&case.guest_key, now())
+    };
+    assert_eq!(renew(&mut live), Ok(1));
+    let renewed = live
+        .workspace()
+        .work_delegation(&server, &person, now())
+        .expect("a renewed delegation is live");
+    assert_eq!(
+        renewed.giving, case.first.giving,
+        "a renewal is no new giving"
+    );
+    assert_eq!(
+        renewed.expires_at_ns.saturating_sub(renewed.issued_at_ns),
+        collab_types::work_delegation::MAX_LIFETIME_NS
+    );
+    assert_eq!(
+        renew(&mut live),
+        Ok(0),
+        "with more than half its life left it stays"
+    );
+    let later = now()
+        .checked_add(std::time::Duration::from_secs(8 * 24 * 60 * 60))
+        .unwrap();
+    assert_eq!(
+        live.workspace().delegated_work(&server, &person, later),
+        DelegatedWork::Ended {
+            at_ns: renewed.expires_at_ns
+        }
+    );
+
+    // Withdrawn, it is never signed again, and a renewal signed without the
+    // withdrawal is refused where it is written.
+    let mut holder = case.holder.clone();
+    assert_eq!(renew(&mut holder), Ok(0));
+    let written = holder
+        .workspace_mut()
+        .author_work_delegation(&renewed, &case.guest_key, now());
+    assert!(
+        written
+            .as_ref()
+            .is_err_and(|refusal| refusal.contains("a later form")),
+        "{written:?}"
+    );
+    assert!(matches!(
+        case.work(&holder),
+        DelegatedWork::Withdrawn { .. }
+    ));
+    assert_eq!(
+        holder.workspace().delegated_work(&[5; 32], &person, now()),
+        DelegatedWork::NotGiven
+    );
+}
+
+/// Work a member gives again after they withdrew it stands only as the giving
+/// that follows the withdrawal. The form a device signs without the
+/// withdrawal in hand, a first giving, is refused where it is written; the
+/// giving that follows the withdrawal is live on the copy that wrote it and
+/// on every holder of the withdrawal that takes it in.
+#[test]
+fn work_given_again_follows_its_withdrawal() {
+    use crate::DelegatedWork;
+    let case = Withdrawn::made();
+    let (server, person) = (case.server.device_public_key, case.guest.user_public_key);
+    let mut copy = case.after.clone();
+
+    let anew = delegating(&case.guest_key, person, server, APP);
+    assert_eq!(anew.giving, 1);
+    let written = copy
+        .workspace_mut()
+        .author_work_delegation(&anew, &case.guest_key, now());
+    assert!(
+        written
+            .as_ref()
+            .is_err_and(|refusal| refusal.contains("a later form")),
+        "{written:?}"
+    );
+    assert!(matches!(case.work(&copy), DelegatedWork::Withdrawn { .. }));
+
+    let held = copy
+        .workspace()
+        .work_delegations()
+        .into_iter()
+        .find(|held| held.row_key() == anew.row_key())
+        .expect("the withdrawal is held");
+    assert!(held.revoked_at_ns.is_some());
+    let again = anew.given_after(&case.guest_key, &held).unwrap();
+    assert_eq!(again.giving, 2, "the giving after the one withdrawn");
+    let given = workspace_changes(&mut copy, |copy| {
+        let written = copy
+            .workspace_mut()
+            .author_work_delegation(&again, &case.guest_key, now());
+        assert_eq!(written, Ok(true), "the member gives the work again");
+    });
+    assert!(matches!(case.work(&copy), DelegatedWork::Live(_)));
+    assert!(case.server_works(&copy));
+
+    let mut holder = case.holder.clone();
+    assert_eq!(
+        take_workspace_changes(&mut holder, case.guest.device_public_key, given),
+        Ok(())
+    );
+    assert!(matches!(case.work(&holder), DelegatedWork::Live(_)));
+    assert!(case.server_works(&holder));
+
+    // The withdrawal of the giving before, written straight back over it,
+    // moves the row back as the first form would: refused, and still live.
+    let changes = delegation_written_straight(&holder, case.owner_device(), &held);
+    let taken = take_workspace_changes(&mut holder, case.owner_device(), changes);
+    assert!(
+        taken
+            .as_ref()
+            .is_err_and(|refusal| refusal.contains("moved back")),
+        "{taken:?}"
+    );
+    assert!(matches!(case.work(&holder), DelegatedWork::Live(_)));
 }

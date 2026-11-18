@@ -122,6 +122,9 @@ pub enum WorkspaceRefusal {
     /// A change erases or lowers the cut of a device's removal
     /// ([`crate::removals::monotonic`]).
     Removals(String),
+    /// A change erases a member's work delegation or moves its row back to an
+    /// earlier form ([`crate::state::work_delegation_rows_kept`]).
+    Delegations(String),
     /// The batch rewinds a durable receipt.
     Durability(String),
     /// The media policy is malformed or its transition is not permitted.
@@ -139,6 +142,7 @@ impl std::fmt::Display for WorkspaceRefusal {
             Self::Malformed(error)
             | Self::Coverage(error)
             | Self::Removals(error)
+            | Self::Delegations(error)
             | Self::Durability(error)
             | Self::Membership(error) => f.write_str(error),
             Self::DeclaredWorkspaceMismatch => f.write_str("declared workspace mismatch"),
@@ -398,7 +402,9 @@ fn membership(refusal: super::membership::MembershipRefusal) -> AdmissionFailure
 /// 4. Every invitation keeps the one redemption the workspace recorded for it
 ///    ([`super::redemptions_kept`]).
 /// 5. Coverage and durable receipts never rewind
-///    ([`crate::coverage::monotonic`], [`crate::durability::monotonic`]).
+///    ([`crate::coverage::monotonic`], [`crate::durability::monotonic`]), and
+///    no work delegation is erased or moved back to an earlier form
+///    ([`crate::state::work_delegation_rows_kept`]).
 /// 6. The media policy is well formed and its transition is permitted
 ///    ([`media::validate_transition`]).
 /// 7. A shortcut names as who saved it only a proven saver
@@ -460,6 +466,11 @@ fn checked(
     }
     crate::coverage::monotonic(before, candidate).map_err(WorkspaceRefusal::Coverage)?;
     crate::removals::monotonic(before, candidate).map_err(WorkspaceRefusal::Removals)?;
+    // Every writer, the owner's devices included, and a base as a batch: what
+    // a member's own devices signed about their work is never taken back by
+    // whoever writes the workspace.
+    crate::state::work_delegation_rows_kept(before, candidate)
+        .map_err(WorkspaceRefusal::Delegations)?;
     crate::durability::monotonic(before, candidate).map_err(WorkspaceRefusal::Durability)?;
     media::validate_transition(before, candidate, media::TransitionMode::Admission)
         .map_err(WorkspaceRefusal::Media)
