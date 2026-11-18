@@ -492,7 +492,7 @@ fn stream_row(
 ) -> Box<dyn Widget> {
     let id = s.node;
     let muted = s.muted;
-    let resource = stream_live_row(s).into_resource();
+    let resource = stream_live_row(s);
     let volume = bound(
         Slider::from_state(&LocalState::new(f64::from(s.volume.unwrap_or(1.0))))
             .with_id(&format!("audio.stream.{id}.volume.sl"))

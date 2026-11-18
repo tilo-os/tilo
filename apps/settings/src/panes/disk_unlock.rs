@@ -714,7 +714,7 @@ impl DiskUnlockModel {
         let args = network_arguments(volume, network, !chosen);
         let binding = crate::on_row::binding(
             dispatcher,
-            &network_resource(volume, network).into_resource(),
+            &network_resource(volume, network),
             effect(DiskUnlockEffect::SET_DISK_UNLOCK_NETWORKS).map(move |()| args.clone()),
         );
         let button = Button::new(&key, &label);

@@ -439,7 +439,7 @@ impl DrivesModel {
     fn drive_rows(cx: &ViewCx<Settings>, drive: &RememberedDrive, busy: bool) -> Vec<Item> {
         let dispatcher = cx.dispatcher();
         let name = drive_name(drive);
-        let live = drive_live_row(drive).into_resource();
+        let live = drive_live_row(drive);
         let placement = t(match drive.placement {
             Placement::Internal => "settings-drives-internal",
             Placement::External => "settings-drives-external",

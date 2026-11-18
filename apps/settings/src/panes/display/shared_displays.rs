@@ -84,7 +84,7 @@ impl DisplayModel {
         let revision = self.shared_revision(&display.device, &display.output);
         crate::on_row::binding(
             dispatcher,
-            &self.device_screen_row(display).into_resource(),
+            &self.device_screen_row(display),
             effect(DisplayEffect::MOVE_DEVICE_DISPLAY)
                 .map(move |(x, y): (i32, i32)| (target.clone(), revision, x, y)),
         )

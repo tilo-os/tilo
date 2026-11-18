@@ -653,7 +653,7 @@ impl PrintersModel {
 
     fn printer_row(dispatcher: &Dispatcher<Settings>, printer: &PrinterQueue) -> Item {
         let name = printer.name.clone();
-        let live = printer_live_row(printer).into_resource();
+        let live = printer_live_row(printer);
         let mut menu = RowMenu::new(
             format!("settings.printers.more.{}", slug(&name)),
             &t_args("settings-row-more", &[("name", name.clone().into())]),
@@ -762,7 +762,7 @@ impl PrintersModel {
             .unwrap_or_else(|| t("settings-printers-driverless"));
         let add_button = crate::on_row::bind_invocation(
             dispatcher,
-            &nearby_live_row(p).into_resource(),
+            &nearby_live_row(p),
             Button::new(&key, &add).control_size(ControlSize::Small),
             PrinterEffect::AddPrinter { uri: p.uri.clone() },
         );
@@ -778,7 +778,7 @@ impl PrintersModel {
     }
 
     fn job_row(dispatcher: &Dispatcher<Settings>, job: &PrintJob) -> Item {
-        let live = job_live_row(job).into_resource();
+        let live = job_live_row(job);
         let size = ui::format::size(job.size_bytes);
         let state = job
             .state

@@ -1561,7 +1561,7 @@ impl DisplayModel {
             .connected_outputs()
             .into_iter()
             .find(|output| output.connector == display)?;
-        crate::on_row::binding(dispatcher, &self.output_row(output).into_resource(), effect)
+        crate::on_row::binding(dispatcher, &self.output_row(output), effect)
     }
 
     fn bind_output<I: 'static, C: ui::framework::ActionControl<I>>(
