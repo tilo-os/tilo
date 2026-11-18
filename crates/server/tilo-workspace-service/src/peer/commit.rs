@@ -316,9 +316,12 @@ async fn commit_refusal(
     let Envelope::Delta { delta: bytes, .. } = delta else {
         return None;
     };
+    let payloads = ws.lock().await.store.payloads().clone();
+    let named = crate::surfaces::governance_named(&*payloads, bytes);
     let decision = Box::pin(crate::workspace::access_deciding(
         ws,
         author,
+        &named,
         |device_access, payloads| {
             crate::surfaces::refusal(payloads, bytes, device_access).is_some()
                 || crate::surfaces::role_refusal(bytes, device_access, author).is_some()

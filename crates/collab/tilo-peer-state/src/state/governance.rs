@@ -17,9 +17,14 @@ use tilo_action_policy::Change;
 pub struct GovernanceHeads(Option<crate::cached_document::CachedDocument>);
 
 impl GovernanceHeads {
-    /// Whether this state holds every head of `heads`: a hash lookup each.
+    /// Whether this state holds every head of `heads`, or `heads` names more
+    /// than [`collab_types::MAX_GOVERNANCE_HEADS`] (and so names none): a few
+    /// hash lookups, whatever it is asked.
     #[must_use]
     pub fn holds(&self, heads: &[[u8; 32]]) -> bool {
+        if heads.len() > collab_types::MAX_GOVERNANCE_HEADS {
+            return true;
+        }
         heads.iter().all(|head| {
             self.0.as_ref().is_some_and(|doc| {
                 doc.get_change_by_hash(&automerge::ChangeHash(*head))

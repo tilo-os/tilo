@@ -12,6 +12,10 @@ use automerge::transaction::Transactable as _;
 pub const MAX_HELD_INPUTS: usize = 64;
 /// Most encoded bytes of app messages one workspace holds for a prerequisite.
 pub const MAX_HELD_BYTES: usize = 4 * 1024 * 1024;
+/// Most app messages of one writer held at once while some wait for the
+/// governance they were written under: a writer naming governance that never
+/// comes fills no more of the queue than this.
+pub const MAX_HELD_FOR_GOVERNANCE_PER_WRITER: usize = 16;
 
 /// How a message is held: what it waits for, and the admission context it
 /// is decided in again.
@@ -159,6 +163,26 @@ impl StatePeer {
                 &message,
                 Some(prerequisite.clone()),
                 DropReason::TooLarge,
+            );
+            self.remember_missed(&input, in_the_clear(&message));
+            let mut report = deferred(vec![input], lacks_history);
+            report.summary.deferred = false;
+            return Ok(report);
+        }
+        if prerequisite == MissingPrerequisite::Governance
+            && self
+                .core
+                .pending
+                .iter()
+                .filter(|(author, ..)| author == &source)
+                .count()
+                >= MAX_HELD_FOR_GOVERNANCE_PER_WRITER
+        {
+            let input = dropped_input(
+                &source,
+                &message,
+                Some(prerequisite.clone()),
+                DropReason::Refused(collab_types::GOVERNANCE_NEVER_ARRIVED.into()),
             );
             self.remember_missed(&input, in_the_clear(&message));
             let mut report = deferred(vec![input], lacks_history);

@@ -128,9 +128,10 @@ pub use mls_governance::{
 pub use op::{
     ContentRetention, DocumentMutation, DocumentMutationEncodeError, DocumentMutationError,
     EncryptionMetadata, EncryptionScheme, GOVERNANCE_NEVER_ARRIVED, MAX_DOCUMENT_MUTATION_BYTES,
-    RoutedDocumentPayload, SignedOp, WholeDocumentPayload, document_artifact_id,
-    document_attestation_id, live_artifact_id, next_unordered_document_sequence,
-    validate_document_payload_route, validate_whole_document_payload_route,
+    MAX_GOVERNANCE_HEADS, RoutedDocumentPayload, SignedOp, WholeDocumentPayload,
+    document_artifact_id, document_attestation_id, live_artifact_id,
+    next_unordered_document_sequence, validate_document_payload_route,
+    validate_whole_document_payload_route,
 };
 pub use own_resource::{OwnResource, own_kinds};
 pub use peer::{PeerPresence, PeerPresencePayload};

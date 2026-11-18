@@ -18,7 +18,7 @@ use automerge::{ReadDoc as _, transaction::Transactable as _};
 /// The durable layout this build writes and reads. A change to what is
 /// stored bumps this: a build refuses state of another version by name
 /// rather than reading it as this one's.
-pub const DURABLE_VERSION: u32 = 9;
+pub const DURABLE_VERSION: u32 = 10;
 
 /// A replica's durable state. `exact` is the exact admission index, present
 /// once the replica selects exact admissions; `sealed` holds each encrypted

@@ -1083,7 +1083,9 @@ impl Governing {
 }
 
 /// What the workspace's devices may do, to decide `author`'s change in `ws`
-/// against, and the workspace's payload adapter.
+/// against, which names the governance heads `claimed`
+/// ([`crate::surfaces::governance_named`]), and the workspace's payload
+/// adapter.
 ///
 /// A device can hold a record's keys, and write, before the host has settled
 /// its own admission of that device: the keys come from another key holder,
@@ -1094,8 +1096,10 @@ impl Governing {
 /// the projection of that moment, such a change would be refused for a grant
 /// the host is about to record. So a change the projection of the moment
 /// `refuses` waits for the next projection, up to [`ACCESS_WAIT`], while the
-/// workspace projects nothing for `author`'s device, or while this server's
-/// own governance is past the state the projection was read from; then it is
+/// workspace projects nothing for `author`'s device, while this server's own
+/// governance is past the state the projection was read from, or while the
+/// change names governance heads the projection was not read from
+/// ([`collab_types::SignedOp::governance`]); then it is
 /// decided against the projection as it is then, with every revocation in it.
 /// The governance says when to decide, never what against. Every other
 /// change is decided at once.
@@ -1104,6 +1108,7 @@ impl Governing {
 pub(crate) async fn access_deciding(
     ws: &SharedWorkspace,
     author: [u8; 32],
+    claimed: &[[u8; 32]],
     refuses: impl Fn(Option<&DeviceAccess>, &dyn crate::payloads::ShellPayloads) -> bool,
 ) -> AccessDecision {
     let deadline = tokio::time::Instant::now()
@@ -1131,8 +1136,9 @@ pub(crate) async fn access_deciding(
         let unprojected = device_access
             .as_ref()
             .is_some_and(|device_access| !device_access.contains_key(&author));
-        let behind =
-            refusing && device_access.is_some() && !heads.holds(&Box::pin(authority.heads()).await);
+        let behind = refusing
+            && device_access.is_some()
+            && (!heads.holds(claimed) || !heads.holds(&Box::pin(authority.heads()).await));
         // A writer with as many changes waiting for governance as it may
         // have is not waited for again.
         let may_wait_behind = behind
@@ -1591,7 +1597,7 @@ mod access_wait_tests {
             tilo_peer_state::GovernanceHeads::default(),
         );
 
-        let deciding = access_deciding(&ws, PAGE, |_, _| true);
+        let deciding = access_deciding(&ws, PAGE, &[], |_, _| true);
         tokio::pin!(deciding);
         // Polled once: the change arrived, and is held, not decided.
         assert!(
@@ -1625,7 +1631,7 @@ mod access_wait_tests {
     async fn a_change_whose_author_has_access_is_decided_at_once() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = shared(&tmp);
-        let unprojected = access_deciding(&ws, PAGE, |_, _| true);
+        let unprojected = access_deciding(&ws, PAGE, &[], |_, _| true);
         tokio::pin!(unprojected);
         let device_access = tokio::time::timeout(std::time::Duration::ZERO, &mut unprojected)
             .await
@@ -1637,7 +1643,7 @@ mod access_wait_tests {
             DeviceAccess::from([(PAGE, access())]),
             tilo_peer_state::GovernanceHeads::default(),
         );
-        let projected = access_deciding(&ws, PAGE, |_, _| true);
+        let projected = access_deciding(&ws, PAGE, &[], |_, _| true);
         tokio::pin!(projected);
         let device_access = tokio::time::timeout(std::time::Duration::ZERO, &mut projected)
             .await
@@ -1646,7 +1652,7 @@ mod access_wait_tests {
         assert!(device_access.unwrap().contains_key(&PAGE));
         // A change the projection does not refuse, the author's presence or
         // governance among them, is decided at once, whether the author has member access or not.
-        let unrefused = access_deciding(&ws, LAPTOP, |_, _| false);
+        let unrefused = access_deciding(&ws, LAPTOP, &[], |_, _| false);
         tokio::pin!(unrefused);
         tokio::time::timeout(std::time::Duration::ZERO, &mut unrefused)
             .await
@@ -1665,7 +1671,7 @@ mod access_wait_tests {
             tilo_peer_state::GovernanceHeads::default(),
         );
         let started = tokio::time::Instant::now();
-        let decision = access_deciding(&ws, PAGE, |_, _| true).await;
+        let decision = access_deciding(&ws, PAGE, &[], |_, _| true).await;
         assert!(started.elapsed() >= ACCESS_WAIT);
         assert!(!decision.governance_behind);
         let device_access = decision.device_access.unwrap();
@@ -1689,7 +1695,7 @@ mod access_wait_tests {
             );
             runtime.test_governance = Some(vec![[9; 32]]);
         }
-        let deciding = access_deciding(&ws, PAGE, |_, _| true);
+        let deciding = access_deciding(&ws, PAGE, &[], |_, _| true);
         tokio::pin!(deciding);
         assert!(
             tokio::time::timeout(std::time::Duration::ZERO, &mut deciding)
@@ -1707,7 +1713,7 @@ mod access_wait_tests {
             "refused for the governance it waited for"
         );
         // One the access lets through is decided at once.
-        let allowed = access_deciding(&ws, PAGE, |_, _| false);
+        let allowed = access_deciding(&ws, PAGE, &[], |_, _| false);
         tokio::pin!(allowed);
         let decision = tokio::time::timeout(std::time::Duration::ZERO, &mut allowed)
             .await
@@ -1732,7 +1738,7 @@ mod access_wait_tests {
         let waiting: Vec<_> = (0..GOVERNANCE_WAITS_PER_WRITER)
             .map(|_| {
                 let ws = Arc::clone(&ws);
-                tokio::spawn(async move { access_deciding(&ws, PAGE, |_, _| true).await })
+                tokio::spawn(async move { access_deciding(&ws, PAGE, &[], |_, _| true).await })
             })
             .collect();
         tokio::task::yield_now().await;
@@ -1747,14 +1753,14 @@ mod access_wait_tests {
         {
             tokio::task::yield_now().await;
         }
-        let over = access_deciding(&ws, PAGE, |_, _| true);
+        let over = access_deciding(&ws, PAGE, &[], |_, _| true);
         tokio::pin!(over);
         let decision = tokio::time::timeout(std::time::Duration::ZERO, &mut over)
             .await
             .expect("a change past the writer's bound is decided at once");
         assert!(decision.governance_behind);
         // Another writer still waits.
-        let mut other = Box::pin(access_deciding(&ws, LAPTOP, |_, _| true));
+        let mut other = Box::pin(access_deciding(&ws, LAPTOP, &[], |_, _| true));
         ws.lock().await.project_access(
             DeviceAccess::from([(PAGE, access()), (LAPTOP, access())]),
             tilo_peer_state::GovernanceHeads::default(),

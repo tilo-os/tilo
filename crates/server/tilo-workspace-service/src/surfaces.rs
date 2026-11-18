@@ -322,6 +322,19 @@ pub(crate) fn own_refusal(
 /// author is not granted. Ops whose surface has not arrived here yet are
 /// left to the workspace's devices, which hold them. `payloads` reads the
 /// document frame.
+/// The governance heads `delta`, a member's change, says it was written
+/// under ([`collab_types::SignedOp::governance`]); none for a change that is
+/// no document write.
+pub(crate) fn governance_named(
+    payloads: &dyn crate::payloads::ShellPayloads,
+    delta: &[u8],
+) -> Vec<[u8; 32]> {
+    crate::coedit::retention_view(delta)
+        .and_then(|(_, _, body)| payloads.open_document(body))
+        .map(|(_, envelope)| envelope.governance)
+        .unwrap_or_default()
+}
+
 pub(crate) fn refusal(
     payloads: &dyn crate::payloads::ShellPayloads,
     delta: &[u8],
