@@ -66,8 +66,8 @@ pub fn check_scenarios_reach_every_action<A: ResourceApp>(
 /// Invoke every action `app` publishes, one after another, as a headless
 /// drive's `invoke` steps do (`FrameHarness::invoke_action`: the API's own
 /// resolution, availability, confirmation and strict binding), each with
-/// `sample_arguments` and confirmed: first as an agent, then, when the
-/// agent was refused, as the person at the screen. Answers the ones the API
+/// `sample_arguments` and confirmed: an app's own action first as an agent,
+/// then, when the agent was refused, as the person at the screen. Answers the ones the API
 /// could not address, as `resource action: why`: published yet reachable
 /// only by clicking; and the ones whose call by the agent opened a dialog or
 /// sheet over the person's window, which an agent never does. An action an earlier one withdrew (its row was removed) is not
@@ -127,11 +127,19 @@ pub fn unreachable_actions_in_share<A: ResourceApp>(
             continue;
         };
         let phrase = confirmation_phrase(spec, &arguments);
-        let before = *shown.get_or_insert_with(|| dialogs(app));
-        if app
-            .harness()
-            .invoke_action_as(&agent, &address, &arguments, true, phrase.as_deref())
-            .is_ok()
+        // The app's own actions; a press of one of its drawn controls is
+        // the person's button, whose destructive press asks them first.
+        let own = !tilo_actions::kind_mirrors_a_control(&descriptor.resource_kind);
+        let before = if own {
+            *shown.get_or_insert_with(|| dialogs(app))
+        } else {
+            0
+        };
+        if own
+            && app
+                .harness()
+                .invoke_action_as(&agent, &address, &arguments, true, phrase.as_deref())
+                .is_ok()
         {
             ran = true;
             let after = dialogs(app);

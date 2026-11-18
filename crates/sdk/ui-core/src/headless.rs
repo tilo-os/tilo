@@ -8163,6 +8163,7 @@ impl FrameHarness {
         let resources = self.resources();
         let spec = tilo_actions::api::resolve(&resources, address)
             .ok_or_else(|| tilo_actions::ApiError::Unknown(address.clone()))?;
+        crate::invocation_scope::check_shown_here(actor, &self.author, spec)?;
         if let tilo_actions::Availability::Unavailable { code, reason } =
             &spec.contract.availability
         {
