@@ -158,6 +158,7 @@ pub mod shape;
 pub mod share;
 pub mod sort;
 pub mod storage;
+pub mod stored_items;
 pub mod surface;
 pub mod table;
 pub mod text;
@@ -208,12 +209,12 @@ pub use reader::{Demand, Reader, heads_of};
 pub use recents::Recents;
 pub use replica::Replica;
 pub use resource::{
-    APPLY, APPLY_PARAM, ActionDecl, BuildAction, EDIT_PARAM, FIELD_EDIT, HeadInputs, NoAction,
-    Place, Resource, ScopeDecl, SearchBody, SearchEntry, SearchPiece, SearchRow, SearchRowShape,
-    SearchText, SearchWeight, SharedResource, bind_declaration, build_action, by_app_refusal,
-    child_by_id, declaration_spec, default_search, encode, head_inputs, need_of, origin_now_ms,
-    publish, publish_head, publish_head_of, reset_type_schemas, scope_contains, spec_kind,
-    state_from_reading, with_origin_clock,
+    APPLY, APPLY_PARAM, ActionDecl, BuildAction, EDIT_PARAM, FIELD_EDIT, HeadInputs, NamesItem,
+    NoAction, Place, Resource, ScopeDecl, SearchBody, SearchEntry, SearchPiece, SearchRow,
+    SearchRowShape, SearchText, SearchWeight, SharedResource, bind_declaration, build_action,
+    by_app_refusal, child_by_id, declaration_spec, default_search, encode, head_inputs, need_of,
+    origin_now_ms, publish, publish_head, publish_head_of, reset_type_schemas, scope_contains,
+    spec_kind, state_from_reading, with_origin_clock,
 };
 pub use schema::JsonSchema;
 pub use shape::{FieldShape, Shape, StoredText, Trust, absent_scalar, stored_text};
@@ -1017,7 +1018,7 @@ pub mod __private {
             .map_err(|error| error.to_string())
     }
 
-    pub use crate::resource::default_search;
+    pub use crate::resource::{default_search, kept_of, listed_of};
 
     /// The arguments of a verb's JSON form: an object (`null` for none).
     ///

@@ -2086,7 +2086,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// The parts of the chain of `P` the app's store holds, oldest first,
-    /// each read as it is stored: what the app keeps beside its record.
+    /// each read as the window reads it: what the app keeps beside its own
+    /// document, with everything a part loads of it (an event's notes
+    /// among it).
     pub fn chain_parts<P: super::Chained>(&self) -> Vec<(u64, std::rc::Rc<P::State>)> {
         let chain = P::chain_beside(&self.checkout().id);
         self.records
@@ -2095,9 +2097,11 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .filter_map(|index| {
                 let state = self
                     .records
-                    .read(&chain.part(index), |doc| P::read(doc))?
+                    .read(&chain.part(index), |doc| {
+                        tilo_resource::Reader::<P>::read(doc)
+                    })?
                     .ok()?;
-                Some((index, std::rc::Rc::new(state)))
+                Some((index, std::rc::Rc::clone(state.state())))
             })
             .collect()
     }

@@ -69,6 +69,8 @@ use tilo_network_actor::{WorkspaceId, native_ingress};
 mod adopt;
 #[cfg(target_os = "linux")]
 mod network;
+#[cfg(target_os = "linux")]
+mod own_service;
 
 #[cfg(target_os = "linux")]
 pub(crate) use network::Reached;
@@ -1382,7 +1384,7 @@ impl Client {
         entry: Entry,
         engine: Option<Arc<Engine>>,
         questions: Option<tilo_service::Questions>,
-        mut beside: tilo_network_actor::local_host::Protocols,
+        mut beside: tilo_network_actor::own_service::Protocols,
         documents: Option<PeerDocuments>,
     ) -> std::io::Result<Self> {
         let (identity, wake) = (entry.identity, entry.wake);

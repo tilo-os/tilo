@@ -107,12 +107,15 @@ impl Records {
     /// notes each record it takes in. What it holds is the one workspace's, so nothing of another
     /// is brought here.
     ///
-    /// Such a host keeps no index of what its apps hold, so each record is also read for what its
-    /// app tells search it holds ([`tilo_app::framework::resource_index::hosted_entries`]): a note is found
-    /// by its title and its words, and opens itself, whether or not a window has its notebook open.
+    /// `contents` reads each document for what its app tells search it holds
+    /// ([`tilo_app::framework::resource_index::hosted_entries`]): what a note says in its body,
+    /// and each note of a notebook as a document of its own. A page whose workspace answers its
+    /// search needs none of that (the device serving the workspace indexes every document), and
+    /// reading it would open every document the page holds each time one of them changed: the
+    /// rows are offered by name from the workspace's indexes instead.
     #[must_use]
-    pub fn over(store: Store, changes: crate::platform::records::Changes) -> Self {
-        Self::read(store, changes, true)
+    pub fn over(store: Store, changes: crate::platform::records::Changes, contents: bool) -> Self {
+        Self::read(store, changes, contents)
     }
 
     fn read(store: Store, changes: crate::platform::records::Changes, contents: bool) -> Self {

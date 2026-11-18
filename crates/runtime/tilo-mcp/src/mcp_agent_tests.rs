@@ -103,6 +103,9 @@ pub(super) struct Notes {
     /// as a record's host lists its items: a note is then several rows of the notebook's
     /// level, and a page may end between them.
     placed: Arc<Mutex<bool>>,
+    /// The action the agent's permissions deny it, listed to it as not allowed, as the
+    /// workspace lists one its person's settings for it deny.
+    refuses: Arc<Mutex<Option<&'static str>>>,
 }
 
 /// What a workspace answers about its installed apps.
@@ -160,7 +163,14 @@ impl Notes {
             links: Arc::default(),
             level_page: Arc::default(),
             placed: Arc::default(),
+            refuses: Arc::default(),
         }
+    }
+
+    /// The same Notes, its action `action` denied to the agent: listed as not allowed.
+    fn refusing(self, action: &'static str) -> Self {
+        *self.refuses.lock().unwrap() = Some(action);
+        self
     }
 
     /// The same live Notes, each note's actions listed in the notebook's level.
@@ -452,7 +462,14 @@ impl Notes {
                     description: Some(format!("{title}. Longer explanation that is not listed.")),
                     locus: tilo_actions::ExecutionLocus::ClientLocal,
                     kind: operation,
-                    contract: tilo_actions::ActionContract::default(),
+                    contract: tilo_actions::ActionContract {
+                        availability: if *self.refuses.lock().unwrap() == Some(name) {
+                            tilo_actions::Availability::not_allowed()
+                        } else {
+                            tilo_actions::Availability::Available
+                        },
+                        ..tilo_actions::ActionContract::default()
+                    },
                     input: tilo_actions::InputSpec::None,
                     params,
                     view: None,
@@ -2395,6 +2412,27 @@ tilo_test_env::scenario! {
             assert!(!text.contains("delete, slow"), "no wall of names: {text}");
             let (text, failed) = tool(&agent(&host), "tilo_do", json!({"path": "notes/Todo"})).await;
             assert!(failed && text.contains("name the action"), "{text}");
+            // An action its permissions deny the agent is refused as not allowed, with where
+            // that is changed: never as one the app does not have, and nothing is invoked.
+            let notes = Notes::new(true).refusing("rename");
+            let (text, failed) = tool(
+                &agent(&notes),
+                "tilo_do",
+                json!({"path": "notes/Todo#rename", "args": {"title": "Done"}}),
+            )
+            .await;
+            assert!(failed, "{text}");
+            assert!(
+                text.contains("not_permitted") && text.contains("under Agents"),
+                "{text}"
+            );
+            assert!(!text.contains("has no action"), "{text}");
+            assert!(notes.invoked.lock().unwrap().is_empty(), "nothing was invoked");
+            let (text, _) = tool(&agent(&notes), "tilo_ls", json!({"path": "notes/Todo"})).await;
+            assert!(
+                text.contains("rename") && text.contains("not allowed"),
+                "the listing shows it, refused: {text}"
+            );
         });
     }
 

@@ -197,13 +197,15 @@ impl Worker {
         request: &InvokeRequest,
         named: &str,
     ) -> Result<(ActionOutput, Option<ActorPlace>), Outcome> {
-        if !self.may_in_files(
+        use fs_protocol::file_action::verbs;
+        if !self.may_on_tree(
             workspace_id,
             caller,
-            ui::permissions::policy::ActionKind::Undoable,
+            &[verbs::NEW_FOLDER, verbs::NEW_FILE, verbs::WRITE],
         ) {
             return Err(Outcome::Rejected(ActionCallError::NotPermitted));
         }
+        let _acting = super::acting_for(caller);
         let arguments = invoke_arguments(&request.argument);
         if arguments.contains_key("device") {
             return Err(refused(

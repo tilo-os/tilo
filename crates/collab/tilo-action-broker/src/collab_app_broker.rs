@@ -8295,12 +8295,18 @@ fn filter_directory_page(
         .iter()
         .map(directory_row_question)
         .collect::<Result<Vec<_>, _>>()?;
-    let mut answers = state.permits_directory_actions(cluster_id, actor, app_id, &questions)?;
-    for (answer, question) in answers.iter_mut().zip(&questions) {
-        if !question.disclosed_to(actor, publishing_person) {
-            *answer = Answer::Deny;
-        }
-    }
+    let answers = state.permits_directory_actions(cluster_id, actor, app_id, &questions)?;
+    // What is not disclosed to the actor is not listed at all; what is, and its permissions deny,
+    // is listed to an agent as not allowed (`AppBrokerState::offered_to`).
+    let answers = answers
+        .into_iter()
+        .zip(&questions)
+        .map(|(answer, question)| {
+            question
+                .disclosed_to(actor, publishing_person)
+                .then_some(answer)
+        })
+        .collect::<Vec<_>>();
     drop(questions);
     // Listed when the actor may take it, or would be asked first; an action
     // asking first asks for the confirmation the person gives on their
@@ -8309,7 +8315,13 @@ fn filter_directory_page(
         .rows
         .into_iter()
         .zip(answers)
-        .filter_map(|(mut row, answer)| match answer {
+        .filter_map(|(mut row, answer)| match answer? {
+            Answer::Deny if actor.is_agent() => {
+                if let Some(descriptor) = row.descriptor.as_mut() {
+                    descriptor.contract.availability = tilo_actions::Availability::not_allowed();
+                }
+                Some(row)
+            }
             Answer::Deny => None,
             Answer::Allow => Some(row),
             Answer::Ask => {

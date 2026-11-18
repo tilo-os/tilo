@@ -42,6 +42,7 @@ pub fn web_apps() -> Vec<&'static ApplicationDefinition> {
         snippets::definition(),
         speed_test::definition(),
         tasks::definition(),
+        terminal::definition(),
         themes::definition(),
         totp::definition(),
         tube::definition(),

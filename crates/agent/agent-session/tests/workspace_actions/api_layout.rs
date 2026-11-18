@@ -197,6 +197,10 @@ async fn what_an_agent_changes_through_the_api_opens_on_the_workspaces_layout() 
         "{desktop:?}"
     );
     assert_eq!(form.title, RUN, "{desktop:?}");
+    assert!(
+        !form.agent.is_empty() && letter.agent == form.agent,
+        "each window names the agent that opened it: {desktop:?}"
+    );
     assert_eq!(
         (&letter.run, &letter.label),
         (&form.run, &form.label),

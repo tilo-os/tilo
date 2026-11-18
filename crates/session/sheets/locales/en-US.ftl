@@ -526,7 +526,7 @@ keyboard-shortcuts-list-description = Every desktop shortcut with its current an
 ## The collaboration network's own questions: an agent on a workspace host
 ## asks its person to allow one action, and a device asks its sibling for the
 ## disk key it boots with.
-network-agent-question-title = { $agent } wants to { $doing }
+network-agent-question-title = { $agent } asks to use “{ $action }”
 network-agent-question-detail = On “{ $resource }” in the workspace “{ $workspace }”.
 network-agent-question-page = Page
 network-agent-question-outside = It acts outside Tilo.

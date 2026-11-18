@@ -53,7 +53,13 @@ impl Namespace {
             .prev_parent(id)
             .filter(|parent| parent == ROOT_ID || self.reaches_root(parent))
             .unwrap_or_else(|| ROOT_ID.to_string());
-        self.set_field(id, "parent", back);
+        if !self.write_action(&fs_protocol::FileAction::Restore {
+            node: id.to_owned(),
+            parent: Some(back),
+        }) {
+            return false;
+        }
+        self.reindex_node(id);
         self.index_refresh_subtree(id);
         true
     }

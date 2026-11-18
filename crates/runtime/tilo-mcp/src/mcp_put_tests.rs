@@ -202,7 +202,7 @@ tilo_test_env::scenario! {
             )
             .await
             .unwrap_err();
-            assert_eq!(again, "append at offset 10000");
+            assert_eq!(again, "the upload has 10000 bytes: append at offset 10000");
             let finished = put(&server, FINISH, json!({"upload": upload}))
                 .await
                 .unwrap();
@@ -282,6 +282,95 @@ tilo_test_env::scenario! {
                 "the session's open uploads end with it"
             );
             drop(log);
+        });
+    }
+
+    phase chunks_sent_ahead_of_the_gap_arrive_intact_and_one_in_its_way_is_refused;
+    {
+        let store = Shelf::default();
+        run(async {
+            let server = McpServer::for_agent(store.clone(), "workspace".into(), "claude-code", "ada");
+            // A few megabytes in pieces of the size one append carries, sent
+            // several at a time: the ones ahead of the gap are held, and the
+            // piece that fills it appends them all.
+            let piece = MAX_CONTENT_PUT_CHUNK;
+            let bytes: Vec<u8> = (0..piece * 4)
+                .map(|n| u8::try_from(n % 251).unwrap())
+                .collect();
+            let upload = put(&server, BEGIN, json!({"size": bytes.len()}))
+                .await
+                .unwrap()["upload"]
+                .clone();
+            let mut answers = Vec::new();
+            for index in [1, 2, 0, 3] {
+                let chunk = &bytes[index * piece..(index + 1) * piece];
+                let appended = put(
+                    &server,
+                    APPEND,
+                    json!({"upload": upload, "offset": index * piece, "chunk": encoded(chunk)}),
+                )
+                .await
+                .unwrap();
+                answers.push(appended["written"].as_u64().unwrap());
+            }
+            assert_eq!(
+                answers,
+                [0, 0, (piece * 3) as u64, (piece * 4) as u64],
+                "each answer is the bytes held contiguously from the start"
+            );
+            let finished = put(&server, FINISH, json!({"upload": upload}))
+                .await
+                .unwrap();
+            assert_eq!(
+                finished["content"],
+                format!("tilo.content:{}", blake3::hash(&bytes).to_hex())
+            );
+            assert_eq!(store.0.lock_recover().stored, [bytes]);
+
+            // A chunk already held, or one past the window, is refused.
+            let held = put(&server, BEGIN, json!({"size": 12}))
+                .await
+                .unwrap()["upload"]
+                .clone();
+            put(
+                &server,
+                APPEND,
+                json!({"upload": held, "offset": 4, "chunk": encoded(b"efgh")}),
+            )
+            .await
+            .unwrap();
+            let twice = put(
+                &server,
+                APPEND,
+                json!({"upload": held, "offset": 4, "chunk": encoded(b"efgh")}),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                twice,
+                "the upload already holds those bytes: append at offset 0"
+            );
+            let past = put(
+                &server,
+                BEGIN,
+                json!({"size": MAX_CONTENT_PUT_AHEAD as u64 + 1}),
+            )
+            .await
+            .unwrap()["upload"]
+            .clone();
+            let too_far = put(
+                &server,
+                APPEND,
+                json!({"upload": past, "offset": MAX_CONTENT_PUT_AHEAD, "chunk": encoded(b"x")}),
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                too_far.contains(&format!(
+                    "at most {MAX_CONTENT_PUT_AHEAD} bytes ahead of the 0 the upload holds"
+                )),
+                "{too_far}"
+            );
         });
     }
 

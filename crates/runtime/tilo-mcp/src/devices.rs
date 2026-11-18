@@ -662,11 +662,7 @@ impl Dialed {
     /// itself, rather than carries to a local client.
     #[must_use]
     pub fn into_lines(self) -> Lines {
-        Lines {
-            connection: self.connection,
-            send: self.send,
-            recv: self.recv,
-        }
+        Lines::open(self)
     }
 
     /// End a probe.
@@ -675,35 +671,139 @@ impl Dialed {
     }
 }
 
-/// An open server's MCP, one JSON-RPC message a line each way.
+/// An open server's MCP, one JSON-RPC message a line each way. Calls may be
+/// in flight at once: each is sent under an id this side gives it, and the
+/// answer carrying that id back is handed to the call waiting on it, in
+/// whatever order the server answers. A slow link then costs one round trip
+/// per group of calls, not one per call.
 pub struct Lines {
     connection: Connection,
-    send: SendStream,
-    recv: RecvStream,
+    send: tokio::sync::Mutex<SendStream>,
+    /// The calls waiting on an answer, by the id this side gave each.
+    waiting: Arc<std::sync::Mutex<HashMap<u64, tokio::sync::oneshot::Sender<serde_json::Value>>>>,
+    /// Whether the server closed: no call made past this is answered.
+    closed: Arc<std::sync::atomic::AtomicBool>,
+    next: std::sync::atomic::AtomicU64,
 }
 
 impl Lines {
-    /// Send `message` as one line.
-    ///
-    /// # Errors
-    /// The server closed.
-    pub async fn send(&mut self, message: &serde_json::Value) -> io::Result<()> {
-        write_line(&mut self.send, message).await
+    /// `dialed`'s open server as lines calls are made over; its answers are
+    /// read on a task of their own.
+    #[must_use]
+    pub fn open(dialed: Dialed) -> Self {
+        let Dialed {
+            connection,
+            send,
+            recv,
+        } = dialed;
+        let waiting = Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (answers, ending) = (Arc::clone(&waiting), Arc::clone(&closed));
+        tokio::spawn(async move { read_answers(recv, &answers, &ending).await });
+        Self {
+            connection,
+            send: tokio::sync::Mutex::new(send),
+            waiting,
+            closed,
+            next: std::sync::atomic::AtomicU64::new(1),
+        }
     }
 
-    /// The next message the server sends.
+    /// Call the server with `request`, answering the message that carries
+    /// `request`'s id back; `None` for a notification, which nothing answers.
     ///
     /// # Errors
-    /// The server closed, or sent what is no JSON.
-    pub async fn next(&mut self) -> io::Result<serde_json::Value> {
-        let line = read_line(&mut self.recv).await?;
-        serde_json::from_slice(&line).map_err(io::Error::other)
+    /// The server closed before it answered.
+    pub async fn call(
+        &self,
+        mut request: serde_json::Value,
+    ) -> io::Result<Option<serde_json::Value>> {
+        let asked = request.get("id").cloned();
+        let id = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if let Some(fields) = request.as_object_mut() {
+            fields.insert("id".into(), id.into());
+        }
+        let (answer, answered) = tokio::sync::oneshot::channel();
+        {
+            let mut waiting = self
+                .waiting
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if self.closed.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(went_away());
+            }
+            waiting.insert(id, answer);
+        }
+        let sent = {
+            let mut send = self.send.lock().await;
+            write_line(&mut send, &request).await
+        };
+        if let Err(error) = sent {
+            self.waiting
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&id);
+            return Err(error);
+        }
+        let Some(asked) = asked else {
+            // A notification: the server answers nothing.
+            return Ok(None);
+        };
+        let mut value = answered.await.map_err(|_| went_away())?;
+        if let Some(fields) = value.as_object_mut() {
+            fields.insert("id".into(), asked);
+        }
+        Ok(Some(value))
     }
+}
+
+/// The server closed before it answered.
+fn went_away() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::ConnectionAborted,
+        "the server closed before it answered",
+    )
+}
+
+/// The answers the server sends, handed to the calls waiting on them; when
+/// it closes, every call still waiting is told.
+async fn read_answers(
+    mut recv: RecvStream,
+    waiting: &Arc<std::sync::Mutex<HashMap<u64, tokio::sync::oneshot::Sender<serde_json::Value>>>>,
+    closed: &std::sync::atomic::AtomicBool,
+) {
+    loop {
+        let Ok(line) = read_line(&mut recv).await else {
+            break;
+        };
+        let Ok(answer) = serde_json::from_slice::<serde_json::Value>(&line) else {
+            break;
+        };
+        let Some(id) = answer.get("id").and_then(serde_json::Value::as_u64) else {
+            // A notification to this side, which nothing here waits on.
+            continue;
+        };
+        let waiter = waiting
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&id);
+        if let Some(waiter) = waiter {
+            let _ = waiter.send(answer);
+        }
+    }
+    // Closed before the map is emptied, so a call that finds the map empty
+    // of its id is told rather than waiting forever: a caller holds the map
+    // while it looks at this.
+    closed.store(true, std::sync::atomic::Ordering::Relaxed);
+    // Dropping what each waits on tells every call the server closed.
+    waiting
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clear();
 }
 
 impl Drop for Lines {
     fn drop(&mut self) {
-        let _ = self.send.finish();
         self.connection.close(0_u32.into(), b"the agent left");
     }
 }

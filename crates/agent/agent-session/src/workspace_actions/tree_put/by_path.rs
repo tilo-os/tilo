@@ -220,6 +220,20 @@ fn answer(verb: &str, changed: &Changed, undo: Option<&Value>) -> Value {
     })
 }
 
+/// The tree's file actions Files' verb `verb` on a path does: what the caller is decided by.
+fn file_actions_of(verb: &str) -> &'static [&'static str] {
+    use fs_protocol::file_action::verbs;
+    match verb {
+        "new-folder" => &[verbs::NEW_FOLDER],
+        "rename" | "move" => &[verbs::NEW_FOLDER, verbs::MOVE],
+        "copy-into" => &[verbs::NEW_FOLDER, verbs::NEW_FILE],
+        "trash" => &[verbs::TRASH],
+        "restore" => &[verbs::RESTORE],
+        // A verb nobody knows is decided as everything the tree takes.
+        _ => &verbs::ALL,
+    }
+}
+
 impl Worker {
     /// Answer one of Files' verbs on the folder of the workspace `named`
     /// ([`fs_protocol::tree::TREE_VERBS`]): change the tree as it asks, and answer what changed.
@@ -240,13 +254,11 @@ impl Worker {
         request: &InvokeRequest,
         named: &str,
     ) -> Result<(ActionOutput, Option<ActorPlace>), Outcome> {
-        if !self.may_in_files(
-            workspace_id,
-            caller,
-            ui::permissions::policy::ActionKind::Undoable,
-        ) {
+        let verb = request.target.address.action.as_str();
+        if !self.may_on_tree(workspace_id, caller, file_actions_of(verb)) {
             return Err(Outcome::Rejected(ActionCallError::NotPermitted));
         }
+        let _acting = super::acting_for(caller);
         let arguments = invoke_arguments(&request.argument);
         if arguments.contains_key("device") {
             return Err(refused(
@@ -254,7 +266,6 @@ impl Worker {
                  Files on that device",
             ));
         }
-        let verb = request.target.address.action.as_str();
         // The tree of a governed workspace is sealed: its keys are what reading it and
         // writing to it need.
         let (mut tree, held) = self.tree_in_workspace(workspace_id, named)?;

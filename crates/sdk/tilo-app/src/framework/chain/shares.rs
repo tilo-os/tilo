@@ -50,7 +50,11 @@ impl ChainState {
         let mut written = Vec::with_capacity(shares.len());
         let mut created = Vec::new();
         for (index, share) in shares {
-            if let Some(previous) = head.filter(|head| head.checked_add(1) == Some(index)) {
+            // A part this write starts carries what the one before it, held
+            // or written just now, says of the parts before.
+            if head.is_some_and(|head| index > head)
+                && let Some(previous) = index.checked_sub(1)
+            {
                 self.carry(previous, index, invoker)?;
             }
             let (share, encoded) = (self.part().written)(&*share)?;

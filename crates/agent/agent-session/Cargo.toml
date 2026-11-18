@@ -81,6 +81,7 @@ slides = { path = "../../../apps/slides" }
 snippets = { path = "../../../apps/snippets" }
 speed-test = { path = "../../../apps/speed-test" }
 tasks = { path = "../../../apps/tasks" }
+terminal = { path = "../../../apps/terminal" }
 themes = { path = "../../../apps/themes" }
 totp = { path = "../../../apps/totp" }
 tube = { path = "../../../apps/tube", default-features = false, features = [] }
@@ -175,8 +176,6 @@ seccompiler.workspace = true
 libc.workspace = true
 # A connector app, mounted only where a workspace's host runs its worker.
 discord = { path = "../../../apps/discord" }
-# Terminal's session records, whose commands a workspace's host runs.
-terminal = { path = "../../../apps/terminal" }
 
 
 [dev-dependencies]

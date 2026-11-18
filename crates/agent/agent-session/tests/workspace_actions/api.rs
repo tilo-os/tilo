@@ -102,9 +102,14 @@ impl Mcp<'_> {
 
     /// The bytes of `content` the session gets back with `tilo_get`.
     async fn get(&mut self, content: &str) -> Vec<u8> {
+        self.get_at(content, 0).await
+    }
+
+    /// [`Self::get`], from `offset`: one piece of the content.
+    async fn get_at(&mut self, content: &str, offset: usize) -> Vec<u8> {
         let (status, reply) = self
             .post(json!({"jsonrpc": "2.0", "id": 5, "method": "tools/call",
-                         "params": {"name": "tilo_get", "arguments": {"content": content}}}))
+                         "params": {"name": "tilo_get", "arguments": {"content": content, "offset": offset}}}))
             .await;
         assert_eq!(status, 200, "{reply}");
         assert_eq!(reply["result"]["isError"], false, "{reply}");
@@ -272,6 +277,25 @@ async fn a_key_works_through_the_api_on_the_server_and_ends_when_revoked() {
     let (status, put) = upload(&minted_session, &workspace, &application_pdf()).await;
     assert_eq!(status, 201, "the form goes into the workspace: {put}");
     let form = put["content"].as_str().unwrap().to_owned();
+    // A file larger than the pieces the server sends into the workspace at
+    // once goes up in one request, its pieces several at a time, and comes
+    // back whole.
+    let big: Vec<u8> = (0..4 * 1024 * 1024 + 4096)
+        .map(|index| u8::try_from(index % 251).unwrap())
+        .collect();
+    let (status, put) = upload(&minted_session, &workspace, &big).await;
+    assert_eq!(status, 201, "a large file goes in: {put}");
+    let large = put["content"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a large upload names its content: {put}"))
+        .to_owned();
+    let mut read = Vec::with_capacity(big.len());
+    while read.len() < big.len() {
+        let piece = minted_session.get_at(&large, read.len()).await;
+        assert!(!piece.is_empty(), "a piece of the file comes back");
+        read.extend_from_slice(&piece);
+    }
+    assert_eq!(read, big, "the file comes back as it went in");
     let work = &mut minted_session;
     work.did("pdf-viewer#open", json!({})).await;
     let imported = work

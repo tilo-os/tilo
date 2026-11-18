@@ -211,6 +211,15 @@ pub const fn default_answer(kind: ActionKind, consequential: bool) -> Answer {
     }
 }
 
+/// Whether an agent may be given `answer` for actions of `kind`: an outside
+/// effect is never carried out unasked, so for one an agent asks first or is
+/// denied. What every list of an agent's answers offers, and what its keeper's
+/// bound is held to.
+#[must_use]
+pub const fn may_give(kind: ActionKind, answer: Answer) -> bool {
+    !matches!((kind, answer), (ActionKind::Outside, Answer::Allow))
+}
+
 /// The answer a delegate's `decision` gives an action, held to the action's
 /// contract: an action that asks for confirmation (`consequential`) asks
 /// first where the decision allows it, unless the decision is an answer

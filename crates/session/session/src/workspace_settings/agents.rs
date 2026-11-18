@@ -341,6 +341,17 @@ impl Agents {
                         kind: agent_access::kind_key(cell.kind).to_owned(),
                         label: agent_access::kind_label(cell.kind),
                         answer: answer_index(cell.answer),
+                        choices: agent_access::ANSWERS
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, answer)| {
+                                **answer == cell.answer
+                                    || tilo_action_policy::agent_answers::may_give(
+                                        cell.kind, **answer,
+                                    )
+                            })
+                            .map(|(index, _)| index)
+                            .collect(),
                     })
                     .collect(),
             })

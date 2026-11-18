@@ -14,6 +14,7 @@ pub(crate) mod folders;
 pub(crate) mod records;
 pub(crate) mod triggers;
 
+use crate::platform::records::{Changes, Source};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -111,8 +112,8 @@ pub struct Automation {
 /// notification policy, what each of its workspaces revokes, and which of the person's devices are
 /// online to run a schedule.
 pub struct Feeds {
-    /// The store the workspaces' records are kept in, and the stream their changes are noted in.
-    pub records: Option<(crate::platform::Store, crate::platform::records::Changes)>,
+    /// What the workspaces hold, and the stream its changes are noted in.
+    pub held: Option<(Source, Changes)>,
     pub fabric: Option<crate::platform::fabric::SharedLink>,
     pub launches: Arc<crate::launches::Launches>,
     pub policy: Arc<std::sync::Mutex<NotificationPolicy>>,
@@ -131,7 +132,7 @@ impl Automation {
         feeds: Feeds,
     ) -> Self {
         let Feeds {
-            records,
+            held,
             fabric,
             launches,
             policy,
@@ -142,7 +143,7 @@ impl Automation {
         triggers.set_devices(Arc::clone(&devices) as Arc<dyn triggers::DeviceDirectory>);
         Self {
             triggers,
-            feed: records::RecordFeed::start(records, wake),
+            feed: records::RecordFeed::start(held, wake),
             followed: BTreeSet::new(),
             broker: None,
             devices,

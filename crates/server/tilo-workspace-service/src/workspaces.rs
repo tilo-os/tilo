@@ -20,6 +20,8 @@
 //! admits it.
 
 mod actions;
+/// The invitation actions a member asks a workspace for, beside its `invite`.
+pub use actions::{CANCEL_INVITATION, INVITATIONS};
 mod admissions;
 #[cfg(feature = "agents")]
 mod agent_members;

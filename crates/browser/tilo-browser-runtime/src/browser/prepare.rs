@@ -96,6 +96,10 @@ pub(super) fn serve_history(
     let activity = tilo_session::activity::Activity::over(tilo_session::activity::Given {
         layouts: Box::new(crate::page_activity::PageLayout(persistence.layout())),
         person: config.author(),
+        held: Some(Rc::new(tilo_session::platform::records::Kept::over(
+            store.clone(),
+            crate::replicated::changes(),
+        ))),
         store: Some(store),
         state: None,
         apps: Some(Arc::new(crate::page_apps::PageApps)),

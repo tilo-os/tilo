@@ -50,6 +50,10 @@ pub type Authors = BTreeMap<u64, String>;
 pub struct OpenedBy {
     /// The run's id, as History groups the run's changes (`agent-run:…`).
     pub run: String,
+    /// The agent whose session it is, by its member id (`MemberId::agent`): what it
+    /// is drawn in, so one agent is one colour beside every window it opened,
+    /// on its face and in its avatar, whichever of its sessions opened it.
+    pub agent: String,
     /// What the run is called: the agent's name.
     pub label: String,
     /// What the run was asked to do, as History names it ("Fill Jane Doe's

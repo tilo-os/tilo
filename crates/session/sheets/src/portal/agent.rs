@@ -57,11 +57,7 @@ impl AgentQuestion {
             handle: handle.to_owned(),
             title: words(
                 "network-agent-question-title",
-                &[
-                    ("agent", &self.agent),
-                    ("action", &self.action),
-                    ("doing", &in_sentence(&self.action)),
-                ],
+                &[("agent", &self.agent), ("action", &self.action)],
             ),
             heading: self.title.clone(),
             detail: words(
@@ -98,19 +94,6 @@ impl AgentQuestion {
         };
         Some(word(&format!("network-agent-question-{key}")))
     }
-}
-
-/// An action's title as it reads inside a sentence: its first letter in
-/// lower case, unless the first word is an initialism (`PDF`).
-fn in_sentence(title: &str) -> String {
-    let mut chars = title.chars();
-    let Some(first) = chars.next() else {
-        return String::new();
-    };
-    if chars.clone().next().is_some_and(char::is_uppercase) {
-        return title.to_owned();
-    }
-    first.to_lowercase().chain(chars).collect()
 }
 
 /// What an action risks, in the person's words: an unknown name reads as

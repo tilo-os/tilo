@@ -264,7 +264,7 @@ pub(crate) fn start_collaboration(
     continuity: crate::platform::fabric::Continuity,
     engine: Option<std::sync::Arc<engine::Engine>>,
     (beside, device_agents): (
-        tilo_network_actor::local_host::Protocols,
+        tilo_network_actor::own_service::Protocols,
         &std::sync::Arc<crate::device_mcp::DeviceAgents>,
     ),
     documents: Option<sync::PeerDocuments>,

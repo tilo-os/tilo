@@ -57,6 +57,8 @@ pub mod item_effects;
 pub mod item_navigation;
 #[path = "item_offers.rs"]
 pub mod item_offers;
+#[path = "item_store_scale.rs"]
+pub mod item_store_scale;
 #[path = "kinds.rs"]
 pub mod kinds;
 #[path = "landings.rs"]

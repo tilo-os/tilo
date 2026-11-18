@@ -901,6 +901,81 @@ async fn a_turn_finds_what_was_said_in_its_conversation_by_words_and_by_time() {
     page.peer.close();
 }
 
+/// A find over a workspace of many notes answers from the index each document's app
+/// publishes, kept as the documents land: the service reads every one once, between requests,
+/// and a person's or an agent's search opens none of them while it waits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_find_answers_from_the_index_kept_as_documents_land() {
+    let mut served = Served::start(1).await;
+    let (workspace, page, said) = served.workspace(|_| Vec::new()).await;
+    let ada = Served::person(&served.ada, &served.devices.1, &workspace);
+    let her_agent = on_a_turn(
+        &ada,
+        SCOUT,
+        (&conversation_with(&served.ada, SCOUT), &said),
+        Vec::new(),
+    );
+    // A notebook of notes whose bodies say the same word: what a search has to read every
+    // document to find without an index.
+    let notes = 60;
+    for file in 0..notes {
+        let (answered, failed) = served
+            .tool(
+                &workspace,
+                &her_agent,
+                "tilo_do",
+                serde_json::json!({
+                    "path": "notes#import-markdown",
+                    "args": {
+                        "title": format!("notes/note-{file}.md"),
+                        "markdown": format!(
+                            "# Note {file}\n\nThe word grebe appears in this body.\n"
+                        ),
+                        "images": [],
+                    },
+                }),
+            )
+            .await;
+        assert!(!failed, "{file}: {answered}");
+    }
+    // The index is kept as the documents land: no find is asked, and the service reads them
+    // between the requests that wrote them.
+    let deadline = tilo_test_env::hang_deadline();
+    while served.actions.search_documents_warmed() < notes as u64 {
+        assert!(
+            Instant::now() < deadline,
+            "the documents are read for the index: {} of {notes} read",
+            served.actions.search_documents_warmed()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // The first find answers from the index too, opening at most the document whose write was
+    // still landing as the pass read; the one after it opens nothing at all.
+    for ask in 0..2 {
+        let opened = served.actions.search_documents_opened();
+        let began = Instant::now();
+        let found = served
+            .found(&workspace, &ada, ("grebe", &Within::default()))
+            .await;
+        let elapsed = began.elapsed();
+        let read = served.actions.search_documents_opened() - opened;
+        eprintln!(
+            "find {ask} over {notes} notes: {elapsed:?}, {} found, {read} documents opened",
+            found.len()
+        );
+        assert!(!found.is_empty(), "the word in the notes' bodies is found");
+        assert!(
+            read <= 1,
+            "a find answers from the index, opening at most the document a write was still \
+             landing in"
+        );
+        if ask == 1 {
+            assert_eq!(read, 0, "a settled find opens no document at all");
+        }
+    }
+    page.peer.close();
+}
+
 /// How the service decides an agent the workspace's own list does not hold.
 #[path = "hosted_across.rs"]
 mod across;

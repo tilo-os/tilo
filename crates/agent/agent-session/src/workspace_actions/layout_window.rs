@@ -72,6 +72,7 @@ impl Worker {
             .filter(|group| group.kind == tilo_actions::context::AGENT_SESSION_GROUP)
             .map(|group| tilo_desktop_model::ownership::OpenedBy {
                 run: group.id,
+                agent: caller.acting().agent_id().unwrap_or_default().to_owned(),
                 // The agent, by its own name; its session, by the title it gave.
                 label: caller
                     .agent_session()
@@ -115,7 +116,7 @@ impl Worker {
         // this session (an agent's first call is often an open).
         let engine = Arc::clone(workspace.peer.engine());
         let Some(held) = workspace
-            .records
+            .documents
             .get_or_insert_with(|| WorkspaceDocuments::new(named, engine))
             .desktop()
         else {

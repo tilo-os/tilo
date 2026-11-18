@@ -397,6 +397,7 @@ pub(crate) fn register() {
     written_views::register();
     prepare_settings_keeper_after_first_frame();
     prepare_page_drops_after_first_frame();
+    prepare_page_search_after_first_frame();
 }
 
 /// Once the page has drawn its first frame, fetch what a file dropped on the
@@ -421,6 +422,23 @@ fn prepare_page_drops_after_first_frame() {
 /// too.
 fn fetch_desktop_search() {
     let _ = tilo_desktop_search::DESKTOP_SEARCH.get();
+}
+
+/// Once the page has drawn its first frame, fetch the page search's code.
+///
+/// The person opens search with Ctrl+K, and code still on its way then is seconds of the box
+/// not opening: the module goes after the first frame, so the shell asks for code that is in.
+/// Fetching it mounts nothing: the search is mounted over the page as the first frame that
+/// lays the desktop out asks for it.
+fn prepare_page_search_after_first_frame() {
+    let work = Closure::once_into_js(move |_deadline: f64| {
+        if tilo_browser_runtime::first_frame_presented() {
+            let _ = tilo_browser_runtime::PAGE_SEARCH.get();
+        } else {
+            prepare_page_search_after_first_frame();
+        }
+    });
+    after_idle(SPELLING_POLL_MS, &work);
 }
 
 /// Once the page has drawn its first frame, fetch the keeper of the person's

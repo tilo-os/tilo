@@ -25,6 +25,7 @@ const PERSON: &str = "person";
 const SESSION: &str = "session";
 const SESSION_LABEL: &str = "session_label";
 const SESSION_TITLE: &str = "session_title";
+const SESSION_AGENT: &str = "session_agent";
 
 /// A view asked to be shown on the layout of `person`, the person it is shown to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,9 +58,11 @@ pub fn ask(
     if let Some(opened_by) = &view.opened_by {
         let OpenedBy {
             run: session,
+            agent,
             label,
             title,
         } = opened_by;
+        doc.put(&entry, SESSION_AGENT, agent.as_str())?;
         doc.put(&entry, SESSION, session.as_str())?;
         doc.put(&entry, SESSION_LABEL, label.as_str())?;
         doc.put(&entry, SESSION_TITLE, title.as_str())?;
@@ -85,6 +88,7 @@ pub fn asked(doc: &AutoCommit) -> Vec<(String, AskedView)> {
             };
             let opened_by = text(SESSION).map(|session| OpenedBy {
                 run: session,
+                agent: text(SESSION_AGENT).unwrap_or_default(),
                 label: text(SESSION_LABEL).unwrap_or_default(),
                 title: text(SESSION_TITLE).unwrap_or_default(),
             });
@@ -174,6 +178,7 @@ mod tests {
             person: person.into(),
             opened_by: Some(OpenedBy {
                 run: "agent-session:1".into(),
+                agent: "claude-code-0a1b2c3d4e".into(),
                 label: "Claude Code".into(),
                 title: String::new(),
             }),

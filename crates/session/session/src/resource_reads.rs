@@ -381,7 +381,7 @@ mod tests {
     /// A workspace this device founded, holding one record of `APP` written under `key`.
     fn workspace_with_record(engine: &Engine, key: &SigningKey) -> WorkspaceId {
         let workspace = WorkspaceId::new();
-        pollster::block_on(engine.found(workspace, "Shell", None));
+        pollster::block_on(engine.found(workspace, "Shell"));
         assert!(
             engine.holds(workspace),
             "the shell's workspace is held here"

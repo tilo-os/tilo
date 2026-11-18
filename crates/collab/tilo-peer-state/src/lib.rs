@@ -61,7 +61,7 @@ pub use installation::{AppearancePolicy, ArmedRecord, DirectoryRef, Installation
 mod verified_certificate;
 pub use state::mail_send_lease;
 /// The person's own documents between their devices, with no host in between.
-pub use state::{AdmittedFrame, PERSONAL_ALPN, PersonalSync};
+pub use state::{AdmittedFrame, PERSONAL_ALPN, PersonalSync, device_resource, resource_owner};
 pub use state::{
     BOT_SCHEDULES_KEY, CLOCK_SKEW_NS, DelegateInactive, DocumentRow, GovernedAccess, GovernedAgent,
     GovernedDelegateRow, InstalledApp, InstalledBot, KeptDocument, LEASES_KEY, Lease, LeaseClaim,

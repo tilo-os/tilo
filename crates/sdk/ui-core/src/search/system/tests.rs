@@ -211,6 +211,43 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase a_name_beats_a_passage_that_merely_holds_the_word;
+    {
+        let strength = |kind, title| {
+            merged_strength(
+                "tasks",
+                &kind,
+                title,
+                None,
+                MAX_PROVIDER_SCORE,
+                MAX_PROVIDER_SCORE,
+                0.0,
+            )
+        };
+        let app = strength(ResourceKind::Application, "Open Tasks");
+        let name = strength(ResourceKind::Note, "Tasks");
+        // A paragraph of prose whose text holds the word, and an action on something whose title
+        // holds it: what the person did not name.
+        let paragraph = strength(ResourceKind::Note, "here are the tasks for today");
+        let action = strength(ResourceKind::Action, "New note inside the Tasks page");
+        assert!(name > paragraph, "the name leads a paragraph mentioning it");
+        assert!(name > action, "the name leads an action mentioning it");
+        assert!(app > name, "the app named leads the note of the same word");
+        let mut merged = vec![
+            ((ResourceKind::Action, Availability::OnDevice, "an action"), action),
+            ((ResourceKind::Note, Availability::OnDevice, "a paragraph"), paragraph),
+            ((ResourceKind::Note, Availability::OnDevice, "a name"), name),
+            ((ResourceKind::Application, Availability::OnDevice, "an app"), app),
+        ];
+        order_hits(&mut merged, |(kind, availability, _)| (kind, *availability));
+        let names: Vec<&str> = merged.iter().map(|((_, _, name), _)| *name).collect();
+        assert_eq!(
+            names,
+            ["an app", "a name", "a paragraph", "an action"],
+            "Enter opens the app named, then what it names; what merely mentions it comes after"
+        );
+    }
+
     phase an_actions_word_typed_whole_counts_as_its_title_begun;
     {
         let action = merged_strength(
@@ -231,17 +268,31 @@ tilo_test_env::scenario! {
             MAX_PROVIDER_SCORE,
             0.0,
         );
-        assert!((action - begun).abs() < f32::EPSILON);
+        // A word the action is known by counts as much as its title begun, but a query that
+        // begins the title names it and is never weaker ([`title_names_query`]).
+        assert!(begun >= action);
+        // Another row that only holds the word is not lifted above the action.
         let setting = merged_strength(
             "power off",
             &ResourceKind::Note,
-            "Power off after",
+            "After the power cut",
             None,
             84,
             MAX_PROVIDER_SCORE,
             0.0,
         );
         assert!(action > setting);
+        // But a row whose name begins with the query leads it.
+        let named = merged_strength(
+            "power off",
+            &ResourceKind::Note,
+            "Power off after",
+            None,
+            MAX_PROVIDER_SCORE,
+            MAX_PROVIDER_SCORE,
+            0.0,
+        );
+        assert!(named > action);
         // A word only begun is no reason to lift it.
         let partial = merged_strength(
             "power",

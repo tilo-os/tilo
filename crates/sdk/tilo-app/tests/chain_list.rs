@@ -7,7 +7,9 @@
 
 use std::rc::Rc;
 
-use tilo_app::framework::{Chain, ChainList, ChainPager, ChainRow, Chained, Paged, PartArrival};
+use tilo_app::framework::{
+    Chain, ChainList, ChainPager, ChainRow, Chained, Paged, PartArrival, PartLimits,
+};
 use tilo_app::prelude::*;
 use tilo_app::resource::{
     DocumentCheckout, DocumentId, ResourceOwners, ResourceStore, ResourceType,
@@ -59,7 +61,7 @@ impl LogPart {
     }
 
     /// Mark lines.
-    #[action]
+    #[action(items = lines)]
     pub fn mark(&mut self, lines: Vec<String>) {
         for id in lines {
             if let Some(line) = self.lines.get_mut(&Id::from_raw(id)) {
@@ -75,42 +77,11 @@ impl Chained for LogPart {
     fn chain() -> DocumentId {
         DocumentId::derived("lines", &DocumentId::workspace_default())
     }
+}
 
-    fn part_for(_: &Self::Action, parts: &[(u64, Rc<Self>)]) -> Result<u64, String> {
-        Ok(parts.last().map_or(0, |(head, part)| {
-            if part.lines.len() >= PART_LINES {
-                head.saturating_add(1)
-            } else {
-                *head
-            }
-        }))
-    }
-
-    /// Marking lines of several parts marks them in each.
-    fn split(
-        action: &Self::Action,
-        parts: &[(u64, Rc<Self>)],
-    ) -> Result<Option<Vec<(u64, Self::Action)>>, String> {
-        let LogPartAction::Mark(log_part::Mark { lines }) = &action.operation else {
-            return Ok(None);
-        };
-        let shares = parts
-            .iter()
-            .filter_map(|(index, part)| {
-                let held: Vec<String> = lines
-                    .iter()
-                    .filter(|id| part.lines.get(&Id::from_raw(id.as_str())).is_some())
-                    .cloned()
-                    .collect();
-                (!held.is_empty()).then(|| {
-                    let mut share = action.clone();
-                    share.operation = LogPartAction::Mark(log_part::Mark { lines: held });
-                    (*index, share)
-                })
-            })
-            .collect();
-        Ok(Some(shares))
-    }
+/// Parts of [`PART_LINES`] lines while it is held.
+fn small_parts() -> PartLimits {
+    PartLimits::scoped(PART_LINES, usize::MAX)
 }
 
 /// One device's records of the log in its workspace.
@@ -194,6 +165,7 @@ tilo_test_env::scenario! {
 
     phase a_part_this_device_has_none_of_is_held_from_its_genesis_until_it_arrives;
     {
+        let _parts = small_parts();
         let joined = Joined::new();
         assert_eq!(joined.held(), [2]);
         assert_eq!(joined.chain.waiting(2), None, "the head arrived");
@@ -214,6 +186,7 @@ tilo_test_env::scenario! {
 
     phase reaching_the_top_opens_one_earlier_part_at_a_time;
     {
+        let _parts = small_parts();
         let joined = Joined::new();
         let mut pager = ChainPager::new(joined.chain.clone());
         assert!(pager.has_earlier());
@@ -244,6 +217,7 @@ tilo_test_env::scenario! {
 
     phase an_item_looked_for_opens_earlier_parts_until_one_has_it;
     {
+        let _parts = small_parts();
         let joined = Joined::new();
         let mut pager = ChainPager::new(joined.chain.clone());
         pager.seek(|part: &LogPart| part.lines.values().any(|line| line.text == "line 1"));
@@ -261,6 +235,7 @@ tilo_test_env::scenario! {
 
     phase a_chain_list_pages_back_when_its_first_row_shows;
     {
+        let _parts = small_parts();
         let joined = Joined::new();
         let mut list = ChainList::new(joined.chain.clone(), texts);
         assert_eq!(list.len(), 2, "the earlier parts' row and the head's line");
@@ -299,6 +274,7 @@ tilo_test_env::scenario! {
     // available, nothing spins and nothing before it is asked for, until it
     // arrives after all.
     {
+        let _parts = small_parts();
         let joined = Joined::new();
         let mut list = ChainList::new(joined.chain.clone(), texts);
         list.request_range(0..2, None);
@@ -329,6 +305,7 @@ tilo_test_env::scenario! {
     phase an_item_looked_for_past_an_unavailable_part_is_not_found;
     // A part looked for that the workspace has none of ends the search.
     {
+        let _parts = small_parts();
         let joined = Joined::new();
         let mut pager = ChainPager::new(joined.chain.clone());
         pager.seek(|part: &LogPart| part.lines.values().any(|line| line.text == "line 1"));
@@ -346,6 +323,7 @@ tilo_test_env::scenario! {
 /// (Three lines fill a part: all of these land in the head.)
 #[test]
 fn a_write_while_its_part_is_on_its_way_lands_once_the_part_arrived() {
+    let _parts = small_parts();
     use durable_store::{DurableStore as _, MemoryStore, StorageKey};
     use std::cell::RefCell;
 
@@ -460,6 +438,7 @@ fn written_while_away() -> (
 /// lands once the part arrives, once, however many windows hold the chain.
 #[test]
 fn a_write_waiting_for_its_part_outlives_its_window() {
+    let _parts = small_parts();
     let (theirs, ours, reader) = written_while_away();
     let window = chain_in(&reader, "bo");
     let another = chain_in(&reader, "bo");
@@ -486,6 +465,7 @@ fn a_write_waiting_for_its_part_outlives_its_window() {
 /// part arrives.
 #[test]
 fn a_write_waiting_for_its_part_outlives_a_restart() {
+    let _parts = small_parts();
     let (theirs, ours, reader) = written_while_away();
     reader.flush().unwrap();
     drop(reader);
@@ -513,6 +493,7 @@ fn a_write_waiting_for_its_part_outlives_a_restart() {
 /// the workspace's own first part, which is still there and still everyone's.
 #[test]
 fn a_native_window_waits_for_the_workspaces_newest_part_and_founds_no_part_of_its_own() {
+    let _parts = small_parts();
     use durable_store::{DurableStore as _, MemoryStore, StorageKey};
     use tilo_app::collaboration::CollaborationManager;
     use tilo_app::collaboration::native_initial::NativeConstruction;
@@ -615,6 +596,7 @@ tilo_test_env::scenario! {
 
     phase it_writes_each_part_holding_some_and_undo_takes_back_all;
     {
+        let _parts = small_parts();
         let store = device();
         let chain = chain_in(&store, "ada");
         for n in 0..=PART_LINES {

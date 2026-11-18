@@ -247,6 +247,13 @@
       "module": "tasks"
     },
     {
+      "id": "so.tilo.terminal",
+      "name": "Terminal",
+      "category": "System",
+      "version": "0.1.0",
+      "module": "terminal"
+    },
+    {
       "id": "so.tilo.themes",
       "name": "Theme Studio",
       "category": "System",

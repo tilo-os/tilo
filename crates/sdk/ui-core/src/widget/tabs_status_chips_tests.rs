@@ -11,9 +11,10 @@ use tilo_desktop_model::ownership::OpenedBy;
 use vello::Scene;
 use vello::kurbo::Affine;
 
-fn run(title: &str) -> OpenedBy {
+fn opened(title: &str) -> OpenedBy {
     OpenedBy {
         run: "agent-session:7".into(),
+        agent: "scribe".into(),
         label: "Jane Doe\u{2019}s agent".into(),
         title: title.into(),
     }
@@ -48,9 +49,9 @@ tilo_test_env::scenario! {
         );
         lay_out_at_width(&mut bar, 1200.0);
         assert!(bar.opened_by_chip(&mut tr, &theme).is_none());
-        let opened = run("Fill Jane Doe\u{2019}s visa application");
-        assert!(bar.set_opened_by(1, Some(opened.clone())));
-        assert!(!bar.set_opened_by(1, Some(opened.clone())), "unchanged");
+        let mark = opened("Fill Jane Doe\u{2019}s visa application");
+        assert!(bar.set_opened_by(1, Some(mark.clone())));
+        assert!(!bar.set_opened_by(1, Some(mark.clone())), "unchanged");
         let (rect, label) = bar
             .opened_by_chip(&mut tr, &theme)
             .expect("the mark stands after the pills");
@@ -68,7 +69,7 @@ tilo_test_env::scenario! {
         );
 
         assert!(bar.press_opened_by(rect.center()));
-        assert_eq!(bar.take_opened_by_press(), Some((1, opened.run.clone())));
+        assert_eq!(bar.take_opened_by_press(), Some((1, mark.run.clone())));
         assert_eq!(bar.take_opened_by_press(), None, "once");
         assert!(Widget::perform_semantic_action(
             &mut bar,
@@ -77,9 +78,9 @@ tilo_test_env::scenario! {
             &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
             &automerge::ROOT,
         ));
-        assert_eq!(bar.take_opened_by_press(), Some((1, opened.run.clone())));
+        assert_eq!(bar.take_opened_by_press(), Some((1, mark.run.clone())));
 
-        assert!(bar.set_opened_by(1, Some(run("Jane Doe\u{2019}s agent"))));
+        assert!(bar.set_opened_by(1, Some(opened("Jane Doe\u{2019}s agent"))));
         draw(&mut bar, &mut tr, &theme);
         let (_, node) = bar.opened_by_stop().expect("still marked");
         assert_eq!(
@@ -105,7 +106,7 @@ tilo_test_env::scenario! {
         let mut bar = TabBar::new("search", vec![TabDescriptor::new(1, "Letter")], 1);
         bar.set_search_control(Some(240.0));
         lay_out_at_width(&mut bar, 900.0);
-        assert!(bar.set_opened_by(1, Some(run(""))));
+        assert!(bar.set_opened_by(1, Some(opened(""))));
         let search_x1 = bar.tabs_end()
             + crate::widget::window_controls::CONTROL_GAP
             + crate::widget::window_controls::CONTROL_PX;
@@ -137,7 +138,7 @@ tilo_test_env::scenario! {
                 ..WindowToolbar::default()
             })
         ));
-        assert!(bar.set_opened_by(1, Some(run("File the receipts"))));
+        assert!(bar.set_opened_by(1, Some(opened("File the receipts"))));
         for _ in 0..2 {
             super::super::tests::lay_out_at_width_with(&mut bar, 1200.0, &theme);
             draw(&mut bar, &mut tr, &theme);
@@ -183,7 +184,7 @@ tilo_test_env::scenario! {
                 ..WindowToolbar::default()
             })
         ));
-        assert!(bar.set_opened_by(1, Some(run("Write a paragraph"))));
+        assert!(bar.set_opened_by(1, Some(opened("Write a paragraph"))));
         for _ in 0..2 {
             super::super::tests::lay_out_at_width_with(&mut bar, 1200.0, &theme);
             draw(&mut bar, &mut tr, &theme);
@@ -207,5 +208,14 @@ tilo_test_env::scenario! {
             "the mark {rect:?} stands after the location and its edited word, which end at {}",
             x + w
         );
+    }
+
+    phase the_agents_mark_wears_the_agents_own_colour_whichever_session_opened_it;
+    // One agent is one colour: its mark beside a window is drawn as its face is,
+    // from the agent, never from the session that happened to open the window.
+    {
+        let face = crate::presence::member_color(&crate::permissions::MemberId::agent("scribe"));
+        let face = vello::peniko::Color::from_rgb8(face.0, face.1, face.2);
+        assert_eq!(super::agent_colour(&opened("")), face);
     }
 }

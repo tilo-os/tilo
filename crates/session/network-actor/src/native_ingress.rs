@@ -8,7 +8,7 @@
 //! between its devices and its host.
 use super::{ActorState, Arc, HashMap, InternalEvent, NeighbourMsg};
 use crate::WorkspaceId;
-use crate::local_host::LocalHost;
+use crate::own_service::OwnService;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_peer_state::direct::DirectSync;
 use tilo_peer_state::join::TransportHint;
@@ -79,7 +79,7 @@ impl Routes {
 struct NativeHolder {
     ws: WorkspaceId,
     endpoint: iroh::Endpoint,
-    local_host: Option<LocalHost>,
+    own_service: Option<OwnService>,
     tx: tokio::sync::mpsc::Sender<InternalEvent>,
 }
 
@@ -88,9 +88,9 @@ impl Holder for NativeHolder {
         Reach {
             endpoint: self.endpoint.clone(),
             own_host: self
-                .local_host
+                .own_service
                 .as_ref()
-                .and_then(LocalHost::get)
+                .and_then(OwnService::get)
                 .map(|host| host as Arc<dyn OwnHost>),
         }
     }
@@ -619,7 +619,7 @@ impl ActorState {
         // own, has no host to reach: its apps' empty states are their own
         // from the start, as in a workspace that syncs with no host. With a
         // host here, its link joins that host in process.
-        if self.local_host.is_none()
+        if self.own_service.is_none()
             && self
                 .host_identity
                 .as_ref()
@@ -638,7 +638,7 @@ impl ActorState {
         let holder = NativeHolder {
             ws,
             endpoint: self.endpoint.clone(),
-            local_host: self.local_host.clone(),
+            own_service: self.own_service.clone(),
             tx: self.internal_tx.clone(),
         };
         let hold = tokio::spawn({
@@ -670,7 +670,7 @@ impl ActorState {
             .native_routes
             .entries
             .iter()
-            .filter(|_| self.local_host.is_none())
+            .filter(|_| self.own_service.is_none())
             .filter(|(_, route)| route.connect.hosted_here(identity))
             .map(|(&ws, _)| ws)
             .collect();

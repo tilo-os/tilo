@@ -1002,6 +1002,26 @@ impl AppBrokerState {
             != tilo_action_policy::Answer::Deny
     }
 
+    /// `action` of `app` as `actor` is offered it; one it is denied is left out, or for an agent
+    /// marked not allowed ([`tilo_actions::Availability::not_allowed`]): it hears it is refused.
+    pub(super) fn offered_to(
+        workspace: &Workspace,
+        actor: &BrokerActor,
+        now: u64,
+        app: &str,
+        mut action: ActionDescriptor,
+    ) -> Option<ActionDescriptor> {
+        let (address, need) = (&action.address, action.contract.need());
+        let target = (&*action.resource_kind, &*address.resource, &*address.action);
+        if actor.action_answer_in(workspace, app, target, &need, now)
+            == tilo_action_policy::Answer::Deny
+        {
+            action.contract.availability = tilo_actions::Availability::not_allowed();
+            return actor.is_agent().then_some(action);
+        }
+        Some(action)
+    }
+
     /// Whether `actor` may take the action `target` now
     /// ([`tilo_action_policy::Answer::admits`]).
     pub(super) fn allowed(
@@ -1131,21 +1151,20 @@ impl AppBrokerState {
                     surface
                         .actions
                         .iter()
-                        .filter(|action| {
-                            Self::offered(
+                        .filter_map(|action| {
+                            Self::offered_to(
                                 &workspace,
                                 &policy,
                                 now,
                                 &surface.app_id,
-                                (&action.resource_kind, &action.resource, &action.action),
-                                &action.contract,
+                                descriptor(action),
                             )
                         })
                         .map(|action| {
                             CatalogueRow::for_action(
                                 surface.peer_id.to_string(),
                                 &surface.app_id,
-                                descriptor(action),
+                                action,
                             )
                         }),
                 );
@@ -1511,22 +1530,17 @@ impl AppBrokerState {
                     surface
                         .actions
                         .iter()
-                        .filter(|action| {
-                            Self::offered(
+                        .filter_map(|action| {
+                            Self::offered_to(
                                 workspace,
                                 policy,
                                 now,
                                 &surface.app_id,
-                                (&action.resource_kind, &action.resource, &action.action),
-                                &action.contract,
+                                descriptor(action),
                             )
                         })
                         .map(|action| {
-                            CatalogueRow::for_action(
-                                provider.clone(),
-                                &surface.app_id,
-                                descriptor(action),
-                            )
+                            CatalogueRow::for_action(provider.clone(), &surface.app_id, action)
                         }),
                 );
             }
@@ -1588,22 +1602,17 @@ impl AppBrokerState {
                         ))
                     })
                     .map(|offer| offered_action(app, offer))
-                    .filter(|action| {
-                        Self::offered(
+                    .filter_map(|action| {
+                        Self::offered_to(
                             workspace,
                             policy,
                             now,
                             &app.package_id,
-                            (&action.resource_kind, &action.resource, &action.action),
-                            &action.contract,
+                            descriptor(&action),
                         )
                     })
                     .map(|action| {
-                        CatalogueRow::for_action(
-                            provider.clone(),
-                            &app.package_id,
-                            descriptor(&action),
-                        )
+                        CatalogueRow::for_action(provider.clone(), &app.package_id, action)
                     }),
             );
         }
