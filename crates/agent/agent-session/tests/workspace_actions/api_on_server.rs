@@ -182,6 +182,7 @@ async fn start(issuer: &str, shelled: bool) -> OnServer {
             web_entry: web_entry.trim_end_matches('/').to_owned(),
             invite_entry: None,
             hosts: vec![server.clone()],
+            invite_entry: None,
         },
         Store::in_memory(),
     )
@@ -261,6 +262,7 @@ impl OnServer {
                 web_entry: web_entry.trim_end_matches('/').to_owned(),
                 invite_entry: None,
                 hosts: vec![server.clone()],
+                invite_entry: None,
             },
             Store::in_memory(),
         )
