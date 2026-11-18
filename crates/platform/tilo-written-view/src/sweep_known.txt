@@ -3,31 +3,8 @@
 # The path is the field of the kind a view reads, then what stands inside it (`*` an item or an entry).
 # The app so.tilo.sweep is the sweep's own kind of every shape a surface declares, a field each.
 
-# ACTOR: an actor traps the field that holds it: it is stored as one text of JSON and handed on as that text.
-ACTOR | so.tilo.browser | browser.page-record | actions
-ACTOR | so.tilo.chat | chat.messages | messages
-ACTOR | so.tilo.chat | chat.workspace | channels
-ACTOR | so.tilo.chat | chat.workspace | feedback
-ACTOR | so.tilo.chat | chat.workspace | moderation
-ACTOR | so.tilo.chat | tilo.workspace.emoji | emoji
-ACTOR | so.tilo.code-editor | code_editor.project | terminal_panel
-ACTOR | so.tilo.notes | notes.pages | pages
-ACTOR | so.tilo.pdf-viewer | pdf.document | annotations
-ACTOR | so.tilo.pdf-viewer | pdf.document | comments
-ACTOR | so.tilo.sheets | sheets.workbook | comments
-ACTOR | so.tilo.sweep | sweep.shapes | actor
-ACTOR | so.tilo.sweep | sweep.shapes | carrying_case
-ACTOR | so.tilo.sweep | sweep.shapes | list_actor
-ACTOR | so.tilo.sweep | sweep.shapes | list_case
-ACTOR | so.tilo.sweep | sweep.shapes | option_actor
-ACTOR | so.tilo.sweep | sweep.shapes | option_case
-ACTOR | so.tilo.tasks | tasks.issues | issues
-ACTOR | so.tilo.terminal | terminal.history | remembered
-ACTOR | so.tilo.terminal | terminal.session | commands
-ACTOR | so.tilo.terminal | terminal.session | holder
-ACTOR | so.tilo.word-processor | word-processor.document | comments
-
 # NAMED LIKE A BUILT-IN: a named type the app calls by a name the app language has a type of its own for (`Bytes`): a reading's value is read as that type, which no reading gives.
+NAMED LIKE A BUILT-IN | so.tilo.chat | chat.messages | messages
 NAMED LIKE A BUILT-IN | so.tilo.settings | settings.network-usage | connections
 NAMED LIKE A BUILT-IN | so.tilo.settings | settings.network-usage | counters
 
@@ -43,8 +20,14 @@ UNTYPED | so.tilo.canvas | canvas.artwork | media
 UNTYPED | so.tilo.canvas | canvas.artwork | reference
 UNTYPED | so.tilo.canvas | canvas.artwork | selection
 UNTYPED | so.tilo.canvas | canvas.recent-artworks | devices
+UNTYPED | so.tilo.chat | chat.messages | messages.*.acting
+UNTYPED | so.tilo.chat | chat.messages | messages.*.reactions
+UNTYPED | so.tilo.chat | chat.workspace | feedback.*.reactions
+UNTYPED | so.tilo.chat | tilo.workspace.emoji | emoji.*.image
 UNTYPED | so.tilo.clocks | clocks.on-devices | devices
 UNTYPED | so.tilo.code-editor | code_editor.project | buffers
+UNTYPED | so.tilo.code-editor | code_editor.project | terminal_panel.commands.*.output
+UNTYPED | so.tilo.code-editor | code_editor.project | terminal_panel.requests
 UNTYPED | so.tilo.code-editor | code_editor.project | terminal_requests
 UNTYPED | so.tilo.contacts | contacts.contacts | contacts.*.birthday
 UNTYPED | so.tilo.discord | discord.guild | outbox

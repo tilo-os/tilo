@@ -310,10 +310,17 @@ impl Filler<'_> {
                 Some((stored, Want::Plain(json!(format!("{first}\n{second}")))))
             }
             FieldType::Actor => {
-                // Written whole as one text of JSON (`tilo_resource`'s `json_scalar`).
-                let who = Actor::Member(MemberId::person("ada"));
-                let kept = serde_json::to_string(&who).unwrap_or_default();
-                Some((Json::String(kept), Want::Plain(json!({ "actor": who }))))
+                // Written whole as one text of JSON (`tilo_resource`'s `json_scalar`): an
+                // actor's own, or a member's, which a surface declares as an actor too.
+                let member = MemberId::person("ada");
+                let who = Actor::Member(member.clone());
+                let kept = if mark.is_multiple_of(2) {
+                    serde_json::to_string(&member)
+                } else {
+                    serde_json::to_string(&who)
+                };
+                let kept = Json::String(kept.unwrap_or_default());
+                Some((kept, Want::Plain(json!({ "actor": who }))))
             }
             FieldType::Named(name) => self.named_value(name, at, mark, open),
             FieldType::Option(inner) => {
