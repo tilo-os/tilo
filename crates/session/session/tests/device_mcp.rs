@@ -35,7 +35,6 @@ use tilo_actions::remote::workspace_activity as wire;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_device_identity::{IdentityPaths, persist};
 use tilo_device_mcp::{ALPN, NotOpened, open};
-use tilo_mcp::devices::agent_id;
 use tilo_peer_state::owner::{self, testing};
 use tilo_peer_state::{PersonalStore, PersonalSync, TransportOrigin};
 use tilo_runtime::personal_devices::PersonalDevices;
