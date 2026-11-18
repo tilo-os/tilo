@@ -2030,6 +2030,10 @@ suite = "os/tests/release_tools_image.sh"
 reason = "needs the built release-tools image"
 
 [[unrequired]]
+suite = "os/tests/registry_update_check.sh"
+reason = "runs inside a booted server, as root (tools/ci/host-assurance.sh)"
+
+[[unrequired]]
 suite = "os/tests/rollback-boot-check.sh"
 reason = "runs inside a booted guest, as root (TPM, LUKS)"
 
