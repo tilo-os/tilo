@@ -162,9 +162,26 @@ pub fn desktop_with(width: i32, height: i32, scale: f64, formats: &[u32]) -> Com
     compositor
 }
 
+/// A keeper on `dir` named `test-launch`, with the options `configure` changes last.
+fn keeper_at(
+    dir: &std::path::Path,
+    prefix: Option<&str>,
+    command: Vec<std::ffi::OsString>,
+    configure: impl FnOnce(&mut Options),
+) -> Keeper {
+    let mut options = Options::new(dir, "test-launch");
+    options.app_id_prefix = prefix.map(str::to_owned);
+    options.command = command;
+    options.grace = Duration::from_millis(300);
+    configure(&mut options);
+    Keeper::new(options).expect("keeper")
+}
+
 /// A keeper, the desktop it shows on, and its directory.
 pub struct Rig {
     pub keeper: Keeper,
+    /// A second keeper on the same desktop, for what two launches do between them.
+    pub other: Option<Keeper>,
     pub desktop: Option<Compositor>,
     pub dir: tempfile::TempDir,
 }
@@ -183,6 +200,31 @@ impl Rig {
         Self::configured(None, Vec::new(), |options| options.x11 = true)
     }
 
+    /// Two keepers, each serving an X11 display of its own, on one desktop: a drag between two
+    /// launches' X11 programs crosses it.
+    pub fn with_x11_pair() -> Self {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let keeper = keeper_at(&dir.path().join("keeper"), None, Vec::new(), |options| {
+            options.x11 = true;
+        });
+        let other = keeper_at(
+            &dir.path().join("other-keeper"),
+            None,
+            Vec::new(),
+            |options| {
+                options.x11 = true;
+            },
+        );
+        let mut rig = Self {
+            keeper,
+            other: Some(other),
+            desktop: None,
+            dir,
+        };
+        rig.attach_new(640, 480);
+        rig
+    }
+
     /// A rig whose keeper's options `configure` changes last.
     pub fn configured(
         prefix: Option<&str>,
@@ -190,14 +232,10 @@ impl Rig {
         configure: impl FnOnce(&mut Options),
     ) -> Self {
         let dir = tempfile::tempdir().expect("temporary directory");
-        let mut options = Options::new(dir.path().join("keeper"), "test-launch");
-        options.app_id_prefix = prefix.map(str::to_owned);
-        options.command = command;
-        options.grace = Duration::from_millis(300);
-        configure(&mut options);
-        let keeper = Keeper::new(options).expect("keeper");
+        let keeper = keeper_at(&dir.path().join("keeper"), prefix, command, configure);
         let mut rig = Self {
             keeper,
+            other: None,
             desktop: None,
             dir,
         };
@@ -231,12 +269,19 @@ impl Rig {
     pub fn attach_desktop(&mut self, compositor: Compositor) {
         // As the session connects a keeper: a connection it hands over itself, for the keeper's
         // process, which is this one in a test.
-        let socket = compositor
-            .client_connector()
-            .connect_for(std::process::id())
-            .expect("desktop connection");
-        self.keeper.attach(socket).expect("attach");
+        for keeper in self.keepers() {
+            let socket = compositor
+                .client_connector()
+                .connect_for(std::process::id())
+                .expect("desktop connection");
+            keeper.attach(socket).expect("attach");
+        }
         self.desktop = Some(compositor);
+    }
+
+    /// The keepers this rig holds: its own, and the second when a test has two.
+    fn keepers(&mut self) -> impl Iterator<Item = &mut Keeper> {
+        std::iter::once(&mut self.keeper).chain(self.other.as_mut())
     }
 
     /// The desktop goes away entirely, as it does when it restarts.
@@ -274,13 +319,17 @@ impl Rig {
         for app in apps.iter_mut() {
             app.exchange();
         }
-        self.keeper
-            .dispatch(Some(Duration::from_millis(1)))
-            .expect("keeper");
+        for keeper in self.keepers() {
+            keeper
+                .dispatch(Some(Duration::from_millis(1)))
+                .expect("keeper");
+        }
         if let Some(desktop) = self.desktop.as_mut() {
             desktop.dispatch(Duration::from_millis(1)).expect("desktop");
         }
-        self.keeper.dispatch(Some(Duration::ZERO)).expect("keeper");
+        for keeper in self.keepers() {
+            keeper.dispatch(Some(Duration::ZERO)).expect("keeper");
+        }
         for app in apps.iter_mut() {
             app.exchange();
         }

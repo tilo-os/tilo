@@ -12,8 +12,8 @@
 //!   workspace's files by Files' own `new-folder`, as the agent on its turn: an agent whose
 //!   rules refuse it Files has none, and its session is told so.
 //! - After a session it counts what the session cost and how long it worked.
-//! - A session that could not finish (the issue's budget, the day's limit, too many steps, a
-//!   failure) is written on the issue as stopped, with its plain line. Nothing here writes `done`.
+//! - A session that could not finish (the issue's budget, the day's limit, a failure) is written
+//!   on the issue as stopped, with its plain line. Nothing here writes `done`.
 
 use std::time::Duration;
 

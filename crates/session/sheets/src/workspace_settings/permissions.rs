@@ -6,12 +6,13 @@
 //! The composer's choices are the sheet's own until the person grants; the
 //! grant names all three, so whoever asks for it says exactly what it gives.
 
+use ui::format::{Date, Time};
 use ui::icons::Icon;
 use ui::prelude::*;
 use ui::tokens::Rhythm;
 use ui::widget::{
-    Button, ButtonRole, Column, ControlSize, Element, EmptyState, ListRow, MenuItem, Row, Section,
-    Segment, Text, ToggleGroup,
+    Button, ButtonRole, Column, ControlSize, DateField, Element, EmptyState, ListRow, MenuItem,
+    Row, Section, Segment, Text, TimeField, ToggleGroup,
 };
 
 use super::agents::{Intro, column, intro};
@@ -40,6 +41,8 @@ pub struct Composer {
     pub what: String,
     pub permissions: Vec<Choice>,
     pub how_long: String,
+    /// How long it may last, by [`tilo_action_policy::Lifetime::key`]: `always`, and `until`, which
+    /// asks for the day and time it ends.
     pub expiries: Vec<Choice>,
     /// The expiry a new permission starts with.
     pub default_expiry: String,
@@ -90,6 +93,8 @@ pub(super) struct Draft {
     pub subject: Option<String>,
     pub permission: Option<String>,
     pub expiry: Option<String>,
+    /// The day and time an `until` permission ends, as the person picked them.
+    pub until: (Option<Date>, Option<Time>),
 }
 
 impl Draft {
@@ -216,12 +221,18 @@ fn composer(permissions: &Permissions, parts: &Parts) -> Element {
             }
         }),
     ));
+    let until = (expiry == UNTIL).then(|| {
+        let (day, time) = parts.local.get().draft.until;
+        items.push(until_fields(day, time, parts));
+        ends_at(day, time)
+    });
     let grant = parts.clone();
     let named = subject
         .as_ref()
         .zip(permission.as_ref())
         .map(|(subject, permission)| (subject.key.clone(), permission.key.clone()));
-    let can_grant = permissions.manage && named.is_some();
+    // An `until` permission is given once it names a day and time still ahead.
+    let can_grant = permissions.manage && named.is_some() && until.is_none_or(|at| at.is_some());
     items.push(buttons(vec![
         Button::new("ws-grant", &composer.grant)
             .role(ButtonRole::Primary)
@@ -231,12 +242,47 @@ fn composer(permissions: &Permissions, parts: &Parts) -> Element {
                     grant.ask(WorkspaceSettingsEffect::Grant {
                         subject,
                         permission,
-                        expiry: expiry.clone(),
+                        until: until.flatten(),
                     });
                 }
             }),
     ]));
     Box::new(Section::titled(composer.header.clone(), items))
+}
+
+/// The expiry that asks for the day and time a permission ends.
+const UNTIL: &str = "until";
+
+/// The day an `until` permission ends, picked on the toolkit's date field, and the time of that
+/// day in its popover.
+fn until_fields(day: Option<Date>, time: Option<Time>, parts: &Parts) -> Element {
+    use ui::component::{Bound, Described as _};
+    let (on_day, on_time) = (parts.clone(), parts.clone());
+    let props = ui::widget::DateFieldProps {
+        value: Bound {
+            state: ui::LocalState::new(day.map(|day| day.to_string()).unwrap_or_default()),
+            ..Bound::default()
+        },
+        at: time.map(|time| time.strftime("%H:%M").to_string()),
+        time: vec![Box::new(
+            TimeField::new("ws-grant-until-time", time)
+                .on_change(move |time| on_time.local.update(|local| local.draft.until.1 = time)),
+        )],
+        ..ui::widget::DateFieldProps::default()
+    };
+    Box::new(
+        DateField::from_props("ws-grant-until-day", props)
+            .on_change(move |day| on_day.local.update(|local| local.draft.until.0 = day)),
+    )
+}
+
+/// The instant a permission picked to end on `day` at `time` ends, in Unix milliseconds: `None`
+/// until both are picked, and for one already past.
+fn ends_at(day: Option<Date>, time: Option<Time>) -> Option<u64> {
+    let at = ui::clock::instant_of(day?.to_datetime(time?))?;
+    (at > ui::clock::local_now().timestamp())
+        .then(|| u64::try_from(at.as_millisecond()).ok())
+        .flatten()
 }
 
 /// A button saying what is chosen, whose menu chooses another.
@@ -351,12 +397,8 @@ pub(super) fn sample() -> Permissions {
                 choice("edit-files", "Edit the workspace's files"),
             ],
             how_long: "For how long".to_owned(),
-            expiries: vec![
-                choice("always", "Until revoked"),
-                choice("session", "This session"),
-                choice("once", "Once"),
-            ],
-            default_expiry: "session".to_owned(),
+            expiries: vec![choice("always", "Always"), choice("until", "Until")],
+            default_expiry: "always".to_owned(),
             grant: "Grant".to_owned(),
         },
         sections: vec![
@@ -366,7 +408,7 @@ pub(super) fn sample() -> Permissions {
                     "cap-1",
                     "Notes",
                     "Use the camera, given by you",
-                    "This session",
+                    "Until",
                 )],
             },
             Holders {

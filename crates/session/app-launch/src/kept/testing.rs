@@ -63,9 +63,13 @@ pub fn keeper_program(path: &Path, test: &str) -> io::Result<()> {
 /// Write at `path` a stand-in for the launcher a kept app starts through: it starts the keeper
 /// it is handed, in the directory and as the launch it is handed, with `app` as the app's command
 /// line followed by what it was handed after `--` (a Windows program's sandbox), and takes no
-/// other argument into account. What it was handed is kept for [`launcher_handed`]. Like the real
-/// launcher, it asks the keeper for an X11 display when the launch is given one
-/// (`--x11-display`).
+/// other argument into account. What it was handed is kept for [`launcher_handed`].
+///
+/// Like the real launcher, it asks the keeper for an X11 display when the launch is given one:
+/// `windows-program` asks with `--x11`, `machine-app` with `--x11-display <name>`. Both spellings
+/// are read here, so a test's launch is served exactly as the real launcher would serve it; the
+/// session's own command lines are proved against the real launcher in `kept_apps` and
+/// `windows_compat`, so the two cannot drift apart unnoticed.
 ///
 /// # Errors
 /// The program could not be written.
@@ -75,8 +79,8 @@ pub fn launcher_program(path: &Path, app: &[String]) -> io::Result<()> {
         path,
         &format!(
             "for a in \"$@\"; do printf '%s\\000' \"$a\"; done > {}\n\
-             while [ $# -gt 0 ]; do case \"$1\" in --keeper) k=$2; shift;; --keep-in) d=$2; shift;; --keep-as) l=$2; shift;; --x11-display) [ -n \"$2\" ] && x=--x11; shift;; --) shift; break;; esac; shift; done\n\
-             exec \"$k\" $x --dir \"$d\" --launch \"$l\" -- {} \"$@\"",
+             while [ $# -gt 0 ]; do case \"$1\" in --keeper) k=$2; shift;; --keep-in) d=$2; shift;; --keep-as) l=$2; shift;; --x11) x=--x11;; --x11-display) x=--x11; shift;; --) shift; break;; esac; shift; done\n\
+             exec \"$k\" --dir \"$d\" --launch \"$l\" $x -- {} \"$@\"",
             quoted(&handed_at(path).to_string_lossy()),
             app.join(" ")
         ),

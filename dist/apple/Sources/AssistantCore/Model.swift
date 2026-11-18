@@ -101,9 +101,13 @@ public struct ProviderChoice: Identifiable, Equatable, Sendable {
     }
 }
 
-/// Whether the person's Tilo answers right now.
+/// Whether the person's Tilo answers right now, as far as anything has shown it.
 public enum Reach: Equatable, Sendable {
+    /// Not known yet: nothing was tried, or the first try has not ended. Nothing is said to
+    /// have failed, however long the try takes.
+    case unknown
     case reachable
+    /// A try has ended without getting in.
     case unreachable
 }
 

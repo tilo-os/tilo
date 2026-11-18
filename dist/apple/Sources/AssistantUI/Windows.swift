@@ -98,16 +98,24 @@ struct JobSheet: View {
     }
 }
 
-/// The line that says Tilo is away, when it is.
+/// What is said over the message field of whether Tilo answers. After a try that failed: that
+/// Tilo cannot be reached. While the first try is still in work: the quiet word for waiting,
+/// so that a server that takes its time is not silent. A try that is in work is never said
+/// to have failed, however long it takes.
 struct ReachLine: View {
     @Environment(AssistantModel.self) private var model
 
     var body: some View {
-        if model.reach == .unreachable {
+        switch model.reach {
+        case .unreachable:
             Text(AssistantWords.notReachable.said).font(.small12).foregroundStyle(Token.ink2)
                 .padding(.horizontal, 10).padding(.vertical, 3)
                 .background(Token.raised, in: Capsule())
                 .padding(.bottom, 6)
+        case .unknown:
+            Fine(words: AssistantWords.pairing.said).padding(.bottom, 6)
+        case .reachable:
+            EmptyView()
         }
     }
 }

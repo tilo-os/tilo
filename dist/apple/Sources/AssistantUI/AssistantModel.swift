@@ -59,7 +59,8 @@ public final class AssistantModel {
     @ObservationIgnored public let source: any AssistantSource
     /// Nil until the source has said where this device stands.
     public private(set) var session: Session?
-    public private(set) var reach = Reach.reachable
+    /// Not known until the source has said it: nothing is said to have failed before a try has ended.
+    public private(set) var reach = Reach.unknown
     public private(set) var subAgents: [SubAgent] = []
     public private(set) var tasks: [AssistantTask] = []
     public private(set) var automations: [Automation] = []
@@ -154,7 +155,7 @@ public final class AssistantModel {
         }
         if let stands = await first(source.session()) { take(stands) }
         setup = await first(source.setup()) ?? .unknown
-        reach = await first(source.reach()) ?? .reachable
+        reach = await first(source.reach()) ?? .unknown
         subAgents = await first(source.subAgents()) ?? []
         tasks = await first(source.tasks()) ?? []
         automations = await first(source.automations()) ?? []
@@ -251,6 +252,12 @@ public final class AssistantModel {
 
     public func conversation(_ chat: Chat) -> Conversation {
         conversations[chat] ?? Conversation()
+    }
+
+    /// Whether a reply is being written in a conversation right now. Its row in the sidebar
+    /// says so for exactly as long as the conversation itself does: both read this one word.
+    public func isWriting(_ chat: Chat) -> Bool {
+        conversation(chat).isAnswering
     }
 
     public var person: Person? {

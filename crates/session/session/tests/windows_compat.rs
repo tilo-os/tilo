@@ -834,6 +834,41 @@ impl KeptRig {
     }
 }
 
+/// What the real launcher would do with `handed`, the command line the session started a launch
+/// with: the keeper it names, and the arguments it would hand that keeper, read from the
+/// launcher's own `--print-keeper` rather than a stand-in's idea of its arguments.
+/// `--print-keeper` goes before the `--` that separates the launcher's options from the
+/// sandbox's command.
+fn real_launcher_keeper(handed: &[String]) -> (String, Vec<String>) {
+    let launcher = tilo_test_env::sibling_binary("launcher", "tilo-launcher");
+    let mut args = handed.to_vec();
+    let separator = args
+        .iter()
+        .position(|arg| arg == "--")
+        .unwrap_or(args.len());
+    args.insert(separator, "--print-keeper".to_owned());
+    let planned = std::process::Command::new(&launcher)
+        .args(&args)
+        .output()
+        .expect("the launcher answers");
+    let said = String::from_utf8_lossy(&planned.stdout);
+    assert!(
+        planned.status.success(),
+        "{args:?}: {}",
+        String::from_utf8_lossy(&planned.stderr)
+    );
+    let mut lines = said.lines();
+    let keeper = lines
+        .next()
+        .and_then(|line| line.strip_prefix("keeper : "))
+        .unwrap_or_else(|| panic!("the launcher named no keeper: {said}"))
+        .to_owned();
+    let keeper_args = lines
+        .map(|line| line.trim_start_matches('\t').to_owned())
+        .collect();
+    (keeper, keeper_args)
+}
+
 fn alive(pid: u32) -> bool {
     Path::new(&format!("/proc/{pid}")).exists()
         && !fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
@@ -851,6 +886,20 @@ fn a_windows_program_stays_open_through_an_in_place_restart() {
     assert_eq!(
         answers[1]["applications"][0]["running"], true,
         "{answers:?}"
+    );
+    // The real launcher takes the session's command line: Wine needs no X11, so neither the
+    // session's launch nor the keeper it names asks for one.
+    let handed =
+        tilo_app_launch::kept::testing::launcher_handed(&rig.home.home().join("tilo-launcher"));
+    assert!(
+        !handed.contains(&"--x11".to_owned()),
+        "the launch asks its keeper for no X11 display: {handed:?}"
+    );
+    let (keeper, keeper_args) = real_launcher_keeper(&handed);
+    assert_eq!(keeper, rig.keeper.display().to_string(), "{keeper_args:?}");
+    assert!(
+        !keeper_args.contains(&"--x11".to_owned()),
+        "the keeper is never asked for a display it would never serve: {keeper_args:?}"
     );
     first.shown();
     let [pid] = rig.starts()[..] else {
@@ -1047,10 +1096,23 @@ fn a_proton_program_shows_through_its_keepers_x11_display_and_stays_open() {
     let mut first = rig.start(false);
     let answers = first.manage(&rig, "first", &["launch"]);
     assert_eq!(answers[0]["result"], "launched", "{answers:?}");
+    let handed =
+        tilo_app_launch::kept::testing::launcher_handed(&rig.home.home().join("tilo-launcher"));
     assert!(
-        tilo_app_launch::kept::testing::launcher_handed(&rig.home.home().join("tilo-launcher"))
-            .contains(&"--x11".to_owned()),
+        handed.contains(&"--x11".to_owned()),
         "the launch asks its keeper for an X11 display"
+    );
+    // The real launcher takes that command line and asks the keeper for the display itself: the
+    // session's spelling and the launcher's are held together by the launcher, not by a stand-in.
+    let (keeper, keeper_args) = real_launcher_keeper(&handed);
+    assert_eq!(keeper, rig.keeper.display().to_string(), "{keeper_args:?}");
+    let command = keeper_args
+        .iter()
+        .position(|arg| arg == "--")
+        .expect("the keeper is handed the program's command");
+    assert!(
+        keeper_args[..command].contains(&"--x11".to_owned()),
+        "the keeper is asked for a display: {keeper_args:?}"
     );
     first.shown();
     let [pid] = rig.starts()[..] else {

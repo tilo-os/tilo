@@ -61,7 +61,11 @@ pub(super) fn dialog(scenario: Option<&str>) -> Dialog {
             )
         },
         Some("action-grant") => Dialog {
-            body: Body::Choices(strings(&["Allow once", "Allow for 1 hour", "Always allow"])),
+            body: Body::Choices(strings(&[
+                "Allow once",
+                "Allow for this session",
+                "Always allow",
+            ])),
             ..base(
                 "action-grant",
                 "Scribe wants to change Mail",

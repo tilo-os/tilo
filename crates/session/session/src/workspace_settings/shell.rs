@@ -275,9 +275,10 @@ fn ask(
         sheet::WorkspaceSettingsEffect::Grant {
             subject,
             permission,
-            expiry,
+            until,
         } => govern(state, fed, move |ws, actor| {
-            let Some(draft) = domain::draft_for(ws, &subject, &permission, &expiry) else {
+            let now = tilo_clock::unix_now_ms();
+            let Some(draft) = domain::draft_for(ws, &subject, &permission, until, now) else {
                 tracing::debug!(%subject, %permission, "no such grant: nothing changed");
                 return Ok(domain::PolicyEdit::default());
             };
@@ -1054,7 +1055,7 @@ fn permissions(
                 })
                 .collect(),
             how_long: t("workspace-settings-expiry-caption"),
-            expiries: domain::lifetime_choices(tilo_clock::unix_now_ms())
+            expiries: domain::lifetime_choices()
                 .into_iter()
                 .map(|(key, label)| sheet::Choice {
                     key: key.to_owned(),
