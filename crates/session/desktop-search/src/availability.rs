@@ -94,12 +94,12 @@ mod tests {
         phase each_platform_runs_only_the_apps_that_declare_it;
         {
             let terminal = app("so.tilo.terminal");
-            assert!(!terminal.platforms.contains(&"web"));
-            assert!(!runs_on(terminal.id, &["web"]), "no terminal in a browser");
+            assert!(terminal.platforms.contains(&"web"));
+            assert!(runs_on(terminal.id, &["web"]));
             assert!(runs_on(terminal.id, &["macos"]));
             assert!(runs_on(terminal.id, &["tilo-os", "linux"]));
             assert!(runs_on("dev.tilo.terminal", &["linux"]), "a local build");
-            assert!(!runs_on("dev.tilo.terminal", &["web"]));
+            assert!(runs_on("dev.tilo.terminal", &["web"]));
 
             let os_only = catalog()
                 .iter()
@@ -126,8 +126,8 @@ mod tests {
         phase an_app_that_does_not_run_here_says_where_it_does;
         {
             assert_eq!(
-                runs_elsewhere("so.tilo.terminal", "the browser"),
-                "Terminal runs in Tilo on a computer, not in the browser"
+                runs_elsewhere("so.tilo.backups", "the browser"),
+                "Backups runs in Tilo on a computer, not in the browser"
             );
             let os_only = catalog()
                 .iter()
