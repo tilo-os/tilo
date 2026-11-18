@@ -239,8 +239,9 @@ Firecracker) and the image above it (`image-host`); it proves the image in a con
 pushes it to `registry.tilo.so/tilo/tilo-host` as `sha-<commit>`, as `<version>`, and as `latest`
 only for a final version tag; a published tag is never moved. An image built from an RPM set no
 release published is refused by signing, so a release installs from a published package set.
-Installed machines verify it with the policy entry `tools/signing/release_trust.py` writes for
-that repository, and update from it with `bootc` over that policy.
+The image's container policy admits that repository, verified with the release key
+(`tools/signing/release_trust.py`), so a server installed with it as its update origin
+(`bootc install --target-imgref registry.tilo.so/tilo/tilo-host:latest`) updates from it.
 
 `t dispatch host-release-rehearsal --ref BRANCH` rehearses the signing and publishing path with a
 throwaway key into a local OCI layout, verifying the published image as its consumers do, with no
