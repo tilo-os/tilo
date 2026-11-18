@@ -23,6 +23,7 @@ use std::time::Duration;
 
 use futures_util::FutureExt as _;
 use serde_json::json;
+use tilo_action_policy::Lifetime;
 use tilo_compositor::{InputEvent, OutputConfig};
 use tilo_service::{Asked, Question, Questions};
 use tilo_session::{Options, Session};
@@ -208,7 +209,7 @@ fn a_click_on_always_allow_answers_an_apps_question_with_the_grant() {
     });
     assert_eq!(
         answer.expect("allowed, not declined").choice,
-        Some(1),
+        Some(Lifetime::UntilRevoked.choice()),
         "always allow is the sheet's lasting answer"
     );
 }
