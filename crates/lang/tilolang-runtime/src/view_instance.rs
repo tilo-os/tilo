@@ -21,6 +21,7 @@ use crate::ids::{Actor, AppId, DocId, ModuleHash};
 use crate::live::{Live, LiveStats};
 use crate::meta::{EffectClass, FieldKind};
 use crate::meta::{Ty, parse_ty};
+use crate::registry::Package;
 use crate::render::ViewTarget;
 use crate::space::Space;
 use crate::store::{ChangeNote, ChangeSummary, Mutation, SubId};
@@ -873,20 +874,33 @@ impl ViewInstance {
         Ok(InvokeOutcome::Done(Value::Unit))
     }
 
+    /// The field `field_id` of `target`, with the package that declares its type. Another
+    /// app's resource, composed here, is typed `<app>#<Type>`: its declaration is the one its
+    /// loaded package gives that type.
+    fn bound_field(
+        &self,
+        target: &ResourceRef,
+        field_id: &str,
+    ) -> Result<(Rc<Package>, crate::registry::FieldInfo), RuntimeError> {
+        let registry = self.core.registry.borrow();
+        let (pkg, info) = registry
+            .type_id(&target.ty)
+            .and_then(|ty| registry.type_info(&ty))
+            .ok_or_else(|| RuntimeError::NotFound(format!("type {}", target.ty)))?;
+        let field = info
+            .field(field_id)
+            .cloned()
+            .ok_or_else(|| RuntimeError::NotFound(format!("field {field_id}")))?;
+        Ok((pkg, field))
+    }
+
     /// What the control `key` is bound to holds now: the field's value, or the view state's
     /// (its default while it was never set).
     pub fn bound_value(&self, key: &str) -> Option<Value> {
         let binding = self.live.find(key)?.binding.clone()?;
         match &binding.target {
             BindTarget::Field { target, field } => {
-                // Another app's resource, composed here, is typed `<app>#<Type>`: its
-                // declaration is the one its loaded package gives that type.
-                let f = {
-                    let registry = self.core.registry.borrow();
-                    let ty = registry.type_id(&target.ty)?;
-                    let (_, info) = registry.type_info(&ty)?;
-                    info.field(field)?.clone()
-                };
+                let (_, f) = self.bound_field(target, field).ok()?;
                 self.core.read_value(target, &f, None).ok()
             }
             BindTarget::State { key, .. } => {
@@ -1007,27 +1021,21 @@ impl ViewInstance {
             BindTarget::Field { target, field } => (target, field),
             BindTarget::State { key, ty, .. } => return self.edit_state(&key, &ty, value),
         };
-        let reg = self.core.registry.borrow();
-        // Another app's resource names its type as `app#Type`.
-        let (pkg, info) = reg
-            .type_id(&target.ty)
-            .and_then(|ty| reg.type_info(&ty))
-            .ok_or_else(|| RuntimeError::NotFound(format!("type {}", target.ty)))?;
-        let field = info
-            .field(&field_id)
-            .cloned()
-            .ok_or_else(|| RuntimeError::NotFound(format!("field {field_id}")))?;
+        let (pkg, field) = self.bound_field(&target, &field_id)?;
         // A control that picks a case hands over its name (the id the field holds it by): the
         // field takes the case itself, so the name becomes that case before the field is
         // written, as a case written in the language already is.
         let value = match (&field.ty, value) {
-            (Ty::Enum(key), Value::Text(case)) => {
-                Value::Enum(reg.enum_value(key, case).map_err(RuntimeError::BadArgs)?)
-            }
+            (Ty::Enum(key), Value::Text(case)) => Value::Enum(
+                self.core
+                    .registry
+                    .borrow()
+                    .enum_value(key, case)
+                    .map_err(RuntimeError::BadArgs)?,
+            ),
             _ => value.clone(),
         };
         let value = &value;
-        drop(reg);
         let ctx = ExecCtx {
             invoker: self.live.viewer.clone(),
             chain: vec![view_module.clone()],
