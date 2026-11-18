@@ -726,14 +726,11 @@ impl AttachedView {
         &self,
         resource: tilo_actions::ResourceSpec,
     ) -> Option<tilo_actions::ResourceSpec> {
-        self.permissions
-            .borrow()
-            .permitted_resource_on(
-                self.definition.app_id(),
-                self.checkout.id.as_str(),
-                resource,
-            )
-            .and_then(reachable)
+        self.permissions.borrow().permitted_resource_on(
+            self.definition.app_id(),
+            self.checkout.id.as_str(),
+            resource,
+        )
     }
 
     /// The resource `id` with its own actions, as the member may reach
@@ -1597,19 +1594,6 @@ fn heads_of(document: &[u8]) -> Result<Vec<ui_core::automerge::ChangeHash>, Stri
     ui_core::automerge::AutoCommit::load(document)
         .map(|mut doc| doc.get_heads())
         .map_err(|error| error.to_string())
-}
-
-/// `resource` as a view publishes it: what its member may not take is left out. A listing marks
-/// a denied action not allowed, so an agent hears where it is refused; a view performs only what
-/// its member may do.
-fn reachable(mut resource: tilo_actions::ResourceSpec) -> Option<tilo_actions::ResourceSpec> {
-    resource.retain_actions(|action| action.contract.availability.refusal().is_none());
-    resource.children = resource
-        .children
-        .into_iter()
-        .filter_map(reachable)
-        .collect();
-    (!resource.actions.is_empty() || !resource.children.is_empty()).then_some(resource)
 }
 
 /// Refuse a view that wrote to the record `checkout` names, one its
