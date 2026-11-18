@@ -76,6 +76,21 @@ long as the program: they stay while the desktop restarts in place, and they
 end when the program ends, is quit, or is ended with its group at logout,
 which disconnects any audio handles the program holds.
 
+### Network
+
+A program the workspace grants specific network destinations gets a private proxy, in its
+launch's own process tree: `tilo-launcher windows-network` starts it right before the sandbox
+and becomes the sandbox, so the proxy lives exactly as long as the program. It stays while the
+desktop restarts in place, and it ends when the program ends, is quit, or is ended with its
+group at logout. The sandbox's network namespace stays empty; the proxy's socket, bound into
+it, is its only route out.
+
+The desktop prepares the policy from the workspace's grants and updates it while the program
+lives, through a control socket in the program's keeper, which the desktop that adopts the
+program after a restart finds again. Taking a grant back cuts the connections it allowed. With
+no desktop up the proxy keeps enforcing the last policy; a proxy that dies leaves the program
+offline, never unfiltered.
+
 ### Installing and opening software
 
 Windows Apps uses the shared file chooser for **Add Windows app…** and registers

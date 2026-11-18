@@ -37,6 +37,7 @@ impl Apps {
             }
         }
         self.follow_saved_windows_programs();
+        self.follow_windows_networks(&display);
     }
 
     /// The saved tabs' programs the service answered since the last pass: one it would not open
@@ -58,6 +59,36 @@ impl Apps {
             }
             false
         });
+    }
+
+    /// Set each kept program's filtered network to what its workspace's grants allow now: the
+    /// proxy lives in the launch, so this reaches a program that outlived the desktop that
+    /// started it, and a grant taken back cuts the connections it allowed.
+    fn follow_windows_networks(&self, display: &crate::windows_compat::Display) {
+        let networks = self.state.borrow().spawner.kept_networks();
+        if networks.is_empty() {
+            return;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|since| since.as_secs());
+        let mut wanted = Vec::with_capacity(networks.len());
+        for network in networks {
+            let workspace = self.workspace_named(&network.workspace);
+            let capabilities = launcher::capabilities::CapabilityPlan::for_app(
+                &network.app,
+                &workspace.grants.sandbox,
+                now,
+            );
+            // The launch's namespace stays empty, so a `*` grant reaches a new launch, not this
+            // one; grants taken back do reach it, and leave it nothing.
+            if capabilities.net_hosts.iter().any(|name| name == "*") {
+                continue;
+            }
+            wanted.push((network.control, capabilities.net_hosts.clone()));
+        }
+        display.apply_networks(wanted);
     }
 
     /// Start `launch` behind the keeper `handed` was reserved for, through the launcher's

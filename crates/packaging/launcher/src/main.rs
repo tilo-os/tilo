@@ -230,6 +230,33 @@ enum Cmd {
         #[arg(last = true, required = true)]
         command: Vec<std::ffi::OsString>,
     },
+    /// Start the filtered network's proxy the compatibility service prepared for a Windows
+    /// program, then become the program's sandbox: the proxy ends with the sandbox's process, so
+    /// it lives exactly as long as the program, in its launch's group (`launcher::netproxy`).
+    #[command(name = "windows-network", hide = true)]
+    WindowsNetwork {
+        /// The directory the policy was prepared in.
+        #[arg(long)]
+        dir: PathBuf,
+        /// The control socket the session reaches the proxy on, in the keeper's directory when
+        /// the program is kept.
+        #[arg(long)]
+        control: PathBuf,
+        /// The sandbox's command line.
+        #[arg(last = true, required = true)]
+        command: Vec<std::ffi::OsString>,
+    },
+    /// Serve one launch's network proxy: the launch starts this as the sandbox's child, and it
+    /// ends with the sandbox (`launcher::netproxy`).
+    #[command(name = "windows-network-serve", hide = true)]
+    WindowsNetworkServe {
+        /// The directory the policy was prepared in.
+        #[arg(long)]
+        dir: PathBuf,
+        /// The control socket the session reaches the proxy on.
+        #[arg(long)]
+        control: PathBuf,
+    },
     /// Build or retire the pre-built read-only system view every sandbox mounts
     /// (`launcher::sandbox_view`).
     #[command(subcommand)]
@@ -534,6 +561,20 @@ fn dispatch_command(
                 &launcher::audio_graph::Daemons::installed(),
                 &command,
             );
+            eprintln!("tilo-launcher: {error}");
+            ExitCode::FAILURE
+        }
+        Cmd::WindowsNetwork {
+            dir,
+            control,
+            command,
+        } => {
+            let Err(error) = launcher::netproxy::exec_with(&dir, &control, &command);
+            eprintln!("tilo-launcher: {error}");
+            ExitCode::FAILURE
+        }
+        Cmd::WindowsNetworkServe { dir, control } => {
+            let Err(error) = launcher::netproxy::serve(&dir, &control);
             eprintln!("tilo-launcher: {error}");
             ExitCode::FAILURE
         }

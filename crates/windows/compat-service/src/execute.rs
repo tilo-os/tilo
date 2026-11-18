@@ -144,8 +144,12 @@ impl SandboxExecutor for BwrapExecutor {
                 RUNTIME_LOCK_CHILD_FD,
             ));
         }
-        let (program, args) =
-            sandbox_program(plan.audio_graph.as_deref(), plan.x11, &plan.bwrap_argv);
+        let (program, args) = sandbox_program(
+            plan.network_proxy.as_ref(),
+            plan.audio_graph.as_deref(),
+            plan.x11,
+            &plan.bwrap_argv,
+        );
         Ok(SandboxCommand {
             program,
             args,
@@ -208,39 +212,64 @@ pub(crate) fn duplicate_above_handed_numbers(
     Ok(rustix::io::fcntl_dupfd_cloexec(fd, PASSWORD_CHILD_FD + 1)?)
 }
 
-/// Bubblewrap with `bwrap_argv`, started by the launcher's `windows-audio` after the private
-/// audio graph prepared in `audio_graph` when there is one: the graph's daemons are children of
-/// the sandbox's own process then, so they end with the program whoever started it, and a program
-/// kept open while the desktop restarts keeps its sound. A sandbox for a program that shows
-/// through `x11` is given the X11 display its keeper serves first (`windows-x11-sandbox`), which
-/// the keeper picks only as it starts.
+/// Bubblewrap with `bwrap_argv`, started by the launcher's `windows-network` and `windows-audio`
+/// steps after the private network proxy and audio graph prepared for the launch when there are
+/// any: each step's processes are children of the sandbox's own process then, so they end with
+/// the program whoever started it, and a program kept open while the desktop restarts keeps its
+/// network and its sound. A sandbox for a program that shows through `x11` is given the X11
+/// display its keeper serves first (`windows-x11-sandbox`), which the keeper picks only as it
+/// starts.
 fn sandbox_program(
+    network_proxy: Option<&crate::plan::NetworkProxy>,
     audio_graph: Option<&std::path::Path>,
     x11: bool,
     bwrap_argv: &[String],
 ) -> (std::path::PathBuf, Vec<std::ffi::OsString>) {
     const BWRAP: &str = "/usr/bin/bwrap";
-    let mut args: Vec<std::ffi::OsString> = Vec::new();
+    let mut wrapped: Vec<std::ffi::OsString> = Vec::new();
     if x11 {
-        args.extend(["windows-x11-sandbox".into(), "--".into()]);
+        wrapped.extend(["windows-x11-sandbox".into(), "--".into()]);
         if audio_graph.is_some() {
-            args.push(crate::plan::TILO_LAUNCHER.into());
+            wrapped.push(crate::plan::TILO_LAUNCHER.into());
         }
     }
     if let Some(graph) = audio_graph {
-        args.extend([
+        wrapped.extend([
             "windows-audio".into(),
             "--graph".into(),
             graph.into(),
             "--".into(),
         ]);
     }
-    if args.is_empty() {
-        return (BWRAP.into(), bwrap_argv.iter().map(Into::into).collect());
+    let (program, args) = if wrapped.is_empty() {
+        (
+            std::path::PathBuf::from(BWRAP),
+            bwrap_argv.iter().map(Into::into).collect(),
+        )
+    } else {
+        wrapped.push(BWRAP.into());
+        wrapped.extend(bwrap_argv.iter().map(Into::into));
+        (
+            std::path::PathBuf::from(crate::plan::TILO_LAUNCHER),
+            wrapped,
+        )
+    };
+    if let Some(proxy) = network_proxy {
+        let mut behind: Vec<std::ffi::OsString> = [
+            std::ffi::OsString::from("windows-network"),
+            "--dir".into(),
+            proxy.dir.clone().into(),
+            "--control".into(),
+            proxy.control.clone().into(),
+            "--".into(),
+            program.into_os_string(),
+        ]
+        .into_iter()
+        .collect();
+        behind.extend(args);
+        return (crate::plan::TILO_LAUNCHER.into(), behind);
     }
-    args.push(BWRAP.into());
-    args.extend(bwrap_argv.iter().map(Into::into));
-    (crate::plan::TILO_LAUNCHER.into(), args)
+    (program, args)
 }
 
 fn validate_identity_uid(planned: u32, effective: u32) -> Result<(), ExecutionError> {
@@ -293,13 +322,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_sandbox_with_sound_starts_after_its_audio_graph() {
+    fn a_sandbox_with_sound_and_a_network_proxy_starts_after_both() {
         let bwrap_argv = vec!["--die-with-parent".to_owned()];
-        let (program, args) = sandbox_program(None, false, &bwrap_argv);
+        let (program, args) = sandbox_program(None, None, false, &bwrap_argv);
         assert_eq!(program, std::path::Path::new("/usr/bin/bwrap"));
         assert_eq!(args, ["--die-with-parent"]);
         let lease = std::path::Path::new("/lease");
-        let (program, args) = sandbox_program(Some(lease), false, &bwrap_argv);
+        let (program, args) = sandbox_program(None, Some(lease), false, &bwrap_argv);
         assert_eq!(program, std::path::Path::new(crate::plan::TILO_LAUNCHER));
         assert_eq!(
             args,
@@ -313,7 +342,7 @@ mod tests {
             ]
         );
         // The display is added to the sandbox's own arguments, past the audio graph's.
-        let (program, args) = sandbox_program(Some(lease), true, &bwrap_argv);
+        let (program, args) = sandbox_program(None, Some(lease), true, &bwrap_argv);
         assert_eq!(program, std::path::Path::new(crate::plan::TILO_LAUNCHER));
         assert_eq!(
             args,
@@ -329,7 +358,31 @@ mod tests {
                 "--die-with-parent"
             ]
         );
-        let (_, args) = sandbox_program(None, true, &bwrap_argv);
+        let proxy = crate::plan::NetworkProxy {
+            dir: "/lease/netproxy".into(),
+            control: "/keeper/network-proxy-control".into(),
+        };
+        let (program, args) = sandbox_program(Some(&proxy), Some(lease), false, &bwrap_argv);
+        assert_eq!(program, std::path::Path::new(crate::plan::TILO_LAUNCHER));
+        assert_eq!(
+            args,
+            [
+                "windows-network",
+                "--dir",
+                "/lease/netproxy",
+                "--control",
+                "/keeper/network-proxy-control",
+                "--",
+                crate::plan::TILO_LAUNCHER,
+                "windows-audio",
+                "--graph",
+                "/lease",
+                "--",
+                "/usr/bin/bwrap",
+                "--die-with-parent"
+            ]
+        );
+        let (_, args) = sandbox_program(None, None, true, &bwrap_argv);
         assert_eq!(
             args,
             [

@@ -663,6 +663,10 @@ where
 
     /// Start the program `input` names. The call returns once it started; the program goes on,
     /// and [`Launched::program`] says when and how it ended.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the launch's stages are kept in order: what is planned, what is started, and what a refusal releases"
+    )]
     pub fn launch(&self, input: &LaunchInput) -> Result<Launched, ServiceError> {
         validate_launch_id("app id", &input.app_id)?;
         validate_launch_id("workspace id", &input.workspace_id)?;
@@ -733,6 +737,14 @@ where
                 None => self.display_for(&input.workspace_id)?,
             };
             let planner = SandboxPlanner::new(&self.store, &self.runtimes, &display)?;
+            // A kept program's proxy answers the session that adopts it after a restart through
+            // a control socket in its keeper's directory.
+            let planner = match &kept {
+                Some(kept) => planner.with_network_control(
+                    kept.display().runtime_dir.join(launcher::netproxy::CONTROL),
+                ),
+                None => planner,
+            };
             let plan = planner.plan(
                 &route,
                 &capsule,

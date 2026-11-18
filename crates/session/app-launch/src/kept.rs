@@ -289,6 +289,14 @@ impl Kept {
         x11.clone()
     }
 
+    /// The control socket of this launch's network proxy, once it has one: the desktop that
+    /// adopts the program after a restart sets the policy it enforces through it.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn network_control(&self) -> Option<PathBuf> {
+        let control = self.dir.join(launcher::netproxy::CONTROL);
+        control.exists().then_some(control)
+    }
+
     /// The launch ends: its directory goes with it, unless a service's (the service reuses or
     /// removes it).
     pub(crate) fn remove(&self) {

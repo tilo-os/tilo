@@ -42,6 +42,8 @@ pub use execute::{
 pub use installer::{
     InstallerError, InstallerInspection, MAX_INSTALLER_BYTES, PeMachine, inspect_installer,
 };
+#[cfg(feature = "test-support")]
+pub use plan::test_lease_root_at;
 pub use plan::{
     AudioBinding, AudioProtocol, CapsuleCommandPlan, KeptDisplay, KeptProgram, LaunchDisplay,
     LaunchDisplays, LaunchLease, LaunchResourceBroker, NetworkShape, PlanError, ResourceError,
