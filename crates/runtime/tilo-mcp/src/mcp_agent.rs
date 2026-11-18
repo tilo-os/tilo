@@ -2626,6 +2626,10 @@ mod tests;
 mod surface_tests;
 
 #[cfg(test)]
+#[path = "mcp_agent_list_tests.rs"]
+mod list_tests;
+
+#[cfg(test)]
 #[path = "mcp_agent_link_tests.rs"]
 mod link_tests;
 
