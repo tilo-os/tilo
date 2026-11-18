@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
-use tilo_agent_session::{AgentHost, AppCatalogue, FeedbackReviewer, ModelChoice};
+use tilo_agent_session::{AgentHost, AppCatalogue, FeedbackReviewer, MakeTurns, ModelChoice};
 use tilo_server::certify::{ApproverDecision, ApproverReply, ConfirmationAnswer};
 use tilo_server::daemon::{Server, ServerIdentity};
 use tilo_server::web::{TlsSource, WebConfig, WebHandle};
@@ -40,10 +40,10 @@ pub struct Hosted {
     pub device: [u8; 32],
 }
 
-/// What a host is set up with: the model its agents plan with, the catalogue
-/// they are offered, and the page it serves.
+/// What a host is set up with: the model its agents work with, the catalogue
+/// its workspace actions open records in, and the page it serves.
 pub struct Options {
-    pub model: ModelChoice,
+    pub model: MakeTurns,
     pub catalogue: Option<Arc<dyn Fn() -> AppCatalogue + Send + Sync>>,
     /// The page's entry point, when the host serves one.
     pub web_entry: Option<String>,
@@ -63,7 +63,7 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            model: ModelChoice::Scripted,
+            model: ModelChoice::Scripted.make_turns(),
             catalogue: None,
             web_entry: None,
             allowed_origins: Vec::new(),
@@ -76,13 +76,21 @@ impl Default for Options {
 }
 
 impl Options {
-    /// Agents offered `catalogue` and planning with `model`.
+    /// A host offering `catalogue`, its agents working with `model`.
     pub fn offering(
         catalogue: impl Fn() -> AppCatalogue + Send + Sync + 'static,
         model: ModelChoice,
     ) -> Self {
+        Self::working_with(catalogue, model.make_turns())
+    }
+
+    /// A host offering `catalogue`, its agents working with the model `turns` makes.
+    pub fn working_with(
+        catalogue: impl Fn() -> AppCatalogue + Send + Sync + 'static,
+        turns: MakeTurns,
+    ) -> Self {
         Self {
-            model,
+            model: turns,
             catalogue: Some(Arc::new(catalogue)),
             ..Self::default()
         }

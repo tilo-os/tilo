@@ -28,11 +28,6 @@ ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # The host's state file is replaced whole, never half-written.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
-# The dates a step's computed arguments (`{{= workday(…) }}`) work with.
-jiff.workspace = true
-# The patterns a step's argument takes a part of a value out with
-# (`{{…|match:INV-\d+}}`): matched in linear time, compiled size bounded.
-regex.workspace = true
 tilo-actions = { path = "../../collab/actions" }
 # A report's authenticated transport and the signed receipt an agent's
 # member answers for.
@@ -40,9 +35,12 @@ tilo-feedback-transport = { path = "../../collab/feedback-transport" }
 # A bot's record events: the dispatcher's event shape and its reader of
 # recorded entries, shared with the shell.
 tilo-automation = { path = "../../collab/automation" }
-# `apps/agent`'s model planner: action discovery tools over a catalogue, and
-# the chooser that asks through tilo-model-gateway.
+# The Settings provider an agent's model is when the host names no other, and
+# the transforms a bot runs.
 agent = { path = "../../../apps/agent" }
+# One agent turn over the workspace's MCP tools: what an agent member works on
+# each task with.
+tilo-agent-turn = { path = "../agent-turn" }
 # The apps an agent can open in a browser session: the browser desktop's
 # registry, generated from the app manifests.
 # generated apps: begin (tools/web/generate_web_desktop.py)
@@ -144,12 +142,8 @@ tilo-content-types = { path = "../../system/content-types" }
 # Where a large upload's bytes wait until its last piece arrives: a file of
 # the host's, never the host's memory.
 tempfile.workspace = true
-# Pictures shown to a planning model: sent base64-encoded, and decoded and
-# shrunk only in a confined worker (`worker::shrink_picture`).
-base64.workspace = true
 # A workspace's content store is kept under the workspace's id.
 uuid.workspace = true
-image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 # The render service's side of `tilo-video-render`, the confined helper an
 # agent's video renders run in (the helper itself is its binary).
 tilo-video-render = { path = "../../media/video-render", default-features = false }
@@ -175,6 +169,8 @@ discord = { path = "../../../apps/discord" }
 
 
 [dev-dependencies]
+# What a test puts in the workspace in pieces, as a page sends it.
+base64.workspace = true
 # Documents the tests write and read back as a Word or Markdown file.
 tilo-doc-codecs = { path = "../../doc/tilo-doc-codecs" }
 tilo-doc = { path = "../../doc/tilo-doc" }

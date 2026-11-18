@@ -1,33 +1,33 @@
-//! One agent session: join the workspace and answer the conversations it is
-//! asked in.
+//! One agent session: join the workspace and answer the conversations it is asked in.
+//!
+//! A turn the host hands this agent is answered through the workspace's MCP tools
+//! ([`tilo_agent_turn`]): an MCP server over the session's own action API, reached on this
+//! agent's connection to the host, which serves every request the agent makes while it answers
+//! as the turn's ([`turn`]). What the turn does and how it ended is told in the conversation that
+//! asked ([`conversation`]).
 
+use std::future::Future;
 use std::path::PathBuf;
-use ui::time::{Duration, Instant};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use ui::time::Duration;
 
 use anyhow::Result;
+use tilo_actions::remote::Caller;
+use tilo_agent_turn::{Carried, SessionActions};
 use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload, RouteSpec};
-use ui::permissions::PermissionContext;
 use ui::presence::PresenceKey;
 use uuid::Uuid;
 
-use crate::model::Chooser;
-use crate::providers::agent_selection;
-use crate::surface;
+use crate::providers::{ProviderSelection, agent_selection};
 use crate::wire::Link;
 
-mod agent_loop;
-/// What a failed turn says, split into the person's sentence and the run's resource.
-pub(crate) use agent_loop::Failure;
-
-mod confirmation;
 mod conversation;
-mod planning;
 mod selection_prompt;
-mod steps;
 mod summary;
+mod turn;
 
-/// How long a task waits for the broker's pushed action catalogue.
-const TASK_CATALOGUE_WAIT: Duration = Duration::from_secs(2);
 /// A turn the broker handed this agent: its answer, invoked with what the person asked.
 #[derive(Clone, Debug)]
 pub struct Asked {
@@ -46,14 +46,6 @@ impl std::ops::Deref for Asked {
 
     fn deref(&self) -> &Self::Target {
         &self.asked
-    }
-}
-
-impl Asked {
-    /// The person's words.
-    #[must_use]
-    pub fn instruction(&self) -> &str {
-        &self.asked.instruction
     }
 }
 
@@ -134,133 +126,6 @@ pub fn answer_descriptor() -> tilo_actions::ActionDescriptor {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct TaskAction {
-    app: String,
-    peer_id: u64,
-    provider: String,
-    resource: String,
-    resource_kind: String,
-    resource_label: String,
-    action: String,
-    arguments: serde_json::Map<String, serde_json::Value>,
-    label: String,
-    /// What the action did, as its app declares it ("showed"):
-    /// how the reply's step line says it, beside its label.
-    did: Option<String>,
-    /// The parameter whose content comes from the immediately preceding
-    /// action result, never from model-authored JSON.
-    carries: Option<String>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-struct StepOutcome {
-    /// The application-declared result returned by the broker.
-    output: tilo_actions::ActionOutput,
-}
-
-impl StepOutcome {
-    fn content_hash(&self) -> Result<&str, String> {
-        match self.output.resources.as_slice() {
-            [] => Err("the previous action produced no content resource".into()),
-            [resource] => tilo_actions::content_hash(resource).ok_or_else(|| {
-                "the previous action produced a resource that is not tilo.content".into()
-            }),
-            _ => Err("the previous action must produce exactly one content resource".into()),
-        }
-    }
-}
-
-fn arguments_for_step(
-    carries: Option<&str>,
-    planned: &serde_json::Map<String, serde_json::Value>,
-    previous: Option<&StepOutcome>,
-) -> Result<serde_json::Map<String, serde_json::Value>, String> {
-    let Some(param) = carries else {
-        return Ok(planned.clone());
-    };
-    let hash = previous
-        .ok_or_else(|| "a content-consuming action has no preceding action result".to_string())?
-        .content_hash()?;
-    let mut arguments = planned.clone();
-    // Replace any model-authored value: the descriptor says the value is
-    // carried, so only the preceding application may supply it.
-    arguments.insert(
-        param.to_owned(),
-        serde_json::Value::String(hash.to_string()),
-    );
-    Ok(arguments)
-}
-
-#[derive(Debug)]
-enum TaskActionStop {
-    Cancelled(Option<String>),
-    Failed(String),
-}
-
-/// A step of the turn the host accepted, followed to its outcome alone
-/// ([`Session::invoke_task_action`]) or beside others started in the same
-/// turn. Each keeps its own invocation id and broker job: following several
-/// at once shares only the waiting.
-struct Following {
-    action: TaskAction,
-    invocation: tilo_actions::InvocationId,
-    /// How the step is observed: by asking the host for it.
-    reask: steps::Reask,
-    /// The latest state the host reported.
-    update: tilo_actions::InvocationUpdate,
-    /// When the step gives up, where it has a time: a step that asks the
-    /// person first has none of its own but the run's budget — the person
-    /// decides in their own time, and nothing else cuts it short.
-    deadline: Option<Instant>,
-    /// Its outcome, once settled.
-    outcome: Option<Result<StepOutcome, TaskActionStop>>,
-}
-
-impl Following {
-    fn into_outcome(self) -> Result<StepOutcome, TaskActionStop> {
-        self.outcome.unwrap_or_else(|| {
-            Err(TaskActionStop::Failed(crate::i18n::t(
-                "agent-fail-no-terminal-state",
-            )))
-        })
-    }
-}
-
-fn task_action_from_offer(
-    offer: &surface::Offer,
-    arguments: serde_json::Map<String, serde_json::Value>,
-) -> Result<TaskAction, String> {
-    let peer_id = match (offer.broker_peer_id, offer.broker_provider.as_ref()) {
-        (Some(peer), _) => peer,
-        (None, Some(_)) => 0,
-        (None, None) => return Err(crate::i18n::t("agent-fail-local-only")),
-    };
-    if !offer.wants_content() {
-        tilo_actions::ActionArgs::bind_json(&offer.descriptor.params, &arguments).map_err(
-            |error| {
-                crate::i18n::t_args(
-                    "agent-fail-arguments",
-                    &[("error", error.to_string().into())],
-                )
-            },
-        )?;
-    }
-    Ok(TaskAction {
-        app: offer.app.clone(),
-        peer_id,
-        provider: offer.broker_provider.clone().unwrap_or_default(),
-        resource: offer.descriptor.address.resource.clone(),
-        resource_kind: offer.descriptor.resource_kind.clone(),
-        resource_label: offer.descriptor.resource_label.clone(),
-        action: offer.descriptor.address.action.clone(),
-        arguments,
-        label: offer.descriptor.action_label.clone(),
-        did: offer.descriptor.did.clone(),
-        carries: offer.content_param(),
-    })
-}
-
 #[derive(Clone, Debug)]
 pub struct Config {
     /// Stable workspace-admitted identity, independent of the display name.
@@ -279,22 +144,16 @@ pub struct Config {
     /// Display name used by name-addressed instructions. The admitted id
     /// remains the author and structured-mention target.
     pub name: String,
-    /// Let a model choose which exported action answers an instruction.
-    /// False pins the run to the keyword vocabulary.
+    /// Let a model answer turns. False answers each turn that no model is set up.
     pub model: bool,
-    /// How long that call may take before the keyword vocabulary decides
-    /// instead. Short on purpose: the work must not wait on the network.
+    /// How long one round of the model may take.
     pub model_timeout: Duration,
-    /// What the agent may enumerate and perform. A denied operation is
-    /// absent from what it discovers, never merely refused — see
-    /// [`crate::surface::Catalogue::offers`].
-    pub permissions: PermissionContext,
-    /// The agent's content store, created once when it starts: content an
-    /// operation produced is read from here by the operation consuming it.
+    /// The agent's content store, created once when it starts: what the web tools read is kept
+    /// here.
     pub content: ui::content::ContentStore,
     /// The model the desktop chose for this agent, when it launched it with
     /// one; otherwise the Settings default this process can read, if any.
-    pub provider: Option<crate::providers::ProviderSelection>,
+    pub provider: Option<ProviderSelection>,
     /// The certificate this connection is admitted with, when it is given one
     /// rather than inheriting the launcher's. A harness that runs an agent
     /// against a real broker over an explicit endpoint presents the same
@@ -303,53 +162,37 @@ pub struct Config {
     pub identity: Option<ui::collaboration::CertifiedEndpointIdentity>,
 }
 
+/// What makes the model a turn asks, given the switch that stops it.
+pub type MakeModel = Arc<dyn Fn(Arc<AtomicBool>) -> Box<dyn tilo_agent_turn::Model> + Send + Sync>;
+
 pub struct Session {
     cfg: Config,
     link: Link,
-    /// Decides which exported action answers an instruction.
-    chooser: Chooser,
-    /// How many steps each request (by its digest) started in the turn so far.
-    children: std::collections::HashMap<[u8; 32], u32>,
+    /// The model this agent answers with, when it has one.
+    selection: Option<ProviderSelection>,
+    /// What makes each turn's model: the gateway's over `selection`, or a harness's.
+    model: Option<MakeModel>,
     /// The last sequence number the turn's answer reported under.
     reported: u64,
-    /// The broker's pushed, permission-filtered live action directory the
-    /// task loop surveys.
+    /// The broker's pushed, permission-filtered action directory: where the conversation's own
+    /// actions on the turn's message are found.
     broker_catalogue: ui::collaboration::ActionCatalogue,
-    next_broker_request: u64,
-    /// Bumped whenever the broker republishes its catalogue.
-    broker_revision: u64,
-    /// The task catalogue survey for [`Self::broker_revision`], shared by
-    /// every reader until the broker republishes.
-    catalogue_cache: Option<(u64, std::sync::Arc<surface::Catalogue>)>,
-    /// What each app whose resources the session serves declares, compacted for the first turn,
-    /// by the alias programs name it with: read once through the API's `describe` and kept, as
-    /// an app's declarations change only when it is updated.
-    declarations: std::collections::BTreeMap<String, String>,
-    /// The model turn in flight while a task loop runs.
-    turn: Option<agent_loop::ActiveTurn>,
     /// The turn the run in progress answers, as its reply is being told.
     record: Option<conversation::Record>,
-    /// The run's working resource of the failure that ended its turn, kept for
-    /// whoever debugs it later: the transport's error, the partial answer, the
-    /// provider's exposed reasoning. The reply's own words are the failure's
-    /// sentence, never this.
+    /// The run's working resource of the failure that ended its turn, kept for whoever debugs
+    /// it later; the reply's own words are the failure's sentence, never this.
     failure_detail: Option<String>,
-    /// What the run in progress may spend today, as its keeper counted it.
-    spending: Option<agent_loop::Spending>,
-    /// The agent's own web tools, with the client and the engines' backoff
-    /// they keep from one call to the next; set up on the first call that
-    /// needs them.
-    web: Option<crate::tools::web::Web>,
     /// Whom this session asks a single question outside a turn's own exchange with its model:
     /// what a conversation's summary is kept with ([`summary`]).
-    single_shot: std::sync::Arc<dyn crate::transform::TransformModel>,
-}
-
-/// Ask the broker to select one current holder of this exact route. Safe to
-/// repeat while no holder is available; unlike presence fan-out, one request
-/// produces at most one full snapshot.
-fn ask_for_document(link: &mut Link) -> Result<()> {
-    link.send(&CollabRequest::RequestDocumentSnapshot)
+    single_shot: Arc<dyn crate::transform::TransformModel>,
+    /// Where the turn's tools and the conversation's steps run.
+    runtime: tokio::runtime::Runtime,
+    /// The session's action API, asked on this agent's link.
+    actions: SessionActions,
+    /// What the actions leave for the link to carry, and hand back what came.
+    carried: Arc<Carried>,
+    /// The agent's own web tools, kept from one turn to the next.
+    web: Arc<std::sync::Mutex<Option<tilo_agent_web_tools::Web>>>,
 }
 
 impl Session {
@@ -373,17 +216,12 @@ impl Session {
                 None,
             )?,
         };
-        // Discovery is workspace-wide, but writes never are. This subscription
-        // lets the agent learn other applications' exported operations while
-        // every mutation below still names its owning app route explicitly.
         if managed.is_none() {
             // A managed agent is limited to its task-bound broker surface: the broker refuses the
             // cluster route, the late-join snapshot and presence on that descriptor, and one
-            // refused snapshot RPC shuts down the whole collaboration bridge. Its catalogue
-            // arrives through the task-bound ActionCatalogue instead.
+            // refused snapshot RPC shuts down the whole collaboration bridge.
             link.join_route(RouteSpec::cluster(cfg.cluster));
-            // The broker directs the late-join request to one existing holder.
-            ask_for_document(&mut link)?;
+            link.send(&CollabRequest::RequestDocumentSnapshot)?;
             link.send(&CollabRequest::Presence {
                 key: PresenceKey::Workspace {
                     id: cfg.cluster.to_string(),
@@ -395,63 +233,66 @@ impl Session {
             transport = if cfg.endpoint.is_some() { "typed-endpoint" } else { "TILO_SVC_COLLAB_FD" },
             app = %cfg.app_id,
             workspace = %cfg.cluster,
-            record = ?cfg.record,
             name = %cfg.name,
-            "joined the workspace; waiting for the document"
+            "joined the workspace"
         );
-        let chooser = match managed {
-            Some(selection) => {
-                let chooser = Chooser::with_provider(true, cfg.model_timeout, selection);
-                anyhow::ensure!(chooser.is_live(), "managed model gateway unavailable");
-                chooser
-            }
-            None => cfg
+        let selection = match managed {
+            Some(selection) => Some(selection),
+            None if cfg.model => cfg
                 .provider
                 .clone()
-                .or_else(|| agent_selection(&cfg.agent_id))
-                .map_or_else(
-                    || Chooser::new(false, cfg.model_timeout),
-                    |selection| Chooser::with_provider(cfg.model, cfg.model_timeout, selection),
-                ),
+                .or_else(|| agent_selection(&cfg.agent_id)),
+            None => None,
         };
-        let single_shot = std::sync::Arc::new(crate::transform::GatewayModel {
-            launched: chooser.selection().cloned(),
+        Self::over(cfg, link, selection)
+    }
+
+    /// A session over `link`, answering with `selection`'s model.
+    fn over(cfg: Config, link: Link, selection: Option<ProviderSelection>) -> Result<Self> {
+        let single_shot = Arc::new(crate::transform::GatewayModel {
+            launched: selection.clone(),
         });
+        let model = selection.clone().map(|selection| {
+            Arc::new(move |stop| {
+                Box::new(crate::model::GatewayModel {
+                    selection: selection.clone(),
+                    stop,
+                }) as Box<dyn tilo_agent_turn::Model>
+            }) as MakeModel
+        });
+        let ring = link.ringer();
+        let (actions, carried) = tilo_agent_turn::carried(cfg.cluster.into(), move || {
+            if let Some(ring) = &ring {
+                let _ = ring.send(());
+            }
+        });
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("tilo-agent-turn")
+            .enable_all()
+            .build()?;
         Ok(Self {
             cfg,
             link,
-            chooser,
-            children: std::collections::HashMap::new(),
+            selection,
+            model,
             reported: 0,
             broker_catalogue: ui::collaboration::ActionCatalogue::default(),
-            next_broker_request: 1,
-            broker_revision: 0,
-            catalogue_cache: None,
-            declarations: std::collections::BTreeMap::new(),
-            turn: None,
             record: None,
             failure_detail: None,
-            spending: None,
-            web: None,
             single_shot,
+            runtime,
+            actions,
+            carried,
+            web: Arc::default(),
         })
     }
 
-    /// The agent's web tools, ready to run a search or read a page: their
-    /// client, runtime and engines' backoff are made once and kept.
-    fn web(&mut self) -> &mut crate::tools::web::Web {
-        let content = self.cfg.content.clone();
-        self.web
-            .get_or_insert_with(|| crate::tools::web::Web::new(content))
-    }
-
-    /// Answer the turns the broker delivers: an unattended run may invoke
-    /// only actions that the authenticated broker currently publishes to this
-    /// agent.
+    /// Answer the turns the broker delivers, and the AI transforms it asks of this agent.
     pub fn run(&mut self) -> Result<()> {
         let mut transforms = crate::transform::TransformService::new(
-            std::sync::Arc::new(crate::transform::GatewayModel {
-                launched: self.chooser.selection().cloned(),
+            Arc::new(crate::transform::GatewayModel {
+                launched: self.selection.clone(),
             }),
             self.cfg.content.clone(),
         );
@@ -471,6 +312,7 @@ impl Session {
                 Some(CollabEvent::ActionCatalogue { change }) => {
                     self.apply_broker_catalogue(&change);
                 }
+                Some(CollabEvent::RemoteAction { message }) => self.carried.hear(message),
                 Some(CollabEvent::Invocation {
                     id,
                     invocation,
@@ -533,6 +375,15 @@ impl Session {
         }
     }
 
+    /// Apply a change to the broker catalogue. A change that does not apply leaves the catalogue
+    /// as it was: the connection asks the broker for the whole catalogue, whose answer comes as a
+    /// reset.
+    fn apply_broker_catalogue(&mut self, change: &ui::collaboration::CatalogueChange) {
+        if let Err(error) = self.broker_catalogue.apply(change) {
+            tracing::warn!(%error, "the broker's catalogue change did not apply");
+        }
+    }
+
     /// Answer the turn the broker handed as `id`: its answer's invocation, with what the person
     /// asked as `argument`. A turn that stopped before its reply was told is reported failed.
     fn answer(
@@ -566,7 +417,7 @@ impl Session {
         };
         if let Err(error) = self.run_task(&asked) {
             tracing::warn!(id, %error, "the turn stopped before its reply was told");
-            if let Err(report_error) = self.fail_task_said(&asked, &error.to_string()) {
+            if let Err(report_error) = self.fail_task(&asked, &error.to_string(), None) {
                 tracing::warn!(%report_error, "the turn's failure was not reported");
             }
         }
@@ -574,185 +425,80 @@ impl Session {
         Ok(())
     }
 
-    /// Plan with `chooser` from now on, in place of the one this session
-    /// connected with: how a harness scripts the model a turn is planned
-    /// with, while every other part of the run stays the production one.
-    pub fn set_chooser(&mut self, chooser: Chooser) {
-        self.chooser = chooser;
+    /// Answer with what `make` makes from now on, in place of the model this session connected
+    /// with: how a harness scripts the model a turn asks, while every other part of the run stays
+    /// the production one.
+    pub fn set_model(&mut self, selection: ProviderSelection, make: MakeModel) {
+        self.selection = Some(selection);
+        self.model = Some(make);
     }
 
     /// Ask single questions of `model` from now on, in place of the gateway this session
-    /// connected with: how a harness scripts them, and how a host answers them with the model of
-    /// the person the agent works for.
-    pub fn set_single_shot(&mut self, model: std::sync::Arc<dyn crate::transform::TransformModel>) {
+    /// connected with: how a harness scripts them.
+    pub fn set_single_shot(&mut self, model: Arc<dyn crate::transform::TransformModel>) {
         self.single_shot = model;
     }
 
-    /// The chooser this session plans with now.
-    #[must_use]
-    pub fn chooser(&self) -> &Chooser {
-        &self.chooser
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one task run keeps planning, per-step reporting and the terminal update in a single auditable sequence"
-    )]
     fn run_task(&mut self, run: &Asked) -> Result<()> {
         // What this run says is the person's language as it stands now: they
         // may have changed it since the app started.
         crate::i18n::follow();
-        self.children.clear();
         self.reported = 0;
+        self.failure_detail = None;
         let cause = match conversation::validate(run) {
             Ok(cause) => cause,
             Err(message) => {
                 tracing::warn!(id = run.id, %message, "refused a turn that answers no message");
-                self.report_task(run, TurnUpdate::Failed { message })?;
-                return Ok(());
+                return self.report_task(run, TurnUpdate::Failed { message });
             }
         };
         self.record = None;
-        let plan = self.planner();
         self.start_turn(cause);
-        // The reply that answers the turn is recorded through the
-        // conversation's own action, so the actions this workspace publishes
-        // are read before the first record: the person sees the reply the
-        // moment the run is taken.
-        self.wait_for_task_catalogue();
         self.report_task(run, TurnUpdate::Accepted)?;
-        self.report_task(
-            run,
-            TurnUpdate::Progress {
-                message: crate::i18n::t("agent-session-reading-actions"),
-            },
-        )?;
-        // Which planner decides this run's steps, said before it decides:
-        // the model that plans it, or that its steps are matched to the
-        // published actions and why no model plans instead.
-        self.report_task(
-            run,
-            TurnUpdate::Progress {
-                message: plan.announcing(),
-            },
-        )?;
-        // A model task is a discover → invoke → observe loop over the live
-        // catalogue. A managed agent has no other planner; one without a
-        // model (`--no-model`) falls back to the rules-only survey below.
-        if plan.is_model() {
-            let end = self.run_task_loop(run)?;
-            return match end {
-                agent_loop::LoopEnd::Finished(finish, completed) => {
-                    if !finish.done {
-                        return self.fail_task(
-                            run,
-                            &agent_loop::Failure::said(
-                                finish
-                                    .reply
-                                    .as_deref()
-                                    .unwrap_or(&crate::i18n::t("agent-session-needs-decision")),
-                            ),
-                        );
-                    }
-                    // The model's own reply is the run's result, whole: an
-                    // answer to a question is what the issue asked for. A run
-                    // that ends with nothing said is not reported as a success
-                    // with a line nobody wrote: the person reads that the
-                    // agent finished without answering.
-                    self.succeed_turn(run, finish.reply, planning::finished(&plan, completed))
-                }
-                agent_loop::LoopEnd::Failed(failure) => self.fail_task(run, &failure),
-                agent_loop::LoopEnd::Cancelled(message) => self.cancel_task(run, &message),
+        let (Some(selection), Some(model)) = (self.selection.clone(), self.model.clone()) else {
+            let key = if self.cfg.model {
+                "agent-plan-no-model"
+            } else {
+                "agent-plan-models-off"
             };
-        }
-        if self.task_cancelled(run) {
-            return self.cancel_task(
-                run,
-                &crate::i18n::t("agent-session-cancelled-before-planning"),
-            );
-        }
-        let (actions, reply) = match self.plan_task(run, &plan) {
-            Ok((actions, reply)) if !actions.is_empty() => (actions, reply),
-            Ok(_) => {
-                return self.fail_task_said(
-                    run,
-                    &planning::unmatched(&plan, &crate::i18n::t("agent-plan-no-action")),
-                );
-            }
-            Err(message) => return self.fail_task_said(run, &message),
+            return self.fail_task(run, &crate::i18n::t(key), None);
         };
-        // What the next content-consuming action is built from.
-        let mut previous: Option<StepOutcome> = None;
-        for (index, action) in actions.iter().enumerate() {
-            if self.task_cancelled(run) {
-                return self.cancel_task(
-                    run,
-                    &crate::i18n::t("agent-session-cancelled-before-action"),
-                );
-            }
-            let arguments = match arguments_for_step(
-                action.carries.as_deref(),
-                &action.arguments,
-                previous.as_ref(),
-            ) {
-                Ok(arguments) => arguments,
-                Err(message) => return self.fail_task_said(run, &message),
-            };
-            self.report_task(
-                run,
-                TurnUpdate::Progress {
-                    message: crate::i18n::t_args(
-                        "agent-session-step",
-                        &[
-                            ("index", (index + 1).into()),
-                            ("total", actions.len().into()),
-                            ("action", action.label.as_str().into()),
-                        ],
-                    ),
-                },
-            )?;
-            let settled = self.run_task_step(run, index, action, &arguments)?;
-            self.resource_action(run, action, settled.as_ref())?;
-            match settled {
-                Ok(outcome) => {
-                    self.chooser
-                        .mark(tilo_model_client::TraceEvent::ActionSettled, index);
-                    previous = Some(outcome);
-                }
-                Err(TaskActionStop::Cancelled(_)) => {
-                    return self
-                        .cancel_task(run, &crate::i18n::t("agent-session-cancelled-in-action"));
-                }
-                Err(TaskActionStop::Failed(message)) => return self.fail_task_said(run, &message),
-            }
+        if let Some(refusal) = crate::model::refuses_tasks(&selection) {
+            return self.fail_task(run, &refusal, None);
         }
-        self.succeed_turn(run, reply, planning::finished(&plan, actions.len()))
-    }
-
-    /// Invoke one planned action through the broker's invocation path.
-    fn run_task_step(
-        &mut self,
-        run: &Asked,
-        index: usize,
-        action: &TaskAction,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<Result<StepOutcome, TaskActionStop>> {
-        if self.task_cancelled(run) {
-            return Ok(Err(TaskActionStop::Cancelled(Some(
-                "Cancelled before the next step".into(),
-            ))));
+        self.report_task(
+            run,
+            TurnUpdate::Progress {
+                message: crate::i18n::t_args(
+                    "agent-plan-model",
+                    &[
+                        (
+                            "model",
+                            ui::i18n::ArgValue::from(selection.model.display_label()),
+                        ),
+                        (
+                            "provider",
+                            ui::i18n::ArgValue::from(selection.profile_label.clone()),
+                        ),
+                    ],
+                ),
+            },
+        )?;
+        match self.work(run, &selection, &model)? {
+            tilo_agent_turn::Outcome::Answered(reply) => self.succeed_turn(run, reply),
+            tilo_agent_turn::Outcome::Stopped(why) | tilo_agent_turn::Outcome::Failed(why) => {
+                self.fail_task(run, &why, None)
+            }
+            tilo_agent_turn::Outcome::Cancelled => self.cancel_task(run),
         }
-        self.chooser
-            .mark(tilo_model_client::TraceEvent::ActionSubmitted, index);
-        self.invoke_task_action(run, action, arguments)
     }
 
     /// Tell the conversation and the broker how `run` stands: the reply to its message shows it,
     /// and the turn's answer reports it.
     fn report_task(&mut self, run: &Asked, update: TurnUpdate) -> Result<()> {
         self.show_turn(run, &update)?;
-        // How the turn ended, with what the person reads, once: the resource a run's
-        // reader (and the live eval, `dist/dev/agent-eval.py`) finds its end by.
+        // How the turn ended, with what the person reads, once: the resource a run's reader finds
+        // its end by.
         let ended = match &update {
             TurnUpdate::Succeeded { message } => Some(("succeeded", message)),
             TurnUpdate::Failed { message } => Some(("failed", message)),
@@ -812,108 +558,100 @@ impl Session {
             .send(&CollabRequest::UpdateInvocation { id: run.id, update })
     }
 
-    /// Whether the person ended `run`: the broker asked to stop its answer.
-    fn task_cancelled(&mut self, run: &Asked) -> bool {
-        self.link.cancelled(run.id)
-    }
-
-    /// Record a failed turn on the reply to the run's message, and tell the
-    /// host it failed. The reply's words are the failure's sentence — what a
-    /// person reads — and the run's working resource goes beside it in the work,
-    /// for whoever debugs it later.
-    fn fail_task(&mut self, run: &Asked, failure: &agent_loop::Failure) -> Result<()> {
-        self.failure_detail = Some(failure.detail().to_owned());
+    /// Record a failed turn on the reply to the run's message, and tell the host it failed:
+    /// `message` is what a person reads, `detail` what the run keeps for whoever debugs it.
+    fn fail_task(&mut self, run: &Asked, message: &str, detail: Option<&str>) -> Result<()> {
+        self.failure_detail = detail.map(str::to_owned);
         self.report_task(
             run,
             TurnUpdate::Failed {
-                message: failure.message().to_owned(),
+                message: message.to_owned(),
             },
         )
     }
 
-    /// [`Self::fail_task`] with the run's own words as both the sentence and
-    /// the record: a stop the loop decided, which names nothing a provider
-    /// said.
-    fn fail_task_said(&mut self, run: &Asked, message: &str) -> Result<()> {
-        self.fail_task(run, &agent_loop::Failure::said(message))
-    }
-
-    fn cancel_task(&mut self, run: &Asked, message: &str) -> Result<()> {
+    fn cancel_task(&mut self, run: &Asked) -> Result<()> {
         self.report_task(
             run,
             TurnUpdate::Cancelled {
-                message: message.to_string(),
+                message: crate::i18n::t("agent-cancel-thinking"),
             },
         )
     }
 
-    fn wait_for_task_catalogue(&mut self) {
-        let wait = Self::task_wait_deadline(TASK_CATALOGUE_WAIT)
-            .saturating_duration_since(ui::time::now());
-        let since = self.broker_revision;
-        self.await_catalogue(wait, |session| {
-            session.broker_revision != since || !session.broker_catalogue.surfaces().is_empty()
-        });
+    /// The caller this agent's own requests name; the host decides each as the turn it answers.
+    fn caller(&self) -> Caller {
+        Caller::local_person(self.cfg.agent_id.clone()).in_workspace(self.cfg.cluster.to_string())
     }
 
-    fn task_wait_deadline(maximum: Duration) -> Instant {
-        let now = ui::time::now();
-        now.checked_add(maximum).unwrap_or(now)
-    }
-
-    /// The rules-only planner: one surveyed action matched by the words of
-    /// the title. Model tasks run [`Self::run_task_loop`] instead.
-    fn plan_task(
+    /// Run `future` on the session's runtime while this thread carries what it asks on the link
+    /// and hands back what the host answers, until it is done. While `watching` a turn, a stop the
+    /// broker asks for sets its switch, and what the turn tells is said as it comes.
+    fn carry<T: Send + 'static>(
         &mut self,
-        run: &Asked,
-        plan: &planning::Planner,
-    ) -> Result<(Vec<TaskAction>, Option<String>), String> {
-        let catalogue = self.task_catalogue();
-        let (offer, arguments) = surface::from_verbs(run.instruction(), &catalogue.offers)
-            .map_err(|no_match| planning::unmatched(plan, &no_match.explanation()))?;
-        task_action_from_offer(offer, arguments).map(|action| (vec![action], None))
-    }
-
-    /// How this turn will decide its steps, as its note states it.
-    fn planner(&self) -> planning::Planner {
-        match self.chooser.planned_by() {
-            Some((provider, model)) => planning::Planner::Model {
-                provider: provider.to_owned(),
-                model: model.to_owned(),
-            },
-            // A model task whose model cannot be reached: the run still
-            // happens, matched to the published actions, and its note says
-            // which model is missing and where to choose one.
-            None => planning::Planner::Words,
+        future: impl Future<Output = T> + Send + 'static,
+        watching: Option<&Watching<'_>>,
+    ) -> Result<T> {
+        let (done, outcome) = mpsc::channel();
+        let ring = self.link.ringer();
+        self.runtime.spawn(async move {
+            let _ = done.send(future.await);
+            if let Some(ring) = ring {
+                let _ = ring.send(());
+            }
+        });
+        loop {
+            for message in self.carried.take_outbox() {
+                self.link.send(&CollabRequest::RemoteAction { message })?;
+            }
+            for event in self.link.take_queued(|event| {
+                matches!(
+                    event,
+                    CollabEvent::RemoteAction { .. } | CollabEvent::ActionCatalogue { .. }
+                )
+            }) {
+                match event {
+                    CollabEvent::RemoteAction { message } => self.carried.hear(message),
+                    CollabEvent::ActionCatalogue { change } => self.apply_broker_catalogue(&change),
+                    _ => {}
+                }
+            }
+            if let Some(watching) = watching {
+                if self.link.cancelled(watching.run.id) {
+                    watching.stop.store(true, Ordering::SeqCst);
+                }
+                while let Ok(told) = watching.told.try_recv() {
+                    self.tell(watching.run, told)?;
+                }
+            }
+            match outcome.try_recv() {
+                Ok(value) => return Ok(value),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    anyhow::bail!("the agent's work ended without an answer")
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+            if let Some(reason) = self.link.closed() {
+                anyhow::bail!("the broker closed the agent's session: {reason}");
+            }
+            self.link.wait(CARRY_WAIT);
         }
     }
+}
 
-    fn invoke_task_action(
-        &mut self,
-        run: &Asked,
-        action: &TaskAction,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<Result<StepOutcome, TaskActionStop>> {
-        let following = match self.start_task_invocation(run, action, arguments)? {
-            Ok(following) => following,
-            Err(stop) => return Ok(Err(stop)),
-        };
-        let mut followed = [following];
-        self.follow_native(run, &mut followed)?;
-        let [following] = followed;
-        Ok(following.into_outcome())
-    }
+/// The longest one wait for the link sleeps while work is carried, should nothing ring it.
+const CARRY_WAIT: Duration = Duration::from_millis(20);
 
-    fn next_request_id(&mut self) -> u64 {
-        let id = self.next_broker_request;
-        self.next_broker_request = self.next_broker_request.saturating_add(1);
-        id
-    }
+/// A turn being carried: its stop switch, and what it tells as it works.
+struct Watching<'a> {
+    run: &'a Asked,
+    stop: &'a AtomicBool,
+    told: &'a mpsc::Receiver<turn::Told>,
 }
 
 /// The model selection of a launcher-managed agent, or `None` when this
 /// agent was not launched with a managed context.
-fn managed_context(cfg: &Config) -> Result<Option<crate::providers::ProviderSelection>> {
+fn managed_context(cfg: &Config) -> Result<Option<ProviderSelection>> {
     let Some(raw) = std::env::var_os("TILO_MANAGED_AGENT_CONTEXT") else {
         return Ok(None);
     };
@@ -971,111 +709,4 @@ fn managed_context(cfg: &Config) -> Result<Option<crate::providers::ProviderSele
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_steps_arguments_bind_exactly_one_preceding_content_result_and_key_its_dispatch() {
-        {
-            let output = tilo_actions::ActionOutput {
-                value: Some(serde_json::json!({"display": "ignored"})),
-                resources: vec![
-                    tilo_actions::content_resource("abc123")
-                        .expect("the producer returned a valid content hash"),
-                ],
-            };
-            let previous = StepOutcome { output };
-            let planned = serde_json::Map::from_iter([(
-                tilo_actions::PROMPTED_PARAM.to_string(),
-                serde_json::Value::String("model-invented".into()),
-            )]);
-
-            let bound = arguments_for_step(
-                Some(tilo_actions::PROMPTED_PARAM),
-                &planned,
-                Some(&previous),
-            )
-            .expect("one content result binds the next content input");
-            assert_eq!(
-                bound.get(tilo_actions::PROMPTED_PARAM),
-                Some(&serde_json::Value::String("abc123".into())),
-                "the preceding app result must replace model input"
-            );
-            assert!(
-                arguments_for_step(Some(tilo_actions::PROMPTED_PARAM), &planned, None).is_err(),
-                "a content action cannot reuse an older or invented result"
-            );
-        }
-
-        {
-            let ambiguous = StepOutcome {
-                output: tilo_actions::ActionOutput {
-                    value: None,
-                    resources: vec!["tilo.content:first".into(), "tilo.content:second".into()],
-                },
-            };
-            assert!(
-                arguments_for_step(
-                    Some(tilo_actions::PROMPTED_PARAM),
-                    &serde_json::Map::new(),
-                    Some(&ambiguous)
-                )
-                .is_err(),
-                "choosing one of two products would be a model-visible guess"
-            );
-
-            let wrong_kind = StepOutcome {
-                output: tilo_actions::ActionOutput {
-                    value: None,
-                    resources: vec!["files.entry:/tmp/picture.png".into()],
-                },
-            };
-            assert!(
-                arguments_for_step(
-                    Some(tilo_actions::PROMPTED_PARAM),
-                    &serde_json::Map::new(),
-                    Some(&wrong_kind)
-                )
-                .is_err(),
-                "a generic resource address is not proof that content bytes exist"
-            );
-        }
-
-        {
-            let previous = StepOutcome::default();
-            assert!(
-                arguments_for_step(
-                    Some(tilo_actions::PROMPTED_PARAM),
-                    &serde_json::Map::new(),
-                    Some(&previous)
-                )
-                .is_err(),
-                "a step that produced nothing cannot feed a content input"
-            );
-        }
-    }
-
-    /// A turn's answer declares its reply as its result ([`answer_descriptor`]): the reply the
-    /// agent reports is admitted by the broker (a job, which may carry no value, refused it as
-    /// "an undeclared terminal value" and failed the invocation the conversation waited on), and
-    /// a result without one is not.
-    #[test]
-    fn a_turns_result_is_its_reply() {
-        let contract = answer_descriptor().contract;
-        let replied = tilo_actions::ActionOutput {
-            value: Some(serde_json::json!({"reply": "Hi! I work across your Notes."})),
-            resources: Vec::new(),
-        };
-        assert!(
-            contract.result.validate(&replied).is_ok(),
-            "the reply is the answer's result: the broker admits it"
-        );
-        assert!(
-            contract
-                .result
-                .validate(&tilo_actions::ActionOutput::default())
-                .is_err(),
-            "an answer without its reply does not satisfy the contract"
-        );
-    }
-}
+mod tests;

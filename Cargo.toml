@@ -169,6 +169,7 @@ members = [
 
     # Agent
     "crates/agent/agent-session",
+    "crates/agent/agent-turn",
     "crates/agent/agent-web-tools",
     "crates/agent/connector",
     "crates/agent/local-model-service",

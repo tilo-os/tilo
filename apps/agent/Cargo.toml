@@ -5,7 +5,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "tilo-agent: a headless member that runs broker-leased tasks through the actions the session's apps publish to it."
+description = "tilo-agent: a headless member that answers the turns people ask it in their conversations through the workspace's MCP tools."
 
 [lib]
 name = "tilo_agent"
@@ -27,7 +27,6 @@ runtime-engine = ["thin", "tilo-agent-web-engine/thin"]
 
 [dependencies]
 runtime-portal = { path = "../../crates/runtime/runtime-portal" }
-collab-types = { path = "../../crates/collab/collab-types" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 runtime-collab = { path = "../../crates/runtime/runtime-collab" }
 # The blocking agent facade delegates to the toolkit's typed
@@ -35,32 +34,19 @@ runtime-collab = { path = "../../crates/runtime/runtime-collab" }
 # windowed app.
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
-# The tracker's run actions, typed: the agent builds each call it makes on
-# an issue (its reports, spend and end) from Tasks' own action arguments, so
-# a renamed or retyped parameter fails to compile rather than being refused
-# at run time. It is the resource crate, not the app: the same types, verbs and
-# arguments the Tasks window draws, with no window or surface of theirs.
-# A skill's selector: the kinds of thing it is for, and what they say.
-tilo-selector = { path = "../../crates/platform/tilo-selector" }
-# The machine this agent runs on, as a run's receipt reports it.
-tilo-paths = { path = "../../crates/platform/tilo-paths" }
+# A turn's work: the workspace's MCP tools over the session's action API, asked on this agent's
+# own connection, until the model answers.
+tilo-agent-turn = { path = "../../crates/agent/agent-turn" }
+tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 tilo-action-policy = { path = "../../crates/collab/action-policy" }
 # The transform action names shortcuts lower their `Ai` steps to.
 tilo-automation = { path = "../../crates/collab/automation" }
-# The agent's own web tools: several public search engines asked at once and
-# merged, and one page reduced to readable text, with every download bounded
-# and every destination checked.
-tilo-web-search = { path = "../../crates/platform/tilo-web-search" }
 # The two tools themselves, which a release loads from its engine library
 # (crates/runtime/engines/agent-web).
 tilo-agent-web-tools = { path = "../../crates/agent/agent-web-tools" }
 # The engine library a release loads the search and the page reader through
 # (crates/runtime/engines/agent-web).
 tilo-agent-web-engine = { path = "../../crates/runtime/engines/agent-web", optional = true }
-# Those tools reach the network on their own runtime, and hand a page they
-# fetched to whoever reads it as tilo.content.
-tilo-rt = { path = "../../crates/platform/tilo-rt" }
-tilo-net = { path = "../../crates/platform/tilo-net", features = ["http"] }
 # The runner reads the same provider profile Settings writes. Resolving the
 # profile's vault reference remains a desktop-secret-broker operation; no key
 # is linked into this binary through configuration.
@@ -68,10 +54,7 @@ agent-provider-config = { path = "../../crates/agent/provider-config" }
 # The descriptor client for the desktop-owned hosted model gateway. This has
 # no vault access and never exposes a bearer token to the agent process.
 tilo-model-client = { default-features = false, path = "../../crates/agent/model-client" }
-# Pictures a read answers with are shown to a model that sees, base64-encoded.
-base64.workspace = true
 blake3.workspace = true
-hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
@@ -84,15 +67,15 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# A host's actions, answered from closures: what the agent's link reaches in its tests.
+tilo-actions = { path = "../../crates/collab/actions", features = ["test-support"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # Read the agent's own catalogues in its tests, as the catalogue check does.
 tilo-copy-lint = { path = "../../crates/dev/copy-lint" }
 # The person's settings, as the session hands them to a launched app.
 settings-store = { path = "../../crates/system/settings-store" }
 tempfile.workspace = true
-# The web tools' tests ask a server on this machine instead of the engines,
-# and read from it, where the shipped paths refuse its addresses.
-tilo-web-search = { path = "../../crates/platform/tilo-web-search", features = ["fixture-servers"] }
+hex.workspace = true
 tilo-agent-web-tools = { path = "../../crates/agent/agent-web-tools", features = ["fixture-servers"] }
 tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 runtime-identity = { package = "tilo-identity-client", path = "../../crates/runtime/tilo-identity-client" }
@@ -103,7 +86,6 @@ tilo-test-env = { path = "../../crates/dev/test-env" }
 # broker in-process, which runs on Linux.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 tilo-workspace-service = { path = "../../crates/server/tilo-workspace-service", features = ["apps", "test-support"] }
-parking_lot.workspace = true
 
 [[test]]
 name = "it"

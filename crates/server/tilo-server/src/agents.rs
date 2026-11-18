@@ -28,15 +28,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
-use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Confirmation,
-    ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest, Pending,
-};
+use tilo_actions::remote::{ActionCallError, Caller, Pending};
 use tilo_agent_session::workspace_actions::{HostDevice, ShellRan, Watching, WorkspaceShell};
 use tilo_agent_session::{
-    AdmissionDone, AgentHost, AgentHostLink, AppCatalogue, ApprovalDone, Approver,
-    CatalogueFactory, FeedbackReviewer, HostActions, HostEndpoint, ModelChoice, SupervisorHost,
-    WorkspaceActions, WorkspaceDocumentsLink,
+    AdmissionDone, AgentHost, AgentHostLink, AppCatalogue, ApprovalDone, CatalogueFactory,
+    FeedbackReviewer, HostActions, HostEndpoint, MakeTurns, SupervisorHost, WorkspaceActions,
+    WorkspaceDocumentsLink,
 };
 use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 
@@ -162,146 +159,14 @@ impl AgentHostLink for ServerAgentLink {
             done();
         });
     }
-
-    fn approver(&self, delegation: &Delegation) -> Option<Approver> {
-        Some(Arc::new(ServerApprover {
-            certification: self.certification.clone(),
-            delegation: delegation.clone(),
-            runtime: self.runtime.clone(),
-        }))
-    }
-}
-
-/// The person's side of one agent's actions that ask first: each is a
-/// question on the person's approving devices, put the way their grants
-/// are approved. It runs nothing itself.
-struct ServerApprover {
-    certification: CertificationProtocol,
-    delegation: Delegation,
-    runtime: tokio::runtime::Handle,
-}
-
-impl ServerApprover {
-    /// The question `request` puts to the person, when `caller` is this
-    /// approver's agent.
-    fn question(
-        &self,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Result<PendingConfirmation, ActionCallError> {
-        let agent = &self.delegation;
-        // Only agents ask their person; a bot runs unattended.
-        let agent_id = agent
-            .delegate
-            .agent_id()
-            .ok_or(ActionCallError::NotPermitted)?;
-        let its_own = caller.acting().agent_id() == Some(agent_id)
-            && caller.user_public_key() == Some(&agent.user_public_key)
-            && caller.device_public_key() == Some(&agent.device_public_key);
-        if !its_own {
-            return Err(ActionCallError::NotPermitted);
-        }
-        let workspace = caller
-            .workspace()
-            .filter(|workspace| {
-                WorkspaceId::parse(workspace).is_some_and(|id| agent.scope.workspaces.contains(&id))
-            })
-            .ok_or(ActionCallError::NotPermitted)?;
-        let mut id = [0_u8; 32];
-        getrandom::fill(&mut id).map_err(|error| ActionCallError::Unavailable {
-            reason: error.to_string(),
-        })?;
-        let address = &request.target.address;
-        let context = request.context.as_ref();
-        Ok(PendingConfirmation {
-            id,
-            agent_id: agent_id.to_owned(),
-            agent_label: agent.label.clone(),
-            action_label: context
-                .and_then(|context| context.purpose.clone())
-                .unwrap_or_else(|| address.action.clone()),
-            resource_label: context
-                .and_then(|context| context.resource.as_ref())
-                .map_or_else(
-                    || address.resource.clone(),
-                    |resource| resource.label.clone(),
-                ),
-            risk: context
-                .and_then(|context| {
-                    context
-                        .facets
-                        .iter()
-                        .find(|facet| facet.key == tilo_actions::RISK_FACET)
-                })
-                .map_or_else(|| "destructive".to_owned(), |facet| facet.value.clone()),
-            workspace: workspace.to_owned(),
-            expires_at_ns: tilo_clock::unix_now_ns().saturating_add(CONFIRMATION_WAIT_NS),
-            ..PendingConfirmation::default()
-        })
-    }
-}
-
-impl ActionProvider for ServerApprover {
-    fn query(
-        &self,
-        _: &Caller,
-        _: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        Pending::ready(Err(ActionCallError::UnknownAction))
-    }
-
-    fn invoke(
-        &self,
-        _: &Caller,
-        _: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        Pending::ready(Err(ActionCallError::UnknownAction))
-    }
-
-    fn observe(&self, _: &Caller, _: &tilo_actions::InvocationId) -> Option<InvocationState> {
-        None
-    }
-
-    fn cancel(
-        &self,
-        _: &Caller,
-        _: &tilo_actions::InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
-        tilo_actions::remote::Pending::ready(Err(ActionCallError::UnknownInvocation))
-    }
-
-    fn confirm(
-        &self,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Pending<Result<ConfirmedInvocation, ActionCallError>> {
-        let question = match self.question(caller, request) {
-            Ok(question) => question,
-            Err(error) => return Pending::ready(Err(error)),
-        };
-        let (completer, answer) = tilo_actions::remote::pending();
-        let certification = self.certification.clone();
-        self.runtime.spawn(async move {
-            let token = hex::encode(question.id);
-            completer.complete(match certification.confirm(question).await {
-                // The question shows no draft, so nothing in it is changed.
-                Ok(ConfirmationAnswer::AllowOnce) => Ok(ConfirmedInvocation::unchanged(
-                    Confirmation::Approved(token),
-                )),
-                Ok(ConfirmationAnswer::Deny) => Err(ActionCallError::NotPermitted),
-                Err(_) => Err(ActionCallError::confirmation_required()),
-            });
-        });
-        answer
-    }
 }
 
 /// What [`start`] runs agents with.
 pub struct AgentOptions {
     /// Grants and agents are kept here.
     pub state_dir: PathBuf,
-    /// The model natural-language tasks are planned with.
-    pub model: ModelChoice,
+    /// The model the agents work on their tasks with.
+    pub model: MakeTurns,
     /// The apps agents may open, and whose records pages may act on through
     /// the host; this machine's registry when `None`.
     pub catalogue: Option<CatalogueFactory>,
@@ -1256,7 +1121,6 @@ async fn start_inner(
         identity.user_public_key,
         (options.state_dir, Arc::clone(&content)),
         options.model,
-        Arc::clone(&catalogue),
     );
     cfg.services.app_serving = true;
     let host_actions = Arc::new(HostActionsServer {

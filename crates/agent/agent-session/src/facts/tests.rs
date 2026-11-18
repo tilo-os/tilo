@@ -33,7 +33,7 @@ fn changes_name_each_value_that_differs_by_its_path() {
             "gaps: added [{\"from\":5.5}]",
         ]
     );
-    assert_eq!(changes_text(&v2, &v2), "nothing changed");
+    assert!(changes(&v2, &v2).is_empty(), "nothing changed");
 }
 
 #[test]

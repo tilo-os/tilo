@@ -2,9 +2,6 @@
 //! edited the way an agent edits it: through an operation the record
 //! publishes, found without app-specific knowledge. An app whose record no
 //! published operation changes is a coverage gap and fails here by name.
-//!
-//! `session_coverage` proves the same edits over the real session: the
-//! browser receives them, authored by the agent.
 
 #![allow(
     clippy::unwrap_used,
@@ -17,7 +14,7 @@ use std::fmt::Write as _;
 use crate::common::{Driveable, LOCAL_STATE, catalogue, find_edit};
 use tilo_actions::MemberId;
 use tilo_actions::api::ActionDescriptor;
-use tilo_agent_session::{Replica, ReplicaActor, Seed, StepAction};
+use tilo_agent_session::{Replica, ReplicaActor, Seed};
 
 /// How many attempts an app gets before it is a gap.
 const ATTEMPTS: usize = 40;
@@ -33,15 +30,15 @@ impl Driveable for Held {
             .read(|doc| serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap())
             .unwrap()
     }
-    fn run(&mut self, action: &StepAction) -> Result<(), String> {
-        match action {
-            StepAction::Invoke { address, arguments } => self
-                .0
-                .invoke(address, arguments, false)
-                .map(|_| ())
-                .map_err(|error| format!("{}: {error}", error.code())),
-            StepAction::Open | StepAction::Continue(_) | StepAction::Wait(_) => Ok(()),
-        }
+    fn run(
+        &mut self,
+        address: &tilo_actions::api::ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        self.0
+            .invoke(address, arguments, false)
+            .map(|_| ())
+            .map_err(|error| format!("{}: {error}", error.code()))
     }
 }
 

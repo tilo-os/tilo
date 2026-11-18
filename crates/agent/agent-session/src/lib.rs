@@ -17,28 +17,26 @@
 //!   worker process, so no app code runs beside the host's and agents'
 //!   keys; the host admits what a worker returns before it signs it
 //!   ([`worker`]).
-//! - **Edits.** Each action's Automerge change is committed through the
-//!   agent's server session and ordered by the host with everyone else's;
-//!   browsers receive it live, attributed to the agent ([`member`]).
-//! - **Presence.** The agent publishes the record it focuses and a
-//!   member of kind agent on the live session; browsers show it there,
-//!   and it sees theirs.
+//! - **Work.** Each task is one turn of the host's model over the tools every
+//!   agent in Tilo works through (`tilo_ls`, `tilo_read`, `tilo_do` and the
+//!   rest), asked of the host's actions through the agent's own session: the
+//!   host runs each action as the agent and orders its change with everyone
+//!   else's; browsers receive it live, attributed to the agent ([`member`]).
+//! - **Presence.** The agent publishes a member of kind agent, saying what it
+//!   is doing, on the live session; browsers show it there, and it sees
+//!   theirs.
 //! - **Steering.** Spawn, message, pause, resume, stop and status are
 //!   remote actions the host answers for the delegating user's devices
 //!   ([`control`]); a grant is requested from the page and approved with
 //!   its delegation in one consent step.
-//! - **Pictures.** A planning model that sees is shown what a read rendered
-//!   (a canvas look, a PDF page) and the pictures it asks to look at, within
-//!   limits; the workspace's own pictures only where the person running the agent
-//!   allows, and decoded only in a confined worker ([`vision`]).
 //! - **Hosting.** [`AgentHost`] runs each agent on its own thread, keeps
 //!   grants and agents under a state directory, resumes them when the host
 //!   restarts and settles expired grants ([`host`]).
 //! - **Memory.** There is none of its own. What an agent learns it reads
 //!   from the workspace's records, and what it keeps it writes there through an
-//!   app's operations; the only state this crate holds is the task's own
-//!   working record and, in the host's state directory, the agents'
-//!   credentials and each workspace's content bytes ([`host`]).
+//!   app's operations; the only state this crate holds is, in the host's state
+//!   directory, the agents' credentials and each workspace's content bytes
+//!   ([`host`]).
 
 #![deny(rust_2018_idioms)]
 
@@ -48,14 +46,10 @@ pub mod control;
 pub mod facts;
 pub mod host;
 pub mod member;
-pub mod message_lines;
 pub mod model;
-pub mod planner;
 pub mod profile;
 pub mod render;
 pub mod search;
-mod values;
-pub mod vision;
 mod web_apps;
 pub mod worker;
 pub mod workspace_actions;
@@ -66,19 +60,12 @@ pub use apps::{
 };
 pub use control::{
     AdmissionDone, AgentControl, AgentHostLink, AgentIdentity, AgentSupervisor, ApprovalDone,
-    Approver, GrantRecord, Spawner, SupervisorHost, SupervisorSnapshot,
+    GrantRecord, Spawner, SupervisorHost, SupervisorSnapshot,
 };
 pub use host::{AgentHost, CatalogueFactory, HostEndpoint};
 pub use member::actions::{RESOURCE_PROVIDER, record_provider};
 pub use member::{AgentMember, MemberConfig, Next, Pumped};
-pub use model::{
-    ApiKey, Briefing, CLOUD_MODEL, GatewayModel, ModelChoice, ModelPlanner, NoPlanReads,
-    OpenAiModel, PlanModel, PlanReads, READ_VIEW, ReadView, ScriptedModel,
-};
-pub use planner::{
-    DirectPlanner, NoReads, Obligations, PlanContext, PlanRole, Planner, Reads, Role, Step,
-    StepAction, TurnRetries,
-};
+pub use model::{ApiKey, CLOUD_MODEL, MakeTurns, ModelChoice};
 pub use worker::ConfinedReplica;
 pub use workspace_actions::{
     FeedbackReviewer, HostActions, WorkspaceActions, WorkspaceDocumentsLink,

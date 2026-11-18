@@ -953,15 +953,6 @@ inputs = ["crates/agent/provider-config/tests/fixtures/openrouter-models.json"]
 readers = ["crates/sdk/provider-settings-ui/src/app_tests.rs"]
 
 [[cargo]]
-package = "agent"
-# The web tools' tests serve the engine answers the search library records, so
-# a changed fixture reruns them.
-inputs = ["crates/platform/tilo-web-search/tests/fixtures/"]
-readers = [
-  "apps/agent/src/session/agent_loop/tests/web.rs",
-]
-
-[[cargo]]
 package = "tilo-agent-web-tools"
 # The tools' own tests serve the same fixture pages.
 inputs = ["crates/platform/tilo-web-search/tests/fixtures/"]

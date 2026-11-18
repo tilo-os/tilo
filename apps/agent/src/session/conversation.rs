@@ -5,30 +5,33 @@
 //! the workspace. The answer is written in the same conversation: the agent
 //! tells the reply to the message what it was taken for, what it does at each
 //! step, and how it ended, by invoking chat's `record-work` as a step of the
-//! turn. The reply is the message its id and
-//! the summons derive (chat keeps that rule), so nothing here has to be
-//! stored to find it, and the conversation needs no resource of its own.
+//! turn. The reply is the message its id and the summons derive (chat keeps
+//! that rule), so nothing here has to be stored to find it.
 //!
-//! What the run resources is what a person reads: its state, the operations it
-//! dispatched, and — once, when it ends — its answer. How the run was planned
-//! stays in the run's own document. Every resource a run makes lands in one group,
-//! so its turn is undone whole.
+//! What the run records is what a person reads: its state, the steps it took,
+//! and — once, when it ends — its answer. Every record a run makes lands in one
+//! group, so its turn is undone whole.
 
 use anyhow::Result;
 use serde_json::{Map, Value, json};
+use tilo_actions::remote::{
+    ActionProvider as _, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
+};
 
-use super::{Asked, Session, TaskAction, TaskActionStop, TurnUpdate};
+use super::{Asked, Session, TurnUpdate};
 
 /// What a conversation's address in the workspace starts with: the chat
 /// resource's kind and the collection its conversations are kept in.
 const CONVERSATION_PREFIX: &str = "chat.workspace/channels/";
 /// What separates a message's own id from its conversation's address.
-const MESSAGES: &str = "/messages/";
+pub(super) const MESSAGES: &str = "/messages/";
 /// The chat action that records a turn on the reply to its message.
 const RECORD_WORK: &str = "record-work";
-/// How long a turn waits for its conversation to offer `record-work` on its message: an agent
+/// How long a turn waits for its conversation to offer its actions on its message: an agent
 /// started for the turn reads Chat's catalogue before Chat has republished the message it answers.
-const RECORD_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+const OFFER_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+/// How long a step of the conversation's own is followed before the turn goes on.
+const FOLLOW_MS: u32 = 5_000;
 /// The longest id a conversation or a message may have.
 const MAX_ID_CHARS: usize = 256;
 /// The state that ends a turn: the reply's work is finished, and the turn is
@@ -58,21 +61,18 @@ impl Cause {
     }
 }
 
-/// The turn a run answers, as it is being told: the cause, the operations
-/// it has dispatched so far, and the answer it ends with.
+/// The turn a run answers, as it is being told: the cause, the steps it took so far, and the
+/// answer it ends with.
 #[derive(Clone, Debug)]
 pub(super) struct Record {
     cause: Cause,
-    /// The operations dispatched so far, each keyed by the id it was given
-    /// when it was dispatched; every resource repeats them whole.
+    /// The steps taken so far; every record repeats them whole.
     pub(super) steps: Vec<Value>,
     /// The words the run answers with, when it has any: the reply's text.
     answer: Option<String>,
-    /// Whether the run has already looked for the reply's `record-work`,
-    /// waiting for the conversation to publish it: that wait is for a
-    /// catalogue republished moments after the run started, so it is paid
-    /// once, never on every step of a long run.
-    looked_for_work: bool,
+    /// Whether the run already waited for the conversation to offer its actions on the message:
+    /// that wait is paid once, never on every step of a long run.
+    waited: bool,
 }
 
 /// The turn `run` answers, checked against what a conversation gives and
@@ -106,316 +106,62 @@ impl Session {
             cause,
             steps: Vec::new(),
             answer: None,
-            looked_for_work: false,
+            waited: false,
         });
     }
 
-    /// End `run` as done: `answer` is the reply's text, and the run's own
-    /// resource says `done` when there is no answer. A run with neither — a
-    /// model-planned run that ended with nothing said — is not reported as a
-    /// success with a line nobody wrote: the person reads that the agent
-    /// finished without answering.
-    pub(super) fn succeed_turn(
-        &mut self,
-        run: &Asked,
-        answer: Option<String>,
-        done: Option<String>,
-    ) -> Result<()> {
-        if let Some(record) = self.record.as_mut() {
-            record.answer.clone_from(&answer);
+    /// End `run` with `answer`, the reply's text. A run that ends with nothing said is not
+    /// reported as a success with a line nobody wrote: the person reads that the agent finished
+    /// without answering.
+    pub(super) fn succeed_turn(&mut self, run: &Asked, answer: String) -> Result<()> {
+        if answer.trim().is_empty() {
+            return self.fail_task(run, &crate::i18n::t("agent-failure-no-answer"), None);
         }
-        let Some(message) = answer.or(done) else {
-            return self.fail_task(
-                run,
-                &crate::session::Failure::said(crate::i18n::t("agent-failure-no-answer")),
-            );
-        };
+        if let Some(record) = self.record.as_mut() {
+            record.answer = Some(answer.clone());
+        }
         if run.fold.is_some() {
             // The reply reads its words first: the conversation's summary is kept once the
             // person has their answer, and the turn ends after it.
-            self.record_state(run, "doing", json!({}), Some(&message))?;
+            self.record_state(run, "doing", json!({}), Some(&answer), None)?;
             self.keep_summary(run)?;
         }
-        self.report_task(run, TurnUpdate::Succeeded { message })
+        self.report_task(run, TurnUpdate::Succeeded { message: answer })
     }
 
     /// Tell the conversation what `run` reports now, as the reply to its
     /// message keeps it.
     pub(super) fn show_turn(&mut self, run: &Asked, update: &TurnUpdate) -> Result<()> {
         match update {
-            TurnUpdate::Accepted => self.record_state(run, "taken", json!({}), None),
-            // Progress narrates the run to its own document; the reply shows
-            // the operations it dispatched instead. What a run spent is its
-            // keeper's count. Neither is a state of the turn.
+            TurnUpdate::Accepted => self.record_state(run, "taken", json!({}), None, None),
+            // Progress narrates the run to its answer; the reply shows the steps it took
+            // instead. What a run spent is its keeper's count. Neither is a state of the turn.
             TurnUpdate::Progress { .. } | TurnUpdate::Spent { .. } => Ok(()),
             TurnUpdate::Succeeded { .. } => {
                 let answer = self
                     .record
                     .as_ref()
                     .and_then(|record| record.answer.clone());
-                self.record_state(run, "provider_complete", json!({}), answer.as_deref())
+                self.record_state(run, "provider_complete", json!({}), answer.as_deref(), None)
             }
             TurnUpdate::Failed { message } => {
-                // What the host heard is the failure's sentence for a person —
-                // what happened, and at most what to do — and the run keeps the
-                // failure's resource beside it for whoever debugs it later.
+                // What the host heard is the failure's sentence for a person; the run keeps the
+                // failure's detail beside it for whoever debugs it later.
                 let detail = self.failure_detail.clone();
-                self.record_state_with_detail(
-                    run,
-                    "refused",
-                    json!({}),
-                    Some(message),
-                    detail.as_deref(),
-                )
+                self.record_state(run, "refused", json!({}), Some(message), detail.as_deref())
             }
             TurnUpdate::Cancelled { message } => {
-                self.record_state(run, "provider_cancelled", json!({}), Some(message))
+                self.record_state(run, "provider_cancelled", json!({}), Some(message), None)
             }
         }
     }
 
-    /// Add one dispatched operation to the reply's step list: where it acted,
-    /// what it did in its app's words (what the action declares it did, or
-    /// its label, with the title of what it acted on: "Showed: All inboxes"),
-    /// and what came of it.
-    pub(super) fn resource_action(
-        &mut self,
-        run: &Asked,
-        action: &TaskAction,
-        settled: Result<&super::StepOutcome, &TaskActionStop>,
-    ) -> Result<()> {
-        let (outcome, why) = match settled {
-            Ok(_) => ("applied", None),
-            Err(TaskActionStop::Failed(why)) => ("refused", Some(why.as_str())),
-            Err(TaskActionStop::Cancelled(why)) => ("refused", why.as_deref()),
-        };
-        let subject = self.subject_of(action, settled.ok());
-        let said = crate::i18n::did(&action.label, action.did.as_deref(), &subject);
-        self.push_step(run, &action.resource_kind, &said, outcome, why)
-    }
-
-    /// The title of what `action` acted on, as the person knows it: what the
-    /// action answered it acted on (a place says the title it stands by), else
-    /// the resource an argument names, by its title, else the resource the
-    /// action is on.
-    fn subject_of(&mut self, action: &TaskAction, done: Option<&super::StepOutcome>) -> String {
-        if let Some(title) = done
-            .and_then(|done| done.output.value.as_ref())
-            .and_then(|value| value.get("title"))
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|title| !title.is_empty())
-        {
-            return title.to_owned();
-        }
-        // A step that made something is about what it made ("New task: Call mum"), never the
-        // list it made it in, nor a neighbour an argument names: the made resource by its title
-        // as its app publishes it, else the title the step gave it.
-        if let Some(made) = done.and_then(|done| done.output.resources.first()) {
-            let catalogue = self.task_catalogue();
-            if let Some(label) = catalogue
-                .offers
-                .iter()
-                .find(|offer| offer.address().resource == *made)
-                .map(|offer| offer.descriptor.resource_label.trim().to_owned())
-                .filter(|label| !label.is_empty())
-            {
-                return label;
-            }
-            if let Some(title) = ["title", "name", "subject"].iter().find_map(|key| {
-                action
-                    .arguments
-                    .get(*key)
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|title| !title.is_empty())
-            }) {
-                return title.to_owned();
-            }
-        }
-        // An action whose label asks for what completes it ("Show as…") is about the value it
-        // was given ("Show as…: so.tilo.shell:strips"), never the resource it changed, whose title
-        // still reads what it was before.
-        if action.label.trim_end().ends_with('…')
-            && action.arguments.len() == 1
-            && let Some(given) = action
-                .arguments
-                .values()
-                .next()
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|given| !given.is_empty())
-        {
-            return given.to_owned();
-        }
-        let catalogue = self.task_catalogue();
-        // The resource it shows or acts on first, then any other the arguments name: a `place`
-        // names the conversation it stands beside too, which is not what it acted on.
-        let named = action.arguments.get("resource").into_iter().chain(
-            action
-                .arguments
-                .iter()
-                .filter(|(name, _)| !matches!(name.as_str(), "resource" | "beside"))
-                .map(|(_, value)| value),
-        );
-        named
-            .filter_map(Value::as_str)
-            .find_map(|named| catalogue.about(named.trim()))
-            .map(|facts| facts.label.trim().to_owned())
-            .filter(|label| !label.is_empty())
-            .unwrap_or_else(|| action.resource_label.trim().to_owned())
-    }
-
-    /// The title `app` publishes itself under, as its application offer names it: `None` when
-    /// the catalogue offers no such application, never a title made of its id.
-    fn app_title(&mut self, app: &str) -> Option<String> {
-        self.task_catalogue()
-            .offers
-            .iter()
-            .find(|offer| {
-                offer.app == app
-                    && offer.descriptor.resource_kind == crate::surface::APPLICATION_KIND
-            })
-            .map(|offer| offer.descriptor.resource_label.trim().to_owned())
-            .filter(|title| !title.is_empty())
-    }
-
-    /// A program's change as the person reads it: the action in its app's words (what it
-    /// declares it did, else its label) with the title of the resource it changed, as the app
-    /// publishes both. A program names a change by its action's name and the resource's id
-    /// ("check" on `tl:…/i…-12`), and the person read "check", never "Complete: Book a haircut".
-    fn change_line(&mut self, action: &str, resource: &str, label: &str) -> String {
-        let catalogue = self.task_catalogue();
-        let on_resource = || {
-            catalogue
-                .offers
-                .iter()
-                .filter(move |offer| offer.address().resource == resource)
-        };
-        let offered = on_resource().find(|offer| offer.address().action == action);
-        let title = Some(label.trim())
-            .filter(|label| !label.is_empty() && *label != action)
-            .map(str::to_owned)
-            .or_else(|| {
-                on_resource()
-                    .map(|offer| offer.descriptor.resource_label.trim().to_owned())
-                    .find(|label| !label.is_empty())
-            })
-            .unwrap_or_default();
-        match offered {
-            Some(offer) => crate::i18n::did(
-                &offer.descriptor.action_label,
-                offer.descriptor.did.as_deref(),
-                &title,
-            ),
-            // A field the program assigned (`d.body = …`, which the API names `body =`).
-            None => match action.trim().strip_suffix('=').map(str::trim) {
-                Some(field) if !field.is_empty() => {
-                    crate::i18n::did(&crate::i18n::edited(field), None, &title)
-                }
-                _ => crate::i18n::did(action, None, &title),
-            },
-        }
-    }
-
-    /// Add one `tilo` program the run ran to the reply's step list.
-    pub(super) fn record_program(
-        &mut self,
-        run: &Asked,
-        step: &ui::tilo_reference::ProgramStep,
-    ) -> Result<()> {
-        use ui::tilo_reference::StepOutcome;
-        // What it did, in its app's words: the first change it made, by the action's label with
-        // the title of what it changed; else what it proposes; else that it looked up the app its
-        // answer names, by that app's own title ("Looked up Tasks").
-        let label = step
-            .changes
-            .first()
-            .map(|row| {
-                // A change on an app's root resource made something in it ("New task" on Tasks):
-                // the step is about what it made, the resource the program's answer shows.
-                let root = crate::tools::canvas::tilolang_app_of(&row.resource.reference.id)
-                    .and_then(|app| {
-                        row.resource
-                            .reference
-                            .id
-                            .strip_prefix(&format!("tl:{app}:"))
-                    })
-                    .is_some_and(|record| !record.contains('/'));
-                // The title the program gave it says what it made, whatever the resource's label read
-                // when the answer was taken ("Note" for a note titled in the same call).
-                let made = root
-                    .then(|| titled_in(&step.program))
-                    .flatten()
-                    .or_else(|| {
-                        step.refs
-                            .iter()
-                            .find(|at| root && at.reference.id != row.resource.reference.id)
-                            .map(|at| at.reference.label.clone())
-                    });
-                let label = made.unwrap_or_else(|| row.resource.reference.label.clone());
-                self.change_line(&row.action, &row.resource.reference.id, &label)
-            })
-            .or_else(|| step.previews.first().map(|row| row.action.clone()))
-            .unwrap_or_else(|| {
-                let app = step.refs.first().map(|at| at.app.clone());
-                let title = app.and_then(|app| self.app_title(&app));
-                crate::i18n::looked_up(title.as_deref())
-            });
-        let resource = step
-            .changes
-            .first()
-            .map(|change| change.resource.reference.id.clone())
-            .or_else(|| step.refs.first().map(|at| at.reference.id.clone()));
-        let resource = resource.as_deref().unwrap_or("tilo.program");
-        let said = step.answer.join(" ").trim().to_owned();
-        let (outcome, why) = match step.outcome {
-            StepOutcome::Done => ("applied", None),
-            StepOutcome::Preview | StepOutcome::Asked => ("asked", None),
-            StepOutcome::Rejected | StepOutcome::Failed => {
-                ("refused", Some(said).filter(|said| !said.is_empty()))
-            }
-        };
-        self.push_step(run, resource, &label, outcome, why.as_deref())
-    }
-
-    /// Add one web search or page the run did to the reply's step list: what
-    /// it asked for or read, and what came of it.
-    pub(super) fn record_web(
-        &mut self,
-        run: &Asked,
-        call: &crate::tools::web::Call,
-        report: &crate::tools::InvokeReport,
-    ) -> Result<()> {
-        // The same vocabulary the person is told the step in, said as done: the
-        // resource says what happened, the note what is under way.
-        let (resource, label) = match call {
-            crate::tools::web::Call::Search { query, .. } => (
-                "web.search",
-                crate::i18n::step_done(&tilo_actions::task_step::TaskStep::Searching(
-                    query.clone(),
-                )),
-            ),
-            crate::tools::web::Call::Page { url, .. } => (
-                "web.page",
-                crate::i18n::step_done(&tilo_actions::task_step::TaskStep::Reading(url.clone())),
-            ),
-        };
-        let (outcome, why) = if report.succeeded {
-            ("applied", None)
-        } else {
-            ("refused", report.error.as_deref())
-        };
-        self.push_step(run, resource, &label, outcome, why)
-    }
-
-    /// Record one step of the turn, keyed by the place it takes in the list.
-    fn push_step(
+    /// Add one step to the reply's step list: what it did, on what, and why it failed if it did.
+    pub(super) fn push_step(
         &mut self,
         run: &Asked,
         resource: &str,
         label: &str,
-        outcome: &str,
         why: Option<&str>,
     ) -> Result<()> {
         let Some(record) = self.record.as_mut() else {
@@ -427,35 +173,23 @@ impl Session {
         step.insert("sequence".into(), json!(sequence));
         step.insert("resource".into(), json!(resource));
         step.insert("label".into(), json!(label));
-        step.insert("outcome".into(), json!(outcome));
+        step.insert(
+            "outcome".into(),
+            json!(if why.is_some() { "refused" } else { "applied" }),
+        );
         if let Some(why) = why {
+            let why: String = why.chars().take(500).collect();
             step.insert("why".into(), json!(why));
         }
         record.steps.push(Value::Object(step));
-        tracing::info!(sequence, %label, outcome, %resource, "turn step");
-        self.record_state(run, "doing", json!({"did": label}), None)
+        tracing::info!(sequence, %label, %resource, "turn step");
+        self.record_state(run, "doing", json!({"did": label}), None, None)
     }
 
-    /// Invoke chat's `record-work` on the reply to the turn's message, in
-    /// `state` with `fields`, and with `say` for the words the reply gets
-    /// when it has none yet. A state that ends the turn is only started: the
-    /// run is over, and following the resource would read that as its
-    /// cancellation.
+    /// Invoke chat's `record-work` on the reply to the turn's message, in `state` with `fields`,
+    /// with `say` for the words the reply gets, and `detail` for what the run keeps of a failure
+    /// for whoever debugs it later. A state that ends the turn is only started: the run is over.
     fn record_state(
-        &mut self,
-        run: &Asked,
-        state: &str,
-        fields: Value,
-        say: Option<&str>,
-    ) -> Result<()> {
-        self.record_state_with_detail(run, state, fields, say, None)
-    }
-
-    /// [`Self::record_state`], with the run's working resource of a failure kept
-    /// on the reply's work beside the words a person reads: the transport's
-    /// error, the partial answer, the provider's exposed reasoning — for
-    /// whoever debugs it later, never the reply's own sentence.
-    fn record_state_with_detail(
         &mut self,
         run: &Asked,
         state: &str,
@@ -481,128 +215,122 @@ impl Session {
         if let Some(say) = say.map(str::trim).filter(|say| !say.is_empty()) {
             arguments.insert("say".into(), json!(say));
         }
-        let Some(child) = self.record_work_action(&arguments) else {
+        let message = format!("{MESSAGES}{}", record.cause.message);
+        self.invoke_on_message(
+            run,
+            &message,
+            RECORD_WORK,
+            arguments,
+            !ENDS.contains(&state),
+        )
+    }
+
+    /// Invoke `action`, which the conversation offers on the resource ending in `item`, with
+    /// `arguments`, as a step of `run`; followed until it ends (at most a few seconds) when
+    /// `follow`. A conversation that offers no such action, or refuses it, leaves the turn as it
+    /// is: what it would have recorded is said in the log.
+    pub(super) fn invoke_on_message(
+        &mut self,
+        run: &Asked,
+        item: &str,
+        action: &str,
+        arguments: Map<String, Value>,
+        follow: bool,
+    ) -> Result<()> {
+        let Some(target) = self.offered_on(item, action) else {
+            tracing::warn!(
+                %item,
+                action,
+                "the conversation offers no such action on the turn's message: the person's \
+                 message gets no answer for it, and this agent's catalogue is why"
+            );
             return Ok(());
         };
-        let started = self.start_task_invocation(run, &child, &arguments);
-        match started? {
-            Ok(following) if ENDS.contains(&state) => {
-                // Started, not followed: the resource ends the turn, and the host
-                // reads a turn that ended as its answer's cancellation.
-                drop(following);
-                Ok(())
-            }
-            Ok(following) => {
-                let mut followed = [following];
-                self.follow_native(run, &mut followed)?;
-                if let Some(Err(stop)) = followed[0].outcome.as_ref() {
-                    tracing::warn!(
-                        state,
-                        ?stop,
-                        "the conversation did not take the run's report"
-                    );
+        let request = InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target,
+            argument: InvokeArgument::Json(arguments),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: Some(run.invocation),
+            appearance: None,
+            wait_ms: follow.then_some(FOLLOW_MS),
+        };
+        let actions = self.actions.clone();
+        let caller = self.caller();
+        let answer = self.carry(async move { actions.invoke(&caller, request).await }, None)?;
+        match answer {
+            Some(Ok(receipt)) => match receipt.status {
+                ReceiptStatus::Failed { error } => {
+                    tracing::warn!(action, error = %error.message, "the conversation refused the turn's step");
                 }
-                Ok(())
+                ReceiptStatus::Rejected { error } => {
+                    tracing::warn!(action, %error, "the conversation refused the turn's step");
+                }
+                _ => {}
+            },
+            Some(Err(error)) => {
+                tracing::warn!(action, %error, "the conversation refused the turn's step");
             }
-            Err(stop) => {
-                tracing::warn!(state, ?stop, "the conversation refused the run's report");
-                Ok(())
-            }
+            None => tracing::warn!(action, "the conversation did not answer the turn's step"),
         }
+        Ok(())
     }
 
-    /// The chat action that resources work on the reply to the turn's message,
-    /// as the broker publishes it to this agent, once it does: an agent started
-    /// for the turn may read the catalogue before Chat republished the message.
-    /// Absent when the workspace offers no `record-work` on that reply, which
-    /// is what a workspace whose Chat is closed — or whose agent was admitted
-    /// without the chat app's actions — leaves, and the reason the reply a
-    /// person asked for never appears.
-    fn record_work_action(&mut self, arguments: &Map<String, Value>) -> Option<TaskAction> {
-        let message = arguments.get("message").and_then(Value::as_str)?;
-        let reply = format!("{MESSAGES}{message}");
-        let offer = |session: &mut Self| {
+    /// Where `action` is offered on the resource ending in `item`, as the broker publishes it to
+    /// this agent, once it does: waited for once per run.
+    pub(super) fn offered_on(&mut self, item: &str, action: &str) -> Option<RemoteActionTarget> {
+        let find = |session: &Self| {
             session
-                .task_catalogue()
-                .offers
+                .broker_catalogue
+                .surfaces()
                 .iter()
-                .find(|offer| {
-                    offer.descriptor.address.action == RECORD_WORK
-                        && offer.descriptor.address.resource.ends_with(&reply)
+                .find_map(|surface| {
+                    if !surface.live && surface.provider.is_none() {
+                        return None;
+                    }
+                    let offered = surface
+                        .actions
+                        .iter()
+                        .find(|offer| offer.action == action && offer.resource.ends_with(item))?;
+                    Some(RemoteActionTarget {
+                        provider: surface
+                            .provider
+                            .clone()
+                            .unwrap_or_else(|| surface.peer_id.to_string()),
+                        address: tilo_actions::ActionAddress::new(&offered.resource, action),
+                    })
                 })
-                .cloned()
         };
-        if self.waits_for_record_work() {
-            self.await_catalogue(RECORD_WAIT, |session| offer(session).is_some());
+        if let Some(found) = find(self) {
+            return Some(found);
         }
-        let Some(offer) = offer(self) else {
-            tracing::warn!(
-                reply = %reply,
-                action = RECORD_WORK,
-                "the conversation publishes no `record-work` on the turn's reply: \
-                 the person's message gets no answer, and this agent's catalogue is why"
-            );
+        let waits = self.record.as_mut().is_some_and(|record| {
+            let first = !record.waited;
+            record.waited = true;
+            first
+        });
+        if !waits {
             return None;
-        };
-        match super::task_action_from_offer(&offer, arguments.clone()) {
-            Ok(action) => Some(action),
-            Err(error) => {
-                tracing::warn!(%error, "the conversation's `record-work` refused its arguments");
-                None
+        }
+        let deadline = ui::time::now() + OFFER_WAIT;
+        while ui::time::now() < deadline {
+            let Some(change) = self.link.next_catalogue(deadline) else {
+                break;
+            };
+            self.apply_broker_catalogue(&change);
+            if let Some(found) = find(self) {
+                return Some(found);
             }
         }
+        None
     }
-
-    /// Whether this run still waits for its reply's `record-work` to be
-    /// published, at most [`RECORD_WAIT`]: once per run, and only while a
-    /// running application publishes `record-work`. What the wait covers is Chat
-    /// republishing the message the run answers moments after the run
-    /// started. A closed Chat keeps the offers it last published — a
-    /// workspace whose Chat is closed, or that publishes none at all, has
-    /// nothing coming and would spend the bound on every step.
-    fn waits_for_record_work(&mut self) -> bool {
-        let Some(record) = self
-            .record
-            .as_mut()
-            .filter(|record| !record.looked_for_work)
-        else {
-            return false;
-        };
-        record.looked_for_work = true;
-        self.broker_catalogue.surfaces().iter().any(|surface| {
-            surface.live
-                && surface
-                    .actions
-                    .iter()
-                    .any(|action| action.action == RECORD_WORK)
-        })
-    }
-}
-
-/// The title a program gave what it made, as it wrote it (`new_task(tasks.tasks, title: "Call
-/// mum", …)`): what a step that made something on an app's root is about when its answer showed
-/// nothing it made.
-fn titled_in(program: &str) -> Option<String> {
-    let (_, rest) = program.split_once("title:")?;
-    let rest = rest.trim_start().strip_prefix('"')?;
-    let (title, _) = rest.split_once('"')?;
-    Some(title.trim().to_owned()).filter(|title| !title.is_empty())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A step that made a task on Tasks' root is about the task, by the title the program gave
-    /// it: "New task: Call mum", never "New task: Tasks".
-    #[test]
-    fn a_made_resource_is_named_by_the_title_its_program_gave_it() {
-        assert_eq!(
-            titled_in("tasks.new_task(tasks.tasks, title: \"Call mum\", due: 2026-11-18)"),
-            Some("Call mum".to_owned())
-        );
-        assert_eq!(titled_in("tasks.check(t, done: true)"), None);
-    }
 
     /// A turn that answers the message at `message`.
     fn asked(message: &str) -> runtime_collab::TurnRequest {

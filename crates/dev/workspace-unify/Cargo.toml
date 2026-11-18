@@ -1109,6 +1109,7 @@ doc = false
 "tilo-activities" = { path = "../../../crates/session/activities", default-features = false, features = [] }
 "tilo-advisory-lock" = { path = "../../../crates/system/advisory-lock", default-features = false, features = [] }
 "tilo-agent-session" = { path = "../../../crates/agent/agent-session", default-features = false, features = [] }
+"tilo-agent-turn" = { path = "../../../crates/agent/agent-turn", default-features = false, features = [] }
 "tilo-agent-web-tools" = { path = "../../../crates/agent/agent-web-tools", default-features = false, features = ["fixture-servers"] }
 "tilo-api" = { path = "../../../crates/server/tilo-api", default-features = false, features = [] }
 "tilo-app" = { path = "../../../crates/sdk/tilo-app", default-features = false, features = ["broker-transport", "default", "gpu-video", "mpris", "native", "realtime-video", "test-support", "webview-adblock"] }

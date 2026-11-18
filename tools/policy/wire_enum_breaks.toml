@@ -480,3 +480,8 @@ reason = "the variant is renamed from `Legacy` to `LinuxVm` because that is the 
 file = "crates/runtime/ush/src/broker.rs"
 enum = "Request"
 reason = "the variant is renamed from `LegacyLaunch` to `LinuxVmLaunch` because that is the VM's name. A request is one JSON frame on the runtime's local broker socket, written and read by the same executable: nothing keeps it and nothing at another version sends it"
+
+[[break]]
+file = "crates/agent/agent-session/src/worker/proto.rs"
+enum = "Mode"
+reason = "the picture slot served only the planner's own reads of pictures, which went with it once agent members work through the MCP tools; a mode travels on the pipe between a host and the worker processes it starts from its own binary, and nothing keeps it"

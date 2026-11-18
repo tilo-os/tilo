@@ -174,7 +174,6 @@ mod tests {
                 let model = std::fs::read_to_string(format!("{root}model.rs")).unwrap();
                 let providers = std::fs::read_to_string(format!("{root}providers.rs")).unwrap();
                 assert!(model.contains("tilo_model_client::complete_streaming"));
-                assert!(model.contains("ModelConversation::new"));
                 assert!(!model.contains("ANTHROPIC_API_KEY"));
                 assert!(!model.contains("reqwest::"));
                 // This scan now reads the file it is written in, so the needle is

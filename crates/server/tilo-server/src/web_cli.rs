@@ -255,13 +255,11 @@ impl AgentArgs {
                 env("TILO_AGENT_API_KEY_FILE"),
             ),
         )
-        .map_err(|error| anyhow::anyhow!("--agent-model: {error}"))?
-        .with_items_from(&env)
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
+        .map_err(|error| anyhow::anyhow!("--agent-model: {error}"))?;
         tracing::info!(model = %model.describe(), state = %state_dir.display(), "agents on this host");
         Ok(Some(tilo_server::agents::AgentOptions {
             state_dir,
-            model,
+            model: model.make_turns(),
             catalogue: None,
             feedback_reviewer: None,
             shell: None,
