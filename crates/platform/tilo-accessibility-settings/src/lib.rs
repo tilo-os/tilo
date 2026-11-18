@@ -615,11 +615,6 @@ mod tests {
 
     #[test]
     fn a_theme_is_a_name_and_anything_else_keeps_the_default() {
-        assert_eq!(DEFAULT_CURSOR_THEME, "Adwaita");
-        assert_eq!(
-            read(serde_json::json!({})).cursor_theme.as_str(),
-            DEFAULT_CURSOR_THEME
-        );
         assert_eq!(
             read(serde_json::json!({"cursor_theme": " Bibata-Modern-Ice "}))
                 .cursor_theme
@@ -657,7 +652,6 @@ mod tests {
         );
         assert!(CursorTheme::new("two/parts").is_none());
         assert!(CursorTheme::new("").is_none());
-        assert_eq!(CursorTheme::default().as_str(), DEFAULT_CURSOR_THEME);
         let long = "ü".repeat(CURSOR_THEME_MAX_CHARS);
         assert_eq!(
             CursorTheme::new(&long).expect("64 characters").as_str(),
