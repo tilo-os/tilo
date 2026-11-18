@@ -67,11 +67,16 @@ pub enum Reaching {
     /// Nothing will name it: its network is its own, and nobody reaches it
     /// from outside.
     OnItsOwn,
+    /// It names where it is reached once something needs it reachable, and
+    /// nothing may wait for that: a desktop, whose first frame waits on what
+    /// it serves and whose endpoint dials out only once it must. What it
+    /// serves names the address again once it has one ([`follow`]).
+    WhenNeeded,
 }
 
 impl Reaching {
     /// Wait for `endpoint` to name where it is reached when it is expected to,
-    /// and answer at once when nothing will.
+    /// and answer at once when nothing will, or nothing may wait for it.
     pub async fn awaited(self, endpoint: &Endpoint) {
         if self == Self::ByRelay {
             await_relay(endpoint).await;
