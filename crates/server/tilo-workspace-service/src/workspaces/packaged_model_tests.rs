@@ -6,6 +6,8 @@
     reason = "a test binds the server it drives until it shuts it down at the end"
 )]
 
+use std::path::{Path, PathBuf};
+
 use super::fixtures::{governor, test_host};
 use super::packaged_model::PackagedAction;
 use tilo_app_package::{Manifest, SigningIdentity, pack, tapp};
@@ -15,29 +17,32 @@ use tilo_resource::Resource as _;
 /// The app the test installs, which the server does not have compiled in.
 const TASKS: &str = "so.tilo.tasks";
 
-/// The Tasks model, built for wasm32 by `apps/tasks/model-wasm/build.sh`: the
-/// module the app's package carries, zstd-compressed and base64 because the
-/// repository carries no binary blobs.
-const TASKS_MODEL: &str = include_str!("../../tests/fixtures/tasks-model.wasm.zst.b64");
-
 /// The invocation's origin clock, milliseconds since the Unix epoch.
 const NOW_MS: i64 = 1_760_000_000_000;
 
-/// [`TASKS_MODEL`], the module's bytes.
+/// The Tasks model module, built for wasm32 by `tilo-app model` beside the app
+/// (`apps/tasks-model-wasm`). A tree keeps no built module, so the check that
+/// exercises this test needs `app-models`, whose outputs land under the target
+/// directory; `t outputs app-models` fetches them for a test taken here.
 #[expect(
     clippy::expect_used,
-    reason = "a fixture that does not decode is a test failure"
+    reason = "a module the app-models check did not build is a test failure"
 )]
 fn tasks_model() -> Vec<u8> {
-    let compressed = base64::Engine::decode(
-        &base64::engine::general_purpose::STANDARD,
-        TASKS_MODEL
-            .bytes()
-            .filter(|byte| !byte.is_ascii_whitespace())
-            .collect::<Vec<u8>>(),
-    )
-    .expect("the fixture is base64");
-    zstd::stream::decode_all(compressed.as_slice()).expect("the fixture is a zstd twin")
+    let directory = std::env::var_os("TILO_APP_MODELS").map_or_else(
+        || {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../..")
+                .join("target/app-models")
+        },
+        PathBuf::from,
+    );
+    let module = directory.join("tasks").join(tilo_app_package::MODEL_MODULE);
+    let asked = format!(
+        "reading {}; build it with `t outputs app-models`",
+        module.display()
+    );
+    std::fs::read(&module).expect(&asked)
 }
 
 /// An app's package: `model`, when it has one, is the payload's model module.
@@ -93,6 +98,7 @@ fn create_area(name: &str) -> serde_json::Map<String, serde_json::Value> {
 }
 
 #[tokio::test]
+#[ignore = "reads the model module the app-models check built (t test test-packaged-model)"]
 async fn a_server_applies_an_installed_apps_action_from_its_package() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();

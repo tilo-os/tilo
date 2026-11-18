@@ -23324,7 +23324,6 @@ dependencies = [
  "accounts",
  "agent-provider-config",
  "app-cli",
- "base64 0.22.1",
  "blake3",
  "calendar",
  "chat",
@@ -23417,7 +23416,6 @@ dependencies = [
  "word-processor",
  "workspace-hack",
  "zeroize",
- "zstd",
 ]
 
 [[package]]

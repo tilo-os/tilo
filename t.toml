@@ -594,6 +594,17 @@ run = "bash tools/ci/app-models.sh"
 outputs = ["/target/app-models/**"]
 default = false
 
+# The one test that installs an app from its package and applies its action
+# through the module the package carries: it reads what `app-models` built, so
+# it is left out of the package's own test family (which builds no module) and
+# runs here, where the module is in place. `workspace-unify` comes beside the
+# package so its features resolve as the test family's build gives them.
+[[check]]
+name = "test-packaged-model"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "TILO_APP_MODELS=\"$CARGO_TARGET_DIR/app-models\" cargo test --locked -p tilo-workspace-service -p workspace-unify --lib packaged_model -- --ignored\n"
+needs = ["app-models"]
+
 [[check]]
 name = "codemap"
 run = "python3 -I tools/docs/codemap.py --check"
