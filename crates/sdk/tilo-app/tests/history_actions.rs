@@ -334,7 +334,7 @@ tilo_test_env::scenario! {
         let refused = refusal(app.call_in_run("mcp:later", "undo", json!({"steps": 4})));
         assert!(
             refused.contains(
-                r#""mcp:earlier" by mcp:earlier (4 steps): undo {"invocation": "mcp:earlier", "steps": 4}"#
+                r#""mcp:earlier" (4 steps): undo {"invocation": "mcp:earlier", "steps": 4}"#
             ),
             "{refused}"
         );

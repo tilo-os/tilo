@@ -8,7 +8,7 @@ use crate::tilo_actions::{InvocationId, InvocationUpdate};
 /// The workspace's history as a session serves it for a window whose resource is a test's
 /// document: each of its changes, under its own id, named as its own history names its author, and
 /// served again each time the session takes up a newer state of the document ([`Self::write`]).
-pub(crate) struct ServedHistory {
+pub struct ServedHistory {
     /// The feed as last read, under the sequence of that reading.
     feed: std::sync::Mutex<(u64, wire::Feed)>,
     /// Followers waiting for the next reading.
@@ -91,7 +91,7 @@ thread_local! {
 
 /// Serve the history of `doc` to every History this test opens: each test is a process of its
 /// own, so the provider stays entered until it ends.
-pub(crate) fn serve(doc: &automerge::AutoCommit) {
+pub fn serve(doc: &automerge::AutoCommit) {
     let served = std::sync::Arc::new(ServedHistory::new(doc));
     SERVED.with(|current| *current.borrow_mut() = Some(served.clone()));
     std::mem::forget(crate::remote_actions::RemoteActions::enter(
@@ -102,7 +102,7 @@ pub(crate) fn serve(doc: &automerge::AutoCommit) {
 
 /// The session took up `doc` as it is now: what this thread serves ([`serve`]) answers every
 /// History that follows it again.
-pub(crate) fn sync(doc: &automerge::AutoCommit) {
+pub fn sync(doc: &automerge::AutoCommit) {
     let served = SERVED.with(|current| current.borrow().clone());
     served.expect("a history is served").write(doc);
 }
@@ -209,4 +209,44 @@ tilo_test_env::scenario! {
         assert_eq!(listed.named[0].end, Some(HistoryEntryId::from_bytes([12; 16])));
         assert!(listed.has_earlier, "the feed holds one change more than it listed");
     }
+}
+
+/// A change whose action recorded its step reads in this app's own words, and software names
+/// whom it acted for.
+#[test]
+fn a_row_says_its_step_in_the_apps_words_and_whom_software_acted_for() {
+    crate::i18n::I18nManager::init("en-US");
+    crate::i18n::I18nManager::add_resource(
+        "en-US",
+        "tasks-rename = Renamed { $item } to { $title }\n".into(),
+    );
+    let step = crate::tilo_actions::ActionContext::for_resource("issues", "tasks.issues", "Issues")
+        .with_app("so.tilo.tasks", "Tasks")
+        .with_described(
+            crate::tilo_actions::Described::new(crate::tilo_actions::Did::verb(
+                crate::tilo_actions::ActionKey::new("so.tilo.tasks", "tasks.issues", "rename"),
+                [("title".to_owned(), "Final plan".into())],
+            ))
+            .on("i1", "Draft the plan"),
+        );
+    let mut served = entry(1, 1, "Planner", 0);
+    served.author.relation = wire::Relation::Software;
+    served.author.on_behalf_of = Some("Ben".into());
+    served.summary = "Rename: Draft the plan".into();
+    served.step = Some(step);
+    let row = super::row(&served, HistoryEntryId::from_bytes([1; 16]));
+    assert_eq!(row.summary, "Renamed Draft the plan to Final plan");
+    assert_eq!(row.author.name, "Planner");
+    assert_eq!(
+        crate::history_source::sentence::acted_for(&row.author).as_deref(),
+        Some("for Ben")
+    );
+    assert_eq!(
+        row.context
+            .and_then(|context| context.app)
+            .map(|app| app.label)
+            .as_deref(),
+        Some("Notes"),
+        "the app as the session names it"
+    );
 }
