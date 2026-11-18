@@ -113,7 +113,7 @@ impl StatePeer {
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
-        self.require_member_writer(key, now)?;
+        self.require_admitting_owner_device(key, now)?;
         if cert.user_public_key != self.core.owner {
             return Err("enrollment root mismatch".into());
         }

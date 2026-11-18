@@ -178,8 +178,32 @@ impl PeerGovernance<'_> {
         self.peer.require_administrator_invitation(key, now).is_ok()
     }
 
-    /// The device that created the workspace: it founds the workspace's MLS
-    /// group, and no other device does.
+    /// The device that founds the workspace's MLS group, and no other device:
+    /// the device the workspace was created on, or, for a workspace founded in
+    /// its person's name, the first of its key-holding devices by device key.
+    /// A person-founded workspace is one every one of their devices makes
+    /// identically when they found it before they see one another, so no
+    /// single device of theirs created it; the first key holder founds its
+    /// group, and a device that is not that one takes the group it hands over.
+    #[must_use]
+    pub fn founding_device(self) -> Option<[u8; 32]> {
+        let founder = self.founder()?;
+        if founder != self.peer.owner() {
+            return Some(founder);
+        }
+        self.keeping_devices()
+            .into_iter()
+            .filter(|hint| {
+                hint.host.user_public_key == self.peer.owner()
+                    && super::holder_role(hint) == super::CopyRole::KeyHolder
+            })
+            .map(|hint| hint.host.device_public_key)
+            .min()
+    }
+
+    /// Who created the workspace: the device it was created on, or, for a
+    /// workspace founded in its person's name, the person's root key. What
+    /// founds the workspace's MLS group is [`Self::founding_device`].
     pub fn founder(self) -> Option<[u8; 32]> {
         let doc = self.peer.core.workspace_doc.as_ref()?;
         let (value, _) = doc.get(ROOT, super::seed::FOUNDER).ok()??;

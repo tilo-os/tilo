@@ -63,6 +63,7 @@ pub use collab_types::work_delegation::WorkDelegation;
 pub use state::ChangeRefused;
 pub use state::DelegatedWork;
 pub use state::mail_send_lease;
+pub use state::person_workspace_seed;
 /// The person's own documents between their devices, with no host in between.
 pub use state::{AdmittedFrame, PERSONAL_ALPN, PersonalSync, device_resource, resource_owner};
 pub use state::{

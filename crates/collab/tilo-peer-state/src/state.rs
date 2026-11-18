@@ -105,7 +105,7 @@ pub use personal::device_grants::{DEVICE_ANSWERS_KIND, DeviceAnswer, DeviceGrant
 pub use personal::link::{AdmittedFrame, PERSONAL_ALPN, PersonalSync};
 pub use personal::scopes::{device_resource, resource_owner};
 pub use personal::{ENROLLMENT_KIND, PeerPersonal, PersonalStore, SETTINGS_KIND, WORKSPACES_KIND};
-pub use seed::{seed_workspace, workspace_seed};
+pub use seed::{person_workspace_seed, seed_workspace, workspace_seed};
 mod compaction_set;
 mod sealed_compaction;
 mod sealed_history;

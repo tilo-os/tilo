@@ -136,8 +136,9 @@ impl Workspaces {
     /// keeping another person's workspace names nothing: its holders are
     /// that person's to name, and the address it signed is the one they
     /// named. Nor does a holder its owners have not named yet, other than the
-    /// device the workspace was founded on: whoever hands it the workspace
-    /// names it, in the role they chose for it.
+    /// device the workspace was founded on, or the device of the person whose
+    /// own workspace it is: whoever hands it the workspace names it, in the
+    /// role they chose for it.
     pub(super) async fn name_own_host(
         &self,
         governed: &mut GovernedWorkspace,
@@ -146,10 +147,12 @@ impl Workspaces {
         let own = host.cert.device_public_key;
         let (others, unnamed) = {
             let peer = governed.peer();
+            // A workspace founded in its person's name is one of their own
+            // devices to name itself in, whichever of them opened it first.
             (
                 peer.owner() != host.cert.user_public_key,
                 peer.governance().holder_role(&own).is_none()
-                    && peer.governance().founder() != Some(own),
+                    && peer.governance().founder() != Some(host.cert.user_public_key),
             )
         };
         if others || unnamed {

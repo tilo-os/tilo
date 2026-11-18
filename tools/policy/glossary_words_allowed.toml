@@ -877,3 +877,16 @@ paths = [
     "crates/session/install-plan/src/host.rs",
     "crates/session/install-plan/src/lib.rs",
 ]
+
+[[allow]]
+reason = "The signed holder address's own `host` field (`TransportHint::host`), the device that answers for a workspace: the field is the type's name, and no new use of the word is meant."
+words = ["host"]
+paths = [
+    "crates/collab/tilo-peer-state/src/state/governance.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/hosts.rs",
+]
+
+[[allow]]
+reason = "A workspace's kept entry as the code around it names it (`WorkspaceDocumentEntry`, its publications and the records it holds), moved here with its comments; the file is the typing of a workspace's first history, and no new name is meant."
+words = ["host", "record"]
+paths = ["crates/server/tilo-workspace-service/src/workspaces/founding.rs"]
