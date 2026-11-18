@@ -62,6 +62,8 @@ LABEL org.opencontainers.image.title="Tilo API server" \
       org.opencontainers.image.revision="${SOURCE_REVISION}"
 
 COPY --chown=65532:65532 bin/tilo-api /usr/local/bin/tilo-api
+# The program the server starts a task's tilolang programs in. It looks for it beside itself.
+COPY --chown=65532:65532 bin/tilolang-process /usr/local/bin/tilolang-process
 
 USER 65532:65532
 # The clients and grants, and nothing else: a read-only root filesystem needs

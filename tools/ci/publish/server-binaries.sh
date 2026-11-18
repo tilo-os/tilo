@@ -20,8 +20,10 @@ target=${CARGO_TARGET_DIR:-$repo_root/target}
 export CARGO_PROFILE_RELEASE_LTO=thin
 case $image in
   api)
-    packages=(-p tilo-api --bin tilo-api)
-    bins=(tilo-api) ;;
+    # The API server starts a task's tilolang programs in tilolang-process, which it finds
+    # beside itself: one feature resolution for the two.
+    packages=(-p tilo-api --bin tilo-api -p tilolang-process --bin tilolang-process)
+    bins=(tilo-api tilolang-process) ;;
   vm-host)
     # tilo-runtime already depends on the runtime packages the host serves from; one feature
     # resolution for the three programs.

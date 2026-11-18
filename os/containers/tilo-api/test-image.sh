@@ -47,13 +47,26 @@ b run "$container" -- /usr/bin/busybox grep -qx 'ID=fedora' /etc/os-release \
 [[ $(stat -c '%u:%g %a' "$root/state") == '65532:65532 700' ]] \
   || die "/state is $(stat -c '%u:%g %a' "$root/state"), not 65532:65532 0700"
 
+# What PROGRAM says when it is started with nothing handed to it; starting all the same is
+# FAULT.
+refusal() { # PROGRAM FAULT
+  local said
+  if said=$(b run "$container" -- "$1" 2>&1); then die "$2"; fi
+  printf '%s' "$said"
+}
 # Nothing is configured in the image: with no environment the server says what it needs instead of
 # starting on a guess.
-if refused=$(b run "$container" -- /usr/local/bin/tilo-api 2>&1); then
-  die 'the server starts with no environment at all'
-fi
+refused=$(refusal /usr/local/bin/tilo-api 'the server starts with no environment at all')
 grep -q 'TILO_API_LISTEN is required' <<< "$refused" \
   || die "the server without an environment said: $refused"
+# The program the server starts a task's tilolang programs in lies beside it, where the server
+# looks for it, and starts on this base: handed no api it says so in its own words, which a
+# missing library would not let it.
+[[ -x $root/usr/local/bin/tilolang-process ]] \
+  || die 'no /usr/local/bin/tilolang-process beside the server'
+refused=$(refusal /usr/local/bin/tilolang-process 'tilolang-process starts with no api handed to it')
+grep -q 'tilolang-process: exiting: no api' <<< "$refused" \
+  || die "tilolang-process on the image's base said: $refused"
 
 # The volume Kubernetes mounts over /state.
 state=$scratch/api-state
