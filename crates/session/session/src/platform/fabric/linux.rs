@@ -5,24 +5,24 @@ mod session;
 pub use session::Continuity;
 pub(crate) use session::SessionFabric;
 
-pub use tilo_device_fabric::link::{
+pub use tilo_network_actor::fabric::link::{
     FabricLink, NearbySpoolOffer, PersonalFabricSendError, SharedLink,
 };
-pub use tilo_device_fabric::notification::{
+pub use tilo_network_actor::fabric::notification::{
     ContinuityNotificationProjection, MAX_CONTINUITY_NOTIFICATION_TTL_MS,
 };
-pub use tilo_device_fabric::runtime::FabricRuntime;
-pub use tilo_device_fabric::secrets::open_wifi_credential;
-pub use tilo_device_fabric::speaker_group::{
+pub use tilo_network_actor::fabric::runtime::FabricRuntime;
+pub use tilo_network_actor::fabric::secrets::open_wifi_credential;
+pub use tilo_network_actor::fabric::speaker_group::{
     AudioEndpoint, AudioEndpointKind, EndpointSelector, SpeakerFabricState,
 };
-pub use tilo_device_fabric::unlock::{
+pub use tilo_network_actor::fabric::unlock::{
     AutoApproval, DEVICE_UNLOCK_ACTION, Decided, DecisionOutcome, MAX_UNLOCK_DECISIONS,
     MergedUnlock, UnlockDecision, UnlockDecisionEntry, UnlockEnrolment, UnlockFabricState,
     UnlockSibling, UnlockView, decision_for, merged_unlock_state,
 };
-pub use tilo_device_fabric::wake::WakeEvent;
-pub use tilo_device_fabric::{
+pub use tilo_network_actor::fabric::wake::WakeEvent;
+pub use tilo_network_actor::fabric::{
     CarriedDrag, CarriedOffer, ClipboardEntry, ClipboardPayload, DeviceFabric,
     DeviceFabricSnapshot, DeviceKind, DevicePresence, FABRIC_SCHEMA_VERSION, FabricCapabilities,
     FabricInputEvent, InputLease, Ipv4Subnet, MAX_INPUT_LEASE_MS, MAX_WAKE_ROUTES,
@@ -31,4 +31,4 @@ pub use tilo_device_fabric::{
     REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_RATE_HZ, ScrollUnit, WakeInterfaceKind,
     WakeOutcome, WakeRoute,
 };
-pub use tilo_device_fabric::{clock, wake};
+pub use tilo_network_actor::fabric::{clock, wake};

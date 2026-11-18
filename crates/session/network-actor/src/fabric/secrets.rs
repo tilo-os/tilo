@@ -18,9 +18,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tilo_seal::{Label, PublicKey, SealedBox, SecretKey};
 
-use crate::{MAX_DEVICES, MAX_SEALED_SECRET_BYTES, WifiCredential};
-use tilo_network_actor::fabric::DeviceId;
-use tilo_network_actor::fabric::FabricStamp;
+use crate::fabric::DeviceId;
+use crate::fabric::FabricStamp;
+use crate::fabric::{MAX_DEVICES, MAX_SEALED_SECRET_BYTES, WifiCredential};
 
 const WIFI_ENVELOPE_VERSION: u8 = 2;
 const WIFI_KEY_DOMAIN: &[u8] = b"tilo-personal-fabric-wifi-envelope-v1\0";
@@ -83,7 +83,7 @@ pub fn seal_wifi_credential(
         return Err(WifiSecretError::InvalidCredential);
     }
     let network_id = wifi_network_id(ssid, security);
-    let bundle_nonce = crate::random::bytes::<24>();
+    let bundle_nonce = crate::fabric::bytes::<24>();
     let mut envelopes = Vec::with_capacity(recipients.len());
     for recipient in recipients {
         let recipient_public = recipient_public_key(&recipient)?;

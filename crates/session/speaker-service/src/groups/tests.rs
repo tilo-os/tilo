@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 use media::sync_playout::ChannelRole;
 
 use super::*;
-use tilo_device_fabric::speaker_group::{StereoSide, SurroundChannel};
-use tilo_device_fabric::{
+use tilo_network_actor::fabric::speaker_group::{StereoSide, SurroundChannel};
+use tilo_network_actor::fabric::{
     DeviceFabricSnapshot, DeviceKind, DevicePresence, FABRIC_SCHEMA_VERSION, FabricCapabilities,
     OwnerSession,
 };
@@ -102,7 +102,7 @@ impl Device {
             settings: Vec::new(),
             wifi: Vec::new(),
             display: None,
-            unlock: tilo_device_fabric::unlock::UnlockFabricState::default(),
+            unlock: tilo_network_actor::fabric::unlock::UnlockFabricState::default(),
             speakers: self.core.authored(endpoints, &stamp(self.name)),
         };
         assert_eq!(fabric.upsert(snapshot), Ok(true));

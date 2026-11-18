@@ -20,9 +20,11 @@ ed25519-dalek = { workspace = true, features = ["rand_core"] }
 futures-util = { workspace = true, features = ["io"] }
 getrandom.workspace = true
 hex.workspace = true
+libc.workspace = true
 iroh.workspace = true
 media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["realtime"] }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
+os-actions = { path = "../../system/os-actions" }
 postcard = { workspace = true, features = ["alloc"] }
 runtime-collab = { path = "../../runtime/runtime-collab" }
 serde.workspace = true
@@ -32,6 +34,7 @@ thiserror.workspace = true
 tilo-actions = { path = "../../collab/actions" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-delivery-protocol = { path = "../../server/tilo-delivery-protocol" }
+tilo-desktop-surface = { path = "../desktop-surface" }
 tilo-desktop-model = { path = "../desktop-model" }
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
 # Who a device is and the revision a fact carries, as every host reads them.
@@ -39,12 +42,14 @@ tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 tilo-identity = { path = "../../runtime/tilo-identity" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-messaging = { path = "../../platform/tilo-messaging" }
+tilo-nearby-service = { path = "../nearby-service" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tilo-server-client = { path = "../../server/tilo-server-client" }
 tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
 tilo-server-session = { path = "../../server/tilo-server-session" }
 tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["apps"] }
 tilo-rt.workspace = true
+tilo-seal = { path = "../../system/tilo-seal" }
 tilo-session-client = { path = "../client" }
 tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
@@ -63,6 +68,7 @@ workspace-hack = { version = "0.1" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 
 [dev-dependencies]
+p256 = { version = "0.14", features = ["ecdsa"] }
 fnv.workspace = true
 # The records a device's apps write: what a member's link carries and this
 # device's apps read.

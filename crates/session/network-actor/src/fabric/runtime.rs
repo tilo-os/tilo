@@ -12,14 +12,14 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use iroh::EndpointId;
 use tilo_user_identity::{DeviceCert, RevocationEntry};
 
-use crate::{
+use crate::fabric::{
     ClipboardEntry, DeviceFabric, DeviceFabricSnapshot, DeviceId, DeviceKind, DevicePresence,
     DisplayPlacement, FABRIC_SCHEMA_VERSION, FabricCapabilities, FabricError, FabricStamp,
     OwnerSession, PersonalFabricAction, PersonalFabricActionEnvelope, WakeRoute,
 };
 
 /// Request ids remembered so a replayed action is refused. An envelope older than
-/// [`crate::MAX_FABRIC_ACTION_AGE_MS`] is refused anyway, so the newest ids cover
+/// [`crate::fabric::MAX_FABRIC_ACTION_AGE_MS`] is refused anyway, so the newest ids cover
 /// every replay the wire lets through.
 const REMEMBERED_ACTIONS: usize = 8192;
 
@@ -103,7 +103,7 @@ impl FabricRuntime {
     /// One of the person's devices proved itself on its session with this one: from now
     /// on its frames are attributed to the device its certificate names, and actions to
     /// it leave the same way. The certificates are the ones the transport verified
-    /// ([`tilo_network_actor::NetEvent::Sibling`]). A device an entry in `revocations`
+    /// ([`crate::NetEvent::Sibling`]). A device an entry in `revocations`
     /// covers is no device of the person's any more, so what it said is dropped. Only
     /// the person's own root speaks for their devices: another root's entry naming this
     /// one refuses nothing of it.
@@ -197,7 +197,7 @@ impl FabricRuntime {
         peer: EndpointId,
         bytes: &[u8],
     ) -> Result<Option<PersonalFabricAction>, FabricError> {
-        if bytes.len() > tilo_network_actor::fabric::MAX_FABRIC_ACTION_BYTES {
+        if bytes.len() > crate::fabric::MAX_FABRIC_ACTION_BYTES {
             return Err(FabricError::ActionTooLarge);
         }
         let (envelope, trailing) = postcard::take_from_bytes::<PersonalFabricActionEnvelope>(bytes)
@@ -290,7 +290,7 @@ impl FabricRuntime {
             .cloned()
             .chain([device.clone()])
             .collect::<BTreeSet<_>>();
-        let credential = crate::secrets::seal_wifi_credential(
+        let credential = crate::fabric::secrets::seal_wifi_credential(
             ssid,
             security,
             password,
@@ -349,7 +349,7 @@ impl FabricRuntime {
     /// Why the state does not make a valid record.
     pub fn set_unlock(
         &mut self,
-        unlock: crate::unlock::UnlockFabricState,
+        unlock: crate::fabric::unlock::UnlockFabricState,
     ) -> Result<bool, FabricError> {
         let Some(local) = &mut self.local else {
             return Ok(false);
@@ -369,10 +369,10 @@ impl FabricRuntime {
     /// each other.
     pub fn set_display(
         &mut self,
-        rect: crate::DisplayRect,
+        rect: crate::fabric::DisplayRect,
         scale_milli: u16,
-        connectors: Vec<crate::DisplayConnectorPlacement>,
-        facts: Vec<crate::DisplayOutputObservation>,
+        connectors: Vec<crate::fabric::DisplayConnectorPlacement>,
+        facts: Vec<crate::fabric::DisplayOutputObservation>,
     ) -> Result<bool, FabricError> {
         let Some(local) = &mut self.local else {
             return Ok(false);
@@ -421,8 +421,8 @@ impl FabricRuntime {
         &self,
     ) -> Option<(
         FabricStamp,
-        Vec<crate::DisplayConnectorPlacement>,
-        Vec<crate::DisplayOutputObservation>,
+        Vec<crate::fabric::DisplayConnectorPlacement>,
+        Vec<crate::fabric::DisplayOutputObservation>,
     )> {
         let local = self.local.as_ref()?;
         let display = local.snapshot.display.as_ref()?;
@@ -443,7 +443,7 @@ impl FabricRuntime {
         &mut self,
         peer: EndpointId,
         stamp: &FabricStamp,
-        outputs: Vec<crate::DisplayConnectorPlacement>,
+        outputs: Vec<crate::fabric::DisplayConnectorPlacement>,
     ) -> Result<bool, FabricError> {
         let Some(owner) = self.device_behind(peer) else {
             return Err(FabricError::UnknownDevice);
@@ -461,7 +461,7 @@ impl FabricRuntime {
         &mut self,
         peer: EndpointId,
         stamp: &FabricStamp,
-        outputs: Vec<crate::DisplayOutputObservation>,
+        outputs: Vec<crate::fabric::DisplayOutputObservation>,
     ) -> Result<bool, FabricError> {
         let Some(owner) = self.device_behind(peer) else {
             return Err(FabricError::UnknownDevice);
@@ -611,8 +611,8 @@ fn own_resource(
         settings: Vec::new(),
         wifi: Vec::new(),
         display: None,
-        speakers: crate::speaker_group::SpeakerFabricState::default(),
-        unlock: crate::unlock::UnlockFabricState::default(),
+        speakers: crate::fabric::speaker_group::SpeakerFabricState::default(),
+        unlock: crate::fabric::unlock::UnlockFabricState::default(),
     };
     snapshot.validate()?;
     Ok(snapshot)
@@ -621,7 +621,7 @@ fn own_resource(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DisplayConnectorPlacement, DisplayOutputObservation, DisplayRect};
+    use crate::fabric::{DisplayConnectorPlacement, DisplayOutputObservation, DisplayRect};
 
     fn endpoint(seed: u8) -> EndpointId {
         iroh::SecretKey::from_bytes(&[seed; 32]).public()
@@ -696,7 +696,7 @@ mod tests {
         action: PersonalFabricAction,
     ) -> PersonalFabricActionEnvelope {
         PersonalFabricActionEnvelope {
-            request_id: crate::random::nonzero::<16>(),
+            request_id: crate::fabric::nonzero::<16>(),
             source: source.clone(),
             target: target.clone(),
             issued_unix_ms: tilo_clock::unix_now_ms(),
@@ -1063,7 +1063,7 @@ mod tests {
 
         let stale = PersonalFabricActionEnvelope {
             issued_unix_ms: tilo_clock::unix_now_ms()
-                .saturating_sub(crate::MAX_FABRIC_ACTION_AGE_MS.saturating_add(1)),
+                .saturating_sub(crate::fabric::MAX_FABRIC_ACTION_AGE_MS.saturating_add(1)),
             ..envelope(
                 &other,
                 &local().0,
@@ -1156,13 +1156,13 @@ mod tests {
             "the passphrase itself never reaches the fabric"
         );
         assert_eq!(
-            crate::secrets::open_wifi_credential(&credential, &key),
+            crate::fabric::secrets::open_wifi_credential(&credential, &key),
             Ok("the-passphrase".to_owned()),
             "this device reads what it shared"
         );
         let another = ed25519_dalek::SigningKey::from_bytes(&[10; 32]);
         assert!(
-            crate::secrets::open_wifi_credential(&credential, &another).is_err(),
+            crate::fabric::secrets::open_wifi_credential(&credential, &another).is_err(),
             "a key the passphrase was not sealed to cannot read it"
         );
 
@@ -1178,7 +1178,7 @@ mod tests {
             .next()
             .expect("one credential");
         assert_eq!(
-            crate::secrets::open_wifi_credential(&credential, &key),
+            crate::fabric::secrets::open_wifi_credential(&credential, &key),
             Ok("changed".to_owned())
         );
     }

@@ -4,12 +4,10 @@
 
 use std::collections::BTreeSet;
 
-use tilo_network_actor::NearbyTransferCheckpoint;
-use tilo_network_actor::fabric::{
-    DeviceId, DisplayConnectorPlacement, DisplayOutputObservation, DisplayRect,
-};
+use crate::NearbyTransferCheckpoint;
+use crate::fabric::{DeviceId, DisplayConnectorPlacement, DisplayOutputObservation, DisplayRect};
 
-use crate::{ClipboardEntry, DeviceFabric, OwnerSession, PersonalFabricAction, WakeRoute};
+use crate::fabric::{ClipboardEntry, DeviceFabric, OwnerSession, PersonalFabricAction, WakeRoute};
 
 /// One of this device's files, staged in its private Nearby spool, on its way
 /// to one of the person's other devices: the checkpoint the stream resumes
@@ -139,7 +137,7 @@ pub trait FabricLink {
 
     /// Offer what this device publishes about disk unlock to the person's other devices:
     /// the sibling halves it holds for them, and the auto-approvals they set here.
-    fn share_unlock(&self, unlock: crate::unlock::UnlockFabricState) {
+    fn share_unlock(&self, unlock: crate::fabric::unlock::UnlockFabricState) {
         let _ = unlock;
     }
 
@@ -256,7 +254,7 @@ impl<T: FabricLink + ?Sized> FabricLink for std::sync::Arc<T> {
         (**self).person_displays()
     }
 
-    fn share_unlock(&self, unlock: crate::unlock::UnlockFabricState) {
+    fn share_unlock(&self, unlock: crate::fabric::unlock::UnlockFabricState) {
         (**self).share_unlock(unlock);
     }
 }

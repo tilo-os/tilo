@@ -23,9 +23,9 @@ use tilo_unlock_protocol::{
 };
 use tilo_user_identity::{CertifiedFleet, DeviceCertification};
 
-use crate::FabricError;
-use tilo_network_actor::fabric::DeviceId;
-use tilo_network_actor::fabric::FabricStamp;
+use crate::fabric::DeviceId;
+use crate::fabric::FabricError;
+use crate::fabric::FabricStamp;
 
 /// The typed action the owner approves a pending unlock with.
 pub const DEVICE_UNLOCK_ACTION: &str = "device.unlock";
@@ -250,7 +250,7 @@ pub struct UnlockFabricState {
 impl UnlockFabricState {
     pub fn validate(&self, owner: &DeviceId) -> Result<(), FabricError> {
         if self.enrolments.len() > MAX_UNLOCK_ENROLMENTS
-            || self.auto_approvals.len() > crate::MAX_DEVICES
+            || self.auto_approvals.len() > crate::fabric::MAX_DEVICES
             || self.decisions.len() > MAX_UNLOCK_DECISIONS
         {
             return Err(FabricError::SnapshotTooLarge);

@@ -1,6 +1,20 @@
 //! Who a device is ([`DeviceId`]), the revision a fact carries ([`FabricStamp`]), the fresh ids
 //! that name one exchange, and where its screens are: the display facts the actor carries.
 
+pub mod carried;
+pub mod clock;
+pub mod link;
+mod model;
+pub mod notification;
+pub mod runtime;
+pub mod secrets;
+pub mod speaker_group;
+pub mod unlock;
+pub mod wake;
+
+pub use carried::{CarriedDrag, CarriedOffer, MAX_CARRIED_OFFERS};
+pub use model::*;
+
 use getrandom::SysRng;
 use getrandom::rand_core::{Rng as _, UnwrapErr};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _, ser::Error as _};

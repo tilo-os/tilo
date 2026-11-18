@@ -18968,36 +18968,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-device-fabric"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "ed25519-dalek 3.0.0",
- "getrandom 0.4.3",
- "hex",
- "iroh",
- "libc",
- "os-actions",
- "p256 0.14.0",
- "postcard",
- "runtime-collab",
- "serde",
- "serde_json",
- "settings-store",
- "thiserror 2.0.21",
- "tilo-clock",
- "tilo-desktop-surface",
- "tilo-media",
- "tilo-nearby-service",
- "tilo-network-actor",
- "tilo-seal",
- "tilo-ui",
- "tilo-unlock-protocol",
- "tilo-user-identity",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-device-vpn"
 version = "0.1.0"
 dependencies = [
@@ -20368,7 +20338,10 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "iroh",
+ "libc",
  "neighbour-wire",
+ "os-actions",
+ "p256 0.14.0",
  "postcard",
  "runtime-collab",
  "serde",
@@ -20382,14 +20355,17 @@ dependencies = [
  "tilo-clock",
  "tilo-delivery-protocol",
  "tilo-desktop-model",
+ "tilo-desktop-surface",
  "tilo-endpoint-reachability",
  "tilo-files",
  "tilo-identity",
  "tilo-lock",
  "tilo-media",
  "tilo-messaging",
+ "tilo-nearby-service",
  "tilo-peer-state",
  "tilo-rt",
+ "tilo-seal",
  "tilo-server-client",
  "tilo-server-protocol",
  "tilo-server-session",
@@ -21902,7 +21878,6 @@ dependencies = [
  "tilo-desktop-policy",
  "tilo-desktop-search",
  "tilo-desktop-surface",
- "tilo-device-fabric",
  "tilo-device-vpn",
  "tilo-dictation",
  "tilo-documents",
@@ -22244,7 +22219,6 @@ dependencies = [
  "rand_core 0.10.0",
  "runtime-collab",
  "serde_json",
- "tilo-device-fabric",
  "tilo-lock",
  "tilo-media",
  "tilo-network-actor",
@@ -29038,7 +29012,6 @@ dependencies = [
  "tilo-desktop-search",
  "tilo-desktop-surface",
  "tilo-device-admin",
- "tilo-device-fabric",
  "tilo-device-vpn",
  "tilo-dialogs",
  "tilo-dictation",

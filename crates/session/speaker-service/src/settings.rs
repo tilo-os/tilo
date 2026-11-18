@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::hash::{Hash as _, Hasher as _};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use tilo_device_fabric::link::FabricLink;
+use tilo_network_actor::fabric::link::FabricLink;
 
 use tokio::sync::watch;
 
@@ -35,12 +35,12 @@ use crate::calibration::{
 use crate::groups::{
     ListenerCandidate, ListenerState, MemberSpec, SpeakerGroupsView, SpeakerSessionStatus,
 };
-use tilo_device_fabric::DeviceFabric;
-use tilo_device_fabric::speaker_group::{
+use tilo_network_actor::fabric::DeviceFabric;
+use tilo_network_actor::fabric::DeviceId;
+use tilo_network_actor::fabric::speaker_group::{
     AudioEndpointKind, EndpointSelector, RoomPoint, SpeakerGroupId, SpeakerRole, SpeakerTrim,
     StereoSide, SurroundChannel,
 };
-use tilo_network_actor::fabric::DeviceId;
 
 /// Shortest interval between two identify sounds on one device.
 pub const IDENTIFY_INTERVAL: Duration = Duration::from_millis(800);
@@ -569,7 +569,7 @@ pub fn changed(
 
 #[must_use]
 pub fn handle(
-    network: &tilo_device_fabric::link::SharedLink,
+    network: &tilo_network_actor::fabric::link::SharedLink,
     command: SpeakerCommand,
 ) -> SpeakerReply {
     let result = match command {
@@ -610,7 +610,7 @@ fn bounded_reason(mut reason: String) -> String {
 }
 
 fn run_command(
-    network: &tilo_device_fabric::link::SharedLink,
+    network: &tilo_network_actor::fabric::link::SharedLink,
     command: SpeakerCommand,
 ) -> Result<Option<String>, String> {
     use crate::groups;
@@ -721,7 +721,7 @@ fn output_group(view: &SpeakerGroupsView) -> Option<SpeakerGroupId> {
 /// Play everything this device plays on `group`, as an output chosen in
 /// Sound: one such group at a time, so choosing another ends the first.
 fn use_as_output(
-    network: &tilo_device_fabric::link::SharedLink,
+    network: &tilo_network_actor::fabric::link::SharedLink,
     group: SpeakerGroupId,
 ) -> Result<(), String> {
     use crate::groups;
@@ -768,7 +768,7 @@ fn with_run<T>(
 /// Measure with the timed audio path; remote members and listening devices
 /// are asked over the fabric.
 fn timed_source(
-    network: &tilo_device_fabric::link::SharedLink,
+    network: &tilo_network_actor::fabric::link::SharedLink,
     local: DeviceId,
     peers: &[DeviceId],
 ) -> Box<dyn crate::calibration::MeasurementSource> {
@@ -846,7 +846,7 @@ fn parse_device(value: &str) -> Result<DeviceId, String> {
 }
 
 fn start_calibration(
-    network: &tilo_device_fabric::link::SharedLink,
+    network: &tilo_network_actor::fabric::link::SharedLink,
     group: &str,
     excluded: &[String],
     listening: Option<&str>,
@@ -908,7 +908,7 @@ fn start_calibration(
         microphones,
         listening,
         timed_source(network, local, &peers),
-        Box::new(tilo_device_fabric::random::nonzero::<16>),
+        Box::new(tilo_network_actor::fabric::nonzero::<16>),
         Instant::now(),
     )?;
     state()

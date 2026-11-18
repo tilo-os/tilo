@@ -1,7 +1,7 @@
 //! What a drag that crosses between the person's devices carries: never a byte of content, only
 //! what names it in the workspace.
 
-use crate::{valid_identifier, valid_mime};
+use crate::fabric::{valid_fabric_identifier, valid_mime};
 
 /// What a drag that crossed between the person's devices carries. No byte of content rides in
 /// it: content is kept in the workspace and named, a resource is named by its address.
@@ -39,11 +39,11 @@ impl CarriedDrag {
     pub fn valid(&self) -> bool {
         match self {
             Self::Content { workspace, offers } => {
-                valid_identifier(workspace, 64)
+                valid_fabric_identifier(workspace, 64)
                     && !offers.is_empty()
                     && offers.len() <= MAX_CARRIED_OFFERS
                     && offers.iter().all(|offer| {
-                        valid_mime(&offer.mime) && valid_identifier(&offer.reference, 256)
+                        valid_mime(&offer.mime) && valid_fabric_identifier(&offer.reference, 256)
                     })
             }
             Self::Resource {
@@ -51,7 +51,7 @@ impl CarriedDrag {
                 address,
                 label,
             } => {
-                valid_identifier(kind, 64)
+                valid_fabric_identifier(kind, 64)
                     && !address.is_empty()
                     && address.len() <= 1024
                     && !address.chars().any(char::is_control)

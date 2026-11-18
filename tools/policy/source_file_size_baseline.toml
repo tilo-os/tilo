@@ -88,7 +88,6 @@
 "crates/session/desktop-surface/src/activity/pane.rs" = 3500
 "crates/session/desktop-surface/src/activity/pane_tests.rs" = 3500
 "crates/session/desktop-surface/src/notifications/center.rs" = 3500
-"crates/session/device-fabric/src/lib.rs" = 4000
 "crates/session/network-actor/src/lib.rs" = 4000
 "crates/session/onboarding-session/src/view.rs" = 7000
 "crates/session/speaker-service/src/remote_audio.rs" = 3500

@@ -221,7 +221,6 @@
   "tilo-desktop-search": {"libraries": 19798682, "tests": 191333544},
   "tilo-desktop-surface": {"libraries": 50816929, "tests": 1696146728},
   "tilo-device-admin": {"libraries": 11485507, "tests": 161093576},
-  "tilo-device-fabric": {"libraries": 26295964, "tests": 228313064},
   "tilo-device-vpn": {"libraries": 9784386, "tests": 304664216},
   "tilo-dialogs": {"libraries": 19509966, "tests": 33234128},
   "tilo-dictation": {"libraries": 3885558, "tests": 31087208},

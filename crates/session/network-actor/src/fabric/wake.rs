@@ -4,7 +4,7 @@
 //! six `0xFF` bytes then the target's MAC sixteen times, broadcast on the LAN
 //! it last sat on. Only a device sharing that LAN can send it, so the person's
 //! other devices cooperate: the one that shares it sends the packet, and any
-//! device may ask for the wake ([`crate::PersonalFabricAction::WakeDevice`]).
+//! device may ask for the wake ([`crate::fabric::PersonalFabricAction::WakeDevice`]).
 //!
 //! What each device needs known here is pure and decided by the fabric the
 //! session already keeps: which device a name or id names, which of them can
@@ -20,7 +20,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
 
-use crate::{DeviceFabric, DeviceId, Ipv4Subnet, MAX_WAKE_ROUTES, WakeOutcome, WakeRoute};
+use crate::fabric::{DeviceFabric, DeviceId, Ipv4Subnet, MAX_WAKE_ROUTES, WakeOutcome, WakeRoute};
 
 /// The port a magic packet goes to.
 pub const MAGIC_PACKET_PORT: u16 = 9;
@@ -324,7 +324,7 @@ impl WakeWatch {
                 requester,
                 started: now,
                 last_probe: None,
-                nonce: crate::random::nonzero::<16>(),
+                nonce: crate::fabric::nonzero::<16>(),
             },
         );
         true
@@ -541,11 +541,11 @@ mod tests {
     use std::net::Ipv4Addr;
 
     use super::*;
-    use crate::{
+    use crate::fabric::FabricStamp;
+    use crate::fabric::{
         DeviceFabricSnapshot, DeviceKind, DevicePresence, FABRIC_SCHEMA_VERSION,
         FabricCapabilities, OwnerSession, WakeInterfaceKind,
     };
-    use tilo_network_actor::fabric::FabricStamp;
 
     fn id(value: &str) -> DeviceId {
         DeviceId::new(value).unwrap()
@@ -589,8 +589,8 @@ mod tests {
             settings: Vec::new(),
             wifi: Vec::new(),
             display: None,
-            unlock: crate::unlock::UnlockFabricState::default(),
-            speakers: crate::speaker_group::SpeakerFabricState::default(),
+            unlock: crate::fabric::unlock::UnlockFabricState::default(),
+            speakers: crate::fabric::speaker_group::SpeakerFabricState::default(),
         }
     }
 

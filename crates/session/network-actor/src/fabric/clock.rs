@@ -34,9 +34,9 @@ use ui::num::f64_of_i64;
 
 use serde::{Deserialize, Serialize};
 
-use crate::PersonalFabricAction;
-use crate::link::FabricLink;
-use tilo_network_actor::fabric::DeviceId;
+use crate::fabric::DeviceId;
+use crate::fabric::PersonalFabricAction;
+use crate::fabric::link::FabricLink;
 
 /// Probe cadence toward a peer while something holds its clock in sync.
 pub const CLOCK_SYNC_PROBE_INTERVAL: Duration = Duration::from_millis(250);
@@ -769,7 +769,7 @@ pub fn pump(network: &dyn FabricLink, media_enabled: bool) {
             |peer| local.as_ref() != Some(peer) && online.contains(peer),
             now,
             now_us,
-            crate::random::nonzero::<16>,
+            crate::fabric::nonzero::<16>,
         )
     });
     for (peer, probe) in probes {

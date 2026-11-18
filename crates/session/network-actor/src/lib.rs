@@ -17,6 +17,9 @@
 //! its tests run on their own.
 
 pub mod behaviour;
+mod i18n {
+    ui::embedded_catalog!(pub(crate) fn, ["en-US", "de-DE"]);
+}
 mod device_sessions;
 pub mod fabric;
 mod fabric_link;
