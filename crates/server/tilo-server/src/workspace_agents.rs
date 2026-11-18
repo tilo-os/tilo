@@ -2085,13 +2085,37 @@ async fn work(
         };
         messages.push(results);
     }
-    (
-        Outcome::Stopped(
-            "I stopped after many steps without finishing. Tell me how to go on.".to_owned(),
-        ),
-        cost,
-    )
+    // Out of steps, it may well have finished: it is asked once more, with no tools, to say
+    // what it did, rather than the person being told only that it stopped.
+    if going.stopped() {
+        return (Outcome::Cancelled, cost);
+    }
+    messages.push(Message::text(Role::User, OUT_OF_STEPS.to_owned()));
+    let request = ModelRequest {
+        messages,
+        tools,
+        tool_choice: ToolChoice::None,
+        max_output_tokens: ANSWER_TOKENS,
+    };
+    let said = match ask_model(&turns, request, format!("{key}:last")).await {
+        Ok(response) => {
+            cost = cost.saturating_add(response.cost_micros);
+            words_of(&response)
+        }
+        Err(_) if going.stopped() => return (Outcome::Cancelled, cost),
+        Err(_) => String::new(),
+    };
+    let said = if said.trim().is_empty() {
+        "I stopped after many steps without finishing. Tell me how to go on.".to_owned()
+    } else {
+        said
+    };
+    tracing::info!(agent = %turn.agent.id.0, cost, said = said.len(), "an agent on the workspace's server ran out of steps and said where it got to");
+    (Outcome::Stopped(said), cost)
 }
+
+const OUT_OF_STEPS: &str = "You have no steps left in this turn. Answer the person now in a few \
+     plain sentences: what you did, what is still open, and how they can let you go on.";
 
 /// Take into the turn what its person wrote since its last step: the model is told it, the
 /// replies the turn leaves say the answer follows below, and `turn` and `reply` become the
