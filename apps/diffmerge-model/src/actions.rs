@@ -3,8 +3,7 @@
 //! effect whose result opens a comparison through a verb. Scrolling, the active hunk and
 //! the mode shown are view state.
 
-use ui::prelude::Effect;
-use ui::tilo_resource;
+use tilo_resource::{self, Effect};
 
 use crate::doc::HunkChoice;
 use crate::model::{BlockKind, ChangeBlock, DiffModel, MergeHunk, MergeModel, Resolution};

@@ -1,4 +1,4 @@
-//! The session's record: the inputs of what is open and the merged result everyone edits,
+//! The session's shared data: the inputs of what is open and the merged result everyone edits,
 //! so a member, a reload and history see the same session. Inputs are written as
 //! atoms, so two people opening different files end with one of the two sets. `resolutions`
 //! and `written` hold how each hunk was taken, and a new merge clears both.
@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{self, Atom, JsonSchema, Model};
+use tilo_resource::{self, Atom, JsonSchema, Model};
 
 use crate::model::{DiffModel, MergeModel, Resolution};
 
@@ -73,21 +73,33 @@ pub struct MergeInputs {
     pub theirs: Atom,
 }
 
+/// The file a side's label names: a label may carry what it was chosen from in
+/// parentheses, and the file is what reads.
+pub fn split_label(label: &str) -> (&str, Option<&str>) {
+    let label = label.trim();
+    match label.rsplit_once(" (") {
+        Some((name, rest)) if rest.ends_with(')') => {
+            (name.trim_end(), rest.strip_suffix(')').map(str::trim))
+        }
+        _ => (label, None),
+    }
+}
+
+/// The file name a side's label shows, without what it was chosen from.
+pub fn file_name(label: &str) -> &str {
+    split_label(label).0
+}
+
+/// The merge's title: the sides it merges, named by their files. Every device
+/// derives the same label from the same resource.
 pub fn merge_title(ours: &str, theirs: &str) -> String {
-    use crate::i18n::{t, t_args, text};
-    let (ours_name, theirs_name) = (
-        crate::highlight::file_name(ours),
-        crate::highlight::file_name(theirs),
-    );
+    let (ours_name, theirs_name) = (file_name(ours), file_name(theirs));
     if ours.is_empty() && theirs.is_empty() {
-        t("merge-title-empty")
+        "Merged result".to_string()
     } else if ours_name == theirs_name {
-        t_args("merge-title", &[("name", text(ours_name))])
+        format!("Merge of {ours_name}")
     } else {
-        t_args(
-            "merge-title-pair",
-            &[("ours", text(ours_name)), ("theirs", text(theirs_name))],
-        )
+        format!("Merge of {ours_name} and {theirs_name}")
     }
 }
 

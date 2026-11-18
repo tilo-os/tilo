@@ -21,25 +21,21 @@
     )
 )]
 
-pub mod actions;
 pub mod app;
 mod chrome;
 pub mod diff_view;
-pub mod doc;
 pub mod folder;
 mod folder_view;
 pub mod highlight;
 pub mod i18n;
 pub mod merge_view;
-pub mod model;
 mod pane;
 pub mod resource;
 pub mod samples;
 mod scroll;
 
-pub use actions::DiffmergeEffect;
 pub use app::{DiffMergeApp, Mode};
-pub use doc::{HunkChoice, Session};
+pub use diffmerge_model::{DiffmergeEffect, HunkChoice, Session, actions, doc, model, session};
 pub use model::{DiffModel, MergeModel, Resolution};
 pub use resource::DiffmergeShell;
 

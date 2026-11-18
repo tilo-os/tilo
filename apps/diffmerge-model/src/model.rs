@@ -9,13 +9,14 @@ thread_local! {
         const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
 }
 
-#[cfg(test)]
 thread_local! {
     static DIGEST_PASSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-#[cfg(test)]
-pub(crate) fn digest_passes() -> usize {
+/// How many times this thread has digested a comparison's content: the
+/// counter a window's test reads to prove an unchanged comparison is not
+/// rehashed.
+pub fn digest_passes() -> usize {
     DIGEST_PASSES.get()
 }
 
@@ -26,8 +27,7 @@ struct ComparisonCache {
 
 /// The alignment of this exact content, shared by the resource and its view: both
 /// source digests are part of it, so an edit cannot reuse the previous comparison.
-pub(crate) fn comparison(left: &str, right: &str) -> std::sync::Arc<DiffModel> {
-    #[cfg(test)]
+pub fn comparison(left: &str, right: &str) -> std::sync::Arc<DiffModel> {
     DIGEST_PASSES.set(DIGEST_PASSES.get().saturating_add(1));
     let key = (
         blake3::hash(left.as_bytes()),
