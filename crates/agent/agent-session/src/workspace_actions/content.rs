@@ -101,6 +101,40 @@ fn piece(
 struct StorePuts(ContentStore);
 
 impl ContentPuts for StorePuts {
+    fn put_many(
+        &self,
+        _caller: &Caller,
+        files: &[Vec<u8>],
+    ) -> Result<Vec<String>, ActionCallError> {
+        let mut contents = Vec::with_capacity(files.len());
+        for bytes in files {
+            if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_PUT_BYTES {
+                return Err(ActionCallError::InvalidRequest {
+                    reason: format!(
+                        "one file is at most {}: split the archive, or keep the piece the workspace needs",
+                        ui::format::memory(MAX_PUT_BYTES)
+                    ),
+                });
+            }
+            let hash = self
+                .0
+                .put(bytes)
+                .map_err(|error| ActionCallError::Refused {
+                    reason: format!("the workspace could not keep the file: {error}"),
+                })?;
+            contents.push(tilo_actions::content_resource(&hash).ok_or_else(|| {
+                ActionCallError::Refused {
+                    reason: "the store named no content".into(),
+                }
+            })?);
+        }
+        Ok(contents)
+    }
+
+    fn have(&self, _caller: &Caller, hashes: &[String]) -> Result<Vec<bool>, ActionCallError> {
+        Ok(hashes.iter().map(|hash| self.0.has(hash)).collect())
+    }
+
     fn begin(&self, _caller: &Caller, size: u64) -> Result<Box<dyn ContentPut>, ActionCallError> {
         if size > MAX_PUT_BYTES {
             return Err(ActionCallError::InvalidRequest {
@@ -237,7 +271,13 @@ impl WorkspaceActions {
             correlation,
             result,
         };
-        let checked = !self.authorized(caller) && matches!(step, ContentPutStep::Begin { .. });
+        let checked = !self.authorized(caller)
+            && matches!(
+                step,
+                ContentPutStep::Begin { .. }
+                    | ContentPutStep::Many { .. }
+                    | ContentPutStep::Have { .. }
+            );
         if checked && !super::speaks_for_a_member(caller) {
             return Pending::ready(respond(Err(ActionCallError::NotPermitted)));
         }
@@ -371,8 +411,15 @@ impl Worker {
         caller: &Caller,
         step: ContentPutStep,
     ) -> Result<tilo_actions::remote::ContentPutAnswer, ActionCallError> {
-        if matches!(step, ContentPutStep::Begin { .. })
-            && !self.may_across(workspace_id, caller, ActionKind::Undoable)
+        if matches!(
+            step,
+            ContentPutStep::Begin { .. } | ContentPutStep::Many { .. }
+        ) && !self.may_across(workspace_id, caller, ActionKind::Undoable)
+        {
+            return Err(ActionCallError::NotPermitted);
+        }
+        if matches!(step, ContentPutStep::Have { .. })
+            && !self.may_across(workspace_id, caller, ActionKind::Read)
         {
             return Err(ActionCallError::NotPermitted);
         }

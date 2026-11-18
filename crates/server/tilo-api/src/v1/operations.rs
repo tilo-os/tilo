@@ -375,6 +375,22 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
         .body(Body::Bytes)
         .json(201, "Uploaded"),
         op(
+            "putManyContents",
+            Method::PUT,
+            "/v1/workspaces/{workspace}/contents",
+            "Store several small files whole in one request, answering each one's reference",
+        )
+        .body(Body::Json("PutMany"))
+        .json(200, "PutManyAnswer"),
+        op(
+            "haveContents",
+            Method::POST,
+            "/v1/workspaces/{workspace}/contents/have",
+            "Which of these content hashes the workspace already holds",
+        )
+        .body(Body::Json("HaveHashes"))
+        .json(200, "HeldHashes"),
+        op(
             "openUpload",
             Method::POST,
             "/v1/workspaces/{workspace}/uploads/{upload}",

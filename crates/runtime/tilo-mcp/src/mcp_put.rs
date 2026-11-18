@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
 use tilo_actions::remote::{
-    ActionCallError, CONTENT_PUTS_UNAVAILABLE, ContentPut, MAX_CONTENT_PUT_AHEAD,
-    MAX_CONTENT_PUT_CHUNK, MAX_OPEN_CONTENT_PUTS,
+    ActionCallError, CONTENT_PUTS_UNAVAILABLE, ContentPut, ContentPuts, MAX_CONTENT_PUT_AHEAD,
+    MAX_CONTENT_PUT_CHUNK, MAX_HAVE_HASHES, MAX_OPEN_CONTENT_PUTS, MAX_PUT_MANY_BYTES,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -21,13 +21,22 @@ use super::{ActionProvider, Deserialize, McpServer, Value, json, parse};
 /// The longest base64 text of a chunk within [`MAX_CONTENT_PUT_CHUNK`].
 const MAX_CHUNK_TEXT: usize = MAX_CONTENT_PUT_CHUNK.div_ceil(3) * 4;
 
+/// The most raw bytes one many-files call takes: a few steps of
+/// [`MAX_PUT_MANY_BYTES`], under the request body a caller can send.
+const MAX_MANY_BYTES: usize = MAX_PUT_MANY_BYTES * 2;
+
+/// The most hashes one call asks about.
+const MAX_HASHES: usize = MAX_HAVE_HASHES * 4;
+
 /// The put tools' names.
 const BEGIN: &str = "tilo_put_begin";
 const APPEND: &str = "tilo_put_append";
 const FINISH: &str = "tilo_put_finish";
+const MANY: &str = "tilo_put_many";
+const HAVE: &str = "tilo_put_have";
 
 pub(super) fn is_put_tool(name: &str) -> bool {
-    matches!(name, BEGIN | APPEND | FINISH)
+    matches!(name, BEGIN | APPEND | FINISH | MANY | HAVE)
 }
 
 /// The put tools, offered where the host has a content store.
@@ -52,6 +61,18 @@ pub(super) fn tool_definitions() -> Vec<Value> {
             "Finish an upload; answers its tilo.content:<hash> reference.",
             json!({"upload":integer}),
             json!(["upload"]),
+        ),
+        (
+            MANY,
+            "Store several small files whole in one call, each base64; answers each one's tilo.content:<hash> reference in order.",
+            json!({"files":{"type":"array","items":{"type":"string"}}}),
+            json!(["files"]),
+        ),
+        (
+            HAVE,
+            "Which of these content hashes (lowercase BLAKE3 hex) the workspace already holds, in order.",
+            json!({"hashes":{"type":"array","items":{"type":"string"}}}),
+            json!(["hashes"]),
         ),
     ]
     .into_iter()
@@ -168,6 +189,18 @@ struct FinishArgs {
     upload: u64,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManyArgs {
+    files: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HaveArgs {
+    hashes: Vec<String>,
+}
+
 /// A host's refusal in its own words.
 fn refusal(error: ActionCallError) -> String {
     match error {
@@ -194,6 +227,14 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 Ok(args) => self.put_finish(args).await,
                 Err(error) => Err(error),
             },
+            MANY => match parse(args) {
+                Ok(args) => self.put_many(args).await,
+                Err(error) => Err(error),
+            },
+            HAVE => match parse(args) {
+                Ok(args) => self.put_have(args).await,
+                Err(error) => Err(error),
+            },
             _ => Err("Unknown tool".to_owned()),
         };
         let (text, failed) = match result {
@@ -203,11 +244,55 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         json!({"content":[{"type":"text","text":text}],"isError":failed})
     }
 
-    async fn put_begin(&self, args: BeginArgs) -> Result<Value, String> {
-        let puts = self
-            .host()
+    /// The session's content puts, when its workspace keeps any.
+    fn puts(&self) -> Result<std::sync::Arc<dyn ContentPuts>, String> {
+        self.host()
             .content_puts()
-            .ok_or_else(|| CONTENT_PUTS_UNAVAILABLE.to_owned())?;
+            .ok_or_else(|| CONTENT_PUTS_UNAVAILABLE.to_owned())
+    }
+
+    async fn put_many(&self, args: ManyArgs) -> Result<Value, String> {
+        let puts = self.puts()?;
+        if args.files.is_empty() {
+            return Err("give at least one file".into());
+        }
+        let mut files = Vec::with_capacity(args.files.len());
+        let mut total = 0_usize;
+        for text in args.files {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(text.as_bytes())
+                .map_err(|_| "each file must be base64".to_owned())?;
+            total = total.saturating_add(bytes.len());
+            if total > MAX_MANY_BYTES {
+                return Err(format!(
+                    "one call stores at most {MAX_MANY_BYTES} bytes of files"
+                ));
+            }
+            files.push(bytes);
+        }
+        let caller = self.caller();
+        let contents = tokio::task::spawn_blocking(move || puts.put_many(&caller, &files))
+            .await
+            .map_err(|_| "the files could not be stored".to_owned())?
+            .map_err(refusal)?;
+        Ok(json!({"contents": contents}))
+    }
+
+    async fn put_have(&self, args: HaveArgs) -> Result<Value, String> {
+        let puts = self.puts()?;
+        if args.hashes.len() > MAX_HASHES {
+            return Err(format!("one call asks about at most {MAX_HASHES} hashes"));
+        }
+        let caller = self.caller();
+        let present = tokio::task::spawn_blocking(move || puts.have(&caller, &args.hashes))
+            .await
+            .map_err(|_| "the workspace could not be asked what it holds".to_owned())?
+            .map_err(refusal)?;
+        Ok(json!({"have": present}))
+    }
+
+    async fn put_begin(&self, args: BeginArgs) -> Result<Value, String> {
+        let puts = self.puts()?;
         if self.uploads.lock_recover().open.len() >= MAX_OPEN_CONTENT_PUTS {
             return Err(format!(
                 "this session already has {MAX_OPEN_CONTENT_PUTS} uploads open: finish one first"

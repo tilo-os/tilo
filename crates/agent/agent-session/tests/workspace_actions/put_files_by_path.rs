@@ -1140,7 +1140,10 @@ async fn with_no_page_open_a_file_is_written_from_text_and_from_content_and_take
     assert_eq!(written["size"], NOTES.len(), "{written}");
     assert_eq!(written["replaced"], false, "{written}");
     assert_eq!(written["made"], json!(["Tasks", TASK]), "{written}");
-    assert!(written["invocation"].is_string(), "the call it was: {written}");
+    assert!(
+        written["invocation"].is_string(),
+        "the call it was: {written}"
+    );
     assert_eq!(text_of(&report).await, NOTES);
     let tree = kept_when(&workspaces, &workspace, |tree| {
         content_at(tree, TASK, "report.md").is_some()

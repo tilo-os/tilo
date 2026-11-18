@@ -289,6 +289,36 @@ async fn a_folder_put_is_one_run_and_one_write_per_chunk() {
         person,
     );
 
+    // Many small files are kept whole in one call, and the workspace says
+    // which addresses it already holds.
+    let first = b"first small file".to_vec();
+    let second = b"second small file".to_vec();
+    let files: Vec<String> = [&first, &second]
+        .iter()
+        .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes))
+        .collect();
+    let said = tool(&server, "tilo_put_many", json!({"files": files})).await;
+    let kept: serde_json::Value = serde_json::from_str(&said).expect("contents");
+    let contents = kept["contents"].as_array().expect("contents");
+    assert_eq!(contents.len(), 2, "one answer for each file: {said}");
+    for (bytes, content) in [&first, &second].iter().zip(contents) {
+        let hash = blake3::hash(bytes).to_hex().to_string();
+        assert_eq!(
+            content.as_str(),
+            Some(format!("tilo.content:{hash}").as_str())
+        );
+    }
+    let known = blake3::hash(&first).to_hex().to_string();
+    let unknown = "0".repeat(64);
+    let said = tool(
+        &server,
+        "tilo_put_have",
+        json!({"hashes": [known, unknown]}),
+    )
+    .await;
+    let held: serde_json::Value = serde_json::from_str(&said).expect("held");
+    assert_eq!(held["have"], json!([true, false]), "{said}");
+
     // A folder large enough to fill more than one chunk of the tree, put in
     // an open whose list a small part of it carries beside the file's own
     // path, and then the rest as content of its own: every file goes in before

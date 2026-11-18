@@ -1043,58 +1043,174 @@ const TREE_BATCH_FILES: usize = 10_000;
 /// no request carries.
 const TREE_BATCH_BYTES: usize = 32 * 1024 * 1024;
 
-/// Upload `files`, [`UPLOADS_AT_ONCE`] at a time, telling a person at a
-/// terminal how far it is: each with the `tilo.content:` reference it went up
-/// as, in name order.
+/// The most raw bytes one many-files call carries: under the 1 MiB request
+/// and session frame bounds once base64 and hex grow them.
+const MANY_BYTES: usize = 512 * 1024;
+/// How many content hashes one call asks the workspace about.
+const HAVE_HASHES: usize = 6_000;
+
+/// `file`'s length, as the disk says it.
+fn file_size(file: &Uploading) -> u64 {
+    std::fs::metadata(&file.path).map_or(0, |meta| meta.len())
+}
+
+/// The address `file`'s bytes keep in the workspace, lowercase BLAKE3 hex: what
+/// the upload would answer, read here so content already kept is not sent again.
+fn hash_of(file: &Uploading) -> Result<String> {
+    use std::io::Read as _;
+    let mut opened = std::fs::File::open(&file.path)
+        .with_context(|| format!("reading {}", file.path.display()))?;
+    let mut hasher = blake3::Hasher::new();
+    let mut piece = vec![0_u8; 256 * 1024];
+    loop {
+        let read = match opened.read(&mut piece) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => {
+                return Err(error).with_context(|| format!("reading {}", file.path.display()));
+            }
+        };
+        hasher.update(piece.get(..read).unwrap_or_default());
+    }
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+/// Upload `files`: what the workspace already holds is named without going up
+/// again, small files go many to a call, and a file larger than one call goes
+/// in pieces a few at a time. Tells a person at a terminal how far it is, and
+/// answers each with the `tilo.content:` reference it is kept by, in name
+/// order.
 async fn upload_all(
     client: &Client,
     workspace: &str,
     files: Vec<Uploading>,
 ) -> Result<Vec<(Uploading, String)>> {
     use futures_util::StreamExt as _;
-    let total: u64 = files
-        .iter()
-        .map(|file| std::fs::metadata(&file.path).map_or(0, |meta| meta.len()))
-        .sum();
     let count = files.len();
-    if files.len() == 1 {
-        // One file says how far it is as its pieces go up.
-        let file = files.into_iter().next().unwrap_or(Uploading {
-            path: PathBuf::new(),
-            name: String::new(),
-        });
-        let mut progress = Progress::new(&file.name);
-        let put = client
-            .upload_file(workspace, &file.path, &mut |done, size| {
-                progress.told(done, size);
-            })
+    let total: u64 = files.iter().map(file_size).sum();
+    let name = if count == 1 {
+        files
+            .first()
+            .map_or_else(String::new, |file| file.name.clone())
+    } else {
+        format!("{count} files")
+    };
+    let mut progress = Progress::new(&name);
+    progress.told(0, total);
+    // What the workspace already holds needs no upload.
+    let hashes: Vec<String> = files.iter().map(hash_of).collect::<Result<_>>()?;
+    let mut held = vec![false; count];
+    for (at, asks) in hashes.chunks(HAVE_HASHES).enumerate() {
+        let answered = client
+            .have_contents(workspace, asks)
             .await
-            .with_context(|| format!("uploading {}", file.name))?;
-        progress.done();
-        return Ok(vec![(file, text(&put, "content").to_owned())]);
+            .context("asking which files the workspace already holds")?;
+        for (offset, present) in answered.into_iter().enumerate() {
+            let index = at.saturating_mul(HAVE_HASHES).saturating_add(offset);
+            if let Some(held_here) = held.get_mut(index) {
+                *held_here = present;
+            }
+        }
     }
-    let mut progress = Progress::new(&format!("{count} files"));
+    let mut contents: Vec<Option<String>> = (0..count).map(|_| None).collect();
     let mut done = 0_u64;
-    let mut going = futures_util::stream::iter(files)
-        .map(|file| async move {
-            let put = client
-                .upload_file(workspace, &file.path, &mut |_, _| {})
+    let mut smalls: Vec<Vec<usize>> = Vec::new();
+    let mut larges: Vec<usize> = Vec::new();
+    let mut group: Vec<usize> = Vec::new();
+    let mut group_bytes = 0_usize;
+    for (index, file) in files.iter().enumerate() {
+        if held.get(index).copied().unwrap_or(false) {
+            if let (Some(kept), Some(hash)) = (contents.get_mut(index), hashes.get(index)) {
+                *kept = Some(format!("tilo.content:{hash}"));
+            }
+            done = done.saturating_add(file_size(file));
+            progress.told(done.min(total), total);
+            continue;
+        }
+        let len = usize::try_from(file_size(file)).unwrap_or(usize::MAX);
+        if len > MANY_BYTES {
+            larges.push(index);
+        } else {
+            if group_bytes.saturating_add(len) > MANY_BYTES && !group.is_empty() {
+                smalls.push(std::mem::take(&mut group));
+                group_bytes = 0;
+            }
+            group_bytes = group_bytes.saturating_add(len);
+            group.push(index);
+        }
+    }
+    if !group.is_empty() {
+        smalls.push(group);
+    }
+    // Small files go many to a call, a few calls at a time.
+    let mut sending = futures_util::stream::iter(smalls)
+        .map(|group| async {
+            let mut batch = Vec::with_capacity(group.len());
+            for index in &group {
+                let file = files
+                    .get(*index)
+                    .ok_or_else(|| anyhow!("a file went missing"))?;
+                batch.push(
+                    std::fs::read(&file.path)
+                        .with_context(|| format!("reading {}", file.path.display()))?,
+                );
+            }
+            let refs = client
+                .put_contents(workspace, &batch)
                 .await
-                .with_context(|| format!("uploading {}", file.name))?;
-            let size = std::fs::metadata(&file.path).map_or(0, |meta| meta.len());
-            anyhow::Ok((file, text(&put, "content").to_owned(), size))
+                .context("storing the files")?;
+            anyhow::Ok((group, refs))
         })
         .buffer_unordered(UPLOADS_AT_ONCE);
-    let mut uploaded = Vec::with_capacity(count);
-    progress.told(0, total);
-    while let Some(put) = going.next().await {
-        let (file, content, size) = put?;
-        done = done.saturating_add(size);
+    while let Some(sent) = sending.next().await {
+        let (group, refs) = sent?;
+        for (index, content) in group.into_iter().zip(refs) {
+            if let Some(kept) = contents.get_mut(index) {
+                *kept = Some(content);
+            }
+            if let Some(file) = files.get(index) {
+                done = done.saturating_add(file_size(file));
+            }
+            progress.told(done.min(total), total);
+        }
+    }
+    // A file larger than one many-files call goes up in pieces, a few at a time.
+    let listing = &files;
+    let mut big = futures_util::stream::iter(larges)
+        .map(|index| {
+            let files = listing;
+            async move {
+                let file = files
+                    .get(index)
+                    .ok_or_else(|| anyhow!("a file went missing"))?;
+                let put = client
+                    .upload_file(workspace, &file.path, &mut |_, _| {})
+                    .await
+                    .with_context(|| format!("uploading {}", file.name))?;
+                anyhow::Ok((index, text(&put, "content").to_owned(), file_size(file)))
+            }
+        })
+        .buffer_unordered(UPLOADS_AT_ONCE);
+    while let Some(sent) = big.next().await {
+        let (index, content, len) = sent?;
+        if let Some(kept) = contents.get_mut(index) {
+            *kept = Some(content);
+        }
+        done = done.saturating_add(len);
         progress.told(done.min(total), total);
-        uploaded.push((file, content));
     }
     progress.done();
-    uploaded.sort_by(|(a, _), (b, _)| a.name.cmp(&b.name));
+    drop(sending);
+    drop(big);
+    let mut uploaded = Vec::with_capacity(count);
+    for (index, file) in files.into_iter().enumerate() {
+        let content = contents
+            .get_mut(index)
+            .and_then(Option::take)
+            .ok_or_else(|| anyhow!("no content reference was answered for {}", file.name))?;
+        uploaded.push((file, content));
+    }
     Ok(uploaded)
 }
 
@@ -1967,6 +2083,22 @@ mod tests {
                     "host": "eu1.tilo.sh", "role": "owner",
                     "labels": {"customer_id": "cus_8121"}}),
             ),
+            ("POST", route) if route.ends_with("/contents/have") => {
+                let asked: Value = serde_json::from_slice(&request.body).unwrap_or_default();
+                let count = asked
+                    .get("hashes")
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len);
+                json_reply(200, json!({"have": vec![false; count]}))
+            }
+            ("PUT", route) if route.ends_with("/contents") => {
+                let asked: Value = serde_json::from_slice(&request.body).unwrap_or_default();
+                let count = asked
+                    .get("files")
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len);
+                json_reply(200, json!({"contents": vec!["tilo.content:abc"; count]}))
+            }
             ("POST", route) if route.ends_with("/uploads") => json_reply(
                 201,
                 json!({"content": "tilo.content:abc", "size": request.body.len()}),
@@ -2120,18 +2252,33 @@ mod tests {
                 },
             );
             let put = api_server.drain_requests();
+            // Content the workspace already holds is not sent again: the
+            // command asks about the file's address first.
+            let asked = put
+                .iter()
+                .find(|request| request.target.ends_with("/contents/have"))
+                .expect("the file's address is asked about");
+            assert_eq!(asked.method, "POST");
+            let asked: Value = serde_json::from_slice(&asked.body).unwrap();
+            let hashes = asked["hashes"].as_array().expect("an address each");
+            assert_eq!(hashes.len(), 1);
+            assert!(hashes[0].as_str().is_some_and(|hash| hash.len() == 64));
+            // The file goes up whole in one call, base64 as the route takes it.
             let upload = put
                 .iter()
-                .find(|request| request.target.ends_with("/uploads"))
-                .expect("the upload");
-            assert_eq!(upload.target, format!("/v1/workspaces/{WORKSPACE}/uploads"));
-            assert_eq!(upload.method, "POST");
-            assert_eq!(upload.body, b"hello");
+                .find(|request| request.target.ends_with("/contents"))
+                .expect("the file goes up");
+            assert_eq!(upload.target, format!("/v1/workspaces/{WORKSPACE}/contents"));
+            assert_eq!(upload.method, "PUT");
             assert_eq!(
-                upload.header("content-type"),
-                Some("application/octet-stream")
+                serde_json::from_slice::<Value>(&upload.body).unwrap(),
+                json!({"files": ["aGVsbG8="]})
             );
-            assert!(upload.header("idempotency-key").is_some());
+            assert!(
+                put.iter()
+                    .all(|request| !request.target.ends_with("/uploads")),
+                "the file does not go up one request to a call"
+            );
             // The bytes are then written into the workspace's files: a Files
             // open names the contents and the names they take, and answers
             // the paths they are at.
@@ -2170,7 +2317,18 @@ mod tests {
                 .iter()
                 .filter(|request| request.target.ends_with("/uploads"))
                 .collect();
-            assert_eq!(uploads.len(), 4, "every file goes up, and the list");
+            assert_eq!(uploads.len(), 1, "the list goes up as content, once");
+            let sent: Vec<&test_http::Request> = folder_put
+                .iter()
+                .filter(|request| request.target.ends_with("/contents"))
+                .collect();
+            assert_eq!(sent.len(), 1, "the folder's files go up in one call");
+            let sent: Value = serde_json::from_slice(&sent[0].body).unwrap();
+            assert_eq!(
+                sent["files"].as_array().map(Vec::len),
+                Some(3),
+                "every file is in that call"
+            );
             let listed = uploads
                 .iter()
                 .find(|request| request.body.starts_with(b"["))

@@ -206,6 +206,8 @@ does not open the file's type refuses it and makes no resource.
 | | |
 |---|---|
 | `POST /v1/workspaces/{workspace}/uploads` (the file's bytes, its `Content-Type`) | `201` `{"content": "tilo.content:<hash>", "size"}`: what an action takes |
+| `PUT /v1/workspaces/{workspace}/contents` `{"files": [base64…]}` | `200` `{"contents": ["tilo.content:<hash>"…]}`: several small files whole in one request, each reference in order |
+| `POST /v1/workspaces/{workspace}/contents/have` `{"hashes": [hex…]}` | `200` `{"have": [bool…]}`: which of these the workspace already holds, so a folder's unchanged files need no upload |
 | `POST /v1/workspaces/{workspace}/uploads/{upload}` `{size}` | `201` `{"upload", "size", "offset": 0}`: opens an upload under an id you choose, for a file too large for one request. Opening it again answers where it stands (`200`) |
 | `PUT /v1/workspaces/{workspace}/uploads/{upload}?offset={offset}` (the next bytes) | `200` `{"upload", "size", "offset"}` where the next piece goes, or `201` `{"content", "size"}` when this piece completes the file |
 | `GET /v1/workspaces/{workspace}/uploads/{upload}` | `200` `{"upload", "size", "offset"}`: where it stands, to continue it |

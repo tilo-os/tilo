@@ -678,6 +678,31 @@ pub struct Uploaded {
     pub size: u64,
 }
 
+/// Several small files put into the workspace in one request.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct PutMany {
+    /// Each file's bytes, base64.
+    pub files: Vec<String>,
+}
+
+/// Each file's `tilo.content:<hash>` reference, in the order asked.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct PutManyAnswer {
+    pub contents: Vec<String>,
+}
+
+/// Content hashes (lowercase BLAKE3 hex) to ask whether the workspace holds.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct HaveHashes {
+    pub hashes: Vec<String>,
+}
+
+/// Whether each asked hash is held, in the order asked.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct HeldHashes {
+    pub have: Vec<bool>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct NewUpload {
     /// How many bytes the whole file is.
@@ -794,6 +819,10 @@ pub fn schemas(generator: &mut schemars::SchemaGenerator) -> Vec<(&'static str, 
         Program,
         ProgramAnswer,
         Uploaded,
+        PutMany,
+        PutManyAnswer,
+        HaveHashes,
+        HeldHashes,
         NewUpload,
         Upload,
         Event,

@@ -24,6 +24,13 @@ pub const MAX_CONTENT_PUT_CHUNK: usize = 512 * 1024;
 /// the start. Eight chunks is as many as a client sends in a group.
 pub const MAX_CONTENT_PUT_AHEAD: usize = 8 * MAX_CONTENT_PUT_CHUNK;
 
+/// The most raw bytes one many-files step carries (hex doubles them, staying
+/// within [`super::MAX_CONTENT_FRAME_BYTES`]).
+pub const MAX_PUT_MANY_BYTES: usize = 384 * 1024;
+
+/// The most hashes one step asks about at once.
+pub const MAX_HAVE_HASHES: usize = 8_192;
+
 /// Uploads one session keeps open at once: a client putting a folder keeps
 /// one open per file until it finishes, so it may hold as many as a workspace
 /// keeps for all its callers ([`super::MAX_HOSTED_CONTENT_PUTS`]).
@@ -37,6 +44,34 @@ pub trait ContentPuts: Send + Sync {
     /// Open an upload of exactly `size` bytes into the content store of
     /// `caller`'s workspace.
     fn begin(&self, caller: &Caller, size: u64) -> Result<Box<dyn ContentPut>, ActionCallError>;
+
+    /// Store `files` whole, answering each one's reference in order: what a
+    /// folder of small files needs, one call instead of three a file.
+    ///
+    /// # Errors
+    /// What [`Self::begin`] or a file's store refused.
+    fn put_many(&self, caller: &Caller, files: &[Vec<u8>]) -> Result<Vec<String>, ActionCallError> {
+        let mut contents = Vec::with_capacity(files.len());
+        for bytes in files {
+            let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+            let mut put = self.begin(caller, size)?;
+            put.append(0, bytes)?;
+            contents.push(put.finish()?);
+        }
+        Ok(contents)
+    }
+
+    /// Which of `hashes` (lowercase BLAKE3 hex) the content store of
+    /// `caller`'s workspace already holds, in order.
+    ///
+    /// # Errors
+    /// A store that cannot be asked, or content `caller` may not read.
+    fn have(&self, caller: &Caller, hashes: &[String]) -> Result<Vec<bool>, ActionCallError> {
+        let _ = (caller, hashes);
+        Err(ActionCallError::Unavailable {
+            reason: "this workspace's content cannot be asked what it holds".into(),
+        })
+    }
 }
 
 /// One upload in progress, owned by the session that began it: dropped
@@ -79,6 +114,12 @@ pub enum ContentPutStep {
     },
     /// Store what the upload holds.
     Finish { upload: u64 },
+    /// Store several whole files at once, each hex-encoded: the answer names
+    /// each one's reference in order ([`ContentPutAnswer::Many`]).
+    Many { files: Vec<String> },
+    /// Ask which of these hashes (lowercase BLAKE3 hex) the store already
+    /// holds ([`ContentPutAnswer::Have`]).
+    Have { hashes: Vec<String> },
     /// Where the upload stands: answered with the bytes accepted so far
     /// ([`ContentPutAnswer::Appended`]), so a client whose append failed on
     /// the way resumes from there.
@@ -107,6 +148,10 @@ pub enum ContentPutAnswer {
     Appended { written: u64 },
     /// The content's reference, `tilo.content:<hash>`.
     Finished { content: String },
+    /// The reference of each file stored, in the order asked.
+    Many { contents: Vec<String> },
+    /// Whether each hash asked about is held, in the order asked.
+    Have { present: Vec<bool> },
 }
 
 /// The uploads a provider keeps open for the callers that began them over a
@@ -136,6 +181,65 @@ impl HostedContentPuts {
             .map(|(_, _, put)| ContentPutAnswer::Appended {
                 written: put.written(),
             })
+    }
+
+    /// Store the files of a [`ContentPutStep::Many`].
+    fn many(
+        puts: &dyn ContentPuts,
+        caller: &Caller,
+        files: &[String],
+    ) -> Result<ContentPutAnswer, ActionCallError> {
+        if files.is_empty() {
+            return Err(ActionCallError::InvalidRequest {
+                reason: "store at least one file".into(),
+            });
+        }
+        let mut decoded = Vec::with_capacity(files.len());
+        let mut total = 0usize;
+        for file in files {
+            if file.len() > MAX_PUT_MANY_BYTES.saturating_mul(2) {
+                return Err(ActionCallError::InvalidRequest {
+                    reason: format!("one file carries at most {MAX_PUT_MANY_BYTES} bytes"),
+                });
+            }
+            let bytes = hex::decode(file).map_err(|_| ActionCallError::InvalidRequest {
+                reason: "a file's bytes must be hex".into(),
+            })?;
+            total = total.saturating_add(bytes.len());
+            decoded.push(bytes);
+        }
+        if total > MAX_PUT_MANY_BYTES {
+            return Err(ActionCallError::InvalidRequest {
+                reason: format!("one call carries at most {MAX_PUT_MANY_BYTES} bytes of files"),
+            });
+        }
+        puts.put_many(caller, &decoded)
+            .map(|contents| ContentPutAnswer::Many { contents })
+    }
+
+    /// Answer which of a [`ContentPutStep::Have`]'s addresses the store holds.
+    fn have(
+        puts: &dyn ContentPuts,
+        caller: &Caller,
+        hashes: &[String],
+    ) -> Result<ContentPutAnswer, ActionCallError> {
+        if hashes.len() > MAX_HAVE_HASHES {
+            return Err(ActionCallError::InvalidRequest {
+                reason: format!("one call asks about at most {MAX_HAVE_HASHES} hashes"),
+            });
+        }
+        if let Some(not) = hashes.iter().find(|hash| {
+            hash.len() != 64
+                || !hash
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        }) {
+            return Err(ActionCallError::InvalidRequest {
+                reason: format!("{not} is not a lowercase BLAKE3 address"),
+            });
+        }
+        puts.have(caller, hashes)
+            .map(|present| ContentPutAnswer::Have { present })
     }
 
     /// Answer `step` from `caller`, putting into `puts`.
@@ -225,6 +329,8 @@ impl HostedContentPuts {
             ContentPutStep::Progress { upload } => {
                 self.progress(caller, upload).ok_or_else(|| gone(upload))
             }
+            ContentPutStep::Many { files } => Self::many(puts, caller, &files),
+            ContentPutStep::Have { hashes } => Self::have(puts, caller, &hashes),
             ContentPutStep::Finish { upload } => {
                 let mut open = self.open.lock_recover();
                 let (_, _, put) = open

@@ -5,7 +5,7 @@
 
 use tilo_actions::remote::{
     ActionCallError, Caller, ContentPut, ContentPutAnswer, ContentPutStep, ContentPuts,
-    MAX_CONTENT_FRAME_BYTES,
+    MAX_CONTENT_FRAME_BYTES, MAX_HAVE_HASHES, MAX_PUT_MANY_BYTES,
 };
 
 use super::SessionActions;
@@ -21,6 +21,52 @@ fn unexpected(answer: &ContentPutAnswer) -> ActionCallError {
 }
 
 impl ContentPuts for SessionPuts {
+    fn put_many(&self, caller: &Caller, files: &[Vec<u8>]) -> Result<Vec<String>, ActionCallError> {
+        let mut contents = Vec::with_capacity(files.len());
+        let mut group: Vec<String> = Vec::new();
+        let mut bytes_in_group = 0_usize;
+        for bytes in files {
+            // One file too large for a step goes the three steps it takes.
+            if bytes.len() > MAX_PUT_MANY_BYTES {
+                if !group.is_empty() {
+                    send_group(self, &mut group, &mut contents)?;
+                    bytes_in_group = 0;
+                }
+                let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+                let mut put = self.begin(caller, size)?;
+                put.append(0, bytes)?;
+                contents.push(put.finish()?);
+                continue;
+            }
+            if bytes_in_group.saturating_add(bytes.len()) > MAX_PUT_MANY_BYTES && !group.is_empty()
+            {
+                send_group(self, &mut group, &mut contents)?;
+                bytes_in_group = 0;
+            }
+            bytes_in_group = bytes_in_group.saturating_add(bytes.len());
+            group.push(hex::encode(bytes));
+        }
+        if !group.is_empty() {
+            send_group(self, &mut group, &mut contents)?;
+        }
+        Ok(contents)
+    }
+
+    fn have(&self, _caller: &Caller, hashes: &[String]) -> Result<Vec<bool>, ActionCallError> {
+        let mut present = Vec::with_capacity(hashes.len());
+        for chunk in hashes.chunks(MAX_HAVE_HASHES) {
+            match self.0.put_step_waited(ContentPutStep::Have {
+                hashes: chunk.to_vec(),
+            })? {
+                ContentPutAnswer::Have { present: answered } if answered.len() == chunk.len() => {
+                    present.extend(answered);
+                }
+                other => return Err(unexpected(&other)),
+            }
+        }
+        Ok(present)
+    }
+
     fn begin(&self, _caller: &Caller, size: u64) -> Result<Box<dyn ContentPut>, ActionCallError> {
         match self.0.put_step_waited(ContentPutStep::Begin { size })? {
             ContentPutAnswer::Begun { upload } => Ok(Box::new(SessionPut {
@@ -31,6 +77,23 @@ impl ContentPuts for SessionPuts {
             })),
             other => Err(unexpected(&other)),
         }
+    }
+}
+
+/// Send `group` as one many-files step and keep its answers.
+fn send_group(
+    puts: &SessionPuts,
+    group: &mut Vec<String>,
+    contents: &mut Vec<String>,
+) -> Result<(), ActionCallError> {
+    let files = std::mem::take(group);
+    match puts.0.put_step_waited(ContentPutStep::Many { files }) {
+        Ok(ContentPutAnswer::Many { contents: answered }) => {
+            contents.extend(answered);
+            Ok(())
+        }
+        Ok(other) => Err(unexpected(&other)),
+        Err(error) => Err(error),
     }
 }
 

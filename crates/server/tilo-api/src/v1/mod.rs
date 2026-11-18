@@ -792,6 +792,20 @@ impl<'a> Caller<'a> {
                     json!({"content": content, "size": self.body.len()}),
                 ))
             }
+            "putManyContents" => {
+                let put: answers::PutMany = self.json_body()?;
+                let answered = self
+                    .call("tilo_put_many", json!({"files": put.files}))
+                    .await?;
+                shaped::<answers::PutManyAnswer>(answered).map(Answer::ok)
+            }
+            "haveContents" => {
+                let asked: answers::HaveHashes = self.json_body()?;
+                let answered = self
+                    .call("tilo_put_have", json!({"hashes": asked.hashes}))
+                    .await?;
+                shaped::<answers::HeldHashes>(answered).map(Answer::ok)
+            }
             "openUpload" => {
                 let id = self.params.get("upload").to_owned();
                 if !crate::content::valid_id(&id) {

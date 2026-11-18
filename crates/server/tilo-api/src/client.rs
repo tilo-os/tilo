@@ -480,6 +480,81 @@ impl Client {
         Ok(answer.json())
     }
 
+    /// Which of `hashes` (lowercase BLAKE3 hex) `workspace` already holds, in
+    /// order: the contents it kept from an earlier put need no upload again.
+    pub async fn have_contents(&self, workspace: &str, hashes: &[String]) -> Result<Vec<bool>> {
+        let path = format!("/v1/workspaces/{workspace}/contents/have");
+        let body = serde_json::json!({"hashes": hashes}).to_string();
+        let answer = self
+            .call(
+                Method::Post,
+                &path,
+                body.as_bytes(),
+                &[],
+                Waiting::Transient,
+            )
+            .await?;
+        if !answer.ok() {
+            return Err(answer.refused());
+        }
+        let said = answer.json();
+        let have: Vec<bool> = said
+            .get("have")
+            .and_then(Value::as_array)
+            .map(|rows| {
+                rows.iter()
+                    .map(|row| row.as_bool().unwrap_or_default())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if have.len() != hashes.len() {
+            bail!(
+                "the workspace answered for {} of {} content hashes",
+                have.len(),
+                hashes.len()
+            );
+        }
+        Ok(have)
+    }
+
+    /// Store `files` whole in `workspace` in one request, answering each one's
+    /// `tilo.content:` reference in order: a folder of small files without a
+    /// request each.
+    pub async fn put_contents(&self, workspace: &str, files: &[Vec<u8>]) -> Result<Vec<String>> {
+        use base64::Engine as _;
+        let encoded: Vec<String> = files
+            .iter()
+            .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes))
+            .collect();
+        let path = format!("/v1/workspaces/{workspace}/contents");
+        let body = serde_json::json!({"files": encoded}).to_string();
+        let answer = self
+            .call(Method::Put, &path, body.as_bytes(), &[], Waiting::Transient)
+            .await?;
+        if !answer.ok() {
+            return Err(answer.refused());
+        }
+        let said = answer.json();
+        let contents: Vec<String> = said
+            .get("contents")
+            .and_then(Value::as_array)
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if contents.len() != files.len() {
+            bail!(
+                "the workspace answered for {} of {} files",
+                contents.len(),
+                files.len()
+            );
+        }
+        Ok(contents)
+    }
+
     /// Put the file at `path` into `workspace`, one request when it fits in
     /// one and in pieces when it does not, telling `told` how many of its
     /// bytes are there after each: the `tilo.content:` reference actions take
