@@ -104,10 +104,14 @@ impl FrameHarness {
             history.set_open_button(false);
             history.set_window_presents(true);
         }
-        // A window shows one bar. The app's own header row is offered the window's bar first: a
-        // row that takes it draws the window's bar itself (a shell's own row, with its actions),
-        // and no row of the frame's stands over it.
-        let bar = self.window_bar_offer();
+        // A window shows one bar: the app's own header row is offered the window's bar, and a row
+        // that draws it is the window's top, with no row of the frame's over it. A page draws no
+        // window furniture, so the bar it offers has none: the row keeps its actions rather than
+        // hiding one behind an overflow nothing else reaches.
+        let bar = crate::widget::WindowBar {
+            controls_width: 0.0,
+            lists_actions: false,
+        };
         crate::widget::window_header::offer_root_header_bar(self.root.as_mut(), Some(bar));
         let frame = self.content_viewport(self.viewport);
         if let Err(error) = self.resize(frame) {
