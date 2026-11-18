@@ -13,7 +13,7 @@ use tilo_actions::remote::{
 use tilo_server_client::login::Admission;
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_server_client::login::{Entry, SignIn};
-use tilo_server_client::{CertifyError, DeviceSigner};
+use tilo_server_client::{CertifyError, DeviceSigner, LinkError};
 use tilo_server_session::workspaces::{
     CREATE_OWN_WORKSPACE, CreatedWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
     KEEP_PERSONAL, LIST_PERSONAL, PersonalList, WorkspaceLabels, WorkspaceListing,
@@ -22,7 +22,7 @@ use tilo_user_identity::DeviceCert;
 use web_time::Duration as Wait;
 
 use crate::remote::SessionActions;
-use crate::session::{HOST_ITSELF, PeerConfig};
+use crate::session::PeerConfig;
 use crate::{Cmd, Link, Outbox, TransportPhase};
 use crate::{MemoryPeerStore, PeerStore};
 use tilo_server_protocol::WorkspaceId;
@@ -261,19 +261,45 @@ impl Device {
     pub async fn redeem(&self, invitation: &[u8], name: &str) -> Result<Admission, CertifyError> {
         let entering =
             invitation_entering(invitation, name, None).map_err(CertifyError::Request)?;
-        let (done, receive) = crate::answer();
-        self.peer
-            .send(Cmd::Enter(entering, done))
-            .map_err(|closed| CertifyError::Request(closed.into()))?;
-        let entered = receive.await.map_err(|_| {
-            CertifyError::Request("the session ended before the host answered".into())
-        })??;
+        // An answer the connection lost is asked for again under the same request, which the
+        // host answers with what became of it: the invitation it spent on the first ask lets this
+        // device in, rather than saying it was spent.
+        let mut pause = REDEEM_RETRY_PAUSE;
+        let mut tries = 1;
+        let entered = loop {
+            match self.enter_once(entering.clone()).await {
+                Err(CertifyError::Transport(LinkError::Unavailable(why)))
+                    if tries < REDEEM_TRIES =>
+                {
+                    tracing::debug!(%why, "the answer to a redeemed invitation was lost; asking again");
+                    tries = tries.saturating_add(1);
+                    n0_future::time::sleep(pause).await;
+                    pause = pause.saturating_mul(2);
+                }
+                answered => break answered?,
+            }
+        };
         admission(entered).map_err(|refusal| {
             CertifyError::Denied(format!(
                 "The workspace did not let this device in: {}",
                 refusal.reason()
             ))
         })
+    }
+
+    /// One ask of `entering` on this device's session, once it is connected: the host's answer.
+    async fn enter_once(
+        &self,
+        entering: tilo_server_protocol::entering::Entering,
+    ) -> Result<tilo_server_protocol::entering::Entered, CertifyError> {
+        self.connected().await.map_err(CertifyError::from)?;
+        let (done, receive) = crate::answer();
+        self.peer
+            .send(Cmd::Enter(entering, done))
+            .map_err(|closed| CertifyError::Request(closed.into()))?;
+        Ok(receive.await.map_err(|_| {
+            CertifyError::Request("the session ended before the host answered".into())
+        })??)
     }
 
     /// Have this device in `workspace` (its UUID) on its host, the one way every program enters
@@ -439,8 +465,10 @@ impl Device {
         self.host_action(KEEP_PERSONAL, arguments).await.map(drop)
     }
 
-    /// The host's own operation `action` with `arguments`, asked on the session itself: no
-    /// workspace decides it.
+    /// The host's own operation `action` with `arguments`, asked in the workspace this
+    /// device entered ([`crate::session::HOST_ITSELF`] before it entered one): no
+    /// workspace decides it, but an agent the session was handed to asks as its grants
+    /// there let it.
     ///
     /// # Errors
     /// The host did not answer, refused, or did not finish.
@@ -453,12 +481,12 @@ impl Device {
             provider: HOST_ACTIONS_PROVIDER.to_owned(),
             address: tilo_actions::ActionAddress::new(HOST_WORKSPACES_RESOURCE, action),
         };
-        self.ask_host(HOST_ITSELF, target, arguments).await
+        self.ask_host(self.workspace_id, target, arguments).await
     }
 
     /// What the host itself answers to `target` with `arguments`, asked in
-    /// `workspace_id` ([`HOST_ITSELF`] for none): one of its own operations, or the person's
-    /// account on it, asked as the person whose device this is.
+    /// `workspace_id` ([`crate::session::HOST_ITSELF`] for none): one of its own operations,
+    /// or the person's account on it, asked as the person whose device this is.
     ///
     /// # Errors
     /// The host did not answer, refused, or did not finish.
@@ -762,6 +790,11 @@ fn invitation_entering(
         },
     })
 }
+
+/// How often an invitation is asked for again when the connection lost the host's answer, and
+/// the first pause before asking: a session that reconnects does so within seconds.
+const REDEEM_TRIES: u32 = 4;
+const REDEEM_RETRY_PAUSE: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// What a workspace said as it admitted a device, or why it did not.
 fn admission(

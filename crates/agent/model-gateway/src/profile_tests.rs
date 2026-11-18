@@ -257,14 +257,13 @@ fn complete_error(profile_id: &str, model_id: &str) -> ModelError {
         .build()
         .unwrap();
     runtime
-        .block_on(rig_adapter::complete(
+        .block_on(provider_call::complete(
             &provider_client().unwrap(),
             &PlanCall {
                 profile_id,
                 model_id,
                 timeout: tilo_test_env::hang_bound(),
                 stream: false,
-                deltas: false,
                 trace: None,
             },
             agent_provider_config::protocol::Conversation::new("system", "hello")
@@ -458,10 +457,6 @@ fn child_mints_from_ownership() {
     assert!(
         !store.status(&reference, &authorization).unwrap(),
         "a sign-in never writes the bound API-key slot"
-    );
-    assert!(
-        !store.legacy_agent_provider_status(&profile.id).unwrap(),
-        "a sign-in never writes the legacy API-key slot"
     );
 
     // Phase: a revoked grant (ownership keeps it empty) means sign in again.

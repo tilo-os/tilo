@@ -38,6 +38,10 @@ pub struct Device {
     pub label: String,
     pub cert: String,
     pub host_cert: String,
+    /// Where the server is dialed over iroh, as its signed invitation named it: a server reached
+    /// that way only (behind a NAT, through a packet relay) has no web origin to ask.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_address: Option<crate::server::ServerAddress>,
 }
 
 impl Device {
@@ -124,4 +128,74 @@ pub fn entered_workspace() -> Result<Option<(String, String)>> {
         .clone()
         .unwrap_or_else(|| device.workspace.clone());
     Ok(Some((device.workspace, name)))
+}
+
+/// Where this account's device holders listen: the session's runtime
+/// directory when it has one, else one of this account's in the temporary
+/// directory, made so that only this account enters it. One someone else
+/// made, or others may enter, is refused: whoever reaches a holder acts as
+/// the person. Short, since a socket's path is (about a hundred bytes), and a
+/// home's state directory need not be.
+///
+/// # Errors
+/// `device_dir` is not readable, or the directory is not this account's own.
+pub fn holder_dir(device_dir: &Path) -> Result<PathBuf, String> {
+    use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
+    let owner = std::fs::metadata(device_dir)
+        .map_err(|error| format!("{} is not readable: {error}", device_dir.display()))?
+        .uid();
+    let dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|runtime| runtime.is_absolute() && runtime.is_dir())
+        .map_or_else(
+            || std::env::temp_dir().join(format!("tilo-{owner}")),
+            |runtime| runtime.join("tilo"),
+        );
+    if let Err(error) = std::fs::DirBuilder::new().mode(0o700).create(&dir)
+        && error.kind() != std::io::ErrorKind::AlreadyExists
+    {
+        return Err(format!("{} could not be made: {error}", dir.display()));
+    }
+    let made = std::fs::symlink_metadata(&dir)
+        .map_err(|error| format!("{} is not readable: {error}", dir.display()))?;
+    if !made.is_dir() || made.uid() != owner || made.mode() & 0o077 != 0 {
+        return Err(format!(
+            "{} is not this account's own private directory",
+            dir.display()
+        ));
+    }
+    Ok(dir)
+}
+
+/// What the holder of the device whose public key is `key` names its files
+/// by: a new login is a new device, with a holder of its own.
+#[must_use]
+pub fn holder_name(key: &[u8; 32]) -> String {
+    format!("session-{}", hex::encode(&key[..8]))
+}
+
+/// The socket the holder named `name` serves Tilo's API on, in `dir`
+/// ([`holder_dir`]): as this computer's device, over its one session.
+#[must_use]
+pub fn holder_api_socket(dir: &Path, name: &str) -> PathBuf {
+    dir.join(format!("{name}.api.sock"))
+}
+
+/// Where this computer's device holder serves Tilo's API, when this computer
+/// logged in: every program of the login acts as the device there, over the
+/// device's one session, and never opens a second one under the same key,
+/// which would cut the first off at the server.
+///
+/// # Errors
+/// The login is damaged, or the holders' directory is not this account's.
+pub fn held_api() -> Result<Option<PathBuf>> {
+    let dir = device_dir()?;
+    let Some((key, _)) = load(&dir)? else {
+        return Ok(None);
+    };
+    let holders = holder_dir(&dir).map_err(|why| anyhow!(why))?;
+    Ok(Some(holder_api_socket(
+        &holders,
+        &holder_name(&key.verifying_key().to_bytes()),
+    )))
 }

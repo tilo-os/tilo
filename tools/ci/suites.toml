@@ -638,6 +638,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/carry-out.test.mjs",
   "crates/browser/tilo-browser-runtime/web/view-present.test.mjs",
   "crates/browser/tilo-browser-runtime/web/peer.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/site-host.test.mjs",
   "crates/browser/tilo-browser-runtime/web/resource-reference.test.mjs",
   "crates/browser/tilo-browser-runtime/web/scrub.test.mjs",
   "crates/browser/tilo-browser-runtime/web/sealed-link.test.mjs",
@@ -827,6 +828,7 @@ package = "tilolang-tilo"
 # task's session holds a native app's package from its surface.
 inputs = [
   "apps/tl/",
+  "apps/tl/gallery/",
   "apps/chat/",
   "apps/tasks/surface.toml",
   "crates/lang/tilolang/tests/fixtures/",
@@ -847,6 +849,7 @@ readers = [
   "crates/platform/tilolang-tilo/tests/discussion.rs",
   "crates/platform/tilolang-tilo/tests/done_days.rs",
   "crates/platform/tilolang-tilo/tests/fixtures.rs",
+  "crates/platform/tilolang-tilo/tests/gallery.rs",
   "crates/platform/tilolang-tilo/tests/history_views.rs",
   "crates/platform/tilolang-tilo/tests/headings.rs",
   "crates/platform/tilolang-tilo/tests/legacy.rs",
@@ -893,6 +896,7 @@ package = "tilolang-process"
 # their surfaces, as a session hands them.
 inputs = [
   "apps/tl/",
+  "apps/tl/gallery/",
   "apps/chat/",
   "apps/tasks/",
   "crates/platform/tilo-app-window/locales/",
@@ -951,15 +955,6 @@ inputs = ["crates/agent/provider-config/tests/fixtures/openrouter-models.json"]
 readers = ["crates/sdk/provider-settings-ui/src/app_tests.rs"]
 
 [[cargo]]
-package = "agent"
-# The web tools' tests serve the engine answers the search library records, so
-# a changed fixture reruns them.
-inputs = ["crates/platform/tilo-web-search/tests/fixtures/"]
-readers = [
-  "apps/agent/src/session/agent_loop/tests/web.rs",
-]
-
-[[cargo]]
 package = "tilo-agent-web-tools"
 # The tools' own tests serve the same fixture pages.
 inputs = ["crates/platform/tilo-web-search/tests/fixtures/"]
@@ -998,7 +993,6 @@ package = "tilo-server"
 inputs = ["apps/discord/bridge/program.json", "apps/notes/surface.toml"]
 readers = [
   "crates/server/tilo-server/src/workspace_bots/tests.rs",
-  "crates/server/tilo-server/tests/governed_workspaces/app_push.rs",
 ]
 
 [[cargo]]
@@ -1314,12 +1308,12 @@ inputs = ["crates/dev/tilo-app-cli/templates/", "crates/dev/tilo-app-cli/src/lib
 readers = ["crates/dev/tilo-app-template-smoke/src/lib.rs"]
 
 [[cargo]]
-package = "tilo-user-identity"
+package = "tilo-device-identity"
 inputs = [
   "os/usr/lib/systemd/system/tilo-device-key-init.service",
   "os/usr/lib/systemd/system/tilo-device-branch.service",
 ]
-readers = ["crates/collab/tilo-user-identity/src/bin/tilo-device-key-init.rs"]
+readers = ["crates/collab/tilo-device-identity/src/bin/tilo-device-key-init.rs"]
 
 [[cargo]]
 package = "settings"
@@ -1383,11 +1377,11 @@ inputs = ["os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json"]
 readers = ["crates/system/os-actions/src/windows_compat.rs"]
 
 [[cargo]]
-package = "legacy-vm"
-inputs = ["os/legacy-guest-snapshot.env", "os/hosted-guest-snapshot.env"]
+package = "linux-vm"
+inputs = ["os/linux-guest-snapshot.env", "os/hosted-guest-snapshot.env"]
 readers = [
-  "crates/runtime/legacy-vm/src/image.rs",
-  "crates/runtime/legacy-vm/src/hosted/guest.rs",
+  "crates/runtime/linux-vm/src/image.rs",
+  "crates/runtime/linux-vm/src/hosted/guest.rs",
 ]
 
 [[cargo]]
@@ -2246,6 +2240,8 @@ readers = ["crates/system/tilo-cli/src/aliases.rs", "crates/system/tilo-cli/src/
 # The Python SDK's suite runs as `uv run --frozen --offline pytest` in the ci-sdk image by the
 # sdk-python check, which carries uv and the SDK's locked dependencies. The integration test is
 # guarded with it and skips unless an API server is named by TILO_TEST_API_URL and TILO_TEST_KEY.
+# test_openapi.py checks the fake against docs/api/openapi.json, as every exchange the fake
+# answers is checked in the suite.
 [[covered]]
 suite = "sdk/python/tests/test_host.py"
 check = "sdk-python"
@@ -2270,6 +2266,10 @@ check = "sdk-python"
 
 [[covered]]
 suite = "sdk/python/tests/test_sync.py"
+check = "sdk-python"
+
+[[covered]]
+suite = "sdk/python/tests/test_openapi.py"
 check = "sdk-python"
 
 [[covered]]

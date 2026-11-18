@@ -341,7 +341,7 @@ fn agents_and_members_never_open_the_device_shell() {
 tilo_test_env::scenario! {
     fn a_tab_runs_where_its_target_says;
 
-    phase the_picker_lists_environments_the_host_and_legacy_vms_only_when_reported;
+    phase the_picker_lists_environments_the_host_and_linux_vms_only_when_reported;
     {
         let (mut widget, _) = tab(RecentTarget::none(), |_| Ok(()));
         widget.show_target(
@@ -377,7 +377,7 @@ tilo_test_env::scenario! {
         assert_eq!(labels.last(), Some(&manage));
         assert!(!labels.iter().any(|l| l.contains("linux")));
 
-        widget.set_legacy_vms(vec!["linux".into()]);
+        widget.set_linux_vms(vec!["linux".into()]);
         widget.open_target_menu();
         let labels = widget.target_menu_labels().unwrap();
         assert!(labels.iter().any(|l| l.starts_with("linux")), "{labels:?}");
@@ -532,7 +532,7 @@ tilo_test_env::scenario! {
             assert!(
                 crate::inner::ush_request(
                     &[],
-                    &SessionTarget::Legacy { vm: "linux".into() },
+                    &SessionTarget::LinuxVm { vm: "linux".into() },
                     Requester::Person,
                     None,
                     None,
@@ -540,7 +540,7 @@ tilo_test_env::scenario! {
                     (80, 24)
                 )
                 .is_err(),
-                "a legacy VM is not this device's supervisor's to serve"
+                "a Linux VM is not this device's supervisor's to serve"
             );
         }
     }
@@ -556,8 +556,8 @@ tilo_test_env::scenario! {
             Some(SessionTarget::environment("work"))
         );
         assert_eq!(
-            crate::parse_target_argument("legacy:linux"),
-            Some(SessionTarget::Legacy { vm: "linux".into() })
+            crate::parse_target_argument("linux-vm:linux"),
+            Some(SessionTarget::LinuxVm { vm: "linux".into() })
         );
         assert_eq!(
             crate::parse_target_argument("host"),
@@ -567,7 +567,7 @@ tilo_test_env::scenario! {
             "",
             "environment:../etc",
             "vm:linux",
-            "legacy:",
+            "linux-vm:",
             "linux",
             "linux:work",
             "linux:work@0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
@@ -576,19 +576,19 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase legacy_vms_appear_once_the_legacy_vm_service_has_made_one;
+    phase linux_vms_appear_once_the_linux_vm_service_has_made_one;
     {
         let dir = tempfile::tempdir().unwrap();
-        assert!(crate::sessions::legacy_vms_under(dir.path()).is_empty());
-        let linux = dir.path().join("tilo/legacy/linux");
+        assert!(crate::sessions::linux_vms_under(dir.path()).is_empty());
+        let linux = dir.path().join("tilo/linux-vm/linux");
         std::fs::create_dir_all(&linux).unwrap();
         assert!(
-            crate::sessions::legacy_vms_under(dir.path()).is_empty(),
+            crate::sessions::linux_vms_under(dir.path()).is_empty(),
             "a directory without a disk is not a VM"
         );
         std::fs::write(linux.join("disk.qcow2"), b"").unwrap();
         assert_eq!(
-            crate::sessions::legacy_vms_under(dir.path()),
+            crate::sessions::linux_vms_under(dir.path()),
             vec!["linux".to_string()]
         );
     }

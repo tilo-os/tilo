@@ -41,9 +41,9 @@
 # `enrol --sibling` adds the factor that unlocks the root at boot with the
 # consent of another of the owner's devices (docs/device-reach.md, "Unlocking
 # it after a reboot"). It runs on an installed, encrypted machine whose owner
-# is signed in: tilo-sibling-unlock draws a device half, a sibling half and a
-# boot-only key pair, adds a LUKS2 slot for the key the halves derive
-# (authorised by --key-file, else cryptsetup asks for the recovery key), and
+# is signed in: `tilo-auth sibling enrol` draws a device half, a sibling half
+# and a boot-only key pair, adds a LUKS2 slot for the key the halves derive
+# (authorised by --key-file, else it asks for the recovery key), and
 # hands the sibling half and the boot key to the owner's session, which
 # certifies the key and gives the half to their other devices. The device
 # half, the boot key, that certificate and the --network credentials (saved
@@ -51,7 +51,7 @@
 # into a token in the volume's own LUKS2 header: sealed to the TPM when
 # /dev/tpmrm0 exists, otherwise in the clear, readable by anyone holding the
 # disk, which Settings tells the owner. The sibling half is never stored
-# here. `tilo-sibling-unlock remove <luks-part>` takes the slot and token away.
+# here. `tilo-auth sibling remove <luks-part>` takes the slot and token away.
 # `--replace-networks` keeps an existing sibling unlock and only chooses its
 # networks again (Settings does the same through polkit).
 #
@@ -460,12 +460,13 @@ cmd_enrol() {
   done
   [ -n "$dev" ] || die "enrol: missing <luks-part>"
   if [ "$sibling" -eq 1 ]; then
-    need tilo-sibling-unlock
+    local auth=/usr/libexec/tilo/tilo-auth
+    [ -x "$auth" ] || die "$auth is missing"
     [ -z "$key" ] || sibling_args+=(--key-file "$key")
     log "  enrolling unlock with the consent of your other devices…"
-    tilo-sibling-unlock enrol "$dev" "${sibling_args[@]}" \
+    "$auth" sibling enrol "$dev" "${sibling_args[@]}" \
       || die "sibling unlock enrolment failed; the volume is unchanged"
-    log "  sibling unlock enrolled: $(tilo-sibling-unlock status "$dev" | tr -d '\n' | tr -s ' ')"
+    log "  sibling unlock enrolled: $("$auth" sibling status "$dev" | tr -d '\n' | tr -s ' ')"
     return 0
   fi
   [ "${#sibling_args[@]}" -eq 0 ] || die "enrol: --network, --session-uid and --replace-networks go with --sibling"

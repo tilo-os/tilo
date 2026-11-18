@@ -84,7 +84,7 @@ vm_failure() {
 # in it: Firecracker boots it in its jail, its agent answers, and the program's
 # output comes back.
 ran=$(podman exec tilo-sh-vm-host-0 setpriv --reuid=10001 --regid=10001 --init-groups \
-  --inh-caps=-all tilo-legacy hosted run --run /run/tilo-hosted \
+  --inh-caps=-all tilo-linux-vm hosted run --run /run/tilo-hosted \
   --workspace ws-local --account acct-tilo-sh --size small -- /bin/sh -c 'echo hello-from-the-guest' 2>&1) \
   || vm_failure 'the workspace VM did not run a program'
 printf '%s\n' "$ran" >&2
@@ -120,7 +120,7 @@ grep -q 'installing the member identity of vm-host-0' "$state/host.log" \
 # an operator asks them.
 as_service() {
   podman exec tilo-sh-vm-host-0 setpriv --reuid=10001 --regid=10001 --init-groups \
-    --inh-caps=-all tilo-legacy hosted "$@"
+    --inh-caps=-all tilo-linux-vm hosted "$@"
 }
 in_vm() { # workspace script
   as_service run --run /run/tilo-hosted --workspace "$1" --account acct-with-card --size small \

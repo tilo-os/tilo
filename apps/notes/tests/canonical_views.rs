@@ -464,7 +464,10 @@ fn stale_local_view_first_real_edit_uses_current_text_marks_and_one_owned_action
                             .unwrap();
                     // The edit was invoked on the notes' chain and names
                     // the note it wrote in its path.
-                    assert_eq!(context.resource.unwrap().id, notes::part::chain_resource());
+                    assert_eq!(
+                        context.resource.unwrap().id,
+                        notes::note_list::chain_resource()
+                    );
                     match context.what {
                         Some(tilo_actions::Did::Edit(edit)) => {
                             assert!(

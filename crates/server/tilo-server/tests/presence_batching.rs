@@ -112,7 +112,7 @@ impl Member {
         tilo_test_env::within("the presence burst to arrive", async {
             let mut seen = Vec::new();
             loop {
-                let Some(EnvelopeV2::State(Envelope::RetiredPresence { payload, .. })) =
+                let Some(EnvelopeV2::State(Envelope::Presence { payload, .. })) =
                     self.reader.read_next().await.unwrap()
                 else {
                     continue;
@@ -304,7 +304,7 @@ impl Member {
             loop {
                 match self.reader.read_next().await.unwrap() {
                     Some(EnvelopeV2::State(Envelope::Delta { .. })) => delta = true,
-                    Some(EnvelopeV2::State(Envelope::RetiredPresence { payload, .. })) => {
+                    Some(EnvelopeV2::State(Envelope::Presence { payload, .. })) => {
                         let attributed = AttributedPresence::decode(&payload).unwrap();
                         let message: NeighbourMsg = postcard::from_bytes(&attributed.body).unwrap();
                         saw_typing |= message == typing(pos - 1, pos);
@@ -445,7 +445,7 @@ impl Member {
         tilo_test_env::within("the pointer's resting position", async {
             let mut moves = Vec::new();
             loop {
-                let Some(EnvelopeV2::State(Envelope::RetiredPresence { payload, .. })) =
+                let Some(EnvelopeV2::State(Envelope::Presence { payload, .. })) =
                     self.reader.read_next().await.unwrap()
                 else {
                     continue;

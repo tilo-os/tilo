@@ -42,7 +42,7 @@ fn click_into_body(app: &mut TestApp<NotesShell>) {
 fn agents_note(title: &str, markdown: Option<&str>) -> (TestApp<NotesShell>, PageId) {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
-    let kind = notes::part::chain_resource();
+    let kind = notes::note_list::chain_resource();
     let mut args = serde_json::json!({ "title": title });
     if let Some(markdown) = markdown {
         args["markdown"] = markdown.into();

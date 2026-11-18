@@ -885,12 +885,12 @@ fn this_computer(
     tilo_user_identity::DeviceCert,
 ) {
     let root = tempfile::tempdir().expect("an identity root");
-    let paths = tilo_user_identity::IdentityPaths::under(root.path());
+    let paths = tilo_device_identity::IdentityPaths::under(root.path());
     std::fs::create_dir_all(paths.device_privkey.parent().expect("the key's directory"))
         .expect("this computer's key directory");
     let person = SigningKey::from_bytes(&[0x61; 32]);
     let device = SigningKey::from_bytes(&[0x62; 32]);
-    tilo_user_identity::persist::write_device_key(&paths.device_privkey, &device)
+    tilo_device_identity::persist::write_device_key(&paths.device_privkey, &device)
         .expect("this computer's device key");
     let mut cert = tilo_user_identity::DeviceCert {
         user_public_key: person.verifying_key().to_bytes(),
@@ -903,7 +903,7 @@ fn this_computer(
         issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
-    tilo_user_identity::persist::write_device_cert(&paths.device_cert, &cert)
+    tilo_device_identity::persist::write_device_cert(&paths.device_cert, &cert)
         .expect("this computer's certificate");
     env.set("TILO_IDENTITY_ROOT", root.path());
     (root, device, cert)
@@ -1088,7 +1088,7 @@ fn provisioned_identity(
     SigningKey,
 ) {
     let root = tempfile::tempdir().expect("a root for this computer's device");
-    let paths = tilo_user_identity::IdentityPaths::under(root.path());
+    let paths = tilo_device_identity::IdentityPaths::under(root.path());
     home.env()
         .set("TILO_IDENTITY_ROOT", root.path())
         .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
@@ -1098,8 +1098,8 @@ fn provisioned_identity(
         tilo_identity::provisioning::IdentityStorage::Files,
     )
     .expect("this computer is provisioned as a device");
-    let key = tilo_user_identity::persist::load_device_key(&paths).expect("this computer's key");
-    let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert)
+    let key = tilo_device_identity::persist::load_device_key(&paths).expect("this computer's key");
+    let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
         .expect("this computer's certificate");
     (root, cert, key)
 }

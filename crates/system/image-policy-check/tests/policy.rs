@@ -29,7 +29,7 @@ fn binary() -> std::path::PathBuf {
 }
 const TILO: &str = "registry.tilo.so/tilo/tilo";
 const CODE: &str = "code.tilo.so/tilo/tilo";
-const GUEST: &str = "registry.tilo.so/tilo/legacy-guest";
+const GUEST: &str = "registry.tilo.so/tilo/linux-guest";
 const HOSTED_GUEST: &str = "registry.tilo.so/tilo/hosted-guest";
 const HOSTED_BROWSER_GUEST: &str = "registry.tilo.so/tilo/hosted-browser-guest";
 const TRUST_ENV: &str = "\
@@ -307,7 +307,7 @@ tilo_test_env::scenario! {
         let docker = policy["transports"]["docker"].as_object_mut().unwrap();
         docker.retain(|name, _| {
             ![
-                "legacy-guest",
+                "linux-guest",
                 "hosted-guest",
                 "tilo-vm",
                 "tilo-ci",
@@ -433,7 +433,7 @@ fn weakened_cases() -> Vec<(&'static str, String)> {
             }),
         ),
         (
-            "legacy-guest-accepts-anything",
+            "linux-guest-accepts-anything",
             weakened(|d| {
                 d.insert(GUEST.into(), accept());
             }),

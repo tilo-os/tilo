@@ -28,8 +28,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::platform::fabric::SharedLink;
+use tilo_device_identity::IdentityPaths;
 use tilo_identity::provisioning::RENEWAL_CAUSES;
-use tilo_user_identity::IdentityPaths;
 
 /// How long to wait after an ask that did not renew before asking again, at most: the causes it can
 /// fail on also wake it, but a person's device that is simply not answering must not be asked on
@@ -68,7 +68,7 @@ impl FleetRenewal {
     pub(crate) fn for_joined_device(fabric: Option<SharedLink>) -> Option<Self> {
         let identity_dir = runtime_identity::identity_dir_from_env().ok()?;
         let paths = tilo_identity::provisioning::collaboration_identity_paths();
-        if !tilo_user_identity::persist::joined_device_is_enrolled(&paths).ok()? {
+        if !tilo_device_identity::persist::joined_device_is_enrolled(&paths).ok()? {
             return None;
         }
         Some(Self::new(identity_dir, paths, fabric))

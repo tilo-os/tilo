@@ -10,6 +10,35 @@ use super::{
 /// The close matches an action no resource offers is told with.
 pub(super) const CLOSE_MATCHES: usize = 5;
 
+/// `arguments` with each parameter's value written as the label a person reads
+/// replaced by the value the app takes, whatever its case or spacing
+/// (`In review` for `in-review`, a status or a choice of a kind of thing alike).
+fn bind_choices(descriptor: &ActionDescriptor, arguments: &mut serde_json::Map<String, Value>) {
+    for param in &descriptor.params {
+        let Some(given) = arguments
+            .get(param.name.as_ref())
+            .and_then(Value::as_str)
+            .map(plain)
+        else {
+            continue;
+        };
+        let choice = param
+            .choices
+            .iter()
+            .find(|choice| plain(choice) == given)
+            .map(|choice| Value::String(choice.to_string()))
+            .or_else(|| {
+                forms(param.schema.as_deref()?)
+                    .into_iter()
+                    .find(|(name, _)| plain(name) == given)
+                    .map(|(_, value)| value)
+            });
+        if let Some(choice) = choice {
+            arguments.insert(param.name.to_string(), choice);
+        }
+    }
+}
+
 /// The action ids closest to `name`, best first, at most `limit`: those it is
 /// part of, one of whose words it is, or whose start it shares.
 pub(super) fn close_matches(name: &str, ids: &[String], limit: usize) -> Vec<String> {
@@ -76,131 +105,131 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// resolved as the tools resolve one, and handed over as the reference an
     /// app takes (its app, kind, id and label). Any other value is the caller's
     /// own reference, passed as given.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one pass over the parameters: each kind of address a caller writes is bound in place"
-    )]
     pub(super) async fn bind_resource_arguments(
         &self,
         descriptor: &ActionDescriptor,
         mut arguments: serde_json::Map<String, Value>,
     ) -> Result<serde_json::Map<String, Value>, Failure> {
         for param in &descriptor.params {
-            // A resource parameter is typed as one, or declared as a reference
-            // to one of a kind (`resource = "notes.pages.pages"`): either way
-            // what it picks is a resource of the workspace.
-            let picks = param.ty == tilo_actions::ParamType::Resource
-                || param
-                    .schema
-                    .as_ref()
-                    .and_then(|schema| schema.get(tilo_actions::PICK_ANNOTATION))
-                    .and_then(Value::as_str)
-                    == Some("resource");
-            if !picks {
-                continue;
-            }
-            let value = match arguments.get(param.name.as_ref()) {
-                Some(value) if !value.is_null() => value.clone(),
-                _ => continue,
-            };
-            // A reference written whole is the caller's own; one written by its id alone,
-            // or as an address the tools list, is resolved as any address is.
-            let (address, missing, by_id) = match &value {
-                serde_json::Value::Object(fields) => match reference_missing(fields) {
-                    missing if missing.is_empty() => continue,
-                    missing => (
-                        fields
-                            .get("id")
-                            .or_else(|| fields.get("resource"))
-                            .and_then(Value::as_str)
-                            .map(str::trim)
-                            .filter(|id| !id.is_empty())
-                            .map(str::to_owned),
-                        missing,
-                        true,
-                    ),
-                },
-                serde_json::Value::String(text) => (
-                    Some(text.trim().to_owned()).filter(|text| !text.is_empty()),
-                    Vec::new(),
-                    false,
-                ),
-                _ => continue,
-            };
-            let Some(address) = address else {
-                return Err(reference_refusal(param.name.as_ref(), &missing, None).into());
-            };
-            // An id is the address an item is published under (`notes.pages/pages/<id>`), read
-            // as an address whole; a string is a path, as a listing writes one.
-            let parsed = if by_id {
-                ParsedPath {
-                    app: address.clone(),
-                    segments: Vec::new(),
-                    action: None,
-                }
-            } else {
-                match parse_path(&address) {
-                    Ok(parsed) => parsed,
-                    Err(why) => return Err(format!("invalid_arguments: {why}").into()),
-                }
-            };
-            let resolved = match self.resolve(&parsed).await? {
-                (Ok(resolved), _) => resolved,
-                (Err(note), _) => {
-                    return Err(
-                        reference_refusal(param.name.as_ref(), &missing, Some(&note)).into(),
-                    );
-                }
-            };
-            let Some(node) = resolved.node.clone() else {
-                return Err(reference_refusal(
-                    param.name.as_ref(),
-                    &missing,
-                    Some(&format!("{address} names no resource")),
-                )
-                .into());
-            };
-            let kept = tilo_actions::remote::resource_parts(&resolved.provider)
-                .filter(|(app, _)| *app == resolved.app_id)
-                .map(|(_, kept)| kept.to_owned())
-                .filter(|kept| !kept.is_empty());
-            let mut reference = serde_json::Map::new();
-            reference.insert("app".into(), json!(resolved.app_id));
-            reference.insert("kind".into(), json!(node.kind));
-            reference.insert("id".into(), json!(node.id));
-            reference.insert("label".into(), json!(node.label));
-            if let Some(kept) = kept {
-                reference.insert("record".into(), json!(kept));
-            }
-            arguments.insert(param.name.to_string(), Value::Object(reference));
+            self.bind_resource_argument(param, &mut arguments).await?;
         }
-        // A value written as the label a person reads is the value the app
-        // takes, whatever its case or spacing (`In review` for `in-review`,
-        // a status or a choice of a kind of thing alike).
+        // What a parameter takes as text is sent as text: a number a person or a model writes
+        // for one (`{"issue": 1}`) is the text the app reads.
         for param in &descriptor.params {
-            let Some(given) = arguments
-                .get(param.name.as_ref())
-                .and_then(Value::as_str)
-                .map(plain)
-            else {
-                continue;
-            };
-            let choice = param
-                .choices
-                .iter()
-                .find(|choice| plain(choice) == given)
-                .map(|choice| Value::String(choice.to_string()))
-                .or_else(|| {
-                    forms(param.schema.as_deref()?)
-                        .into_iter()
-                        .find(|(name, _)| plain(name) == given)
-                        .map(|(_, value)| value)
-                });
-            if let Some(choice) = choice {
-                arguments.insert(param.name.to_string(), choice);
+            if param.ty == tilo_actions::ParamType::Text
+                && let Some(number) = arguments
+                    .get(param.name.as_ref())
+                    .filter(|value| value.is_number())
+                    .cloned()
+            {
+                arguments.insert(
+                    param.name.to_string(),
+                    Value::String(match &number {
+                        Value::Number(number) => number.to_string(),
+                        _ => String::new(),
+                    }),
+                );
             }
         }
+        bind_choices(descriptor, &mut arguments);
         Ok(arguments)
+    }
+
+    /// `arguments` with `param`'s value bound, when it picks a resource of the
+    /// workspace, from the address a caller wrote: a path is resolved as the
+    /// tools resolve one, and handed over as the reference an app takes. Any
+    /// other value is the caller's own reference, passed as given.
+    async fn bind_resource_argument(
+        &self,
+        param: &tilo_actions::ActionParam,
+        arguments: &mut serde_json::Map<String, Value>,
+    ) -> Result<(), Failure> {
+        // A resource parameter is typed as one, or declared as a reference
+        // to one of a kind (`resource = "notes.pages.pages"`): either way
+        // what it picks is a resource of the workspace.
+        let picks = param.ty == tilo_actions::ParamType::Resource
+            || param
+                .schema
+                .as_ref()
+                .and_then(|schema| schema.get(tilo_actions::PICK_ANNOTATION))
+                .and_then(Value::as_str)
+                == Some("resource");
+        if !picks {
+            return Ok(());
+        }
+        let value = match arguments.get(param.name.as_ref()) {
+            Some(value) if !value.is_null() => value.clone(),
+            _ => return Ok(()),
+        };
+        // A reference written whole is the caller's own; one written by its id alone,
+        // or as an address the tools list, is resolved as any address is.
+        let (address, missing, by_id) = match &value {
+            serde_json::Value::Object(fields) => match reference_missing(fields) {
+                missing if missing.is_empty() => return Ok(()),
+                missing => (
+                    fields
+                        .get("id")
+                        .or_else(|| fields.get("resource"))
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|id| !id.is_empty())
+                        .map(str::to_owned),
+                    missing,
+                    true,
+                ),
+            },
+            serde_json::Value::String(text) => (
+                Some(text.trim().to_owned()).filter(|text| !text.is_empty()),
+                Vec::new(),
+                false,
+            ),
+            _ => return Ok(()),
+        };
+        let Some(address) = address else {
+            return Err(reference_refusal(param.name.as_ref(), &missing, None).into());
+        };
+        // An id is the address an item is published under (`notes.pages/pages/<id>`), read
+        // as an address whole; a string is a path, as a listing writes one.
+        let parsed = if by_id {
+            ParsedPath {
+                app: address.clone(),
+                segments: Vec::new(),
+                action: None,
+            }
+        } else {
+            match parse_path(&address) {
+                Ok(parsed) => parsed,
+                Err(why) => return Err(format!("invalid_arguments: {why}").into()),
+            }
+        };
+        let resolved = match self.resolve(&parsed).await? {
+            (Ok(resolved), _) => resolved,
+            (Err(note), _) => {
+                return Err(reference_refusal(param.name.as_ref(), &missing, Some(&note)).into());
+            }
+        };
+        let Some(node) = resolved.node.clone() else {
+            return Err(reference_refusal(
+                param.name.as_ref(),
+                &missing,
+                Some(&format!("{address} names no resource")),
+            )
+            .into());
+        };
+        let kept = tilo_actions::remote::resource_parts(&resolved.provider)
+            .filter(|(app, _)| *app == resolved.app_id)
+            .map(|(_, kept)| kept.to_owned())
+            .filter(|kept| !kept.is_empty());
+        let mut reference = serde_json::Map::new();
+        reference.insert("app".into(), json!(resolved.app_id));
+        reference.insert("kind".into(), json!(node.kind));
+        reference.insert("id".into(), json!(node.id));
+        reference.insert("label".into(), json!(node.label));
+        if let Some(kept) = kept {
+            reference.insert("record".into(), json!(kept));
+        }
+        arguments.insert(param.name.to_string(), Value::Object(reference));
+        Ok(())
     }
 
     /// The resource `address` names, written either as its listing publishes

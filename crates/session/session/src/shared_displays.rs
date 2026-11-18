@@ -347,23 +347,16 @@ mod tests {
 
     /// This session's fabric, as a device of the person's with one screen.
     fn fabric() -> std::sync::Arc<crate::platform::fabric::SessionFabric> {
-        let (outgoing, _frames) = tokio::sync::mpsc::unbounded_channel();
-        let runtime = crate::platform::fabric::FabricRuntime::restored(
-            Some((
-                crate::platform::fabric::DeviceId::new("this-laptop").expect("a device id"),
-                "Laptop".to_owned(),
-            )),
-            None,
-        )
-        .expect("a runtime");
-        crate::platform::fabric::SessionFabric::new(
-            runtime,
-            crate::sync::HostOutbox::of(outgoing),
+        let (reach, _sent) = crate::platform::fabric::Reach::listened(
             [7; 32],
             ed25519_dalek::SigningKey::from_bytes(&[7; 32]),
             crate::platform::fabric::Continuity::default(),
+        );
+        crate::platform::fabric::SessionFabric::new(
+            crate::platform::fabric::DeviceId::new("this-laptop").expect("a device id"),
+            "Laptop".to_owned(),
             None,
-            tilo_endpoint_reachability::Nearby::new(std::sync::Arc::new(|| {})),
+            reach,
         )
     }
 }

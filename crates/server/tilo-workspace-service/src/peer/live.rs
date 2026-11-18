@@ -7,8 +7,8 @@ use super::{
 };
 use tilo_server_protocol::WorkspaceId;
 
-/// Handle `RetiredLiveJoin`: add a subscribed device to the workspace's live
-/// live session and send it one `LiveMember` per member already present.
+/// Handle `LiveJoin`: add a subscribed device to the workspace's live session
+/// and send it one `LiveMember` per member already present.
 pub(super) async fn handle_live_join(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
@@ -42,7 +42,7 @@ pub(super) async fn handle_live_join(
     for device in members {
         // Live state is never authority: a member notice lost to a full
         // queue costs only a late cursor.
-        let _ = session.outbound.try_send(Envelope::RetiredLiveMember {
+        let _ = session.outbound.try_send(Envelope::LiveMember {
             workspace_id,
             device_public_key: device,
             active: true,
@@ -271,7 +271,7 @@ pub(super) async fn handle_presence(
 ) -> Result<Option<Envelope>, PeerError> {
     // A presence that is no toolkit presence may ask the workspace for content.
     let mut asks = None;
-    let Envelope::RetiredPresence { workspace_id, .. } = &env else {
+    let Envelope::Presence { workspace_id, .. } = &env else {
         return Err(PeerError::Protocol(
             "handle_presence called with a non-Presence envelope".into(),
         ));
@@ -288,7 +288,7 @@ pub(super) async fn handle_presence(
         None => false,
     };
     if !attached
-        && let Envelope::RetiredPresence { payload, .. } = &mut env
+        && let Envelope::Presence { payload, .. } = &mut env
         && let Some(mut attributed) = crate::AttributedPresence::decode(payload)
     {
         // Co-edit receivers recover the author from this opaque wrapper.

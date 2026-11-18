@@ -650,143 +650,6 @@ tilo_test_env::scenario! {
             assert_eq!(ns.lookup(right, "occupied.txt").unwrap().ino.0, occupied);
         }
         {
-            use ed25519_dalek::SigningKey;
-            use fs_protocol::{
-                ContentHash, FILE_MUTATION_TRANSACTION_VERSION, FileMutationOperation,
-                TransactionFile, FileMutationTransactionManifest, FileProvenance,
-                FileVersionId, FileVersionV1,
-            };
-            use getrandom::{SysRng, rand_core::UnwrapErr};
-
-            let mut ns = Namespace::new("a").unwrap();
-            let source_ino = ns
-                .create_file(ROOT_INO, "source.txt", Some(&h(1)), 1, 1)
-                .unwrap();
-            let victim_ino = ns
-                .create_file(ROOT_INO, "destination.txt", Some(&h(2)), 1, 1)
-                .unwrap();
-            let source_document = ns.document_id_for(source_ino).unwrap();
-            let victim_document = ns.document_id_for(victim_ino).unwrap();
-            let root_document = ns.document_id_for(ROOT_INO).unwrap();
-            let source_expected = FileVersionId::new();
-            let victim_expected = FileVersionId::new();
-            for (ino, document_id, version_id, byte) in [
-                (source_ino, source_document, source_expected, 1_u8),
-                (victim_ino, victim_document, victim_expected, 2_u8),
-            ] {
-                assert!(ns.set_content_revision(
-                    ino,
-                    &ContentRevisionV1 {
-                        schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-                        document_id,
-                        version_id,
-                        content_hash: Some(ContentHash([byte; 32])),
-                        byte_len: 1,
-                        metadata_hash: ContentHash([byte + 2; 32]),
-                    },
-                    1,
-                ));
-            }
-            let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-            let actor = FileActor {
-                person: collab_types::Ed25519PublicKey([9; 32]),
-                device: collab_types::Ed25519PublicKey(key.verifying_key().to_bytes()),
-            };
-            let transaction_file = |document_id, expected_version, role, content_byte| {
-                let version = FileVersionV1 {
-                    id: FileVersionId::new(),
-                    document_id,
-                    parents: vec![expected_version],
-                    actor,
-                    timestamp_ms: 2,
-                    content_hash: Some(ContentHash([content_byte; 32])),
-                    metadata_hash: ContentHash([content_byte + 2; 32]),
-                    provenance: match role {
-                        TransactionFileRole::Source => FileProvenance::Rename,
-                        TransactionFileRole::Replaced => FileProvenance::Delete,
-                        _ => unreachable!("replacement fixture role"),
-                    },
-                };
-                let mut transaction_file = TransactionFile {
-                    document_id,
-                    role,
-                    expected_version,
-                    proposed_binding: FileBindingV1 {
-                        schema_version: FILE_BINDING_VERSION,
-                        document_id,
-                        parent: Some(root_document),
-                        name: "destination.txt".into(),
-                        kind: FileNodeKind::File,
-                        tombstoned: role == TransactionFileRole::Replaced,
-                        actor,
-                        observed_at_ms: 2,
-                    },
-                    proposed_content_revision: Some(ContentRevisionV1 {
-                        schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-                        document_id,
-                        version_id: version.id,
-                        content_hash: version.content_hash,
-                        byte_len: 1,
-                        metadata_hash: version.metadata_hash,
-                    }),
-                    proposed_version: version,
-                    projection_hash: ContentHash([0; 32]),
-                };
-                transaction_file.projection_hash = transaction_file.computed_projection_hash().unwrap();
-                transaction_file
-            };
-            let mut files = vec![
-                transaction_file(
-                    source_document,
-                    source_expected,
-                    TransactionFileRole::Source,
-                    1,
-                ),
-                transaction_file(
-                    victim_document,
-                    victim_expected,
-                    TransactionFileRole::Replaced,
-                    2,
-                ),
-            ];
-            files.sort_by_key(|transaction_file| transaction_file.document_id);
-            let transaction = fs_protocol::FileMutationTransaction::signed(
-                FileMutationTransactionManifest {
-                    schema_version: FILE_MUTATION_TRANSACTION_VERSION,
-                    transaction_id: Uuid::new_v4(),
-                    workspace_id: Uuid::new_v4(),
-                    actor,
-                    timestamp_ms: 2,
-                    operation: FileMutationOperation::ReplacementRename {
-                        source_parent: root_document,
-                        source_name: "source.txt".into(),
-                        destination_parent: root_document,
-                        destination_name: "destination.txt".into(),
-                        source_document,
-                        replaced_document: victim_document,
-                    },
-                    files,
-                },
-                &key,
-            )
-            .unwrap();
-            let delta = ns
-                .apply_replacement_transaction(&transaction.manifest)
-                .unwrap()
-                .unwrap();
-            assert!(!delta.is_empty());
-            assert_eq!(
-                ns.lookup(ROOT_INO, "destination.txt").unwrap().ino.0,
-                source_ino
-            );
-            assert!(ns.lookup(ROOT_INO, "source.txt").is_none());
-            assert!(ns.ino_for_document_id(victim_document).is_none());
-            assert_eq!(
-                ns.apply_replacement_transaction(&transaction.manifest),
-                Ok(None)
-            );
-        }
-        {
             let mut ns = Namespace::new("owner").unwrap();
             let first = ns.create_file(ROOT_INO, "a", None, 0, 1).unwrap();
             let duplicate = ns.create_file(ROOT_INO, "b", None, 0, 1).unwrap();
@@ -1317,4 +1180,65 @@ fn a_write_through_the_mount_names_its_file_actions_and_the_agent_that_wrote() {
         "one change by the agent, one by the person"
     );
     assert_eq!(ns.hash_for(ino), Some(h(2)));
+}
+
+/// Each chunk's heads, the tree's own document first.
+fn chunk_heads(ns: &mut Namespace) -> BTreeMap<fs_protocol::TreeChunk, Vec<automerge::ChangeHash>> {
+    ns.note_change();
+    ns.doc.heads()
+}
+
+/// A device that wrote a change and has not published it yet takes in another device's change of
+/// the same chunk: its own change is not counted as one the holders have, so it goes out with
+/// its next publication and the holders merge every later change built on it.
+#[test]
+fn a_change_not_published_yet_goes_out_after_another_devices_change_arrives() {
+    let mut laptop = Namespace::new("laptop").unwrap();
+    laptop
+        .create_file(ROOT_INO, "report.txt", Some(&h(1)), 1, 1)
+        .unwrap();
+    laptop
+        .create_file(ROOT_INO, "build.bin", Some(&h(2)), 1, 1)
+        .unwrap();
+    let mut desktop = Namespace::new("desktop").unwrap();
+    desktop
+        .take_documents(
+            laptop
+                .document_writes(&BTreeMap::new())
+                .into_iter()
+                .map(|w| (w.chunk, w.changes))
+                .collect(),
+        )
+        .unwrap();
+    let (laptop_published, desktop_published) =
+        (chunk_heads(&mut laptop), chunk_heads(&mut desktop));
+
+    // The desktop renames one file and has not published it when the laptop's rename arrives.
+    assert!(desktop.rename(ROOT_INO, "report.txt", ROOT_INO, "notes.txt", 2));
+    assert!(laptop.rename(ROOT_INO, "build.bin", ROOT_INO, "out.bin", 2));
+    let from_laptop = laptop.document_writes(&laptop_published);
+    let holders = desktop
+        .take_published_documents(
+            from_laptop
+                .into_iter()
+                .map(|w| (w.chunk, w.changes))
+                .collect(),
+            &desktop_published,
+        )
+        .unwrap();
+    assert!(desktop.lookup(ROOT_INO, "out.bin").is_some());
+
+    // The desktop's next publication carries its rename, and the laptop takes it.
+    let from_desktop = desktop.document_writes(&holders);
+    assert!(!from_desktop.is_empty(), "the desktop's rename goes out");
+    laptop
+        .take_documents(
+            from_desktop
+                .into_iter()
+                .map(|w| (w.chunk, w.changes))
+                .collect(),
+        )
+        .unwrap();
+    assert!(laptop.lookup(ROOT_INO, "notes.txt").is_some());
+    assert_eq!(chunk_heads(&mut laptop), chunk_heads(&mut desktop));
 }

@@ -680,7 +680,7 @@ pub struct StepUpdate {
 /// file, of its true size, and content that is not here is refused before
 /// anyone is shown a message pointing at nothing.
 pub(crate) fn prepare_file_post(
-    params: &mut crate::messages::chat_part::PostFile,
+    params: &mut crate::messages::chat_messages::PostFile,
 ) -> Result<(), String> {
     let address = params.content.trim();
     let hash = tilo_actions::content_hash(address)

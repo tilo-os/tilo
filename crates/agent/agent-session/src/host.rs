@@ -3,8 +3,8 @@
 //! restarts.
 //!
 //! [`AgentHost`] owns an [`AgentSupervisor`] whose spawner starts one thread
-//! per agent. The thread mounts its apps, plans with the host's
-//! [`ModelChoice`] and pumps the member until the agent stops or the
+//! per agent. The thread pumps the member, which works on each task with
+//! the host's model ([`MakeTurns`]), until the agent stops or the
 //! host shuts down, sleeping between pumps until its session or steering
 //! changes or its presence keep-alive is due. A keeper thread settles expired
 //! grants (the agent stops and the host refuses its device) and writes the
@@ -20,9 +20,8 @@
 //! statuses as they were, so the next start resumes them.
 //!
 //! Each workspace's content (the bytes its records name by hash) is kept under
-//! `content/<workspace>` in the state directory, in this process: an agent's
-//! app workers are handed what an operation names and give back what they
-//! store ([`ConfinedReplica`](crate::ConfinedReplica)). A harness puts
+//! `content/<workspace>` in the state directory, in this process: the host's
+//! one store, which its workspace actions read and write. A harness puts
 //! content in and reads it back by address ([`AgentHost::put_content`],
 //! [`AgentHost::content`]).
 
@@ -45,7 +44,7 @@ use crate::control::{
     AgentControl, AgentHostLink, AgentIdentity, AgentSupervisor, SupervisorSnapshot,
 };
 use crate::member::{AgentMember, MemberConfig};
-use crate::model::ModelChoice;
+use crate::model::MakeTurns;
 use tilo_lock::MutexRecover as _;
 
 const STATE_FILE: &str = "agents.json";
@@ -57,7 +56,7 @@ const WRITE_SPACING: Duration = Duration::from_millis(500);
 #[cfg(test)]
 const CONTENT_DIR: &str = "content";
 
-/// Builds the apps an agent may open, on the agent's own thread.
+/// Builds the apps a host's workspace actions open records in.
 pub type CatalogueFactory = Arc<dyn Fn() -> AppCatalogue + Send + Sync>;
 
 /// How agents reach the host they run on.
@@ -82,8 +81,7 @@ impl HostEndpoint {
 
 struct Shared {
     state_dir: PathBuf,
-    model: ModelChoice,
-    catalogue: CatalogueFactory,
+    model: MakeTurns,
     endpoint: OnceLock<HostEndpoint>,
     /// The link the supervisor asks the host it runs on through, once it
     /// started.
@@ -94,7 +92,7 @@ struct Shared {
     /// Each agent's thread, with its control to wake it for shutdown.
     threads: Mutex<Vec<(JoinHandle<()>, Arc<AgentControl>)>>,
     /// Each workspace's content store: the host's one store, which its
-    /// workspace actions and members' reads use too.
+    /// workspace actions use too.
     content: Arc<WorkspaceStores>,
     /// Each agent's session state, by its agent id: kept while the host
     /// runs, so an agent stopped and started again keeps its channel keys.
@@ -125,22 +123,20 @@ pub struct AgentHost {
 }
 
 impl AgentHost {
-    /// Agents of `user_public_key`, kept under `state_dir`, planning with
-    /// `model`, keeping what their apps make in the host's `content`. Serve
+    /// Agents of `user_public_key`, kept under `state_dir`, working with
+    /// `model`, the host's workspaces' content in `content`. Serve
     /// [`Self::supervisor`] to browsers (it answers the agent vocabulary),
     /// then [`Self::start`] once the host is up.
     #[must_use]
     pub fn new(
         user_public_key: [u8; 32],
         (state_dir, content): (PathBuf, Arc<WorkspaceStores>),
-        model: ModelChoice,
-        catalogue: CatalogueFactory,
+        model: MakeTurns,
     ) -> Self {
         Self::with_clock(
             user_public_key,
             (state_dir, content),
             model,
-            catalogue,
             Arc::new(tilo_clock::unix_now_ns),
         )
     }
@@ -150,15 +146,13 @@ impl AgentHost {
     pub fn with_clock(
         user_public_key: [u8; 32],
         (state_dir, content): (PathBuf, Arc<WorkspaceStores>),
-        model: ModelChoice,
-        catalogue: CatalogueFactory,
+        model: MakeTurns,
         clock: HostClock,
     ) -> Self {
         let shared = Arc::new(Shared {
             content,
             state_dir,
             model,
-            catalogue,
             endpoint: OnceLock::new(),
             link: OnceLock::new(),
             runtime: OnceLock::new(),
@@ -398,18 +392,8 @@ fn run_agent(
     // on its workspaces before it joins, rather than race the host that
     // writes it.
     wait_admitted(shared, &identity);
-    // The agent holds records as replicas of their resources and runs no
-    // app's code, so it reads nothing of this machine's files or secrets;
-    // it plans with the host's model.
-    let planner = Box::new(shared.model.planner());
-    let catalogue = (shared.catalogue)();
-    let content = match shared.workspace_content(&workspace) {
-        Ok(content) => content,
-        Err(error) => {
-            control.fail(&error);
-            return;
-        }
-    };
+    // The agent runs no app's code and reads nothing of this machine's files
+    // or secrets: it acts through the host's actions, with the host's model.
     let session = Arc::clone(
         shared
             .sessions
@@ -422,12 +406,10 @@ fn run_agent(
             host: endpoint.host,
             host_cert: endpoint.host_cert,
             workspace,
-            content,
         },
         identity,
         control.clone(),
-        catalogue,
-        planner,
+        Arc::clone(&shared.model),
         session,
     ) {
         Ok(member) => member,
@@ -437,7 +419,7 @@ fn run_agent(
             return;
         }
     };
-    tracing::info!(agent = %agent_id, model = %shared.model.describe(), "agent joined its workspace");
+    tracing::info!(agent = %agent_id, "agent joined its workspace");
     member.run_until(None, |_| {
         shared.stopping.load(Ordering::Acquire) || control.status() == AgentStatus::Stopped
     });
@@ -532,8 +514,7 @@ mod tests {
         let mut host = AgentHost::with_clock(
             root.verifying_key().to_bytes(),
             (state.path().to_owned(), test_content(state.path())),
-            ModelChoice::Scripted,
-            Arc::new(AppCatalogue::native),
+            crate::ModelChoice::Scripted.make_turns(),
             Arc::new(move || clock.load(Ordering::Relaxed)),
         );
         #[cfg(target_os = "linux")]
@@ -597,8 +578,7 @@ mod tests {
         AgentHost::new(
             [7; 32],
             (state.to_path_buf(), test_content(state)),
-            ModelChoice::Scripted,
-            Arc::new(|| AppCatalogue::new(Vec::new())),
+            crate::ModelChoice::Scripted.make_turns(),
         )
     }
 

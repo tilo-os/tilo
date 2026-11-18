@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use fs::workspace_authority::{AuthorityRequest, WorkspaceAuthority, WorkspaceAuthorityEnvelope};
-use tilo_user_identity::{IdentityPaths, persist};
+use tilo_device_identity::{IdentityPaths, persist};
+use tilo_user_identity::StatementSigner;
 
 #[derive(clap::Args, Debug)]
 pub(super) struct InitializeOptions {
@@ -177,9 +178,9 @@ pub(super) fn initialize(options: &InitializeOptions) -> Result<()> {
         policy,
         false,
         person,
-        |bytes| {
+        |digest| {
             identity
-                .sign(bytes)
+                .sign_digest(digest)
                 .map_err(|e| anyhow::anyhow!("sign existing policy: {e}"))
         },
     )?;
@@ -218,9 +219,9 @@ pub(super) fn publish(acl: &Path) -> Result<()> {
             policy,
             false,
             person,
-            |bytes| {
+            |digest| {
                 identity
-                    .sign(bytes)
+                    .sign_digest(digest)
                     .map_err(|e| anyhow::anyhow!("sign existing policy: {e}"))
             },
         )?;
@@ -317,7 +318,8 @@ mod tests {
         {
             use collab_types::{Access, CapOverride, Effect, Scope};
             use tilo_action_policy::Grantee;
-            use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+                        use tilo_user_identity::{ DeviceCapabilities, DeviceCert, sign_device_cert };
+
             let temp = tempfile::tempdir().unwrap();
             let paths = IdentityPaths::under(temp.path().join("identity"));
             paths.ensure_directories().unwrap();

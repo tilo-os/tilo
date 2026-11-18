@@ -202,11 +202,24 @@ impl Delta {
         let mut created: HashMap<ObjId, (ObjId, Option<String>)> = HashMap::new();
         let mut located: std::collections::HashSet<ObjId> = std::collections::HashSet::new();
         let mut touched = Vec::new();
+        // Each object once: a text's characters are an operation each, on
+        // the one object.
+        let mut found: HashMap<automerge::legacy::ObjectId, Option<ObjId>> = HashMap::new();
         for change in changes {
             let actor = change.actor_id().to_hex_string();
             let start = change.start_op().get();
             for (offset, op) in change.decode().operations.iter().enumerate() {
-                let Some(obj) = exid(doc, &op.obj) else {
+                let obj = if let Some(obj) = found.get(&op.obj) {
+                    obj.clone()
+                } else {
+                    let obj = exid(doc, &op.obj);
+                    if let Some(obj) = &obj {
+                        touched.push(obj.clone());
+                    }
+                    found.insert(op.obj.clone(), obj.clone());
+                    obj
+                };
+                let Some(obj) = obj else {
                     continue;
                 };
                 let key = match &op.key {
@@ -223,10 +236,9 @@ impl Delta {
                 if matches!(op.action, automerge::legacy::OpType::Make(_)) {
                     let counter = start.saturating_add(u64::try_from(offset).unwrap_or(u64::MAX));
                     if let Ok((made, _)) = doc.import(&format!("{counter}@{actor}")) {
-                        created.insert(made, (obj.clone(), key));
+                        created.insert(made, (obj, key));
                     }
                 }
-                touched.push(obj);
             }
         }
         for obj in touched {

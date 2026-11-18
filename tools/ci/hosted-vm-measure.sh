@@ -89,7 +89,7 @@ probe=$(cat "$here/hosted-browser-probe.py")
 # Open a page in WORKSPACE's VM, keep it open, and wait for the probe's line.
 open_page() {
   local workspace=$1
-  as_service tilo-legacy hosted run --run /run/tilo-hosted --workspace "$workspace" \
+  as_service tilo-linux-vm hosted run --run /run/tilo-hosted --workspace "$workspace" \
     --account acct-measure --size small -- python3 -c "$probe" 600 > "$work/$workspace.out" 2>&1 &
   for _ in $(seq 300); do
     grep -q '^{' "$work/$workspace.out" 2>/dev/null && break
@@ -109,7 +109,7 @@ weigh() {
   done | jq -s .
 }
 
-status() { as_service tilo-legacy hosted status --run /run/tilo-hosted; }
+status() { as_service tilo-linux-vm hosted status --run /run/tilo-hosted; }
 
 cold_page=$(open_page ws-cold)
 cold_weight=$(weigh)

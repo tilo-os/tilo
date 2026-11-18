@@ -175,20 +175,10 @@ pub struct AgentControl {
     delegation: Delegation,
     state: Mutex<ControlState>,
     changed: Changed,
-    /// Who confirms an action the agent's grants leave to the person: the
-    /// person's own host, never the agent.
-    approver: Mutex<Option<Approver>>,
     /// The supervisor's signal that its snapshot changed, once the agent
     /// is one of its agents.
     reports_to: OnceLock<Arc<SnapshotChanges>>,
 }
-
-/// The person's host an agent asks before an action that asks first
-/// ([`tilo_actions::remote::ActionProvider::confirm`]): it puts the question to
-/// the person on their own device and answers with their
-/// [`Confirmation::Approved`](tilo_actions::remote::Confirmation::Approved),
-/// or refuses.
-pub type Approver = Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>;
 
 impl AgentControl {
     #[must_use]
@@ -204,7 +194,6 @@ impl AgentControl {
                 workspace: None,
             }),
             changed: Changed::default(),
-            approver: Mutex::new(None),
             reports_to: OnceLock::new(),
         })
     }
@@ -238,7 +227,6 @@ impl AgentControl {
                 workspace: info.workspace.clone(),
             }),
             changed: Changed::default(),
-            approver: Mutex::new(None),
             reports_to: OnceLock::new(),
         })
     }
@@ -332,16 +320,6 @@ impl AgentControl {
                 .unwrap_or_else(PoisonError::into_inner),
         };
         *raised = false;
-    }
-
-    /// The person's host that confirms what the agent's grants leave to
-    /// them. Without one, such an action is refused.
-    pub fn set_approver(&self, approver: Option<Approver>) {
-        *self.approver.lock_recover() = approver;
-    }
-
-    pub(crate) fn approver(&self) -> Option<Approver> {
-        self.approver.lock_recover().clone()
     }
 
     #[must_use]
@@ -501,6 +479,30 @@ impl AgentControl {
         !state.paused && state.status != AgentStatus::Stopped
     }
 
+    /// Whether the agent is paused while task `id` runs.
+    pub(crate) fn paused_on(&self, id: &str) -> bool {
+        let state = self.state();
+        state.paused
+            && state
+                .tasks
+                .iter()
+                .any(|task| task.id == id && task.state == TaskState::Running)
+    }
+
+    /// Block while the agent is paused and task `id` still runs: a turn under
+    /// way takes no step until its person resumes the agent, stops it or
+    /// cancels the task. Every one of those wakes the agent, and this wait
+    /// with it; the signal stays raised for the agent's loop.
+    pub(crate) fn hold_while_paused(&self, id: &str) {
+        let raised = self.changed.raised.lock_recover();
+        drop(
+            self.changed
+                .condvar
+                .wait_while(raised, |_| self.paused_on(id))
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+    }
+
     /// Whether task `id` is still wanted.
     #[must_use]
     pub fn is_running(&self, id: &str) -> bool {
@@ -536,14 +538,6 @@ impl AgentControl {
         drop(state);
         self.persisted_changed();
         Some(begun)
-    }
-
-    /// Whether a task waits for [`Self::begin_next`].
-    pub(crate) fn has_queued(&self) -> bool {
-        self.state()
-            .tasks
-            .iter()
-            .any(|task| task.state == TaskState::Queued)
     }
 
     /// Record one action task `id` performed.
@@ -721,14 +715,6 @@ pub trait AgentHostLink: Send + Sync {
 
     /// Refuse the agent device from now on.
     fn withdraw(&self, device_public_key: [u8; 32]);
-
-    /// The host of the person `delegation` names, which puts an action the
-    /// agent's grants leave to them to them on their own device. `None`: no
-    /// such host here, and the agent's actions that ask first are refused.
-    fn approver(&self, delegation: &Delegation) -> Option<Approver> {
-        let _ = delegation;
-        None
-    }
 }
 
 /// Receives the outcome of [`AgentHostLink::request_approval`].
@@ -879,10 +865,6 @@ impl AgentSupervisor {
     /// Connect the host: grants can then be requested, and approved ones
     /// are registered and withdrawn with it.
     pub fn set_link(&self, link: Arc<dyn AgentHostLink>) {
-        // Agents already running ask the person through this host too.
-        for control in self.state().agents.values() {
-            control.set_approver(link.approver(control.delegation()));
-        }
         *self.link.lock_recover() = Some(link);
     }
 
@@ -1134,10 +1116,6 @@ impl AgentSupervisor {
             let control = AgentControl::new(identity.delegation.clone());
             control.report_to(&self.changes);
             control.set_workspace(&workspace);
-            control.set_approver(
-                self.link()
-                    .and_then(|link| link.approver(&identity.delegation)),
-            );
             state.agents.insert(grant.to_owned(), control.clone());
             drop(state);
             (identity, control)
@@ -1287,10 +1265,6 @@ impl AgentSupervisor {
                 (None, Err(_)) => continue,
             };
             let control = AgentControl::restore(delegation, &info);
-            control.set_approver(
-                self.link()
-                    .and_then(|link| link.approver(control.delegation())),
-            );
             control.report_to(&self.changes);
             match identity {
                 Some(identity) if !control.ended() => resume.push((identity, control.clone())),

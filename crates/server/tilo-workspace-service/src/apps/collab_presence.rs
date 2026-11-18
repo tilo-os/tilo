@@ -4,9 +4,9 @@
 //! transport-neutral presence payload cross hosts; this module checks the
 //! architecture-sized positions when translating to and from the local model.
 
+use collab_types::presence::PresenceKey;
 use collab_types::{PeerPresence, PeerPresencePayload};
-use ui::collaboration::PresencePayload;
-use ui::presence::PresenceKey;
+use collaboration::PresencePayload;
 
 pub fn to_peer(key: &PresenceKey, payload: &PresencePayload) -> Option<PeerPresence> {
     Some(PeerPresence {
@@ -102,7 +102,7 @@ pub fn decode_peer(
         // What a device sends in the call is for the roster, not for the local
         // presence: a shell's roster says who is in a call, never a camera.
         PeerPresencePayload::Availability { state, call, .. } => PresencePayload::Availability {
-            state: ui::Availability::from_id(&state)
+            state: collab_types::presence::Availability::from_id(&state)
                 .ok_or_else(|| format!("availability {state:?} is unknown"))?,
             call,
         },
@@ -166,7 +166,7 @@ mod tests {
                     automatic: true,
                 },
                 PresencePayload::Availability {
-                    state: ui::Availability::Focusing,
+                    state: collab_types::presence::Availability::Focusing,
                     call: Some("voice".into()),
                 },
                 PresencePayload::Composing { composing: true },

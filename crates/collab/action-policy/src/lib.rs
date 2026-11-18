@@ -47,7 +47,7 @@ mod workspace;
 
 pub use acting::{Invocation, admit_invocation, answer_at, asker_of, granted_to};
 pub use admission::{Admission, Asker, Invoked, Reach, Refused, admit};
-pub use decide::{Authority, Basis, Cap, Decision, Party, Verdict, decide};
+pub use decide::{Authority, Basis, Cap, Decision, Party, Refuser, Verdict, decide};
 pub use describe::{Ids, Labels, describe, describe_node, sentences};
 pub use earlier::EarlierIds;
 pub use entry::{EntryError, EntryPolicy, ListingPolicy};
@@ -76,6 +76,7 @@ pub use grant::{Answer, Context, Grant, GrantId, Grantee, Lifetime, OFFERED_SPAN
 pub use kind::{ActionKind, KindSet};
 pub use member::{
     Acting, Actor, AgentSessionId, AutomationId, DIRECT_CONVERSATION_PREFIX, MemberId, ResourceId,
+    key_agent_id, key_of_agent,
 };
 pub use member_access::MemberAccess;
 pub use path::{Level, PathError, Segment, Specificity, TreePath};

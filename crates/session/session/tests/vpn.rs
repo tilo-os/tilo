@@ -45,11 +45,9 @@ use settings_store::device_vpn::{
 use tilo_compositor::OutputConfig;
 use tilo_nm::{ActiveState, ActiveVpn, VpnReading, VpnWatch};
 use tilo_session::platform::fabric::Continuity;
-use tilo_session::platform::fabric::SpeakerFabricState;
-use tilo_session::platform::fabric::UnlockFabricState;
 use tilo_session::platform::fabric::{
-    ClipboardEntry, DeviceFabric, DeviceFabricSnapshot, DeviceId, DeviceKind, DevicePresence,
-    FABRIC_SCHEMA_VERSION, FabricCapabilities, FabricStamp, OwnerSession, PersonalFabricAction,
+    ClipboardEntry, DeviceAbout, DeviceId, DeviceKind, FabricCapabilities, PersonDevice,
+    PersonDevices, PersonalFabricAction,
 };
 use tilo_session::platform::fabric::{FabricLink, PersonalFabricSendError, SharedLink};
 use tilo_session::sync::{Client, Entry, OwnPresence};
@@ -441,38 +439,23 @@ impl KnownDevices {
 }
 
 impl FabricLink for KnownDevices {
-    fn device_fabric(&self) -> DeviceFabric {
-        let mut fabric = DeviceFabric::default();
-        for (device, label) in &self.named {
-            fabric
-                .upsert(DeviceFabricSnapshot {
-                    schema_version: FABRIC_SCHEMA_VERSION,
-                    owner: device.clone(),
-                    presence: DevicePresence {
-                        device: device.clone(),
+    fn devices(&self) -> PersonDevices {
+        PersonDevices::new(
+            self.named.iter().map(|(device, label)| {
+                let mut known = PersonDevice::new(
+                    device.clone(),
+                    DeviceAbout {
                         label: label.clone(),
                         kind: DeviceKind::Laptop,
                         capabilities: FabricCapabilities::default(),
-                        online: true,
-                        last_seen_unix_ms: 1,
-                        wake_routes: Vec::new(),
-                        session: OwnerSession::default(),
-                        stamp: FabricStamp {
-                            counter: 1,
-                            device: device.clone(),
-                        },
                     },
-                    media: Vec::new(),
-                    clipboard: Vec::new(),
-                    settings: Vec::new(),
-                    wifi: Vec::new(),
-                    display: None,
-                    speakers: SpeakerFabricState::default(),
-                    unlock: UnlockFabricState::default(),
-                })
-                .expect("the snapshot is valid");
-        }
-        fabric
+                );
+                known.online = true;
+                known.last_seen_unix_ms = 1;
+                known
+            }),
+            Vec::new(),
+        )
     }
 
     fn online_device_ids(&self) -> BTreeSet<DeviceId> {
@@ -544,7 +527,7 @@ fn choosing_a_device_to_route_through_carries_its_networks_until_they_stop() {
             hosts: Vec::new(),
             continuity: Continuity::default(),
             wake: Arc::new(|| {}),
-            fabric: None,
+            personal: None,
             relays: test_server::loopback(),
             lan: None,
         },
@@ -703,7 +686,7 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
             hosts: Vec::new(),
             continuity: Continuity::default(),
             wake: Arc::new(|| {}),
-            fabric: None,
+            personal: None,
             relays: test_server::loopback(),
             lan: None,
         },
@@ -723,7 +706,7 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
             hosts: Vec::new(),
             continuity: Continuity::default(),
             wake: Arc::new(|| {}),
-            fabric: None,
+            personal: None,
             relays: test_server::loopback(),
             lan: None,
         },

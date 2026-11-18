@@ -88,7 +88,8 @@ pub mod service_credentials;
 #[cfg(test)]
 mod service_credentials_tests;
 pub use service_credentials::{
-    AccountCredentials, CredentialRef, ServiceAuthorization, ServiceCredentials,
+    AccountCredentials, CredentialRef, MODEL_SERVICE, ServiceAuthorization, ServiceCredentials,
+    provider_api_key,
 };
 #[cfg(feature = "person")]
 pub mod person;

@@ -691,7 +691,7 @@ impl Apply for SystemdApply {
     }
 
     fn machine_identity(&mut self) -> crate::apply::MachineIdentity {
-        let paths = tilo_user_identity::IdentityPaths::default_system();
+        let paths = tilo_device_identity::IdentityPaths::default_system();
         crate::apply::MachineIdentity {
             person: paths.user_pubkey.is_file(),
             certified: paths.device_cert.is_file(),

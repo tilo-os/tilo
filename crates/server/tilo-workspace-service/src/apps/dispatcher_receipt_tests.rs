@@ -109,14 +109,16 @@ async fn dispatch_receipt_read(rig: &Rig) -> (u64, DurableInvocation) {
     );
     let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
     assert_eq!(delivered.invocation_uuid, *receipt.invocation.0.as_bytes());
-    let lease = (rig.authorize)(&ui::invocation_scope::PublishedInvocationRequest {
-        wire_id: delivered.id,
-        invocation: receipt.invocation,
-        address: tilo_actions::ActionAddress::new(delivered.resource, delivered.action),
-        argument: delivered.argument,
-        actor: delivered.actor,
-        presence: None,
-    })
+    let lease = (rig.authorize)(
+        &collaboration::invocation_scope::PublishedInvocationRequest {
+            wire_id: delivered.id,
+            invocation: receipt.invocation,
+            address: tilo_actions::ActionAddress::new(delivered.resource, delivered.action),
+            argument: delivered.argument,
+            actor: delivered.actor,
+            presence: None,
+        },
+    )
     .expect("the worker accepts the dispatcher's original ownership");
     lease.check().unwrap();
     (delivered.id, receipt_record(rig, delivered.id))

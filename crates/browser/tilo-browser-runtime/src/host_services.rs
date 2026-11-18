@@ -12,10 +12,11 @@
 //! own for an application mounted without a desktop.
 //!
 //! Models are lent per mount, never ambient: the embedding host's model
-//! service when it supplies a session, else the page's own
-//! ([`tilo_model_gateway::page_service`]), which asks the providers the
-//! person set up in Model Providers with the keys kept in this browser's
-//! encrypted secret store. Only Model Providers is lent its administration.
+//! service when it supplies a session, else the person's own model on their
+//! server, asked with the key their vault keeps there
+//! ([`server_models`]). A browser keeps no provider key. Only Model
+//! Providers is lent an administration, and only one the embedder
+//! grants.
 //!
 //! Browsers grant pickers, popups and permission prompts only inside a user
 //! gesture. Every call comes from the app's handling of an input event, which
@@ -28,7 +29,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use agent_provider_config::ProviderConfig;
 use agent_provider_config::management::AdminFuture;
-use tilo_model_gateway::page_service::ProviderKeys;
+use agent_provider_config::protocol::ModelResponse;
+use tilo_actions::remote::person_models;
 use ui::models::{
     CompletionFuture, CredentialStatus, ErrorKind, ModelBackend, ModelError, ModelRequest,
     ProviderAdmin, ProviderSnapshot, StreamSink,
@@ -37,8 +39,8 @@ use ui::models::{
 /// Model access belongs to a mount, never to the page's ambient services.
 /// The embedding host supplies a short-lived model-service session token,
 /// not a provider credential. The service enforces its audience and grants.
-/// A mount the host supplies none to is lent the page's own model service
-/// ([`page_models`]).
+/// A mount the embedder supplies none to asks the person's own model on their
+/// server ([`server_models`]).
 #[derive(Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ModelConfig {
@@ -72,7 +74,7 @@ impl ModelConfig {
             _ => return Err("profileId and modelId must be supplied together and nonempty".into()),
         };
         Ok(ui::models::Models::new(Rc::new(LazyModels {
-            service: Service::Host {
+            service: EmbedderSession {
                 endpoint: self.endpoint.clone(),
                 session_token: zeroize::Zeroizing::new(self.session_token.clone()),
             },
@@ -98,7 +100,7 @@ impl ProviderManagementConfig {
         tilo_model_gateway::transport::check_endpoint_in_page(&self.endpoint)?;
         Ok(ui::models::ProviderAdministration::new(Arc::new(
             LazyAdministration {
-                service: Service::Host {
+                service: EmbedderSession {
                     endpoint: self.endpoint.clone(),
                     session_token: zeroize::Zeroizing::new(self.session_token.clone()),
                 },
@@ -108,93 +110,112 @@ impl ProviderManagementConfig {
     }
 }
 
-/// The page's own model service, for a mount its host lends none: the
-/// providers the person set up in Model Providers, asked from this page
-/// with the keys kept in the person's encrypted store in this browser.
-pub(crate) fn page_models() -> ui::models::Models {
-    ui::models::Models::new(Rc::new(LazyModels {
-        service: Service::Page,
-        choice: None,
-        client: std::cell::OnceCell::new(),
+/// The person's own models, for a mount its embedder lends none: the
+/// server the page's peer `peer` is with asks them
+/// ([`person_models::ASK`]), with the key the person's vault keeps there.
+/// That is the model and the key Settings shows and their hosted agents use;
+/// a browser keeps no provider key of its own. A page with no server has no
+/// model to ask.
+pub(crate) fn server_models(
+    peer: Option<u32>,
+    workspace: &str,
+    person: &str,
+) -> ui::models::Models {
+    let Some(peer) = peer else {
+        return ui::models::Models::default();
+    };
+    ui::models::Models::new(Rc::new(ServerTurns {
+        peer,
+        workspace: workspace.to_owned(),
+        person: person.to_owned(),
     }))
 }
 
-/// Model Providers' administration of the page's own model service.
-///
-/// A person whose workspace runs on a host (`hosted`) keeps their providers
-/// and keys there, which Settings and Model Providers both show. Such a
-/// page lends its own key store only while it still holds a provider from
-/// before: nobody else is shown a second place to keep a key.
-pub(crate) fn provider_admin(hosted: bool) -> ui::models::ProviderAdministration {
-    if hosted && !page_models_set_up() {
-        return ui::models::ProviderAdministration::default();
-    }
-    ui::models::ProviderAdministration::new(Arc::new(LazyAdministration {
-        service: Service::Page,
-        client: std::sync::OnceLock::new(),
-    }))
+/// How long the server holds a turn's answer before it says the turn runs and
+/// the page follows it: within what one ask over the session may wait.
+const TURN_WAIT_MS: u32 = 10_000;
+/// The longest a turn of the person's model is followed.
+const TURN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(150);
+
+/// Turns of the person's model, asked of the server over the
+/// session the page's peer holds with it.
+struct ServerTurns {
+    peer: u32,
+    workspace: String,
+    person: String,
 }
 
-/// Whether the page's own model service has a provider to ask: something
-/// to lend a report's review rather than the workspace's model.
-pub(crate) fn page_models_set_up() -> bool {
-    ProviderConfig::load()
-        .profiles
-        .iter()
-        .any(|profile| profile.enabled)
-}
-
-/// Which model service a mount's clients talk to.
-enum Service {
-    /// The embedding host's, over its session.
-    Host {
-        endpoint: String,
-        session_token: zeroize::Zeroizing<String>,
-    },
-    /// The page's own.
-    Page,
-}
-
-/// Where the page's model service keeps the person's provider keys: the
-/// page's secret store (AES-GCM under a key the browser will not export,
-/// in `IndexedDB`), under a name of its own that no application's store
-/// reads.
-struct PageKeys(tilo_secrets::SecretStore);
-
-/// The secret store name the page's model service keeps keys under.
-const PAGE_KEYS: &str = "so.tilo.model-service";
-
-fn page_keys() -> Arc<dyn ProviderKeys> {
-    Arc::new(PageKeys(tilo_secrets::SecretStore::for_app(PAGE_KEYS)))
-}
-
-fn key_store_error(_: tilo_secrets::SecretError) -> ModelError {
-    ModelError {
-        kind: ErrorKind::Unavailable,
-        message: "This browser cannot keep provider keys; allow this site to store data".into(),
+impl ServerTurns {
+    async fn turn(&self, request: &ModelRequest) -> Result<ModelResponse, ModelError> {
+        use tilo_actions::remote::{
+            ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, settle_with,
+        };
+        let unreachable = || ModelError {
+            kind: ErrorKind::Unavailable,
+            message: "Your workspace's server can't be reached from this page right now".into(),
+        };
+        let workspace = crate::peer::workspace_id(&self.workspace).map_err(|_| unreachable())?;
+        let api = crate::peer_sync::actions_of(self.peer, workspace).ok_or_else(unreachable)?;
+        let serde_json::Value::Object(argument) = serde_json::to_value(request)
+            .map_err(|_| ModelError::new(ErrorKind::InvalidRequest))?
+        else {
+            return Err(ModelError::new(ErrorKind::InvalidRequest));
+        };
+        let caller = Caller::local_person(self.person.clone()).in_workspace(self.workspace.clone());
+        let invocation = tilo_actions::InvocationId::new();
+        let asked = InvokeRequest {
+            invocation,
+            target: person_models::target(person_models::ASK),
+            argument: InvokeArgument::Json(argument),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: Some(TURN_WAIT_MS),
+            appearance: None,
+        };
+        let refused = |message: String| ModelError {
+            kind: ErrorKind::Unavailable,
+            message,
+        };
+        let mut receipt = api
+            .invoke(&caller, asked)
+            .await
+            .ok_or_else(unreachable)?
+            .map_err(|error| refused(error.to_string()))?;
+        if matches!(receipt.status, ReceiptStatus::Accepted) {
+            let now = tilo_clock::now();
+            let until = now.checked_add(TURN_TIMEOUT).unwrap_or(now);
+            receipt = settle_with(&api, &caller, invocation, None, until)
+                .await
+                .flatten()
+                .map(|state| state.receipt())
+                .ok_or_else(unreachable)?;
+        }
+        let output = match receipt.status {
+            ReceiptStatus::Completed { output } => output,
+            ReceiptStatus::Accepted => return Err(ModelError::new(ErrorKind::TimedOut)),
+            ReceiptStatus::Cancelled { .. } => return Err(ModelError::new(ErrorKind::Cancelled)),
+            ReceiptStatus::Failed { error } => return Err(refused(error.message)),
+            ReceiptStatus::Rejected { error } => return Err(refused(error.to_string())),
+        };
+        serde_json::from_value::<Result<ModelResponse, ModelError>>(
+            output.value.unwrap_or_default(),
+        )
+        .map_err(|_| ModelError::new(ErrorKind::InvalidResponse))?
     }
 }
 
-impl ProviderKeys for PageKeys {
-    fn get(&self, slot: &str) -> Result<Option<zeroize::Zeroizing<String>>, ModelError> {
-        Ok(self
-            .0
-            .get_blocking(slot)
-            .map_err(key_store_error)?
-            .map(|secret| {
-                zeroize::Zeroizing::new(String::from_utf8_lossy(secret.expose()).into_owned())
-            }))
+impl ModelBackend for ServerTurns {
+    fn complete<'a>(&'a self, request: &'a ModelRequest) -> CompletionFuture<'a> {
+        Box::pin(self.turn(request))
     }
+}
 
-    fn put(&self, slot: &str, key: &str) -> Result<(), ModelError> {
-        self.0
-            .put_blocking(slot, key.as_bytes(), tilo_secrets::PutOptions::default())
-            .map_err(key_store_error)
-    }
-
-    fn delete(&self, slot: &str) -> Result<(), ModelError> {
-        self.0.delete_blocking(slot).map_err(key_store_error)
-    }
+/// The embedder's model service, over the session it lent the mount.
+struct EmbedderSession {
+    endpoint: String,
+    session_token: zeroize::Zeroizing<String>,
 }
 
 /// The model service's clients: the inference client and the provider
@@ -209,16 +230,7 @@ impl ProviderKeys for PageKeys {
 pub struct ModelClients {
     models: MakeModels,
     administration: MakeAdministration,
-    page_models: MakePageModels,
-    page_administration: MakePageAdministration,
 }
-
-/// Starts the page's own model service over the person's keys.
-type MakePageModels = fn(Arc<dyn ProviderKeys>) -> Result<Rc<dyn ModelBackend>, ModelError>;
-
-/// Starts the page's own model service for Model Providers.
-type MakePageAdministration =
-    fn(Arc<dyn ProviderKeys>) -> Result<Arc<dyn ProviderAdmin>, ModelError>;
 
 /// Opens the model service client for a base URL, a token and an optional
 /// provider credential pair.
@@ -252,22 +264,9 @@ pub fn builtin_model_clients() -> ModelClients {
         let transport = FetchTransport::new(endpoint, session_token)?;
         Ok(Arc::new(AdministrationClient::new(transport)))
     }
-    fn page_models(keys: Arc<dyn ProviderKeys>) -> Result<Rc<dyn ModelBackend>, ModelError> {
-        let service = Arc::new(tilo_model_gateway::page_service::PageService::new(keys)?);
-        Ok(Rc::new(service.models(None)))
-    }
-    fn page_administration(
-        keys: Arc<dyn ProviderKeys>,
-    ) -> Result<Arc<dyn ProviderAdmin>, ModelError> {
-        Ok(Arc::new(
-            tilo_model_gateway::page_service::PageService::new(keys)?,
-        ))
-    }
     ModelClients {
         models,
         administration,
-        page_models,
-        page_administration,
     }
 }
 
@@ -286,7 +285,7 @@ async fn model_clients() -> Result<ModelClients, ModelError> {
 
 /// A mount's models, connected on the first request.
 struct LazyModels {
-    service: Service,
+    service: EmbedderSession,
     choice: Option<(String, String)>,
     client: std::cell::OnceCell<Rc<dyn ModelBackend>>,
 }
@@ -297,14 +296,12 @@ impl LazyModels {
             return Ok(Rc::clone(client));
         }
         let clients = model_clients().await?;
-        let client = match &self.service {
-            Service::Host {
-                endpoint,
-                session_token,
-            } => (clients.models)(endpoint, session_token.to_string(), self.choice.clone())
-                .map_err(|_| ModelError::new(ErrorKind::Transport))?,
-            Service::Page => (clients.page_models)(page_keys())?,
-        };
+        let EmbedderSession {
+            endpoint,
+            session_token,
+        } = &self.service;
+        let client = (clients.models)(endpoint, session_token.to_string(), self.choice.clone())
+            .map_err(|_| ModelError::new(ErrorKind::Transport))?;
         Ok(Rc::clone(self.client.get_or_init(|| client)))
     }
 }
@@ -325,7 +322,7 @@ impl ModelBackend for LazyModels {
 
 /// A mount's provider administration, connected on the first request.
 struct LazyAdministration {
-    service: Service,
+    service: EmbedderSession,
     client: std::sync::OnceLock<Arc<dyn ProviderAdmin>>,
 }
 
@@ -335,14 +332,12 @@ impl LazyAdministration {
             return Ok(Arc::clone(client));
         }
         let clients = model_clients().await?;
-        let client = match &self.service {
-            Service::Host {
-                endpoint,
-                session_token,
-            } => (clients.administration)(endpoint, session_token.to_string())
-                .map_err(|_| ModelError::new(ErrorKind::Transport))?,
-            Service::Page => (clients.page_administration)(page_keys())?,
-        };
+        let EmbedderSession {
+            endpoint,
+            session_token,
+        } = &self.service;
+        let client = (clients.administration)(endpoint, session_token.to_string())
+            .map_err(|_| ModelError::new(ErrorKind::Transport))?;
         Ok(Arc::clone(self.client.get_or_init(|| client)))
     }
 }
@@ -382,23 +377,6 @@ impl ProviderAdmin for LazyAdministration {
 
     fn remove_api_key(&self, profile_id: String) -> AdminFuture<'_, ()> {
         Box::pin(async move { self.client().await?.remove_api_key(profile_id).await })
-    }
-
-    fn migrate_api_key(
-        &self,
-        profile_id: String,
-        original_endpoint: String,
-    ) -> AdminFuture<'_, ()> {
-        Box::pin(async move {
-            self.client()
-                .await?
-                .migrate_api_key(profile_id, original_endpoint)
-                .await
-        })
-    }
-
-    fn remove_legacy_api_key(&self, profile_id: String) -> AdminFuture<'_, ()> {
-        Box::pin(async move { self.client().await?.remove_legacy_api_key(profile_id).await })
     }
 }
 

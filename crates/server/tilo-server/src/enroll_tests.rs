@@ -17,6 +17,33 @@ fn fleet_document(
     serde_json::to_vec_pretty(&fleet).unwrap()
 }
 
+#[test]
+fn a_refused_signature_issues_no_enrollment_response() {
+    struct RefusingRoot;
+
+    impl tilo_user_identity::StatementSigner for RefusingRoot {
+        fn public_key(&self) -> [u8; 32] {
+            [1; 32]
+        }
+
+        fn sign_digest(
+            &self,
+            _digest: &[u8; 32],
+        ) -> Result<[u8; 64], tilo_user_identity::SignError> {
+            Err(tilo_user_identity::SignError("locked".into()))
+        }
+    }
+
+    impl tilo_server::root_signer::RootSigner for RefusingRoot {}
+
+    let refusing = RefusingRoot;
+    let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+    assert!(
+        sign_response(payload(&root), Approver::Root(&refusing)).is_err(),
+        "a refusing root issues no enrollment response"
+    );
+}
+
 tilo_test_env::scenario! {
     fn certificates_and_fleets_admit_only_what_the_identity_signed;
 
@@ -71,10 +98,10 @@ tilo_test_env::scenario! {
         refused(load_approval_identity(&options).err().unwrap(), "revoked");
         fleet.revocations.clear();
         store.adopt_transferred(&fleet).unwrap();
-        let mut issuer = tilo_user_identity::persist::read_device_cert(&paths.device_cert).unwrap();
+        let mut issuer = tilo_device_identity::persist::read_device_cert(&paths.device_cert).unwrap();
         issuer.capabilities = DeviceCapabilities::member();
         sign_root_cert(&mut issuer, identity.root.as_deref().unwrap()).unwrap();
-        tilo_user_identity::persist::write_device_cert(
+        tilo_device_identity::persist::write_device_cert(
             &paths.device_cert_for_user(&identity.user_public_key),
             &issuer,
         )
@@ -87,7 +114,7 @@ tilo_test_env::scenario! {
         issuer.issued_at_ns = 1;
         issuer.expires_at_ns = Some(2);
         sign_root_cert(&mut issuer, identity.root.as_deref().unwrap()).unwrap();
-        tilo_user_identity::persist::write_device_cert(
+        tilo_device_identity::persist::write_device_cert(
             &paths.device_cert_for_user(&identity.user_public_key),
             &issuer,
         )
@@ -97,7 +124,7 @@ tilo_test_env::scenario! {
         issuer.expires_at_ns = None;
         issuer.user_public_key = unrelated_root.verifying_key().to_bytes();
         sign_device_cert(&mut issuer, &unrelated_root).unwrap();
-        tilo_user_identity::persist::write_device_cert(
+        tilo_device_identity::persist::write_device_cert(
             &paths.device_cert_for_user(&identity.user_public_key),
             &issuer,
         )
@@ -119,7 +146,7 @@ tilo_test_env::scenario! {
         let paths = IdentityPaths::under(identity_root.path());
         paths.ensure_directories().unwrap();
         let root = ed25519_dalek::SigningKey::from_bytes(&[43; 32]);
-        tilo_user_identity::persist::write_signing_key(&paths.user_privkey, &root).unwrap();
+        tilo_device_identity::persist::write_signing_key(&paths.user_privkey, &root).unwrap();
         let admin = ed25519_dalek::SigningKey::from_bytes(&[44; 32]);
         let device = hex::encode(admin.verifying_key().to_bytes());
         let out = identity_dir.path().join("admin.cert");
@@ -138,7 +165,7 @@ tilo_test_env::scenario! {
 
         let admin_only = ["admin".to_owned()];
         certify(&options(&admin_only)).unwrap();
-        let cert = tilo_user_identity::persist::read_device_cert(&out).unwrap();
+        let cert = tilo_device_identity::persist::read_device_cert(&out).unwrap();
         verify_device_cert(&cert).unwrap();
         assert_eq!(cert.user_public_key, root.verifying_key().to_bytes());
         assert_eq!(cert.capabilities, DeviceCapabilities::administrator());
@@ -154,7 +181,7 @@ tilo_test_env::scenario! {
         let identity_dir = tempfile::tempdir().unwrap();
         device_key(identity_root.path()).unwrap();
         let paths = IdentityPaths::under(identity_root.path());
-        let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey).unwrap();
+        let device = tilo_device_identity::persist::read_device_key(&paths.device_privkey).unwrap();
         let root = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
         let user = root.verifying_key().to_bytes();
         let issue = |device_public_key: [u8; 32], root: &ed25519_dalek::SigningKey| {
@@ -172,7 +199,7 @@ tilo_test_env::scenario! {
             let path = identity_dir
                 .path()
                 .join(format!("{}.cert", hex::encode(&cert.signature[..8])));
-            tilo_user_identity::persist::write_device_cert(&path, &cert).unwrap();
+            tilo_device_identity::persist::write_device_cert(&path, &cert).unwrap();
             path
         };
 
@@ -182,7 +209,7 @@ tilo_test_env::scenario! {
         assert!(!paths.device_cert.exists());
 
         let root_key = identity_dir.path().join("root.key");
-        tilo_user_identity::persist::write_signing_key(&root_key, &root).unwrap();
+        tilo_device_identity::persist::write_signing_key(&root_key, &root).unwrap();
         let own = identity_dir.path().join("own.cert");
         let capabilities = ["own"].map(String::from);
         certify(&CertifyOptions {
@@ -198,11 +225,11 @@ tilo_test_env::scenario! {
         install_cert(identity_root.path(), identity_dir.path(), &own).unwrap();
         // Delivered again (a restart before the launcher noticed): unchanged.
         install_cert(identity_root.path(), identity_dir.path(), &own).unwrap();
-        let installed = tilo_user_identity::persist::read_device_cert(&paths.device_cert).unwrap();
+        let installed = tilo_device_identity::persist::read_device_cert(&paths.device_cert).unwrap();
         assert_eq!(installed.user_public_key, user);
         assert!(installed.capabilities.can_own_workspaces && !installed.capabilities.can_admit_devices);
         assert_eq!(
-            tilo_user_identity::persist::read_public_key(&paths.user_pubkey).unwrap(),
+            tilo_device_identity::persist::read_public_key(&paths.user_pubkey).unwrap(),
             user
         );
         let record =
@@ -214,7 +241,7 @@ tilo_test_env::scenario! {
         let takeover = issue(device.verifying_key().to_bytes(), &stranger);
         assert!(install_cert(identity_root.path(), identity_dir.path(), &takeover).is_err());
         assert_eq!(
-            tilo_user_identity::persist::read_public_key(&paths.user_pubkey).unwrap(),
+            tilo_device_identity::persist::read_public_key(&paths.user_pubkey).unwrap(),
             user
         );
     }
@@ -585,7 +612,7 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
         let identity_dir = tempfile::tempdir().unwrap();
         let paths = IdentityPaths::under(identity_root.path());
         paths.ensure_directories().unwrap();
-        tilo_user_identity::persist::write_public_key(
+        tilo_device_identity::persist::write_public_key(
             &paths.user_pubkey,
             &old_root.verifying_key().to_bytes(),
         )
@@ -601,7 +628,7 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
             issuer: None,
         };
         sign_device_cert(&mut old_cert, &old_root).unwrap();
-        tilo_user_identity::persist::write_device_cert(&paths.device_cert, &old_cert).unwrap();
+        tilo_device_identity::persist::write_device_cert(&paths.device_cert, &old_cert).unwrap();
         let before_key = std::fs::read(&paths.user_pubkey).unwrap();
         let before_cert = std::fs::read(&paths.device_cert).unwrap();
 
@@ -696,7 +723,7 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
             use std::os::unix::fs::PermissionsExt as _;
             assert_eq!(
                 std::fs::metadata(&public).unwrap().permissions().mode() & 0o777,
-                tilo_user_identity::persist::PUBLIC_FILE_MODE,
+                tilo_device_identity::persist::PUBLIC_FILE_MODE,
                 "{} is not readable to the session",
                 public.display()
             );
@@ -706,7 +733,7 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
             root.verifying_key().to_bytes()
         );
         assert_eq!(
-            tilo_user_identity::persist::read_device_cert(&paths.device_cert)
+            tilo_device_identity::persist::read_device_cert(&paths.device_cert)
                 .unwrap()
                 .device_public_key,
             member.verifying_key().to_bytes()
@@ -989,13 +1016,13 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
     paths.ensure_directories().unwrap();
     let root = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
     let issuer = ed25519_dalek::SigningKey::from_bytes(&[32; 32]);
-    tilo_user_identity::persist::write_signing_key(&paths.user_privkey, &root).unwrap();
-    tilo_user_identity::persist::write_public_key(
+    tilo_device_identity::persist::write_signing_key(&paths.user_privkey, &root).unwrap();
+    tilo_device_identity::persist::write_public_key(
         &paths.user_pubkey,
         &root.verifying_key().to_bytes(),
     )
     .unwrap();
-    tilo_user_identity::persist::write_device_key(&paths.device_privkey, &issuer).unwrap();
+    tilo_device_identity::persist::write_device_key(&paths.device_privkey, &issuer).unwrap();
     let mut issuer_cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: issuer.verifying_key().to_bytes(),
@@ -1007,8 +1034,8 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
         issuer: None,
     };
     sign_device_cert(&mut issuer_cert, &root).unwrap();
-    tilo_user_identity::persist::write_device_cert(&paths.device_cert, &issuer_cert).unwrap();
-    tilo_user_identity::persist::write_device_cert(
+    tilo_device_identity::persist::write_device_cert(&paths.device_cert, &issuer_cert).unwrap();
+    tilo_device_identity::persist::write_device_cert(
         &paths.device_cert_for_user(&root.verifying_key().to_bytes()),
         &issuer_cert,
     )
@@ -1037,7 +1064,8 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
     let new_device = ed25519_dalek::SigningKey::from_bytes(&[44; 32]);
     let new_paths = IdentityPaths::under(new_root.path());
     new_paths.ensure_directories().unwrap();
-    tilo_user_identity::persist::write_device_key(&new_paths.device_privkey, &new_device).unwrap();
+    tilo_device_identity::persist::write_device_key(&new_paths.device_privkey, &new_device)
+        .unwrap();
     let expected_device = hex::encode(new_device.verifying_key().to_bytes());
     let expected_service = hex::encode(tilo_server::daemon::server_node_id(&new_device));
 
@@ -1098,7 +1126,8 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
     approval.join().unwrap().unwrap();
 
     let enrolled_paths = IdentityPaths::under(new_root.path());
-    let cert = tilo_user_identity::persist::read_device_cert(&enrolled_paths.device_cert).unwrap();
+    let cert =
+        tilo_device_identity::persist::read_device_cert(&enrolled_paths.device_cert).unwrap();
     assert_eq!(cert.user_public_key, root.verifying_key().to_bytes());
     assert_eq!(cert.capabilities, DeviceCapabilities::member());
     assert!(verify_device_cert(&cert).is_ok());
@@ -1178,8 +1207,8 @@ fn a_device_holding_no_key_pairs_a_device_its_key_holder_approved() {
     let paths = IdentityPaths::under(member_root.path());
     paths.ensure_directories().unwrap();
     let member = ed25519_dalek::SigningKey::from_bytes(&[32; 32]);
-    tilo_user_identity::persist::write_public_key(&paths.user_pubkey, &user).unwrap();
-    tilo_user_identity::persist::write_device_key(&paths.device_privkey, &member).unwrap();
+    tilo_device_identity::persist::write_public_key(&paths.user_pubkey, &user).unwrap();
+    tilo_device_identity::persist::write_device_key(&paths.device_privkey, &member).unwrap();
     let mut member_cert = DeviceCert {
         user_public_key: user,
         device_public_key: member.verifying_key().to_bytes(),
@@ -1191,8 +1220,8 @@ fn a_device_holding_no_key_pairs_a_device_its_key_holder_approved() {
         issuer: None,
     };
     sign_device_cert(&mut member_cert, &root).unwrap();
-    tilo_user_identity::persist::write_device_cert(&paths.device_cert, &member_cert).unwrap();
-    tilo_user_identity::persist::write_device_cert(
+    tilo_device_identity::persist::write_device_cert(&paths.device_cert, &member_cert).unwrap();
+    tilo_device_identity::persist::write_device_cert(
         &paths.device_cert_for_user(&user),
         &member_cert,
     )
@@ -1210,7 +1239,8 @@ fn a_device_holding_no_key_pairs_a_device_its_key_holder_approved() {
     let new_device = ed25519_dalek::SigningKey::from_bytes(&[44; 32]);
     let new_paths = IdentityPaths::under(new_root.path());
     new_paths.ensure_directories().unwrap();
-    tilo_user_identity::persist::write_device_key(&new_paths.device_privkey, &new_device).unwrap();
+    tilo_device_identity::persist::write_device_key(&new_paths.device_privkey, &new_device)
+        .unwrap();
     let service = tilo_server::daemon::server_node_id(&new_device);
 
     // What the member found nearby, proposed to the key holder, who asks
@@ -1307,7 +1337,7 @@ fn a_device_holding_no_key_pairs_a_device_its_key_holder_approved() {
     .unwrap();
     approval.join().unwrap().unwrap();
 
-    let cert = tilo_user_identity::persist::read_device_cert(
+    let cert = tilo_device_identity::persist::read_device_cert(
         &IdentityPaths::under(new_root.path()).device_cert,
     )
     .unwrap();
@@ -1662,10 +1692,12 @@ tilo_test_env::scenario! {
         let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
         let user = root.verifying_key().to_bytes();
         let reply = sign_response(payload(&root), Approver::Root(&root)).unwrap();
-        let signature = root
-            .sign(&response_preimage(&payload(&root)).unwrap())
-            .to_bytes()
-            .to_vec();
+        let signature = tilo_user_identity::StatementSigner::sign_digest(
+            &root,
+            &response_statement_digest(&payload(&root)).unwrap(),
+        )
+        .unwrap()
+        .to_vec();
         assert_eq!(
             *reply,
             postcard::to_stdvec(&(payload(&root), signature)).unwrap()

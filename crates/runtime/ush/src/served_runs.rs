@@ -1,5 +1,5 @@
 //! A served run in a workspace's machine, from its host's side
-//! ([`legacy_agent_protocol::served`]).
+//! ([`linux_vm_protocol::served`]).
 //!
 //! A command line a workspace's shell runs gets its files and the internet.
 //! A program that needs what only its host may hold (a person's model, the
@@ -21,8 +21,8 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use legacy_agent_protocol::served::{self, FromRun, ToRun};
-use legacy_agent_protocol::{recv, send};
+use linux_vm_protocol::served::{self, FromRun, ToRun};
+use linux_vm_protocol::{recv, send};
 use tilo_actions::remote::server_account::Refusal;
 use ush_shell::io::{PipeWriter, pipe};
 use ush_shell::{Input, Output, Program, Stdio};
@@ -33,8 +33,8 @@ use crate::workspace_shell::{Payer, WorkspaceShells};
 /// The frames of a served run and what both of its sides agree on, for a
 /// host that holds one.
 pub mod wire {
-    pub use legacy_agent_protocol::served::*;
-    pub use legacy_agent_protocol::{ExitStatus, recv, send};
+    pub use linux_vm_protocol::served::*;
+    pub use linux_vm_protocol::{ExitStatus, recv, send};
 }
 
 /// A program to start in a workspace's machine, served by its host.

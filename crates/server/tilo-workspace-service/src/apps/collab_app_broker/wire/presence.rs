@@ -65,7 +65,7 @@ impl PresenceSession {
         let payload = match payload {
             PresencePayload::Status { text, automatic } => {
                 let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-                if text.chars().count() > ui::MAX_STATUS_CHARS {
+                if text.chars().count() > collab_types::presence::MAX_STATUS_CHARS {
                     return Err("status exceeds local protocol bound".into());
                 }
                 PresencePayload::Status { text, automatic }

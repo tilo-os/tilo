@@ -185,6 +185,7 @@ struct SelectedPreview {
     before: HistorySnapshot,
     after: HistorySnapshot,
     effect_only: bool,
+    part: Option<SelectedPart>,
 }
 
 /// Documents a window keeps beside its own whose changes its History lists with its own: the parts of
@@ -193,7 +194,49 @@ pub trait HistoryParts {
     /// Every part's committed frontier, in one list: it moves whenever a part changes or arrives.
     fn heads(&self) -> Vec<ChangeHash>;
     /// Every part's committed document.
-    fn documents(&self) -> Vec<AutoCommit>;
+    fn documents(&self) -> Vec<(HistoryPart, AutoCommit)>;
+    /// The window's view of what `part` held at `version.heads`, drawn over `version.own`, the
+    /// window's document as it is now.
+    ///
+    /// # Errors
+    /// Why the version cannot be drawn.
+    fn preview(&self, version: PartVersion<'_>) -> Result<Box<dyn HistoryPreview>, String>;
+    /// Write `part` back as it was at `heads`, as a new change by `author`.
+    ///
+    /// # Errors
+    /// Why the part was not restored.
+    fn restore(
+        &self,
+        part: &HistoryPart,
+        heads: &[ChangeHash],
+        author: &MemberId,
+    ) -> Result<(), String>;
+}
+
+/// One part of a chain whose changes History lists: the chain's document id and the part's number.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HistoryPart {
+    pub chain: String,
+    pub index: u64,
+}
+
+/// A version of a part to draw: the part, the frontier shown, the selected changes' frontiers before
+/// and after them, the window's document and where the person left the previous version.
+pub struct PartVersion<'a> {
+    pub part: &'a HistoryPart,
+    pub heads: &'a [ChangeHash],
+    pub before: &'a [ChangeHash],
+    pub after: &'a [ChangeHash],
+    pub own: &'a AutoCommit,
+    pub view: PreviewView,
+}
+
+/// The selected changes are a part's: the part, the window's document and the part's frontier when
+/// they were selected.
+struct SelectedPart {
+    part: HistoryPart,
+    own: AutoCommit,
+    live_heads: Vec<ChangeHash>,
 }
 
 pub struct HistoryController {
@@ -307,7 +350,7 @@ impl HistoryController {
         let Some(parts) = &self.parts else {
             return (entries, earlier);
         };
-        for mut part in parts.documents() {
+        for (_, mut part) in parts.documents() {
             earlier |= part.get_changes_meta(&[]).len() > self.window;
             entries.extend(
                 self.source
@@ -389,10 +432,12 @@ impl HistoryController {
     pub fn refresh(&mut self, live: &AutoCommit) -> Result<(), HistoryError> {
         let mut projection = committed_clone(live);
         let live_heads = sorted_heads(projection.get_heads());
-        self.live_updates = self
-            .selected
-            .as_ref()
-            .is_some_and(|selected| selected.after.heads != live_heads);
+        self.live_updates = self.selected.as_ref().is_some_and(|selected| {
+            selected.part.as_ref().map_or_else(
+                || selected.after.heads != live_heads,
+                |part| selected.after.heads != part.live_heads || self.parts_moved(),
+            )
+        });
         self.observed_live_heads.clone_from(&live_heads);
         if let Some(named) = self.workspace_agents {
             let current = crate::history_source::workspace_agents_revision();
@@ -434,7 +479,13 @@ impl HistoryController {
     ) -> Result<(), HistoryError> {
         let mut projection = committed_clone(live);
         let current_live_heads = sorted_heads(projection.get_heads());
-        let comparison = compare_entries(&mut projection, entries).map_err(HistoryError::from)?;
+        let (comparison, part) = match compare_entries(&mut projection, entries) {
+            Ok(comparison) => (comparison, None),
+            Err(CompareError::UnknownEntry(unknown)) => self
+                .part_comparison(entries, &projection)
+                .ok_or(HistoryError::UnknownEntry(unknown))?,
+            Err(error) => return Err(error.into()),
+        };
         let refreshed_projection =
             if self.projected_heads.as_ref() == Some(&current_live_heads) && !self.parts_moved() {
                 None
@@ -468,7 +519,10 @@ impl HistoryController {
             PreviewSide::After,
             &selection,
         );
-        let live_updates = after.heads != current_live_heads;
+        let live_updates = &after.heads
+            != part
+                .as_ref()
+                .map_or(&current_live_heads, |part| &part.live_heads);
 
         self.generation = self.generation.wrapping_add(1);
         if let Some((entries, named)) = refreshed_projection {
@@ -487,10 +541,99 @@ impl HistoryController {
             before,
             after,
             effect_only,
+            part,
         });
         self.side = PreviewSide::After;
         self.live_updates = live_updates;
         Ok(())
+    }
+
+    /// The comparison of `entries` in the part that made them, with the part, `own` and the part's
+    /// frontier now.
+    fn part_comparison(
+        &self,
+        entries: &[HistoryEntryId],
+        own: &AutoCommit,
+    ) -> Option<(
+        crate::history_source::HistoryComparison,
+        Option<SelectedPart>,
+    )> {
+        self.parts
+            .as_ref()?
+            .documents()
+            .into_iter()
+            .find_map(|(part, mut document)| {
+                let comparison = compare_entries(&mut document, entries).ok()?;
+                let selected = SelectedPart {
+                    part,
+                    own: own.clone(),
+                    live_heads: sorted_heads(document.get_heads()),
+                };
+                Some((comparison, Some(selected)))
+            })
+    }
+
+    /// The part the selected changes were made in, when they are a part's.
+    pub fn selected_part(&self) -> Option<&HistoryPart> {
+        self.selected
+            .as_ref()
+            .and_then(|selected| selected.part.as_ref())
+            .map(|selected| &selected.part)
+    }
+
+    /// The window's view of the part the selected changes were made in, at `snapshot`; `None` when
+    /// they are the window's document's own.
+    pub(crate) fn part_preview(
+        &self,
+        snapshot: &HistorySnapshot,
+        view: PreviewView,
+    ) -> Option<Result<Box<dyn HistoryPreview>, String>> {
+        let selected = self.selected.as_ref()?;
+        let part = selected.part.as_ref()?;
+        let parts = self.parts.as_ref()?;
+        Some(parts.preview(PartVersion {
+            part: &part.part,
+            heads: snapshot.heads(),
+            before: &selected.before.heads,
+            after: &selected.after.heads,
+            own: &part.own,
+            view,
+        }))
+    }
+
+    /// Write the reviewed part back as it was at the reviewed version, as a new change by `author`.
+    ///
+    /// # Errors
+    /// The review no longer matches the selection, the part changed since, or the part refused.
+    pub(crate) fn restore_part(
+        &self,
+        review: &RestoreReview,
+        author: &MemberId,
+    ) -> Result<(), HistoryError> {
+        let selected = self
+            .selected
+            .as_ref()
+            .ok_or(HistoryError::ReviewInvalidated)?;
+        let (Some(part), Some(parts)) = (&selected.part, &self.parts) else {
+            return Err(HistoryError::ReviewInvalidated);
+        };
+        if review.generation != self.generation
+            || review.selection != selected.selection
+            || review.selected_heads != selected.after.heads
+        {
+            return Err(HistoryError::ReviewInvalidated);
+        }
+        let now = parts
+            .documents()
+            .into_iter()
+            .find(|(held, _)| *held == part.part)
+            .map(|(_, mut document)| sorted_heads(document.get_heads()));
+        if now.as_ref() != Some(&review.reviewed_live_heads) {
+            return Err(HistoryError::StaleLiveHeads);
+        }
+        parts
+            .restore(&part.part, &review.selected_heads, author)
+            .map_err(HistoryError::Materialize)
     }
 
     /// Switch between the selected comparison's exact states.
@@ -531,7 +674,10 @@ impl HistoryController {
             resource: self.resource.clone(),
             selection: selected.selection.clone(),
             selected_heads: selected.after.heads.clone(),
-            reviewed_live_heads: self.observed_live_heads.clone(),
+            reviewed_live_heads: selected.part.as_ref().map_or_else(
+                || self.observed_live_heads.clone(),
+                |part| part.live_heads.clone(),
+            ),
             generation: self.generation,
         })
     }
@@ -560,6 +706,10 @@ impl HistoryController {
         }
         if selected.effect_only {
             return Err(HistoryError::EffectOnlySelection);
+        }
+        // A part's version is written back by the part ([`Self::restore_part`]).
+        if selected.part.is_some() {
+            return Err(HistoryError::ReviewInvalidated);
         }
         let mut projection = committed_clone(live);
         if sorted_heads(projection.get_heads()) != review.reviewed_live_heads {

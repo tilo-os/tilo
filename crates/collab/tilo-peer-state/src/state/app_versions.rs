@@ -129,7 +129,6 @@ impl StatePeer {
                 .map_err(err)?,
             None => doc.delete(&versions, app).map_err(err)?,
         }
-        doc.commit();
         self.write_governance(doc, &before, key, now)
     }
 

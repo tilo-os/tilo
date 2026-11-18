@@ -114,7 +114,7 @@ fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Client {
             hosts: Vec::new(),
             continuity: Continuity::default(),
             wake: Arc::new(|| {}),
-            fabric: None,
+            personal: None,
             relays: test_server::loopback(),
             lan: None,
         },

@@ -1059,7 +1059,12 @@ mod tests {
             let shown = AgentWorkPresentation::of(&running, false, false).unwrap();
             assert_eq!(shown.did, None);
             assert_eq!(shown.steps, lines);
-            // Done, it is one line that opens the list.
+            // Done with one operation, that operation is the line: no count to open.
+            let one = AgentWork::new(complete.clone(), 42).with_trace(steps[..1].to_vec());
+            let shown = AgentWorkPresentation::of(&one, false, false).unwrap();
+            assert_eq!(shown.did, None);
+            assert_eq!(shown.steps, lines[..1]);
+            // Done with several, it is one line that opens the list.
             let done = AgentWork::new(complete, 42).with_trace(steps);
             let folded = AgentWorkPresentation::of(&done, false, false).unwrap();
             assert_eq!(folded.summary, None);

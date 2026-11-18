@@ -13,7 +13,7 @@ de = "Passwörter"
 x86_64 = "v3"
 aarch64 = "aarch64"
 
-# What the app's code uses (tools/policy/check_app_capabilities.py checks it).
+# What the app's code uses (tilo-app check holds the code to this list).
 [capabilities]
 optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files", "secrets", "threads"]
 
@@ -43,8 +43,9 @@ secrets = "via-host"
 [sandbox.services]
 # The app's actions reach the shell over the workspace's broker: its window
 # publishes them there, and they are invoked back through it.
-collab = "optional@31"
-tilo-fs = "optional@31"
+collab = "optional@32"
+tilo-fs = "optional@32"
+# The window's bar shows the app's toolbar (ui::window_toolbar).
 # The permission requests the messaging service makes for Messages.
 messaging = "optional@1"
 

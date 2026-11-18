@@ -43,11 +43,11 @@ fn current_owner_prepared_activation_keeps_original_record_device_and_selected_d
     cert.signature = owner
         .sign(&tilo_user_identity::device_cert_signing_digest(&cert).unwrap())
         .to_bytes();
-    let paths = tilo_user_identity::persist::IdentityPaths::under(&system);
+    let paths = tilo_device_identity::persist::IdentityPaths::under(&system);
     paths.ensure_directories().unwrap();
-    tilo_user_identity::persist::write_device_key(&paths.device_privkey, &device).unwrap();
-    tilo_user_identity::persist::write_public_key(&paths.user_pubkey, &key).unwrap();
-    tilo_user_identity::persist::write_device_cert(&paths.device_cert, &cert).unwrap();
+    tilo_device_identity::persist::write_device_key(&paths.device_privkey, &device).unwrap();
+    tilo_device_identity::persist::write_public_key(&paths.user_pubkey, &key).unwrap();
+    tilo_device_identity::persist::write_device_cert(&paths.device_cert, &cert).unwrap();
     let record = identity.join("member.json");
     tilo_files::native::atomic::write_with_mode(
         &record,

@@ -77,7 +77,6 @@ pub(crate) const ACCOUNT_CHILD_FD: i32 = 42;
 pub(crate) const SERVICE_NAMESPACE_CHILD_FD: i32 = 43;
 /// Every fixed child slot; declared services are numbered around them.
 pub(crate) const RESERVED_CHILD_FDS: &[i32] = &[
-    runtime_identity::broker::BROKER_CHILD_FD,
     BLOB_CHILD_FD,
     IDENTITY_CHILD_FD,
     CHOOSER_CHILD_FD,
@@ -275,8 +274,8 @@ pub fn resolve_shell_ui_bind(
     }))
 }
 
-/// Connect the per-session identity broker and authenticate the launch context before the sandboxed app
-/// can write to the stream.
+/// Connect the workspace identity service and authenticate the launch context before the sandboxed
+/// app can write to the stream.
 pub fn resolve_identity_bind(
     app_id: &str,
     workspace_id: Option<&str>,
@@ -303,7 +302,7 @@ pub fn resolve_identity_bind_for_contract(
     }
     let path = identity_socket();
     if !path.exists() {
-        tracing::warn!("identity service is unavailable; app receives public metadata only");
+        tracing::warn!("identity service is unavailable; the app runs without an identity");
         return Ok(None);
     }
     let mut stream = match UnixStream::connect(&path) {

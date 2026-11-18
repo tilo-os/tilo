@@ -27,7 +27,7 @@ use tilo_actions::remote::Caller;
 use tilo_actions::remote::person_accounts::SendFile;
 use tilo_mail_session::Leaving;
 
-use super::PendingConfirmation;
+use tilo_server_protocol::certify::PendingConfirmation;
 
 /// How long a message waits for its person's answer before the question is
 /// a refusal.
@@ -145,12 +145,8 @@ impl Shown {
     /// The question as a confirmation the person's devices answer, asked by
     /// `agent` as `caller`.
     pub(super) fn question(&self, agent: &str, caller: &Caller) -> PendingConfirmation {
-        let mut id = [0_u8; 32];
-        for half in id.chunks_mut(16) {
-            half.copy_from_slice(uuid::Uuid::new_v4().as_bytes());
-        }
         PendingConfirmation {
-            id,
+            id: crate::workspaces::actions::agents::question_id(),
             agent_id: agent.to_owned(),
             agent_label: caller.agent_name().unwrap_or(agent).to_owned(),
             title: String::new(),

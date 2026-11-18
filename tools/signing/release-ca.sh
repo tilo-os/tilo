@@ -20,7 +20,7 @@
 # An operational certificate binds one KMS public key (`cosign public-key
 # --key awskms:///...` prints it, on any connected machine) to one purpose:
 #
-#   os-images             OS images and the legacy guest (containers-policy)
+#   os-images             OS images and the Linux VM guest (containers-policy)
 #   extension-manifests   downloaded system-extension manifests
 #
 # Its identity is <purpose>@TILO_RELEASE_IDENTITY_DOMAIN and its OIDC-issuer

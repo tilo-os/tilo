@@ -12,9 +12,11 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use threshold_identity::ThresholdIdentity;
+use tilo_device_identity::persist::DeviceKeyOwnership;
+use tilo_device_identity::{IdentityPaths, persist};
 use tilo_identity_ceremony::IdentityRecord;
-use tilo_user_identity::persist::DeviceKeyOwnership;
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, IdentityPaths, persist};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert};
+
 use zeroize::{Zeroize, Zeroizing};
 
 /// Where a newly provisioned personal identity's private share is kept.
@@ -1278,7 +1280,7 @@ fn ensure_device_certificate_for_identity(
         // A machine copied from another one re-keyed at boot and named
         // itself after it; its certificate carries that name.
         None => {
-            let branch = tilo_user_identity::branch::pending_label(paths)
+            let branch = tilo_device_identity::branch::pending_label(paths)
                 .ok()
                 .flatten();
             let label = branch.as_deref().unwrap_or(device_label);
@@ -1290,7 +1292,7 @@ fn ensure_device_certificate_for_identity(
             persist::write_device_cert(path, &cert).map_err(|e| io::Error::other(e.to_string()))?;
         }
     }
-    if let Err(error) = tilo_user_identity::branch::clear_pending_label(paths) {
+    if let Err(error) = tilo_device_identity::branch::clear_pending_label(paths) {
         tracing::warn!(%error, "could not clear the name a copied machine waited with");
     }
     Ok(cert_path)

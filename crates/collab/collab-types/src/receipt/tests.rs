@@ -618,3 +618,6 @@ impl SurfaceSource for Channels {
 
 #[path = "invoker_tests.rs"]
 mod invoker_tests;
+
+#[path = "continuation_tests.rs"]
+mod continuation_tests;

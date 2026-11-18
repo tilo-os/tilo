@@ -165,11 +165,11 @@ pub enum Envelope {
         signature: [u8; 64],
     },
 
-    /// Retired: a presence event, broadcast as an opaque payload. Nothing
-    /// sends it — presence rides the workspace's live session, on its presence
-    /// track — and it stays only so every later variant keeps its postcard
-    /// position.
-    RetiredPresence {
+    /// A presence event, broadcast as an opaque payload. The host fans it out
+    /// to the workspace's other subscribers, and the server never inspects the
+    /// bytes; a forwarded presence reaches a device batched, as the delivery
+    /// protocol's `EnvelopeV2::PresenceBatch` writes it.
+    Presence {
         workspace_id: WorkspaceId,
         /// Peer-defined presence payload. The server never inspects
         /// the bytes.
@@ -329,9 +329,8 @@ pub enum Envelope {
     },
 
     /// Join the workspace's live session: the host answers with the members
-    /// already present and tells them this device joined. The name keeps the
-    /// variant's place in the wire enum.
-    RetiredLiveJoin {
+    /// already present and tells them this device joined.
+    LiveJoin {
         /// Workspace id.
         workspace_id: WorkspaceId,
     },
@@ -344,23 +343,9 @@ pub enum Envelope {
         workspace_id: WorkspaceId,
     },
 
-    /// Retired: one ephemeral live frame ([`crate::live::LiveFrame`] bytes)
-    /// relayed by the host. Nothing sends it — frames travel on the live session —
-    /// and it stays only so every later variant keeps its postcard position.
-    RetiredLive {
-        workspace_id: WorkspaceId,
-        /// Publishing device, stamped by the host. Whatever a sender puts
-        /// here is overwritten.
-        from_device_public_key: [u8; 32],
-        /// Canonical [`crate::live::LiveFrame`] encoding.
-        #[serde(with = "serde_bytes")]
-        frame: Vec<u8>,
-    },
-
     /// A device joined (`active`) or left the workspace's live session, sent
-    /// by the host to the live session's other members. The name keeps the
-    /// variant's place in the wire enum.
-    RetiredLiveMember {
+    /// by the host to the live session's other members.
+    LiveMember {
         workspace_id: WorkspaceId,
         device_public_key: [u8; 32],
         /// Whether it is now a live member.
@@ -611,24 +596,6 @@ pub enum Envelope {
         frame: Vec<u8>,
     },
 
-    /// Retired: a device asked the host it is joined to who is here, and the
-    /// host answered ([`Self::RetiredHereReply`]). Who is here is the live
-    /// live session alone now; nothing sends it, and it stays only so every later
-    /// variant keeps its postcard position.
-    RetiredHereRequest {
-        request_id: u64,
-        #[serde(with = "serde_bytes")]
-        frame: Vec<u8>,
-    },
-
-    /// Retired: the host's answer to [`Self::RetiredHereRequest`]. Nothing
-    /// sends it; it keeps its postcard position.
-    RetiredHereReply {
-        request_id: u64,
-        #[serde(with = "serde_bytes")]
-        frame: Vec<u8>,
-    },
-
     /// The host's fetch proxy grant for this connection: the bearer token a
     /// page sends with every request it makes through its host
     /// ([`FETCH_PATH`], as `tilo_net::proxy` names it). Sent once, as the
@@ -700,6 +667,26 @@ pub enum Envelope {
         #[serde(with = "serde_bytes")]
         list: Vec<u8>,
     },
+
+    /// The server kept none of a [`Self::Delta`]'s document changes: the
+    /// document they write, the changes themselves, and why. Only the device
+    /// that sent them sees it, so peers that predate it never receive it.
+    ChangeRefused {
+        /// The workspace the changes were sent to.
+        workspace_id: WorkspaceId,
+        /// The app whose document the changes write.
+        app_id: String,
+        /// The workspace the document belongs to, as the change named it: one
+        /// a change names but is not sent to is refused all the same.
+        cluster_id: String,
+        /// The document.
+        document_id: String,
+        /// The changes the refused change carried, as their hashes: what a
+        /// reader withdraws and a person's history names as missing.
+        changes: Vec<[u8; 32]>,
+        /// Why.
+        refusal: crate::refusal::Refusal,
+    },
 }
 
 /// A member's own record a device opens ([`Envelope::OpenDocument`]): the app
@@ -750,7 +737,7 @@ impl Envelope {
             Self::Subscribe { .. } => "Subscribe",
             Self::Unsubscribe { .. } => "Unsubscribe",
             Self::Delta { .. } => "Delta",
-            Self::RetiredPresence { .. } => "Presence",
+            Self::Presence { .. } => "Presence",
             Self::Ready { .. } => "Ready",
             Self::NotAuthorised { .. } => "NotAuthorised",
             Self::Ping => "Ping",
@@ -763,10 +750,9 @@ impl Envelope {
             Self::Commit { .. } => "Commit",
             Self::Committed { .. } => "Committed",
             Self::CommitRefused { .. } => "CommitRefused",
-            Self::RetiredLiveJoin { .. } => "LiveJoin",
+            Self::LiveJoin { .. } => "LiveJoin",
             Self::LiveLeave { .. } => "LiveLeave",
-            Self::RetiredLive { .. } => "Live",
-            Self::RetiredLiveMember { .. } => "LiveMember",
+            Self::LiveMember { .. } => "LiveMember",
             Self::SubscribeFrom { .. } => "SubscribeFrom",
             Self::Position { .. } => "Position",
             Self::CompactVolunteer { .. } => "CompactVolunteer",
@@ -791,8 +777,6 @@ impl Envelope {
             Self::DocumentContentWant { .. } => "DocumentContentWant",
             Self::WorkspacesRequest { .. } => "WorkspacesRequest",
             Self::WorkspacesReply { .. } => "WorkspacesReply",
-            Self::RetiredHereRequest { .. } => "HereRequest",
-            Self::RetiredHereReply { .. } => "HereReply",
             Self::FetchGrant { .. } => "FetchGrant",
             Self::AgentSession { .. } => "AgentSession",
             Self::AgentSessionAnswer { .. } => "AgentSessionAnswer",
@@ -801,6 +785,7 @@ impl Envelope {
             Self::HostSaid { .. } => "HostSaid",
             Self::KeyFollower => "KeyFollower",
             Self::PersonalList { .. } => "PersonalList",
+            Self::ChangeRefused { .. } => "ChangeRefused",
         }
     }
 
@@ -815,7 +800,7 @@ impl Envelope {
             Self::Subscribe { workspace_id }
             | Self::Unsubscribe { workspace_id }
             | Self::Delta { workspace_id, .. }
-            | Self::RetiredPresence { workspace_id, .. }
+            | Self::Presence { workspace_id, .. }
             | Self::Ready { workspace_id, .. }
             | Self::NotAuthorised { workspace_id, .. }
             | Self::SyncRequest { workspace_id, .. }
@@ -826,10 +811,10 @@ impl Envelope {
             | Self::Commit { workspace_id, .. }
             | Self::Committed { workspace_id, .. }
             | Self::CommitRefused { workspace_id, .. }
-            | Self::RetiredLiveJoin { workspace_id }
+            | Self::ChangeRefused { workspace_id, .. }
+            | Self::LiveJoin { workspace_id }
             | Self::LiveLeave { workspace_id }
-            | Self::RetiredLive { workspace_id, .. }
-            | Self::RetiredLiveMember { workspace_id, .. }
+            | Self::LiveMember { workspace_id, .. }
             | Self::SubscribeFrom { workspace_id, .. }
             | Self::Position { workspace_id, .. }
             | Self::CompactVolunteer { workspace_id }
@@ -855,8 +840,6 @@ impl Envelope {
             | Self::HostAction { .. }
             | Self::WorkspacesRequest { .. }
             | Self::WorkspacesReply { .. }
-            | Self::RetiredHereRequest { .. }
-            | Self::RetiredHereReply { .. }
             | Self::AgentSession { .. }
             | Self::AgentSessionAnswer { .. }
             | Self::AgentSessionStopped
@@ -877,7 +860,7 @@ pub const MAX_DOCUMENT_CONTENT_FRAME_BYTES: usize = 256 * 1024;
 /// Version of the [`Envelope::RemoteAction`] kind this build routes. The
 /// server refuses other versions as undeliverable instead of forwarding
 /// frames whose routing fields it may misread.
-pub const REMOTE_ACTION_ENVELOPE_VERSION: u16 = 1;
+pub const REMOTE_ACTION_ENVELOPE_VERSION: u16 = 2;
 
 #[cfg(test)]
 mod tests {
@@ -897,8 +880,8 @@ mod tests {
 
         phase frozen_v1_envelope_bytes;
         {
-            // Literal ABI fixtures: changing an existing discriminant or field
-            // ordering would strand deployed readers and retained state.
+            // Literal ABI fixtures: a change to a discriminant or a field's
+            // order moves what every frame after it means on the wire.
             let cases = [
                 (
                     Envelope::Subscribe {
@@ -913,7 +896,7 @@ mod tests {
                     [vec![1], id(7)].concat(),
                 ),
                 (
-                    Envelope::RetiredPresence {
+                    Envelope::Presence {
                         workspace_id: WorkspaceId::from_u128(7),
                         payload: vec![9, 8],
                     },
@@ -987,7 +970,7 @@ mod tests {
                         call: [1; 32],
                         participation: None,
                     },
-                    [vec![27], id(7), vec![1; 32], vec![0]].concat(),
+                    [vec![26], id(7), vec![1; 32], vec![0]].concat(),
                 ),
                 (
                     Envelope::VoiceJoin {
@@ -995,7 +978,7 @@ mod tests {
                         call: [1; 32],
                         participation: Some([2; 32]),
                     },
-                    [vec![27], id(7), vec![1; 32], vec![1], vec![2; 32]].concat(),
+                    [vec![26], id(7), vec![1; 32], vec![1], vec![2; 32]].concat(),
                 ),
                 (
                     Envelope::VoiceLeave {
@@ -1003,7 +986,7 @@ mod tests {
                         call: [1; 32],
                         participation: [2; 32],
                     },
-                    [vec![30], id(7), vec![1; 32], vec![2; 32]].concat(),
+                    [vec![29], id(7), vec![1; 32], vec![2; 32]].concat(),
                 ),
             ];
             for (envelope, payload) in cases {
@@ -1026,7 +1009,7 @@ mod tests {
             };
             assert_eq!(delta.workspace_id(), Some(WorkspaceId::from_u128(9)));
             assert_eq!(
-                Envelope::RetiredPresence {
+                Envelope::Presence {
                     workspace_id: WorkspaceId::from_u128(4),
                     payload: Vec::new(),
                 }

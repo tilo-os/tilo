@@ -14,8 +14,7 @@ const MAX_HASHES: usize = 256;
 #[serde(deny_unknown_fields)]
 pub struct Request {
     /// Original authenticated channel provenance, compared with live ownership at admission.
-    /// Read under the name a report writes it by, and under the code's.
-    #[serde(default, rename = "custody", alias = "ownership")]
+    #[serde(default)]
     pub ownership: Option<runtime_collab::committed_document::ConnectionSnapshot>,
     pub version: u8,
     pub invocation: uuid::Uuid,
@@ -151,30 +150,8 @@ mod tests {
             "mutation_hashes": vec![[1u8; 32]], "group": null,
             "encoded": {"type_id": "test.edit", "payload": b"{}".to_vec()},
             "context": null,
-            "custody": null
+            "ownership": null
         })
-    }
-
-    /// A report names its provenance as it always did, and one that names it as the code
-    /// does, as builds wrote it for a while, is read too.
-    #[test]
-    fn a_report_is_read_under_either_name_of_its_provenance() {
-        let provenance = serde_json::json!({
-            "root": vec![1; 32], "device": vec![2; 32], "agent": null,
-            "app_id": "app", "workspace": "workspace", "document": "document"
-        });
-        let mut before = report();
-        before["custody"] = provenance.clone();
-        let mut between = report();
-        between.as_object_mut().unwrap().remove("custody");
-        between["ownership"] = provenance.clone();
-        for written in [before, between] {
-            let request: Request = serde_json::from_value(written).unwrap();
-            assert!(request.ownership.is_some());
-            let again = serde_json::to_value(&request).unwrap();
-            assert_eq!(again["custody"], provenance);
-            assert!(again.get("ownership").is_none());
-        }
     }
 
     tilo_test_env::scenario! {
@@ -198,7 +175,7 @@ mod tests {
                     "encoded" => {
                         serde_json::json!({"type_id": "test.edit", "payload": b"null".to_vec()})
                     }
-                    "custody" => serde_json::json!({
+                    "ownership" => serde_json::json!({
                         "root": vec![1; 32], "device": vec![2; 32], "agent": null,
                         "app_id": "app", "workspace": "workspace", "document": "document"
                     }),
@@ -236,7 +213,7 @@ mod tests {
                             .with_purpose("private purpose")
                             .with_group("gesture", "Edit", "edit")
                     ),
-                    "custody" => serde_json::json!({
+                    "ownership" => serde_json::json!({
                         "root": vec![1; 32], "device": vec![2; 32], "agent": null,
                         "app_id": "app", "workspace": "workspace", "document": "document"
                     }),

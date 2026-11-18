@@ -46,7 +46,7 @@ pub fn certified_person_fixture_for_seeds(
 ) -> CertifiedPersonFixture {
     let evidence_home = tilo_test_env::TestHome::new().unwrap();
     let identity_paths =
-        tilo_user_identity::IdentityPaths::under(evidence_home.root().join("system-identity"));
+        tilo_device_identity::IdentityPaths::under(evidence_home.root().join("system-identity"));
     let mut evidence_env = tilo_test_env::ScopedEnv::new();
     evidence_env
         .set(
@@ -116,7 +116,7 @@ pub fn certified_person_fixture_for_seeds(
         device_certificate: serde_json::to_vec(&certificate).unwrap(),
         proof: ed25519_dalek::Signer::sign(
             &device,
-            &runtime_identity::collaboration_join_signing_bytes(&workspace_id.to_string()),
+            &runtime_identity::collaboration_join_digest(&workspace_id.to_string()).unwrap(),
         )
         .to_bytes()
         .to_vec(),

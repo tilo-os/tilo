@@ -35,18 +35,31 @@ impl Availability {
         matches!(self, Self::Available)
     }
 
-    /// An action an agent's permissions deny it, as it is listed to the agent: told it is not
-    /// allowed, and where that is changed, rather than left to read the action's absence as
-    /// there being no such action and look for another way.
+    /// An action an agent's permissions deny it, as it is listed to the agent: told, in one
+    /// sentence, what refuses it (`by`, where the check knows) and where that is changed, rather
+    /// than left to read the action's absence as there being no such action.
     #[must_use]
-    pub fn not_allowed() -> Self {
+    pub fn not_allowed(by: Option<tilo_action_policy::Refuser>) -> Self {
+        let reason = match by {
+            Some(tilo_action_policy::Refuser::Settings) => {
+                "the person you work for set this to Deny for you in this workspace; they can \
+                 change it under Workspace settings → Agents"
+            }
+            Some(tilo_action_policy::Refuser::Workspace) => {
+                "this workspace's own rules don't let agents or keys do this here"
+            }
+            None => Self::NOT_ALLOWED_HERE,
+        };
         Self::Unavailable {
             code: Self::NOT_ALLOWED.to_owned(),
-            reason: "not allowed: this workspace's permissions do not let this agent do it here \
-                     (its person sets what it may do in the workspace's settings, under Agents)"
-                .to_owned(),
+            reason: reason.to_owned(),
         }
     }
+
+    /// What an action refused by a check that does not say which rule refused it is told.
+    pub const NOT_ALLOWED_HERE: &'static str = "this workspace's permissions don't let you do \
+         this here; the person you work for can change what you may do under Workspace \
+         settings → Agents";
 
     /// The reason an action is listed as [`Self::not_allowed`], when it is.
     #[must_use]

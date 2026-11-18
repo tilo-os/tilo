@@ -46,12 +46,8 @@ tilo_agent_session::app_worker!();
 mod action_cost;
 #[path = "app_coverage.rs"]
 mod app_coverage;
-#[path = "asking_first.rs"]
-mod asking_first;
 #[path = "chain_reads.rs"]
 mod chain_reads;
-#[path = "check_facts.rs"]
-mod check_facts;
 #[path = "empty_state_actions.rs"]
 mod empty_state_actions;
 #[path = "host_agents.rs"]
@@ -62,20 +58,10 @@ mod issue_reads;
 mod mail_for_agents;
 #[path = "messages_for_agents.rs"]
 mod messages_for_agents;
-#[path = "model_planner.rs"]
-mod model_planner;
-#[path = "public_workspace_documents.rs"]
-mod public_workspace_documents;
 #[path = "render_video.rs"]
 mod render_video;
 #[path = "replicas.rs"]
 mod replicas;
-#[path = "search_workspace.rs"]
-mod search_workspace;
-#[path = "session_coverage.rs"]
-mod session_coverage;
-#[path = "shared_session.rs"]
-mod shared_session;
 #[path = "worker_isolation.rs"]
 mod worker_isolation;
 #[path = "workspace_actions.rs"]

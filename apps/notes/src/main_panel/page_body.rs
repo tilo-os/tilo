@@ -1,10 +1,10 @@
 //! A note's body as the editor reads and edits it: the rich text kept in
 //! the part that keeps the note.
 
-use super::{AutoCommit, Chain, Dispatcher, PageId, PagePart, RichTextField, RichTextSource};
+use super::{AutoCommit, Chain, Dispatcher, NoteList, PageId, RichTextField, RichTextSource};
 
 /// The notes' chain and the part keeping the note.
-pub(super) type Kept = (Chain<PagePart>, u64);
+pub(super) type Kept = (Chain<NoteList>, u64);
 
 /// A page's body: a rich-text child resource of the note, kept in the part
 /// that keeps the note and edited through the notes' chain once the app is
@@ -28,7 +28,7 @@ impl PageBody {
 /// The dispatcher `page`'s body is edited through: each rich-text edit is a
 /// field edit of the part keeping the note, at the body's path.
 pub(super) fn body_dispatcher(
-    pages: &Dispatcher<PagePart>,
+    pages: &Dispatcher<NoteList>,
     page: PageId,
 ) -> Dispatcher<tilo_document::RichText> {
     pages.child(&crate::actions::page_resource_id(page), move |op| {

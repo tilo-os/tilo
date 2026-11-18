@@ -47,7 +47,8 @@ Mounted app processes inject their own `ProcessContext::models()` capability.
 Native launcher transport and the browser host's authenticated HTTP transport
 converge on the same gateway backend and provider protocol.
 
-The gateway uses Rig for provider translation and streaming, and the common
+The gateway uses the one wire codec (`agent_provider_config::wire`) for provider
+translation and streaming, and the common
 accounts credential broker for service-, purpose- and origin-bound provider
 keys. A light HTTP host can expose the gateway without running a server/node.
 See [`model-gateway`](../../crates/agent/model-gateway/README.md) for session

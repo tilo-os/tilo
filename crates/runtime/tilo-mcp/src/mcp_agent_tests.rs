@@ -469,7 +469,9 @@ impl Notes {
                     kind: operation,
                     contract: tilo_actions::ActionContract {
                         availability: if *self.refuses.lock().unwrap() == Some(name) {
-                            tilo_actions::Availability::not_allowed()
+                            tilo_actions::Availability::not_allowed(Some(
+                                tilo_action_policy::Refuser::Settings,
+                            ))
                         } else {
                             tilo_actions::Availability::Available
                         },
@@ -1289,14 +1291,30 @@ tilo_test_env::scenario! {
 
     phase the_apps_are_listed_by_name_running_first;
     {
-        let host = Notes::new(true);
+        let notes = Notes::new(true);
         run(async {
-            let (text, failed) = tool(&agent(&host), "tilo_ls", json!({})).await;
+            let server = agent(&notes);
+            let (text, failed) = tool(&server, "tilo_ls", json!({})).await;
             assert!(!failed, "{text}");
             assert_eq!(
                 text,
                 "apps\nnotes  Notes  running\nsheets  Sheets  installed"
             );
+            // The API's routes ask for the typed answer and answer its `text`, so
+            // a caller with no surface reads the words an agent reads.
+            let plain = server
+                .handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                    "params":{"name":"tilo_ls","arguments":{}}}))
+                .await
+                .unwrap();
+            let words = plain["result"]["content"][0]["text"].as_str().unwrap_or_default();
+            let typed = server
+                .handle(json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
+                    "params":{"name":"tilo_ls","arguments":{},
+                              "_meta":{"so.tilo.mcp":{"structured":true}}}}))
+                .await
+                .unwrap();
+            assert_eq!(typed["result"]["structuredContent"]["text"].as_str(), Some(words));
         });
     }
 
@@ -2436,14 +2454,16 @@ tilo_test_env::scenario! {
             .await;
             assert!(failed, "{text}");
             assert!(
-                text.contains("not_permitted") && text.contains("under Agents"),
+                text.starts_with("not_permitted: the person you work for set this to Deny")
+                    && text.contains("Workspace settings → Agents")
+                    && !text.contains("not allowed: "),
                 "{text}"
             );
             assert!(!text.contains("has no action"), "{text}");
             assert!(notes.invoked.lock().unwrap().is_empty(), "nothing was invoked");
             let (text, _) = tool(&agent(&notes), "tilo_ls", json!({"path": "notes/Todo"})).await;
             assert!(
-                text.contains("rename") && text.contains("not allowed"),
+                text.contains("rename") && text.contains("set this to Deny"),
                 "the listing shows it, refused: {text}"
             );
         });

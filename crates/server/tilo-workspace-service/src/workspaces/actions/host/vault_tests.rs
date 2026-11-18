@@ -481,11 +481,13 @@ async fn an_agent_keeps_a_providers_key_by_naming_the_vault_item() {
     // The key is the provider's now: sealed in Ada's vault, nowhere in the
     // clear.
     let own = workspaces.person_settings_root(&ada.user_public_key);
-    let sealed = accounts::AccountCredentials::open_in(&own)
+    let (reference, authorization) =
+        accounts::provider_api_key(&provider, "https://models.example/v1").unwrap();
+    let sealed = accounts::ServiceCredentials::open_in(&own)
+        .resolve(&reference, &authorization)
         .unwrap()
-        .get(&accounts::AccountId::from(format!("provider:{provider}")))
         .expect("the provider's key is kept");
-    assert_eq!(sealed.password, KEY);
+    assert_eq!(sealed.as_str(), KEY);
     assert!(files_holding(dir.path(), KEY.as_bytes()).is_empty());
 
     let listed = ask(

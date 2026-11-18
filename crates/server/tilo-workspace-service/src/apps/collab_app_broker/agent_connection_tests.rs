@@ -119,9 +119,7 @@ impl SessionAgent {
             certificate: self.delegation.encode(),
             proof: self
                 .key
-                .sign(&runtime_identity::collaboration_join_signing_bytes(
-                    &workspace,
-                ))
+                .sign(&runtime_identity::collaboration_join_digest(&workspace).unwrap())
                 .to_bytes()
                 .to_vec(),
         }

@@ -210,7 +210,7 @@ impl TurnProvider for TurnMailConnects {
 
 /// Whether the question this server put about `ask` is in `parts` and over: told how its answer
 /// ended, or taken back. A question that is not there says nothing.
-fn question_over(parts: &[(String, chat::parts::ChatPart)], ask: &MailAsk) -> bool {
+fn question_over(parts: &[(String, chat::parts::ChatMessages)], ask: &MailAsk) -> bool {
     let (agent, person) = (
         MemberId::agent(ask.agent.clone()),
         MemberId::person(ask.person.clone()),

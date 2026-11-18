@@ -106,7 +106,6 @@ impl ContentPuts for StorePuts {
         _caller: &Caller,
         files: &[Vec<u8>],
     ) -> Result<Vec<String>, ActionCallError> {
-        let mut contents = Vec::with_capacity(files.len());
         for bytes in files {
             if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_PUT_BYTES {
                 return Err(ActionCallError::InvalidRequest {
@@ -116,17 +115,37 @@ impl ContentPuts for StorePuts {
                     ),
                 });
             }
+        }
+        let resource = |hash: &str| {
+            tilo_actions::content_resource(hash).ok_or_else(|| ActionCallError::Refused {
+                reason: "the store named no content".into(),
+            })
+        };
+        // A store that seals writes one item at a time; one that does not
+        // keeps the batch in one write (one index update, one flush).
+        if !self.0.seals() {
+            let items: Vec<&[u8]> = files.iter().map(Vec::as_slice).collect();
+            return self
+                .0
+                .put_public_many(&items)
+                .into_iter()
+                .map(|kept| {
+                    let hash = kept.map_err(|error| ActionCallError::Refused {
+                        reason: format!("the workspace could not keep the file: {error}"),
+                    })?;
+                    resource(&hash)
+                })
+                .collect();
+        }
+        let mut contents = Vec::with_capacity(files.len());
+        for bytes in files {
             let hash = self
                 .0
                 .put(bytes)
                 .map_err(|error| ActionCallError::Refused {
                     reason: format!("the workspace could not keep the file: {error}"),
                 })?;
-            contents.push(tilo_actions::content_resource(&hash).ok_or_else(|| {
-                ActionCallError::Refused {
-                    reason: "the store named no content".into(),
-                }
-            })?);
+            contents.push(resource(&hash)?);
         }
         Ok(contents)
     }

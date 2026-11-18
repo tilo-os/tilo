@@ -15,6 +15,18 @@ pub fn each_item(
     value: &dyn Any,
     found: &mut dyn FnMut(Id, &dyn Any, &'static ModelTable),
 ) {
+    each_entry(table, value, &mut |_, id, item, table| {
+        found(id, item, table);
+    });
+}
+
+/// [`each_item`] with the name of the collection field holding each item,
+/// in the order each collection keeps them.
+pub fn each_entry<'a>(
+    table: &'static ModelTable,
+    value: &'a dyn Any,
+    found: &mut dyn FnMut(&'static str, Id, &'a dyn Any, &'static ModelTable),
+) {
     let Some(desc) = table.record() else {
         return;
     };
@@ -27,7 +39,7 @@ pub fn each_item(
         };
         for at in 0..list.count() {
             if let Some((id, item)) = list.item(at) {
-                found(id, item, items.item_table);
+                found(field.key, id, item, items.item_table);
             }
         }
     }
@@ -53,4 +65,11 @@ pub fn stored_size(table: &'static ModelTable, value: &dyn Any) -> usize {
         Ok(()) => count.0,
         Err(_) => 0,
     }
+}
+
+/// `value`, of the type `table` describes, in its JSON form
+/// ([`crate::Model::to_json`]).
+#[must_use]
+pub fn json(table: &'static ModelTable, value: &dyn Any) -> serde_json::Value {
+    (table.ops.to_json)(table, value)
 }

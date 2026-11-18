@@ -15,8 +15,8 @@ use ui::application::ProcessContext;
 use ui::framework::Chain;
 use ui::tilo_resource::{Bytes, Id, Invoke};
 
+use crate::note_list::{NoteList, note_list};
 use crate::notebook::{Notebook, page_id};
-use crate::part::{PagePart, page_part};
 
 const INBOX: &str = "personal-data-incoming/pages";
 const VERSION: u32 = 1;
@@ -97,7 +97,7 @@ pub(crate) fn import(context: &ProcessContext) -> Result<(), String> {
     // The pages go into the parts beside the notebook, through their own
     // verbs, as the window would carry them out.
     let chain =
-        Chain::<PagePart>::detached_in(context.records().clone(), ui::apps::NOTES, &author, || {
+        Chain::<NoteList>::detached_in(context.records().clone(), ui::apps::NOTES, &author, || {
             Rc::new(Notebook::default())
         })
         .ok_or_else(|| "the notebook's notes cannot be opened".to_owned())?;
@@ -110,7 +110,7 @@ pub(crate) fn import(context: &ProcessContext) -> Result<(), String> {
 
 /// Add `entries` the notebook does not hold yet, parents and link targets first.
 pub(crate) fn apply(
-    chain: &Chain<PagePart>,
+    chain: &Chain<NoteList>,
     entries: Vec<Entry>,
     content: &tilo_content::ContentStore,
 ) -> Result<bool, String> {
@@ -137,7 +137,7 @@ pub(crate) fn invokes(
     entries: Vec<Entry>,
     held: &BTreeSet<Id>,
     keep: &mut dyn FnMut(Vec<u8>) -> Result<Bytes, String>,
-) -> Result<Vec<Invoke<PagePart>>, String> {
+) -> Result<Vec<Invoke<NoteList>>, String> {
     let mut present = held.clone();
     let ordered = ordered(
         entries
@@ -159,7 +159,7 @@ pub(crate) fn invokes(
             }
             images.push(keep(bytes)?);
         }
-        steps.push(PagePart::IMPORT_MARKDOWN.with(page_part::ImportMarkdown {
+        steps.push(NoteList::IMPORT_MARKDOWN.with(note_list::ImportMarkdown {
             title: entry.title.clone(),
             markdown: entry.markdown.clone(),
             images,
@@ -175,7 +175,7 @@ pub(crate) fn invokes(
             .map(|parent| note_for(&entry.source, parent))
             .filter(|parent| present.contains(parent));
         if let Some(parent) = parent {
-            steps.push(PagePart::MOVE_NOTE.with(page_part::MoveNote {
+            steps.push(NoteList::MOVE_NOTE.with(note_list::MoveNote {
                 page: note,
                 parent: Some(parent),
                 before: None,
@@ -188,7 +188,7 @@ pub(crate) fn invokes(
 
 /// What the `migrated` screenshot shows: an Outline team's handbook as a migration lands it.
 #[cfg(feature = "samples")]
-pub(crate) fn migrated_scenario() -> Vec<Invoke<PagePart>> {
+pub(crate) fn migrated_scenario() -> Vec<Invoke<NoteList>> {
     let picture = base64::engine::general_purpose::STANDARD.encode(crate::scenario::IMAGE);
     let digest = blake3::hash(crate::scenario::IMAGE).to_hex();
     let page = |key: &str, title: &str, markdown: String, parent: Option<&str>| Entry {
@@ -351,7 +351,7 @@ mod tests {
             entry("doc-welcome", "Welcome", "Hello.", Some("collection:c1")),
             entry("collection:c1", "Handbook", "How we work", None),
         ];
-        let chain = Chain::<PagePart>::detached(
+        let chain = Chain::<NoteList>::detached(
             ui::apps::NOTES,
             &ui::tilo_resource::MemberId::person("ada"),
             || Rc::new(Notebook::default()),
@@ -360,7 +360,7 @@ mod tests {
         let content = tilo_content::ContentStore::memory();
         assert!(apply(&chain, entries.clone(), &content).unwrap());
         let parts = chain.parts();
-        let pages = crate::part::Pages::of(&parts);
+        let pages = crate::note_list::Pages::of(&parts);
         let note = |key: &str| pages.get(&note_for("outline", key)).unwrap().clone();
         let handbook = note("collection:c1");
         assert_eq!(handbook.title, "Handbook");
@@ -371,7 +371,7 @@ mod tests {
         );
         let checklist = note("doc-child");
         assert_eq!(checklist.parent, Some(note_for("outline", "doc-welcome")));
-        let images = crate::part::images(&parts);
+        let images = crate::note_list::images(&parts);
         assert_eq!(images.len(), 1, "the picture is kept with the notebook");
         assert!(images.contains_key(&digest));
         let blocks = format!("{:?}", checklist.blocks());
@@ -380,7 +380,7 @@ mod tests {
         // Opening again with the same entries adds nothing.
         assert!(!apply(&chain, entries, &content).unwrap());
         let parts = chain.parts();
-        assert_eq!(crate::part::Pages::of(&parts).len(), 3);
+        assert_eq!(crate::note_list::Pages::of(&parts).len(), 3);
     }
 
     #[test]

@@ -165,9 +165,7 @@ tilo_test_env::scenario! {
                 Some((bundle_dir.as_path(), "smoke-1.0.0")),
                 &[],
                 None,
-                None,
-                &CapabilityPlan::empty(),
-            );
+                &CapabilityPlan::empty());
             assert!(
                 argv.windows(3).any(|w| w[0] == "--ro-bind"
                     && w[1] == bundle_dir.display().to_string()
@@ -264,9 +262,7 @@ tilo_test_env::scenario! {
                 Some((resolved_path.as_path(), resolved_ver.as_str())),
                 &[],
                 None,
-                None,
-                &CapabilityPlan::empty(),
-            );
+                &CapabilityPlan::empty());
             let mount = format!("/run/tilo-runtime/{version}");
             assert!(
                 argv.windows(3).any(|w| w[0] == "--ro-bind"
@@ -415,9 +411,7 @@ tilo_test_env::scenario! {
                 None,
                 &[],
                 Some(&plan),
-                None,
-                &CapabilityPlan::empty(),
-            );
+                &CapabilityPlan::empty());
             // The host source must be the proxy socket, NOT /run/user/1234/bus itself.
             let proxy_sock = plan.host_socket.display().to_string();
             assert!(
@@ -917,9 +911,7 @@ tilo_test_env::scenario! {
                 None,
                 &[],
                 None,
-                None,
-                &plan,
-            );
+                &plan);
 
             assert!(
                 argv.windows(3).any(|w| w[0] == "--ro-bind-try"

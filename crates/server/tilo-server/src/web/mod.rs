@@ -527,7 +527,7 @@ impl Server {
             workspaces: self.workspaces().cloned(),
             envelopes: envelopes::Envelopes::new(self.state_root().join("envelopes")),
             profiles: Arc::new(envelopes::Envelopes::of(
-                envelopes::Record::Profile,
+                envelopes::Kind::Profile,
                 self.state_root().join("profiles"),
             )),
             fetch: fetch.proxy,

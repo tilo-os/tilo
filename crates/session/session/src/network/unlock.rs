@@ -10,8 +10,8 @@
 //! half sealed to its own new key where the person allowed it, instead of asking them twice.
 //! `tilo-disk-encrypt enrol --sibling` reaches [`Unlock::enrol`] through the session's enrolment
 //! socket ([`tilo_unlock_protocol::ENROL_SOCKET`]): the boot key is certified by the person's root,
-//! the sibling half is sealed to the secret-sync key, and the enrolment is published in this
-//! device's fabric record for the person's other devices to carry.
+//! the sibling half is sealed to the secret-sync key, and the enrolment is kept in this device's
+//! part of the person's store for their other devices to carry.
 
 use std::io::{Read as _, Write as _};
 use std::sync::{Arc, Mutex};
@@ -49,7 +49,7 @@ const WRITE_GRACE: Duration = Duration::from_secs(2);
 pub(crate) struct UnlockQuestion {
     /// The code the boot screen shows; the person compares them.
     pub approval_code: String,
-    /// The device that asks, as its record names it.
+    /// The device that asks, as the person's store names it.
     pub device: String,
     /// The slot it wants unlocked.
     pub slot: String,
@@ -271,23 +271,23 @@ impl Unlock {
         )
     }
 
-    /// The name this device's record gives `device` .
+    /// The name the person's store holds for `device` .
     fn label_of(&self, device: &[u8; 32]) -> String {
         let key = hex::encode(device);
         self.link
-            .device_fabric()
-            .snapshots()
-            .values()
-            .find(|snapshot| snapshot.owner.as_str() == key)
-            .map_or_else(|| key, |snapshot| snapshot.presence.label.clone())
+            .devices()
+            .devices()
+            .iter()
+            .find(|(id, _)| id.as_str() == key)
+            .map_or_else(|| key, |(_, device)| device.about.label.clone())
     }
 
-    /// The enrolments, auto-approvals and answers the person's fabric holds now, under the fleet
+    /// The enrolments, auto-approvals and answers the person's store holds now, under the fleet
     /// this device trusts.
     fn published(&self, ownership: &Ownership) -> MergedUnlock {
-        let fabric = self.link.device_fabric();
+        let fabric = self.link.devices();
         merged_unlock_state(
-            fabric.snapshots().values().map(|snapshot| &snapshot.unlock),
+            fabric.devices().values().map(|device| &device.unlock),
             &ownership.fleet,
             tilo_clock::unix_now_ns(),
         )
@@ -334,16 +334,16 @@ impl Unlock {
         let now = tilo_clock::unix_now_ns();
         let siblings =
             self.link
-                .device_fabric()
-                .snapshots()
+                .devices()
+                .devices()
                 .iter()
-                .filter(|(owner, _)| owner.as_str() != hex::encode(self.local))
-                .filter_map(|(owner, snapshot)| {
-                    let key = crate::network::key_of(owner)?;
+                .filter(|(id, _)| id.as_str() != hex::encode(self.local))
+                .filter_map(|(id, device)| {
+                    let key = crate::network::key_of(id)?;
                     (ownership.fleet.certification(&key, now) == DeviceCertification::Certified)
                         .then(|| SiblingContact {
                             device_public_key: key,
-                            label: snapshot.presence.label.clone(),
+                            label: device.about.label.clone(),
                             endpoint: String::new(),
                         })
                 })
@@ -389,8 +389,8 @@ impl Unlock {
     }
 
     /// Add `enrolment`, and the owner's acceptance of the boot chain it asked
-    /// for, to this device's own fabric record, keeping what else it
-    /// published there.
+    /// for, to this device's own part of the person's store, keeping what else
+    /// it published there.
     fn publish(&self, enrolment: UnlockEnrolment, approval: Option<AutoApproval>) {
         let local = self.local;
         self.update_state(|state| {
@@ -407,8 +407,9 @@ impl Unlock {
         });
     }
 
-    /// Keep the owner's answer in this device's own fabric record, so their other devices answer
-    /// the same boot the same way. Answers that no longer hold give way to the newest ones.
+    /// Keep the owner's answer in this device's own part of the person's store, so their other
+    /// devices answer the same boot the same way. Answers that no longer hold give way to the
+    /// newest ones.
     fn keep(&self, record: UnlockDecisionEntry) {
         let now = tilo_clock::unix_now_ns();
         self.update_state(|state| {
@@ -422,20 +423,20 @@ impl Unlock {
         });
     }
 
-    /// Change what this device publishes about disk unlock: its own record in the person's fabric
-    /// is the only one it may write.
+    /// Change what this device publishes about disk unlock: its own part of the person's store is
+    /// the only one it may write.
     fn update_state(&self, change: impl FnOnce(&mut UnlockFabricState)) {
         let _serialized = self
             .published
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let fabric = self.link.device_fabric();
+        let fabric = self.link.devices();
         let key = hex::encode(self.local);
         let mut state = fabric
-            .snapshots()
+            .devices()
             .iter()
-            .find(|(owner, _)| owner.as_str() == key)
-            .map(|(_, snapshot)| snapshot.unlock.clone())
+            .find(|(id, _)| id.as_str() == key)
+            .map(|(_, device)| device.unlock.clone())
             .unwrap_or_default();
         change(&mut state);
         self.link.share_unlock(state);

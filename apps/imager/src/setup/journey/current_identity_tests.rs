@@ -50,11 +50,11 @@ fn current_owner_desktop_actions_restart_and_authenticated_import_preserve_origi
     cert.signature = signer
         .sign(&tilo_user_identity::device_cert_signing_digest(&cert).unwrap())
         .to_bytes();
-    let paths = tilo_user_identity::persist::IdentityPaths::under(&system);
+    let paths = tilo_device_identity::persist::IdentityPaths::under(&system);
     paths.ensure_directories().unwrap();
-    tilo_user_identity::persist::write_device_key(&paths.device_privkey, &device).unwrap();
-    tilo_user_identity::persist::write_public_key(&paths.user_pubkey, &public_key).unwrap();
-    tilo_user_identity::persist::write_device_cert(&paths.device_cert, &cert).unwrap();
+    tilo_device_identity::persist::write_device_key(&paths.device_privkey, &device).unwrap();
+    tilo_device_identity::persist::write_public_key(&paths.user_pubkey, &public_key).unwrap();
+    tilo_device_identity::persist::write_device_cert(&paths.device_cert, &cert).unwrap();
     let record = identity.join("member.json");
     let original = runtime_identity::public_member_record("Ada", [1, 2, 3], public_key).unwrap();
     tilo_files::native::atomic::write_with_mode(&record, &original, 0o600).unwrap();

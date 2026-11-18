@@ -21,11 +21,9 @@ untyped-live-row 1 apps/git-client/src/app.rs
 untyped-live-row 3 apps/imager/src/app.rs
 untyped-live-row 5 apps/imager/src/setup/actions.rs
 untyped-live-row 1 apps/imager/src/setup/desktop_journey.rs
-untyped-live-row 1 apps/imager/src/setup/destination/installer_app/surface.rs
 untyped-live-row 3 apps/imager/src/setup/import_actions.rs
 untyped-live-row 1 apps/launcher/src/surface.rs
 untyped-live-row 1 apps/logs/src/actions.rs
-untyped-live-row 4 apps/mail/src/actions.rs
 untyped-live-row 1 apps/mail/src/app.rs
 untyped-live-row 2 apps/mail/src/contact_recipients.rs
 untyped-live-row 1 apps/mail/src/resource.rs
@@ -33,7 +31,6 @@ untyped-live-row 5 apps/maps/src/app/window.rs
 untyped-live-row 1 apps/monitor/src/app.rs
 untyped-live-row 9 apps/music/src/actions.rs
 untyped-live-row 2 apps/music/src/app.rs
-untyped-live-row 4 apps/music/src/app/spotify.rs
 untyped-live-row 6 apps/osk/src/actions.rs
 untyped-live-row 3 apps/passwords/src/actions.rs
 untyped-live-row 3 apps/pdf-viewer/src/actions.rs

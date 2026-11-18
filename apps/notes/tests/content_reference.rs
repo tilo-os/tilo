@@ -27,7 +27,7 @@ fn app() -> TestApp<NotesShell> {
 }
 
 fn kept(app: &TestApp<NotesShell>) -> Vec<String> {
-    notes::part::images(&crate::framework_support::parts(app))
+    notes::note_list::images(&crate::framework_support::parts(app))
         .iter()
         .map(|(digest, _)| digest.clone())
         .collect()
@@ -43,7 +43,7 @@ fn a_picture_larger_than_inline_arguments_is_kept_by_reference() {
     let reference = format!("tilo.content:{digest}");
 
     app.call_on(
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "keep-image",
         json!({ "bytes": reference }),
     )
@@ -51,7 +51,7 @@ fn a_picture_larger_than_inline_arguments_is_kept_by_reference() {
     assert_eq!(kept(&app), std::slice::from_ref(&digest));
 
     app.call_on(
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "import-markdown",
         json!({
             "title": "Trip",
@@ -74,7 +74,7 @@ fn a_reference_to_content_the_workspace_does_not_hold_is_refused() {
 
     let refused = app
         .call_on(
-            &notes::part::chain_resource(),
+            &notes::note_list::chain_resource(),
             "keep-image",
             json!({ "bytes": reference }),
         )

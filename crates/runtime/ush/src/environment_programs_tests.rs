@@ -184,7 +184,7 @@ fn a_program_is_held_for_its_workspaces_server_and_told_each_frame_once() {
     let dir = tempfile::tempdir().unwrap();
     let member = member(dir.path());
     let program = tilo_test_env::script(dir.path().join("repeats"), REPEATS).unwrap();
-    let agent = tilo_test_env::sibling_binary("legacy-agent", "tilo-legacy-agent");
+    let agent = tilo_test_env::sibling_binary("linux-vm-agent", "tilo-linux-vm-agent");
     let ours = server("ws-1");
     let start = serving(program.path(), &agent);
     let id = start.invocation;
@@ -263,7 +263,7 @@ fn a_program_whose_server_no_longer_asks_after_it_is_ended() {
     let dir = tempfile::tempdir().unwrap();
     let member = member(dir.path()).leaving_programs_after(Duration::from_millis(500));
     let program = tilo_test_env::script(dir.path().join("repeats"), REPEATS).unwrap();
-    let agent = tilo_test_env::sibling_binary("legacy-agent", "tilo-legacy-agent");
+    let agent = tilo_test_env::sibling_binary("linux-vm-agent", "tilo-linux-vm-agent");
     let ours = server("ws-1");
     let start = serving(program.path(), &agent);
     let id = start.invocation;

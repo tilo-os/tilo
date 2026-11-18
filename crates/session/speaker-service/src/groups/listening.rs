@@ -2,11 +2,11 @@
 //!
 //! It mirrors membership consent. The leader invites a device when a
 //! calibration first wants its microphone; that device asks its own user
-//! once and, on approval, authors a [`SpeakerListener`] in its own snapshot.
-//! Only then may the leader ask it to record around a sweep, and the device
-//! answers with what it measured from the recording, never the recording.
-//! The leader's own microphones need no consent: the person calibrating is
-//! at that device.
+//! once and, on approval, keeps a [`SpeakerListener`] in its own part of the
+//! person's store. Only then may the leader ask it to capture around a sweep,
+//! and the device answers with what it measured from that audio, never the
+//! audio itself. The leader's own microphones need no consent: the person
+//! calibrating is at that device.
 
 use std::collections::BTreeSet;
 use std::time::Instant;
@@ -19,7 +19,7 @@ use tilo_network_actor::fabric::FabricStamp;
 use tilo_network_actor::fabric::speaker_group::{
     EndpointSelector, MAX_SPEAKER_LISTENERS, SpeakerGroup, SpeakerGroupId, SpeakerListener,
 };
-use tilo_network_actor::fabric::{DeviceFabric, PersonalFabricAction};
+use tilo_network_actor::fabric::{PersonDevices, PersonalFabricAction};
 
 #[derive(Clone, Debug)]
 pub struct PendingListen {
@@ -71,17 +71,17 @@ impl SpeakerGroupCore {
     #[must_use]
     pub fn listener_candidates(
         &self,
-        fabric: &DeviceFabric,
+        fabric: &PersonDevices,
         local: &DeviceId,
         group: &SpeakerGroup,
         now: Instant,
     ) -> Vec<ListenerCandidate> {
         let mut candidates = fabric
-            .snapshots()
+            .devices()
             .values()
-            .filter_map(|snapshot| {
-                let microphone = snapshot.speakers.calibration_microphone()?;
-                let device = snapshot.owner.clone();
+            .filter_map(|known| {
+                let microphone = known.speakers.calibration_microphone()?;
+                let device = known.device.clone();
                 let recent =
                     self.listen_invites
                         .get(&(group.id, device.clone()))
@@ -89,7 +89,7 @@ impl SpeakerGroupCore {
                             invite.microphone == microphone.selector
                                 && now.saturating_duration_since(invite.sent) < CONSENT_TTL
                         });
-                let consented = snapshot
+                let consented = known
                     .speakers
                     .listeners
                     .iter()
@@ -97,9 +97,9 @@ impl SpeakerGroupCore {
                     || recent.is_some_and(|invite| invite.answer == Some(true));
                 let state = if &device == local {
                     ListenerState::Ready
-                } else if !snapshot.presence.capabilities.audio_group {
+                } else if !known.about.capabilities.audio_group {
                     ListenerState::Unavailable
-                } else if !snapshot.presence.online {
+                } else if !known.online {
                     ListenerState::Offline
                 } else if consented {
                     ListenerState::Ready
@@ -113,7 +113,7 @@ impl SpeakerGroupCore {
                 Some(ListenerCandidate {
                     local: &device == local,
                     device,
-                    device_label: snapshot.presence.label.clone(),
+                    device_label: known.about.label.clone(),
                     microphone: microphone.selector,
                     label: microphone.label.clone(),
                     state,
@@ -167,7 +167,7 @@ impl SpeakerGroupCore {
     /// Answer a microphone prompt on this device.
     pub fn resolve_listen_consent(
         &mut self,
-        fabric: &DeviceFabric,
+        fabric: &PersonDevices,
         local: &DeviceId,
         group_id: SpeakerGroupId,
         approved: bool,
@@ -226,7 +226,7 @@ impl SpeakerGroupCore {
     #[must_use]
     pub fn may_listen(
         &self,
-        fabric: &DeviceFabric,
+        fabric: &PersonDevices,
         local: &DeviceId,
         source: &DeviceId,
         group: SpeakerGroupId,
@@ -313,7 +313,7 @@ impl SpeakerGroupCore {
     /// longer publishes is void and stale prompts expire.
     pub fn pump_listening(
         &mut self,
-        fabric: &DeviceFabric,
+        fabric: &PersonDevices,
         local: &DeviceId,
         enabled: bool,
         now: Instant,
@@ -345,7 +345,7 @@ impl SpeakerGroupCore {
             .iter()
             .flatten()
             .filter(|listener| {
-                fabric.snapshots().contains_key(&listener.leader)
+                fabric.contains(&listener.leader)
                     && fabric
                         .speaker_group(listener.group)
                         .is_none_or(|group| group.leader != listener.leader)
@@ -365,14 +365,13 @@ impl SpeakerGroupCore {
 
     pub fn listen_consent_views(
         &self,
-        fabric: &DeviceFabric,
+        fabric: &PersonDevices,
         local: &DeviceId,
     ) -> Vec<SpeakerConsentView> {
         let microphone_label = |microphone| {
             fabric
-                .snapshots()
                 .get(local)
-                .and_then(|snapshot| snapshot.speakers.microphone(microphone))
+                .and_then(|known| known.speakers.microphone(microphone))
                 .map(|endpoint| endpoint.label.clone())
         };
         self.listen_consents
@@ -392,7 +391,7 @@ impl SpeakerGroupCore {
             .collect()
     }
 
-    pub fn listener_views(&self, fabric: &DeviceFabric) -> Vec<super::SpeakerMembershipView> {
+    pub fn listener_views(&self, fabric: &PersonDevices) -> Vec<super::SpeakerMembershipView> {
         self.listeners
             .iter()
             .flatten()
@@ -408,17 +407,17 @@ impl SpeakerGroupCore {
     }
 }
 
-fn device_label(fabric: &DeviceFabric, device: &DeviceId) -> String {
-    fabric.snapshots().get(device).map_or_else(
+fn device_label(fabric: &PersonDevices, device: &DeviceId) -> String {
+    fabric.get(device).map_or_else(
         || device.as_str().to_string(),
-        |snapshot| snapshot.presence.label.clone(),
+        |known| known.about.label.clone(),
     )
 }
 
 /// The prompt still describes the group as its leader publishes it, and
 /// this device still offers the microphone.
 fn listen_matches(
-    fabric: &DeviceFabric,
+    fabric: &PersonDevices,
     local: &DeviceId,
     group: SpeakerGroupId,
     pending: &PendingListen,
@@ -426,11 +425,10 @@ fn listen_matches(
     let published = fabric
         .speaker_group(group)
         .is_some_and(|published| published.leader == pending.leader);
-    // Before this device's own snapshot is known, the microphone cannot be
-    // checked; the capture resolves it again anyway.
+    // Before this device's own part of the person's store is known, the
+    // microphone cannot be checked; the capture resolves it again anyway.
     let offered = fabric
-        .snapshots()
         .get(local)
-        .is_none_or(|snapshot| snapshot.speakers.microphone(pending.microphone).is_some());
+        .is_none_or(|known| known.speakers.microphone(pending.microphone).is_some());
     published && offered
 }

@@ -181,7 +181,7 @@ pub(super) async fn put(
         service,
         caller,
         &route,
-        &ui::resource::chain_resource_id(&chat::parts::chain()),
+        &collab_types::document::chain_resource_id(&chat::parts::chain()),
         "ask",
         arguments,
     )
@@ -342,7 +342,7 @@ fn reference_of(detail: &str) -> Option<String> {
 /// its agent wrote for that person that asks for a login at the calendar server under the user
 /// name. A question that ended, by whoever, is not it.
 pub(super) fn question_about(
-    parts: &[(String, chat::parts::ChatPart)],
+    parts: &[(String, chat::parts::ChatMessages)],
     ask: &dyn PutAsk,
 ) -> Option<Found> {
     let (agent, person) = (

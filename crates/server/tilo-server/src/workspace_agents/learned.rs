@@ -27,11 +27,11 @@
 
 use std::fmt::Write as _;
 
+use collaboration::permissions::MemberId;
 use serde_json::{Value, json};
 use tilo_resource::{Id, NonBlank, Replica};
 use tilo_workspace_agent::Agent;
 use tilo_workspace_agent::learned::{Learned, MAX_SOURCE, learned};
-use ui::permissions::MemberId;
 
 use super::{Ask, ToolDefinition, Turn};
 use crate::workspaces::Workspaces;

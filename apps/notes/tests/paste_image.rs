@@ -14,8 +14,8 @@ fn note() -> (TestApp<NotesShell>, PageId) {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
     let page = PageId::new_v4();
-    app.invoke_child::<notes::PagePart>(
-        &notes::part::chain_resource(),
+    app.invoke_child::<notes::NoteList>(
+        &notes::note_list::chain_resource(),
         Invoke::apply(&create_page_action(page, None, "First")).unwrap(),
     )
     .unwrap();
@@ -44,7 +44,7 @@ fn png(width: u32, height: u32, noisy: bool) -> Vec<u8> {
 fn images(app: &TestApp<NotesShell>, page: PageId) -> Vec<(String, Vec<u8>)> {
     let store = app.content();
     let assets = notes::notebook::image_snapshot(
-        &notes::part::images(&crate::framework_support::parts(app)),
+        &notes::note_list::images(&crate::framework_support::parts(app)),
         &store,
     );
     crate::framework_support::part_doc(app, page, |doc| {
@@ -302,8 +302,8 @@ fn a_members_picture_is_drawn_when_its_bytes_arrive_and_not_looked_for_before() 
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
     let page = PageId::new_v4();
-    app.invoke_child::<notes::PagePart>(
-        &notes::part::chain_resource(),
+    app.invoke_child::<notes::NoteList>(
+        &notes::note_list::chain_resource(),
         Invoke::apply(&create_page_action(page, None, "First")).unwrap(),
     )
     .unwrap();
@@ -320,7 +320,7 @@ fn a_members_picture_is_drawn_when_its_bytes_arrive_and_not_looked_for_before() 
     crate::framework_support::part_edit(&mut app, page, |doc| {
         let _device = theirs.enter();
         // Their window keeps the picture as it places it.
-        let placed = ui::tilo_resource::Invoke::<notes::PagePart>::apply(
+        let placed = ui::tilo_resource::Invoke::<notes::NoteList>::apply(
             &notes::actions::place_image_action(page, picture.clone(), Some("their photo")),
         )
         .unwrap()

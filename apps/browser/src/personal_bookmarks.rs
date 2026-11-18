@@ -422,26 +422,35 @@ pub(crate) enum Named<'a> {
     Placement(&'a ImportedTree, &'a ImportedNode),
 }
 impl Named<'_> {
-    /// The resource kind the row is published under.
-    pub(crate) fn kind(&self) -> &'static str {
+    /// The row `id` names, of the type the entry is.
+    pub(crate) fn row(&self, id: &str) -> ui::framework::LiveRow {
         match self {
-            Self::Flat(_) => "browser.personal-bookmark",
-            Self::Placement(_, node) => node_kind(node),
-        }
-    }
-    /// The row's name: the bookmark's or the placement's title.
-    pub(crate) fn label(&self) -> &str {
-        match self {
-            Self::Flat(entry) => &entry.title,
-            Self::Placement(_, node) => &node.title,
+            Self::Flat(entry) => {
+                ui::framework::LiveRow::typed::<crate::row_types::PersonalBookmark>(
+                    id,
+                    &entry.title,
+                )
+            }
+            Self::Placement(_, node) => node_row(node, id.to_owned()),
         }
     }
 }
-fn node_kind(node: &ImportedNode) -> &'static str {
+/// The row `id` names: `node`, an entry of an imported tree, of the type its
+/// kind is.
+pub(crate) fn node_row(node: &ImportedNode, id: String) -> ui::framework::LiveRow {
     match node.kind {
-        NodeKind::Folder => "browser.personal-bookmark-folder",
-        NodeKind::Bookmark { .. } => "browser.personal-bookmark-placement",
-        NodeKind::Separator => "browser.personal-bookmark-separator",
+        NodeKind::Folder => {
+            ui::framework::LiveRow::typed::<crate::row_types::PersonalBookmarkFolder>(
+                id,
+                &node.title,
+            )
+        }
+        NodeKind::Bookmark { .. } => ui::framework::LiveRow::typed::<
+            crate::row_types::PersonalBookmarkPlacement,
+        >(id, &node.title),
+        NodeKind::Separator => ui::framework::LiveRow::typed::<
+            crate::row_types::PersonalBookmarkSeparator,
+        >(id, &node.title),
     }
 }
 /// What `id` names, when it names anything of the person's.
@@ -461,11 +470,7 @@ pub(crate) fn named<'a>(state: &'a PersonalBookmarkState, id: &str) -> Option<Na
     None
 }
 pub(crate) fn node_resource(tree: &ImportedTree, node: &ImportedNode) -> ui::framework::LiveRow {
-    let mut resource = ui::framework::LiveRow::new(
-        node_id(&tree.source, &node.id),
-        node_kind(node),
-        &node.title,
-    );
+    let mut resource = node_row(node, node_id(&tree.source, &node.id));
     resource = resource.effect(&crate::effects::BrowserEffect::RemovePersonalImportedNode {
         source: blake3::Hash::from(tree.source).to_hex().to_string(),
         id: node.id.clone(),
@@ -487,9 +492,8 @@ pub(crate) fn node_resource(tree: &ImportedTree, node: &ImportedNode) -> ui::fra
     resource
 }
 pub(crate) fn flat_resource(entry: &crate::continuity_library::Bookmark) -> ui::framework::LiveRow {
-    ui::framework::LiveRow::new(
+    ui::framework::LiveRow::typed::<crate::row_types::PersonalBookmark>(
         flat_id(&entry.url),
-        "browser.personal-bookmark",
         &entry.title,
     )
     .effect(&crate::effects::BrowserEffect::Open {

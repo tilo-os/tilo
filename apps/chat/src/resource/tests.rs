@@ -669,7 +669,7 @@ fn an_agent_posts_and_reacts_in_one_call_each_as_itself_for_its_person() {
         MemberId::agent("44444444-4444-4444-8444-444444444444"),
         "the post is the agent's, not its person's"
     );
-    let react = crate::parts::ChatPart::paths()
+    let react = crate::parts::ChatMessages::paths()
         .messages
         .item(&ui::tilo_resource::Id::from_raw(&posted.id))
         .reactions
@@ -982,7 +982,7 @@ tilo_test_env::scenario! {
         app.settle();
         let posted_id = messages(&mut app).pop().unwrap().id;
         let posted = crate::testing::message_item(&posted_id);
-        let react = crate::parts::ChatPart::paths()
+        let react = crate::parts::ChatMessages::paths()
             .messages
             .item(&ui::tilo_resource::Id::from_raw(&posted_id))
             .reactions
@@ -1103,7 +1103,7 @@ tilo_test_env::scenario! {
         let changed = app
             .replica_arrives(&crate::parts::part(0), |doc| {
                 let mut bot =
-                    ui::tilo_resource::Replica::<crate::parts::ChatPart>::from_doc(std::mem::take(doc))
+                    ui::tilo_resource::Replica::<crate::parts::ChatMessages>::from_doc(std::mem::take(doc))
                         .as_author("bot");
                 bot.apply(crate::testing::post("c_chat", text, None))
                     .expect("the bot posts");

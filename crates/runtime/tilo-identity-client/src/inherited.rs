@@ -3,30 +3,22 @@ use std::os::fd::{AsRawFd, BorrowedFd};
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
-use crate::{BrokerSigningIdentity, IDENTITY_SERVICE, IdentityMetadata, NotAvailable, legacy};
+use crate::{BrokerSigningIdentity, IDENTITY_SERVICE, IdentityMetadata, NotAvailable};
 
-/// Uses only launcher-supplied descriptors, never an identity record or a
-/// secret store.
+/// Uses only the launcher-supplied identity service descriptor, never an
+/// identity record or a secret store.
 pub fn load() -> Result<Arc<BrokerSigningIdentity>, NotAvailable> {
-    if let Some(fd) = runtime_portal::service_fd(IDENTITY_SERVICE) {
-        // SAFETY: the launcher retains this inherited service descriptor.
-        return connect_service(unsafe { BorrowedFd::borrow_raw(fd) });
-    }
-    if std::env::var_os(legacy::BROKER_ENV_VAR).is_some() {
-        return legacy::connect_from_env();
-    }
-    Err(NotAvailable::ServiceFdMissing)
+    let Some(fd) = runtime_portal::service_fd(IDENTITY_SERVICE) else {
+        return Err(NotAvailable::ServiceFdMissing);
+    };
+    // SAFETY: the launcher retains this inherited service descriptor.
+    connect_service(unsafe { BorrowedFd::borrow_raw(fd) })
 }
 
-/// Who the person is, for showing them: the public record the launcher's
-/// broker carries. Only an app with no broker asks the workspace identity
-/// service, whose answer needs this device's ownership of the workspace profile.
+/// Who the person is, for showing them: the public record the workspace
+/// identity service answers over its inherited descriptor.
 pub fn load_metadata() -> Result<IdentityMetadata, NotAvailable> {
-    let identity = if std::env::var_os(legacy::BROKER_ENV_VAR).is_some() {
-        legacy::connect_from_env()?
-    } else {
-        load()?
-    };
+    let identity = load()?;
     let metadata = identity.metadata();
     Ok(IdentityMetadata {
         profile_photo: metadata.profile_photo().cloned(),

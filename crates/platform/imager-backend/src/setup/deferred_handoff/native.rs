@@ -1002,7 +1002,7 @@ mod tests {
         let cert_path =
             tilo_identity::provisioning::ensure_device_certificate_for_record(&record, &paths)
                 .unwrap();
-        let cert = tilo_user_identity::persist::read_device_cert(&cert_path).unwrap();
+        let cert = tilo_device_identity::persist::read_device_cert(&cert_path).unwrap();
         tilo_identity::device_fleet::DeviceFleetStore::from_env()
             .unwrap()
             .remember_certificate(&id, cert)

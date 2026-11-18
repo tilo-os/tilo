@@ -1118,7 +1118,7 @@ fn take_identity(material: &Material) -> Result<(), String> {
     let key = material.key()?;
     // [`write_signing_key`] is the one way to write a key only its owner may
     // read (0600), rather than the device key's group-readable mode.
-    tilo_user_identity::persist::write_signing_key(&paths.device_privkey, &key)
+    tilo_device_identity::persist::write_signing_key(&paths.device_privkey, &key)
         .map_err(|error| format!("this device's key was not written: {error}"))?;
     // A guest resumed from its template's snapshot wakes with the clock that
     // snapshot was taken at, behind the host's: the certificate the server issued
@@ -1126,13 +1126,13 @@ fn take_identity(material: &Material) -> Result<(), String> {
     // it wakes it; should it still read a little behind, this session waits for
     // the clock to reach its certificate rather than ending without an identity.
     loop {
-        let refused = match tilo_user_identity::install_device_cert(
+        let refused = match tilo_device_identity::install_device_cert(
             &paths,
             &material.device,
             tilo_clock::unix_now_ns(),
         ) {
             Ok(()) => break,
-            Err(tilo_user_identity::PersistError::Io(error)) => error,
+            Err(tilo_device_identity::PersistError::Io(error)) => error,
             Err(error) => {
                 return Err(format!("this device's certificate was not taken: {error}"));
             }
@@ -1145,7 +1145,7 @@ fn take_identity(material: &Material) -> Result<(), String> {
                 "this device's certificate was not taken: {refused}"
             ));
         };
-        if tilo_user_identity::wait_for_wall_clock(at).is_err() {
+        if tilo_device_identity::wait_for_wall_clock(at).is_err() {
             return Err(format!(
                 "this device's certificate was not taken: {refused}"
             ));

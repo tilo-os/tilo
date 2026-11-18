@@ -91,10 +91,7 @@ chat-start-video-call = Videoanruf starten
 
 # Belege, die an der Antwort eines Agents hängen; die Verfügbarkeit kommt aus der Präsenz.
 chat-agent-work-waiting = Wartet auf { $app }
-chat-agent-work-did = { $count ->
-    [one] Hat eine Sache erledigt
-   *[other] Hat { $count } Sachen erledigt
-}
+chat-agent-work-did = Hat { $count } Sachen erledigt
 chat-agent-work-refused = Diese Anfrage konnte nicht abgeschlossen werden
 chat-agent-work-step-requested = Angefragt: { $target }
 chat-agent-work-step-applied = Angewandt: { $target }

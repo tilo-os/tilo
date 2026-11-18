@@ -82,9 +82,9 @@ bundle_publisher=$(sed -n 's/^publisher_hex = "\([0-9a-fA-F]\{64\}\)"$/\1/p' \
     "$runtime_dir/bundle.toml")
 test "${#bundle_publisher}" -eq 64
 grep -Fxiq "$bundle_publisher" /etc/tilo/runtime-bundle-trusted-publishers.txt
-# The ush supervisor runs these: itself, and the legacy VM service behind app
+# The ush supervisor runs these: itself, and the Linux VM service behind app
 # shims.
-for program in /usr/libexec/tilo-ush /usr/libexec/tilo/tilo-legacy; do
+for program in /usr/libexec/tilo-ush /usr/libexec/tilo/tilo-linux-vm; do
     test -x "$program"
     test "$(rpm -qf "$program")" = "$(rpm -q tilo-session-apps)"
 done

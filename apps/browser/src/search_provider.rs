@@ -15,9 +15,6 @@ struct Row {
     resource_id: String,
     title: String,
     url: String,
-    /// The exact resource kind published in Browser's hierarchy, not a search-only proxy: a
-    /// search result must be interchangeable with opening the same row from the Library.
-    resource_kind: &'static str,
     search_kind: &'static str,
     download: Option<String>,
     icon: Icon,
@@ -86,7 +83,6 @@ impl BrowserSearchIndex {
                     entry.title.clone()
                 },
                 url: entry.url.clone(),
-                resource_kind: "browser.history-entry",
                 search_kind: "History",
                 download: None,
                 icon: Icon::History,
@@ -104,7 +100,6 @@ impl BrowserSearchIndex {
                 resource_id: entry.resource_id(),
                 title: entry.display_name().to_string(),
                 url: format!("{} {destination}", entry.source_url),
-                resource_kind: "browser.download",
                 search_kind: "Downloads",
                 download: Some(entry.id.clone()),
                 icon: Icon::Download,
@@ -165,10 +160,15 @@ impl BrowserSearchIndex {
         use ui::tilo_resource::Effect as _;
         let action = self.opened(id)?.bound();
         let row = self.state.read_recover().rows.get(id).cloned()?;
-        Some(
-            ui::framework::LiveRow::new(&row.resource_id, row.resource_kind, &row.title)
-                .operation(action),
-        )
+        let row = if row.download.is_some() {
+            ui::framework::LiveRow::typed::<crate::row_types::Download>(
+                &row.resource_id,
+                &row.title,
+            )
+        } else {
+            ui::framework::LiveRow::typed::<crate::row_types::Visit>(&row.resource_id, &row.title)
+        };
+        Some(row.operation(action))
     }
 
     /// The search source the framework builds over these entries, resolving hits the way

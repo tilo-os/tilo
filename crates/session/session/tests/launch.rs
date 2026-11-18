@@ -573,7 +573,7 @@ fn installed_probe_package(home: &mut tilo_test_env::TestHome) {
 /// long as the caller keeps it: the session reads the device's key from it.
 fn this_computer(home: &mut tilo_test_env::TestHome) -> (tempfile::TempDir, String) {
     let root = tempfile::tempdir().expect("a directory for this computer's identity");
-    let paths = tilo_user_identity::IdentityPaths::under(root.path());
+    let paths = tilo_device_identity::IdentityPaths::under(root.path());
     tilo_identity::provisioning::ensure_collaboration_identity(
         &home.config().join("tilo").join("identity"),
         &paths,
@@ -581,7 +581,7 @@ fn this_computer(home: &mut tilo_test_env::TestHome) -> (tempfile::TempDir, Stri
     )
     .expect("this computer's identity");
     home.env().set("TILO_IDENTITY_ROOT", root.path());
-    let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert)
+    let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
         .expect("this computer's certificate");
     (root, hex::encode(cert.user_public_key))
 }

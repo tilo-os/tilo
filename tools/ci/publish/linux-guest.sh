@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# The Linux VM guest disk (os/Containerfile.linux-guest): Fedora bootc with Flatpak, the
+# waypipe forwarder and Tilo's vsock guest agent, installed to a qcow2, booted once until the
+# agent serves, and published as a single-layer image whose digest os/linux-guest-snapshot.env
+# pins; `tilo-linux-vm` fetches only that digest.
+#
+#   linux-guest.sh agent OUT           build the guest agent into OUT (CI builder)
+#   linux-guest.sh build AGENT OUT     build the guest image with that agent, install it to a
+#                                       disk, boot it until the agent serves, and wrap the disk
+#                                       into OUT/image.oci.tar (as root in an x86_64 micro-VM
+#                                       step); linux-guest-e2e.sh, beside this script, tests it
+#   linux-guest.sh binaries OUT        the session under test (debug) and tilo-linux-vm
+#                                       (CI builder)
+#   linux-guest.sh pins OUT            after publish-linux-guest published OUT, write
+#                                       OUT/pins.env: its reference and the inputs it was built from
+set -euo pipefail
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
+cd "$repo_root"
+repository=registry.tilo.so/tilo/linux-guest
+
+# Everything that ends up in the guest disk.
+inputs_digest() {
+  find os/Containerfile.linux-guest os/linux-guest os/base-snapshot.env \
+    crates/runtime/linux-vm-agent crates/runtime/linux-vm-protocol \
+    os/external-assets/xwayland-satellite tools/ci/install-xwayland-satellite.sh -type f -print0 \
+    | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1
+}
+
+case ${1:-} in
+  agent)
+    out=${2:?usage: linux-guest.sh agent OUT}
+    cargo build --locked --release -p linux-vm-agent --bin tilo-linux-vm-agent
+    install -D -m 0755 "${CARGO_TARGET_DIR:-target}/release/tilo-linux-vm-agent" "$out/tilo-linux-vm-agent"
+    ;;
+  build)
+    agent=${2:?usage: linux-guest.sh build AGENT OUT}
+    out=${3:?}
+    [[ $(uname -m) == x86_64 ]] || die 'the Linux VM guest is built on x86_64'
+    dnf install -y --setopt=install_weak_deps=False btrfs-progs dosfstools e2fsprogs edk2-ovmf \
+      fuse-overlayfs jq podman python3 qemu-img qemu-system-x86-core skopeo systemd-repart util-linux >/dev/null
+    # The VM's /dev is static; the kernel's own loop and FUSE nodes appear with devtmpfs.
+    modprobe fuse 2>/dev/null || true
+    modprobe loop 2>/dev/null || true
+    modprobe vhost_vsock 2>/dev/null || true
+    if [[ ! -c /dev/loop-control || ! -c /dev/fuse ]]; then
+      mount -t devtmpfs devtmpfs /dev
+      mkdir -p /dev/pts /dev/shm
+      [[ $(stat -f -c %T /dev/pts) == devpts ]] || mount -t devpts -o gid=5,mode=620,ptmxmode=666 devpts /dev/pts
+      mountpoint -q /dev/shm || mount -t tmpfs -o mode=1777 tmpfs /dev/shm
+    fi
+    losetup --find >/dev/null
+    python3 os/dev/probe-kvm.py x86_64 || die 'no KVM: an unbooted guest is never published'
+    RUNNER_TEMP=$scratch CONTAINERS_STORAGE_CONF=$(RUNNER_TEMP=$scratch bash os/dev/ci-native-podman-store.sh)
+    export RUNNER_TEMP CONTAINERS_STORAGE_CONF
+    use_cosign
+    . os/base-snapshot.env
+    install -D -m 0755 "$agent/tilo-linux-vm-agent" os/linux-guest/agent/tilo-linux-vm-agent
+    guest=localhost/tilo-linux-vm-guest:ci
+    podman build --pull=always -f os/Containerfile.linux-guest --build-arg "BASE_REF=$BASE_REF" -t "$guest" .
+    disk=$scratch/linux-guest-disk
+    mkdir -p "$disk"
+    TILO_QCOW2_COMPRESS=1 bash os/dev/disk-image.sh "$guest" "$disk" --bootloader grub --rootfs ext4 --size 16G
+    test -s "$disk/disk.qcow2"
+    bash os/dev/linux-guest-smoke.sh "$disk/disk.qcow2"
+    # One layer holding the disk, fixed timestamps: the digest is the disk's.
+    printf 'FROM scratch\nCOPY disk.qcow2 /disk.qcow2\n' > "$disk/Containerfile"
+    podman build --timestamp 0 -f "$disk/Containerfile" -t localhost/linux-guest-disk "$disk"
+    mkdir -p "$out"
+    rm -f "$out/image.oci.tar"
+    podman push localhost/linux-guest-disk "oci-archive:$out/image.oci.tar"
+    archive_digest "$out/image.oci.tar" > "$out/digest"
+    printf 'built %s\n' "$(cat "$out/digest")"
+    ;;
+  binaries)
+    out=${2:?usage: linux-guest.sh binaries OUT}
+    target=${CARGO_TARGET_DIR:-target}
+    # Debug: the session's test-control socket exists only in development builds.
+    CARGO_PROFILE_DEV_DEBUG=0 cargo build --locked -p tilo-session --bin tilo-session \
+      -p linux-vm --bin tilo-linux-vm
+    install -D -m 0755 "$target/debug/tilo-session" "$out/tilo-session"
+    install -D -m 0755 "$target/debug/tilo-linux-vm" "$out/tilo-linux-vm"
+    ;;
+  pins)
+    out=${2:?usage: linux-guest.sh pins OUT}
+    [[ -s $out/receipt.json ]] || die "$out is not published"
+    printf 'LINUX_GUEST_X86_64_REF=%s@%s\nINPUTS_SHA256=%s\n' \
+      "$repository" "$(cat "$out/digest")" "$(inputs_digest)" > "$out/pins.env"
+    cat "$out/pins.env"
+    ;;
+  *) die 'usage: linux-guest.sh agent|build|binaries|pins ...' ;;
+esac

@@ -38,7 +38,6 @@ use runtime_portal::NotAvailable;
 
 pub mod approved_checks;
 pub mod external_moderation;
-pub mod write_attribution;
 /// The host distinguishes local UI intent from continuation of a published action.
 /// A published id is resolved only against broker-retained original ownership.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -147,7 +146,7 @@ pub const CERTIFIED_JOIN_PREFIX: &[u8] = b"tilo-collab-certified-join-v1\0";
 /// Peer-verifiable proof that an enrolled device joined one workspace.
 /// `device_certificate` is the JSON form supplied by `runtime-identity`; the
 /// proof is an Ed25519 device-key signature over
-/// `runtime_identity::collaboration_join_signing_bytes(workspace_id)`.
+/// `runtime_identity::collaboration_join_digest(workspace_id)`.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CertifiedJoinIdentity {
@@ -941,9 +940,7 @@ impl std::fmt::Debug for PublishedInvocationResult {
 #[serde(deny_unknown_fields)]
 pub struct LocalDocumentActionReport {
     /// Original authenticated channel provenance, compared with live ownership at admission.
-    /// Written under the name a report has always given it, which is not the code's: a
-    /// report that names it as the code does reads too, because builds wrote that for a while.
-    #[serde(default, rename = "custody", alias = "ownership")]
+    #[serde(default)]
     pub ownership: Option<committed_document::ConnectionSnapshot>,
     pub version: u8,
     pub invocation: uuid::Uuid,

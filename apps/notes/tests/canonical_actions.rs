@@ -28,7 +28,7 @@ fn duplicate_subtree_round_trips_rich_content_and_mints_fresh_ids() {
         let mut a = doc.clone();
         let mut b = doc.clone();
         let registry = tilo_actions::ActionRegistry::with(
-            ui::tilo_resource::group::register::<notes::PagePart>,
+            ui::tilo_resource::group::register::<notes::NoteList>,
         );
         let dispatched = tilo_actions::dispatch(
             &mut a,
@@ -371,7 +371,7 @@ fn bound_rich_split_tree_moves_and_duplicates_are_owned_actions() {
         )
         .unwrap();
         let registry = tilo_actions::ActionRegistry::with(
-            ui::tilo_resource::group::register::<notes::PagePart>,
+            ui::tilo_resource::group::register::<notes::NoteList>,
         );
         tilo_actions::replay(&mut b, dispatched.envelope(), &registry).unwrap();
         assert_eq!(a.get_heads(), b.get_heads());
@@ -572,7 +572,7 @@ fn registry_authority_and_stale_page_views_keep_other_instances_live() {
             b.invoke_bound_action(
                 &ui::bound_dispatch::BoundActionAddress {
                     instance_id: 12,
-                    address: notes::PagePart::RENAME.on(actions::page_resource_id(f.child))
+                    address: notes::NoteList::RENAME.on(actions::page_resource_id(f.child))
                 },
                 serde_json::json!({"title":"denied"}).as_object().unwrap()
             )
@@ -582,7 +582,7 @@ fn registry_authority_and_stale_page_views_keep_other_instances_live() {
             b.invoke_bound_action_confirmed(
                 &ui::bound_dispatch::BoundActionAddress {
                     instance_id: 12,
-                    address: notes::PagePart::DELETE.on(actions::page_resource_id(f.child))
+                    address: notes::NoteList::DELETE.on(actions::page_resource_id(f.child))
                 },
                 &serde_json::Map::new()
             )
@@ -645,7 +645,7 @@ fn registry_authority_and_stale_page_views_keep_other_instances_live() {
         invoke_confirmed(&mut b, 12, &actions::page_resource_id(f.child), "delete");
         let denied = ui::bound_dispatch::BoundActionAddress {
             instance_id: 11,
-            address: notes::PagePart::RENAME.on(actions::page_resource_id(f.child)),
+            address: notes::NoteList::RENAME.on(actions::page_resource_id(f.child)),
         };
         assert!(
             a.invoke_bound_action(
@@ -665,7 +665,7 @@ fn registry_authority_and_stale_page_views_keep_other_instances_live() {
         close_driver(&mut a);
         let stale = ui::bound_dispatch::BoundActionAddress {
             instance_id: 11,
-            address: notes::PagePart::RENAME.on(actions::page_resource_id(f.root)),
+            address: notes::NoteList::RENAME.on(actions::page_resource_id(f.root)),
         };
         let mut reopened = driver(&f, 11, &checkout);
         assert!(
@@ -1052,9 +1052,9 @@ fn bound_open_tag_uses_current_membership_without_prior_sync() {
     invoke_with(
         &mut b,
         12,
-        notes::part::chain_resource(),
+        notes::note_list::chain_resource(),
         "field-edit",
-        serde_json::json!({ "edit": notes::PagePart::paths()
+        serde_json::json!({ "edit": notes::NoteList::paths()
             .pages
             .item(&notes::notebook::page_id(f.child))
             .tags
@@ -1178,7 +1178,7 @@ fn page_tree_bound_action_preserves_rich_bodies_owned_undo_and_revocation() {
         a.invoke_bound_action(
             &ui::bound_dispatch::BoundActionAddress {
                 instance_id: 11,
-                address: notes::PagePart::OUTDENT.on(actions::page_resource_id(f.child)),
+                address: notes::NoteList::OUTDENT.on(actions::page_resource_id(f.child)),
             },
             &serde_json::Map::new()
         )
@@ -1205,7 +1205,7 @@ fn newly_created_note_opens_before_the_next_presentation_frame() {
         .unwrap()
         .clone();
     let create = app.invoke_bound_action(
-        &address(notes::PagePart::NEW_NOTE.on(notes::part::chain_resource())),
+        &address(notes::NoteList::NEW_NOTE.on(notes::note_list::chain_resource())),
         &arguments,
     );
     assert!(create.is_ok(), "normal declared creation: {create:?}");

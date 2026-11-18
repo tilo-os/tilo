@@ -1,9 +1,11 @@
 use super::*;
 use ed25519_dalek::Signer as _;
 use std::os::unix::fs::PermissionsExt as _;
+use tilo_device_identity::{IdentityPaths, persist};
 #[cfg(feature = "native-current-device-qualification")]
 use tilo_test_env::SpawnUnderEnvLock as _;
-use tilo_user_identity::{DeviceCapabilities, IdentityPaths, persist};
+use tilo_user_identity::DeviceCapabilities;
+
 const PASSWORD: &[u8] = b"a private device transport password";
 struct Fixture {
     source: tempfile::TempDir,

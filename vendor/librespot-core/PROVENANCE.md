@@ -32,6 +32,11 @@ Tilo changes:
   headers and credentials are discarded. Status-to-error-kind mapping and
   refusal behavior remain unchanged; no alternate identity or bearer is tried.
 
+- `Cargo.toml` drops the `librespot-oauth` dependency and its TLS feature
+  forwards, and `src/error.rs` its `From<OAuthError>` conversion: the
+  interactive OAuth login is never used (Music hands the session its own
+  bearer), and it brought in a second reqwest and oauth2.
+
 The upstream TLS feature definitions/defaults are retained. Music explicitly
 disables defaults and selects Rustls with native roots; the root workspace
 patch supplies Tilo's existing fixed-path native-root loader.

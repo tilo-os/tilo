@@ -1,7 +1,7 @@
 //! The person's device fabric lives on the session: a copy made on one device reaches the other,
 //! and an action reaches the one device it is addressed to and no other.
 //! The sessions here run on this machine's loopback with the real peer actor and real certificates
-//! of one person, so what is checked is the transport and the fabric runtime together, not a
+//! of one person, so what is checked is the transport and the link over it together, not a
 //! stand-in link.
 
 #![cfg(target_os = "linux")]
@@ -70,7 +70,7 @@ fn permitted() -> Continuity {
 
 /// One of the person's devices, certified by `person` , on its own key.
 fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Device {
-    kept_device(person, seed, label, None, test_server::loopback(), None)
+    device_with(person, seed, label, test_server::loopback(), None)
 }
 
 /// Discovery on this machine's loopback instead of the network the session runs on: what a
@@ -79,12 +79,11 @@ fn loopback_discovery() -> tilo_endpoint_reachability::Nearby {
     tilo_endpoint_reachability::Nearby::on(Arc::new(|| {}), [std::net::Ipv4Addr::LOCALHOST])
 }
 
-/// [`device`], keeping its fabric under `kept` between runs as a session does.
-fn kept_device(
+/// [`device`], over the reach and local discovery it is given.
+fn device_with(
     person: &ed25519_dalek::SigningKey,
     seed: u8,
     label: &str,
-    kept: Option<&std::path::Path>,
     relays: tilo_endpoint_reachability::EndpointRelays,
     lan: Option<tilo_endpoint_reachability::Nearby>,
 ) -> Device {
@@ -97,7 +96,7 @@ fn kept_device(
             hosts: Vec::new(),
             continuity: permitted(),
             wake: Arc::new(|| {}),
-            fabric: kept.map(std::path::Path::to_path_buf),
+            personal: None,
             relays,
             lan,
         },
@@ -185,71 +184,6 @@ fn a_remote_audio_route_gets_the_clock_it_plays_the_other_device_by() {
     );
 }
 
-/// A device whose session starts again goes on from the revision it last said, so its other
-/// devices take what it says now over what they kept of it; a record said again from the first
-/// revision was refused as a conflict ("same device revision carried conflicting state", box of
-/// e2e-branch after both boxes rebooted). A machine copied from it, under a key of its own,
-/// starts a line of its own and does not take up the one it was copied with.
-#[test]
-fn a_device_that_starts_again_continues_its_own_revisions() {
-    let person = person();
-    let kept = tempfile::tempdir().expect("a state directory");
-    let session = device(&person, 2, "Session");
-    let laptop = kept_device(
-        &person,
-        1,
-        "Laptop",
-        Some(kept.path()),
-        test_server::loopback(),
-        None,
-    );
-    let id = laptop.id.clone();
-    laptop.client.connect(session.client.endpoint_addr());
-    assert!(
-        until(&[&laptop, &session], || both_online(&laptop, &session)),
-        "the two devices' sessions came up"
-    );
-    let held = |session: &Device| {
-        session
-            .fabric()
-            .device_fabric()
-            .snapshots()
-            .get(&id)
-            .map(|record| record.presence.stamp.clone())
-    };
-    let before = held(&session).expect("the session holds what the laptop said");
-    drop(laptop);
-
-    let laptop = kept_device(
-        &person,
-        1,
-        "Laptop",
-        Some(kept.path()),
-        test_server::loopback(),
-        None,
-    );
-    laptop.client.connect(session.client.endpoint_addr());
-    assert!(
-        until(&[&laptop, &session], || {
-            held(&session).is_some_and(|now| now.is_newer_than(&before))
-        }),
-        "the session took what the laptop said after starting again: it still holds {before:?}"
-    );
-
-    let copy = kept_device(
-        &person,
-        3,
-        "Branch",
-        Some(kept.path()),
-        test_server::loopback(),
-        None,
-    );
-    assert!(
-        !copy.fabric().device_fabric().snapshots().contains_key(&id),
-        "a machine with a key of its own does not take up the laptop's kept fabric"
-    );
-}
-
 /// Two of the person's devices on one local network, whose server is unreachable and which ask no
 /// directory: each is told only the other's key, finds it on the network, and what is copied on one
 /// reaches the other. Each lists the other as nearby; a device of someone else's, heard on the same
@@ -263,27 +197,24 @@ fn the_persons_devices_on_one_network_sync_without_a_relay() {
         ))
     };
     let person = person();
-    let laptop = kept_device(
+    let laptop = device_with(
         &person,
         1,
         "Laptop",
-        None,
         unreachable(),
         Some(loopback_discovery()),
     );
-    let session = kept_device(
+    let session = device_with(
         &person,
         2,
         "Session",
-        None,
         unreachable(),
         Some(loopback_discovery()),
     );
-    let stranger = kept_device(
+    let stranger = device_with(
         &ed25519_dalek::SigningKey::from_bytes(&[22; 32]),
         3,
         "Stranger",
-        None,
         unreachable(),
         Some(loopback_discovery()),
     );
@@ -314,7 +245,7 @@ fn the_persons_devices_on_one_network_sync_without_a_relay() {
         until(&[&laptop, &session, &stranger], || {
             session
                 .fabric()
-                .device_fabric()
+                .devices()
                 .merged_clipboard()
                 .entries()
                 .any(|entry| entry.payload == ClipboardPayload::Text(text.to_owned()))

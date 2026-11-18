@@ -92,7 +92,7 @@ impl IdentityRegistry {
     /// launcher-bound record, or one a setup wrote after this registry's last read).
     pub fn certified_identity(&self) -> Option<IdentityProfile> {
         let paths = crate::provisioning::collaboration_identity_paths();
-        let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert).ok()?;
+        let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert).ok()?;
         self.identity_of(&cert.user_public_key)
     }
 
@@ -587,7 +587,7 @@ pub fn identity_for_workspace(workspace: &str) -> io::Result<Option<IdentityProf
 /// This device's certificate, which names the person it presents.
 fn device_cert() -> Option<DeviceCert> {
     let paths = crate::provisioning::collaboration_identity_paths();
-    tilo_user_identity::persist::read_device_cert(&paths.device_cert).ok()
+    tilo_device_identity::persist::read_device_cert(&paths.device_cert).ok()
 }
 
 /// Resolve the identity directory from environment variables.

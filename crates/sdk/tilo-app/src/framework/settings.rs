@@ -153,11 +153,11 @@ pub(crate) struct Hosted {
     pub(crate) person: Option<ui_core::resource::person::PersonResources>,
     pub(crate) device: Option<String>,
     /// The store of the app's records in the workspace, who edits there and
-    /// what they may do.
+    /// what they may do (`None`: a past version, where nobody edits).
     pub(crate) records: Option<(
         ui_core::resource::ResourceStore,
         tilo_resource::MemberId,
-        ui_core::permissions::LivePermissions,
+        Option<ui_core::permissions::LivePermissions>,
     )>,
     /// The records every app of the workspace opens, and the window's wake
     /// scope, against which the workspace's emoji are registered.
@@ -181,7 +181,7 @@ impl Hosted {
         let permissions = self
             .records
             .as_ref()
-            .map(|(_, _, permissions)| permissions.clone());
+            .and_then(|(_, _, permissions)| permissions.clone());
         let workspace = self.workspace.map(|(records, wake)| {
             let state = Rc::new(super::workspace::WorkspaceState::new(
                 records,
@@ -216,7 +216,7 @@ impl Hosted {
                 super::chain::WorkspaceResources {
                     store,
                     me,
-                    permissions: Some(permissions),
+                    permissions,
                     app_id,
                     app_title,
                 }
@@ -404,8 +404,26 @@ impl ViewStorage {
     pub(crate) fn read_chain_parts<T>(
         &self,
         read: &dyn Fn(&ui_core::automerge::AutoCommit) -> T,
-    ) -> Vec<T> {
+    ) -> Vec<(ui_core::history_mode::HistoryPart, T)> {
         self.chains.read_parts(read)
+    }
+
+    /// A part's version beside the other parts of its chain ([`super::chain::Chains::past_part`]).
+    pub(crate) fn past_part(
+        &self,
+        version: &ui_core::history_mode::PartVersion<'_>,
+    ) -> Result<super::chain::PastPart, String> {
+        self.chains.past_part(version)
+    }
+
+    /// Write a part back as it was at `heads` ([`super::chain::Chains::restore_part`]).
+    pub(crate) fn restore_chain_part(
+        &self,
+        part: &ui_core::history_mode::HistoryPart,
+        heads: &[ui_core::automerge::ChangeHash],
+        author: &tilo_resource::MemberId,
+    ) -> Result<(), String> {
+        self.chains.restore_part(part, heads, author)
     }
 
     /// What search finds in the chains the views opened.

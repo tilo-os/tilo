@@ -713,7 +713,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
     );
     // The notes are kept in parts beside the notebook, which the page's
     // window follows.
-    browser.follow_chain(NOTES, notes::part::chain().chain_head().as_str());
+    browser.follow_chain(NOTES, notes::note_list::chain().chain_head().as_str());
     let deadline = tilo_test_env::hang_deadline();
     let runs = loop {
         let runs = runs_of(&mut browser, notes);

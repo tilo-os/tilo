@@ -178,6 +178,18 @@ impl HistoryHost {
         let Some(scope) = self.registration.definition.scopes.get(self.active_scope) else {
             return false;
         };
+        if controller.selected_part().is_some() {
+            return match controller.restore_part(review, author) {
+                Ok(()) => {
+                    self.review = None;
+                    true
+                }
+                Err(error) => {
+                    self.show_review(None, error.to_string());
+                    false
+                }
+            };
+        }
         let Some(now) = (self.clock)() else {
             self.show_review(None, I18nManager::lookup_plain("history-review-no-clock"));
             return false;

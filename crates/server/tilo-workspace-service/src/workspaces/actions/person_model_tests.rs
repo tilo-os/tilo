@@ -399,6 +399,10 @@ async fn no_agent_reads_or_changes_a_persons_key() {
                 person_models::REMOVE_PROVIDER,
                 json!({"provider": provider}),
             ),
+            (
+                person_models::ASK,
+                serde_json::to_value(asking("Spend her key")).unwrap(),
+            ),
         ] {
             let verb = asking.0;
             let refused = ask_as(&host, workspace_id, &ada, agent, asking).await;
@@ -435,6 +439,66 @@ async fn no_agent_reads_or_changes_a_persons_key() {
         .await
         .unwrap();
     assert_eq!(scripted.asked()[0].key.as_deref(), Some(ADA_KEY));
+}
+
+/// A page's window asks the person's model through their server: the turn is
+/// answered by the model they set up in Settings, with the key their vault
+/// keeps, and a person who set none up is told so, in a failure whose kind
+/// the window decides by.
+#[tokio::test]
+async fn a_page_asks_the_persons_model_through_their_host() {
+    use agent_provider_config::protocol::{ErrorKind, ModelError, ModelResponse};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let bo = admit(workspaces, &workspace, &owner, 2).await;
+    let scripted = ScriptedProvider::answering([Reply::text("from the server")]);
+    workspaces.answer_models_with(scripted.clone());
+
+    let provider = link(
+        &host,
+        workspace_id,
+        &ada,
+        ("Google", "https://models.example.com/v1", ADA_KEY),
+    )
+    .await;
+    workspaces
+        .offer_models_for(&ada.user_public_key, &provider, &["gemini-main"])
+        .unwrap();
+    ask_own(
+        &host,
+        workspace_id,
+        &ada,
+        person_models::SET_DEFAULT,
+        json!({"provider": provider, "model": "gemini-main"}),
+    )
+    .await
+    .unwrap();
+
+    let turn = serde_json::to_value(asking("Summarise my day")).unwrap();
+    let hers = ask_own(&host, workspace_id, &ada, person_models::ASK, turn.clone())
+        .await
+        .unwrap();
+    let hers: Result<ModelResponse, ModelError> = serde_json::from_value(hers).unwrap();
+    let hers = hers.unwrap();
+    assert!(
+        matches!(hers.message.content.as_slice(), [Content::Text { text }] if text == "from the server")
+    );
+    let asked = scripted.asked();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].model, "gemini-main");
+    assert_eq!(asked[0].key.as_deref(), Some(ADA_KEY));
+
+    let his = ask_own(&host, workspace_id, &bo, person_models::ASK, turn)
+        .await
+        .unwrap();
+    let his: Result<ModelResponse, ModelError> = serde_json::from_value(his).unwrap();
+    assert_eq!(his.unwrap_err().kind, ErrorKind::NoProvider);
+    assert_eq!(scripted.asked().len(), 1, "nobody else's model answers him");
 }
 
 /// Everything written to the log while a key is kept, a model is asked and

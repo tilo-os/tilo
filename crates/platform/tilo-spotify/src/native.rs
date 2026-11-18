@@ -2,16 +2,16 @@
 //! streaming tokens never enter a resource, profile or collaborative document.
 
 use gstreamer::{self as gst, prelude::*};
-use librespot::{
-    core::{SpotifyUri, authentication::Credentials, config::SessionConfig, session::Session},
-    playback::{
-        audio_backend::{Sink, SinkError, SinkResult},
-        config::{Bitrate, PlayerConfig},
-        convert::Converter,
-        decoder::AudioPacket,
-        mixer::NoOpVolume,
-        player::{Player, PlayerEvent},
-    },
+use librespot_core::{
+    SpotifyUri, authentication::Credentials, config::SessionConfig, session::Session,
+};
+use librespot_playback::{
+    audio_backend::{Sink, SinkError, SinkResult},
+    config::{Bitrate, PlayerConfig},
+    convert::Converter,
+    decoder::AudioPacket,
+    mixer::NoOpVolume,
+    player::{Player, PlayerEvent},
 };
 use std::sync::{
     Arc, Mutex,
@@ -490,7 +490,7 @@ pub fn self_check() -> Result<String, String> {
     let player = playback_config();
     Ok(format!(
         "librespot {} parsed {uri}; a session starts with autoplay {:?} and plays at {:?}",
-        librespot::core::version::SEMVER,
+        librespot_core::version::SEMVER,
         session.autoplay,
         player.bitrate,
     ))
@@ -573,11 +573,11 @@ async fn playback_metadata(session: &Session, uri: &str) -> Result<SpotifyUri, S
     Ok(track)
 }
 
-fn playback_metadata_error(error: &librespot::core::Error) -> String {
+fn playback_metadata_error(error: &librespot_core::Error) -> String {
     // Only the typed status and transport-allowlisted fixed reason are public.
     // Other sources may contain credentials and must never reach app state.
     if let Some(source) = error.error.downcast_ref() {
-        let source: &librespot::core::http_client::HttpClientError = source;
+        let source: &librespot_core::http_client::HttpClientError = source;
         let reason = source
             .reason()
             .map_or(String::new(), |reason| format!(", {reason}"));
@@ -610,7 +610,7 @@ async fn connect_session(
             tokio::task::spawn_blocking(ownership_streaming_bearer)
                 .await
                 .map_err(|_| {
-                    librespot::core::Error::unavailable("Spotify credential worker stopped")
+                    librespot_core::Error::unavailable("Spotify credential worker stopped")
                 })?
         })
     }));
@@ -629,7 +629,7 @@ async fn connect_session(
     Ok(session)
 }
 
-fn ownership_streaming_bearer() -> Result<librespot::core::token::Token, librespot::core::Error> {
+fn ownership_streaming_bearer() -> Result<librespot_core::token::Token, librespot_core::Error> {
     let (token, expires) = account_credentials::CredentialStore::live()
         .oauth_access_token_with_expiry(
             &accounts::AccountId::from(STREAMING_ACCOUNT.to_string()),
@@ -637,14 +637,14 @@ fn ownership_streaming_bearer() -> Result<librespot::core::token::Token, libresp
             false,
         )
         .map_err(|_| {
-            librespot::core::Error::unauthenticated("Spotify playback authorization is unavailable")
+            librespot_core::Error::unauthenticated("Spotify playback authorization is unavailable")
         })?;
     let lifetime = expires
         .and_then(|expiry| expiry.checked_sub(tilo_clock::unix_now()))
         .ok_or_else(|| {
-            librespot::core::Error::unauthenticated("Spotify did not provide a valid bearer expiry")
+            librespot_core::Error::unauthenticated("Spotify did not provide a valid bearer expiry")
         })?;
-    Ok(librespot::core::token::Token {
+    Ok(librespot_core::token::Token {
         access_token: token.as_str().to_owned(),
         expires_in: Duration::from_secs(lifetime),
         token_type: "Bearer".into(),
@@ -813,7 +813,7 @@ mod tests {
 
         phase spotify_metadata_refusal_classifies_only_bounded_provider_codes;
         {
-            use librespot::core::http_client::HttpClientError;
+            use librespot_core::http_client::HttpClientError;
             let status = "403".parse().unwrap();
             for (body, expected) in [
                 (
@@ -843,10 +843,10 @@ mod tests {
             ] {
                 let source = HttpClientError::from_status_body(status, body);
                 assert_eq!(source.reason(), Some(expected));
-                let error: librespot::core::Error = source.into();
+                let error: librespot_core::Error = source.into();
                 assert_eq!(
                     error.kind,
-                    librespot::core::error::ErrorKind::PermissionDenied
+                    librespot_core::error::ErrorKind::PermissionDenied
                 );
                 let public = playback_metadata_error(&error);
                 assert!(public.contains(expected));
@@ -860,7 +860,7 @@ mod tests {
 
         phase playback_metadata_failure_preserves_provider_status_without_secret_sources;
         {
-            use librespot::core::http_client::HttpClientError;
+            use librespot_core::http_client::HttpClientError;
 
             for status in ["401", "402", "403"] {
                 let error = HttpClientError::StatusCode(status.parse().unwrap()).into();
@@ -869,7 +869,7 @@ mod tests {
                     format!("Spotify refused the playback metadata request (HTTP {status})")
                 );
             }
-            let error = librespot::core::Error::permission_denied(
+            let error = librespot_core::Error::permission_denied(
                 "private bearer and request URL must not enter collaborative state",
             );
             assert_eq!(
@@ -1147,7 +1147,7 @@ mod tests {
     }
     #[test]
     fn external_oauth_bearer_never_uses_stored_credential_login5() {
-        use librespot::core::{Error, error::ErrorKind, token::Token};
+        use librespot_core::{Error, error::ErrorKind, token::Token};
         use std::time::SystemTime;
         tilo_rt::block_on(async {
             let session = Session::new(

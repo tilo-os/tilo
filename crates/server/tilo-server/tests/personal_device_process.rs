@@ -23,11 +23,10 @@ use std::process::{Command, Stdio};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
+use tilo_device_identity::IdentityPaths;
 use tilo_server::daemon::ServerIdentity;
 use tilo_server::{Envelope, HomePeerRegistration, ServerClient, ServerConfig};
-use tilo_user_identity::{
-    DeviceCapabilities, DeviceCert, IdentityPaths, RevocationList, sign_device_cert,
-};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 use crate::common::client_endpoint;
 use tilo_server::WorkspaceId;
@@ -93,21 +92,21 @@ fn write_approver_fixture(
 ) -> HomePeerRegistration {
     let paths = IdentityPaths::under(root_dir);
     paths.ensure_directories().unwrap();
-    tilo_user_identity::persist::write_signing_key(&paths.user_privkey, root).unwrap();
-    tilo_user_identity::persist::write_public_key(
+    tilo_device_identity::persist::write_signing_key(&paths.user_privkey, root).unwrap();
+    tilo_device_identity::persist::write_public_key(
         &paths.user_pubkey,
         &root.verifying_key().to_bytes(),
     )
     .unwrap();
-    tilo_user_identity::persist::write_device_key(&paths.device_privkey, approver).unwrap();
+    tilo_device_identity::persist::write_device_key(&paths.device_privkey, approver).unwrap();
     let approver_cert = signed_cert(
         root,
         approver,
         "Approving laptop",
         DeviceCapabilities::primary(),
     );
-    tilo_user_identity::persist::write_device_cert(&paths.device_cert, &approver_cert).unwrap();
-    tilo_user_identity::persist::write_device_cert(
+    tilo_device_identity::persist::write_device_cert(&paths.device_cert, &approver_cert).unwrap();
+    tilo_device_identity::persist::write_device_cert(
         &paths.device_cert_for_user(&root.verifying_key().to_bytes()),
         &approver_cert,
     )
@@ -194,7 +193,7 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
     let recipient = SigningKey::generate(&mut UnwrapErr(SysRng));
     let recipient_paths = IdentityPaths::under(&recipient_root);
     recipient_paths.ensure_directories().unwrap();
-    tilo_user_identity::persist::write_device_key(&recipient_paths.device_privkey, &recipient)
+    tilo_device_identity::persist::write_device_key(&recipient_paths.device_privkey, &recipient)
         .unwrap();
     let recipient_id = hex::encode(recipient.verifying_key().to_bytes());
     let recipient_service = hex::encode(tilo_server::daemon::server_node_id(&recipient));
@@ -249,7 +248,7 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
     );
 
     let member_cert =
-        tilo_user_identity::persist::read_device_cert(&recipient_paths.device_cert).unwrap();
+        tilo_device_identity::persist::read_device_cert(&recipient_paths.device_cert).unwrap();
     assert_eq!(member_cert.capabilities, DeviceCapabilities::member());
     assert!(!recipient_paths.user_privkey.exists());
     let record = recipient_identities.join(format!(
@@ -367,14 +366,14 @@ fn ordinary_device_enrollment_is_approved_with_the_identity_record() {
     )
     .unwrap();
     assert!(!approver_paths.user_privkey.exists());
-    let user = tilo_user_identity::persist::read_device_cert(&approver_paths.device_cert)
+    let user = tilo_device_identity::persist::read_device_cert(&approver_paths.device_cert)
         .unwrap()
         .user_public_key;
 
     let recipient = SigningKey::generate(&mut UnwrapErr(SysRng));
     let recipient_paths = IdentityPaths::under(&recipient_root);
     recipient_paths.ensure_directories().unwrap();
-    tilo_user_identity::persist::write_device_key(&recipient_paths.device_privkey, &recipient)
+    tilo_device_identity::persist::write_device_key(&recipient_paths.device_privkey, &recipient)
         .unwrap();
     let recipient_id = hex::encode(recipient.verifying_key().to_bytes());
     let recipient_service = hex::encode(tilo_server::daemon::server_node_id(&recipient));
@@ -415,7 +414,7 @@ fn ordinary_device_enrollment_is_approved_with_the_identity_record() {
     both_succeed(recipient_process, approval);
 
     let member_cert =
-        tilo_user_identity::persist::read_device_cert(&recipient_paths.device_cert).unwrap();
+        tilo_device_identity::persist::read_device_cert(&recipient_paths.device_cert).unwrap();
     assert_eq!(member_cert.user_public_key, user);
     assert_eq!(
         member_cert.device_public_key,
@@ -483,8 +482,11 @@ fn privileged_helper_preserves_user_owned_personal_device_projection() {
         let recipient_paths = IdentityPaths::under(&recipient_root);
         recipient_paths.ensure_directories().unwrap();
         std::fs::set_permissions(&recipient_root, std::fs::Permissions::from_mode(0o700)).unwrap();
-        tilo_user_identity::persist::write_device_key(&recipient_paths.device_privkey, &recipient)
-            .unwrap();
+        tilo_device_identity::persist::write_device_key(
+            &recipient_paths.device_privkey,
+            &recipient,
+        )
+        .unwrap();
         let recipient_id = hex::encode(recipient.verifying_key().to_bytes());
         let recipient_service = hex::encode(tilo_server::daemon::server_node_id(&recipient));
         let enroll = tilo_test_env::package_binary!("tilo-enroll");
@@ -574,7 +576,7 @@ wait "$approval"
         .unwrap();
         assert_eq!(status["state"], "complete");
         let cert =
-            tilo_user_identity::persist::read_device_cert(&recipient_paths.device_cert).unwrap();
+            tilo_device_identity::persist::read_device_cert(&recipient_paths.device_cert).unwrap();
         assert_eq!(cert.capabilities, DeviceCapabilities::member());
         assert!(!recipient_paths.user_privkey.exists());
         let transferred: Vec<HomePeerRegistration> = serde_json::from_slice(

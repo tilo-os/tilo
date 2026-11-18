@@ -36,7 +36,7 @@ import {idbStorage, openDeviceKey, rememberBrowserDevice} from './device-key.mjs
 import {identityProfile} from './identity-profile.mjs';
 import {currentIdentity, fitDisplayName, IdentityError} from './identity.mjs';
 import {FETCH_PROXY_PATH} from './fetch-proxy.mjs';
-import {siteHost, STALE_SITE_HOST, staleSiteHost, staleSiteHostReport} from './site-host.mjs';
+import {siteServer, STALE_SITE_SERVER, staleSiteServer, staleSiteServerReport} from './site-host.mjs';
 import {deviceLabel} from './pairing.mjs';
 
 export {
@@ -497,7 +497,7 @@ async function connect({
   // WebTransport origin, and the certificate a page pins when the host's is
   // not trusted by the browser): the site's own naming of the host has
   // that, and the host is the same one, so it is kept.
-  const named = siteHost(origin)?.info;
+  const named = siteServer(origin)?.info;
   let host = answered?.address ? answered : named ?? JSON.parse(await runtime.hostInfo(post));
   if (answered?.address && !answered.address.web && named?.address?.web) {
     host = {...answered, address: {...answered.address, web: named.address.web}};
@@ -559,16 +559,16 @@ async function connect({
     siteChecked = true;
     if (!disposed) publish();
   };
-  const checkSiteHost = () => {
+  const checkSiteServer = () => {
     if (reached || checking || stale || siteChecked || disposed) return;
     checking = runtime.hostInfo(post).then(text => {
       if (reached || disposed) return;
-      if (!staleSiteHost(host, JSON.parse(text))) { checked(); return; }
-      const report = staleSiteHostReport(origin);
+      if (!staleSiteServer(host, JSON.parse(text))) { checked(); return; }
+      const report = staleSiteServerReport(origin);
       console.error(report);
       // The site's entry logs what a page did not catch (`reportErrors` in entry-page.mjs).
       globalThis.reportError?.(new Error(report));
-      stale = new AdmissionError('stale-entry', STALE_SITE_HOST);
+      stale = new AdmissionError('stale-entry', STALE_SITE_SERVER);
       publish();
     }, () => {
       // Its web address does not answer either: the host is down.
@@ -576,7 +576,7 @@ async function connect({
       checked();
     });
   };
-  let siteHostCheck;
+  let siteServerCheck;
   // Desktop surfaces mounted through this peer, by surface id: their failures
   // are reported into SessionHealth and recovered through `recover`.
   const surfaces = new Map();
@@ -589,11 +589,11 @@ async function connect({
       const transport = snapshot.health?.transport?.phase;
       if (transport === 'connected') {
         reached = true;
-        clearTimeout(siteHostCheck);
+        clearTimeout(siteServerCheck);
       } else if (stale) {
         snapshot = {...snapshot, phase: 'failed', error: stale.message, errorCode: stale.code};
       } else if (['reconnecting', 'offline', 'failed'].includes(transport)) {
-        checkSiteHost();
+        checkSiteServer();
       }
     }
     if (snapshot.health?.transport?.phase === 'connected') connectedOnce = true;
@@ -800,7 +800,7 @@ async function connect({
     // Settings lists this browser's tabs' device keys as one entry.
     if (profile) rememberBrowserDevice(certified, namespaces);
     peer.subscribe(publish);
-    if (!reached) siteHostCheck ??= setTimeout(checkSiteHost, SITE_HOST_CHECK_MS);
+    if (!reached) siteServerCheck ??= setTimeout(checkSiteServer, SITE_HOST_CHECK_MS);
     if (workspace) {
       // A workspace of the person's own its server does not hold yet is
       // placed there under the workspace's name.
@@ -1108,7 +1108,7 @@ async function connect({
     let resolve, reject;
     disposal = new Promise((done, failed) => { resolve = done; reject = failed; });
     disposed = true;
-    clearTimeout(siteHostCheck);
+    clearTimeout(siteServerCheck);
     // Abort and explicit close can overlap. Every caller joins the same
     // settlement, installed before teardown can call back into dispose.
     (async () => {
@@ -1483,7 +1483,7 @@ async function connect({
         // record is pinned to the one before, so the page loads again and
         // joins the new host as the same person (`joinViaHost`), with the
         // kept certificate left as it is.
-        const answering = siteHost(origin)?.info ?? JSON.parse(await runtime.hostInfo(post));
+        const answering = siteServer(origin)?.info ?? JSON.parse(await runtime.hostInfo(post));
         const kept = await store.get(CERTIFICATE);
         if (reconnecting(kept, undefined, JSON.stringify(answering.hostCert)) === 'host-changed') {
           if (!globalThis.location) throw new AdmissionError('host-changed', HOST_CHANGED);
@@ -1539,12 +1539,31 @@ export async function inspectInvitation(relayUrl, invitation, {runtime, fetch: f
     console.warn('invitation refused:', reply.reason ?? reply.kind);
     throw new AdmissionError('invitation-unusable', UNUSABLE_INVITATION);
   }
+  return invitationOffer(reply);
+}
+
+/**
+ * The server `invitation` admits into, as the invitation itself names it (`invitedServer` in
+ * wasm, checked under its signature): `{info, endpoint, offer}`, `info` as the server's `/host` answers,
+ * the server's endpoint id, and what the invitation offers as `inspectInvitation` answers it. A
+ * server reached only over iroh has no web origin to ask any of it of.
+ */
+export async function invitedServer(invitation, {runtime} = {}) {
+  runtime ??= await pageRuntime();
+  if (typeof runtime.invitedServer !== 'function') return null;
+  const named = JSON.parse(runtime.invitedServer(invitationBytes(invitation)));
+  return {info: named.info, endpoint: named.endpoint, offer: invitationOffer(named.offer)};
+}
+
+/** What an invitation offers, as `inspectInvitation` answers it, from its `reply` (the server's
+ * answer, or the invitation's own word for a server reached only over iroh: `invitedServer`). */
+export function invitationOffer(reply) {
   return {
     // An administrator's invitation gives the Editor role and makes them an
     // administrator, an owner's an administrator the workspace is kept for:
     // the card names what they become.
-    workspaceName: reply.name,
-    role: reply.owner ? 'owner' : reply.administrator ? 'administrator' : reply.role.toLowerCase(),
+    workspaceName: reply.name ?? '',
+    role: reply.owner ? 'owner' : reply.administrator ? 'administrator' : String(reply.role ?? '').toLowerCase(),
     workspace: reply.workspace, workspaceId: reply.workspaceId,
     expiresAtNs: reply.expiresAtNs, members: reply.members ?? null, inviter: reply.inviter ?? undefined,
   };
@@ -1585,7 +1604,7 @@ export async function pairDevice(options) {
   const pairing = async () => {
     const runtime = options.runtime ?? await pageRuntime(options.desktop);
     const deviceKeyForWasm = own.kind === 'sealed-seed' ? await own.unseal() : own;
-    const info = siteHost(origin)?.info ?? JSON.parse(await runtime.hostInfo(httpsPost(origin, options.fetch)));
+    const info = siteServer(origin)?.info ?? JSON.parse(await runtime.hostInfo(httpsPost(origin, options.fetch)));
     if (!info.address) throw new Error('the host named no iroh endpoint to reach it at');
     // The host names this device: the name asked for, or the next numbered one
     // when another of the person's devices reads by it already.
@@ -1717,7 +1736,7 @@ async function enterOnSession({
   origin, workspace, entry, identity, person, label, displayName, signal, onProgress, runtime, deviceKey,
   profile, fetcher, connectOptions,
 }) {
-  const named = siteHost(origin);
+  const named = siteServer(origin);
   let hostText = named?.text;
   let entered;
   try {
@@ -1750,7 +1769,7 @@ async function enterOnSession({
   } catch (error) {
     await peer.dispose?.().catch(() => {});
     // The site names the host as it was before it was set up again: the site's to fix.
-    if (error?.code === 'stale-entry') throw new AdmissionError('stale-entry', STALE_SITE_HOST);
+    if (error?.code === 'stale-entry') throw new AdmissionError('stale-entry', STALE_SITE_SERVER);
     // An entry's own refusal (its code, and the wait it asked for) is the caller's to show:
     // `workspaces.mjs` reads it. The workspace refusing the device the entry let in is a refusal
     // of what this browser brings, which the caller answers by coming again as a new device.

@@ -154,6 +154,7 @@ fn server() -> Arc<Server> {
         &Config {
             issuer: ISSUER.into(),
             web_entry: WEB_ENTRY.into(),
+            invite_entry: None,
             // Nothing here reaches a workspace, so nothing dials it.
             hosts: vec!["https://server.tilo.test".into()],
         },
@@ -1093,6 +1094,7 @@ fn server_in_front_of(site: &str) -> Arc<Server> {
         &Config {
             issuer: ISSUER.into(),
             web_entry: site.into(),
+            invite_entry: None,
             hosts: vec!["https://server.tilo.test".into()],
         },
         Store::in_memory(),
@@ -1178,7 +1180,7 @@ fn a_workspace_refusal_is_read_by_its_case() {
 
 /// Where the site keeps no invitation, the link carries the invitation's
 /// text after a route that names the server, as the site's own workspace
-/// links do, so following it reaches the workspace's host.
+/// links do, so following it reaches the workspace's server.
 #[tokio::test]
 async fn an_invitation_the_site_keeps_not_names_the_relay_in_its_link() {
     let (site, _) = site_answering("404 Not Found").await;
@@ -1188,6 +1190,31 @@ async fn an_invitation_the_site_keeps_not_names_the_relay_in_its_link() {
     assert!(
         link.starts_with(&format!("{site}/#/@server.tilo.test/w/{workspace}?invite=")),
         "{link}"
+    );
+}
+
+/// A server reached only over iroh has its invitations carry themselves:
+/// the link names the page that redeems it and the invitation's own text,
+/// and no site of the server's, so nothing is fetched from it.
+#[tokio::test]
+async fn an_invitation_to_a_server_reached_over_iroh_carries_itself() {
+    let (site, _) = site_answering("200 OK").await;
+    let server = Server::new(
+        &Config {
+            issuer: ISSUER.into(),
+            web_entry: site.clone(),
+            invite_entry: Some("https://tilo.test/".into()),
+            hosts: vec!["https://server.tilo.test".into()],
+        },
+        Store::in_memory(),
+    )
+    .unwrap();
+    let workspace = "3ee4a797-1ec0-474b-a3d0-62895d5e15af";
+    let link = server.invitation_link(workspace, b"signed", u64::MAX).await;
+    assert_eq!(
+        link,
+        format!("https://tilo.test/#/w/{workspace}?invite=c2lnbmVk"),
+        "the link carries the invitation, with no server to ask"
     );
 }
 

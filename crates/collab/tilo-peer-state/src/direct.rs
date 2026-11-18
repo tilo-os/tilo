@@ -34,11 +34,7 @@
 //! The device a member dials answers each of the member's own writes it took
 //! in, or refused for good, on a unidirectional stream of its own opened after
 //! its frames' ([`Answered`]); the member lets an answered write go from its
-//! ownership, as it does what a server host answers. That stream is the
-//! difference between [`DIRECT_ALPN`] and [`DIRECT_ALPN_V2`], which a device
-//! still answers and dials where the other device answers nothing newer: on a
-//! link of the older protocol nothing is answered, and a member lets its writes
-//! go once the receipts a later link's catch-up brings cover them.
+//! ownership, as it does what a server host answers.
 
 use crate::actions::now_ns;
 use crate::frames::{MAX_FRAME_BYTES, OUTGOING, REFUSED, bump, from_device};
@@ -60,14 +56,6 @@ use web_time::SystemTime;
 /// ALPN of a direct replica link between two devices of one workspace, on which
 /// the dialled device answers the dialling one's writes ([`Answered`]).
 pub const DIRECT_ALPN: &[u8] = b"tilo-peer-state-direct/3";
-
-/// ALPN of the direct link before writes were answered: a device of this build
-/// serves it beside [`DIRECT_ALPN`], and dials it where the other device serves
-/// nothing newer.
-pub const DIRECT_ALPN_V2: &[u8] = b"tilo-peer-state-direct/2";
-
-/// The ALPN codes a device serves direct links on, newest first.
-pub const DIRECT_ALPNS: [&[u8]; 2] = [DIRECT_ALPN, DIRECT_ALPN_V2];
 
 /// What the dialled device made of one of the dialling device's own writes,
 /// named by the hash of the write's frame as the writer keeps it held.
@@ -332,30 +320,9 @@ impl Dialed {
     }
 }
 
-/// Whether dialling failed because the other device serves none of the protocols asked for: a
-/// device of an older build, which answers a direct link only on [`DIRECT_ALPN_V2`].
-fn refused_protocol(error: &iroh::endpoint::ConnectError) -> bool {
-    use iroh::endpoint::{ConnectError, ConnectingError, ConnectionError, TransportErrorCode};
-    // TLS's alert for an application protocol neither side shares.
-    let none_shared = TransportErrorCode::crypto(120);
-    let (ConnectError::Connection { source: closed, .. }
-    | ConnectError::Connecting {
-        source: ConnectingError::ConnectionError { source: closed, .. },
-        ..
-    }) = error
-    else {
-        return false;
-    };
-    match closed {
-        ConnectionError::ConnectionClosed(close) => close.error_code == none_shared,
-        ConnectionError::TransportError(error) => error.code == none_shared,
-        _ => false,
-    }
-}
-
-/// Where the dialled device's answers to the dialling one's writes go, where it answers them, and
-/// what writes them on the stream it opens for them: after its frames', so the dialling device
-/// takes the two in that order.
+/// Where the dialled device's answers to the dialling one's writes go, and
+/// what writes them on the stream it opens for them: after its frames', so the
+/// dialling device takes the two in that order.
 async fn answering(
     connection: &Connection,
     dialing: bool,
@@ -367,7 +334,7 @@ async fn answering(
     String,
 > {
     let (answering, answers) = tokio::sync::mpsc::unbounded_channel::<Answered>();
-    if dialing || !answers_writes(connection) {
+    if dialing {
         return Ok((None, Box::pin(answer_all(None, answers))));
     }
     let stream = connection
@@ -390,11 +357,6 @@ async fn answer_all(
         crate::frames::write_frame(&mut stream, &bytes).await?;
     }
     Ok(())
-}
-
-/// Whether `connection` is a link on which the dialled device answers the dialling one's writes.
-fn answers_writes(connection: &Connection) -> bool {
-    connection.alpn() == DIRECT_ALPN
 }
 
 /// Why the device on the other end of `connection` refused it, when it did.
@@ -902,16 +864,10 @@ impl DirectSync {
         device: [u8; 32],
     ) -> Result<Dialed, String> {
         let addr: EndpointAddr = addr.into();
-        // A device of an older build serves only the link before writes were answered: its
-        // handshake refuses the newer protocol at once, and the older one is dialled instead.
-        let connection = match endpoint.connect(addr.clone(), DIRECT_ALPN).await {
-            Ok(connection) => connection,
-            Err(error) if refused_protocol(&error) => endpoint
-                .connect(addr, DIRECT_ALPN_V2)
-                .await
-                .map_err(|error| error.to_string())?,
-            Err(error) => return Err(error.to_string()),
-        };
+        let connection = endpoint
+            .connect(addr, DIRECT_ALPN)
+            .await
+            .map_err(|error| error.to_string())?;
 
         let (mut send, recv) = connection
             .open_bi()
@@ -1492,10 +1448,10 @@ impl DirectSync {
         }
     }
 
-    /// Take what the device this one dialled answers of its writes, on the stream it opens after
-    /// its frames', on a link where it does; on any other link, nothing.
+    /// Take what the device this one dialled answers of its writes, on the
+    /// stream it opens after its frames'.
     async fn take_answers(&self, connection: &Connection, dialing: bool) -> Result<(), String> {
-        if !answers_writes(connection) || !dialing {
+        if !dialing {
             return std::future::pending().await;
         }
         let mut recv = connection

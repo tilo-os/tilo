@@ -9,8 +9,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use crate::issue_list::{IssueList, issue_list};
 use crate::model::{Issue, Status, Tracker};
-use crate::part::{IssuePart, issue_part};
 use ui::prelude::*;
 use ui::reorder::{DropPlacement, ReorderDrop};
 use ui::tilo_resource::MemberId;
@@ -560,7 +560,7 @@ fn list(window: &Window, nav: &Nav, filter: Filter, me: Option<MemberId>) -> Ele
                             .and_then(|issue| issues.parent_of(issue).cloned())
                     }),
                 };
-                moving.submit(IssuePart::MOVE_UNDER.with(issue_part::MoveUnder {
+                moving.submit(IssueList::MOVE_UNDER.with(issue_list::MoveUnder {
                     issue: source,
                     parent: parent.map(ui::tilo_resource::items::Ref::from),
                 }));
@@ -671,7 +671,7 @@ fn change_status(window: &Window, issue: Id, status: Status) {
     let before = window
         .tasks
         .with(|tasks| tasks.issues().after(&issue).cloned());
-    window.submit(IssuePart::PLACE.with(issue_part::Place {
+    window.submit(IssueList::PLACE.with(issue_list::Place {
         issue,
         status,
         before: before.map(ui::tilo_resource::items::Ref::from),
@@ -728,8 +728,8 @@ mod tests {
     use ui::prelude::*;
 
     use super::IssueRows;
-    use crate::part::tests::Board;
-    use crate::part::{IssuePart, Issues, issue_part};
+    use crate::issue_list::tests::Board;
+    use crate::issue_list::{IssueList, Issues, issue_list};
     use crate::{Filter, Tasks};
 
     /// The window's state as `board`'s parts hold it now, read through `index`.
@@ -800,7 +800,7 @@ mod tests {
             board.create("A new sub-issue", Some(ids[20].clone()));
             follow(&mut model, &board, &index, "a sub-issue made");
             board
-                .apply(IssuePart::PLACE.with(issue_part::Place {
+                .apply(IssueList::PLACE.with(issue_list::Place {
                     issue: ids[4].clone(),
                     status: crate::model::Status::Done,
                     before: None,
@@ -809,7 +809,7 @@ mod tests {
                 .unwrap();
             follow(&mut model, &board, &index, "a sub-issue done");
             board
-                .apply(IssuePart::PLACE.with(issue_part::Place {
+                .apply(IssueList::PLACE.with(issue_list::Place {
                     issue: ids[30].clone(),
                     status: crate::model::Status::Done,
                     before: Some(ui::tilo_resource::items::Ref::from(&ids[0])),
@@ -818,20 +818,20 @@ mod tests {
                 .unwrap();
             follow(&mut model, &board, &index, "a parent done and moved first");
             board
-                .apply(IssuePart::MOVE_UNDER.with(issue_part::MoveUnder {
+                .apply(IssueList::MOVE_UNDER.with(issue_list::MoveUnder {
                     issue: ids[40].clone(),
                     parent: Some(ui::tilo_resource::items::Ref::from(&ids[50])),
                 }))
                 .unwrap();
             follow(&mut model, &board, &index, "a parent moved under another");
             board
-                .apply(IssuePart::DELETE.with(issue_part::Delete {
+                .apply(IssueList::DELETE.with(issue_list::Delete {
                     issue: ids[10].clone(),
                 }))
                 .unwrap();
             follow(&mut model, &board, &index, "a parent deleted");
             board
-                .apply(IssuePart::MOVE_UNDER.with(issue_part::MoveUnder {
+                .apply(IssueList::MOVE_UNDER.with(issue_list::MoveUnder {
                     issue: ids[45].clone(),
                     parent: None,
                 }))

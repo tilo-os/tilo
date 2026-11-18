@@ -406,14 +406,7 @@ pub(super) fn member_actor(
         access: bounded_access(policy, who)?,
         sandbox: policy.sandbox.clone(),
         unix_time: policy.unix_time,
-        agent: who.agent.clone(),
         agent_name: who.agent_name.clone(),
-        agent_session: who
-            .caller
-            .acting()
-            .agent_session
-            .as_ref()
-            .map(|session| session.as_str().to_owned()),
     })
 }
 
@@ -693,7 +686,7 @@ impl Worker {
         // A replica taken back from a save that outlived the grace was set
         // aside when the workspace last caught up: what others wrote since is
         // merged before it acts, only the changes after the heads it holds.
-        super::catch_up::catch_up(&holder, &mut held.held, state);
+        super::catch_up::catch_up(&holder, &mut held.held, state, None);
         super::catch_up::hold_parts(&holder, &mut held.held, state);
         super::catch_up::tell_kept(&mut held.held, state, kept);
         if holder != *route && !held.held.parts.contains_key(route) {

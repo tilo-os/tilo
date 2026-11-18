@@ -119,9 +119,7 @@ fn fixture() -> Fixture {
         workspace_id: workspace_id.into(),
         device_certificate: serde_json::to_vec(&certificate).unwrap(),
         proof: key
-            .sign(&runtime_identity::collaboration_join_signing_bytes(
-                workspace_id,
-            ))
+            .sign(&runtime_identity::collaboration_join_digest(workspace_id).unwrap())
             .to_bytes()
             .to_vec(),
     }

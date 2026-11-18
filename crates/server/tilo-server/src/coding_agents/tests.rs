@@ -1,6 +1,6 @@
 //! A coding agent's run, from its host's side, against the real launcher.
 //!
-//! The machine here is this computer: the test starts `tilo-legacy-agent
+//! The machine here is this computer: the test starts `tilo-linux-vm-agent
 //! serve-run` as a workspace's machine would, and the harness it serves is a
 //! stand-in for Claude Code that behaves as Claude Code does at its edges. It
 //! reads one JSON message a line, asks its model at `ANTHROPIC_BASE_URL` in
@@ -447,12 +447,12 @@ async fn a_machine_that_cannot_serve_a_run_says_why_in_words() {
     let old = ended(Over {
         exit: 1,
         refusal: None,
-        words: "tilo-legacy-agent: listen on vsock port 7110: Address already in use\n".into(),
+        words: "tilo-linux-vm-agent: listen on vsock port 7110: Address already in use\n".into(),
     });
     assert_eq!(old.how, Ending::Failed);
     assert_eq!(
         old.words,
-        "This workspace's machine could not serve a coding agent: tilo-legacy-agent: listen on \
+        "This workspace's machine could not serve a coding agent: tilo-linux-vm-agent: listen on \
          vsock port 7110: Address already in use"
     );
 
@@ -465,7 +465,7 @@ async fn a_machine_that_cannot_serve_a_run_says_why_in_words() {
     let unpaid = ended(Over {
         exit: 126,
         refusal: Some(refusal),
-        words: "ush: tilo-legacy-agent: Linux machines need a card on file.\n".into(),
+        words: "ush: tilo-linux-vm-agent: Linux machines need a card on file.\n".into(),
     });
     assert_eq!(
         (unpaid.how, unpaid.words.as_str()),

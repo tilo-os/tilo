@@ -20,7 +20,7 @@ mod common;
 use common::{chain, held};
 use serde_json::{Value, json};
 use tasks::model::{Issue, Status, issue_resource};
-use tasks::{App, IssuePart};
+use tasks::{App, IssueList};
 use ui::prelude::*;
 
 fn open() -> TestApp<App> {
@@ -407,9 +407,12 @@ fn several_issues_in_one_call_are_what_their_caller_may_do_one_at_a_time() {
 #[test]
 fn a_group_reaches_issues_kept_in_two_parts_and_is_refused_for_both() {
     ui::i18n::I18nManager::init("en-US");
-    let before = tasks::part::PART_ISSUES - 1;
+    // Parts of 500 issues, and the first one full: what is made next
+    // starts the second.
+    let _parts = ui::framework::PartLimits::scoped(500, usize::MAX);
+    let before = 500;
     let mut app = TestApp::<App>::drive(&format!("issues-{before}")).expect("open");
-    // Three more issues than the first part has room for start the next.
+    // The first part is full: three more issues start the next.
     app.call_on(
         &chain(),
         "create-many",
@@ -420,7 +423,7 @@ fn a_group_reaches_issues_kept_in_two_parts_and_is_refused_for_both() {
         ] }),
     )
     .expect("the issues are made");
-    let parts = app.chain_parts::<IssuePart>();
+    let parts = app.chain_parts::<IssueList>();
     assert_eq!(parts.len(), 2);
 
     // One call changes an issue of each part.
@@ -530,5 +533,26 @@ fn a_group_creates_a_parent_and_a_child_under_it() {
         child.1.parent.as_ref().map(Id::as_str),
         Some(parent.0.as_str()),
         "the child stands under the issue the same group made"
+    );
+}
+
+#[test]
+fn issues_made_in_one_group_stand_in_the_order_they_were_given() {
+    let mut app = open();
+    make(&mut app, 2);
+    let creates = (0..5)
+        .map(|at| member("create", json!({ "title": format!("New {at}") })))
+        .collect();
+    group(&mut app, creates).expect("the group is applied");
+
+    let mut made: Vec<(u64, String)> = held(&app)
+        .values()
+        .map(|issue| (issue.number, issue.rank))
+        .collect();
+    made.sort();
+    assert_eq!(made.len(), 7);
+    assert!(
+        made.windows(2).all(|pair| pair[0].1 < pair[1].1),
+        "each issue goes after the one made before it: {made:?}"
     );
 }

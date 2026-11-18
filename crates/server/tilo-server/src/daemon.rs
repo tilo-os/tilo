@@ -567,7 +567,19 @@ impl Server {
                     "a host runs its own packet relay or is given one, not both".into(),
                 ));
             }
-            None => (None, relay_mode),
+            // Given a packet relay's URL and none of its own, the server is
+            // reached through that one: a packet relay on the public internet
+            // when the server sits behind a router nobody can dial into.
+            None => match (&cfg.packet_relay_url, relay_mode) {
+                (Some(published), None) if endpoint.is_none() => {
+                    let url: iroh::RelayUrl = published.parse().map_err(|error| {
+                        ServerError::Iroh(format!("packet relay URL {published}: {error}"))
+                    })?;
+                    tracing::info!(%url, "reached through another packet relay");
+                    (None, Some(iroh::RelayMode::Custom(url.into())))
+                }
+                (_, relay_mode) => (None, relay_mode),
+            },
         };
         // A host told to use no relay never reaches one: waiting for it below
         // would only hold every start back by the whole wait.

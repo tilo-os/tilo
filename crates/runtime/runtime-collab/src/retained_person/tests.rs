@@ -139,14 +139,16 @@ fn proof(
         revocations: vec![],
         execution_id: "39b8f599-0d98-4d89-9c11-4d8ea6401c1e".into(),
     };
-    let signature = device.sign(&claims.signing_bytes()?).to_bytes().to_vec();
+    let signature = tilo_user_identity::StatementSigner::sign_digest(device, &claims.digest()?)
+        .map_err(io::Error::other)?
+        .to_vec();
     Ok(SignedRetainedPersonProof { claims, signature })
 }
 fn resign(proof: &mut SignedRetainedPersonProof, device: &SigningKey) -> io::Result<()> {
-    proof.signature = device
-        .sign(&proof.claims.signing_bytes()?)
-        .to_bytes()
-        .to_vec();
+    proof.signature =
+        tilo_user_identity::StatementSigner::sign_digest(device, &proof.claims.digest()?)
+            .map_err(io::Error::other)?
+            .to_vec();
     Ok(())
 }
 fn revocation(root: &SigningKey, key: [u8; 32]) -> io::Result<RevocationEntry> {

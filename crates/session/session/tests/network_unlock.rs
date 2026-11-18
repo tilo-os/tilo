@@ -1,9 +1,9 @@
 //! Another of the person's devices boots early and asks this one for its disk-unlock half; the
 //! person allows it on the session's sheet, and the half the boot could not read alone is released
 //! to it.
-//! The enrolment is the phone's own, published in its fabric record as the phone's session
-//! publishes it: the shell's session merges it from the person's fabric, so what happens here is the
-//! whole path — the sibling exchange, the question, and the sealed half.
+//! The enrolment is the phone's own, kept in its part of the person's store and read from there by
+//! the shell's session, so what happens here is the whole path — the sibling exchange, the
+//! question, and the sealed half.
 //! An answer is a fact the answering device keeps, so a boot that loses its stream before reading
 //! it hears the same answer when it comes back, with the half sealed to the key it now holds.
 
@@ -23,15 +23,17 @@
 use std::net::Ipv4Addr;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use iroh::RelayMode;
 use iroh::endpoint::{Endpoint, RecvStream, SendStream};
 use tilo_actions::remote::workspace_activity as wire;
 use tilo_compositor::OutputConfig;
+use tilo_device_identity::IdentityPaths;
 use tilo_identity::device_fleet::DeviceFleetStore;
 use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_network_actor::DeviceIdentity;
+use tilo_peer_state::{PERSONAL_ALPN, PersonalStore, PersonalSync};
 use tilo_service::{Answer, Question, Questions};
 use tilo_session::platform::fabric::Continuity;
 use tilo_session::platform::fabric::{DeviceId, FabricStamp};
@@ -44,7 +46,17 @@ use tilo_unlock_protocol::{
     UnlockHello, UnlockRequest, decode_frame, encode_frame, frame_len, open_release,
     seal_sibling_half,
 };
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, IdentityPaths};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert};
+
+/// What answers the person's own store's link on a device's endpoint, beside its own traffic.
+fn personal_protocol(
+    sync: &PersonalSync,
+) -> (Vec<u8>, Box<dyn iroh::protocol::DynProtocolHandler>) {
+    (
+        PERSONAL_ALPN.to_vec(),
+        Box::<dyn iroh::protocol::DynProtocolHandler>::from(sync.clone()),
+    )
+}
 
 /// What the sheet lists a disk-unlock request as.
 const KIND: &str = "network.device-unlock";
@@ -189,27 +201,49 @@ impl Devices {
         };
 
         let questions = Questions::new();
+        let runtime = tokio::runtime::Runtime::new().expect("a runtime");
+        // The person's own store as each of their two devices keeps it: what either writes in its
+        // own part reaches the other over the store's link, as it does between real devices.
+        let shell_identity = tilo_session::sync::device_identity().expect("this device's identity");
+        let shell_personal = {
+            let store = PersonalStore::open(
+                person.user_public_key,
+                shell_identity.device_cert.clone(),
+                SystemTime::now(),
+            )
+            .expect("this device's store of the person's own");
+            PersonalSync::new(store, Arc::clone(&shell_identity.signer))
+        };
+        let phone_personal = {
+            let store = PersonalStore::open(
+                person.user_public_key,
+                person.phone_cert.clone(),
+                SystemTime::now(),
+            )
+            .expect("the phone's store of the person's own");
+            PersonalSync::new(store, person.phone_key.clone())
+        };
         let shell = Rc::new(
             Client::start(
                 Entry {
-                    identity: tilo_session::sync::device_identity(),
+                    identity: Some(shell_identity),
                     own: OwnPresence::default(),
                     hosts: Vec::new(),
                     continuity: Continuity::default(),
                     wake: Arc::new(|| {}),
-                    fabric: None,
+                    personal: Some(shell_personal.clone()),
                     relays: test_server::loopback(),
                     lan: None,
                 },
                 None,
                 Some(questions.clone()),
-                Vec::new(),
+                vec![personal_protocol(&shell_personal)],
                 None,
             )
             .expect("this device's endpoint binds"),
         );
         let shell_addr = shell.endpoint_addr();
-        // The phone's session, on its own key, publishing what its record holds.
+        // The phone's session, on its own key, publishing what its part of the store holds.
         let phone = Rc::new(
             Client::start(
                 Entry {
@@ -221,18 +255,28 @@ impl Devices {
                     hosts: Vec::new(),
                     continuity: Continuity::default(),
                     wake: Arc::new(|| {}),
-                    fabric: None,
+                    personal: Some(phone_personal.clone()),
                     relays: test_server::loopback(),
                     lan: None,
                 },
                 None,
                 None,
-                Vec::new(),
+                vec![personal_protocol(&phone_personal)],
                 None,
             )
             .expect("the phone's endpoint binds"),
         );
         phone.connect(shell_addr);
+        // The store's link: what one writes in its part reaches the other, so the phone's
+        // enrolment is read here and this device's answer is read there.
+        let phone_endpoint = phone.endpoint().expect("the phone's endpoint");
+        let shell_addr = shell.endpoint_addr();
+        let dialing = phone_personal;
+        let _personal_link = runtime.spawn(async move {
+            if let Err(error) = dialing.connect(&phone_endpoint, shell_addr).await {
+                tracing::warn!(%error, "the store's link between the two devices ended");
+            }
+        });
         let session = crate::common::headless_on(
             &[OutputConfig::new("HEADLESS-1", 1280, 720)],
             Options {
@@ -256,7 +300,6 @@ impl Devices {
             .fabric()
             .expect("the phone's session keeps a fabric")
             .share_unlock(state);
-        let runtime = tokio::runtime::Runtime::new().expect("a runtime");
         let boot_endpoint = runtime.block_on(async {
             Endpoint::builder(iroh::endpoint::presets::Minimal)
                 .relay_mode(RelayMode::Disabled)
@@ -301,16 +344,16 @@ impl Devices {
         });
     }
 
-    /// Wait until the shell's fabric carries the phone's enrolment.
+    /// Wait until the shell knows the phone's enrolment.
     fn enrolled(&mut self) {
         self.carry(|devices| {
             devices
                 .shell_link()
-                .device_fabric()
-                .snapshots()
+                .devices()
+                .devices()
                 .values()
-                .any(|snapshot| {
-                    snapshot
+                .any(|device| {
+                    device
                         .unlock
                         .enrolments
                         .iter()
@@ -548,10 +591,10 @@ fn an_answer_on_one_device_reads_in_the_others_history() {
     // the boot that asked.
     let decided = devices
         .shell_link()
-        .device_fabric()
-        .snapshots()
+        .devices()
+        .devices()
         .values()
-        .find_map(|snapshot| snapshot.unlock.decisions.first().cloned())
+        .find_map(|device| device.unlock.decisions.first().cloned())
         .expect("the shell keeps the answer it made");
     let (shell, shell_label) = devices
         .shell_link()
@@ -580,10 +623,10 @@ fn an_answer_on_one_device_reads_in_the_others_history() {
     // The answer reaches the phone's fabric, as it reaches every device of the person's.
     devices.carry(|devices| {
         devices.phone.fabric().is_some_and(|link| {
-            link.device_fabric()
-                .snapshots()
+            link.devices()
+                .devices()
                 .values()
-                .any(|snapshot| !snapshot.unlock.decisions.is_empty())
+                .any(|device| !device.unlock.decisions.is_empty())
         })
     });
     // The history the phone already follows lists it with nothing asked and nothing touched: the
@@ -667,7 +710,7 @@ fn served<T: serde::de::DeserializeOwned>(
 /// The shell's fleet key: the sibling the boot is answered by.
 fn shell_key() -> [u8; 32] {
     let paths = tilo_identity::provisioning::collaboration_identity_paths();
-    let key = tilo_user_identity::persist::load_device_key(&paths).expect("this device's key");
+    let key = tilo_device_identity::persist::load_device_key(&paths).expect("this device's key");
     key.verifying_key().to_bytes()
 }
 

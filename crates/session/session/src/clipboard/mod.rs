@@ -390,7 +390,7 @@ impl Clipboard {
         }
         self.synced_at.set(Some(now));
         let shared: Vec<ClipboardEntry> = link
-            .device_fabric()
+            .devices()
             .merged_clipboard()
             .entries()
             .cloned()

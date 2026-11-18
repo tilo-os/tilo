@@ -278,9 +278,10 @@ where
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
+    use tilo_device_identity::{IdentityPaths, adopt_device_key, persist::write_device_cert};
     use tilo_user_identity::{
-        DeviceCapabilities, DeviceCert, IdentityPaths, RevocationEntry, RevocationReason,
-        adopt_device_key, persist::write_device_cert, sign_device_cert, sign_revocation_entry,
+        DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_device_cert,
+        sign_revocation_entry,
     };
 
     const NOW: u64 = 5_000_000;

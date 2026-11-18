@@ -10,7 +10,7 @@ fn actions() -> Vec<ui::tilo_actions::ActionSpec> {
             .map(declaration_spec),
     );
     actions.extend(
-        <crate::part::PagePart>::declarations()
+        <crate::note_list::NoteList>::declarations()
             .iter()
             .map(declaration_spec),
     );

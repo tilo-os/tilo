@@ -24,7 +24,7 @@
 use std::sync::Arc;
 use tilo_session_client::{Cmd, Outbox};
 
-use ed25519_dalek::{Signer as _, SigningKey};
+use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_server_client::CertificationOutcome;
 use tilo_server_client::invite::guest_certificate;
@@ -103,12 +103,12 @@ async fn waiting_for(approver: &MemberApprover, root: &SigningKey) -> PendingCer
 fn approval(root: &SigningKey, request: ApproverRequest) -> MemberApproval {
     let user_public_key = root.verifying_key().to_bytes();
     let issued_at_ns = tilo_clock::unix_now_ns();
-    let message = MemberApproval::signed_message(&user_public_key, issued_at_ns, &request).unwrap();
+    let message = MemberApproval::signed_digest(&user_public_key, issued_at_ns, &request).unwrap();
     MemberApproval {
         user_public_key,
         issued_at_ns,
         request,
-        signature: root.sign(&message).to_bytes(),
+        signature: tilo_user_identity::StatementSigner::sign_digest(root, &message).unwrap(),
         device: None,
     }
 }

@@ -81,9 +81,9 @@ pub(super) async fn issues(workspaces: &Workspaces, workspace: &str) -> Result<V
     let mut filed = Vec::new();
     for (app, document) in routes {
         let part = app == TASKS
-            && ui::resource::DocumentId::parse(&document)
+            && collab_types::document::DocumentId::parse(&document)
                 .and_then(|id| id.chain_part())
-                .is_some_and(|(chain, _)| chain == tasks::part::chain());
+                .is_some_and(|(chain, _)| chain == tasks::issue_list::chain());
         if !part {
             continue;
         }
@@ -95,7 +95,7 @@ pub(super) async fn issues(workspaces: &Workspaces, workspace: &str) -> Result<V
             continue;
         };
         let mut doc = automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
-        let part = crate::workspace_bots::opened::<tasks::part::IssuePart>(&mut doc)?;
+        let part = crate::workspace_bots::opened::<tasks::issue_list::IssueList>(&mut doc)?;
         filed.extend(
             part.issues
                 .iter()
@@ -187,7 +187,7 @@ impl Tracker {
             &self.service(),
             &self.caller,
             &self.route(&tracker),
-            &ui::resource::chain_resource_id(&tasks::part::chain()),
+            &collab_types::document::chain_resource_id(&tasks::issue_list::chain()),
             "create",
             arguments.as_object().cloned().unwrap_or_default(),
         )

@@ -164,15 +164,11 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Live
     let resource_id = FilesState::entry_resource_id(entry);
     let id = || resource_id.clone();
     let document_id = entry.document_id.map(uuid::Uuid::from_bytes);
-    let mut resource = LiveRow::new(
-        resource_id.clone(),
-        if document_id.is_some() {
-            "files.record"
-        } else {
-            "files.entry"
-        },
-        entry.name.clone(),
-    );
+    let mut resource = if document_id.is_some() {
+        LiveRow::typed::<crate::row_types::Document>(resource_id.clone(), entry.name.clone())
+    } else {
+        LiveRow::typed::<crate::row_types::Entry>(resource_id.clone(), entry.name.clone())
+    };
     resource = resource.operation(
         row_action(
             &FilesEffect::ReadEntry { entry: id() },

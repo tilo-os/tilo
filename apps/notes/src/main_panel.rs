@@ -53,7 +53,7 @@ use tilo_rich_text::{RichTextField, RichTextSource, RichTextSurface};
 use ui::Widget;
 use ui::framework::{Chain, Dispatcher};
 
-use crate::part::PagePart;
+use crate::note_list::NoteList;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
@@ -324,7 +324,7 @@ pub struct MainPanel {
     /// "is a page open" signal that checks the title vs. the empty state.
     page_id: Option<PageId>,
     /// The part of the notes' chain the open note is kept in, when hosted.
-    page_part: Option<u64>,
+    note_list: Option<u64>,
     date_index: crate::metadata::NoteDateIndex,
     dates: crate::metadata::NoteDates,
     /// Where the note was first written, as its header shows it, when it
@@ -403,7 +403,7 @@ pub struct MainPanel {
     notebook: Option<Dispatcher<crate::resource::Notebook>>,
     /// The notes' chain, once the app is hosted: page bodies are read from
     /// the part keeping each and edited through it.
-    chain: Option<Chain<PagePart>>,
+    chain: Option<Chain<NoteList>>,
     image_store: Option<ui::ImageStore>,
     /// Last markdown body the panel was loaded with. Used to detect
     /// whether the editor's current state still matches the loaded
@@ -503,7 +503,7 @@ impl MainPanel {
         title.set_accessible_name(CATALOG.t("notes-a11y-page-title"));
         Self {
             page_id: None,
-            page_part: None,
+            note_list: None,
             date_index: crate::metadata::NoteDateIndex::default(),
             dates: crate::metadata::NoteDates::default(),
             origin: None,
@@ -682,9 +682,9 @@ impl MainPanel {
         let kept = self.chain.clone().zip(part);
         let body = match &kept {
             Some((chain, part)) => chain
-                .read_part(*part, |doc| crate::part::body_object(doc, page))
+                .read_part(*part, |doc| crate::note_list::body_object(doc, page))
                 .flatten(),
-            None => crate::part::body_object(doc, page),
+            None => crate::note_list::body_object(doc, page),
         }
         .ok_or("the page has no body")?;
         if let Some(old) = self.page_id
@@ -727,7 +727,7 @@ impl MainPanel {
         self.editor = editor;
         self.content_generation = self.content_generation.wrapping_add(1);
         self.page_id = Some(page);
-        self.page_part = part;
+        self.note_list = part;
         self.dates = self.date_index.get(page);
         self.refresh_captions();
         self.empty_action_focused = false;
@@ -827,7 +827,7 @@ impl MainPanel {
     /// Clear the panel back to the empty state.
     pub fn clear(&mut self) {
         self.page_id = None;
-        self.page_part = None;
+        self.note_list = None;
         self.parent_path.clear();
         self.set_title_value("");
         self.header.set_tags(Vec::new());
@@ -1787,7 +1787,7 @@ impl Widget for MainPanel {
             // A note's dates are its own changes, kept in its part.
             let page = self.page_id;
             let index = &mut self.date_index;
-            match self.chain.as_ref().zip(self.page_part) {
+            match self.chain.as_ref().zip(self.note_list) {
                 Some((chain, part)) => {
                     chain.read_part(part, |doc| index.sync(doc, page));
                 }

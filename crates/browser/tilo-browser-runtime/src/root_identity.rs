@@ -22,7 +22,7 @@ use tilo_user_identity::root_envelope::{
     RECOVERY_KEY_LEN, RecoveryKey, RootEnvelope, RootEnvelopeError, RootWrap, SALT_LEN, WrapKind,
     wrap_aad, wrap_key_info,
 };
-use tilo_user_identity::root_statement::{self, Record};
+use tilo_user_identity::root_statement::{self, Kind};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
@@ -463,23 +463,23 @@ impl Root {
         Ok(Uint8Array::from(&signature[..]))
     }
 
-    /// The signature of the statement [`Record`] `record` (`envelope` or
-    /// `profile`) keeps for `json`, issued at `issued_at_ms`: what a host
-    /// verifies before keeping the record.
+    /// The signature of the statement [`Kind`] `kind` (`envelope` or
+    /// `profile`) keeps for `json`, issued at `issued_at_ms`: what a machine
+    /// verifies before keeping it.
     ///
     /// # Errors
     ///
-    /// `malformed` for another record name or a time out of range, `locked`
+    /// `malformed` for another kind or a time out of range, `locked`
     /// once the identity is locked.
     #[wasm_bindgen(js_name = signRecord)]
     pub async fn sign_record(
         &self,
-        record: String,
+        kind_name: String,
         json: String,
         issued_at_ms: f64,
     ) -> Result<Uint8Array, JsValue> {
-        let record = Record::named(&record)
-            .ok_or_else(|| error_with("malformed", "not a record a root signs"))?;
+        let kind = Kind::named(&kind_name)
+            .ok_or_else(|| error_with("malformed", "not a kind a root signs"))?;
         // Milliseconds since the epoch, as JSON numbers carry them: a whole
         // number within what an `f64` holds exactly.
         if !(0.0..=9_007_199_254_740_991.0).contains(&issued_at_ms) {
@@ -493,7 +493,8 @@ impl Root {
         let at = issued_at_ms as u64;
         let signature = sign_with(
             &self.signer()?,
-            &root_statement::statement(record, at, &json),
+            &root_statement::digest(kind, at, &json)
+                .map_err(|error| error_with("malformed", &format!("not a statement: {error}")))?,
         )
         .await?;
         Ok(Uint8Array::from(&signature[..]))

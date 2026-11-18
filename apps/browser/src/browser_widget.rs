@@ -5064,8 +5064,7 @@ impl BrowserWidget {
         use crate::effects::BrowserEffect as E;
         use ui::framework::LiveRow;
         use ui::tilo_resource::Effect as _;
-        let mut browser = LiveRow::new(
-            crate::resource::Browser::KIND,
+        let mut browser = LiveRow::typed::<crate::resource::Browser>(
             crate::resource::Browser::KIND,
             crate::resource::CATALOG.t("browser-window-name"),
         );
@@ -5099,8 +5098,7 @@ impl BrowserWidget {
         } else {
             &self.current_uri
         });
-        let mut page = LiveRow::new(
-            "browser.page",
+        let mut page = LiveRow::typed::<crate::row_types::Page>(
             "browser.page",
             if site.is_empty() {
                 CATALOG.t("browser-page-untitled")
@@ -5446,9 +5444,8 @@ impl BrowserWidget {
             page = page.operation(spec);
         }
 
-        let mut session = LiveRow::new(
+        let mut session = LiveRow::typed::<crate::row_types::Session>(
             "browser.session",
-            "browser.history-pause",
             if self.history_paused() {
                 CATALOG.t("browser-history-paused")
             } else {
@@ -5463,8 +5460,7 @@ impl BrowserWidget {
 
         // The Library's views are the Library row's: a view on these rows would
         // be their disclosure, and with it every action here.
-        let mut history = LiveRow::new(
-            "browser.history",
+        let mut history = LiveRow::typed::<crate::row_types::History>(
             "browser.history",
             CATALOG.t("browser-resource-history"),
         );
@@ -5485,17 +5481,14 @@ impl BrowserWidget {
             } else {
                 entry.title.as_str()
             };
-            let mut row = LiveRow::new(
-                history_resource_id(&entry.url),
-                "browser.history-entry",
-                title,
-            )
-            .operation(
-                E::Open {
-                    url: entry.url.clone(),
-                }
-                .bound(),
-            );
+            let mut row =
+                LiveRow::typed::<crate::row_types::Visit>(history_resource_id(&entry.url), title)
+                    .operation(
+                        E::Open {
+                            url: entry.url.clone(),
+                        }
+                        .bound(),
+                    );
             // Only a window that keeps a resource offers the row its removal.
             if self.person_history.is_some() {
                 row = row.operation(
@@ -5508,8 +5501,7 @@ impl BrowserWidget {
             history = history.row(row);
         }
 
-        let mut bookmarks = LiveRow::new(
-            "browser.bookmarks",
+        let mut bookmarks = LiveRow::typed::<crate::row_types::Bookmarks>(
             "browser.bookmarks",
             CATALOG.t("browser-resource-bookmarks"),
         );
@@ -5522,9 +5514,8 @@ impl BrowserWidget {
             .iter()
             .take(MATERIALIZED_LIMIT)
             .map(|entry| {
-                LiveRow::new(
+                LiveRow::typed::<crate::row_types::Bookmark>(
                     bookmark_resource_id(&entry.id),
-                    "browser.bookmark",
                     entry.title.clone(),
                 )
                 .operation(
@@ -5536,8 +5527,7 @@ impl BrowserWidget {
             })
             .collect();
 
-        let mut downloads = LiveRow::new(
-            "browser.downloads",
+        let mut downloads = LiveRow::typed::<crate::row_types::Downloads>(
             "browser.downloads",
             CATALOG.t("browser-resource-downloads"),
         );
@@ -5553,9 +5543,8 @@ impl BrowserWidget {
             let id = entry.id.clone();
             // No show view: a search hit shows the download through its own
             // resource.
-            let mut child = LiveRow::new(
+            let mut child = LiveRow::typed::<crate::row_types::Download>(
                 entry.resource_id(),
-                "browser.download",
                 entry.display_name(),
             );
             match entry.status {
@@ -5582,8 +5571,7 @@ impl BrowserWidget {
             downloads = downloads.row(child);
         }
 
-        let mut extensions = LiveRow::new(
-            "browser.extensions",
+        let mut extensions = LiveRow::typed::<crate::row_types::Extensions>(
             "browser.extensions",
             CATALOG.t("browser-resource-extensions"),
         );
@@ -5600,8 +5588,7 @@ impl BrowserWidget {
         // Library is a presentation resource, not a collection of tabs, so
         // keyboard users, assistive technology, action search and agents use the
         // same section operations as the visible surface.
-        let mut library = LiveRow::new(
-            "browser.library",
+        let mut library = LiveRow::typed::<crate::row_types::Library>(
             "browser.library",
             CATALOG.t("browser-resource-library"),
         );
@@ -5626,8 +5613,7 @@ impl BrowserWidget {
             clear_filter
         });
 
-        let mut settings = LiveRow::new(
-            "browser.settings",
+        let mut settings = LiveRow::typed::<crate::row_types::Settings>(
             "browser.settings",
             CATALOG.t("browser-resource-settings"),
         );
@@ -5645,8 +5631,7 @@ impl BrowserWidget {
             rows.push(selection.resource());
         }
         rows.push(
-            LiveRow::new(
-                "browser.service-sessions",
+            LiveRow::typed::<crate::row_types::ServiceSessions>(
                 "browser.service-sessions",
                 CATALOG.t("browser-resource-accounts"),
             )
@@ -5668,8 +5653,7 @@ impl BrowserWidget {
             || self.service_observation.is_some()
         {
             rows.push(
-                LiveRow::new(
-                    "browser.service-status",
+                LiveRow::typed::<crate::row_types::ServiceStatus>(
                     "browser.service-status",
                     CATALOG.t("browser-resource-account"),
                 )

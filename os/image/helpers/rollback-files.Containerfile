@@ -14,7 +14,6 @@ COPY \
     os/usr/lib/systemd/system-generators/tilo-root-generator \
     /usr/lib/systemd/system-generators/
 COPY os/usr/lib/dracut/modules.d/91tilo-rollback /usr/lib/dracut/modules.d/91tilo-rollback
-COPY os/usr/lib/dracut/modules.d/92tilo-sibling-unlock /usr/lib/dracut/modules.d/92tilo-sibling-unlock
 # The greeter as the boot's sign-in screen, with its faces, keymaps and voice;
 # the boot-greeter component installs the binary it copies.
 COPY os/usr/lib/dracut/modules.d/94tilo-greeter /usr/lib/dracut/modules.d/94tilo-greeter

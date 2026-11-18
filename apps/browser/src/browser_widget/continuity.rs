@@ -115,8 +115,7 @@ impl BrowserWidget {
             if controller.status() == Status::Absent {
                 return None;
             }
-            let mut resource = ui::framework::LiveRow::new(
-                "browser.continuity",
+            let mut resource = ui::framework::LiveRow::typed::<crate::row_types::Continuity>(
                 "browser.continuity",
                 crate::CATALOG.t("browser-resource-continuity"),
             )

@@ -226,11 +226,6 @@ impl HistoryGroup {
         }
     }
 
-    /// The dim second line as one string, for a text summary.
-    pub fn subtitle(&self, entries: &[HistoryEntry]) -> String {
-        self.subtitle_facts(entries).join(" \u{00b7} ")
-    }
-
     /// The dim second line: who, and how much moved, as separate facts a
     /// surface lays out apart ([`crate::widget::primitives::Facts`]), never
     /// joined by a glyph.
@@ -264,10 +259,17 @@ impl HistoryGroup {
         {
             // Same spelling as a row's own summary: a group that wrote its
             // counts with a different minus sign reads as a different unit.
-            parts.push(widget_format(
-                "history-group-chars",
-                &[("inserted", ins.into()), ("deleted", del.into())],
-            ));
+            // A count of nothing is not said: "+26 chars" or "-3 chars" alone.
+            parts.push(if ins > 0 && del > 0 {
+                widget_format(
+                    "history-group-chars",
+                    &[("inserted", ins.into()), ("deleted", del.into())],
+                )
+            } else if ins > 0 {
+                widget_format("history-group-chars-added", &[("count", ins.into())])
+            } else {
+                widget_format("history-group-chars-removed", &[("count", del.into())])
+            });
         } else if !summarised
             && self.name.is_none()
             && self.len() > 1
@@ -764,11 +766,11 @@ mod tests {
                 );
                 assert_eq!(groups[0].len(), 10);
                 assert_eq!(groups[0].title(&entries), "10 edits");
-                assert_eq!(groups[0].subtitle(&entries), "Alice \u{00b7} +30 -0 chars");
-                // Drawn as separate facts, never joined by a glyph.
+                // Drawn as separate facts, never joined by a glyph; what nothing removed is
+                // not counted.
                 assert_eq!(
                     groups[0].subtitle_facts(&entries),
-                    vec!["Alice".to_owned(), "+30 -0 chars".to_owned()]
+                    vec!["Alice".to_owned(), "+30 chars".to_owned()]
                 );
             }
 
@@ -1135,10 +1137,10 @@ mod tests {
                 entries[1].text_delta = None;
                 let groups = group_entries(&entries, &[], &GroupingConfig::default());
                 assert_eq!(groups[0].text_delta, None);
+                let facts = groups[0].subtitle_facts(&entries);
                 assert!(
-                    !groups[0].subtitle(&entries).contains("chars"),
-                    "got {:?}",
-                    groups[0].subtitle(&entries)
+                    !facts.iter().any(|fact| fact.contains("chars")),
+                    "got {facts:?}"
                 );
             }
 

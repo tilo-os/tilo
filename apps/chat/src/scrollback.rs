@@ -14,7 +14,7 @@
 //! parts: the "new messages" line goes before the first message after the
 //! reader's mark as it stood when they opened the channel, and the unread
 //! counts reach back to the mark through the counts each part carries of
-//! the ones before it ([`crate::parts::ChatPart::earlier`]), however long
+//! the ones before it ([`crate::parts::ChatMessages::earlier`]), however long
 //! the reader was away, with nothing earlier held. A message a link or an
 //! agent names that no part held here has is looked for in earlier parts,
 //! opened in turn.
@@ -23,12 +23,12 @@ use ui::framework::{ChainPager, Paged};
 use ui::tilo_resource::Id;
 
 use crate::app::ChatApp;
-use crate::parts::{ChatPart, ReadMark};
+use crate::parts::{ChatMessages, ReadMark};
 
 /// Where the window stands reading back through the chat's parts.
 #[derive(Default)]
 pub(crate) struct Scrollback {
-    pub(crate) pager: Option<ChainPager<ChatPart>>,
+    pub(crate) pager: Option<ChainPager<ChatMessages>>,
     /// The channel in view, the reader's mark in it when they opened it,
     /// and whether anything after that mark was unread then.
     opened: Option<(String, ReadMark, bool)>,
@@ -164,7 +164,7 @@ impl ChatApp {
             return false;
         }
         let id = Id::from_raw(message);
-        pager.seek(move |part: &ChatPart| part.messages.contains(&id));
+        pager.seek(move |part: &ChatMessages| part.messages.contains(&id));
         self.scrollback.seeking = Some(message.to_owned());
         true
     }

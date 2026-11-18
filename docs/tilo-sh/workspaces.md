@@ -185,8 +185,8 @@ curl -sS --fail-with-body "$members" -H "$auth" \
   | jq -r '.members[] | "member: \(.name // .person) \(.role)"'
 ```
 
-Only a key you created that reaches all your workspaces invites, and it invites into a workspace you
-administer, as an editor at most. A key minted for one workspace invites nobody. Listing the members also
+A key you created that reaches all your workspaces invites as you would, as far as your role in the
+workspace goes. An agent asks you first, unless you allowed it in the workspace's settings, under Agents. Listing the members also
 shows the invitations nobody has accepted yet. Once the person is in, your agent's record links open
 straight in the record's app for them, because a link opens for the workspace's members and carries no
 secret.

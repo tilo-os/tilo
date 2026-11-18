@@ -34,8 +34,9 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::{EnvFilter, fmt};
 
+use tilo_device_identity::{IdentityPaths, persist};
 use tilo_server::{ServerConfig, daemon::ServerIdentity};
-use tilo_user_identity::{IdentityPaths, RevocationList, persist};
+use tilo_user_identity::RevocationList;
 
 // The tests in this binary open records, which an app worker serves: libtest
 // owns `main`, so the worker is one more test here.

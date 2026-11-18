@@ -475,17 +475,25 @@ impl Acting {
 
     /// Who made a change that names this acting as its invoker, signed by the
     /// device acting as `signer`: this tree, for the signer, so the signer's
-    /// grants bound it. A handed agent keeps its delegation only where the
-    /// signer is the person it acts for, on their own device: only that device
-    /// can hand its session to an agent.
+    /// grants bound it, unless the signer is the tree's own person on their
+    /// own device.
+    ///
+    /// A handed agent keeps its delegation whoever's device signs, a person's
+    /// own or a server's: a signer able to claim the agent's person could
+    /// claim the person themselves, so the agent's preset, bounded by that
+    /// person and by the signer, gives it no more. An agent's own device
+    /// cannot claim a person, and keeps nothing it claims to have been
+    /// handed. A key's agent ([`key_agent_id`]) keeps nothing it claims
+    /// either: it is decided by the grant its person signed, the key's
+    /// certificate, which the workspace reads and its person revokes.
     #[must_use]
     pub fn signed_by(mut self, signer: &Self) -> Self {
-        let person = signer.direct_person().map(str::to_owned);
-        let hands = |node: &Self| {
-            person.as_deref().is_some_and(|person| {
-                node.acted_for.is_empty() || node.acted_for_person() == Some(person)
-            })
-        };
+        let person = signer
+            .direct_person()
+            .filter(|_| !signer.foreign_device)
+            .map(str::to_owned);
+        let hands =
+            |node: &Self| person.is_some() && node.agent_id().and_then(key_of_agent).is_none();
         self.unhand(&hands);
         match &person {
             // The tree names the signing person already: it is theirs as it is.
@@ -630,6 +638,25 @@ impl Acting {
             .collect()
     }
 }
+
+/// The agent member a key the person approved acts as wherever it is
+/// admitted: `grant-` and its device key, hex. History names its changes by
+/// it, and receivers find the key's certificate by it ([`key_of_agent`]).
+#[must_use]
+pub fn key_agent_id(device_public_key: &[u8; 32]) -> String {
+    format!("{KEY_AGENT_PREFIX}{}", hex::encode(device_public_key))
+}
+
+/// The device key of the key whose agent `agent` is ([`key_agent_id`]);
+/// `None` for any other agent.
+#[must_use]
+pub fn key_of_agent(agent: &str) -> Option<[u8; 32]> {
+    let hex = agent.strip_prefix(KEY_AGENT_PREFIX)?;
+    hex::decode(hex).ok()?.try_into().ok()
+}
+
+/// What [`key_agent_id`] starts with.
+const KEY_AGENT_PREFIX: &str = "grant-";
 
 #[cfg(test)]
 mod tests {

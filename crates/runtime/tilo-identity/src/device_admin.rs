@@ -14,7 +14,8 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use tilo_actions::remote::identity_admin::FleetDevice;
-use tilo_user_identity::{IdentityPaths, RevocationEntry, RevocationReason};
+use tilo_device_identity::IdentityPaths;
+use tilo_user_identity::{RevocationEntry, RevocationReason};
 
 /// Which pairing finds and admits a new device: one the person uses
 /// themselves, or a home peer that runs their workspaces' sync without a
@@ -327,7 +328,7 @@ pub fn trusted_devices(
     {
         return Err("the device fleet holds another identity's records".into());
     }
-    let current = tilo_user_identity::persist::read_device_cert(
+    let current = tilo_device_identity::persist::read_device_cert(
         &device.device_cert_for_user(&user_public_key),
     )
     .ok()

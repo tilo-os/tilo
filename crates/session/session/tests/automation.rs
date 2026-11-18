@@ -65,7 +65,7 @@ fn this_computer(
     home: &mut tilo_test_env::TestHome,
 ) -> (tempfile::TempDir, SigningKey, DeviceCert) {
     let root = tempfile::tempdir().expect("a directory for this computer's identity");
-    let paths = tilo_user_identity::IdentityPaths::under(root.path());
+    let paths = tilo_device_identity::IdentityPaths::under(root.path());
     let identities = home.config().join("tilo/identity");
     home.env()
         .set("TILO_IDENTITY_ROOT", root.path())
@@ -77,8 +77,8 @@ fn this_computer(
     )
     .expect("this computer's identity");
     let device =
-        tilo_user_identity::persist::load_device_key(&paths).expect("this computer's device key");
-    let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert)
+        tilo_device_identity::persist::load_device_key(&paths).expect("this computer's device key");
+    let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
         .expect("this computer's certificate");
     ui::local_identity::install_source(Some(Arc::new(ui::local_identity::FixedIdentity(
         ui::local_identity::LocalIdentity {

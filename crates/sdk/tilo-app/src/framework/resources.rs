@@ -116,7 +116,8 @@ impl<P: Resource> Held<P> {
     ) -> Self {
         self.read = Some(Box::new(move |payload| {
             let mut answered = Err("the record cannot be read".to_owned());
-            document(&mut |doc| answered = read_resource::<P>(doc, payload));
+            let kind = tilo_resource::ResourceKind::of::<P>();
+            document(&mut |doc| answered = read_resource(&kind, doc, payload));
             answered
         }));
         self
@@ -479,17 +480,17 @@ pub(crate) fn answer(
     Ok(tilo_actions::ActionOutput::default())
 }
 
-/// A `read` of the record `P` whose committed document is `doc`, asked as
+/// A `read` of the record of `kind` whose committed document is `doc`, asked as
 /// `payload`: what it holds through its own read, or from its model tables.
-fn read_resource<P: Resource>(
+fn read_resource(
+    kind: &tilo_resource::ResourceKind,
     doc: &ui_core::automerge::AutoCommit,
     payload: &[u8],
 ) -> Result<serde_json::Value, String> {
-    let kind = tilo_resource::ResourceKind::of::<P>();
     let content = |doc: &ui_core::automerge::AutoCommit, item: Option<&str>| {
         kind.content(doc, item).map_err(|error| error.to_string())
     };
-    super::root::answer_read(doc, payload, |item| content(doc, item), content)
+    super::root::answer_read(doc, payload, &|item| content(doc, item), &content)
 }
 
 /// A record other than the app's own that views and surfaces edit: the

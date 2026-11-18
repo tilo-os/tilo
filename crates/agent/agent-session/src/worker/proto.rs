@@ -49,8 +49,6 @@ pub(crate) enum Mode {
     Views,
     /// Mount one record's component to answer its registered reads.
     Read,
-    /// Shrink pictures to show a planning model ([`super::picture`]).
-    Picture,
 }
 
 impl Mode {
@@ -59,7 +57,6 @@ impl Mode {
             Self::Replica => "replica",
             Self::Views => "views",
             Self::Read => "read",
-            Self::Picture => "picture",
         }
     }
 
@@ -68,7 +65,6 @@ impl Mode {
             "replica" => Some(Self::Replica),
             "views" => Some(Self::Views),
             "read" => Some(Self::Read),
-            "picture" => Some(Self::Picture),
             _ => None,
         }
     }
@@ -225,14 +221,6 @@ pub(crate) enum Request {
     },
     /// Report what the confinement still lets the worker do at `path`.
     Probe { path: String },
-    /// Decode a picture and write it out again within `max_side` pixels a
-    /// side and `max_bytes` ([`Mode::Picture`]); answered with
-    /// [`Reply::Picture`].
-    Shrink {
-        bytes: Vec<u8>,
-        max_side: u32,
-        max_bytes: u64,
-    },
     /// Keep one content item where the app's code reads it; answered with
     /// [`Reply::Stored`].
     PutContent(Vec<u8>),
@@ -277,9 +265,6 @@ pub(crate) enum Reply {
     /// JSON `Vec<IndexEntry>`: what search finds in a document. Not
     /// trusted: a host bounds each entry before it ranks it.
     Entries(String),
-    /// A picture written out again as a PNG or JPEG. Not trusted: its
-    /// header is checked before it is shown to anyone.
-    Picture(Vec<u8>),
     /// Whether the mounted component registers any reader.
     Registers(bool),
     /// The request was carried out.
@@ -419,7 +404,7 @@ mod tests {
 
     #[test]
     fn modes_round_trip_by_name() {
-        for mode in [Mode::Replica, Mode::Views, Mode::Read, Mode::Picture] {
+        for mode in [Mode::Replica, Mode::Views, Mode::Read] {
             assert_eq!(Mode::parse(mode.as_str()), Some(mode));
         }
         assert_eq!(Mode::parse("other"), None);

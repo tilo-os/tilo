@@ -677,7 +677,7 @@ impl PersonModel {
             deadline,
             private_addresses: self.models.private_addresses.load(Ordering::Acquire),
             quiet: self.quiet_now(),
-            key: resolved.key.as_ref().map(|secret| secret.password.as_str()),
+            key: resolved.key.as_deref().map(String::as_str),
         };
         let response = tokio::time::timeout_at(
             tokio::time::Instant::from_std(deadline),
@@ -840,7 +840,7 @@ fn may_send(
 struct Resolved {
     profile: ProviderProfile,
     model: ModelDescriptor,
-    key: Option<accounts::Secret>,
+    key: Option<zeroize::Zeroizing<String>>,
 }
 
 impl Resolved {
@@ -941,7 +941,7 @@ fn resolve(
     if profile.sign_in.is_some() {
         return Err(ModelRefusal::NoKey { provider: named() });
     }
-    let key = kept.of(root, &profile.id)?;
+    let key = kept.of(root, profile)?;
     // Only a server on the operator's own network may take no key.
     if key.is_none() && public {
         return Err(ModelRefusal::NoKey { provider: named() });

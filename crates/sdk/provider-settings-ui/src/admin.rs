@@ -221,69 +221,55 @@ impl<H: PanelBindings> ProviderPanel<H> {
             let revision = snapshot.revision.clone();
             validate_key_ownership(snapshot, &effect)?;
             self.limits_ack = self.remember_limits(&effect);
-            let work: PendingMutation =
-                match effect {
-                    ProviderEffect::SaveProviderKey { provider, key } => {
-                        let buffer = self.key_buffer(&provider);
-                        if let Some(key) = key {
-                            let mut draft = buffer.lock_recover();
-                            draft.zeroize();
-                            *draft = key;
-                        }
-                        let value = zeroize::Zeroizing::new(buffer.lock_recover().clone());
-                        if value.trim().is_empty() {
-                            return Err(t("agent-key-empty"));
-                        }
-                        self.saved_key = Some((buffer, value.clone()));
-                        Box::pin(async move {
-                            admin
-                                .set_api_key(provider, value.to_string())
-                                .await
-                                .map(|()| None)
-                        })
+            let work: PendingMutation = match effect {
+                ProviderEffect::SaveProviderKey { provider, key } => {
+                    let buffer = self.key_buffer(&provider);
+                    if let Some(key) = key {
+                        let mut draft = buffer.lock_recover();
+                        draft.zeroize();
+                        *draft = key;
                     }
-                    ProviderEffect::RemoveProviderKey { provider } => {
-                        Box::pin(async move { admin.remove_api_key(provider).await.map(|()| None) })
+                    let value = zeroize::Zeroizing::new(buffer.lock_recover().clone());
+                    if value.trim().is_empty() {
+                        return Err(t("agent-key-empty"));
                     }
-                    ProviderEffect::RemoveLegacyProviderKey { provider } => Box::pin(async move {
-                        admin.remove_legacy_api_key(provider).await.map(|()| None)
-                    }),
-                    ProviderEffect::MigrateProviderKey {
-                        provider,
-                        original_endpoint,
-                    } => Box::pin(async move {
+                    self.saved_key = Some((buffer, value.clone()));
+                    Box::pin(async move {
                         admin
-                            .migrate_api_key(provider, original_endpoint)
+                            .set_api_key(provider, value.to_string())
                             .await
                             .map(|()| None)
-                    }),
-                    ProviderEffect::RemoveProvider { provider } => {
-                        let config = self.proposed_config(ProviderEffect::RemoveProvider {
-                            provider: provider.clone(),
-                        })?;
-                        let uses_api_key = snapshot
-                            .config
-                            .profiles
-                            .iter()
-                            .any(|profile| profile.id == provider && profile.sign_in.is_none());
-                        Box::pin(async move {
-                            // Revalidate before destructive cleanup. The backend forbids
-                            // deletion while bound or legacy credentials remain.
-                            if admin.get_config().await?.revision != revision {
-                                return Err(ModelError::new(ErrorKind::Conflict));
-                            }
-                            if uses_api_key {
-                                admin.remove_api_key(provider.clone()).await?;
-                                admin.remove_legacy_api_key(provider).await?;
-                            }
-                            admin.set_config(revision, config).await.map(Some)
-                        })
-                    }
-                    metadata => {
-                        let config = self.proposed_config(metadata)?;
-                        Box::pin(async move { admin.set_config(revision, config).await.map(Some) })
-                    }
-                };
+                    })
+                }
+                ProviderEffect::RemoveProviderKey { provider } => {
+                    Box::pin(async move { admin.remove_api_key(provider).await.map(|()| None) })
+                }
+                ProviderEffect::RemoveProvider { provider } => {
+                    let config = self.proposed_config(ProviderEffect::RemoveProvider {
+                        provider: provider.clone(),
+                    })?;
+                    let uses_api_key = snapshot
+                        .config
+                        .profiles
+                        .iter()
+                        .any(|profile| profile.id == provider && profile.sign_in.is_none());
+                    Box::pin(async move {
+                        // Revalidate before destructive cleanup. The backend forbids
+                        // deletion while bound credentials remain.
+                        if admin.get_config().await?.revision != revision {
+                            return Err(ModelError::new(ErrorKind::Conflict));
+                        }
+                        if uses_api_key {
+                            admin.remove_api_key(provider.clone()).await?;
+                        }
+                        admin.set_config(revision, config).await.map(Some)
+                    })
+                }
+                metadata => {
+                    let config = self.proposed_config(metadata)?;
+                    Box::pin(async move { admin.set_config(revision, config).await.map(Some) })
+                }
+            };
             let reader = self
                 .provider_admin
                 .get()
@@ -383,9 +369,7 @@ fn validate_key_ownership(
     effect: &ProviderEffect,
 ) -> Result<(), String> {
     let (ProviderEffect::SaveProviderKey { provider, .. }
-    | ProviderEffect::RemoveProviderKey { provider }
-    | ProviderEffect::RemoveLegacyProviderKey { provider }
-    | ProviderEffect::MigrateProviderKey { provider, .. }) = effect
+    | ProviderEffect::RemoveProviderKey { provider }) = effect
     else {
         return Ok(());
     };

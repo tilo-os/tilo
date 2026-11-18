@@ -768,7 +768,7 @@ pub fn run_guest(config: &Path) -> Result<i32, String> {
         grant_root: None,
         runtime_bin: check.runtime_binary.clone(),
         helper_runtime: helper,
-        legacy_commands: vec![],
+        linux_vm_commands: vec![],
         broker_socket: session.join("absent-broker"),
         seccomp_blob: session.join("ush.bpf"),
         command,

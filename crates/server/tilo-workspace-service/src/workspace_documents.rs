@@ -366,7 +366,7 @@ impl WorkspaceDocuments {
         }
         .encode()
         .map_err(|error| error.to_string())?;
-        let envelope = Envelope::RetiredPresence {
+        let envelope = Envelope::Presence {
             workspace_id,
             payload,
         };

@@ -1918,9 +1918,8 @@ impl ExtensionController {
             .map(|(info, extension)| {
                 let id = extension.id.clone();
                 let granted = granted_line(&extension.access.granted);
-                let mut resource = LiveRow::new(
+                let mut resource = LiveRow::typed::<crate::row_types::Extension>(
                     extensions::resource_id(&info.id),
-                    "browser.extension",
                     info.name.clone(),
                 )
                 .presentation(ResourcePresentation {

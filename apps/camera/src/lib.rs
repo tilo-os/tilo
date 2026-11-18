@@ -31,6 +31,7 @@ pub mod media;
 pub mod model;
 pub mod paint;
 pub mod resource;
+pub(crate) mod row_types;
 pub mod scan;
 pub mod video;
 pub mod worker;

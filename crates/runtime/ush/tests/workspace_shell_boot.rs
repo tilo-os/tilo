@@ -3,10 +3,10 @@
 //! refused it in the words an agent is given.
 //!
 //! It boots VMs, so it is ignored by default. On a host with `/dev/kvm` and the hosted-VM
-//! service's machine and jail set up as for `legacy-vm`'s `hosted_jailed_boot`:
+//! service's machine and jail set up as for `linux-vm`'s `hosted_jailed_boot`:
 //!
 //! ```text
-//! TILO_HOSTED_FIRECRACKER=… TILO_HOSTED_KERNEL=… TILO_HOSTED_INITRAMFS=… //! TILO_LEGACY_BIN=… it workspace_shell_boot --ignored --nocapture
+//! TILO_HOSTED_FIRECRACKER=… TILO_HOSTED_KERNEL=… TILO_HOSTED_INITRAMFS=… //! TILO_LINUX_VM_BIN=… it workspace_shell_boot --ignored --nocapture
 //! ```
 
 #![allow(
@@ -21,13 +21,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use legacy_vm::hosted::control::{self, Reply, Request};
-use legacy_vm::hosted::firecracker::Machine;
-use legacy_vm::hosted::jail::{Helper, Jail};
-use legacy_vm::hosted::plan::{Plan, Plans, Sells};
-use legacy_vm::hosted::service::{Service, ServiceConfig};
-use legacy_vm::hosted::size::VmSize;
-use legacy_vm::hosted::vm::{Settings, system_clock};
+use linux_vm::hosted::control::{self, Reply, Request};
+use linux_vm::hosted::firecracker::Machine;
+use linux_vm::hosted::jail::{Helper, Jail};
+use linux_vm::hosted::plan::{Plan, Plans, Sells};
+use linux_vm::hosted::service::{Service, ServiceConfig};
+use linux_vm::hosted::size::VmSize;
+use linux_vm::hosted::vm::{Settings, system_clock};
 use tilo_actions::remote::server_account::{NextStepKind, Reason};
 use ush::hosted_vm::HostedTarget;
 use ush::workspace_shell::WorkspaceShells;
@@ -89,7 +89,7 @@ fn a_workspace_shell_runs_programs_in_its_vm_and_refuses_an_account_without_a_ca
                 base_disk: None,
             },
             idle_suspend: Duration::from_secs(2),
-            self_exe: env_path("TILO_LEGACY_BIN"),
+            self_exe: env_path("TILO_LINUX_VM_BIN"),
             jail,
             server: None,
             templates: None,

@@ -76,12 +76,22 @@ impl HistoryHost {
                 let Some(snapshot) = snapshot else {
                     continue;
                 };
+                let view = PreviewView {
+                    application: self.live_presentation.clone(),
+                    ..PreviewView::default()
+                };
+                // A part's version is drawn by the parts, with no media of the window's document.
+                if let Some(preview) = self
+                    .controller
+                    .as_ref()
+                    .and_then(|controller| controller.part_preview(&snapshot, view.clone()))
+                {
+                    canvas.install(preview);
+                    continue;
+                }
                 canvas.install(create(PreviewInput {
                     snapshot: snapshot.clone(),
-                    initial_view: PreviewView {
-                        application: self.live_presentation.clone(),
-                        ..PreviewView::default()
-                    },
+                    initial_view: view,
                     assets: FrozenPreviewAssets::default(),
                 }));
                 if let Some(provider) = &provider {

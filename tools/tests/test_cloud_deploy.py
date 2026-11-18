@@ -183,7 +183,7 @@ class CloudDeployTests(unittest.TestCase):
             self.fake.publish(SERVER, revision)
         self.fake.publish(WEB, self.newest)
         self.fake.publish(WEB, self.side)
-        guest = deploy.Service("legacy-guest", deploy.GUEST_IMAGE, "", "")
+        guest = deploy.Service("linux-guest", deploy.GUEST_IMAGE, "", "")
         for revision in (self.deployed, self.target, self.newest, self.side):
             self.fake.publish(guest, revision)
         self.fake.publish(SERVER, self.side)
@@ -490,7 +490,7 @@ class CloudDeployTests(unittest.TestCase):
 
     def guest_of(self, revision):
         """The guest the given commit publishes, as the deploy resolves it."""
-        guest = deploy.Service("legacy-guest", deploy.GUEST_IMAGE, "", "")
+        guest = deploy.Service("linux-guest", deploy.GUEST_IMAGE, "", "")
         return deploy.Registry(self.fake).image(guest, TARGET.tag.format(commit=revision)).digest
 
     def qualification(self, revision, *, observation="native", services=None, guest=None, **identities):

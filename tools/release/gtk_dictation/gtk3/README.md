@@ -104,7 +104,7 @@ property. It adds no input method or private Undo implementation.
 
 A guest OS library change does not cover Flatpak-owned GTK runtimes. Deliver only
 inside an exactly matched app/runtime closure after qualification. The existing
-legacy guest workflow signs/pins guest images, but this candidate adds no workflow,
+Linux VM guest workflow signs/pins guest images, but this candidate adds no workflow,
 publication, global environment, new trust root or OS rootfs toolkit exception.
 
 The private native build driver is `private_build.py`. It requires a fresh

@@ -41,8 +41,8 @@ fn bot_base(
     existing: Option<Vec<u8>>,
 ) -> Result<(automerge::AutoCommit, Vec<automerge::ChangeHash>, bool), CollaborationError> {
     let Some(bytes) = existing else {
-        let part =
-            ui::resource::DocumentId::parse(record).is_some_and(|id| id.chain_part().is_some());
+        let part = collab_types::document::DocumentId::parse(record)
+            .is_some_and(|id| id.chain_part().is_some());
         return if part {
             Ok((automerge::AutoCommit::new(), Vec::new(), true))
         } else {
@@ -397,14 +397,15 @@ impl Workspaces {
         // A record a workspace route names (the workspace's default record) is
         // created under that id: a genesis naming another id would be
         // published there, and no member could open it.
-        let seed =
-            if record.is_empty() {
-                Seed::New
-            } else {
-                Seed::NewAt(ui::resource::DocumentId::parse(record).ok_or_else(|| {
+        let seed = if record.is_empty() {
+            Seed::New
+        } else {
+            Seed::NewAt(
+                collab_types::document::DocumentId::parse(record).ok_or_else(|| {
                     CollaborationError::new("application record is not a record id")
-                })?)
-            };
+                })?,
+            )
+        };
         let genesis = {
             let source = ConfinedReplica::open(
                 catalogue,

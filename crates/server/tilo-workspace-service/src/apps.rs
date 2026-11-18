@@ -47,11 +47,11 @@ pub struct SurfacePersonDocuments;
 
 impl tilo_identity::broker::PersonResourceTypes for SurfacePersonDocuments {
     fn person_resource_types(&self, app_id: &str) -> Vec<String> {
-        ui::app_surface::person_resource_types(app_id)
+        collab_types::app_surface::person_resource_types(app_id)
     }
 
     fn reads_documents_of(&self, reader: &str, owner: &str) -> bool {
-        ui::app_surface::reads_app(reader, owner)
+        collab_types::app_surface::reads_app(reader, owner)
     }
 }
 
@@ -60,7 +60,7 @@ impl tilo_identity::broker::PersonResourceTypes for SurfacePersonDocuments {
 /// the changes it signs name that surface. A host calls it as it launches
 /// the package.
 pub fn register_package_surface(app_id: &str, surface: &[u8]) {
-    ui::app_surface::register_package(app_id, surface);
+    collab_types::app_surface::register_package(app_id, surface);
 }
 
 /// Run `app_id` with `surface` as [`register_package_surface`] does, and
@@ -124,7 +124,7 @@ pub fn decide_receipt_against_surfaces(
                 running_surface(record.app, hash).or_else(|| read(record, hash))
             }),
         )),
-        ui::app_surface::hash_of,
+        collab_types::app_surface::hash_of,
     );
 }
 
@@ -132,9 +132,9 @@ pub fn decide_receipt_against_surfaces(
 /// with. The bytes are addressed by their hash, which the reader checks
 /// again, so where they come from does not change what they mean.
 fn running_surface(app: &str, hash: &str) -> Option<Vec<u8>> {
-    let running = ui::app_surface::hash_of(app)?;
+    let running = collab_types::app_surface::hash_of(app)?;
     (hex::encode(running) == hash)
-        .then(|| ui::app_surface::bytes_of(app).map(<[u8]>::to_vec))
+        .then(|| collab_types::app_surface::bytes_of(app).map(<[u8]>::to_vec))
         .flatten()
 }
 
@@ -148,7 +148,7 @@ mod read_surface_tests {
             let reader = b"reads = [\"so.tilo.test.owner.note\"]\n\n[[resources]]\nkind = \"so.tilo.test.reader\"\nlabel = \"Reader\"\nversion = 1\nfields = []\n";
             let owner = b"[[resources]]\nkind = \"so.tilo.test.owner.note\"\nlabel = \"Note\"\nversion = 1\nfields = []\n";
             let other = b"[[resources]]\nkind = \"so.tilo.test.unread.item\"\nlabel = \"Item\"\nversion = 1\nfields = []\n";
-            assert!(!ui::app_surface::reads_app(
+            assert!(!collab_types::app_surface::reads_app(
                 "so.tilo.test.reader",
                 "so.tilo.test.owner"
             ));
@@ -159,11 +159,11 @@ mod read_surface_tests {
                 ]
             });
             assert!(
-                ui::app_surface::reads_app("so.tilo.test.reader", "so.tilo.test.owner"),
+                collab_types::app_surface::reads_app("so.tilo.test.reader", "so.tilo.test.owner"),
                 "the read the reader declares is decided by the owner's installed surface"
             );
             assert_eq!(
-                ui::app_surface::bytes_of("so.tilo.test.unread"),
+                collab_types::app_surface::bytes_of("so.tilo.test.unread"),
                 None,
                 "a package the reader does not read stays unknown here"
             );

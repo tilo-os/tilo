@@ -20,7 +20,7 @@ and nobody configures keys, ports or endpoints.
 - The same state and controls are actions on the person's devices in the
   palette's continuity actions (`vpn.through.*`, `vpn.stop.*`,
   `vpn.exit.stop.*`, `vpn.exit.share`/`unshare`), dispatched through the same
-  device-fabric action path as the other continuity controls, so automation,
+  action path between the person's devices as the other continuity controls, so automation,
   agents and assistive technology reach exactly what the switches reach.
 
 ## Pieces
@@ -127,9 +127,8 @@ follows them and makes the tunnel match.
 
 - **Offers** are learnt by asking: when the person's online devices change,
   and every five minutes, the shell probes each one on the tunnel ALPN, and
-  lists those that answer with an offer. (A fabric capability would spare the
-  probes, but adding a field changes the fabric's Postcard schema, which
-  devices on another version would then refuse whole.)
+  lists those that answer with an offer. (A capability each device keeps of
+  itself in the person's store would spare the probes.)
 - **Client states:** connecting, connected (since when), reconnecting (with
   whether the kill switch blocks meanwhile), refused (the exit does not count
   this device as the person's, its switch is off, or it has no workspace), and

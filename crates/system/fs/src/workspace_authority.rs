@@ -8,13 +8,18 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use collab_types::CapOverride;
-use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use tilo_action_policy::MemberId;
+use tilo_user_identity::canonical::signing_digest;
 use wire_frame::{FrameError, Framing};
 
 use crate::sync::Ticket;
 use crate::{AclHandle, IdentityKey, WorkspaceAcl};
+
+/// The domain the governor signs workspace authority state under: the BLAKE3
+/// digest of this tag and the envelope's canonical encoding.
+const AUTHORITY_DOMAIN: &[u8] = b"tilo-workspace-authority-v1\0";
 
 pub const TILO_FS_AUTHORITY_ALPN: &[u8] = b"tilo-fs-workspace-authority/1";
 const MAX_AUTHORITY_FRAME: usize = 256 * 1024;
@@ -207,27 +212,32 @@ impl WorkspaceAuthorityEnvelope {
         revision: u64,
         authority: impl Into<collab_types::FsAuthority>,
         tombstoned: bool,
-        governor: &ed25519_dalek::SigningKey,
+        governor: &dyn tilo_user_identity::StatementSigner,
     ) -> anyhow::Result<Self> {
         Self::sign_with(
             workspace,
             revision,
             authority,
             tombstoned,
-            governor.verifying_key().to_bytes(),
-            |payload| Ok(governor.sign(payload).to_bytes()),
+            governor.public_key(),
+            |digest| {
+                governor
+                    .sign_digest(digest)
+                    .map_err(|error| anyhow::anyhow!("sign the authority: {error}"))
+            },
         )
     }
 
     /// [`Self::sign`] for a governor whose key this process cannot hold, such as a person's identity
-    /// record: `sign` receives the exact payload and returns the governor's signature over it.
+    /// so `sign` receives the statement's domain-separated digest and returns the
+    /// signature over it.
     pub fn sign_with(
         workspace: uuid::Uuid,
         revision: u64,
         authority: impl Into<collab_types::FsAuthority>,
         tombstoned: bool,
         governor: [u8; 32],
-        sign: impl FnOnce(&[u8]) -> anyhow::Result<[u8; 64]>,
+        sign: impl FnOnce(&[u8; 32]) -> anyhow::Result<[u8; 64]>,
     ) -> anyhow::Result<Self> {
         let collab_types::FsAuthority { capabilities } = authority.into();
         let mut envelope = Self {
@@ -238,7 +248,7 @@ impl WorkspaceAuthorityEnvelope {
             governor,
             signature: [0; 64],
         };
-        envelope.signature = sign(&envelope.payload()?)?;
+        envelope.signature = sign(&envelope.digest()?)?;
         envelope.verify(workspace, governor)?;
         Ok(envelope)
     }
@@ -250,18 +260,30 @@ impl WorkspaceAuthorityEnvelope {
         );
         anyhow::ensure!(self.governor == governor, "authority governor mismatch");
         VerifyingKey::from_bytes(&governor)?
-            .verify(&self.payload()?, &Signature::from_bytes(&self.signature))?;
+            .verify(&self.digest()?, &Signature::from_bytes(&self.signature))?;
         Ok(())
     }
 
-    fn payload(&self) -> anyhow::Result<Vec<u8>> {
-        Ok(postcard::to_allocvec(&(
-            self.workspace,
-            self.revision,
-            &self.capabilities,
-            self.tombstoned,
-            self.governor,
-        ))?)
+    fn digest(&self) -> anyhow::Result<[u8; 32]> {
+        #[derive(Serialize)]
+        struct View<'a> {
+            workspace: uuid::Uuid,
+            revision: u64,
+            capabilities: &'a [CapOverride],
+            tombstoned: bool,
+            governor: [u8; 32],
+        }
+        signing_digest(
+            AUTHORITY_DOMAIN,
+            &View {
+                workspace: self.workspace,
+                revision: self.revision,
+                capabilities: &self.capabilities,
+                tombstoned: self.tombstoned,
+                governor: self.governor,
+            },
+        )
+        .map_err(|error| anyhow::anyhow!("{error}"))
     }
 }
 
@@ -656,6 +678,33 @@ fn project(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refused_signature_publishes_no_authority() {
+        struct Refusing;
+
+        impl tilo_user_identity::StatementSigner for Refusing {
+            fn public_key(&self) -> [u8; 32] {
+                [1; 32]
+            }
+
+            fn sign_digest(
+                &self,
+                _digest: &[u8; 32],
+            ) -> Result<[u8; 64], tilo_user_identity::SignError> {
+                Err(tilo_user_identity::SignError("locked".into()))
+            }
+        }
+
+        let refused = WorkspaceAuthorityEnvelope::sign(
+            uuid::Uuid::from_bytes([0x44; 16]),
+            1,
+            Vec::new(),
+            false,
+            &Refusing,
+        );
+        assert!(refused.is_err(), "a refusing governor publishes nothing");
+    }
 
     #[tokio::test]
     async fn authority_frames_are_little_endian_length_then_postcard() {

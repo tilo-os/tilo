@@ -80,7 +80,7 @@ class RpmBuildGraphTest(unittest.TestCase):
             "fs",
             "tilo-server-admin",
             "tilo-enroll",
-            "tilo-legacy",
+            "tilo-linux-vm",
         }
         workspace = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]
         seen = set()
@@ -130,7 +130,7 @@ class RpmBuildGraphTest(unittest.TestCase):
                         ):
                             expected.add(source.parent.name)
         self.assertEqual(seen, SUPPORT)
-        self.assertEqual(packages, SUPPORT | {"imager", "tilo-server", "legacy-vm"})
+        self.assertEqual(packages, SUPPORT | {"imager", "tilo-server", "linux-vm"})
         self.assertEqual(bins, expected)
         self.assertEqual(support[:4], ["build", "--release", "--locked", "--lib"])
         self.assertEqual(

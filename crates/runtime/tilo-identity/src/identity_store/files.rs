@@ -2,7 +2,8 @@
 use std::path::PathBuf;
 
 use ed25519_dalek::VerifyingKey;
-use tilo_user_identity::{DeviceCert, IdentityPaths, RevocationEntry};
+use tilo_device_identity::IdentityPaths;
+use tilo_user_identity::{DeviceCert, RevocationEntry};
 
 use super::IdentityStore;
 
@@ -28,9 +29,9 @@ impl IdentityStore for Files {
         ),
         String,
     > {
-        let key =
-            tilo_user_identity::persist::load_device_key(&self.paths).map_err(|e| e.to_string())?;
-        let cert = tilo_user_identity::persist::read_device_cert(&self.paths.device_cert)
+        let key = tilo_device_identity::persist::load_device_key(&self.paths)
+            .map_err(|e| e.to_string())?;
+        let cert = tilo_device_identity::persist::read_device_cert(&self.paths.device_cert)
             .map_err(|e| e.to_string())?;
         if cert.device_public_key != key.verifying_key().to_bytes() {
             return Err("the collaboration device key and its certificate differ".into());
@@ -43,8 +44,8 @@ impl IdentityStore for Files {
         _workspace: super::WorkspaceId,
         device: &VerifyingKey,
     ) -> Result<(DeviceCert, Vec<RevocationEntry>), String> {
-        let stored_key =
-            tilo_user_identity::persist::load_device_key(&self.paths).map_err(|e| e.to_string())?;
+        let stored_key = tilo_device_identity::persist::load_device_key(&self.paths)
+            .map_err(|e| e.to_string())?;
         if stored_key.verifying_key() != *device {
             return Err("native device identity store changed".into());
         }
@@ -53,7 +54,7 @@ impl IdentityStore for Files {
         let registry = store.load_reconciled_cached().map_err(|e| e.to_string())?;
         // The certificate these paths hold names the person whose device this is: the registry
         // knows that person, and their fleet holds the revocations.
-        let cert = tilo_user_identity::persist::read_device_cert(&self.paths.device_cert)
+        let cert = tilo_device_identity::persist::read_device_cert(&self.paths.device_cert)
             .map_err(|e| e.to_string())?;
         let profile = registry
             .identity_of(&cert.user_public_key)

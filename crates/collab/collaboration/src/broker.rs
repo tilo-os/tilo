@@ -1796,6 +1796,14 @@ impl DocumentReassembly {
         }
         drop(reassembler);
         match result {
+            // Every segment carries the claims of the whole mutation: what it
+            // opened to must say what they say, as a whole frame's must.
+            Ok(Some(done))
+                if let Err(refusal) = collab_types::check_reassembled(envelope, &done.payload) =>
+            {
+                tracing::warn!(%refusal, "collab: refused a segmented document op");
+                None
+            }
             Ok(Some(done)) => {
                 tracing::debug!(
                     target: "tilo.state",
@@ -4457,8 +4465,6 @@ struct SdkJoinContext<'a> {
 struct SdkRoute {
     _checks: Option<crate::route_endpoints::Registration<super::approved_checks::Endpoint>>,
     _moderation: Option<crate::route_endpoints::Registration<super::external_moderation::Endpoint>>,
-    _attribution:
-        Option<crate::route_endpoints::Registration<super::write_attribution_endpoint::Endpoint>>,
     document: DocumentRoute,
     presence: Option<runtime_collab::PresenceHandle>,
     workspace_controls: std::collections::HashMap<u64, runtime_collab::WorkspaceControlHandle>,

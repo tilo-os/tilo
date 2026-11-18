@@ -21,6 +21,8 @@ use anyhow::{Context as _, Result};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt as _, AsyncRead, AsyncWrite, AsyncWriteExt as _, BufReader};
 
+use tilo_api::client::device;
+
 use super::{Connection, Enter, Shared, answer};
 
 /// How long a connection waits for a holder to listen.
@@ -52,6 +54,10 @@ const LOGIN_LOOK: Duration = Duration::from_secs(3);
 #[derive(Clone)]
 pub(crate) struct Place {
     socket: PathBuf,
+    /// Where it serves Tilo's API as the device, over the one session: what
+    /// `tilo do`, `ls`, `read` and the other workspace commands of this login
+    /// reach ([`device::held_api`]).
+    api: PathBuf,
     /// One per device directory, not per key: a computer has one holder, and a login made again
     /// under a new key waits for the holder of the old one to step down instead of running
     /// beside it. Two live endpoints under one device's keys take each other's place at the
@@ -65,20 +71,20 @@ pub(crate) struct Place {
 impl Place {
     /// The holder of the device whose public key is `key`, logged in under
     /// `dir`: a new login is a new device, with a holder of its own. Its
-    /// socket is in this account's own short directory ([`socket_dir`]),
-    /// since a socket's path is short (about a hundred bytes) and a home's
-    /// state directory need not be.
+    /// sockets are in this account's own short directory
+    /// ([`device::holder_dir`]).
     pub(crate) fn of(dir: &Path, key: &[u8; 32]) -> Result<Self, String> {
-        Ok(Self::at(&socket_dir(dir)?, dir, key))
+        Ok(Self::at(&device::holder_dir(dir)?, dir, key))
     }
 
     /// The holder of `key`'s device under `dir`, listening in `sockets`.
     fn at(sockets: &Path, dir: &Path, key: &[u8; 32]) -> Self {
         let mut first = [0; 8];
         first.copy_from_slice(&key[..8]);
-        let name = format!("session-{}", hex::encode(first));
+        let name = device::holder_name(key);
         Self {
             socket: sockets.join(format!("{name}.sock")),
+            api: device::holder_api_socket(sockets, &name),
             lock: dir.join("holder.lock"),
             log: dir.join(format!("{name}.log")),
             key: first,
@@ -98,39 +104,6 @@ impl Place {
             _ => true,
         }
     }
-}
-
-/// Where this account's holders listen: the session's runtime directory
-/// when it has one, else one of this account's in the temporary directory,
-/// made so that only this account enters it. One someone else made, or
-/// others may enter, is refused: whoever reaches a holder acts as the
-/// person.
-fn socket_dir(device_dir: &Path) -> Result<PathBuf, String> {
-    use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
-    let owner = std::fs::metadata(device_dir)
-        .map_err(|error| format!("{} is not readable: {error}", device_dir.display()))?
-        .uid();
-    let dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .filter(|runtime| runtime.is_absolute() && runtime.is_dir())
-        .map_or_else(
-            || std::env::temp_dir().join(format!("tilo-{owner}")),
-            |runtime| runtime.join("tilo"),
-        );
-    if let Err(error) = std::fs::DirBuilder::new().mode(0o700).create(&dir)
-        && error.kind() != std::io::ErrorKind::AlreadyExists
-    {
-        return Err(format!("{} could not be made: {error}", dir.display()));
-    }
-    let made = std::fs::symlink_metadata(&dir)
-        .map_err(|error| format!("{} is not readable: {error}", dir.display()))?;
-    if !made.is_dir() || made.uid() != owner || made.mode() & 0o077 != 0 {
-        return Err(format!(
-            "{} is not this account's own private directory",
-            dir.display()
-        ));
-    }
-    Ok(dir)
 }
 
 /// A connection to the device's holder when one listens, starting none.
@@ -384,6 +357,7 @@ async fn serve_held<E: Enter>(
         })
         .with_context(|| format!("listen at {}", place.socket.display()))?;
     std::fs::set_permissions(&place.socket, std::fs::Permissions::from_mode(0o600))?;
+    serve_api(place, &shared)?;
     let linger = match holding {
         Holding::Linger(linger) => {
             // Enter the workspace while the first agent starts, not at its first call.
@@ -444,8 +418,37 @@ async fn serve_held<E: Enter>(
     }
     // No connection is left to cut off: the next one starts a holder anew.
     let _ = std::fs::remove_file(&place.socket);
+    let _ = std::fs::remove_file(&place.api);
     drop(listener);
     shared.leaving().await;
+    Ok(())
+}
+
+/// Serve Tilo's API at `place` as this computer's device, over the one session it holds: every
+/// workspace command of this login (`tilo do`, `ls`, `read`, `workspace`, `keys`) is a call here,
+/// one round trip over a session already in the workspace, rather than a session of its own that
+/// would cut this one off at the server. While the device is not in the workspace, each call
+/// answers why.
+fn serve_api<E: Enter>(place: &Place, shared: &Arc<Shared<E>>) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let _ = std::fs::remove_file(&place.api);
+    let listener = tilo_files::native::socket::bind(&place.api)
+        .and_then(|listener| {
+            listener.set_nonblocking(true)?;
+            tokio::net::UnixListener::from_std(listener)
+        })
+        .with_context(|| format!("listen at {}", place.api.display()))?;
+    std::fs::set_permissions(&place.api, std::fs::Permissions::from_mode(0o600))?;
+    let shared = Arc::clone(shared);
+    tokio::spawn(tilo_api::direct::serve_current(listener, move || {
+        let shared = Arc::clone(&shared);
+        async move {
+            let session = shared.session(false, super::Ask::Agent).await?;
+            session.api.clone().ok_or_else(|| {
+                "this computer's login does not reach Tilo's API here; log in again".to_owned()
+            })
+        }
+    }));
     Ok(())
 }
 
@@ -1062,6 +1065,165 @@ mod tests {
             !place.socket.exists(),
             "a holder whose connections all ended stops listening"
         );
+    }
+
+    /// A certificate `root` gives `key`, as a login's is.
+    fn certified(
+        root: &ed25519_dalek::SigningKey,
+        key: &ed25519_dalek::SigningKey,
+    ) -> tilo_user_identity::DeviceCert {
+        let now = tilo_clock::unix_now_ns();
+        let mut cert = tilo_user_identity::DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: "Ada's laptop".into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: now.saturating_sub(60_000_000_000),
+            expires_at_ns: Some(now.saturating_add(3_600_000_000_000)),
+            signature: [0; 64],
+            issuer: None,
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, root).unwrap();
+        cert
+    }
+
+    /// On a logged-in computer, a workspace command (`tilo do`, `ls`, `read`, `workspace`) is a
+    /// call to the one holder of the device's session: every call reaches it, and none enters the
+    /// workspace as the device on its own, which would cut that session off at the server. A key
+    /// someone handed over (`--key-file`) still acts as that key, in process, and never reaches
+    /// the holder.
+    #[test]
+    fn a_logged_in_computers_workspace_commands_are_calls_to_its_one_holder() {
+        let state = tempfile::tempdir().unwrap();
+        let runtime_dir = tempfile::tempdir().unwrap();
+        let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+        let key = log_in(state.path(), &root);
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_DEVICE_DIR", state.path())
+            .set("XDG_RUNTIME_DIR", runtime_dir.path())
+            .remove(tilo_api::client::KEY_ENV)
+            .remove(tilo_api::client::DESKTOP_ENV);
+        let place = Place::of(state.path(), &key.verifying_key().to_bytes()).unwrap();
+        assert_eq!(
+            device::held_api().unwrap(),
+            Some(place.api.clone()),
+            "the login's commands reach where its holder serves"
+        );
+        let counting = Arc::new(Counting(AtomicUsize::new(0)));
+        let shared = Arc::new(Shared::new(Arc::clone(&counting), Err("unused".to_owned())));
+        let holding = {
+            let (place, shared) = (place.clone(), Arc::clone(&shared));
+            std::thread::spawn(move || {
+                hold_for(
+                    &place,
+                    shared,
+                    Holding::Linger(Duration::from_millis(300)),
+                    Duration::ZERO,
+                )
+                .unwrap()
+            })
+        };
+        // An agent's connection keeps the holder up meanwhile.
+        let agent = loop {
+            if let Ok(stream) = UnixStream::connect(&place.socket) {
+                break stream;
+            }
+            std::thread::sleep(POLL);
+        };
+        while counting.0.load(Ordering::SeqCst) == 0 {
+            std::thread::sleep(POLL);
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let as_login = || {
+            crate::api::Client::open(crate::api::Reach {
+                api: None,
+                key_file: None,
+                json: false,
+            })
+            .unwrap()
+        };
+        for _ in 0..3 {
+            let refused = runtime
+                .block_on(as_login().get("/v1/workspaces"))
+                .expect_err("this device is not in the workspace");
+            let refusal = crate::api::Refusal::of(&refused).expect("the holder's answer");
+            assert_eq!(refusal.code(), "not_in_workspace", "{refused}");
+            assert!(refused.to_string().contains("asked 1"), "{refused}");
+        }
+        assert_eq!(
+            counting.0.load(Ordering::SeqCst),
+            1,
+            "the device entered once, for the holder; no command entered on its own"
+        );
+
+        assert!(
+            a_key_file_asks_its_own_server(state.path(), &root, &runtime),
+            "a key handed over acts as itself, against its own server, in process"
+        );
+        assert_eq!(counting.0.load(Ordering::SeqCst), 1, "the holder was not");
+
+        drop(agent);
+        holding.join().unwrap();
+        assert!(!place.api.exists(), "a holder that ended serves no API");
+        drop(env);
+    }
+
+    /// Whether a call with a key file `root` certified (`--key-file`) asked the key's own server.
+    fn a_key_file_asks_its_own_server(
+        dir: &Path,
+        root: &ed25519_dalek::SigningKey,
+        runtime: &tokio::runtime::Runtime,
+    ) -> bool {
+        let server = test_http::Responder::handle(|_| Some(test_http::Reply::status(404)));
+        let key_file = dir.join("script.json");
+        let script = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
+        std::fs::write(
+            &key_file,
+            serde_json::to_vec(&tilo_api::direct::KeyFile::new(
+                &server.url(),
+                None,
+                "Nightly build",
+                &script,
+                &certified(root, &script),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let as_key = crate::api::Client::open(crate::api::Reach {
+            api: None,
+            key_file: Some(&key_file),
+            json: false,
+        })
+        .unwrap();
+        // Its server answers nothing useful, so the call keeps asking: it is not waited out.
+        let _ = runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(2), as_key.get("/v1/workspaces")).await
+        });
+        !server.drain_requests().is_empty()
+    }
+
+    /// This computer logged in under `dir` as a device `root` certified: its key.
+    fn log_in(dir: &Path, root: &ed25519_dalek::SigningKey) -> ed25519_dalek::SigningKey {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let cert = certified(root, &key);
+        let login = crate::login::Device {
+            site: "https://tilo.test/".into(),
+            host_origin: "https://eu1.tilo.test".into(),
+            workspace: "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b".into(),
+            workspace_name: Some("Studio".into()),
+            user: hex::encode(root.verifying_key().to_bytes()),
+            agent: "Claude Code".into(),
+            label: "Claude Code on build-box".into(),
+            cert: hex::encode(postcard::to_allocvec(&cert).unwrap()),
+            host_cert: "00".into(),
+            server_address: None,
+        };
+        crate::login::store(dir, &key, &login).unwrap();
+        key
     }
 
     tilo_test_env::scenario! {

@@ -95,7 +95,7 @@ at_prompt_then_type() {
     [ "$attempt" -lt 6 ] || die "B did not unlock with its passphrase after the $label case"
   done
   # The initramfs journal is part of this boot's: what the attempt saw.
-  vm_b ssh 'journalctl -b --no-pager -o short-monotonic -t tilo-sibling-unlock' \
+  vm_b ssh 'journalctl -b --no-pager -o short-monotonic -u 'tilo-unlock-sibling@*'' \
     > "$out/unlock-$label-b-initrd.txt" 2>&1 || true
   note "B stayed at the passphrase prompt ($label) and opened with the passphrase"
 }
@@ -186,7 +186,7 @@ sudo_b "/usr/libexec/tilo-disk-encrypt enrol $b_root_part --sibling --key-file /
   > "$out/unlock-enrol.txt" 2>&1 || { cat "$out/unlock-enrol.txt" >&2; die "the sibling slot could not be enrolled"; }
 sudo_b "cryptsetup luksDump $b_root_part" > "$out/unlock-luksdump.txt"
 grep -q 'tilo-sibling-unlock' "$out/unlock-luksdump.txt" || die "B's header carries no sibling-unlock token"
-sudo_b "tilo-sibling-unlock status $b_root_part" > "$out/unlock-status.json"
+sudo_b "/usr/libexec/tilo/tilo-auth sibling status $b_root_part" > "$out/unlock-status.json"
 if vm_b ssh 'test -e /dev/tpmrm0'; then sealing=tpm2; else sealing=cleartext; fi
 grep -q "\"sealing\": \"$sealing\"" "$out/unlock-status.json" \
   || die "B's material is not sealed as $sealing: $(cat "$out/unlock-status.json")"
@@ -201,7 +201,7 @@ control_a actions invoke continuity.devices "device.unlock.approve.$code" --args
   > "$out/unlock-approve.txt" 2>&1 || { cat "$out/unlock-approve.txt" >&2; die "A could not approve"; }
 await_ssh_b "after A approved its unlock" 120
 await_history approved "$approved_before" approve
-vm_b ssh 'journalctl -b --no-pager -o short-monotonic -t tilo-sibling-unlock' > "$out/unlock-approve-b-initrd.txt" 2>&1 || true
+vm_b ssh 'journalctl -b --no-pager -o short-monotonic -u 'tilo-unlock-sibling@*'' > "$out/unlock-approve-b-initrd.txt" 2>&1 || true
 grep -q 'unlocked with the consent' "$out/unlock-approve-b-initrd.txt" \
   || die "B came up, but not through the sibling unlock: $(cat "$out/unlock-approve-b-initrd.txt")"
 sudo_b 'cat /run/tilo-sibling-unlock/exchange.json' > "$out/unlock-approved-exchange.json" \
@@ -219,7 +219,7 @@ await_history denied "$denied_before" deny
 # --- 10b. replay, while B sits at the prompt of the denied boot ---------------------
 refused_before="$(a_history refused)"
 vm_a ssh 'cat > /tmp/unlock-replay.json' < "$out/unlock-approved-exchange.json"
-vm_a ssh 'tilo-sibling-unlock replay /tmp/unlock-replay.json' > "$out/unlock-replay.txt" 2>&1 || true
+vm_a ssh 'sudo /usr/libexec/tilo/tilo-auth sibling replay /tmp/unlock-replay.json' > "$out/unlock-replay.txt" 2>&1 || true
 grep -qE 'refused: (unknown or reused challenge|this boot was already unlocked)' "$out/unlock-replay.txt" \
   || die "A did not refuse the replayed exchange: $(cat "$out/unlock-replay.txt")"
 grep -q released "$out/unlock-replay.txt" && die "A released a half to a replayed exchange"
@@ -277,16 +277,16 @@ note "an uncertified boot key leaves B at the prompt"
 # and A releases the half without a question. Needs a TPM in B; without one the
 # case is reported, never silently skipped.
 if vm_b ssh 'test -e /dev/tpmrm0'; then
-  sudo_b "tilo-sibling-unlock remove $b_root_part --key-file /root/unlock-e2e/pass \
+  sudo_b "/usr/libexec/tilo/tilo-auth sibling remove $b_root_part --key-file /root/unlock-e2e/pass \
       && /usr/libexec/tilo-disk-encrypt enrol $b_root_part --sibling --unattended \
         --key-file /root/unlock-e2e/pass --network tilo-nearby-lan \
         --session-uid \$(id -u $TILO_USER)" \
     > "$out/unlock-unattended-enrol.txt" 2>&1 \
     || { cat "$out/unlock-unattended-enrol.txt" >&2; die "B could not re-enrol for an unattended unlock"; }
-  sudo_b "tilo-sibling-unlock status $b_root_part" > "$out/unlock-unattended-status.json"
+  sudo_b "/usr/libexec/tilo/tilo-auth sibling status $b_root_part" > "$out/unlock-unattended-status.json"
   reboot_b
   await_ssh_b "without a prompt after its unattended unlock" 120
-  vm_b ssh 'journalctl -b --no-pager -o short-monotonic -t tilo-sibling-unlock' \
+  vm_b ssh 'journalctl -b --no-pager -o short-monotonic -u 'tilo-unlock-sibling@*'' \
     > "$out/unlock-unattended-b-initrd.txt" 2>&1 || true
   grep -q 'unlocked with the consent' "$out/unlock-unattended-b-initrd.txt" \
     || die "B came up, but not through the sibling unlock: $(cat "$out/unlock-unattended-b-initrd.txt")"

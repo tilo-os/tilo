@@ -35,8 +35,8 @@ fn save_labels(app: &mut TestApp<NotesShell>) -> Vec<String> {
 fn a_hosted_note_reports_saved_and_survives_a_reopen() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
-    app.invoke_child::<notes::PagePart>(
-        &notes::part::chain_resource(),
+    app.invoke_child::<notes::NoteList>(
+        &notes::note_list::chain_resource(),
         Invoke::apply(&create_page_action(PageId::new_v4(), None, "Groceries")).unwrap(),
     )
     .unwrap();

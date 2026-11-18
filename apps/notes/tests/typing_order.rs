@@ -12,8 +12,8 @@ fn with_focused_page() -> (TestApp<NotesShell>, PageId) {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
     let page = PageId::new_v4();
-    app.invoke_child::<notes::PagePart>(
-        &notes::part::chain_resource(),
+    app.invoke_child::<notes::NoteList>(
+        &notes::note_list::chain_resource(),
         Invoke::apply(&create_page_action(page, None, "Order")).unwrap(),
     )
     .unwrap();
@@ -176,7 +176,7 @@ fn semantic_new_page_open_adopts_focused_line_and_types_without_pointer_focus() 
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
     app.call_on(
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "new-note",
         serde_json::json!({"title": "Input diagnostic scratch"}),
     )
@@ -216,7 +216,7 @@ fn semantic_open_from_a_narrow_drawer_routes_the_first_printable_key_to_the_note
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
     app.call_on(
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "new-note",
         serde_json::json!({"title": "Routing scratch"}),
     )
@@ -252,7 +252,7 @@ fn semantic_new_page_from_a_narrow_drawer_routes_the_first_printable_key_to_the_
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
     app.call_on(
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "new-note",
         serde_json::json!({"title": "Routing scratch"}),
     )
@@ -264,7 +264,7 @@ fn semantic_new_page_from_a_narrow_drawer_routes_the_first_printable_key_to_the_
     app.harness().click_at(toggle.x, toggle.y);
     assert!(surface(&mut app, |notes| notes.drawer_open_for_test()));
     app.call_on(
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "new-note",
         serde_json::json!({"title": "Fresh routing scratch"}),
     )
@@ -296,7 +296,7 @@ fn focused_editor_behind_a_retained_narrow_drawer_does_not_lose_printable_input_
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
     app.call_on(
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "new-note",
         serde_json::json!({"title": "Routing scratch"}),
     )
@@ -308,7 +308,7 @@ fn focused_editor_behind_a_retained_narrow_drawer_does_not_lose_printable_input_
     app.harness().click_at(toggle.x, toggle.y);
     assert!(surface(&mut app, |notes| notes.drawer_open_for_test()));
     app.call_on(
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "new-note",
         serde_json::json!({"title": "Fresh routing scratch"}),
     )
@@ -364,8 +364,8 @@ fn semantic_open_commits_an_outgoing_title_only_to_its_original_page() {
     use crate::framework_support::surface;
     let (mut app, original) = with_focused_page();
     let other = PageId::new_v4();
-    app.invoke_child::<notes::PagePart>(
-        &notes::part::chain_resource(),
+    app.invoke_child::<notes::NoteList>(
+        &notes::note_list::chain_resource(),
         Invoke::apply(&create_page_action(other, None, "Other")).unwrap(),
     )
     .unwrap();

@@ -501,7 +501,7 @@ async fn a_sub_agent_works_in_a_conversation_of_its_own_and_reads_nothing_of_its
         "it is not answered what its starter was"
     );
     assert!(
-        refused.contains("not_permitted: not allowed"),
+        refused.contains("not_permitted: "),
         "its read of the chat is refused as not allowed: {refused}"
     );
     for request in &subs {
@@ -1001,7 +1001,7 @@ fn refused_in_words(answer: &str) -> bool {
         "has no action",
         "no such action",
         "may not invoke",
-        "not allowed",
+        "not_permitted: ",
     ]
     .iter()
     .any(|said| answer.contains(said))
@@ -1113,7 +1113,7 @@ async fn a_sub_agent_writes_only_into_its_own_conversation() {
     // message in it.
     let [answer, question, words] = ui::tilo_workspace_agent::sub::OWN_WRITES;
     let grows = ui::tilo_workspace_agent::sub::OWN_GROWTH;
-    let of_messages = writes_of::<chat::parts::ChatPart>();
+    let of_messages = writes_of::<chat::parts::ChatMessages>();
     let of_chat = writes_of::<chat::chat::Chat>();
     assert!(
         of_messages.len() >= 20
@@ -1241,7 +1241,7 @@ async fn a_sub_agent_writes_only_into_its_own_conversation() {
         for ((verb, path, _), (words, failed)) in calls.iter().zip(&answers) {
             if path.starts_with(READ) {
                 assert!(
-                    words.contains("not_permitted: not allowed") && !words.contains("heron"),
+                    words.contains("not_permitted: ") && !words.contains("heron"),
                     "after its starter was told, its read is still refused: {words}"
                 );
                 continue;

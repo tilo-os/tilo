@@ -1,7 +1,7 @@
 # Tilo VM host
 
 One per VM-host node of a Tilo host that serves other people's workspaces
-(tilo.sh): `tilo-legacy hosted serve`, which runs each
+(tilo.sh): `tilo-linux-vm hosted serve`, which runs each
 workspace's Linux programs and its Browser in one jailed Firecracker VM
 ([`docs/app-model/environments.md`](../../../docs/app-model/environments.md),
 "Hosted workspace VMs"). `entrypoint.sh` says what the start does.
@@ -31,7 +31,7 @@ workspace's Linux programs and its Browser in one jailed Firecracker VM
   not fit waits; when the node's free memory falls under the reserve, the VMs'
   balloons are asked for memory back first, and a VM is never killed for room.
 - **A placer's view** (optional): `TILO_VM_STATUS_LISTEN`, a TCP address
-  that answers the service's Status alone, for `tilo-legacy hosted place`.
+  that answers the service's Status alone, for `tilo-linux-vm hosted place`.
 - **Plans** (optional): `TILO_VM_PLANS`, the account plans file the service
   admits wakes against.
 - **The guest**: the digest this build pins (`os/hosted-guest-snapshot.env`),

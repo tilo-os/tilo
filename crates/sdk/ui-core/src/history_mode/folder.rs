@@ -39,6 +39,21 @@ pub trait FolderVersions {
     /// # Errors
     /// Why nothing was done: the grants refuse it, or History's verb does.
     fn apply(&self, chunk: TreeChunk, edit: HistoryEdit, node: Option<&str>) -> Result<(), String>;
+
+    /// The whole tree, as the folder's documents hold it now. `None` when it cannot be read.
+    fn tree(&self) -> Option<fs_protocol::tree::Tree>;
+
+    /// Do `actions` to the tree as `invoker`, each one change of the document of the chunk its
+    /// node is in, as the executor writes any action: History names them as that invoker's.
+    ///
+    /// # Errors
+    /// Why an action was not done: the grants refuse it, or the tree does. The ones before it
+    /// are done.
+    fn act(
+        &self,
+        actions: &[fs_protocol::FileAction],
+        invoker: &tilo_actions::ActionInvoker,
+    ) -> Result<(), String>;
 }
 
 #[derive(Default)]
@@ -127,6 +142,29 @@ impl FolderHistorySource {
                 .wrapping_add(generation)
                 .saturating_add(1)
         })
+    }
+
+    /// The whole tree the window shows, when its documents are open and read.
+    #[must_use]
+    pub fn tree(&self) -> Option<fs_protocol::tree::Tree> {
+        self.versions()?.tree()
+    }
+
+    /// Do `actions` to the window's tree as `invoker`: what an app carrying out someone else's
+    /// call on the workspace's files does, so the files' History names who called it
+    /// ([`FolderVersions::act`]).
+    ///
+    /// # Errors
+    /// The folder is not open, or an action was refused.
+    pub fn act(
+        &self,
+        actions: &[fs_protocol::FileAction],
+        invoker: &tilo_actions::ActionInvoker,
+    ) -> Result<(), String> {
+        let versions = self.versions().ok_or("the folder is not open")?;
+        versions.act(actions, invoker)?;
+        super::note_news();
+        Ok(())
     }
 
     /// Whether two sources are the same window's: what a runner checks when it hands a

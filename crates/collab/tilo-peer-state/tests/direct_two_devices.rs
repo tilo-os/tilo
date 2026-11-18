@@ -14,7 +14,7 @@ use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use std::time::Duration;
-use tilo_peer_state::direct::{DIRECT_ALPN, DIRECT_ALPN_V2, DirectSync, Kept};
+use tilo_peer_state::direct::{DIRECT_ALPN, DirectSync, Kept};
 use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_workspace};
 use tilo_user_identity::RevocationList;
 use web_time::SystemTime;
@@ -409,38 +409,4 @@ async fn the_device_dialled_answers_each_write_it_takes_in() {
     .await
     .expect("A answers B's write");
     assert_eq!(answered.kept, Kept::Durable);
-}
-
-/// A device of an older build serves only the link before writes were answered: a device of
-/// this one dials that link instead, and the two converge as before, nothing answered.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_device_that_answers_nothing_newer_is_dialled_on_the_older_link() {
-    let (a, a_key, b, b_key) = two_devices();
-    let a_endpoint = localhost_endpoint(&a_key).await;
-    let _a_router = iroh::protocol::Router::builder(a_endpoint.clone())
-        .accept(DIRECT_ALPN_V2, a.clone())
-        .spawn();
-    let b_endpoint = localhost_endpoint(&b_key).await;
-    let mut answers = b.answers();
-    let _link = tokio::spawn({
-        let (b, b_endpoint, a_addr) = (b.clone(), b_endpoint.clone(), addr(&a_endpoint));
-        async move { b.connect(&b_endpoint, a_addr).await }
-    });
-    let rows = a.read(StatePeer::rows);
-    until(&b, "B holds A's rows over the older link", |b| {
-        b.rows() == rows
-    })
-    .await;
-    let edited = edit(&b, &b_key, "from b");
-    until(&a, "A holds B's edit over the older link", |a| {
-        a.document_heads(APP, RECORD) == edited
-    })
-    .await;
-    assert!(
-        matches!(
-            answers.try_recv(),
-            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
-        ),
-        "nothing is answered on the older link"
-    );
 }

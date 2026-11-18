@@ -1,4 +1,5 @@
 use super::*;
+use ::collaboration::resource::{WORKSPACE, genesis_actor_of, meta_obj};
 use std::path::Path;
 
 tilo_test_env::scenario! {

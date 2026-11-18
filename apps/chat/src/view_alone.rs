@@ -489,9 +489,9 @@ mod tests {
     use crate::ChatApp;
     use crate::effects::ChatEffect;
     use crate::identity::LocalIdentity;
-    use crate::messages::chat_part;
+    use crate::messages::chat_messages;
     use crate::model::ME;
-    use crate::parts::ChatPart;
+    use crate::parts::ChatMessages;
     use crate::testing::Workspace;
 
     const GENERAL: &str = "c_general";
@@ -571,7 +571,7 @@ mod tests {
         crate::testing::apply_part_as(
             workspace,
             ME,
-            ChatPart::POST_VIEW.with(chat_part::PostView {
+            ChatMessages::POST_VIEW.with(chat_messages::PostView {
                 channel: Id::from_raw(GENERAL),
                 text: NonBlank::parse("The areas, as they stand").expect("words"),
                 source: AREAS.to_owned(),
@@ -653,7 +653,7 @@ mod tests {
         crate::testing::apply_part_as(
             &mut workspace,
             ME,
-            ChatPart::REWRITE_VIEW.with(chat_part::RewriteView {
+            ChatMessages::REWRITE_VIEW.with(chat_messages::RewriteView {
                 message: Id::from_raw(message),
                 source: NAMES.to_owned(),
                 reads: vec!["tasks".to_owned()],

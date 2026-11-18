@@ -15,8 +15,6 @@ use collab_types::DocumentMutation;
 use collab_types::{Ed25519PublicKey, SignedOp, document_artifact_id, document_attestation_id};
 use ed25519_dalek::Signer;
 use runtime_identity::wire::{FRAMING, HANDSHAKE_FRAMING, Request, Response};
-#[cfg(test)]
-use tilo_action_policy::Grantee;
 use tilo_action_policy::{ActionKind, Answer};
 use tilo_clock::unix_now;
 use wire_frame::FrameError;
@@ -26,8 +24,8 @@ use tilo_desktop_model::{Workspace, WorkspaceId};
 
 use tilo_lock::MutexRecover as _;
 
-/// The legacy resource for app device-signature grants. Ordinary app
-/// connections no longer accept generic signing, regardless of grants.
+/// The resource a signature grant names. A grant admits operation kinds for
+/// this device; it never makes the device key sign bytes a caller chooses.
 pub const DEVICE_SIGNATURE_RESOURCE: &str = "identity.device-signature";
 
 /// `read` over `workspace`, or `None` when this host has none.
@@ -228,11 +226,6 @@ fn serve(
             Request::Metadata => {
                 metadata_response(tree, &workspace, negotiated.presentation_version != 0)
             }
-            // No policy grant or caller-chosen action can turn the device
-            // key into an arbitrary-message signing oracle.
-            Request::Sign { .. } => Response::Denied(
-                "generic signing is not available to application connections".into(),
-            ),
             Request::CollaborationJoin { workspace_id } => {
                 let bound = Bound {
                     workspace: &workspace,
@@ -405,14 +398,15 @@ fn sign_collaboration_join(
         return Response::Denied("collaboration join requested for a different workspace".into());
     }
     match require_trusted_current_device(&profile) {
-        Ok((device, _)) => Response::Signature(
-            device
-                .sign(&runtime_identity::collaboration_join_signing_bytes(
-                    workspace_id,
-                ))
-                .to_bytes()
-                .to_vec(),
-        ),
+        Ok((device, _)) => match runtime_identity::collaboration_join_digest(workspace_id) {
+            Ok(digest) => {
+                match tilo_user_identity::StatementSigner::sign_digest(&device, &digest) {
+                    Ok(signature) => Response::Signature(signature.to_vec()),
+                    Err(error) => Response::Denied(error.to_string()),
+                }
+            }
+            Err(error) => Response::Denied(error.to_string()),
+        },
         Err(error) => Response::Denied(error.to_string()),
     }
 }
@@ -705,11 +699,11 @@ fn require_trusted_current_device(
     profile: &crate::registry::IdentityProfile,
 ) -> io::Result<(ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert)> {
     let paths = crate::provisioning::collaboration_identity_paths();
-    let device = tilo_user_identity::persist::load_device_key(&paths)
+    let device = tilo_device_identity::persist::load_device_key(&paths)
         .map_err(|error| io::Error::other(error.to_string()))?;
     let device_key = device.verifying_key().to_bytes();
     let cert_path = paths.device_cert_for_user(&profile.user_public_key);
-    let cert = tilo_user_identity::persist::read_device_cert(&cert_path)
+    let cert = tilo_device_identity::persist::read_device_cert(&cert_path)
         .map_err(|error| io::Error::other(error.to_string()))?;
     tilo_user_identity::verify_device_cert(&cert)
         .map_err(|error| io::Error::other(error.to_string()))?;
@@ -815,9 +809,9 @@ mod tests {
             }
         }
     }
-    use tilo_action_policy::{Grant, KindSet, Role};
+    use tilo_action_policy::{Grant, Grantee, KindSet, Role};
 
-    /// A legacy signature grant that must no longer authorize signing.
+    /// A signature grant naming this device's document-save action.
     fn signing_grant(workspace: &Workspace) -> Grant {
         Grant::new(
             "notes-sign-save",
@@ -836,6 +830,7 @@ mod tests {
             ),
         )
     }
+
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
     use std::io::Read as _;
     use std::os::fd::IntoRawFd;
@@ -876,7 +871,7 @@ mod tests {
     }
     fn ensure_collaboration_identity(
         identity_dir: &std::path::Path,
-        paths: &tilo_user_identity::IdentityPaths,
+        paths: &tilo_device_identity::IdentityPaths,
     ) -> io::Result<crate::provisioning::ProvisionOutcome> {
         crate::provisioning::ensure_collaboration_identity(
             identity_dir,
@@ -902,7 +897,7 @@ mod tests {
         let mut sent = [0_u8; 8];
         app.read_exact(&mut sent).expect("response");
         assert_eq!(sent, [4, 0, 0, 0, 2, 2, b'n', b'o']);
-        app.write_all(&[3, 0, 0, 0, 2, 1, b'w']).expect("request");
+        app.write_all(&[3, 0, 0, 0, 1, 1, b'w']).expect("request");
         assert!(matches!(
             read_action_frame::<Request>(&mut service).expect("request"),
             Request::CollaborationJoin { workspace_id } if workspace_id == "w"
@@ -924,7 +919,7 @@ mod tests {
             .set("TILO_IDENTITY_ROOT", &system_root)
             .set(crate::provisioning::FILE_SECRETS_ENV, "1");
         let identity_dir = xdg.join("tilo/identity");
-        let paths = tilo_user_identity::IdentityPaths::under(&system_root);
+        let paths = tilo_device_identity::IdentityPaths::under(&system_root);
         let workspace = WorkspaceId::new().to_string();
         let operation = registry_types::ExternalModerationOperation {
             destination: registry_types::ModerationDestination {
@@ -990,7 +985,7 @@ mod tests {
                 .set("TILO_IDENTITY_ROOT", &system_root)
                 .set(crate::provisioning::FILE_SECRETS_ENV, "1");
             let identity_dir = xdg.join("tilo/identity");
-            let paths = tilo_user_identity::IdentityPaths::under(&system_root);
+            let paths = tilo_device_identity::IdentityPaths::under(&system_root);
             ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
 
             let workspace = WorkspaceId::new();
@@ -1000,7 +995,7 @@ mod tests {
             let profile = crate::registry::identity_for_workspace(&workspace_id)
                 .expect("registry")
                 .expect("profile");
-            let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
+            let device = tilo_device_identity::persist::read_device_key(&paths.device_privkey)
                 .expect("device key");
             let author = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
 
@@ -1249,7 +1244,7 @@ params = []
                 .set("TILO_IDENTITY_ROOT", &system_root)
                 .set(crate::provisioning::FILE_SECRETS_ENV, "1");
             let identity_dir = xdg.join("tilo/identity");
-            let paths = tilo_user_identity::IdentityPaths::under(&system_root);
+            let paths = tilo_device_identity::IdentityPaths::under(&system_root);
             ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
 
             let workspace = WorkspaceId::new();
@@ -1260,7 +1255,7 @@ params = []
             let profile = crate::registry::identity_for_workspace(&workspace_id)
                 .expect("registry")
                 .expect("profile");
-            let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
+            let device = tilo_device_identity::persist::read_device_key(&paths.device_privkey)
                 .expect("device key");
             let author = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
             let mut committed = Workspace::new(workspace, "Workspace");
@@ -1318,7 +1313,7 @@ params = []
                 .set("TILO_IDENTITY_ROOT", &system_root)
                 .set(crate::provisioning::FILE_SECRETS_ENV, "1");
             let identity_dir = xdg.join("tilo/identity");
-            let paths = tilo_user_identity::IdentityPaths::under(&system_root);
+            let paths = tilo_device_identity::IdentityPaths::under(&system_root);
             ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
 
             let workspace = WorkspaceId::new();
@@ -1328,7 +1323,7 @@ params = []
             let profile = crate::registry::identity_for_workspace(&workspace_id)
                 .expect("registry")
                 .expect("profile");
-            let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
+            let device = tilo_device_identity::persist::read_device_key(&paths.device_privkey)
                 .expect("device key");
             let op = SignedOp::new_unsigned(
                 DocumentMutation::Snapshot(b"automerge document".to_vec())
@@ -1407,7 +1402,7 @@ params = []
                 .set("TILO_IDENTITY_ROOT", &system_root)
                 .set(crate::provisioning::FILE_SECRETS_ENV, "1");
             let identity_dir = xdg.join("tilo/identity");
-            let paths = tilo_user_identity::IdentityPaths::under(system_root);
+            let paths = tilo_device_identity::IdentityPaths::under(system_root);
             ensure_collaboration_identity(&identity_dir, &paths).unwrap();
             let photo = runtime_identity::ProfilePhoto::new(1, 1, vec![25, 90, 210, 255]).unwrap();
             runtime_identity::update_identity_photo(&identity_dir, "primary", Some(photo.clone()))
@@ -1457,7 +1452,12 @@ params = []
                 client.metadata().group_public_key(),
                 profile.user_public_key
             );
-            assert!(client.sign(b"photo does not grant signing").is_err());
+            assert!(
+                client
+                    .sign_collaboration_join(&WorkspaceId::new().to_string())
+                    .is_err(),
+                "a photo grants no signature beyond the bound workspace"
+            );
             drop(client);
             let legacy = connect(0).unwrap();
             assert!(legacy.metadata().profile_photo().is_none());
@@ -1511,7 +1511,7 @@ params = []
                 .set("TILO_IDENTITY_ROOT", &system_root)
                 .set(crate::provisioning::FILE_SECRETS_ENV, "1");
             let identity_dir = xdg.join("tilo/identity");
-            let paths = tilo_user_identity::IdentityPaths::under(system_root);
+            let paths = tilo_device_identity::IdentityPaths::under(system_root);
             ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
 
             let workspace = WorkspaceId::new();
@@ -1559,15 +1559,15 @@ params = []
             // Leave the accepted worker waiting between frames; Darwin must not treat
             // a temporarily empty nonblocking receive as the end of this session.
             std::thread::sleep(Duration::from_millis(50));
-            assert!(identity.sign_for("document.save", b"saved").is_err());
+            assert!(
+                identity.sign(b"caller-chosen payload").is_err(),
+                "an application connection never gets a caller-chosen signature"
+            );
+            // Signature and Outside grants admit operation kinds for the typed
+            // document operation below; no request shape turns either into a
+            // signature over caller-chosen bytes.
             let grant = signing_grant(&tree.read().desktop.workspaces[0]);
             tree.write().desktop.workspaces[0].grant(grant);
-            assert!(
-                identity.sign_for("document.save", b"saved").is_err(),
-                "even an exact legacy signature grant must be denied"
-            );
-            // The ordinary socket must deny even a broad Outside grant and
-            // alternate labels, without dispatching on the app's action string.
             let node = tree.read().desktop.workspaces[0].node();
             tree.write().desktop.workspaces[0].grant(Grant::new(
                 "notes-outside",
@@ -1577,26 +1577,13 @@ params = []
                 Answer::Allow,
                 Grantee::person(profile.person_id()),
             ));
-            for action in [
-                "document.save",
-                "document.delete",
-                "sign",
-                "moderation.report",
-                "",
-            ] {
-                assert!(
-                    identity.sign_for(action, b"caller-chosen payload").is_err(),
-                    "broad Outside grants must not enable generic signing for {action:?}"
-                );
-            }
-            assert!(identity.sign(b"caller-chosen payload").is_err());
             let join_proof = identity
                 .sign_collaboration_join(&workspace_id)
                 .expect("the launcher-bound workspace may request a join proof");
             VerifyingKey::from_bytes(&identity.signing_public_key())
                 .expect("device key")
                 .verify(
-                    &runtime_identity::collaboration_join_signing_bytes(&workspace_id),
+                    &runtime_identity::collaboration_join_digest(&workspace_id).unwrap(),
                     &Signature::from_bytes(&join_proof),
                 )
                 .expect("workspace-scoped device proof");
@@ -1629,7 +1616,6 @@ params = []
                 .expect("owner may sign a typed document operation");
             op.signature = collab_types::Signature::from_bytes(op_signature);
             collab_types::verify_op(&op).expect("identity service signature verifies");
-            assert!(identity.sign_for("document.delete", b"no").is_err());
 
             let own_cluster = collab_types::personal_cluster(&identity.group_public_key()).to_string();
             let own_proof = identity
@@ -1638,7 +1624,7 @@ params = []
             VerifyingKey::from_bytes(&identity.signing_public_key())
                 .expect("device key")
                 .verify(
-                    &runtime_identity::collaboration_join_signing_bytes(&own_cluster),
+                    &runtime_identity::collaboration_join_digest(&own_cluster).unwrap(),
                     &Signature::from_bytes(&own_proof),
                 )
                 .expect("a proof for the person's store");

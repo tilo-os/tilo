@@ -1,0 +1,188 @@
+//! Workspace-level collaboration experience shared by every application. Pointer/caret presence answers
+//! *where*. Inference is deliberately local and transient; only the resulting short status is fit for
+//! publication, and a manual status always wins.
+
+use web_time::{Duration, SystemTime};
+
+/// Automatic summaries go stale quickly.
+pub const INFERRED_STATUS_TTL: Duration = Duration::from_secs(5 * 60);
+/// Manual statuses are explicit communication and therefore remain until the author clears them.
+pub const MAX_STATUS_CHARS: usize = 96;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StatusSharing {
+    /// No inferred status is produced or published. Manual status remains available so privacy never
+    /// removes the useful explicit path.
+    Off,
+    /// Only a status typed by the member is visible.
+    ManualOnly,
+    /// A local model may summarize recent semantic actions.
+    #[default]
+    Automatic,
+}
+
+impl StatusSharing {
+    /// The word a profile and the shell's actions name this sharing by.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::ManualOnly => "manual",
+            Self::Automatic => "automatic",
+        }
+    }
+
+    /// The sharing `word` names ([`Self::word`], or `manual-only`), if any.
+    #[must_use]
+    pub fn from_word(word: &str) -> Option<Self> {
+        Some(match word {
+            "off" => Self::Off,
+            "manual" | "manual-only" => Self::ManualOnly,
+            "automatic" => Self::Automatic,
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StatusOrigin {
+    Manual,
+    /// Name of the local generator, surfaced in details rather than disguised as something the
+    /// member literally wrote.
+    Inferred {
+        generator: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LiveStatus {
+    pub text: String,
+    pub origin: StatusOrigin,
+    pub updated_at: SystemTime,
+}
+
+/// What the people in a workspace see of this person, chosen per workspace. A public workspace (one
+/// listed in its host's directory, open to anyone) starts at [`Self::ThatImHere`]: strangers see a
+/// face, never where it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PresenceVisibility {
+    /// Your face, which window you are in, your pointer, your selection and what you say beside your
+    /// pointer.
+    WhereIAm,
+    /// Your face only: not which window, not your pointer.
+    ThatImHere,
+    /// Nothing: you do not appear, and you do not see others' pointers either.
+    Nothing,
+}
+
+impl PresenceVisibility {
+    /// What a workspace starts at before the person chooses.
+    #[must_use]
+    pub const fn default_for(public: bool) -> Self {
+        if public {
+            Self::ThatImHere
+        } else {
+            Self::WhereIAm
+        }
+    }
+
+    /// Whether others may see where this person is: which window, their pointer, caret and selection,
+    /// what they say beside the pointer.
+    #[must_use]
+    pub const fn shows_where(self) -> bool {
+        matches!(self, Self::WhereIAm)
+    }
+
+    /// Whether others may see this person at all.
+    #[must_use]
+    pub const fn shows_presence(self) -> bool {
+        !matches!(self, Self::Nothing)
+    }
+
+    /// Whether this person sees others' pointers: someone who shows nothing sees nothing of where
+    /// others are, which is fair.
+    #[must_use]
+    pub const fn sees_pointers(self) -> bool {
+        !matches!(self, Self::Nothing)
+    }
+
+    /// The stored word.
+    #[must_use]
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::WhereIAm => "where",
+            Self::ThatImHere => "here",
+            Self::Nothing => "nothing",
+        }
+    }
+
+    /// The choice a stored word names; `None` for one this build does not know.
+    #[must_use]
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "where" => Some(Self::WhereIAm),
+            "here" => Some(Self::ThatImHere),
+            "nothing" => Some(Self::Nothing),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod presence_choice_tests {
+    use super::*;
+    use crate::presence::{Availability, IDLE_AFTER};
+
+    tilo_test_env::scenario! {
+        fn presence_and_availability_follow_the_workspace_and_the_person;
+
+        phase what_people_see_defaults_by_workspace_and_round_trips;
+        // A public workspace shows strangers a face and nothing of where it is; a private one shows where;
+        // Nothing shows nothing and sees no pointers.
+        {
+            assert_eq!(
+                PresenceVisibility::default_for(true),
+                PresenceVisibility::ThatImHere
+            );
+            assert_eq!(
+                PresenceVisibility::default_for(false),
+                PresenceVisibility::WhereIAm
+            );
+            assert!(!PresenceVisibility::ThatImHere.shows_where());
+            assert!(PresenceVisibility::ThatImHere.shows_presence());
+            assert!(!PresenceVisibility::Nothing.shows_presence());
+            assert!(!PresenceVisibility::Nothing.sees_pointers());
+            for choice in [
+                PresenceVisibility::WhereIAm,
+                PresenceVisibility::ThatImHere,
+                PresenceVisibility::Nothing,
+            ] {
+                assert_eq!(PresenceVisibility::from_id(choice.id()), Some(choice));
+            }
+        }
+
+        phase idle_and_away_come_on_their_own;
+        // Locked is away; five quiet minutes is idle unless another status was chosen.
+        {
+            let quiet = IDLE_AFTER;
+            assert_eq!(
+                Availability::shown(Availability::Available, false, quiet),
+                Availability::Idle
+            );
+            assert_eq!(
+                Availability::shown(Availability::Available, false, Duration::from_secs(10)),
+                Availability::Available
+            );
+            assert_eq!(
+                Availability::shown(Availability::Focusing, false, quiet),
+                Availability::Focusing
+            );
+            assert_eq!(
+                Availability::shown(Availability::Focusing, true, Duration::ZERO),
+                Availability::Away
+            );
+            assert!(Availability::Idle.dims() && Availability::Away.dims());
+            assert!(!Availability::Focusing.dims());
+        }
+    }
+}

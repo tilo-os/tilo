@@ -652,8 +652,11 @@ impl TreeBrowser {
     fn handoff(app: &str, label: &str) -> Option<ActionEmitter<String>> {
         let spec =
             ApplicationLaunch::content_spec(app, "open", label, &t("files-tree-open-detail"));
-        let row = ui::framework::LiveRow::new(format!("{app}.app"), "applications.app", label)
-            .operation(spec.clone());
+        let row = ui::framework::LiveRow::typed::<ui::framework::Application>(
+            format!("{app}.app"),
+            label,
+        )
+        .operation(spec.clone());
         let binding = ActionBinding::new(&row, &spec, |hash: String| {
             let mut arguments = serde_json::Map::new();
             arguments.insert("content_hash".into(), serde_json::Value::String(hash));
@@ -844,70 +847,38 @@ mod window_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 
     use super::*;
+    use fs_protocol::FileAction;
     use fs_protocol::tree::Placing;
-    use fs_protocol::{
-        ContentHash, Ed25519PublicKey, FileActor, FileAttributionV1, FileProvenance,
-        FileVersionAttributionV1, FileVersionId, FileVersionV1,
-    };
-    use ui::automerge::{AutoCommit, ObjType};
+    use ui::automerge::AutoCommit;
 
     const WORKSPACE: &str = "00000000-0000-4000-8000-0000000000f1";
 
-    /// A version of `document_id` written by an agent session for the person at `[7; 32]`.
-    fn write_version(doc: &mut AutoCommit, document_id: fs_protocol::FileDocumentId, id: u128) {
-        use ui::automerge::ScalarValue;
-        use ui::tilo_resource::Slot;
-
-        let version = FileVersionV1 {
-            id: FileVersionId(uuid::Uuid::from_u128(id)),
-            document_id,
-            parents: Vec::new(),
-            actor: FileActor {
-                person: Ed25519PublicKey([7; 32]),
-                device: Ed25519PublicKey([9; 32]),
-            },
-            timestamp_ms: 1_767_225_600_000 + u64::try_from(id).unwrap() * 1_000,
-            content_hash: Some(ContentHash([1; 32])),
-            metadata_hash: ContentHash([2; 32]),
-            provenance: FileProvenance::Edit,
-        };
-        let root = Slot::Key(&ui::automerge::ROOT, "history")
-            .object(doc, ObjType::Map)
-            .unwrap();
-        let record = Slot::Key(&root, &document_id.0.to_string())
-            .object(doc, ObjType::Map)
-            .unwrap();
-        let versions = Slot::Key(&record, "versions")
-            .object(doc, ObjType::Map)
-            .unwrap();
-        Slot::Key(&versions, &version.id.0.to_string())
-            .put_scalar(
-                doc,
-                ScalarValue::Bytes(fs_protocol::canonical::canonical_bytes(&version).unwrap()),
-            )
-            .unwrap();
-        let attributed = FileVersionAttributionV1 {
-            version_id: version.id,
-            attribution: FileAttributionV1 {
-                writer: fs_protocol::AttributedWriter::agent_session("claude", "abc"),
-                label: "Claude Code".into(),
-                color: [10, 20, 30],
-            },
-        };
-        let map = Slot::Key(&record, "attributions")
-            .object(doc, ObjType::Map)
-            .unwrap();
-        Slot::Key(&map, &version.id.0.to_string())
-            .put_scalar(
-                doc,
-                ScalarValue::Bytes(fs_protocol::canonical::canonical_bytes(&attributed).unwrap()),
-            )
-            .unwrap();
-        doc.commit();
+    /// An agent session working for the person at `[7; 32]`.
+    fn agent() -> ui::tilo_actions::ActionInvoker {
+        ui::tilo_actions::ActionInvoker::admitted(
+            &ui::tilo_actions::Acting::agent("claude").in_session("abc"),
+        )
+        .named(Some("Claude Code".into()))
+        .acting_for(hex::encode([7_u8; 32]))
     }
 
-    /// A device's writes into chunk 1's document `doc`: `terms.txt` at the root and
-    /// `legal/nda.txt`, each with a version of its own.
+    /// Apply `action` to `doc` as the executor does: one change, naming `invoker`, else the
+    /// person at the device.
+    fn apply(
+        doc: &mut AutoCommit,
+        action: &FileAction,
+        invoker: Option<ui::tilo_actions::ActionInvoker>,
+    ) {
+        let context = fs_protocol::file_action::change_context("tree", action.described(), invoker);
+        let encoded = ui::tilo_actions::EncodedAction {
+            type_id: fs_protocol::file_action::FILE_ACTION_TYPE.to_owned(),
+            payload: serde_json::to_vec(action).unwrap(),
+        };
+        ui::tilo_actions::apply_local_with_context(doc, action, encoded, None, context).unwrap();
+    }
+
+    /// A device's writes into chunk 1's document `doc`: `terms.txt` at the root, written by an
+    /// agent, and `legal/nda.txt`, whose folder the person renamed.
     fn write_terms_and_legal(doc: &mut AutoCommit) {
         let mut held = Tree::default();
         let placed = fs_protocol::tree::place(
@@ -922,13 +893,25 @@ mod window_tests {
             (1_000, &hex::encode([9_u8; 32])),
         )
         .unwrap();
-        let document_id = held.node(&placed.id).unwrap().document_id.unwrap();
-        write_version(doc, document_id, 1);
+        doc.commit();
+        apply(
+            doc,
+            &FileAction::Write {
+                node: placed.id,
+                hash: Some("c".repeat(64)),
+                size: 14,
+                mtime: 1_500,
+                author: hex::encode([9_u8; 32]),
+                revision: None,
+                keep_preview: false,
+            },
+            Some(agent()),
+        );
         let folder = fs_protocol::tree::place(
             (&mut *doc, 1),
             &mut held,
             ROOT_ID,
-            "legal",
+            "drafts",
             Placing::Folder,
             (2_000, &hex::encode([9_u8; 32])),
         )
@@ -945,8 +928,17 @@ mod window_tests {
             (2_500, &hex::encode([9_u8; 32])),
         )
         .unwrap();
-        let folder_resource = held.node(&folder.id).unwrap().document_id.unwrap();
-        write_version(doc, folder_resource, 2);
+        doc.commit();
+        apply(
+            doc,
+            &FileAction::Move {
+                node: folder.id.clone(),
+                parent: ROOT_ID.to_owned(),
+                name: "legal".into(),
+                mtime: 3_000,
+            },
+            None,
+        );
     }
 
     #[test]
@@ -1013,7 +1005,7 @@ mod window_tests {
             .into_iter()
             .find(|(_, node)| {
                 node.label()
-                    .is_some_and(|label| label.ends_with("Edited legal"))
+                    .is_some_and(|label| label.contains("legal") && !label.contains("nda"))
             })
             .map_or_else(
                 || panic!("History lists the folder's change: {labels:?}"),

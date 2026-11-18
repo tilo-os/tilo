@@ -9,7 +9,7 @@ use std::fs as stdfs;
 use fs::eviction::EvictionQueue;
 use fs::{AvailabilityRegistry, Namespace, load_mount_identity};
 use tempfile::tempdir;
-use tilo_user_identity::IdentityPaths;
+use tilo_device_identity::IdentityPaths;
 
 fn truncated(bytes: &[u8]) -> Vec<u8> {
     let midpoint = bytes.len().div_ceil(2);

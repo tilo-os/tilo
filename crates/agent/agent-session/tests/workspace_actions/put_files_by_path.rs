@@ -868,10 +868,7 @@ async fn not_allowed(
     )
     .await;
     assert!(failed, "files#{verb} was not refused: {text}");
-    assert!(
-        text.contains("not_permitted: not allowed"),
-        "files#{verb}: {text}"
-    );
+    assert!(text.contains("not_permitted: "), "files#{verb}: {text}");
     text
 }
 

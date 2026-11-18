@@ -18,10 +18,10 @@ rpms=${2:?$usage}
 binaries=${3:?$usage}
 out=${4:?$usage}
 cd "$repo_root"
-for bin in tilo-server tilo-server-admin tilo-enroll fs tilo-legacy tilo-hosted-jail tilo-api \
+for bin in tilo-server tilo-server-admin tilo-enroll fs tilo-linux-vm tilo-hosted-jail tilo-api \
   tilolang-process \
   tilo-esp-write tilo-image-policy-check tilo-image-trust tilo-board-successor \
-  tilo-rollback tilo-auth tilo-boot-signin tilo-sibling-unlock; do
+  tilo-rollback tilo-auth tilo-boot-signin; do
   [[ -x $binaries/$bin ]] || die "no $bin in $binaries"
 done
 # The mirrored bootc base and the install-time boot loader configuration the desktop image also

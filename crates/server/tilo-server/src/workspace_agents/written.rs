@@ -24,10 +24,10 @@
 use std::sync::Mutex;
 
 use chat::agent_stream::{AgentFinish, AgentOutput, AgentStreamEvent};
+use collaboration::permissions::MemberId;
 use serde_json::{Map, json};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
-use ui::permissions::MemberId;
 
 use super::{Ask, CHAT, Outcome, Reply, Turn, asks, invoke_named};
 
@@ -165,7 +165,7 @@ impl Written {
     /// Take up what the reply holds already, as `held` keeps it: words a turn wrote into it
     /// on a server that stopped before that turn ended. What this turn writes stands below
     /// them.
-    pub(super) fn goes_on_from(&self, held: &chat::parts::ChatPart) {
+    pub(super) fn goes_on_from(&self, held: &chat::parts::ChatMessages) {
         let Some(place) = &self.place else {
             return;
         };
@@ -421,7 +421,7 @@ impl Reply {
             &self.provider,
             &self.caller,
             &route,
-            &ui::resource::chain_resource_id(&chat::parts::chain()),
+            &collab_types::document::chain_resource_id(&chat::parts::chain()),
             "stream-output",
             arguments,
         )

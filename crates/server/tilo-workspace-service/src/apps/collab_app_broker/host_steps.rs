@@ -432,7 +432,7 @@ pub(crate) mod signed_test_support {
                 .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
             tilo_identity::provisioning::ensure_collaboration_identity(
                 &directory.path().join("config/tilo/identity"),
-                &tilo_user_identity::IdentityPaths::under(directory.path().join("identity")),
+                &tilo_device_identity::IdentityPaths::under(directory.path().join("identity")),
                 tilo_identity::provisioning::IdentityStorage::Files,
             )
             .expect("provision the production receipt signer");
@@ -489,9 +489,7 @@ pub(crate) mod signed_test_support {
                 workspace_id: workspace_id.clone(),
                 device_certificate: serde_json::to_vec(&certificate).unwrap(),
                 proof: key
-                    .sign(&runtime_identity::collaboration_join_signing_bytes(
-                        &workspace_id,
-                    ))
+                    .sign(&runtime_identity::collaboration_join_digest(&workspace_id).unwrap())
                     .to_bytes()
                     .to_vec(),
             }
@@ -537,9 +535,7 @@ pub(crate) mod signed_test_support {
                 workspace_id: fixture.workspace.clone(),
                 device_certificate: serde_json::to_vec(&certificate).unwrap(),
                 proof: key
-                    .sign(&runtime_identity::collaboration_join_signing_bytes(
-                        &fixture.workspace,
-                    ))
+                    .sign(&runtime_identity::collaboration_join_digest(&fixture.workspace).unwrap())
                     .to_bytes()
                     .to_vec(),
             }
@@ -1472,7 +1468,7 @@ mod settings_documents_tests {
         settings_resources,
     };
 
-    const APP: &str = ui::apps::SETTINGS;
+    const APP: &str = tilo_app_id::apps::SETTINGS;
     const RESOURCE: &str = "settings:power";
 
     /// The session's settings, in its place: one section whose lock delay

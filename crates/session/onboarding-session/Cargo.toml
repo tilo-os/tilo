@@ -54,6 +54,7 @@ tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tracing.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
+tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["fs", "pipe", "process", "stdio"] }

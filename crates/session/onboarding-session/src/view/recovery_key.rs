@@ -16,7 +16,7 @@ use tilo_onboarding::t_args;
 /// restored backup file does.
 pub(super) fn import_recovery_words(
     import_dir: &Path,
-    identity_paths: &tilo_user_identity::IdentityPaths,
+    identity_paths: &tilo_device_identity::IdentityPaths,
     words: &str,
 ) -> Result<MintedIdentity, String> {
     let store = tilo_identity::registry::IdentityRegistryStore::at(import_dir);

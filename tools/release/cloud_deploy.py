@@ -692,12 +692,12 @@ def load_qualification(path: Path) -> Qualification:
 # The guest a deployment boots, published and pinned like any other product: the release's
 # `sha-<commit>` tag holds the guest that release builds, so the evidence can name the exact
 # one without trusting the manifest to say which release it belongs to.
-GUEST_IMAGE = "registry.tilo.so/tilo/legacy-guest"
+GUEST_IMAGE = "registry.tilo.so/tilo/linux-guest"
 
 
 def guest_of(registry: Registry, revision: str, tag: str) -> str:
     """The digest of the guest this release publishes."""
-    return registry.image(Service("legacy-guest", GUEST_IMAGE, "", ""), tag.format(commit=revision)).digest
+    return registry.image(Service("linux-guest", GUEST_IMAGE, "", ""), tag.format(commit=revision)).digest
 
 
 def check_qualification(qualification: Qualification, images: Mapping[str, Image],

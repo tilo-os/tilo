@@ -428,7 +428,7 @@ mod tests {
                     }
                 );
                 let registry = tilo_actions::ActionRegistry::with(
-                    ui::tilo_resource::group::register::<crate::PagePart>,
+                    ui::tilo_resource::group::register::<crate::NoteList>,
                 );
                 tilo_actions::replay(&mut peer, &envelope, &registry).unwrap();
                 let mut peer_index = NoteDateIndex::default();

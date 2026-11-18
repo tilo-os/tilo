@@ -204,7 +204,7 @@ enum = "GovernanceRow"
 reason = "the rows a writer's operation names are new in this type and no build writes an operation naming `Layout`: the workspace's shared layout is no longer a governed row, and every operation stored before it is one that names a row that still exists"
 
 [[break]]
-file = "crates/runtime/legacy-vm/src/hosted/size.rs"
+file = "crates/runtime/linux-vm/src/hosted/size.rs"
 enum = "VmSize"
 reason = "drops `Browser`, its last variant, so every other variant keeps its position: only a browser environment's VM was of that size, and its meter was deleted with it when it stopped and it billed no log, so no stored byte names it; the hosted-VM socket that carried it is between one host's service and its member, which ship together"
 
@@ -281,7 +281,7 @@ reason = "`ChannelKeys` is renamed `GroupKeys` at the same index: postcard write
 [[break]]
 file = "crates/runtime/tilo-identity-client/src/lib.rs"
 enum = "Request"
-reason = "`ChannelKeys` is renamed `GroupKeys` at the same index: postcard writes no names, so the bytes read the same"
+reason = "`Sign` is gone, so the collaboration requests move down one place; the identity service and every app are one build that ships together, no identity-service bytes are stored, and the bytes of a running connection die with it"
 
 [[break]]
 file = "crates/runtime/tilo-identity-client/src/lib.rs"
@@ -400,7 +400,7 @@ reason = "renames RecordsArrived to ResourcesArrived in place: the runtime inter
 [[break]]
 file = "crates/session/network-actor/src/lib.rs"
 enum = "PersonalFabricPayload"
-reason = "renames the RecordContent variants to DocumentContent in place: devices of one person speak one build's format"
+reason = "frames between two of one person's devices are never kept and both speak one build's format: the RecordContent variants became DocumentContent in place, and what a device says of itself is a Presence frame where its stamped state was"
 
 [[break]]
 file = "crates/collab/actions/src/remote/workspace_activity.rs"
@@ -451,3 +451,42 @@ reason = "the rate-limited answer a spent change budget sent goes with that budg
 file = "crates/collab/action-policy/src/grant.rs"
 enum = "Lifetime"
 reason = "drops the retired task lifetime that kept the later lifetimes at their places: stored formats change with the code, and grants an older build wrote no longer read"
+
+[[break]]
+file = "crates/agent/model-client/src/lib.rs"
+enum = "Request"
+reason = "the raw-body plan request had no caller left once every model turn went through the neutral complete request; a request is JSON (named by its verb) on a live socket between an app and its gateway, which ship together, and nothing keeps it, so an app that still sent the verb is refused as an unknown request rather than misread"
+
+[[break]]
+file = "crates/agent/provider-config/src/management.rs"
+enum = "CredentialStatus"
+reason = "an unbound provider key is no longer read or adopted, so there is no state left to report; the status is JSON (renamed by a snake_case name) on a live socket between an app and its gateway, which ship together, and nothing keeps it, so a person with an old unbound key enters it again"
+[[break]]
+file = "crates/server/tilo-server-protocol/src/transport.rs"
+enum = "Envelope"
+reason = "the live-frame and who-is-here tombstones go, and the live session's join and member notices take their names where they stood: presence, live frames and who is here are the workspace's live session. The peer protocol version is bumped from 55 to 56 with the removal and `previous-peer-frames.txt` moves to it, so a device at another version admits nothing from this one"
+
+[[break]]
+file = "crates/server/tilo-delivery-protocol/src/transport_v2.rs"
+enum = "EnvelopeV2"
+reason = "the ten private action-connection frames went with the broker that opened them; a device's actions ride its own connection now. Postcard fails to decode one where it stood, which ends the session, and the peer protocol version is bumped from 55 to 56 with the removal, so a device at another version admits nothing from this one"
+
+[[break]]
+file = "crates/collab/actions/src/remote.rs"
+enum = "RemoteActionMessage"
+reason = "the record-request and record-watch frames went with the record API they served, and the variants after them move up; the remote-action envelope version is bumped from 1 to 2 with the removal, so the server refuses an older endpoint's frame as undeliverable instead of forwarding it to be read at the wrong positions"
+
+[[break]]
+file = "apps/terminal/src/target.rs"
+enum = "SessionTarget"
+reason = "the variant is renamed from `Legacy` to `LinuxVm` because that is the VM's name. A target is JSON in the terminal's own session record, where an unknown kind decodes as no target and the tab opens its default, so a record written by another build cannot be misread; nothing else sends it (the supervisor's target type does not carry a VM target)"
+
+[[break]]
+file = "crates/runtime/ush/src/broker.rs"
+enum = "Request"
+reason = "the variant is renamed from `LegacyLaunch` to `LinuxVmLaunch` because that is the VM's name. A request is one JSON frame on the runtime's local broker socket, written and read by the same executable: nothing keeps it and nothing at another version sends it"
+
+[[break]]
+file = "crates/agent/agent-session/src/worker/proto.rs"
+enum = "Mode"
+reason = "the picture slot served only the planner's own reads of pictures, which went with it once agent members work through the MCP tools; a mode travels on the pipe between a host and the worker processes it starts from its own binary, and nothing keeps it"

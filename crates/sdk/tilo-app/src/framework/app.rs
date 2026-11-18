@@ -745,8 +745,9 @@ pub(crate) enum Editing {
         me: MemberId,
         run: Box<Run>,
     },
-    /// Never: a past version in History mode.
-    ReadOnly,
+    /// Never: a past version in History mode, launched as `run` says (the record whose chains it
+    /// reads, the item it shows).
+    ReadOnly(Box<Run>),
 }
 
 /// The permission that makes the record `run` opened editable: writing the
@@ -799,7 +800,7 @@ impl RootShell {
                 me,
                 run,
             } => (Some(permissions), false, Some(me), *run),
-            Editing::ReadOnly => (None, true, None, Run::past()),
+            Editing::ReadOnly(run) => (None, true, None, *run),
         };
         let scope = write_scope(app, &run);
         let read_only = read_only
@@ -1165,6 +1166,10 @@ fn open_root<A: ResourceApp>(
         Ok(reader) => reader,
         Err(reason) => return Ok(Err(reason)),
     };
+    let record = match &editing {
+        Editing::Live { run, .. } => run.launched.record.clone(),
+        Editing::ReadOnly(_) => None,
+    };
     let root = build_root::<A>(reader, editing, context.storage(), hosted(context));
     if let Some(typed) = root.typed::<A::Resource>() {
         let record = typed.live.get();
@@ -1183,7 +1188,11 @@ fn open_root<A: ResourceApp>(
             }
         }
     }
-    let parts = Rc::new(super::history::ChainHistory(Rc::downgrade(&root.storage)));
+    let parts = Rc::new(super::history::ChainHistory {
+        storage: Rc::downgrade(&root.storage),
+        preview: super::preview::part_preview::<A>,
+        record,
+    });
     Ok(Ok((root.into_widget(), parts)))
 }
 
@@ -1239,7 +1248,7 @@ pub(crate) fn hosted(context: &ProcessContext) -> super::settings::Hosted {
         records: Some((
             context.records().clone(),
             context.author().clone(),
-            context.live_permissions(),
+            Some(context.live_permissions()),
         )),
         workspace: context
             .workspace_resources()

@@ -2092,7 +2092,7 @@ fn render_frame(app: &mut ChatApp, w: f64, h: f64) {
 }
 
 fn stage_agent_work(app: &mut ChatApp, doc: &mut crate::testing::Workspace) {
-    let mut head = crate::parts::ChatPart::clone(&doc.messages().parts()[0].1);
+    let mut head = crate::parts::ChatMessages::clone(&doc.messages().parts()[0].1);
     let (summons, message) = crate::resource::agent_summons();
     head.messages.push(summons, message);
     doc.write_part(0, &head).unwrap();

@@ -35,6 +35,9 @@ mod agent_member;
 #[path = "workspace_actions/api.rs"]
 mod api;
 #[cfg(test)]
+#[path = "workspace_actions/api_apps.rs"]
+mod api_apps;
+#[cfg(test)]
 #[path = "workspace_actions/api_invites.rs"]
 mod api_invites;
 #[cfg(test)]
@@ -86,6 +89,9 @@ mod chat_restart;
 #[path = "workspace_actions/delete_workspace.rs"]
 mod delete_workspace;
 #[cfg(test)]
+#[path = "workspace_actions/device_writes.rs"]
+mod device_writes;
+#[cfg(test)]
 #[path = "workspace_actions/encrypted_resource.rs"]
 mod encrypted_resource;
 #[cfg(test)]
@@ -103,6 +109,9 @@ mod hosted_agent_issues;
 #[cfg(test)]
 #[path = "workspace_actions/hosted_agent_questions.rs"]
 mod hosted_agent_questions;
+#[cfg(test)]
+#[path = "workspace_actions/hosted_agent_sessions.rs"]
+mod hosted_agent_sessions;
 #[cfg(test)]
 #[path = "workspace_actions/hosted_agent_turns.rs"]
 mod hosted_agent_turns;
@@ -128,6 +137,9 @@ mod invocations_read;
 #[path = "workspace_actions/joining.rs"]
 mod joining;
 #[cfg(test)]
+#[path = "workspace_actions/key_writes.rs"]
+mod key_writes;
+#[cfg(test)]
 #[path = "workspace_actions/mcp_issue_by_id.rs"]
 mod mcp_issue_by_id;
 #[cfg(test)]
@@ -141,6 +153,9 @@ mod member_own;
 mod member_roles;
 #[cfg(test)]
 #[cfg(test)]
+#[path = "workspace_actions/one_workspace_list.rs"]
+mod one_workspace_list;
+#[cfg(test)]
 #[path = "workspace_actions/own_agent.rs"]
 mod own_agent;
 #[cfg(test)]
@@ -149,6 +164,9 @@ mod public_documents;
 #[cfg(test)]
 #[path = "workspace_actions/put_files.rs"]
 mod put_files;
+#[cfg(test)]
+#[path = "workspace_actions/refresh_reads.rs"]
+mod refresh_reads;
 #[path = "workspace_actions/resource_support.rs"]
 mod resource_support;
 #[cfg(test)]
@@ -166,6 +184,10 @@ mod throughput;
 #[cfg(test)]
 #[path = "workspace_actions/workspace_find.rs"]
 mod workspace_find;
+
+#[cfg(test)]
+#[path = "workspace_actions/search_beside_requests.rs"]
+mod search_beside_requests;
 
 #[cfg(test)]
 #[path = "workspace_actions/workspace_per_customer.rs"]
@@ -411,7 +433,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     assert_eq!(locator.provider, provider);
     for wanted in [
         ViewResourceQuery {
-            id: ui::tilo_resource::items::item_resource_id::<chat::parts::ChatPart>(
+            id: ui::tilo_resource::items::item_resource_id::<chat::parts::ChatMessages>(
                 "messages",
                 &ui::tilo_resource::Id::from_raw("missing"),
             ),

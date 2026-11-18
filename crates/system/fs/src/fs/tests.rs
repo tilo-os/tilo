@@ -1775,14 +1775,7 @@ mod history_integration_tests {
         drop(history);
         let reopened =
             Namespace::from_bytes("reopened-history", &namespace.lock_recover().save()).unwrap();
-        assert_eq!(
-            reopened
-                .document_history(document_id)
-                .unwrap()
-                .versions
-                .len(),
-            3
-        );
+        assert_eq!(reopened.document_versions(document_id).len(), 3);
     }
 }
 

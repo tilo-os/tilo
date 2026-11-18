@@ -20,13 +20,11 @@ use runtime_collab::recall::Fold;
 use serde_json::{Map, json};
 use ui::time::Duration;
 
-use super::{Asked, Session, TaskAction};
+use super::conversation::MESSAGES;
+use super::{Asked, Session};
 
 /// The chat action that keeps a conversation's summary.
 const KEEP_SUMMARY: &str = "keep-summary";
-/// What separates a message's own id from its conversation's address, where the turn's item is
-/// published.
-const MESSAGES: &str = "/messages/";
 /// How long the one question may take.
 const ASK_TIMEOUT: Duration = Duration::from_secs(20);
 /// How often the wait for its answer looks whether the person ended the turn.
@@ -42,71 +40,34 @@ impl Session {
         let Some(fold) = run.fold.clone() else {
             return Ok(());
         };
+        let Some((_, message)) = run.message.rsplit_once(MESSAGES) else {
+            return Ok(());
+        };
+        let item = format!("{MESSAGES}{message}");
         // Where the answer could not be kept, no model is asked.
-        let Some(action) = self.keep_summary_action(run, &fold) else {
+        if self.offered_on(&item, KEEP_SUMMARY).is_none() {
             tracing::info!(
                 conversation = %fold.conversation,
                 "the workspace offers no `keep-summary` on the turn: the summary stays as it is"
             );
             return Ok(());
-        };
+        }
         let Some(answer) = self.ask_once(run, &fold) else {
             return Ok(());
         };
-        let mut arguments = action.arguments.clone();
-        arguments.insert("text".into(), json!(fold.kept(&answer)));
-        match self.start_task_invocation(run, &action, &arguments)? {
-            Ok(following) => {
-                let mut followed = [following];
-                self.follow_native(run, &mut followed)?;
-                if let Some(Err(stop)) = followed.first().and_then(|kept| kept.outcome.as_ref()) {
-                    tracing::warn!(?stop, "the conversation did not keep its summary");
-                } else {
-                    tracing::info!(
-                        conversation = %fold.conversation,
-                        through = %fold.through,
-                        rewritten = fold.condenses(),
-                        "kept the conversation's summary"
-                    );
-                }
-            }
-            Err(stop) => tracing::warn!(?stop, "the conversation refused its summary"),
-        }
-        Ok(())
-    }
-
-    /// Chat's `keep-summary` as the broker offers it on the turn's message, with everything it
-    /// takes but the summary's text. Absent where the workspace offers none there.
-    fn keep_summary_action(&mut self, run: &Asked, fold: &Fold) -> Option<TaskAction> {
-        let (_, message) = run.message.rsplit_once(MESSAGES)?;
-        let item = format!("{MESSAGES}{message}");
-        let offer = self
-            .task_catalogue()
-            .offers
-            .iter()
-            .find(|offer| {
-                offer.descriptor.address.action == KEEP_SUMMARY
-                    && offer.descriptor.address.resource.ends_with(&item)
-            })
-            .cloned()?;
         let mut arguments = Map::new();
         arguments.insert("conversation".into(), json!(fold.conversation));
         arguments.insert("through".into(), json!(fold.through));
         arguments.insert("through_ts".into(), json!(fold.through_ts));
-        // Checked with a text of its own, so a workspace whose verb takes other arguments is
-        // found out before a model is asked.
-        let mut checked = arguments.clone();
-        checked.insert("text".into(), json!(fold.summary));
-        match super::task_action_from_offer(&offer, checked) {
-            Ok(mut action) => {
-                action.arguments = arguments;
-                Some(action)
-            }
-            Err(error) => {
-                tracing::warn!(%error, "the conversation's `keep-summary` refused its arguments");
-                None
-            }
-        }
+        arguments.insert("text".into(), json!(fold.kept(&answer)));
+        self.invoke_on_message(run, &item, KEEP_SUMMARY, arguments, true)?;
+        tracing::info!(
+            conversation = %fold.conversation,
+            through = %fold.through,
+            rewritten = fold.condenses(),
+            "kept the conversation's summary"
+        );
+        Ok(())
     }
 
     /// The one answer to what `fold` asks, from the model this session asks single questions of.
@@ -143,7 +104,7 @@ impl Session {
                     return None;
                 }
                 Err(RecvTimeoutError::Timeout) => {
-                    if self.task_cancelled(run) {
+                    if self.link.cancelled(run.id) {
                         stop.store(true, Ordering::Relaxed);
                         return None;
                     }

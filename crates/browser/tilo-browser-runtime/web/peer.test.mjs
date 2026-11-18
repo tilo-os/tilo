@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, HOST_CHANGED, PROFILE_DEVICE, profileDevice, REFUSED_JOIN, renewDevice, UNUSABLE_INVITATION, rendererFailureCode, statusAsset, storageFailureCode, withDeviceKey, withStartFields} from './peer.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
 import {memberText} from './json-text.mjs';
-import {forgetSiteHosts, nameSiteHost, STALE_SITE_HOST, staleSiteHost} from './site-host.mjs';
+import {forgetSiteServers, nameSiteServer, STALE_SITE_SERVER, staleSiteServer} from './site-host.mjs';
 import {failureCause} from './failure-screen.mjs';
 import {hostUnreachable} from './session-refusal.mjs';
 import {deviceRemoved} from './session-refusal.mjs';
@@ -359,8 +359,8 @@ const refusalOptions = (runtime, extra = {}) => ({
 });
 
 test('an entry whose site names its host is entered with no request to the host', async t => {
-  t.after(forgetSiteHosts);
-  nameSiteHost(home());
+  t.after(forgetSiteServers);
+  nameSiteServer(home());
   const runtime = fakeRuntime();
   let asked = 0;
   runtime.hostInfo = async () => { asked += 1; throw new Error('the host is not asked'); };
@@ -374,8 +374,8 @@ test('an entry whose site names its host is entered with no request to the host'
 });
 
 test('a page its site told of the host connects to it again without asking it', async t => {
-  t.after(forgetSiteHosts);
-  nameSiteHost(home());
+  t.after(forgetSiteServers);
+  nameSiteServer(home());
   const runtime = certifiedBySite(fakeRuntime());
   let asked = 0;
   runtime.hostInfo = async () => { asked += 1; throw new Error('the host is not asked'); };
@@ -385,8 +385,8 @@ test('a page its site told of the host connects to it again without asking it', 
 });
 
 test('a site that names its host as it was before it was set up again stops the entry, and says why', async t => {
-  t.after(forgetSiteHosts);
-  nameSiteHost(home(siteNamed(1)));
+  t.after(forgetSiteServers);
+  nameSiteServer(home(siteNamed(1)));
   const runtime = fakeRuntime();
   // The host the site named answers no more: its entry is never answered.
   runtime.calls.entry = {outcome: 'waiting'};
@@ -410,7 +410,7 @@ test('a site that names its host as it was before it was set up again stops the 
   runtime.peer.transport = 'reconnecting';
   runtime.peer.emit();
   await assert.rejects(entering, failed => failed.name === 'AdmissionError' && failed.code === 'stale-entry'
-    && failed.message === STALE_SITE_HOST);
+    && failed.message === STALE_SITE_SERVER);
   assert.equal(asked, 1, 'the host is asked who it is once, only once the session could not reach it');
   assert.ok(said.some(line => line.includes('TILO_WEB_HOME_HOST_INFO') && line.includes('tilo-server page-host https://host.example:8443')), said.join('\n'));
   assert.ok(runtime.peer.disposed, 'the session is let go');
@@ -425,14 +425,14 @@ test('a host that listens for pages elsewhere, or under a renewed pinned certifi
     return info;
   };
   const named = at('https://host.example:8443', [1, 2]);
-  assert.equal(staleSiteHost(named, at('https://host.example:8443', [1, 2])), false);
-  assert.equal(staleSiteHost(named, at('https://host.example:9443', [1, 2])), true);
-  assert.equal(staleSiteHost(named, at('https://host.example:8443', [3, 4])), true);
+  assert.equal(staleSiteServer(named, at('https://host.example:8443', [1, 2])), false);
+  assert.equal(staleSiteServer(named, at('https://host.example:9443', [1, 2])), true);
+  assert.equal(staleSiteServer(named, at('https://host.example:8443', [3, 4])), true);
 });
 
 test('a session that cannot reach the host its site names as it is goes on trying', async t => {
-  t.after(forgetSiteHosts);
-  nameSiteHost(home());
+  t.after(forgetSiteServers);
+  nameSiteServer(home());
   const runtime = certifiedBySite(fakeRuntime());
   let asked = 0;
   runtime.hostInfo = async () => { asked += 1; return siteNamed(); };
@@ -494,8 +494,8 @@ test('a session its server stops because this browser was removed says so at onc
 });
 
 test('an entry the page cannot reach is said at once, after its site\'s host is asked who it is', async t => {
-  t.after(forgetSiteHosts);
-  nameSiteHost(home());
+  t.after(forgetSiteServers);
+  nameSiteServer(home());
   const runtime = fakeRuntime();
   runtime.calls.entry = {outcome: 'waiting'};
   let asked = 0;
@@ -528,9 +528,9 @@ test('a host that answers the page that it does not let it in is said at once', 
 
 test('a site naming its host in a form the page cannot read stops the page', () => {
   for (const info of ['{', '{"hostCert":{}}', '{"address":{"endpointAddr":{}}}']) {
-    assert.throws(() => nameSiteHost(home(info)), /TILO_WEB_HOME_HOST_INFO/);
+    assert.throws(() => nameSiteServer(home(info)), /TILO_WEB_HOME_HOST_INFO/);
   }
-  forgetSiteHosts();
+  forgetSiteServers();
 });
 
 test('a page holding the root certifies itself, with no pairing code, and renews a certificate about to expire', async () => {

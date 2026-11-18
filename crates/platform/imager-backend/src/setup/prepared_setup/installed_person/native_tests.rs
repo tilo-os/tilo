@@ -3,12 +3,14 @@ use super::*;
 use ed25519_dalek::Signer as _;
 use std::os::unix::process::CommandExt as _;
 use std::os::{fd::AsRawFd, unix::fs::PermissionsExt};
+use tilo_device_identity::{IdentityPaths, persist};
 use tilo_identity::{
     device_fleet::DeviceFleet,
     enrolled_transport::{AuthenticatedEnrolledDevice, EnrolledDevice},
 };
 use tilo_test_env::SpawnUnderEnvLock as _;
-use tilo_user_identity::{DeviceCapabilities, IdentityPaths, RevocationReason, persist};
+use tilo_user_identity::{DeviceCapabilities, RevocationReason};
+
 const PASSWORD: &[u8] = b"synthetic retained anchor native fixture password";
 const TEST: &str = "setup::prepared_setup::installed_person::native_tests::authenticated_native_seed_revocations_and_certificate_ownership";
 const CHILD: &str = "TILO_INSTALLED_PERSON_ANCHOR_NATIVE_CHILD";

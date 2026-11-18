@@ -1,5 +1,5 @@
 //! libvirt vocabulary shared by Tilo's virtual machines: the Windows appliance
-//! on `qemu:///system` and the per-user legacy VMs on `qemu:///session`. Both
+//! on `qemu:///system` and the per-user Linux VMs on `qemu:///session`. Both
 //! drive libvirt through `virsh` with typed arguments, never a shell.
 
 use std::ffi::OsString;
@@ -169,12 +169,12 @@ mod tests {
             );
             assert_eq!(DomainState::from_domstate("blocked"), DomainState::Other);
             assert!(DomainState::listed(
-                "a\n tilo-legacy-linux \n",
-                "tilo-legacy-linux"
+                "a\n tilo-linux-vm-linux \n",
+                "tilo-linux-vm-linux"
             ));
             assert!(!DomainState::listed(
-                "tilo-legacy-linux-2\n",
-                "tilo-legacy-linux"
+                "tilo-linux-vm-linux-2\n",
+                "tilo-linux-vm-linux"
             ));
         }
         {
@@ -196,22 +196,22 @@ mod tests {
             assert_eq!(xml_text("a'b<c"), "a&apos;b&lt;c");
         }
         {
-            let marker = metadata_xml("legacy-vm", &[("guest", "linux")]);
+            let marker = metadata_xml("linux-vm", &[("guest", "linux")]);
             assert_eq!(
                 marker,
-                "<metadata><tilo:legacy-vm xmlns:tilo='https://tilo.sh/vm/1' guest='linux'/></metadata>"
+                "<metadata><tilo:linux-vm xmlns:tilo='https://tilo.sh/vm/1' guest='linux'/></metadata>"
             );
-            assert!(is_ours(&marker, "legacy-vm", &[("guest", "linux")]));
+            assert!(is_ours(&marker, "linux-vm", &[("guest", "linux")]));
             assert!(is_ours(
-                "<tilo:legacy-vm xmlns:tilo=\"https://tilo.sh/vm/1\" guest=\"linux\"/>",
-                "legacy-vm",
+                "<tilo:linux-vm xmlns:tilo=\"https://tilo.sh/vm/1\" guest=\"linux\"/>",
+                "linux-vm",
                 &[("guest", "linux")]
             ));
-            assert!(!is_ours(&marker, "legacy-vm", &[("guest", "windows")]));
+            assert!(!is_ours(&marker, "linux-vm", &[("guest", "windows")]));
             assert!(!is_ours(&marker, "windows-appliance", &[]));
             assert!(!is_ours(
-                "<tilo:legacy-vm/><x guest='linux'/>",
-                "legacy-vm",
+                "<tilo:linux-vm/><x guest='linux'/>",
+                "linux-vm",
                 &[("guest", "linux")]
             ));
             assert!(is_ours(

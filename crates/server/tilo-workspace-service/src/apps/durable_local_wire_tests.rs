@@ -328,7 +328,7 @@ async fn an_agents_durable_invocation_is_its_own_and_follows_current_policy() {
                 delivered.actor,
                 tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe"))
             );
-            let request = ui::invocation_scope::PublishedInvocationRequest {
+            let request = collaboration::invocation_scope::PublishedInvocationRequest {
                 wire_id: delivered.id,
                 invocation,
                 address: tilo_actions::ActionAddress::new(delivered.resource, delivered.action),
@@ -773,7 +773,7 @@ async fn an_agent_on_another_device_neither_sees_the_persons_invocation_nor_outl
             let invocation = id(0xf002);
             invoke(&second.handle, invocation).await.unwrap();
             let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
-            let request = ui::invocation_scope::PublishedInvocationRequest {
+            let request = collaboration::invocation_scope::PublishedInvocationRequest {
                 wire_id: delivered.id,
                 invocation,
                 address: tilo_actions::ActionAddress::new(delivered.resource, delivered.action),
@@ -848,7 +848,7 @@ async fn host_execution_retirement_refuses_actual_retained_worker_ownership() {
             .await
             .expect("the broker admits the queued original caller");
             let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
-            let request = ui::invocation_scope::PublishedInvocationRequest {
+            let request = collaboration::invocation_scope::PublishedInvocationRequest {
                 wire_id: delivered.id,
                 invocation,
                 address: tilo_actions::ActionAddress::new(delivered.resource, delivered.action),

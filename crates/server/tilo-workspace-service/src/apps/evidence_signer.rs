@@ -138,9 +138,10 @@ mod tests {
     use std::path::Path;
     use std::time::Duration;
 
+    use tilo_device_identity::IdentityPaths;
     use tilo_identity::device_fleet::DeviceFleetStore;
     use tilo_identity::provisioning::{self, IdentityStorage};
-    use tilo_user_identity::{IdentityPaths, RevocationReason};
+    use tilo_user_identity::RevocationReason;
 
     use super::*;
 
@@ -380,7 +381,7 @@ mod tests {
             cert.signature = root
                 .sign(&tilo_user_identity::device_cert_signing_digest(&cert).expect("digest"))
                 .expect("certify");
-            tilo_user_identity::persist::write_device_cert(&fixture.cert_file(), &cert)
+            tilo_device_identity::persist::write_device_cert(&fixture.cert_file(), &cert)
                 .expect("write certificate");
             fixture.settle();
             let mut cache = SignerCache::default();

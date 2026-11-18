@@ -12,10 +12,11 @@ use tilo_actions::remote::{
     PendingPoll, RemoteActionTarget, settings_resources,
 };
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
+use tilo_device_identity::IdentityPaths;
 use tilo_identity::provisioning::IdentityStorage;
 use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::owner::{self, testing};
-use tilo_user_identity::{DeviceCert, IdentityPaths};
+use tilo_user_identity::DeviceCert;
 
 const APPEARANCE: &str = "settings:settings.appearance";
 const POWER: &str = "settings:settings.power";
@@ -49,10 +50,10 @@ fn fixture() -> Fixture {
         IdentityStorage::Files,
     )
     .expect("this computer's identity");
-    let device = tilo_user_identity::persist::load_device_key(&IdentityPaths::under(&system))
+    let device = tilo_device_identity::persist::load_device_key(&IdentityPaths::under(&system))
         .expect("this device's key");
     let cert =
-        tilo_user_identity::persist::read_device_cert(&IdentityPaths::under(&system).device_cert)
+        tilo_device_identity::persist::read_device_cert(&IdentityPaths::under(&system).device_cert)
             .expect("this device's certificate");
     hold_workspace(&state, &device, &cert);
     Fixture {

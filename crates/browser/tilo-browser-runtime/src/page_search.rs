@@ -133,12 +133,16 @@ pub(crate) struct WorkspaceSearch {
 
 /// What the page's search is mounted over: the bundle's apps as the apps installed here, the
 /// records the workspace's indexes name as `store` holds them (what the page's replication took
-/// in, noted in its one stream of record changes), the workspace's files, the page's own model
-/// service as the gateway its questions run on, and the page as the host of the rows that reach an
-/// app's window.
+/// in, noted in its one stream of record changes), the workspace's files, the person's own model on
+/// their server as the model its questions run on, and the page as what shows the rows
+/// that reach an app's window.
 pub(crate) struct SearchParts {
     pub handle: DesktopHandle,
     pub person: String,
+    /// The page's peer with the workspace's server, whose session asks the person's model.
+    pub peer: Option<u32>,
+    /// The workspace the page shows.
+    pub workspace: String,
     pub store: tilo_session::platform::Store,
     pub content: tilo_content::ContentStore,
     pub files: Option<Rc<crate::page_files::WorkspaceFiles>>,
@@ -183,7 +187,11 @@ fn mount(parts: SearchParts) -> Rc<SessionSearch> {
             content: parts.content,
         }) as Rc<dyn AppActions>),
         Some(parts.wake),
-        Some(Arc::new(PageGateway) as Arc<dyn tilo_session::platform::Models>),
+        Some(Arc::new(PageGateway {
+            peer: parts.peer,
+            workspace: parts.workspace.clone(),
+            person: parts.person.clone(),
+        }) as Arc<dyn tilo_session::platform::Models>),
     ));
     parts
         .handle
@@ -267,12 +275,18 @@ impl PageSearch {
     }
 }
 
-/// The model service this page runs, as the session's ask reaches it: its models hold the page's
-/// own handles, so each question builds the capability where it is asked.
-struct PageGateway;
+/// The person's own model on their server, as the session's ask reaches it: its models
+/// hold the page's own handles, so each question builds the capability where it is asked. A page
+/// with no server has none.
+struct PageGateway {
+    peer: Option<u32>,
+    workspace: String,
+    person: String,
+}
 
 impl tilo_session::platform::Models for PageGateway {
     fn models(&self) -> Option<ui::models::Models> {
-        Some(crate::host_services::page_models())
+        let models = crate::host_services::server_models(self.peer, &self.workspace, &self.person);
+        models.is_available().then_some(models)
     }
 }

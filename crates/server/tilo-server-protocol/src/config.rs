@@ -13,7 +13,7 @@
 //! # /etc/tilo/server.toml
 //!
 //! # Where the user root public key + this device's keypair + cert live.
-//! # Matches `tilo_user_identity::IdentityPaths::default_system()`.
+//! # Matches `tilo_device_identity::IdentityPaths::default_system()`.
 //! identity_root = "/var/lib/tilo"
 //!
 //! # Where server state (workspace pins, pending deltas) lives.
@@ -43,7 +43,7 @@ use crate::work::WorkSetting;
 pub struct ServerConfig {
     /// Root under which the user + device identity files live.
     /// Passed straight into
-    /// [`tilo_user_identity::IdentityPaths::under`].
+    /// [`tilo_device_identity::IdentityPaths::under`].
     #[serde(default = "default_identity_root")]
     pub identity_root: PathBuf,
 

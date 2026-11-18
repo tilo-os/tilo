@@ -61,8 +61,8 @@ pub(super) fn read(
     let value = answer(
         doc,
         payload,
-        |item| typed.read_content(state, doc, item),
-        |frozen, item| {
+        &|item| typed.read_content(state, doc, item),
+        &|frozen, item| {
             // The type's own adapter over the frozen version: its content,
             // or the exact bytes it holds. A version that does not read as
             // the type says which of the three ways it does not.
@@ -86,6 +86,8 @@ pub(super) fn read(
     })
 }
 
+type Read = Result<serde_json::Value, String>;
+
 /// Answer a `read` of a record whose committed document is `doc`, asked as
 /// `payload` ([`tilo_resource::read::spec`]): `current` reads the record as
 /// it is, `past` a frozen version of it, each the item a read names. The
@@ -94,9 +96,9 @@ pub(super) fn read(
 pub(crate) fn answer(
     doc: &AutoCommit,
     payload: &[u8],
-    current: impl FnOnce(Option<&str>) -> Result<serde_json::Value, String>,
-    past: impl FnOnce(&AutoCommit, Option<&str>) -> Result<serde_json::Value, String>,
-) -> Result<serde_json::Value, String> {
+    current: &dyn Fn(Option<&str>) -> Read,
+    past: &dyn Fn(&AutoCommit, Option<&str>) -> Read,
+) -> Read {
     let args: serde_json::Value = if payload.is_empty() {
         serde_json::Value::Null
     } else {

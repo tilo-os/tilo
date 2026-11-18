@@ -416,7 +416,7 @@ carry none of this.
 
 `os/scripts/verify-board-initramfs.py` runs after dracut in every board
 build and reads the result back with `lsinitrd`: each profile firmware file
-and modular boot driver must be there, and when the sibling-unlock unit is,
+and modular boot driver must be there, and when the sibling unlock's network is,
 NetworkManager's Wi-Fi plugin, `wpa_supplicant` and its D-Bus activation file
 too. That proves the pieces are present. Only the laptop can show that the
 radio powers up, picks that board entry and associates before the root opens.

@@ -108,7 +108,7 @@ pub struct GuestPlan {
     /// The runtime binary, bound in so the guest's `pkg`/`perm`/… resolve.
     pub runtime_bin: PathBuf,
     pub helper_runtime: Option<crate::helper_runtime::HelperRuntime>,
-    pub legacy_commands: Vec<String>,
+    pub linux_vm_commands: Vec<String>,
     pub broker_socket: PathBuf,
     pub seccomp_blob: PathBuf,
     pub command: Vec<String>,
@@ -451,7 +451,7 @@ fn push_runtime_and_broker(a: &mut Vec<OsString>, plan: &GuestPlan, broker: bool
         a.push("tilo-ush".into());
         a.push(format!("{}/{cmd}", crate::GUEST_BIN_DIR).into());
     }
-    for cmd in &plan.legacy_commands {
+    for cmd in &plan.linux_vm_commands {
         a.push("--symlink".into());
         a.push("tilo-ush".into());
         a.push(format!("{}/{cmd}", crate::GUEST_BIN_DIR).into());
@@ -777,7 +777,7 @@ mod tests {
             );
         }
 
-        phase installed_legacy_apps_get_a_shim_on_the_guest_path;
+        phase installed_linux_vm_apps_get_a_shim_on_the_guest_path;
         {
             let dir = tempfile::tempdir().unwrap();
             let p = plan_in(dir.path());
@@ -786,7 +786,7 @@ mod tests {
                 shims.iter().any(|w| w[0] == "--symlink"
                     && w[1] == "tilo-ush"
                     && w[2] == format!("{}/code", crate::GUEST_BIN_DIR)),
-                "an installed legacy app has no shim in the guest"
+                "an installed Linux VM app has no shim in the guest"
             );
         }
 
@@ -983,7 +983,7 @@ mod tests {
             grant_root: None,
             runtime_bin: PathBuf::from("/usr/libexec/tilo-ush"),
             helper_runtime: None,
-            legacy_commands: vec!["code".into()],
+            linux_vm_commands: vec!["code".into()],
             broker_socket: dir.join("store/sessions/s1/broker.sock"),
             seccomp_blob: dir.join("store/sessions/s1/ush.bpf"),
             command: Vec::new(),

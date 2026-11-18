@@ -85,6 +85,7 @@ client_side = [
     "tilo-content",
     "tilo-content-types",
     "tilo-delivery-protocol",  # where a workspace's host is reached
+    "tilo-device-identity",    # where a device keeps its key and certificates
     "tilo-face",
     "tilo-failure",            # a failure dropped on purpose, with its reason
     "tilo-files",

@@ -46,8 +46,6 @@ pub(crate) fn permitted(session: &dyn Session, request: &crate::Request) -> bool
         | crate::Request::SecretStatus { .. }
         | crate::Request::CredentialStatus { .. }
         | crate::Request::ListModels { .. }
-        | crate::Request::MigrateApiKey { .. }
-        | crate::Request::RemoveLegacyApiKey { .. }
         | crate::Request::SetApiKey { .. }
         | crate::Request::RemoveApiKey { .. } => {
             matches!(session.caller(), Caller::Settings) && session.may_manage_credentials()
@@ -111,15 +109,12 @@ mod tests {
         ));
         let mut forbidden = vec![
             serde_json::json!({"verb":"selection_configured", "profile_id":"p", "model_id":"m", "protocol":"open_ai_compat"}),
-            serde_json::json!({"verb":"plan", "profile_id":"p", "model_id":"m", "body":{}, "timeout_ms":1}),
             serde_json::json!({"verb":"transform", "profile_id":"p", "model_id":"m", "instructions":"x", "input":"x", "max_output_tokens":1, "timeout_ms":1}),
             serde_json::json!({"verb":"analyze_image", "profile_id":"p", "model_id":"m", "image":{"media_type":"image/png", "data_base64":"AA==", "source_content_hash":"hash"}}),
             serde_json::json!({"verb":"trace", "trace":{"id":1,"turn":0}, "event":"plan_ready"}),
             serde_json::json!({"verb":"cluster_faces", "profile_id":"p", "model_id":"m", "images":[]}),
             serde_json::json!({"verb":"secret_status", "profile_id":"p"}),
             serde_json::json!({"verb":"credential_status", "profile_id":"p"}),
-            serde_json::json!({"verb":"migrate_api_key", "profile_id":"p", "original_endpoint":"https://example.com"}),
-            serde_json::json!({"verb":"remove_legacy_api_key", "profile_id":"p"}),
             serde_json::json!({"verb":"set_api_key", "profile_id":"p", "api_key":"x"}),
             serde_json::json!({"verb":"remove_api_key", "profile_id":"p"}),
         ];
@@ -174,7 +169,6 @@ mod tests {
                     .await;
             assert!(!response.ok, "{value}");
             let expected = match value["verb"].as_str().unwrap() {
-                "plan" => "only tilo-agent may plan",
                 "transform" => "only tilo-agent may run transforms",
                 "cluster_faces" => "only Photos may request fixed local face clustering",
                 "analyze_image" => "only Photos may request fixed local image analysis",
@@ -221,7 +215,7 @@ mod tests {
             }
         }
 
-        phase legacy_management_requires_live_settings_ownership_permission;
+        phase management_requires_live_settings_ownership_permission;
         {
             for request in [
                 crate::Request::GetProviderConfig,
@@ -230,13 +224,6 @@ mod tests {
                     config: agent_provider_config::ProviderConfig::default(),
                 },
                 crate::Request::CredentialStatus {
-                    profile_id: "profile".into(),
-                },
-                crate::Request::MigrateApiKey {
-                    profile_id: "profile".into(),
-                    original_endpoint: "https://original.example".into(),
-                },
-                crate::Request::RemoveLegacyApiKey {
                     profile_id: "profile".into(),
                 },
             ] {

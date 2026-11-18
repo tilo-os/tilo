@@ -15,7 +15,7 @@ de = "Windows-Apps"
 x86_64 = "v3"
 aarch64 = "aarch64"
 
-# What the app's code uses (tools/policy/check_app_capabilities.py checks it).
+# What the app's code uses (tilo-app check holds the code to this list).
 [capabilities]
 required = ["processes"]
 optional = ["files.open", "files.paths", "threads"]
@@ -46,8 +46,8 @@ mode = "off"
 file-chooser = "via-host"
 
 [sandbox.services]
-compat = "optional@31"
-collab = "optional@31"
+compat = "optional@32"
+collab = "optional@32"
 
 [entrypoint]
 bin = "bin/windows"

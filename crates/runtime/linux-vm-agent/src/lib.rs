@@ -1,0 +1,25 @@
+//! The agent inside a Linux VM guest: a root system service on vsock
+//! [`AGENT_PORT`](linux_vm_protocol::AGENT_PORT) that starts apps as the
+//! guest's one ordinary user, relays their stdio, mounts the host's shares at
+//! the paths it names, and reports what runs and what is installed.
+//!
+//! It decides nothing about the host: which directories are shared, and when
+//! the VM sleeps, are the host's decisions.
+
+#![allow(
+    clippy::missing_errors_doc,
+    reason = "errors are typed enums whose variants document themselves"
+)]
+
+pub mod apps;
+pub mod launch;
+pub mod mounts;
+#[cfg(target_os = "linux")]
+pub mod remote_fs;
+#[cfg(target_os = "linux")]
+pub mod served;
+pub mod server;
+pub mod system;
+#[cfg(unix)]
+pub mod terminal;
+pub mod user;

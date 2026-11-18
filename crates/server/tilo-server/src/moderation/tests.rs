@@ -101,7 +101,7 @@ fn flooded_workspace() -> Replica {
             Some(tilo_actions::ActionInvoker::person(author)),
             None,
             &tilo_actions::api::ActionAddress::new(
-                ui::resource::chain_resource_id(&chat::parts::chain()),
+                collab_types::document::chain_resource_id(&chat::parts::chain()),
                 "post",
             ),
             post.as_object().unwrap(),

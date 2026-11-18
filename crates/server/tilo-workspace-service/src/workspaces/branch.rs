@@ -18,7 +18,7 @@
 //! 2. The branch is made as any workspace of the person's own is: governed here,
 //!    its governance new, the person its only member and its administrator, its
 //!    channels with keys of their own the first time a record of it is sealed.
-//! 3. Each record is forked into it (`ui::resource::transfer::branch`: its whole
+//! 3. Each record is forked into it (`collaboration::resource::transfer::branch`: its whole
 //!    history under a writer of its own, one change naming the branch) and founded
 //!    there as the governor founds a record again (`sealed_documents::refound`):
 //!    sealed under the branch's own keys where its records are sealed.
@@ -237,8 +237,10 @@ mod copy {
                     .map(|((app, record), bytes)| {
                         let source = AutoCommit::load(&bytes)
                             .map_err(|error| NotMade::record(&app, &record)(error.to_string()))?;
-                        let mut forked = ui::resource::transfer::branch(&source, &branch)
-                            .map_err(|error| NotMade::record(&app, &record)(error.to_string()))?;
+                        let mut forked = collaboration::resource::transfer::branch(
+                            &source, &branch,
+                        )
+                        .map_err(|error| NotMade::record(&app, &record)(error.to_string()))?;
                         Ok(((app, record), forked.save()))
                     })
                     .collect::<Result<Vec<_>, NotMade>>()

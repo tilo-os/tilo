@@ -27,7 +27,7 @@ use super::proto::{
 use crate::apps::{AppCatalogue, Replica, ReplicaActor, Seed};
 use crate::workspace_actions::ViewReadPolicy;
 
-/// Serve as a worker in `mode` on the socket that is this process's stdin.
+/// Serve as a worker on the socket that is this process's stdin.
 /// Returns the exit code.
 ///
 /// One worker serves many slots ([`Slot`]): each record, view or read the
@@ -36,7 +36,7 @@ use crate::workspace_actions::ViewReadPolicy;
 /// [`Request::Close`]. What the process prepares before it confines itself
 /// (the app catalogue, the fonts) is shared by every slot, so a worker costs
 /// its process once and each record only what the record holds.
-pub(super) fn serve(mode: Mode) -> i32 {
+pub(super) fn serve() -> i32 {
     // SAFETY: descriptor 0 is the socket the supervisor handed this process
     // as stdin; it is taken over here and nothing else in the worker reads
     // stdin.
@@ -51,7 +51,7 @@ pub(super) fn serve(mode: Mode) -> i32 {
     // or, without one, in the one renderer mapped now, for its first slot.
     let mut fonts = Fonts {
         held: catalog_held,
-        resident: (mode != Mode::Picture && !catalog_held).then(resident_text_renderer),
+        resident: (!catalog_held).then(resident_text_renderer),
     };
     // The confinement denies the GPU driver its IOKit and Mach services, so
     // no adapter starts here: an app's pictures are drawn on the CPU.
@@ -71,9 +71,6 @@ pub(super) fn serve(mode: Mode) -> i32 {
     {
         return 1;
     }
-    // A picture worker shrinks pictures and nothing else; any other serves
-    // every kind of slot.
-    let serves = |slot_mode: Mode| (mode == Mode::Picture) == (slot_mode == Mode::Picture);
     let mut slots: HashMap<Slot, Held> = HashMap::new();
     loop {
         let (slot, slot_mode, request): (Slot, Mode, Request) =
@@ -88,11 +85,6 @@ pub(super) fn serve(mode: Mode) -> i32 {
                 Reply::Done
             }
             Request::Probe { path } => Reply::Probe(probe(&path)),
-            _ if !serves(slot_mode) => Reply::Failed(format!(
-                "a {} worker serves no {} slot",
-                mode.as_str(),
-                slot_mode.as_str()
-            )),
             request => {
                 let held = slots
                     .entry(slot)
@@ -235,17 +227,6 @@ impl Worker {
     fn handle(&mut self, request: Request) -> Reply {
         match request {
             Request::PutContent(bytes) => self.content.put(&bytes),
-            Request::Shrink {
-                bytes,
-                max_side,
-                max_bytes,
-            } => {
-                if self.mode == Mode::Picture {
-                    super::picture::shrink(&bytes, max_side, max_bytes)
-                } else {
-                    Reply::Failed("this worker shrinks no pictures".into())
-                }
-            }
             Request::TakeContent => self.content.take(),
             Request::Open {
                 app_id,

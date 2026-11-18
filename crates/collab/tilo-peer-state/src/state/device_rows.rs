@@ -8,6 +8,7 @@
 //! `<scope>/<device key hex>`, so the first rows two devices write for one
 //! scope are two keys of one map and a merge keeps both.
 
+use super::SystemTime;
 use super::facades::PeerWorkspaceMut;
 use super::{BOT_SCHEDULES_KEY, DONE_KEY, HELD_COPIES_KEY, LEASES_KEY, ROOT};
 use automerge::transaction::Transactable as _;
@@ -89,7 +90,8 @@ pub(super) fn all_rows(doc: Option<&AutoCommit>, map: &str) -> Vec<(String, [u8;
 
 impl PeerWorkspaceMut<'_> {
     /// Put `text` at `key` of the founded `map`, or remove the row when `text`
-    /// is `None`, as `device`'s own change. Answers whether a row was there.
+    /// is `None`, as `device`'s own change in `person`'s name, made at `now`.
+    /// Answers whether a row was there.
     ///
     /// # Errors
     ///
@@ -99,19 +101,23 @@ impl PeerWorkspaceMut<'_> {
         map: &str,
         key: &str,
         device: &[u8; 32],
+        person: &[u8; 32],
         text: Option<&str>,
+        now: SystemTime,
     ) -> Result<bool, String> {
         self.set_row(
             map,
             key,
             device,
+            person,
             text.map(|text| automerge::ScalarValue::Str(text.into())),
+            now,
         )
     }
 
     /// Put `value` at `key` of the founded `map`, or remove the row when
-    /// `value` is `None`, as `device`'s own change. Answers whether a row was
-    /// there.
+    /// `value` is `None`, as `device`'s own change in `person`'s name, made at
+    /// `now` ([`super::commit_governance`]). Answers whether a row was there.
     ///
     /// # Errors
     ///
@@ -121,7 +127,9 @@ impl PeerWorkspaceMut<'_> {
         map: &str,
         key: &str,
         device: &[u8; 32],
+        person: &[u8; 32],
         value: Option<automerge::ScalarValue>,
+        now: SystemTime,
     ) -> Result<bool, String> {
         let actor = self.peer.workspace_actor_for(device);
         let workspace = self
@@ -143,7 +151,7 @@ impl PeerWorkspaceMut<'_> {
             Some(value) => candidate.put(&rows, key, value).map_err(message)?,
             None => candidate.delete(&rows, key).map_err(message)?,
         }
-        candidate.commit();
+        super::commit_governance(&mut candidate, Some(person), super::now_secs(now));
         self.peer.core.workspace_doc = Some(candidate.into());
         Ok(held)
     }

@@ -189,11 +189,12 @@ pub(super) async fn gather(
         }
         next.documents.insert(key, heads);
         let tasks_part = app == TASKS
-            && ui::resource::DocumentId::parse(&document)
+            && collab_types::document::DocumentId::parse(&document)
                 .and_then(|id| id.chain_part())
-                .is_some_and(|(chain, _)| chain == tasks::part::chain());
+                .is_some_and(|(chain, _)| chain == tasks::issue_list::chain());
         if tasks_part
-            && let Ok(part) = crate::workspace_bots::opened::<tasks::part::IssuePart>(&mut doc)
+            && let Ok(part) =
+                crate::workspace_bots::opened::<tasks::issue_list::IssueList>(&mut doc)
         {
             tasks_in(
                 part.issues.iter(),
@@ -238,7 +239,7 @@ fn changes_in(
     since: &[String],
     own: &Own,
 ) -> Option<Value> {
-    let kind = ui::resource::identity(doc)
+    let kind = collaboration::resource::identity(doc)
         .map(|checkout| checkout.kind.as_str().to_owned())
         .unwrap_or_default();
     let events =

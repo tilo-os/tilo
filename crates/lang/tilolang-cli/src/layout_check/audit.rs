@@ -596,23 +596,58 @@ fn interactive(role: ui::a11y::Role) -> bool {
     )
 }
 
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "each flag is one independent fact about where the walk stands"
-)]
+/// What holds the node being walked, where each fact changes a check.
+#[derive(Clone, Copy, Default)]
+struct Holds(u8);
+
+impl Holds {
+    /// Past the window's edge.
+    const BEYOND: u8 = 1;
+    /// Inside a view that scrolls sideways: its content reaches past the window by design.
+    const ACROSS: u8 = 2;
+    /// Inside a box already found off the device pixels: what it holds moves with it.
+    const OFF_PIXEL: u8 = 4;
+    /// Inside a scroll view's content: where the node stands up and down is where the scroll
+    /// put it, not a gutter it stands against.
+    const IN_SCROLL: u8 = 8;
+
+    fn beyond(self) -> bool {
+        self.has(Self::BEYOND)
+    }
+
+    fn across(self) -> bool {
+        self.has(Self::ACROSS)
+    }
+
+    fn off_pixel(self) -> bool {
+        self.has(Self::OFF_PIXEL)
+    }
+
+    fn in_scroll(self) -> bool {
+        self.has(Self::IN_SCROLL)
+    }
+
+    fn has(self, fact: u8) -> bool {
+        self.0 & fact != 0
+    }
+
+    /// Take on `fact` for what this node holds; the walk gives back what it had on leaving.
+    fn hold(&mut self, fact: u8) {
+        self.0 |= fact;
+    }
+
+    /// Leave `facts`: a layer the window paints is measured against the window.
+    fn release(&mut self, facts: u8) {
+        self.0 &= !facts;
+    }
+}
+
 struct Walk<'a> {
     viewport: Rect,
-    beyond: bool,
-    /// Inside a view that scrolls sideways: its content reaches past the window by design.
-    across: bool,
+    holds: Holds,
     min_target: Option<f64>,
     display_scale: f64,
-    /// Inside a box already found off the device pixels: what it holds moves with it.
-    off_pixel: bool,
     page: Option<Rect>,
-    /// Inside content a scroll view holds down: where the node stands up and down is where the
-    /// scroll put it, not a gutter it stands against.
-    in_scroll: bool,
     /// The column of the window's shell the node stands in:
     /// the box a shell gives one of its parts, beside the
     /// others.
@@ -677,13 +712,10 @@ pub fn inspect(
     let viewport = Rect::new(0.0, 0.0, f64::from(viewport.0), f64::from(viewport.1));
     let mut walk = Walk {
         viewport,
-        beyond: false,
-        across: false,
+        holds: Holds::default(),
         min_target,
         display_scale,
-        off_pixel: false,
         page: None,
-        in_scroll: false,
         column: None,
         header_counts: Vec::new(),
         place_counts: Vec::new(),
@@ -985,10 +1017,6 @@ impl Walk<'_> {
         });
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one node's checks, each a rule of the layout audit, in the order they apply"
-    )]
     fn visit(
         &mut self,
         node: &InspectionNode,
@@ -1017,12 +1045,13 @@ impl Walk<'_> {
         // A page scrolls the window's content under its heading;
         // a list inside it scrolls rows the page already scrolls.
         let under_page = self.page;
-        let was_in_scroll = self.in_scroll;
-        self.in_scroll = self.in_scroll || scroller.down;
+        let outer = self.holds;
+        if scroller.down {
+            self.holds.hold(Holds::IN_SCROLL);
+        }
         if node.widget == "Page" {
             self.page = Some(own);
         }
-        let (was_beyond, was_across, was_off_pixel) = (self.beyond, self.across, self.off_pixel);
         if geometric {
             self.own_box(node, keys, own, above, under_page);
         }
@@ -1045,7 +1074,7 @@ impl Walk<'_> {
             (parent, scroller)
         };
         if scrolls.across && geometric {
-            self.across = true;
+            self.holds.hold(Holds::ACROSS);
         }
         // A scroll view shows its content within its own box, whether or not it reports a clip.
         let mut inner_clip = clip;
@@ -1070,17 +1099,42 @@ impl Walk<'_> {
             self.navigation(node, keys, own.intersect(inner_clip));
         }
         self.page_checks(node, keys);
+        self.walk_children(
+            node,
+            keys,
+            inner_parent,
+            inner_clip,
+            inner_scroller,
+            scrolling,
+        );
+        self.holds = outer;
+        self.page = under_page;
+        self.heading = was_heading;
+    }
+
+    /// What the node's children are checked for: each measured in the box that holds it, and a
+    /// layer the window paints against the window itself.
+    fn walk_children(
+        &mut self,
+        node: &InspectionNode,
+        keys: &mut Vec<String>,
+        inner_parent: Rect,
+        inner_clip: Rect,
+        inner_scroller: Scrolls,
+        scrolling: bool,
+    ) {
         for child in &node.children {
             if floats(&child.widget) {
                 continue;
             }
-            // A menu the window's top layer paints stands against the window, not the box that opened
-            // it: it is measured from the window's edges, and its own edges and targets are still
-            // checked.
+            // A menu the window's top layer paints stands against the window, not the box that
+            // opened it: it is measured from the window's edges, and its own edges and targets are
+            // still checked.
             if floats_in_window(&child.widget) {
                 self.past_window(child, keys);
-                let (beyond, across, off_pixel) = (self.beyond, self.across, self.off_pixel);
-                (self.beyond, self.across, self.off_pixel) = (false, false, false);
+                let held = self.holds;
+                self.holds
+                    .release(Holds::BEYOND | Holds::ACROSS | Holds::OFF_PIXEL);
                 self.node(
                     child,
                     keys,
@@ -1090,12 +1144,10 @@ impl Walk<'_> {
                     false,
                     &node.widget,
                 );
-                (self.beyond, self.across, self.off_pixel) = (beyond, across, off_pixel);
+                self.holds = held;
                 continue;
             }
-            // A scroll view holds its content in a box of its own,
-            // which is the view's own content rather than a frame
-            // around it.
+            // A child of the shell stands in the column the shell gives it.
             let was_column = self.column;
             if node.widget == SHELL && has_area(rect(child.rect)) {
                 self.column = Some(rect(child.rect));
@@ -1111,12 +1163,6 @@ impl Walk<'_> {
             );
             self.column = was_column;
         }
-        self.beyond = was_beyond;
-        self.across = was_across;
-        self.off_pixel = was_off_pixel;
-        self.page = under_page;
-        self.in_scroll = was_in_scroll;
-        self.heading = was_heading;
     }
 
     /// The checks of a page's own parts: cards cramped against a sibling, an item shown
@@ -1173,7 +1219,7 @@ impl Walk<'_> {
     /// A box with an edge between two device pixels: the outermost such box only, since what it
     /// holds is placed from its edges.
     fn pixels(&mut self, node: &InspectionNode, keys: &[String], own: Rect) {
-        if self.off_pixel {
+        if self.holds.off_pixel() {
             return;
         }
         let scale = self.display_scale;
@@ -1187,7 +1233,7 @@ impl Walk<'_> {
         let Some((side, edge)) = edges.into_iter().find(|(_, edge)| off(*edge)) else {
             return;
         };
-        self.off_pixel = true;
+        self.holds.hold(Holds::OFF_PIXEL);
         self.push(
             Kind::OffPixel,
             node,
@@ -1582,7 +1628,7 @@ impl Walk<'_> {
             return;
         }
         let inside = self.column.unwrap_or(self.viewport);
-        let scrolls = self.page.is_some() || self.in_scroll;
+        let scrolls = self.page.is_some() || self.holds.in_scroll();
         let edges = [
             ("left", own.x0 - inside.x0, false),
             ("right", own.x1 - inside.x1, false),
@@ -1659,11 +1705,11 @@ impl Walk<'_> {
     ) {
         let past_window =
             own.x0 < self.viewport.x0 - EPSILON || own.x1 > self.viewport.x1 + EPSILON;
-        if past_window && !self.across {
-            if self.beyond {
+        if past_window && !self.holds.across() {
+            if self.holds.beyond() {
                 return;
             }
-            self.beyond = true;
+            self.holds.hold(Holds::BEYOND);
             self.push(
                 Kind::ScrollsSideways,
                 node,

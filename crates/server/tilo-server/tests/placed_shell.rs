@@ -17,8 +17,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use iroh::{EndpointAddr, EndpointId};
-use legacy_vm::hosted::control::{self, Reply, Request};
-use legacy_vm::hosted::size::VmSize;
+use linux_vm::hosted::control::{self, Reply, Request};
+use linux_vm::hosted::size::VmSize;
 use tilo_actions::InvocationId;
 use tilo_actions::remote::environment_commands::{self, CommandOutput, CommandRequest};
 use tilo_actions::remote::environment_programs::{self, ServeProgram, TellProgram};
@@ -55,7 +55,7 @@ fn placer() -> (String, Arc<AtomicUsize>) {
             };
             assert_eq!(vm.account, "acct-1");
             let reply = if counted.fetch_add(1, Ordering::SeqCst) == 0 {
-                Reply::Busy(legacy_vm::hosted::service::BUSY.into())
+                Reply::Busy(linux_vm::hosted::service::BUSY.into())
             } else {
                 Reply::Placed {
                     host: VM_HOST.into(),

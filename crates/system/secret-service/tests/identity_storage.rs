@@ -288,7 +288,7 @@ fn identity_keys_prefer_the_secret_service_and_fall_back_truthfully_without_losi
         "a key the Secret Service holds was also written to a file"
     );
     assert_stored_key_signs(&keyring, 2);
-    let launch_metadata = runtime_identity::load_metadata_for_launch(&keyring).unwrap();
+    let launch_metadata = runtime_identity::load_metadata_from_path(&keyring).unwrap();
     let vault = bus.path("data/tilo/secrets/vault.tseal");
     let sealed = std::fs::read(&vault).unwrap();
     let hex_key = hex::encode([2_u8; 32]);
@@ -317,7 +317,7 @@ fn identity_keys_prefer_the_secret_service_and_fall_back_truthfully_without_losi
     let sealed_before = std::fs::read(&vault).unwrap();
     // App launch needs only public metadata; ownership must still refuse the
     // identity host's attempt to retrieve the locked signing key.
-    let metadata = runtime_identity::load_metadata_for_launch(&keyring)
+    let metadata = runtime_identity::load_metadata_from_path(&keyring)
         .expect("a locked provider must not block public launch metadata");
     assert_eq!(
         metadata.group_public_key,
@@ -329,7 +329,7 @@ fn identity_keys_prefer_the_secret_service_and_fall_back_truthfully_without_losi
     );
     // Launch validation must not read the key, even while its store is locked.
     assert_eq!(
-        runtime_identity::load_metadata_for_launch(&keyring).unwrap(),
+        runtime_identity::load_metadata_from_path(&keyring).unwrap(),
         launch_metadata
     );
     assert!(
@@ -363,7 +363,7 @@ fn identity_keys_prefer_the_secret_service_and_fall_back_truthfully_without_losi
     let prefix = resource_before.get(..resource_before.len() / 2).unwrap();
     std::fs::write(&truncated, prefix).unwrap();
     std::fs::set_permissions(&truncated, std::fs::Permissions::from_mode(0o600)).unwrap();
-    let Err(error) = runtime_identity::load_metadata_for_launch(&truncated) else {
+    let Err(error) = runtime_identity::load_metadata_from_path(&truncated) else {
         panic!("a truncated record launched");
     };
     assert!(
@@ -455,8 +455,8 @@ fn turn_non_dumpable() {
 /// which leaves this process non-dumpable.
 #[cfg(target_os = "linux")]
 fn load_device_key_like_the_compositor(root: &Path) {
-    tilo_user_identity::persist::load_or_create_device_key(
-        &tilo_user_identity::persist::IdentityPaths::under(root),
+    tilo_device_identity::persist::load_or_create_device_key(
+        &tilo_device_identity::persist::IdentityPaths::under(root),
     )
     .unwrap();
     assert!(
@@ -525,8 +525,8 @@ fn serve_with_this_binary_as_portal_host() {
     use tilo_secret_service::store::{DeviceIdentityKey, Store};
     let device = child_env(CHILD_DEVICE);
     let run = child_env(CHILD_RUN);
-    let paths = tilo_user_identity::persist::IdentityPaths::under(&device);
-    tilo_user_identity::persist::load_or_create_device_key(&paths).unwrap();
+    let paths = tilo_device_identity::persist::IdentityPaths::under(&device);
+    tilo_device_identity::persist::load_or_create_device_key(&paths).unwrap();
     let uid = rustix::process::geteuid().as_raw();
     let keys = DeviceIdentityKey::new(paths, run.join("salt"), &uid.to_string());
     let store = Arc::new(Store::new(run.join("vault.tseal"), Box::new(keys)));

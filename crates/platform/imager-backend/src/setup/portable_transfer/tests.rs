@@ -562,7 +562,7 @@ fn protected_private_ownership_keeps_descriptor_bound_archive_export_and_import_
     .unwrap();
     let source_pin = PinnedDirectory::open_absolute(&source).unwrap();
     let target_pin = PinnedDirectory::open_absolute(&target).unwrap();
-    tilo_user_identity::persist::protect_private_ownership().unwrap();
+    tilo_device_identity::persist::protect_private_ownership().unwrap();
     // SAFETY: PR_GET_DUMPABLE reads this test process's current privacy mode.
     assert_eq!(unsafe { libc::prctl(libc::PR_GET_DUMPABLE) }, 0);
     let cancel = AtomicBool::new(false);

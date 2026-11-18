@@ -222,7 +222,7 @@ impl Worker {
     /// keeps goes into: the one it shows or changed last, `None` for none.
     pub(super) fn kept_document(state: &WorkspaceState, app: &str) -> Option<DocumentRoute> {
         state
-            .records
+            .documents
             .iter()
             .find(|route| route.app_id == app)
             .cloned()

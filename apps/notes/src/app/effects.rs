@@ -401,7 +401,7 @@ impl NotesApp {
     /// The notes' chain, which a note's change is carried out through.
     pub(crate) fn pages_chain(
         &self,
-    ) -> Result<ui::framework::Chain<crate::part::PagePart>, String> {
+    ) -> Result<ui::framework::Chain<crate::note_list::NoteList>, String> {
         self.notes
             .as_ref()
             .map(|notes| notes.chain.clone())
@@ -632,7 +632,7 @@ pub(super) fn image_not_added_text(error: &str) -> String {
 fn import_note(
     title: &str,
     markdown: &str,
-    chain: &ui::framework::Chain<crate::part::PagePart>,
+    chain: &ui::framework::Chain<crate::note_list::NoteList>,
     done: &mut Vec<Completed>,
 ) -> Result<PageId, String> {
     if let Err(error) = crate::notebook::check_markdown_import(markdown) {

@@ -185,10 +185,10 @@ devices are asked, and which Wi-Fi networks may unlock it, with a control to
 use or stop using each saved Wi-Fi network. The description of an enrolment
 (`/var/lib/tilo/sibling-unlock/<uuid>.json`) is root's alone, since it names
 the networks the owner trusts; Settings reads it with `pkexec
-tilo-sibling-unlock volumes`, which polkit grants an administrator at the
-machine's seat without a prompt. Changing the networks runs the same enrolment
-(`tilo-sibling-unlock enrol --replace-networks`, or `tilo-disk-encrypt enrol
---sibling --replace-networks`) after administrator authentication; it keeps
+/usr/libexec/tilo/tilo-auth sibling volumes`, which polkit grants an
+administrator at the machine's seat without a prompt. Changing the networks
+runs the same enrolment (`tilo-auth sibling enrol --replace-networks`, or
+`tilo-disk-encrypt enrol --sibling --replace-networks`) after administrator authentication; it keeps
 the slot, its certificate and the siblings, and seals the new networks the way
 the old ones were.
 
@@ -220,13 +220,21 @@ TPM failure does not fall back to cleartext. Failed registration still removes
 the new slot through the normal helper rollback path.
 
 The device must contain both the typed VMD action and the matching
-`tilo-sibling-unlock --require-tpm` helper. Enrollment needs an existing disk
+`tilo-auth sibling enrol --require-tpm` helper. Enrollment needs an existing disk
 passphrase or recovery key; a login password does not acquire that authority.
 This does not enroll a locked disk or replace the existing early-boot approval
 and certificate checks.
 
-The prompt for the passphrase is up while early boot asks; whichever answers
-first opens the volume. The client answers systemd-cryptsetup's passphrase
+One program opens the system volume in early boot: `tilo-auth`, which the
+initramfs carries in the `tilo-rollback` dracut module beside
+`tilo-root-discover`, and which reads the LUKS2 header and drives cryptsetup
+and the TPM through one module each ([sign-in.md](security/sign-in.md) §3.5).
+For a root whose header holds a `tilo-sibling-unlock` token,
+`tilo-root-discover` starts `tilo-auth sibling unlock` as
+`tilo-unlock-sibling@.service` once nobody signed in at the boot screen, and
+stops it, which wipes the material, the network profiles and the links, once
+the volume is open. The prompt for the passphrase is up while early boot
+asks; whichever answers first opens the volume. The client answers systemd-cryptsetup's passphrase
 request as a password agent, and only with a key it has already checked
 against the slot, so a failed or refused attempt costs the person nothing and
 leaves the prompt as it was.

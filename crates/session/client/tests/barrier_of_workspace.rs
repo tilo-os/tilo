@@ -112,7 +112,7 @@ async fn a_write_one_workspace_holds_keeps_no_other_workspaces_write_from_being_
     // What is written here next is confirmed for this workspace, while that change waits.
     page.write(here.clone(), &write(&mut note, "second"))
         .unwrap();
-    let confirmed = page.barrier_of(&[workspace()]).unwrap();
+    let confirmed = page.barrier_for(&[route()]).unwrap();
     within(
         "the write here to be confirmed while a change elsewhere waits for its document",
         confirmed,
@@ -140,12 +140,12 @@ async fn a_write_one_workspace_holds_keeps_no_other_workspaces_write_from_being_
 
     // The change that waits is not confirmed, nor is the session as a whole: both were asked
     // before a later write here, which is confirmed again.
-    let own = page.barrier_of(&[elsewhere]).unwrap();
+    let own = page.barrier_for(std::slice::from_ref(&there)).unwrap();
     let whole = page.barrier().unwrap();
     page.write(here, &write(&mut note, "third")).unwrap();
     within(
         "a later write here to be confirmed",
-        page.barrier_of(&[workspace()]).unwrap(),
+        page.barrier_for(&[route()]).unwrap(),
     )
     .await
     .expect("the session answers")
@@ -241,8 +241,7 @@ async fn a_write_one_document_holds_keeps_no_other_documents_write_from_being_co
         .unwrap();
     within(
         "a write to be confirmed while a change to another document of its workspace waits",
-        page.barrier_of_documents(std::slice::from_ref(&beside))
-            .unwrap(),
+        page.barrier_for(std::slice::from_ref(&beside)).unwrap(),
     )
     .await
     .expect("the session answers")
@@ -259,19 +258,16 @@ async fn a_write_one_document_holds_keeps_no_other_documents_write_from_being_co
 
     // The change that waits is confirmed neither by its own document, nor with the other, nor
     // by its workspace: each was asked before a later write beside it, which is confirmed again.
-    let own = page
-        .barrier_of_documents(std::slice::from_ref(&waiting))
-        .unwrap();
+    let own = page.barrier_for(std::slice::from_ref(&waiting)).unwrap();
     let both = page
-        .barrier_of_documents(&[beside.clone(), waiting.clone()])
+        .barrier_for(&[beside.clone(), waiting.clone()])
         .unwrap();
     let whole = page.barrier_of(&[workspace()]).unwrap();
     page.write(beside.clone(), &write(&mut note, "second"))
         .unwrap();
     within(
         "a later write beside the change that waits to be confirmed",
-        page.barrier_of_documents(std::slice::from_ref(&beside))
-            .unwrap(),
+        page.barrier_for(std::slice::from_ref(&beside)).unwrap(),
     )
     .await
     .expect("the session answers")

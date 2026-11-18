@@ -19,10 +19,11 @@ use runtime_collab::{
     CollabClient, PortableWifiSecurity, WifiContinuityCommand, WifiContinuityReply,
 };
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
+use tilo_device_identity::IdentityPaths;
 use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_service::LoopWake;
 use tilo_session::{AppSocket, Launches, Options, Session};
-use tilo_user_identity::{DeviceCert, IdentityPaths};
+use tilo_user_identity::DeviceCert;
 
 use crate::common::held::{WORKSPACE, actor, presentation};
 
@@ -63,8 +64,8 @@ fn person() -> Person {
         IdentityStorage::Files,
     )
     .expect("this computer's identity");
-    let device = tilo_user_identity::persist::load_device_key(&paths).expect("this device's key");
-    let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert)
+    let device = tilo_device_identity::persist::load_device_key(&paths).expect("this device's key");
+    let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
         .expect("this device's certificate");
     Person {
         device,

@@ -242,7 +242,12 @@ impl PeerWorkspaceMut<'_> {
             // Another device holds it. A claim of this device's that did not
             // win the term goes with it, so it stops being a contender.
             if mine.is_some_and(|claim| claim.term <= holder.term) {
-                self.write_claim_removed(id, &device.device_public_key)?;
+                self.write_claim_removed(
+                    id,
+                    &device.device_public_key,
+                    &device.user_public_key,
+                    now,
+                )?;
             }
             return Ok(None);
         }
@@ -262,7 +267,7 @@ impl PeerWorkspaceMut<'_> {
             expires_at_ns: now_ns.saturating_add(ttl_ns),
             rank,
         };
-        self.write_claim(id, claim)?;
+        self.write_claim(id, claim, &device.user_public_key, now)?;
         let after = self.peer.workspace().lease(id, now);
         if after
             .holder
@@ -272,7 +277,7 @@ impl PeerWorkspaceMut<'_> {
         } else {
             // Another device won the same term. Its call is the work's; this
             // device's claim goes so it does not keep contesting it.
-            self.write_claim_removed(id, &device.device_public_key)?;
+            self.write_claim_removed(id, &device.device_public_key, &device.user_public_key, now)?;
             Ok(None)
         }
     }
@@ -290,7 +295,7 @@ impl PeerWorkspaceMut<'_> {
         now: SystemTime,
     ) -> Result<bool, String> {
         self.check_writer(device, now)?;
-        self.write_claim_removed(id, &device.device_public_key)
+        self.write_claim_removed(id, &device.device_public_key, &device.user_public_key, now)
     }
 
     /// Check that `device` is this workspace's exact current certificate for a
@@ -321,7 +326,13 @@ impl PeerWorkspaceMut<'_> {
 
     /// Write `claim` into its device's row under its lease, as this device's
     /// own change.
-    fn write_claim(&mut self, id: &str, claim: LeaseClaim) -> Result<(), String> {
+    fn write_claim(
+        &mut self,
+        id: &str,
+        claim: LeaseClaim,
+        person: &[u8; 32],
+        now: SystemTime,
+    ) -> Result<(), String> {
         let json = serde_json::to_string(&StoredClaim {
             term: claim.term,
             expires_at_ns: claim.expires_at_ns,
@@ -329,13 +340,20 @@ impl PeerWorkspaceMut<'_> {
         })
         .map_err(|error| error.to_string())?;
         let key = device_rows::row_key(id, &claim.device);
-        self.write_row(LEASES_KEY, &key, &claim.device, Some(&json))?;
+        self.write_row(LEASES_KEY, &key, &claim.device, person, Some(&json), now)?;
         Ok(())
     }
 
     /// Remove `device`'s claim under `id`, answering whether one was there.
-    fn write_claim_removed(&mut self, id: &str, device: &[u8; 32]) -> Result<bool, String> {
-        self.write_row(LEASES_KEY, &device_rows::row_key(id, device), device, None)
+    fn write_claim_removed(
+        &mut self,
+        id: &str,
+        device: &[u8; 32],
+        person: &[u8; 32],
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        let key = device_rows::row_key(id, device);
+        self.write_row(LEASES_KEY, &key, device, person, None, now)
     }
 }
 

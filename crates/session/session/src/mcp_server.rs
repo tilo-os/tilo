@@ -1879,9 +1879,10 @@ fn certify(
         device_certificate: serde_json::to_vec(certificate).map_err(|error| error.to_string())?,
         certificate: cert.encode(),
         proof: key
-            .sign(&runtime_identity::collaboration_join_signing_bytes(
-                admitted.workspace,
-            ))
+            .sign(
+                &runtime_identity::collaboration_join_digest(admitted.workspace)
+                    .map_err(|error| format!("the workspace's join cannot be signed: {error}"))?,
+            )
             .to_bytes()
             .to_vec(),
     }

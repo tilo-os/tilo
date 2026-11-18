@@ -28,8 +28,15 @@ pub const MAX_CONTENT_PUT_AHEAD: usize = 8 * MAX_CONTENT_PUT_CHUNK;
 /// within [`super::MAX_CONTENT_FRAME_BYTES`]).
 pub const MAX_PUT_MANY_BYTES: usize = 384 * 1024;
 
-/// The most hashes one step asks about at once.
-pub const MAX_HAVE_HASHES: usize = 8_192;
+/// The most files one many-files step carries: every one is a store write,
+/// and a step answers within the peer's reply deadline.
+pub const MAX_PUT_MANY_FILES: usize = 256;
+
+/// The most hashes one step asks about at once. Every hash costs the store a
+/// look, and one step must answer within the peer's reply deadline: a few
+/// thousand is minutes of looking on a loaded disk, so a caller asks in
+/// steps this size instead.
+pub const MAX_HAVE_HASHES: usize = 1_024;
 
 /// Uploads one session keeps open at once: a client putting a folder keeps
 /// one open per file until it finishes, so it may hold as many as a workspace
@@ -192,6 +199,11 @@ impl HostedContentPuts {
         if files.is_empty() {
             return Err(ActionCallError::InvalidRequest {
                 reason: "store at least one file".into(),
+            });
+        }
+        if files.len() > MAX_PUT_MANY_FILES {
+            return Err(ActionCallError::InvalidRequest {
+                reason: format!("one call carries at most {MAX_PUT_MANY_FILES} files"),
             });
         }
         let mut decoded = Vec::with_capacity(files.len());
@@ -453,6 +465,28 @@ mod tests {
             puts.step(&Memory, &ada, ContentPutStep::Finish { upload })
                 .is_err(),
             "a finished upload is closed"
+        );
+    }
+
+    /// A many-files step takes at most [`MAX_PUT_MANY_FILES`] files, so it
+    /// answers within the peer's reply deadline however small they are.
+    #[test]
+    fn a_many_files_step_takes_at_most_its_files() {
+        let puts = HostedContentPuts::default();
+        let ada = Caller::local_person("ada");
+        let whole = vec![String::new(); MAX_PUT_MANY_FILES];
+        let ContentPutAnswer::Many { contents } = puts
+            .step(&Memory, &ada, ContentPutStep::Many { files: whole })
+            .unwrap()
+        else {
+            panic!("many")
+        };
+        assert_eq!(contents.len(), MAX_PUT_MANY_FILES);
+        let past = vec![String::new(); MAX_PUT_MANY_FILES.saturating_add(1)];
+        assert!(
+            puts.step(&Memory, &ada, ContentPutStep::Many { files: past })
+                .is_err(),
+            "a step of more files is refused rather than made to wait"
         );
     }
 }

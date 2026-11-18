@@ -16,7 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 # tilo-auth, plymouth and systemd-ask-password are driven as the programs the
-# initramfs carries, as tilo-rollback and tilo-sibling-unlock drive theirs.
+# initramfs carries, as tilo-rollback and tilo-auth drive theirs.
 # Refused entries are remembered as HMACs under a key made at start.
 getrandom.workspace = true
 hmac.workspace = true

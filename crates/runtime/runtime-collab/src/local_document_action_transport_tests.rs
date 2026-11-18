@@ -127,12 +127,12 @@ tilo_test_env::scenario! {
                 "argument",
                 "capture_id",
                 "context",
-                "custody",
                 "encoded",
                 "group",
                 "invocation",
                 "mutation_hashes",
                 "original_heads",
+                "ownership",
                 "resource",
                 "revision",
                 "version",
@@ -144,28 +144,17 @@ tilo_test_env::scenario! {
         assert_eq!(json["invocation"], value.invocation.to_string());
         assert_eq!(json["capture_id"], value.capture_id.to_string());
         let mut missing_ownership = json.clone();
-        missing_ownership.as_object_mut().unwrap().remove("custody");
+        missing_ownership
+            .as_object_mut()
+            .unwrap()
+            .remove("ownership");
         let legacy: LocalDocumentActionReport = serde_json::from_value(missing_ownership).unwrap();
         assert!(legacy.ownership.is_none());
-        // A report names its provenance as it always did. One that names it as the code
-        // does, as builds wrote it for a while, reads with what it holds, and is written as
-        // reports always were.
-        let provenance = serde_json::json!({
-            "root": vec![1; 32], "device": vec![2; 32], "agent": null,
-            "app_id": "app", "workspace": "workspace", "document": "document"
-        });
-        let mut before = json.clone();
-        before["custody"] = provenance.clone();
-        let mut between = json.clone();
-        between.as_object_mut().unwrap().remove("custody");
-        between["ownership"] = provenance.clone();
-        for written in [before, between] {
-            let read: LocalDocumentActionReport = serde_json::from_value(written).unwrap();
-            assert!(read.ownership.is_some());
-            let again = serde_json::to_value(&read).unwrap();
-            assert_eq!(again["custody"], provenance);
-            assert!(again.get("ownership").is_none());
-        }
+        // The report reads the name it writes: any other name is refused, not aliased.
+        let mut renamed = json.clone();
+        renamed.as_object_mut().unwrap().remove("ownership");
+        renamed["provenance"] = serde_json::json!(null);
+        assert!(serde_json::from_value::<LocalDocumentActionReport>(renamed).is_err());
         let mut missing_capture = json.clone();
         missing_capture
             .as_object_mut()

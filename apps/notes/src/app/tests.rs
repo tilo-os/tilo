@@ -1,7 +1,7 @@
 mod agent_content;
 mod search_refresh;
 use super::*;
-use crate::part::PagePart;
+use crate::note_list::NoteList;
 use tempfile::TempDir;
 
 /// The notes app as the framework holds it.
@@ -19,7 +19,7 @@ pub(super) fn notes(app: &mut App) -> &mut NotesApp {
 
 /// Every note the notes hold, in the order they are shown.
 pub(super) fn page_ids(app: &App) -> Vec<PageId> {
-    let parts = app.chain_parts::<PagePart>();
+    let parts = app.chain_parts::<NoteList>();
     crate::Pages::of(&parts)
         .iter()
         .filter_map(|(id, _)| crate::notebook::page_of(id))
@@ -28,7 +28,7 @@ pub(super) fn page_ids(app: &App) -> Vec<PageId> {
 
 /// The part keeping note `page`.
 fn part_of(app: &App, page: PageId) -> u64 {
-    let parts = app.chain_parts::<PagePart>();
+    let parts = app.chain_parts::<NoteList>();
     crate::Pages::of(&parts)
         .part_of(&crate::notebook::page_id(page))
         .expect("a part keeps the note")
@@ -37,7 +37,7 @@ fn part_of(app: &App, page: PageId) -> u64 {
 /// Read the document of the part keeping note `page`, as the window
 /// holds it.
 pub(super) fn part_doc<T>(app: &App, page: PageId, read: impl FnOnce(&AutoCommit) -> T) -> T {
-    app.read_document_of(&crate::part::chain().part(part_of(app, page)), read)
+    app.read_document_of(&crate::note_list::chain().part(part_of(app, page)), read)
         .expect("the part is held")
 }
 
@@ -45,10 +45,13 @@ pub(super) fn part_doc<T>(app: &App, page: PageId, read: impl FnOnce(&AutoCommit
 /// with any write.
 fn stored(app: &App) -> Vec<Vec<automerge::ChangeHash>> {
     let mut heads = vec![app.read_document(AutoCommit::base_heads)];
-    for (index, _) in app.chain_parts::<PagePart>() {
+    for (index, _) in app.chain_parts::<NoteList>() {
         heads.push(
-            app.read_document_of(&crate::part::chain().part(index), AutoCommit::base_heads)
-                .unwrap(),
+            app.read_document_of(
+                &crate::note_list::chain().part(index),
+                AutoCommit::base_heads,
+            )
+            .unwrap(),
         );
     }
     heads
@@ -57,8 +60,8 @@ fn stored(app: &App) -> Vec<Vec<automerge::ChangeHash>> {
 /// Apply a note's `action` as this window's person does, through the
 /// notes' chain, and show what it changed.
 pub(super) fn apply(app: &mut App, action: &actions::Action) {
-    app.invoke_child::<PagePart>(
-        &crate::part::chain_resource(),
+    app.invoke_child::<NoteList>(
+        &crate::note_list::chain_resource(),
         ui::tilo_resource::Invoke::apply(action).unwrap(),
     )
     .unwrap();
@@ -68,11 +71,17 @@ pub(super) fn apply(app: &mut App, action: &actions::Action) {
 /// A note's `action` arriving from another member's replica, as sync
 /// delivers it: written into the part keeping its note; no frame is drawn.
 pub(super) fn arrive(app: &mut App, action: &actions::Action) {
-    let parts = app.chain_parts::<PagePart>();
+    let parts = app.chain_parts::<NoteList>();
     let mut action = action.clone();
-    crate::part::prepare(&mut action, &app.state(), &parts, None).unwrap();
-    let index = crate::part::part_for(&action, &parts).unwrap();
-    app.replica_arrives(&crate::part::chain().part(index), |doc| {
+    crate::note_list::prepare(
+        std::slice::from_mut(&mut action),
+        &app.state(),
+        &parts,
+        None,
+    )
+    .unwrap();
+    let index = ui::framework::placed::<NoteList>(&action, &parts);
+    app.replica_arrives(&crate::note_list::chain().part(index), |doc| {
         tilo_actions::apply_local_by(doc, &action, actions::encode(&action), Some(b"peer"))
             .unwrap();
     })
@@ -218,7 +227,7 @@ fn published_block_range_selects_unicode_in_the_real_editor_without_editing() {
     use tilo_document::RichTextAction;
     let mut app = open();
     app.call_on(
-        &crate::part::chain_resource(),
+        &crate::note_list::chain_resource(),
         "new-note",
         serde_json::json!({"title": "Range fixture"}),
     )
@@ -446,9 +455,9 @@ fn a_failed_save_holds_its_notice_with_try_again_until_a_save_succeeds() {
     // A regular file in place of this test's directory makes writes fail
     // for root as well as ordinary users; no permission assumptions.
     std::fs::write(&directory, b"deliberate test storage fault").unwrap();
-    app.invoke_child::<PagePart>(
-        &crate::part::chain_resource(),
-        PagePart::RENAME.with(crate::part::page_part::Rename {
+    app.invoke_child::<NoteList>(
+        &crate::note_list::chain_resource(),
+        NoteList::RENAME.with(crate::note_list::note_list::Rename {
             page: crate::notebook::page_id(page),
             title: "Retried receipt".into(),
         }),
@@ -523,7 +532,7 @@ fn a_failed_save_holds_its_notice_with_try_again_until_a_save_succeeds() {
     );
     let bytes = std::fs::read(directory.join("state.automerge")).unwrap();
     let persisted = automerge::AutoCommit::load(&bytes).unwrap();
-    let part = PagePart::read(&persisted).unwrap();
+    let part = NoteList::read(&persisted).unwrap();
     assert_eq!(
         part.pages
             .get(&crate::notebook::page_id(page))

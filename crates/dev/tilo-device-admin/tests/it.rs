@@ -8,9 +8,9 @@ use tilo_device_admin::dial::{Dialer, Failure, Options};
 use tilo_device_admin::handshake::{Refusal, Untrusted};
 use tilo_device_admin::net::Relays;
 use tilo_device_admin::{identity, serve};
-use tilo_user_identity::{
-    DeviceCapabilities, DeviceCert, IdentityPaths, persist, sign_device_cert,
-};
+use tilo_device_identity::{IdentityPaths, persist};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+
 use tokio::io::{AsyncBufReadExt as _, BufReader};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

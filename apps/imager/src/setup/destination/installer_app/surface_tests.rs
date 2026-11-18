@@ -15,15 +15,6 @@ use ui::tilo_resource::Effect as _;
 mod capacity_tests;
 mod method_intent_tests;
 
-/// The installer's published live rows as the resource tree the palette, a
-/// script and an agent reach.
-fn published_resources(app: &InstallerApp) -> Vec<ui::tilo_actions::ResourceSpec> {
-    app.published()
-        .into_iter()
-        .map(ui::framework::LiveRow::into_resource)
-        .collect()
-}
-
 struct FakeBackend {
     disks: Vec<Disk>,
     installs: Mutex<Vec<(String, String, String, InstallOptions)>>,
@@ -399,8 +390,8 @@ tilo_test_env::scenario! {
                 ))
                 .is_none()
             );
-            let published = published_resources(&app);
-            let storage = published[0]
+            let storage = app.published()[0].clone().into_resource();
+            let storage = storage
                 .children
                 .iter()
                 .find(|r| r.id.0 == STORAGE)
@@ -466,7 +457,11 @@ tilo_test_env::scenario! {
                 Step::Install,
             ] {
                 app.step = step;
-                let resources = published_resources(&app);
+                let resources: Vec<tilo_actions::ResourceSpec> = app
+                    .published()
+                    .into_iter()
+                    .map(ui::framework::LiveRow::into_resource)
+                    .collect();
                 let violations = tilo_actions::validate_surface(
                     &resources,
                     &tilo_actions::ActionRegistry::new(),
@@ -567,9 +562,10 @@ tilo_test_env::scenario! {
             by_row.recovery_key = Some(KEY.into());
             by_row.control(DestinationEffect::Reboot).fire();
             by_row.sync(&row_doc, &automerge::ROOT);
-            let reason = published_resources(&by_row)
-                .iter()
-                .flat_map(|root| root.actions.iter())
+            let reason = by_row
+                .published()
+                .into_iter()
+                .flat_map(|root| root.into_resource().actions)
                 .find(|action| action.id == "reboot")
                 .map(|reboot| match &reboot.contract.availability {
                     tilo_actions::Availability::Unavailable { reason, .. } => reason.clone(),

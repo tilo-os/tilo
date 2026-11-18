@@ -456,7 +456,7 @@ longer required: the short-PIN TPM2 policy is used only when a TPM is present an
 `tilo-verified-boot-install-preflight` passes, and otherwise the same input is enrolled as an
 ordinary strong passphrase, checked by `tilo-startup-secret-policy`. `os/etc/kernel/install.conf`
 no longer exists; the image builds its initramfs with an explicit dracut call in
-`os/Containerfile`, carrying the `91tilo-rollback` and `92tilo-sibling-unlock` modules. The
+`os/Containerfile`, carrying the `91tilo-rollback` module. The
 enrolment itself is held by `os/tests/luks_enrolment.sh`, which runs during the image build and
 asserts that each factor opens the volume. A boot of the current image to an opened root on real
 hardware is not recorded here.
@@ -829,7 +829,7 @@ The write goes through an atomic write-with-mode, closing the TOCTOU window. The
 `/var/lib/tilo/device-private/keypair.bin` (`DEVICE_KEY_PATH`). Held by
 `crates/session/network-actor/src/behaviour.rs::tests::device_key_persists_and_is_never_replaced`
 (phase `malformed_key_is_never_replaced`), `::created_device_key_is_not_world_accessible`, and
-`crates/collab/tilo-user-identity/src/persist.rs::tests::device_keys_are_group_private_created_once_and_never_rotated_silently`.
+`crates/collab/tilo-device-identity/src/persist.rs::tests::device_keys_are_group_private_created_once_and_never_rotated_silently`.
 
 ## P2-3 — Revocation is modelled but undeliverable
 
@@ -946,7 +946,7 @@ string. Held by `os/tests/kernel_hardening_invariants.sh`.
 
 **Residual, resolved.** The image-policy check was three independent `grep -F` matches over
 `policy.json`, not a parse, so a signed `code.tilo.so/tilo/tilo` or
-`registry.tilo.so/tilo/legacy-guest` entry would have satisfied it while the
+`registry.tilo.so/tilo/linux-guest` entry would have satisfied it while the
 `registry.tilo.so/tilo/tilo` scope itself accepted anything. The audit now runs
 `os/usr/libexec/tilo-image-policy-check`, which parses the policy and passes only when
 `registry.tilo.so/tilo/tilo` and `code.tilo.so/tilo/tilo` each hold nothing but `sigstoreSigned`
@@ -957,7 +957,7 @@ signature, from the pinned key or through the release root, and the default is `
 invariant's weakened copies changed with it.) `os/tests/kernel_hardening_invariants.sh` runs it against the
 shipped policy and eighteen weakened copies (each Tilo scope accepting anything, another key,
 `signedBy`, a remapped identity, extra key material, a tag override, a removed scope, a removed
-legacy-guest or development scope that leaves it to the permissive default, a permissive
+linux-guest or development scope that leaves it to the permissive default, a permissive
 namespace scope, malformed JSON, a duplicate scope, a missing file), every one of which must
 fail. Separately, the audit's mem-init check required the kernel to report
 `heap free:on` and so warned on every correct boot once `init_on_free` left the kernel
@@ -970,7 +970,7 @@ old pattern.
 repositories only; every other image reference is unverified by the policy.
 
 **Resolved.** The default is `reject`. `tools/signing/release_trust.py` generates the
-policy, and each reference it admits says why: the OS and legacy-guest repositories require a
+policy, and each reference it admits says why: the OS and linux-guest repositories require a
 transparency-logged release signature (the release key until the root ceremony, then an
 operational certificate chaining to the offline release root, `keys/README.md`); the `tilo-vm`,
 `tilo-ci` and `tilo-dev` repositories are refused by name; the public registries a person pulls

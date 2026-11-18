@@ -42,24 +42,25 @@ tilo_test_env::scenario! {
                 wire::Request::Metadata
             ));
             write_frame(&mut host, &metadata()).unwrap();
-            let mut messages = Vec::new();
+            let mut workspaces = Vec::new();
             for _ in 0..2 {
-                let wire::Request::Sign { action, message } = read_frame(&mut host).unwrap() else {
+                let wire::Request::CollaborationJoin { workspace_id } =
+                    read_frame(&mut host).unwrap()
+                else {
                     panic!("metadata must be exchanged only once");
                 };
-                assert_eq!(action, "document.save");
-                messages.push(message);
+                workspaces.push(workspace_id);
                 write_frame(&mut host, &wire::Response::Denied("revoked".into())).unwrap();
             }
-            messages.sort();
-            assert_eq!(messages, [b"first".to_vec(), b"second".to_vec()]);
+            workspaces.sort();
+            assert_eq!(workspaces, ["first".to_owned(), "second".to_owned()]);
         });
         let first = inherited::connect_service(app.as_fd()).unwrap();
         let second = inherited::connect_service(app.as_fd()).unwrap();
         assert!(Arc::ptr_eq(&first, &second));
         std::thread::scope(|scope| {
-            let one = scope.spawn(|| error_kind(first.sign_for("document.save", b"first")));
-            let two = scope.spawn(|| error_kind(second.sign_for("document.save", b"second")));
+            let one = scope.spawn(|| error_kind(first.sign_collaboration_join("first")));
+            let two = scope.spawn(|| error_kind(second.sign_collaboration_join("second")));
             assert_eq!(one.join().unwrap(), io::ErrorKind::PermissionDenied);
             assert_eq!(two.join().unwrap(), io::ErrorKind::PermissionDenied);
         });
@@ -144,7 +145,6 @@ fn private_record_and_ambient_config_never_supply_a_client_identity() {
     .unwrap();
     let mut env = tilo_test_env::ScopedEnv::new();
     env.remove("TILO_SVC_IDENTITY_FD")
-        .remove(crate::legacy::BROKER_ENV_VAR)
         .set("TILO_USER_IDENTITY", &record)
         .set("XDG_CONFIG_HOME", dir.path())
         .set("HOME", dir.path());
@@ -154,8 +154,4 @@ fn private_record_and_ambient_config_never_supply_a_client_identity() {
         Err(NotAvailable::ServiceFdMissing)
     ));
     assert!(crate::bound_profile_photo().is_none());
-    env.set(crate::legacy::BROKER_ENV_VAR, "not-a-descriptor");
-    assert_eq!(error_kind(crate::load()), io::ErrorKind::InvalidInput);
-    env.set(crate::legacy::BROKER_ENV_VAR, "2");
-    assert_eq!(error_kind(crate::load()), io::ErrorKind::InvalidInput);
 }

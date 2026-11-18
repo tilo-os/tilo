@@ -15,13 +15,14 @@
 
 use std::path::{Path, PathBuf};
 
+use tilo_device_identity::IdentityPaths;
 use tilo_onboarding_session::firstboot;
 use tilo_onboarding_session::identity::IdentityProblem;
 use tilo_onboarding_session::identity_provisioning::{
     DiskIdentityStore, IDENTITY_RECOVERY_ENV, is_secret_service_unavailable, needs_first_run_flow,
 };
 use tilo_onboarding_session::view::OnboardingView;
-use tilo_user_identity::{CertificateClockError, IdentityPaths};
+use tilo_user_identity::CertificateClockError;
 
 use crate::clock_wait::ClockWait;
 use crate::setup::BeforeShell;

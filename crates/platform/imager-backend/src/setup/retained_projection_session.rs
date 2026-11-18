@@ -12,7 +12,7 @@ use launcher::{
         TargetProjectionAdmission, TargetProjectionAuthority, TargetProjectionCredentials,
         TargetProjectionEndpoint, TargetProjectionMode,
     },
-    run::{IdentitySource, LaunchMode, RunOptions},
+    run::{LaunchMode, RunOptions},
 };
 use runtime_fs::{
     directory_connection::DirectoryConnection, selected_client::SelectedFileConnection,
@@ -196,7 +196,6 @@ impl RetainedProjectionSession {
                 expected_package_hash: Some(service.package_hash.clone()),
                 app_id: Some(owned_service::RETAINED_IO_PACKAGE_ID.into()),
                 data_home: Some(working.path().to_owned()),
-                identity: IdentitySource::None,
                 mode: LaunchMode::Service {
                     passthrough_argv: vec!["--tilo-retained-target-projection".into()],
                 },

@@ -1,6 +1,6 @@
 use super::*;
-use crate::messages::chat_part;
-use crate::parts::ChatPart;
+use crate::messages::chat_messages;
+use crate::parts::ChatMessages;
 use crate::testing::MountedChat;
 use crate::testing::Workspace;
 use ui::tilo_resource::Id;
@@ -10,8 +10,8 @@ fn fixture() -> Workspace {
     crate::testing::demo_doc()
 }
 
-fn event(sequence: u64, output: AgentOutput) -> ui::tilo_resource::Invoke<ChatPart> {
-    ChatPart::STREAM_OUTPUT.with(chat_part::StreamOutput {
+fn event(sequence: u64, output: AgentOutput) -> ui::tilo_resource::Invoke<ChatMessages> {
+    ChatMessages::STREAM_OUTPUT.with(chat_messages::StreamOutput {
         channel: Id::from_raw("c_crit"),
         reply: "stream_reply".into(),
         name: None,
@@ -211,7 +211,7 @@ tilo_test_env::scenario! {
         let summons = Id::from_raw("m_concept");
         let reply = crate::chat::reply_id(&summons, &MemberId::person(crate::model::ME));
         let output = |sequence, event| {
-            ChatPart::STREAM_OUTPUT.with(chat_part::StreamOutput {
+            ChatMessages::STREAM_OUTPUT.with(chat_messages::StreamOutput {
                 channel: Id::from_raw("c_crit"),
                 reply: reply.to_string(),
                 name: None,
@@ -237,7 +237,7 @@ tilo_test_env::scenario! {
         crate::testing::apply_part_as(
             &mut doc,
             crate::model::ME,
-            ChatPart::RECORD_WORK.with(chat_part::RecordWork {
+            ChatMessages::RECORD_WORK.with(chat_messages::RecordWork {
                 message: summons,
                 work: crate::chat::WorkUpdate {
                     state: "doing".into(),

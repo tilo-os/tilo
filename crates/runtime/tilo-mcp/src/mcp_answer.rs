@@ -7,7 +7,9 @@ use std::fmt::Write as _;
 
 /// The MCP result of an agent tool: its text alone, or the structured copy
 /// the caller asked for (its typed answer) as JSON, which is the text then: a
-/// second rendering would be read twice. A call the host refused for a reason
+/// second rendering would be read twice. The words go in the typed answer too
+/// (`text`), so a caller with no surface of its own — the API's routes — reads
+/// what an agent reads. A call the host refused for a reason
 /// it can act on is answered with the host's code: `not_ready` until the
 /// workspace serves it, `unanswered` to ask again under the same invocation
 /// id. A call that ran more than is safe to run again (`retry_safe` false) is
@@ -25,15 +27,22 @@ pub(super) fn text_result(
     }
     match result {
         Ok(Reply {
-            structured: Some(answer),
+            structured: Some(mut answer),
             failed,
             images,
-            ..
-        }) => json!({
-            "content":content(&answer.to_string(), images),
-            "structuredContent":answer,
-            "isError":failed
-        }),
+            text,
+        }) => {
+            if !text.is_empty()
+                && let Some(fields) = answer.as_object_mut()
+            {
+                fields.entry("text").or_insert_with(|| json!(text));
+            }
+            json!({
+                "content":content(&answer.to_string(), images),
+                "structuredContent":answer,
+                "isError":failed
+            })
+        }
         Ok(reply) if structured => {
             // A tool that answered no typed value: what it said is the value.
             let answer = json!({

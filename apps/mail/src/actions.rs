@@ -805,6 +805,41 @@ pub(crate) fn message_row(message: &crate::model::Message) -> MessageRow {
     }
 }
 
+/// A message the engine loaded, as the type its row is an item of.
+struct MessageItem;
+impl ui::tilo_resource::words::RowType for MessageItem {
+    const KIND: &'static str = "mail.message";
+    const LABEL: &'static str = "Message";
+}
+
+/// An attachment of a loaded message, as the type its row is an item of.
+struct AttachmentItem;
+impl ui::tilo_resource::words::RowType for AttachmentItem {
+    const KIND: &'static str = "mail.attachment";
+    const LABEL: &'static str = "Attachment";
+}
+
+/// A draft, as the type its row is an item of.
+struct DraftItem;
+impl ui::tilo_resource::words::RowType for DraftItem {
+    const KIND: &'static str = "mail.draft";
+    const LABEL: &'static str = "Draft";
+}
+
+/// One of this device's accounts, as the type its row is an item of.
+struct AccountItem;
+impl ui::tilo_resource::words::RowType for AccountItem {
+    const KIND: &'static str = "mail.account";
+    const LABEL: &'static str = "Account";
+}
+
+/// The accounts, as the type their collection row is an item of.
+struct AccountsItem;
+impl ui::tilo_resource::words::RowType for AccountsItem {
+    const KIND: &'static str = "mail.account.collection";
+    const LABEL: &'static str = "Accounts";
+}
+
 fn message_label(m: &MessageRow) -> String {
     let base = &m.label;
     if m.starred {
@@ -816,9 +851,8 @@ fn message_label(m: &MessageRow) -> String {
 
 pub(crate) fn message_row_of(message: &MessageRow) -> LiveRow {
     let mut row = with_message_views(
-        LiveRow::new(
+        LiveRow::typed::<MessageItem>(
             format!("mail.message:{}", message.id),
-            "mail.message",
             message_label(message),
         ),
         &message.id,
@@ -862,9 +896,8 @@ pub(crate) fn attachment_row(
             )
         }
     };
-    LiveRow::new(
+    LiveRow::typed::<AttachmentItem>(
         format!("mail.attachment:{message_id}:{index}"),
-        "mail.attachment",
         format!(
             "{} ({})",
             attachment.filename,
@@ -885,9 +918,8 @@ pub(crate) fn draft_row(id: &str, draft: &crate::resource::DraftState) -> LiveRo
     } else {
         MailTarget::DraftId(id.to_owned())
     };
-    LiveRow::new(
+    LiveRow::typed::<DraftItem>(
         format!("mail.draft:{id}"),
-        "mail.draft",
         crate::resource::draft_label(draft),
     )
     .operation(bound(&MailEffect::Open { target }, "Open draft"))
@@ -921,9 +953,8 @@ fn with_message_views(row: LiveRow, id: &str) -> LiveRow {
 
 /// One of this device's accounts, opening its inbox.
 pub(crate) fn account_row(id: &str, label: &str, active: bool) -> LiveRow {
-    LiveRow::new(
+    LiveRow::typed::<AccountItem>(
         format!("mail.account:{id}"),
-        "mail.account",
         if active {
             format!("{label} (open)")
         } else {
@@ -941,7 +972,7 @@ pub(crate) fn account_row(id: &str, label: &str, active: bool) -> LiveRow {
 /// This device's accounts `(id, label, active)`, each opening its inbox.
 pub(crate) fn accounts_collection(accounts: &[(String, String, bool)]) -> LiveRow {
     accounts.iter().fold(
-        LiveRow::new("mail.accounts", "mail.account.collection", "Accounts"),
+        LiveRow::typed::<AccountsItem>("mail.accounts", "Accounts"),
         |collection, (id, label, active)| collection.row(account_row(id, label, *active)),
     )
 }

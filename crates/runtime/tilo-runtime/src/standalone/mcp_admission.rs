@@ -164,16 +164,15 @@ impl Joined {
             }
             Ok(())
         })?;
+        let join = runtime_identity::collaboration_join_digest(workspace)
+            .map_err(|error| error.to_string())?;
         let presentation = runtime_collab::CertifiedJoinIdentity {
             workspace_id: workspace.into(),
             device_certificate: serde_json::to_vec(&certificate)
                 .map_err(|error| error.to_string())?,
-            proof: collab_types::signer::sign_now(
-                self.identity.signer.as_ref(),
-                runtime_identity::collaboration_join_signing_bytes(workspace),
-            )
-            .map_err(|error| error.to_string())?
-            .to_vec(),
+            proof: collab_types::signer::sign_now(self.identity.signer.as_ref(), join.to_vec())
+                .map_err(|error| error.to_string())?
+                .to_vec(),
         }
         .encode()
         .map_err(|error| error.to_string())?;

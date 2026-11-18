@@ -87,8 +87,8 @@ pub enum Readiness {
 #[must_use]
 pub fn device_readiness(workspace: &str, person: &str) -> Readiness {
     let paths = tilo_identity::provisioning::collaboration_identity_paths();
-    if tilo_user_identity::persist::load_device_key(&paths).is_err()
-        || tilo_user_identity::persist::read_device_cert(&paths.device_cert).is_err()
+    if tilo_device_identity::persist::load_device_key(&paths).is_err()
+        || tilo_device_identity::persist::read_device_cert(&paths.device_cert).is_err()
     {
         return Readiness::Refused("this device holds no identity to sign in with".to_owned());
     }
@@ -263,7 +263,7 @@ mod tests {
             .set("TILO_IDENTITY_ROOT", root.path().join("system"))
             .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
         let identity_dir = config.join("tilo/identity");
-        let system = tilo_user_identity::IdentityPaths::under(root.path().join("system"));
+        let system = tilo_device_identity::IdentityPaths::under(root.path().join("system"));
         let certificate = provision.then(|| {
             tilo_identity::provisioning::ensure_collaboration_identity(
                 &identity_dir,
@@ -271,7 +271,7 @@ mod tests {
                 tilo_identity::provisioning::IdentityStorage::Files,
             )
             .expect("an identity for the login");
-            tilo_user_identity::persist::read_device_cert(&system.device_cert)
+            tilo_device_identity::persist::read_device_cert(&system.device_cert)
                 .expect("the device certificate")
         });
         Login {

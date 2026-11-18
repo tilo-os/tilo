@@ -227,10 +227,5 @@ action note_photo(last: Text, p: Photo) {
 
 /// The media group, with a library of photos the gallery carries itself, each in its address.
 scenario "media" {
-    let g = root Gallery
-    g.media_source = "text(\"Hills at dawn\")"
-    g.media_photos.insert(Photo(title: "Dawn", place: "Black Forest", picture: photo()))
-    g.media_photos.insert(Photo(title: "Blue hour", place: "Lake Constance", picture: photo()))
-    g.media_photos.insert(Photo(title: "Dunes", place: "Erg Chebbi", picture: photo()))
-    g.media_photos.insert(Photo(title: "Pines in fog", place: "Harz", picture: photo(), tall: true))
+    fill(root Gallery)
 }

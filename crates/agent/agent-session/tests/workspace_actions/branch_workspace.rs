@@ -88,7 +88,7 @@ pub(super) async fn person(on_server: &OnServer, name: &str) -> (SigningKey, Str
 async fn note_parts(workspaces: &Workspaces, workspace: &str) -> Vec<automerge::AutoCommit> {
     let mut parts = Vec::new();
     for index in 0.. {
-        let record = notes::part::chain().part(index);
+        let record = notes::note_list::chain().part(index);
         let Some(bytes) = workspaces
             .resource_document(workspace, "so.tilo.notes", record.as_str())
             .await
@@ -110,7 +110,7 @@ async fn titles(workspaces: &Workspaces, workspace: &str) -> BTreeSet<String> {
     note_parts(workspaces, workspace)
         .await
         .iter()
-        .filter_map(|doc| <notes::PagePart as ui::tilo_resource::Resource>::read(doc).ok())
+        .filter_map(|doc| <notes::NoteList as ui::tilo_resource::Resource>::read(doc).ok())
         .flat_map(|part| {
             part.pages
                 .iter()

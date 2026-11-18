@@ -680,7 +680,7 @@ impl WorkspaceRuntime {
     /// or left it. Ephemeral: a member notice lost to a full queue costs
     /// only a stale peer list, never a change.
     fn announce_live_member(&self, device: [u8; 32], workspace_id: WorkspaceId, active: bool) {
-        let envelope = Envelope::RetiredLiveMember {
+        let envelope = Envelope::LiveMember {
             workspace_id,
             device_public_key: device,
             active,
@@ -803,7 +803,7 @@ impl WorkspaceRuntime {
             }
             if let (
                 Some(mailbox),
-                Envelope::RetiredPresence {
+                Envelope::Presence {
                     workspace_id,
                     payload,
                 },
@@ -1174,7 +1174,7 @@ mod tests {
         });
         let mailbox = Arc::new(PresenceMailbox::default());
         rt.route_presence(RECIPIENT, Arc::clone(&mailbox));
-        let presence = Envelope::RetiredPresence {
+        let presence = Envelope::Presence {
             workspace_id: WorkspaceId::from_u128(9),
             payload: b"caret".to_vec(),
         };

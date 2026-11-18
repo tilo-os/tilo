@@ -48,6 +48,7 @@ tilo-user-identity = { path = "../../collab/tilo-user-identity", optional = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"], optional = true }
 uuid.workspace = true
 zeroize = { workspace = true, optional = true }
+tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

@@ -68,9 +68,7 @@ fn invoke(
 fn run(app: &mut TestApp<SettingsShell>, effect: AgentModelsEffect) {
     if matches!(
         effect,
-        AgentModelsEffect::RemoveProvider { .. }
-            | AgentModelsEffect::RemoveProviderKey { .. }
-            | AgentModelsEffect::RemoveLegacyProviderKey { .. }
+        AgentModelsEffect::RemoveProvider { .. } | AgentModelsEffect::RemoveProviderKey { .. }
     ) {
         let row = row_for(&effect);
         let effect = SettingsEffect::from(effect);

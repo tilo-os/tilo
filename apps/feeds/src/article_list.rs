@@ -472,31 +472,35 @@ impl tilo_resource::NamesItem for Fetched {
     }
 }
 
-/// Fill in, where `action` is invoked, what it reads of the library's
-/// subscriptions and of every article held there, and refuse what they do not
-/// allow: a refresh for a subscription the library does not have, articles it
-/// already holds.
+/// Fill in, where `actions` are invoked together, what each reads of the
+/// library's subscriptions and of every article held there, and refuse what
+/// they do not allow: a refresh for a subscription the library does not have,
+/// articles it already holds. The articles are read once for all of them.
 ///
 /// # Errors
 /// Refuses as the action's verb would, had it every part.
 pub fn prepare(
-    action: &mut <ArticleList as tilo_resource::Resource>::Action,
+    actions: &mut [<ArticleList as tilo_resource::Resource>::Action],
     library: &Library,
     parts: &[(u64, Rc<ArticleList>)],
 ) -> Result<(), String> {
     use crate::article_list::article_list::{ForgetFeed, Receive};
     let held = Articles::of(parts, library);
-    match &mut action.operation {
-        ArticleListAction::Receive(Receive { feed, articles }) => {
-            if library.feeds.get(feed).is_none() {
+    for action in actions {
+        match &mut action.operation {
+            ArticleListAction::Receive(Receive { feed, articles }) => {
+                if library.feeds.get(feed).is_none() {
+                    return Err("no such subscription".into());
+                }
+                articles.retain(|article| !held.has_article(feed, &article.url, &article.title));
+            }
+            ArticleListAction::ForgetFeed(ForgetFeed { feed })
+                if library.feeds.get(feed).is_none() =>
+            {
                 return Err("no such subscription".into());
             }
-            articles.retain(|article| !held.has_article(feed, &article.url, &article.title));
+            _ => {}
         }
-        ArticleListAction::ForgetFeed(ForgetFeed { feed }) if library.feeds.get(feed).is_none() => {
-            return Err("no such subscription".into());
-        }
-        _ => {}
     }
     Ok(())
 }
@@ -515,12 +519,12 @@ impl Chained for ArticleList {
     }
 
     fn prepare(
-        action: &mut Self::Action,
+        actions: &mut [Self::Action],
         library: &Library,
         parts: &[(u64, Rc<Self>)],
         _invoker: &ui::tilo_actions::ActionInvoker,
     ) -> Result<(), String> {
-        prepare(action, library, parts)
+        prepare(actions, library, parts)
     }
 
     /// The list shows every article, so a window holds all of them.

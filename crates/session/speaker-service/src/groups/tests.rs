@@ -6,8 +6,7 @@ use media::sync_playout::ChannelRole;
 use super::*;
 use tilo_network_actor::fabric::speaker_group::{StereoSide, SurroundChannel};
 use tilo_network_actor::fabric::{
-    DeviceFabricSnapshot, DeviceKind, DevicePresence, FABRIC_SCHEMA_VERSION, FabricCapabilities,
-    OwnerSession,
+    DeviceAbout, DeviceKind, FabricCapabilities, PersonDevice, PersonDevices,
 };
 
 const LEFT: SpeakerRole = SpeakerRole::Stereo(StereoSide::Left);
@@ -58,10 +57,10 @@ impl Device {
         id(self.name)
     }
 
-    /// Publish this device's current records into `fabric`.
-    fn publish(&mut self, fabric: &mut DeviceFabric) {
+    /// Keep what this device says of itself into `fabric`, replacing what it
+    /// said before.
+    fn publish(&mut self, fabric: &mut PersonDevices) {
         self.counter = self.counter.saturating_add(1);
-        let owner = self.id();
         let endpoints = vec![
             AudioEndpoint {
                 selector: output(self.name),
@@ -76,11 +75,9 @@ impl Device {
                 is_default: true,
             },
         ];
-        let snapshot = DeviceFabricSnapshot {
-            schema_version: FABRIC_SCHEMA_VERSION,
-            owner: owner.clone(),
-            presence: DevicePresence {
-                device: owner.clone(),
+        let mut device = PersonDevice::new(
+            self.id(),
+            DeviceAbout {
                 label: self.name.into(),
                 kind: DeviceKind::Speaker,
                 capabilities: FabricCapabilities {
@@ -88,29 +85,17 @@ impl Device {
                     audio_group: self.audio_group,
                     ..FabricCapabilities::default()
                 },
-                online: self.online,
-                last_seen_unix_ms: self.counter,
-                wake_routes: Vec::new(),
-                session: OwnerSession::default(),
-                stamp: FabricStamp {
-                    counter: self.counter,
-                    device: owner,
-                },
             },
-            media: Vec::new(),
-            clipboard: Vec::new(),
-            settings: Vec::new(),
-            wifi: Vec::new(),
-            display: None,
-            unlock: tilo_network_actor::fabric::unlock::UnlockFabricState::default(),
-            speakers: self.core.authored(endpoints, &stamp(self.name)),
-        };
-        assert_eq!(fabric.upsert(snapshot), Ok(true));
+        );
+        device.online = self.online;
+        device.last_seen_unix_ms = self.counter;
+        device.speakers = self.core.authored(endpoints, &stamp(self.name));
+        fabric.insert(device);
     }
 
     fn handle(
         &mut self,
-        fabric: &DeviceFabric,
+        fabric: &PersonDevices,
         item: &Egress,
         from: &str,
         now: Instant,
@@ -153,8 +138,8 @@ fn invited_pair(
     office: &mut Device,
     shelf: &mut Device,
     now: Instant,
-) -> (DeviceFabric, SpeakerGroupId, Vec<Egress>) {
-    let mut fabric = DeviceFabric::default();
+) -> (PersonDevices, SpeakerGroupId, Vec<Egress>) {
+    let mut fabric = PersonDevices::default();
     office.publish(&mut fabric);
     shelf.publish(&mut fabric);
     let group = SpeakerGroupId([4; 16]);
@@ -178,7 +163,7 @@ fn joined_pair(
     office: &mut Device,
     shelf: &mut Device,
     now: Instant,
-) -> (DeviceFabric, SpeakerGroupId) {
+) -> (PersonDevices, SpeakerGroupId) {
     let (mut fabric, group, invites) = invited_pair(office, shelf, now);
     assert_eq!(invites.len(), 1);
     assert!(shelf.handle(&fabric, &invites[0], "office", now).is_empty());
@@ -578,7 +563,7 @@ tilo_test_env::scenario! {
     {
         let now = Instant::now();
         let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
-        let mut fabric = DeviceFabric::default();
+        let mut fabric = PersonDevices::default();
         office.publish(&mut fabric);
         let stranger = office.core.create_group(
             &fabric,
@@ -627,7 +612,7 @@ tilo_test_env::scenario! {
 fn admitted_session(
     office: &mut Device,
     shelf: &mut Device,
-    fabric: &DeviceFabric,
+    fabric: &PersonDevices,
     group: SpeakerGroupId,
     now: Instant,
 ) -> [u8; 16] {
@@ -707,7 +692,7 @@ tilo_test_env::scenario! {
         assert!(office.core.playback_plans().is_empty());
         office.publish(&mut fabric);
         // Even if the leave message is lost, the member notices the group is
-        // gone from its leader's snapshot.
+        // gone from its leader's part of the person's store.
         let teardown = shelf.core.pump(&fabric, &shelf.id(), true, now);
         assert!(teardown.contains(&egress(
             &office.id(),
@@ -828,7 +813,7 @@ tilo_test_env::scenario! {
             Device::new("shelf"),
             Device::new("sub"),
         );
-        let mut fabric = DeviceFabric::default();
+        let mut fabric = PersonDevices::default();
         office.publish(&mut fabric);
         shelf.publish(&mut fabric);
         sub.publish(&mut fabric);
@@ -1070,7 +1055,7 @@ tilo_test_env::scenario! {
         let (mut fabric, group) = joined_pair(&mut office, &mut shelf, now);
         phone.publish(&mut fabric);
         let published = fabric.speaker_group(group).unwrap().clone();
-        let consent = |phone: &mut Device, office: &mut Device, fabric: &mut DeviceFabric, at| {
+        let consent = |phone: &mut Device, office: &mut Device, fabric: &mut PersonDevices, at| {
             let invites =
                 office.core
                     .invite_listeners(&published, &[(phone.id(), microphone("phone"))], at);
@@ -1110,7 +1095,7 @@ tilo_test_env::scenario! {
 
 fn candidate_state(
     office: &Device,
-    fabric: &DeviceFabric,
+    fabric: &PersonDevices,
     group: SpeakerGroupId,
     device: &str,
     now: Instant,

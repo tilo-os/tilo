@@ -1,11 +1,10 @@
-//! The chat's messages: the verbs of a part ([`ChatPart`]), which part each
+//! The chat's messages: the verbs of a part ([`ChatMessages`]), which part each
 //! changes ([`Chained`]), and the parts a device holds read as one timeline
 //! ([`Messages`]).
 //!
-//! A post goes to the head the device holds, or the part after it once the
-//! head is full ([`crate::parts::post_part`]); anything done to a message
-//! (an edit, a reaction, a reply in its thread, an agent's log of its
-//! work on it) goes to the part that holds it. What a part's verb records
+//! The framework places each message: a post with the newest, anything done
+//! to a message (an edit, a reaction, a reply in its thread, an agent's log
+//! of its work on it) where the message is ([`Chained::beside`]). What a part's verb keeps
 //! from the workspace's chat resource — who a mention names — is filled in where it
 //! is invoked ([`Chained::prepare`]), so the verb reads only its own part
 //! and replays the same everywhere.
@@ -32,7 +31,7 @@ use crate::chat::{
     ShareAccess, Step, Transition, WindowShare, Work, WorkUpdate, author, reply_id_at, seconds,
 };
 use crate::message_view::View;
-use crate::parts::{self, ChatPart};
+use crate::parts::{self, ChatMessages};
 use crate::question::{Choice, Question};
 
 /// Refuses anyone but `message`'s author: editing and deleting a message is
@@ -61,7 +60,7 @@ fn written_at(cx: &ActionCx, written: Option<i64>, brought: bool) -> i64 {
         .map_or(now, |written| written.clamp(0, now))
 }
 
-impl ChatPart {
+impl ChatMessages {
     /// What search finds in the messages this part keeps: each message's
     /// words, opening the message in the chat it was posted in.
     ///
@@ -106,17 +105,7 @@ impl ChatPart {
     }
 }
 
-impl ChatPart {
-    /// The message text of the part, in bytes: what fills it
-    /// ([`parts::PART_TEXT_BYTES`]).
-    #[must_use]
-    pub fn text_bytes(&self) -> usize {
-        self.messages
-            .values()
-            .map(|message| message.text.len())
-            .sum()
-    }
-
+impl ChatMessages {
     /// Append a message to `channel` by the invoker `cx` names, at `ts`, refusing what no
     /// one should see: a reply to a reply or to another channel's message,
     /// an oversized body or an invalid attachment. Whether the channel takes
@@ -199,7 +188,7 @@ impl ChatPart {
     }
 }
 
-impl ChatPart {
+impl ChatMessages {
     /// The question the message `message` asks.
     fn question_of(&mut self, message: &Id) -> Result<&mut Question, Refusal> {
         self.messages
@@ -225,7 +214,7 @@ impl ChatPart {
     }
 }
 
-/// A message to post: the parameters of [`ChatPart::post`].
+/// A message to post: the parameters of [`ChatMessages::post`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct NewMessage {
     /// The channel
@@ -265,12 +254,12 @@ pub struct NewMessage {
 // each message the chain publishes, as on the resource's other items.
 #[ui::tilo_resource::resource(
     kind = "chat.messages",
-    params = chat_part,
-    search = ChatPart::search,
+    params = chat_messages,
+    search = ChatMessages::search,
     effects = crate::effects::ChatEffect,
     item_views = crate::effects::item_views,
 )]
-impl ChatPart {
+impl ChatMessages {
     /// Post a message.
     ///
     /// `@Name` of a member becomes a mention of them.
@@ -927,7 +916,12 @@ impl ChatPart {
         #[param("Filled in where it is asked; leave it out")] members: Option<
             Vec<ui::tilo_resource::MemberId>,
         >,
+        #[param("The message it is carried by: filled in where it is asked; leave it out")]
+        message: Option<Id>,
     ) -> Result<(), Refusal> {
+        // What is kept where this message would be, so an ask under a key
+        // asked before finds it; the verb derives the message itself.
+        let _ = message;
         let starter = crate::cause::starter(cx)?;
         let cause = Cause::started(cause, &starter)?;
         let asker = author(cx)?;
@@ -1277,147 +1271,120 @@ fn takes_posts(chat: &Chat, channel: &Id) -> Result<(), String> {
     Ok(())
 }
 
-impl Chained for ChatPart {
+impl Chained for ChatMessages {
     type Base = Chat;
 
     fn chain() -> ui::resource::DocumentId {
         parts::chain()
     }
 
-    fn part_for(action: &Self::Action, parts: &[(u64, Rc<Self>)]) -> Option<Result<u64, String>> {
-        use chat_part::{
-            AnswerWithView, Ask, AskAgent, DeliverMessage, EditMessage, Post, PostView, RecordWork,
+    /// The message a write goes with, which keeps it beside that one: a
+    /// reply beside the message it answers, a delivery or an agent's ask made
+    /// before where it was put (so making it again changes nothing), a
+    /// streamed reply where it started, and any change of a message where
+    /// the message is.
+    fn beside(action: &Self::Action) -> Option<Id> {
+        use chat_messages::{
+            AnswerWithView, AskAgent, DeliverMessage, EditMessage, PostView, RecordWork,
             RewriteView, StreamOutput,
         };
-        let holding = |message: &Id| {
-            parts
-                .iter()
-                .rev()
-                .find(|(_, part)| part.messages.contains(message))
-                .map(|(index, _)| *index)
-                .ok_or_else(|| "there is no such message".to_owned())
-        };
-        let new = || {
-            Ok(parts.last().map_or(0, |(head, part)| {
-                parts::post_part(*head, part.messages.len(), part.text_bytes())
-            }))
-        };
-        Some(match &action.operation {
-            // A reply goes to its parent's part, beside the message it
-            // answers.
-            ChatPartAction::Post(Post {
+        match &action.operation {
+            ChatMessagesAction::Post(chat_messages::Post {
                 message:
                     NewMessage {
                         parent: Some(parent),
                         ..
                     },
             })
-            | ChatPartAction::Ask(Ask {
+            | ChatMessagesAction::Ask(chat_messages::Ask {
                 parent: Some(parent),
                 ..
             })
-            | ChatPartAction::PostView(PostView {
+            | ChatMessagesAction::PostView(PostView {
                 parent: Some(parent),
                 ..
-            }) => holding(parent),
-            // A delivery made before is where it was put; it changes nothing.
-            ChatPartAction::DeliverMessage(DeliverMessage {
+            }) => Some(parent.clone()),
+            ChatMessagesAction::DeliverMessage(DeliverMessage {
                 channel,
                 author,
                 body,
                 ts: Some(ts),
-            }) => holding(&crate::transcript::delivered_id(channel, author, *ts, body))
-                .or_else(|_| new()),
-            // An ask made before is where it was put: asking again under
-            // its key changes nothing.
-            ChatPartAction::AskAgent(AskAgent { channel, cause, .. }) => parts
-                .iter()
-                .rev()
-                .find(|(_, part)| {
-                    part.messages.iter().any(|(_, held)| {
-                        held.channel == *channel
-                            && held
-                                .cause
-                                .as_ref()
-                                .is_some_and(|before| before.key.0 == cause.key)
-                    })
-                })
-                .map_or_else(new, |(index, _)| Ok(*index)),
-            ChatPartAction::Post(_)
-            | ChatPartAction::Ask(_)
-            | ChatPartAction::DeliverMessage(_)
-            | ChatPartAction::PostFile(_)
-            | ChatPartAction::ShareResource(_)
-            | ChatPartAction::ShareWindow(_)
-            | ChatPartAction::PostView(_) => new(),
-            // A reply being streamed stays where it started.
-            ChatPartAction::StreamOutput(StreamOutput { reply, .. }) => {
-                holding(&Id::from_raw(reply.clone())).or_else(|_| new())
+            }) => Some(crate::transcript::delivered_id(channel, author, *ts, body)),
+            ChatMessagesAction::AskAgent(AskAgent { message, .. }) => message.clone(),
+            ChatMessagesAction::StreamOutput(StreamOutput { reply, .. }) => {
+                Some(Id::from_raw(reply.clone()))
             }
-            ChatPartAction::RecordWork(RecordWork { message, .. })
-            | ChatPartAction::EditMessage(EditMessage { message, .. })
-            | ChatPartAction::AnswerWithView(AnswerWithView { message, .. })
-            | ChatPartAction::RewriteView(RewriteView { message, .. }) => holding(message),
-            other => match Self::item_of(other) {
-                Some(message) => holding(&message),
-                // A field edit of the part (a message inserted whole, as
-                // a scenario stages one) goes to the head.
-                None => Ok(parts.last().map_or(0, |(head, _)| *head)),
-            },
-        })
+            ChatMessagesAction::RecordWork(RecordWork { message, .. })
+            | ChatMessagesAction::EditMessage(EditMessage { message, .. })
+            | ChatMessagesAction::AnswerWithView(AnswerWithView { message, .. })
+            | ChatMessagesAction::RewriteView(RewriteView { message, .. }) => Some(message.clone()),
+            other => Self::item_of(other),
+        }
     }
 
     fn prepare(
-        action: &mut Self::Action,
+        actions: &mut [Self::Action],
         chat: &Chat,
         _parts: &[(u64, Rc<Self>)],
-        _invoker: &ui::tilo_actions::ActionInvoker,
+        invoker: &ui::tilo_actions::ActionInvoker,
     ) -> Result<(), String> {
-        match &mut action.operation {
-            ChatPartAction::Post(post) => {
-                let message = &mut post.message;
-                takes_posts(chat, &message.channel)?;
-                let body = message.body.clone().unwrap_or_default();
-                message.mentions = Some(Chat::mentions(&message.text, &body));
+        for action in actions {
+            match &mut action.operation {
+                ChatMessagesAction::Post(post) => {
+                    let message = &mut post.message;
+                    takes_posts(chat, &message.channel)?;
+                    let body = message.body.clone().unwrap_or_default();
+                    message.mentions = Some(Chat::mentions(&message.text, &body));
+                }
+                ChatMessagesAction::PostFile(post) => {
+                    takes_posts(chat, &post.channel)?;
+                    post.mentions = Some(Chat::mentions(
+                        post.text.as_deref().unwrap_or_default(),
+                        &[],
+                    ));
+                }
+                ChatMessagesAction::ShareResource(share) => {
+                    takes_posts(chat, &share.channel)?;
+                    let text = share
+                        .text
+                        .clone()
+                        .filter(|text| !text.trim().is_empty())
+                        .unwrap_or_else(|| share.attached.reference.label.clone());
+                    share.mentions = Some(Chat::mentions(&text, &[]));
+                }
+                ChatMessagesAction::ShareWindow(share) => {
+                    takes_posts(chat, &share.channel)?;
+                    share.mentions = Some(Chat::mentions(
+                        share.text.as_deref().unwrap_or_default(),
+                        &[],
+                    ));
+                }
+                ChatMessagesAction::Ask(ask) => takes_posts(chat, &ask.channel)?,
+                ChatMessagesAction::PostView(post) => takes_posts(chat, &post.channel)?,
+                ChatMessagesAction::AskAgent(ask) => {
+                    takes_posts(chat, &ask.channel)?;
+                    // Who the conversation is with, for the verb to check its
+                    // asker and the person asked for against.
+                    ask.members = Some(chat.conversation_members(&ask.channel));
+                    // The message an ask under this key is carried by, where it
+                    // was asked before: whoever it is asked for, and the key.
+                    ask.message = crate::cause::led_to(&invoker.acting).map(|person| {
+                        crate::cause::message_id(
+                            &ui::tilo_resource::MemberId::person(person),
+                            &ask.cause.key,
+                        )
+                    });
+                }
+                ChatMessagesAction::EditMessage(edit) => {
+                    let body = edit.body.clone().unwrap_or_default();
+                    edit.mentions = Some(Chat::mentions(&edit.text, &body));
+                }
+                ChatMessagesAction::StreamOutput(stream) => takes_posts(chat, &stream.channel)?,
+                ChatMessagesAction::DeliverMessage(delivery) => {
+                    takes_posts(chat, &delivery.channel)?;
+                }
+                _ => {}
             }
-            ChatPartAction::PostFile(post) => {
-                takes_posts(chat, &post.channel)?;
-                post.mentions = Some(Chat::mentions(
-                    post.text.as_deref().unwrap_or_default(),
-                    &[],
-                ));
-            }
-            ChatPartAction::ShareResource(share) => {
-                takes_posts(chat, &share.channel)?;
-                let text = share
-                    .text
-                    .clone()
-                    .filter(|text| !text.trim().is_empty())
-                    .unwrap_or_else(|| share.attached.reference.label.clone());
-                share.mentions = Some(Chat::mentions(&text, &[]));
-            }
-            ChatPartAction::ShareWindow(share) => {
-                takes_posts(chat, &share.channel)?;
-                share.mentions = Some(Chat::mentions(
-                    share.text.as_deref().unwrap_or_default(),
-                    &[],
-                ));
-            }
-            ChatPartAction::Ask(ask) => takes_posts(chat, &ask.channel)?,
-            ChatPartAction::PostView(post) => takes_posts(chat, &post.channel)?,
-            ChatPartAction::AskAgent(ask) => {
-                takes_posts(chat, &ask.channel)?;
-                // Who the conversation is with, for the verb to check its
-                // asker and the person asked for against.
-                ask.members = Some(chat.conversation_members(&ask.channel));
-            }
-            ChatPartAction::EditMessage(edit) => {
-                let body = edit.body.clone().unwrap_or_default();
-                edit.mentions = Some(Chat::mentions(&edit.text, &body));
-            }
-            ChatPartAction::StreamOutput(stream) => takes_posts(chat, &stream.channel)?,
-            ChatPartAction::DeliverMessage(delivery) => takes_posts(chat, &delivery.channel)?,
-            _ => {}
         }
         Ok(())
     }
@@ -1425,20 +1392,20 @@ impl Chained for ChatPart {
     /// The channel a post goes to, as everyone in the workspace sees it named
     /// (`#general`). A direct conversation is never named.
     fn carry(previous: u64, part: &Self) -> Option<tilo_resource::Invoke<Self>> {
-        Some(Self::CARRY_COUNTS.with(chat_part::CarryCounts {
+        Some(Self::CARRY_COUNTS.with(chat_messages::CarryCounts {
             earlier: part.carried_after(previous),
         }))
     }
 
     fn place(action: &Self::Action, chat: &Chat) -> Option<String> {
         let channel = match &action.operation {
-            ChatPartAction::Post(post) => &post.message.channel,
-            ChatPartAction::PostFile(post) => &post.channel,
-            ChatPartAction::ShareResource(share) => &share.channel,
-            ChatPartAction::ShareWindow(share) => &share.channel,
-            ChatPartAction::Ask(ask) => &ask.channel,
-            ChatPartAction::PostView(post) => &post.channel,
-            ChatPartAction::AskAgent(ask) => &ask.channel,
+            ChatMessagesAction::Post(post) => &post.message.channel,
+            ChatMessagesAction::PostFile(post) => &post.channel,
+            ChatMessagesAction::ShareResource(share) => &share.channel,
+            ChatMessagesAction::ShareWindow(share) => &share.channel,
+            ChatMessagesAction::Ask(ask) => &ask.channel,
+            ChatMessagesAction::PostView(post) => &post.channel,
+            ChatMessagesAction::AskAgent(ask) => &ask.channel,
             _ => return None,
         };
         let conversation = chat.conversation(channel)?;
@@ -1447,7 +1414,7 @@ impl Chained for ChatPart {
     }
 }
 
-impl ChatPart {
+impl ChatMessages {
     /// The message `reply` answers, when `reply` is what an agent writes in answer on the
     /// attempt that goes now ([`reply_id_at`]): the message its turn's stop stands on.
     fn answered_by(&self, reply: &Id) -> Option<Id> {
@@ -1465,22 +1432,35 @@ impl ChatPart {
     }
 
     /// The message a verb on one message names.
-    fn item_of(action: &ChatPartAction) -> Option<Id> {
+    fn item_of(action: &ChatMessagesAction) -> Option<Id> {
         match action {
-            ChatPartAction::DeleteMessage(chat_part::DeleteMessage { message })
-            | ChatPartAction::RemoveMessage(chat_part::RemoveMessage { message })
-            | ChatPartAction::Pin(chat_part::Pin { message, .. })
-            | ChatPartAction::StopSharing(chat_part::StopSharing { message })
-            | ChatPartAction::SetShareAccess(chat_part::SetShareAccess { message, .. })
-            | ChatPartAction::ShareOpen(chat_part::ShareOpen { message, .. })
-            | ChatPartAction::AnswerQuestion(chat_part::AnswerQuestion { message, .. })
-            | ChatPartAction::WithdrawQuestion(chat_part::WithdrawQuestion { message, .. })
-            | ChatPartAction::SettleQuestion(chat_part::SettleQuestion { message, .. })
-            | ChatPartAction::AnswerWithView(chat_part::AnswerWithView { message, .. })
-            | ChatPartAction::RewriteView(chat_part::RewriteView { message, .. })
-            | ChatPartAction::StopAgent(chat_part::StopAgent { message }) => Some(message.clone()),
+            ChatMessagesAction::DeleteMessage(chat_messages::DeleteMessage { message })
+            | ChatMessagesAction::RemoveMessage(chat_messages::RemoveMessage { message })
+            | ChatMessagesAction::Pin(chat_messages::Pin { message, .. })
+            | ChatMessagesAction::StopSharing(chat_messages::StopSharing { message })
+            | ChatMessagesAction::SetShareAccess(chat_messages::SetShareAccess {
+                message, ..
+            })
+            | ChatMessagesAction::ShareOpen(chat_messages::ShareOpen { message, .. })
+            | ChatMessagesAction::AnswerQuestion(chat_messages::AnswerQuestion {
+                message, ..
+            })
+            | ChatMessagesAction::WithdrawQuestion(chat_messages::WithdrawQuestion {
+                message,
+                ..
+            })
+            | ChatMessagesAction::SettleQuestion(chat_messages::SettleQuestion {
+                message, ..
+            })
+            | ChatMessagesAction::AnswerWithView(chat_messages::AnswerWithView {
+                message, ..
+            })
+            | ChatMessagesAction::RewriteView(chat_messages::RewriteView { message, .. })
+            | ChatMessagesAction::StopAgent(chat_messages::StopAgent { message }) => {
+                Some(message.clone())
+            }
             // A field edit of one message (a reaction) names it in its path.
-            ChatPartAction::FieldEdit(edit) => match edit.path() {
+            ChatMessagesAction::FieldEdit(edit) => match edit.path() {
                 [Segment::Field(field), Segment::Item(message), ..] if field == "messages" => {
                     Some(message.clone())
                 }
@@ -1503,17 +1483,17 @@ impl ChatPart {
 /// shows beside a message, never what orders them.
 #[derive(Clone, Debug, Default)]
 pub struct Messages {
-    parts: Vec<(u64, Rc<ChatPart>)>,
+    parts: Vec<(u64, Rc<ChatMessages>)>,
     /// The messages sent from here that wait for the part they go to, on its
     /// way from the workspace ([`ui::framework::Chain::unwritten`]): shown as
     /// being sent, in no part yet.
-    sending: Option<Rc<ChatPart>>,
+    sending: Option<Rc<ChatMessages>>,
 }
 
 impl Messages {
     /// The parts held, oldest first.
     #[must_use]
-    pub fn new(mut parts: Vec<(u64, Rc<ChatPart>)>) -> Self {
+    pub fn new(mut parts: Vec<(u64, Rc<ChatMessages>)>) -> Self {
         parts.sort_by_key(|(index, _)| *index);
         Self {
             parts,
@@ -1523,7 +1503,7 @@ impl Messages {
 
     /// These parts with the messages being sent, `sending`, after them.
     #[must_use]
-    pub fn with_sending(mut self, sending: Option<Rc<ChatPart>>) -> Self {
+    pub fn with_sending(mut self, sending: Option<Rc<ChatMessages>>) -> Self {
         self.sending = sending;
         self
     }
@@ -1538,13 +1518,13 @@ impl Messages {
 
     /// One part, numbered 0: for a reader of a single part's document.
     #[must_use]
-    pub fn single(part: ChatPart) -> Self {
+    pub fn single(part: ChatMessages) -> Self {
         Self::new(vec![(0, Rc::new(part))])
     }
 
     /// The parts held, oldest first.
     #[must_use]
-    pub fn parts(&self) -> &[(u64, Rc<ChatPart>)] {
+    pub fn parts(&self) -> &[(u64, Rc<ChatMessages>)] {
         &self.parts
     }
 
@@ -1606,14 +1586,6 @@ impl Messages {
             .map(|(index, _)| *index)
     }
 
-    /// The part a new post goes to ([`parts::post_part`]).
-    #[must_use]
-    pub fn post_part(&self) -> u64 {
-        self.parts.last().map_or(0, |(head, part)| {
-            parts::post_part(*head, part.messages.len(), part.text_bytes())
-        })
-    }
-
     /// The top-level messages of `channel` held, in every part.
     #[must_use]
     pub fn top_level(&self, channel: &Id) -> usize {
@@ -1666,7 +1638,7 @@ impl Messages {
     }
 
     /// How many top-level messages `channel` has in the parts before the
-    /// oldest held, as the head carries them ([`ChatPart::earlier`]); `None`
+    /// oldest held, as the head carries them ([`ChatMessages::earlier`]); `None`
     /// when the head does not say for every one of them (parts written
     /// before parts carried counts).
     #[must_use]
@@ -1682,7 +1654,7 @@ impl Messages {
 
     /// The top-level messages of `channel` after `mark`: counted in each
     /// part held, and in the parts between that are not, as the head
-    /// carries them ([`ChatPart::earlier`]).
+    /// carries them ([`ChatMessages::earlier`]).
     #[must_use]
     pub fn unread(&self, channel: &Id, mark: parts::ReadMark) -> usize {
         let Some((head, newest)) = self.parts.last() else {
@@ -1791,8 +1763,8 @@ impl Messages {
 /// The parts `doc` holds when it is a part's resource, read as one: for a
 /// reader of one part document.
 #[must_use]
-pub fn read_part(doc: &tilo_actions::Doc) -> ChatPart {
-    <ChatPart as tilo_resource::Resource>::read(doc).unwrap_or_default()
+pub fn read_part(doc: &tilo_actions::Doc) -> ChatMessages {
+    <ChatMessages as tilo_resource::Resource>::read(doc).unwrap_or_default()
 }
 
 #[cfg(test)]

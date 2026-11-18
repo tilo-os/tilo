@@ -31,18 +31,18 @@ pub const DEVICE_KEY_PATH: &str = "/var/lib/tilo/device-private/keypair.bin";
 /// Load the device key, creating it only when the path is genuinely absent.
 /// Malformed, unreadable or over-permissive files are never replaced.
 pub fn load_or_create_keypair(path: &std::path::Path) -> std::io::Result<iroh::SecretKey> {
-    let canonical_paths = tilo_user_identity::IdentityPaths::under(
+    let canonical_paths = tilo_device_identity::IdentityPaths::under(
         path.parent()
             .and_then(std::path::Path::parent)
             .unwrap_or_else(|| std::path::Path::new("/var/lib/tilo")),
     );
 
     let signing = if path == canonical_paths.device_privkey {
-        tilo_user_identity::load_or_create_device_key(&canonical_paths)
+        tilo_device_identity::load_or_create_device_key(&canonical_paths)
             .map_err(persist_error)?
             .0
     } else if path.exists() {
-        tilo_user_identity::persist::read_device_key(path).map_err(persist_error)?
+        tilo_device_identity::persist::read_device_key(path).map_err(persist_error)?
     } else {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -50,15 +50,15 @@ pub fn load_or_create_keypair(path: &std::path::Path) -> std::io::Result<iroh::S
         let key = ed25519_dalek::SigningKey::generate(&mut getrandom::rand_core::UnwrapErr(
             getrandom::SysRng,
         ));
-        tilo_user_identity::persist::write_device_key(path, &key)?;
+        tilo_device_identity::persist::write_device_key(path, &key)?;
         key
     };
     Ok(iroh::SecretKey::from_bytes(&signing.to_bytes()))
 }
 
-fn persist_error(error: tilo_user_identity::PersistError) -> std::io::Error {
+fn persist_error(error: tilo_device_identity::PersistError) -> std::io::Error {
     let kind = match error {
-        tilo_user_identity::PersistError::Io(ref e) => e.kind(),
+        tilo_device_identity::PersistError::Io(ref e) => e.kind(),
         _ => std::io::ErrorKind::InvalidData,
     };
     std::io::Error::new(kind, error)

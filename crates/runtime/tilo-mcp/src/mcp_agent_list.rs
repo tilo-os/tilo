@@ -83,6 +83,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             text.push('\n');
             text.push_str(&line);
         }
+        // A page is one page of the listing typed as it is in text: rows past
+        // the cursor's offset belong to the next page, not this one.
+        rows = rows.into_iter().skip(offset).take(limit).collect();
         let end = offset.saturating_add(limit);
         let next = (end < total).then(|| end.to_string());
         if let Some(next) = &next {

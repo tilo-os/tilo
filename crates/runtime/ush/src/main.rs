@@ -44,7 +44,7 @@ fn main() -> ExitCode {
         }
         "ush" => host(rest),
         ush::shell_host::SHELL_COMMAND => Ok(ush::shell_host::main(rest)),
-        name if guest::is_legacy_shim(name) => guest::legacy_launch(name, rest),
+        name if guest::is_linux_vm_shim(name) => guest::linux_vm_launch(name, rest),
         _ => dispatch(rest),
     };
 
@@ -87,7 +87,6 @@ fn dispatch(args: &[String]) -> anyhow::Result<i32> {
         Some("guard") => guest::guard(rest),
         Some("quarantine") => guest::quarantine(rest),
         Some("history") => guest::file_history(rest),
-        Some("version") => Ok(guest::version(rest)),
         Some(name) if ush::file_actions::cli::Tool::of(name).is_some() => {
             guest::file_action(name, rest)
         }
@@ -122,10 +121,6 @@ Inside a guest:
                                    undone from its History; --json
   history [--json]                 what was removed or replaced, and its id
   history restore ID               put one back
-  version status | log | show | diff | restore
-                                   a file's own history: revisions, their
-                                   contents, what changed, and a checked
-                                   restore (see `version --help`)
 ";
 
 fn host(args: &[String]) -> anyhow::Result<i32> {
@@ -350,7 +345,7 @@ Examples:\n  tilo app u browser\n  tilo system status\n  tilo update\n\n\
 Unavailable providers are skipped by `tilo update`; explicit provider commands\n\
 explain when the host does not offer them.\n";
 
-    pub fn is_legacy_shim(name: &str) -> bool {
+    pub fn is_linux_vm_shim(name: &str) -> bool {
         !name.is_empty()
             && name != "tilo-ush"
             && !ush::GUEST_COMMANDS.contains(&name)
@@ -358,9 +353,9 @@ explain when the host does not offer them.\n";
             && Path::new(ush::GUEST_BROKER_SOCK).exists()
     }
 
-    pub fn legacy_launch(app: &str, args: &[String]) -> anyhow::Result<i32> {
+    pub fn linux_vm_launch(app: &str, args: &[String]) -> anyhow::Result<i32> {
         let cwd = std::env::current_dir()?;
-        let request = Request::LegacyLaunch {
+        let request = Request::LinuxVmLaunch {
             app: app.to_string(),
             args: args.to_vec(),
             cwd,
@@ -942,13 +937,6 @@ explain when the host does not offer them.\n";
         Ok(0)
     }
 
-    /// `version`: a file's own history. Nothing here keeps a store of its own — the mount's
-    /// history is the one the file manager's History view shows. A refusal is an exit code, never
-    /// an error, because a caller reads the answer either way.
-    pub fn version(args: &[String]) -> i32 {
-        ush::version::run(args)
-    }
-
     fn store_dir(outside_home: &Path) -> PathBuf {
         if broker_socket().exists() {
             PathBuf::from(ush::file_actions::RECOVERABLE_DIR)
@@ -978,7 +966,7 @@ explain when the host does not offer them.\n";
                         ush::GUEST_COMMANDS.contains(&name),
                         "{name} is not put on the guest's PATH"
                     );
-                    assert!(!is_legacy_shim(name), "{name} is not a legacy app");
+                    assert!(!is_linux_vm_shim(name), "{name} is not a Linux VM app");
                 }
                 assert!(ush::GUEST_COMMANDS.contains(&"history"));
             }

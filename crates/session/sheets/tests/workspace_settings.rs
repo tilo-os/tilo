@@ -554,6 +554,47 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase choosing_an_answer_far_down_keeps_the_sheet_where_it_was;
+    // A choice made far down a long review rebuilds the sheet with the new answer: it stays where
+    // the person was, rather than jumping back to the top.
+    {
+        let mut settings = staged_settings("agent-review");
+        let review = settings.agents.review.as_mut().unwrap();
+        let first = review.apps[0].clone();
+        review.apps = (0..12)
+            .map(|at| {
+                let mut app = first.clone();
+                app.scope = format!("app-{at}");
+                app.label = format!("App {at}");
+                app
+            })
+            .collect();
+        let (mut app, state) = mounted_with(settings.clone());
+        let row = "ws-agent-answer-app-9-change";
+        let at = |app: &mut HeadlessApp<WorkspaceSettingsApp>| {
+            app.harness().targets().get(row).map(|bounds| bounds.y0)
+        };
+        let top = at(&mut app).expect("the row is laid out");
+        app.harness()
+            .send(&ui::synthetic_input::cursor_moved(640.0, 450.0));
+        for _ in 0..6 {
+            app.harness().scroll(0.0, -3.0);
+        }
+        app.settle();
+        let scrolled = at(&mut app).expect("still laid out");
+        assert!(scrolled < top - 100.0, "the review scrolls: {top} to {scrolled}");
+        // The shell shows the answer chosen: the same page with one answer changed.
+        let review = settings.agents.review.as_mut().unwrap();
+        review.apps[9].kinds[1].answer = 2;
+        state.show(settings);
+        app.settle();
+        let after = at(&mut app).expect("still laid out");
+        assert!(
+            (after - scrolled).abs() < 1.0,
+            "the sheet stays where it was: {scrolled} then {after}"
+        );
+    }
+
     phase a_requested_bot_is_removed_here_and_a_hosts_bot_is_not;
     // Remove takes back a bot a member asked for, and the tab offers no Remove
     // for one the workspace's host runs from its own choice.

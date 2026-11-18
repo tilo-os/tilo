@@ -13,8 +13,6 @@ type Item {
     reactions: Map<Set<Actor>>
 }
 
-/// The everyday parts of a window: navigation, text and buttons, chips, a card of facts, an
-///
 /// The gallery: a window of every group. A group's file adds its page to the gallery's sidebar
 /// and, where a control on it is bound to a field, the field here. The root is made with the
 /// package and holds every value the pages show, so a window opens on its components from the
@@ -68,6 +66,134 @@ type Gallery {
 root Gallery
 
 default view gallery for Gallery
+
+/// A gallery whose root is made opens filled: the platform applies this once to the root, as it
+/// applies every migration, as the root is made and before the window that asked for it is drawn.
+migration action seed(g: Gallery) {
+    fill(g)
+}
+
+/// What the gallery shows with nothing in it yet: one document of every group, so a person meets
+/// the components rather than an empty window. Each group fills only while it stands empty, so a
+/// scenario may fill them too.
+action fill(g: Gallery) {
+    if g.backlog_items.is_empty() {
+        g.backlog_items.insert(
+            Item(
+                title: "Write the release notes",
+                notes: RichText("Lead with the sync fix, then the new board."),
+                stage: "To do",
+            ),
+        )
+        g.backlog_items.insert(
+            Item(title: "Screenshots for the docs", notes: RichText(""), stage: "Doing"),
+        )
+        g.backlog_items.insert(Item(title: "Bump the version", notes: RichText(""), stage: "Done"))
+    }
+    if g.release_items.is_empty() {
+        g.release_items.insert(
+            Item(title: "Write the release notes", notes: RichText(""), stage: "To do"),
+        )
+        g.release_items.insert(
+            Item(title: "Translate the onboarding", notes: RichText(""), stage: "To do"),
+        )
+        g.release_items.insert(
+            Item(title: "Screenshots for the docs", notes: RichText(""), stage: "Doing"),
+        )
+        g.release_items.insert(Item(title: "Bump the version", notes: RichText(""), stage: "Done"))
+    }
+    if g.data_rows.is_empty() {
+        g.data_rows.insert(Row(title: "Readme.md", state: "Edited", size: 1204))
+        g.data_rows.insert(Row(title: "release.toml", state: "New", size: 312))
+        g.data_rows.insert(Row(title: "notes.txt", state: "Locked", size: 48))
+    }
+    if g.data_files.is_empty() {
+        let project = g.data_files.insert(Node(title: "Project", folder: true))
+        let src = g.data_files.insert(Node(title: "src", parent: project, folder: true, size: 0))
+        g.data_files.insert(Node(title: "main.rs", parent: src, folder: false, size: 880))
+        g.data_files.insert(Node(title: "board.rs", parent: src, folder: false, size: 2416))
+        let docs = g.data_files.insert(Node(title: "docs", parent: project, folder: true, size: 0))
+        g.data_files.insert(
+            Node(title: "release-notes.md", parent: docs, folder: false, size: 1204),
+        )
+    }
+    if g.data_messages.is_empty() {
+        g.data_messages.insert(
+            Message(
+                title: "a",
+                from: "Ada",
+                body: "Are we ready to ship the release tomorrow?",
+                at: 2026-06-29T16:05Z,
+                mine: false,
+            ),
+        )
+        g.data_messages.insert(
+            Message(
+                title: "b",
+                from: "Sam",
+                body: "The build is green. One screenshot is left for the docs.",
+                at: 2026-06-29T16:07Z,
+                mine: true,
+            ),
+        )
+        g.data_messages.insert(
+            Message(
+                title: "c",
+                from: "Sam",
+                body: "I'll finish it first thing.",
+                at: 2026-06-29T16:07Z,
+                mine: true,
+            ),
+        )
+        g.data_messages.insert(
+            Message(
+                title: "d",
+                from: "Ada",
+                body: "Screenshots are in. Then let us go.",
+                at: 2026-06-30T08:44Z,
+                mine: false,
+            ),
+        )
+        g.data_messages.insert(
+            Message(
+                title: "e",
+                from: "Sam",
+                body: "Shipping now.",
+                at: 2026-06-30T08:46Z,
+                mine: true,
+            ),
+        )
+    }
+    if g.data_cards.is_empty() {
+        g.data_cards.insert(Card(title: "Design", count: 12))
+        g.data_cards.insert(Card(title: "Engineering", count: 34))
+        g.data_cards.insert(Card(title: "Support", count: 7))
+    }
+    if g.data_changes.is_empty() {
+        g.data_changes.insert(
+            Change(title: "a", who: "Ada", summary: "Rewrote the summary", at: 2026-06-30T08:42Z),
+        )
+        g.data_changes.insert(
+            Change(title: "b", who: "Sam", summary: "Moved to Done", at: 2026-06-30T09:10Z),
+        )
+    }
+    if g.media_photos.is_empty() {
+        g.media_photos.insert(Photo(title: "Dawn", place: "Black Forest", picture: photo()))
+        g.media_photos.insert(Photo(title: "Blue hour", place: "Lake Constance", picture: photo()))
+        g.media_photos.insert(Photo(title: "Dunes", place: "Erg Chebbi", picture: photo()))
+        g.media_photos.insert(
+            Photo(title: "Pines in fog", place: "Harz", picture: photo(), tall: true),
+        )
+    }
+    if g.media_source == "" {
+        g.media_source = "text(\"Hills at dawn\")"
+    }
+    if g.chrome_apps.is_empty() {
+        g.chrome_apps.insert(Pinned(title: "Notes"))
+        g.chrome_apps.insert(Pinned(title: "Tasks"))
+        g.chrome_apps.insert(Pinned(title: "Mail"))
+    }
+}
 
 /// What the chosen group is called, over its page.
 fn page_title(page: Text) -> Text {
@@ -366,36 +492,11 @@ view board_item_row(x: Item) {
 /// The basics, with a note the person looking wrote.
 scenario "basics" {
     let g = root Gallery
+    fill(g)
     g.basics_note = "Written from the text input."
 }
 
-/// A team's backlog a week into a release.
-scenario "a backlog" {
-    let g = root Gallery
-    g.backlog_items.insert(
-        Item(
-            title: "Write the release notes",
-            notes: RichText("Lead with the sync fix, then the new board."),
-            stage: "To do",
-        ),
-    )
-    g.backlog_items.insert(
-        Item(title: "Screenshots for the docs", notes: RichText(""), stage: "Doing"),
-    )
-    g.backlog_items.insert(Item(title: "Bump the version", notes: RichText(""), stage: "Done"))
-}
-
-/// The same release on a board.
-scenario "a release board" {
-    let g = root Gallery
-    g.release_items.insert(
-        Item(title: "Write the release notes", notes: RichText(""), stage: "To do"),
-    )
-    g.release_items.insert(
-        Item(title: "Translate the onboarding", notes: RichText(""), stage: "To do"),
-    )
-    g.release_items.insert(
-        Item(title: "Screenshots for the docs", notes: RichText(""), stage: "Doing"),
-    )
-    g.release_items.insert(Item(title: "Bump the version", notes: RichText(""), stage: "Done"))
+/// Every group filled, as the gallery's first start fills it.
+scenario "every family" {
+    invoke(fill(root Gallery))
 }

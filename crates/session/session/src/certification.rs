@@ -245,9 +245,9 @@ pub(crate) fn handle_action(fabric: &SharedLink, envelope: &PersonalFabricAction
             };
             let from = envelope.source.clone();
             let person = ask.cert.user_public_key;
-            let via = fabric.device_fabric().snapshots().get(&from).map_or_else(
+            let via = fabric.devices().get(&from).map_or_else(
                 || from.as_str().chars().take(8).collect(),
-                |snapshot| snapshot.presence.label.clone(),
+                |device| device.about.label.clone(),
             );
             // The identity store may wait on a secret service: off the loop.
             let spawned = std::thread::Builder::new()
@@ -894,9 +894,10 @@ pub(crate) fn asking_step(fabric: Option<&SharedLink>) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::fabric::FabricRuntime;
+    #[cfg(target_os = "linux")]
+    use crate::platform::fabric::Live;
     use crate::platform::fabric::PersonalFabricSendError;
-    use crate::platform::fabric::{DeviceFabric, DeviceId};
+    use crate::platform::fabric::{DeviceAbout, DeviceId, PersonDevice, PersonDevices};
     use iroh::EndpointId;
     use std::collections::{BTreeSet, HashMap};
     use threshold_identity::{SigningRound1Commitment, SigningRound2Partial, SigningSessionNonces};
@@ -906,7 +907,7 @@ mod tests {
     fn identity() -> (tempfile::TempDir, runtime_identity::SigningIdentity) {
         let root = tempfile::tempdir().expect("temp root");
         let dir = root.path().join("config/tilo/identity");
-        let device = tilo_user_identity::IdentityPaths::under(root.path().join("system"));
+        let device = tilo_device_identity::IdentityPaths::under(root.path().join("system"));
         tilo_identity::provisioning::ensure_collaboration_identity(
             &dir,
             &device,
@@ -1006,7 +1007,7 @@ mod tests {
     /// other's [`handle_action`].
     struct Wire {
         links: Mutex<HashMap<String, SharedLink>>,
-        fabric: DeviceFabric,
+        devices: PersonDevices,
         online: BTreeSet<DeviceId>,
     }
 
@@ -1017,8 +1018,8 @@ mod tests {
     }
 
     impl FabricLink for Peer {
-        fn device_fabric(&self) -> DeviceFabric {
-            self.wire.fabric.clone()
+        fn devices(&self) -> PersonDevices {
+            self.wire.devices.clone()
         }
 
         fn online_device_ids(&self) -> BTreeSet<DeviceId> {
@@ -1067,16 +1068,18 @@ mod tests {
     fn pair(a: [u8; 32], b: [u8; 32]) -> (SharedLink, SharedLink, DeviceId, DeviceId) {
         let first = DeviceId::new(hex::encode(a)).expect("this laptop");
         let second = DeviceId::new(hex::encode(b)).expect("the other device");
-        // The devices know each other from the live session, so the ask names the laptop the way the
-        // person knows it.
-        let here = FabricRuntime::restored(Some((first.clone(), "This laptop".into())), None)
-            .expect("a fabric here");
-        let known =
-            DeviceFabric::decode_checkpoint(&here.own_snapshot().expect("this laptop's record"))
-                .expect("this laptop's record");
+        // The laptop is one of the person's devices, so the ask names it the way the person knows
+        // it.
+        let known = PersonDevices::new(
+            [PersonDevice::new(
+                first.clone(),
+                DeviceAbout::named("This laptop"),
+            )],
+            Vec::new(),
+        );
         let wire = Arc::new(Wire {
             links: Mutex::new(HashMap::new()),
-            fabric: known,
+            devices: known,
             online: BTreeSet::from([first.clone(), second.clone()]),
         });
         let peer = |device: DeviceId, label: &'static str| -> SharedLink {
@@ -1244,8 +1247,9 @@ mod tests {
         assert!(fresh.is_empty(), "a device without the key asks nobody");
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
-    fn a_revoked_device_loses_its_record_and_its_session_on_the_live_session() {
+    fn a_revoked_device_is_dropped_from_the_live_session() {
         let key = [0x71; 32];
         let device = DeviceId::new(hex::encode(key)).expect("the old phone");
         let cert = DeviceCert {
@@ -1266,23 +1270,29 @@ mod tests {
             signature: [0; 64],
         };
         let peer = EndpointId::from_bytes(&key).expect("an endpoint");
-        let mut here = FabricRuntime::restored(None, None).expect("a fabric here");
-        let there = FabricRuntime::restored(Some((device.clone(), "Old phone".into())), None)
-            .expect("a fabric there");
+        let local = DeviceId::new(hex::encode([0x70; 32])).expect("this laptop");
+        let mut here = Live::new(local);
+        let there = Live::new(device.clone());
 
-        // The device proved itself and its frames were taken.
-        here.sibling(peer, std::slice::from_ref(&cert), &[]);
-        here.snapshot(peer, &there.own_snapshot().expect("its record"))
-            .expect("its record is kept");
-        assert!(here.device_fabric().snapshots().contains_key(&device));
+        // The device proved itself and what it said of itself was taken.
+        assert_eq!(
+            here.sibling(peer, std::slice::from_ref(&cert), &[]),
+            Some(device.clone())
+        );
+        here.presence(peer, there.own_presence().clone())
+            .expect("its word is taken");
+        assert!(here.device_behind(peer).is_some());
         assert!(here.online_device_ids().contains(&device));
 
         // The person removed it: the next hello carrying the revocation ends it, and everything it
         // said is dropped rather than kept as theirs.
-        here.sibling(peer, std::slice::from_ref(&cert), &[revoked]);
+        assert_eq!(
+            here.sibling(peer, std::slice::from_ref(&cert), &[revoked]),
+            None
+        );
         assert!(
-            !here.device_fabric().snapshots().contains_key(&device),
-            "a revoked device's record is gone"
+            here.device_behind(peer).is_none(),
+            "a revoked device is no device of the person's"
         );
         assert!(
             !here.online_device_ids().contains(&device),
@@ -1294,7 +1304,7 @@ mod tests {
     /// shape, whose certificate ran out.
     struct Joined {
         device_key: ed25519_dalek::SigningKey,
-        paths: tilo_user_identity::IdentityPaths,
+        paths: tilo_device_identity::IdentityPaths,
         held: DeviceCert,
     }
 
@@ -1329,7 +1339,7 @@ mod tests {
     /// this laptop has, certified by the person's root and holding no root of its own.
     fn joined_device(root: &runtime_identity::SigningIdentity, label: &str) -> Joined {
         let dir = tempfile::tempdir().expect("a directory for a joined device");
-        let paths = tilo_user_identity::IdentityPaths::under(dir.path().join("system"));
+        let paths = tilo_device_identity::IdentityPaths::under(dir.path().join("system"));
         paths.ensure_directories().expect("the identity tree");
         let device_key = ed25519_dalek::SigningKey::from_bytes(&[0x6d; 32]);
         let now = tilo_clock::unix_now_ns();
@@ -1346,16 +1356,16 @@ mod tests {
         };
         let digest = tilo_user_identity::device_cert_signing_digest(&cert).expect("a digest");
         cert.signature = root.sign(&digest).expect("the person's key signs it");
-        tilo_user_identity::persist::write_device_cert(&paths.device_cert, &cert)
+        tilo_device_identity::persist::write_device_cert(&paths.device_cert, &cert)
             .expect("the lapsed certificate");
-        tilo_user_identity::persist::write_device_cert(
+        tilo_device_identity::persist::write_device_cert(
             &paths.device_cert_for_user(&root.person()),
             &cert,
         )
         .expect("the lapsed certificate where the identity keeps it");
-        tilo_user_identity::persist::write_public_key(&paths.user_pubkey, &root.person())
+        tilo_device_identity::persist::write_public_key(&paths.user_pubkey, &root.person())
             .expect("the person's key");
-        tilo_user_identity::persist::write_signing_key(&paths.device_privkey, &device_key)
+        tilo_device_identity::persist::write_signing_key(&paths.device_privkey, &device_key)
             .expect("the joined device's key");
         std::mem::forget(dir);
         Joined {

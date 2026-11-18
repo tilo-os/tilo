@@ -82,16 +82,10 @@ it in the host's model backend rather than a process-global singleton.
 `transport::ModelClient<T>` adapts any transport to the portable
 `agent_provider_config::protocol::ModelBackend` for one selected profile/model.
 
-A page whose host lends no model service runs its own:
-`page_service::PageService` is the same `ModelBackend` for its windows and
-the same `ProviderAdmin` for Model Providers, over the person's settings
-document and their provider keys in the browser's encrypted secret store
-(`tilo-secrets`), each bound to its provider's origin as here. It speaks the
-providers' dialects through `conversation`, which reads an OpenAI-compatible
-answer with the gateway's own `openai::read_turn`, directly
-to a provider that answers browsers and through the workspace host's fetch
-proxy (relayed, never kept) to one that does not. Sign-ins stay on Tilo
-computers; in a browser a provider takes an API key.
+A page whose server lends no model service keeps no provider key and asks no
+provider itself: its windows ask the person's own model on their workspace
+server (the `tilo.models` `ask` action), which the server answers with the key the
+person's vault keeps there, as it answers their hosted agents.
 
 HTTP responses are no-store NDJSON. Requests/individual events are capped at
 2 MiB, intermediate events have a bounded eight-frame queue and event count,
@@ -131,12 +125,14 @@ server coverage. These tests use local fixtures, not live provider credentials.
 
 ## Streaming and credentials
 
-Rig 0.44 owns provider JSON, SSE event decoding, reasoning normalization and
-argument assembly. Its OpenAI chat decoder rejects EOF without a finish reason,
-but allows EOF after an explicit finish (some compatible providers omit
-`[DONE]`). Unknown valid JSON events are ignored; malformed JSON fails the turn.
-The gateway additionally rejects an undelimited SSE tail, which Rig's framer
-otherwise discards. It does not infer success from a connection closing.
+`agent_provider_config::wire` is the one codec for provider requests, answers
+and their event streams, shared with the browser page's model service: it
+writes the request body (with every profile setting applied), decodes whole and
+streamed answers, and checks a turn before any call in it may run. A chat
+stream needs a finish reason, a Messages stream its `message_stop`, a Responses
+stream its completed answer; an event without its closing blank line counts as
+cut. Unknown valid JSON events are ignored; malformed JSON fails the turn. The
+gateway does not infer success from a connection closing.
 
 `complete_streaming` (native or `transport::ModelClient`) emits text and
 provider-exposed reasoning deltas. Reasoning can be raw provider-exposed tokens
@@ -165,9 +161,9 @@ and answers only model ids, names and context sizes.
 Provider keys use `accounts::ServiceCredentials`, bound to the model-gateway
 service, provider-key purpose and exact canonical endpoint origin. Storage and
 durable-write failures are reported, not treated as missing credentials or
-successful writes. Legacy unbound keys are not silently adopted from the
-current editable endpoint. Re-enter the key, or use the accounts migration API
-with an independently known original origin. Remove a bound key before changing
-its origin; if already changed, restore the original endpoint to remove it.
+successful writes. A key from before origin binding is not read or adopted from
+the current editable endpoint: re-enter the key. Remove a bound key before
+changing its origin; if already changed, restore the endpoint it was saved with
+to remove it.
 Provider diagnostics use fixed actionable advice, never provider messages,
 arbitrary identifiers, headers or credential bytes.

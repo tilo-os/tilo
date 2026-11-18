@@ -2,7 +2,7 @@
 //! the certificate and owner-controlled ancestor namespace before trusting it.
 use crate::{PLAN_FILE, PROFILES_DIRECTORY, Plan};
 use cap_fs_ext::OpenOptionsMaybeDirExt;
-use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::File,
@@ -23,7 +23,7 @@ const DEFERRED_ROOT: [u8; 16] = [
     0x4f, 0x8a, 0x3d, 0x55, 0x7f, 0x8e, 0x5c, 0x31, 0xa1, 0xc2, 0x0d, 0x7e, 0xfe, 0xbb, 0x6a, 0x41,
 ];
 const DEFERRED_SETUP_DOMAIN: &[u8] = b"tilo-browser-deferred-first-launch-v1\0";
-const DOMAIN: &[u8] = b"tilo-browser-authenticated-carrier-completion-v1\0";
+const DOMAIN: &[u8] = b"tilo-browser-authenticated-carrier-completion-v2\0";
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct Stamp {
@@ -85,24 +85,27 @@ pub struct Completion {
 fn failed() -> io::Error {
     io::Error::other("Browser completion is unavailable or changed")
 }
-fn signing_bytes(body: &Body) -> io::Result<Vec<u8>> {
-    let mut bytes = DOMAIN.to_vec();
-    bytes.extend(serde_json::to_vec(body)?);
-    if bytes.len() > MAX_BYTES {
-        return Err(failed());
-    }
-    Ok(bytes)
+fn signing_digest(body: &Body) -> io::Result<[u8; 32]> {
+    tilo_user_identity::canonical::signing_digest(DOMAIN, body)
+        .map_err(|error| io::Error::other(error.to_string()))
 }
 impl Unsigned {
     /// Certify a capture after the helper revalidates its authenticated archive.
     ///
     /// # Errors
     /// Refuses an oversized body or certificate.
-    pub fn sign(self, signer: &SigningKey, certificate: Vec<u8>) -> io::Result<Completion> {
+    pub fn sign(
+        self,
+        signer: &dyn tilo_user_identity::StatementSigner,
+        certificate: Vec<u8>,
+    ) -> io::Result<Completion> {
         if certificate.is_empty() || certificate.len() > 4096 {
             return Err(failed());
         }
-        let signature = signer.sign(&signing_bytes(&self.body)?).to_bytes().to_vec();
+        let signature = signer
+            .sign_digest(&signing_digest(&self.body)?)
+            .map_err(|error| io::Error::other(error.to_string()))?
+            .to_vec();
         let completion = Completion {
             body: self.body,
             certificate,
@@ -221,7 +224,7 @@ impl Completion {
         self.encode()?;
         let key = VerifyingKey::from_bytes(&current_device_public).map_err(io::Error::other)?;
         let signature = Signature::from_slice(&self.signature).map_err(io::Error::other)?;
-        key.verify_strict(&signing_bytes(&self.body)?, &signature)
+        key.verify_strict(&signing_digest(&self.body)?, &signature)
             .map_err(io::Error::other)?;
         if capture_entries(&self.body.projection, &self.body.plan)? != self.body.entries {
             return Err(failed());
@@ -289,7 +292,7 @@ pub fn capture(
             entries,
         },
     };
-    signing_bytes(&unsigned.body)?;
+    signing_digest(&unsigned.body)?;
     unsigned.verify_unchanged()?;
     Ok(unsigned)
 }
@@ -459,4 +462,53 @@ fn capture_entries(projection: &Path, plan: &Plan) -> io::Result<Vec<Entry>> {
         return Err(failed());
     }
     Ok(entries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Plan, Profile, Provider};
+
+    fn unsigned() -> Unsigned {
+        let profile = Profile::new(
+            "a".repeat(64),
+            Provider::Chromium,
+            vec!["Default".into()],
+            true,
+            false,
+        )
+        .expect("a reviewed profile");
+        let plan = Plan::new("setup".into(), [7; 32], vec![profile]).expect("a plan");
+        Unsigned {
+            body: Body {
+                schema: 1,
+                plan,
+                setup_digest: [1; 32],
+                browser_digest: [2; 32],
+                operation: "import".into(),
+                projection: PathBuf::from("projection"),
+                entries: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn a_refused_signature_issues_no_completion() {
+        struct Refusing;
+
+        impl tilo_user_identity::StatementSigner for Refusing {
+            fn public_key(&self) -> [u8; 32] {
+                [7; 32]
+            }
+
+            fn sign_digest(
+                &self,
+                _digest: &[u8; 32],
+            ) -> Result<[u8; 64], tilo_user_identity::SignError> {
+                Err(tilo_user_identity::SignError("locked".into()))
+            }
+        }
+
+        assert!(unsigned().sign(&Refusing, vec![1]).is_err());
+    }
 }

@@ -1,5 +1,5 @@
 //! What a notebook's documents hold, read through its records: the
-//! [`Notebook`] and the parts its notes are kept in ([`PagePart`]). For tools
+//! [`Notebook`] and the parts its notes are kept in ([`NoteList`]). For tools
 //! and tests that look at documents rather than a window.
 
 use std::rc::Rc;
@@ -10,8 +10,8 @@ use ui::widget::BlockContent;
 
 use crate::actions::{Action, InlineMarkSpan, StoredBlock};
 use crate::model::{PageId, PageMeta, TagId, TagMeta, Workspace};
+use crate::note_list::NoteList;
 use crate::notebook::{Notebook, Page, page_id};
-use crate::part::PagePart;
 
 /// Start a new notebook in `doc`.
 ///
@@ -31,7 +31,7 @@ pub fn initialize(doc: &mut AutoCommit) {
 /// When `doc` cannot be written.
 #[allow(clippy::expect_used, reason = "a fresh document always takes a part")]
 pub fn initialize_part(doc: &mut AutoCommit) {
-    PagePart::initialize(doc).expect("a new part");
+    NoteList::initialize(doc).expect("a new part");
 }
 
 /// The notebook `doc` holds; an empty one when it holds none.
@@ -42,27 +42,27 @@ pub fn notebook(doc: &AutoCommit) -> Notebook {
 
 /// The part of the notes `doc` holds; an empty one when it holds none.
 #[must_use]
-pub fn part(doc: &AutoCommit) -> PagePart {
-    PagePart::read(doc).unwrap_or_default()
+pub fn part(doc: &AutoCommit) -> NoteList {
+    NoteList::read(doc).unwrap_or_default()
 }
 
 /// Whether `doc` reads as a part of the notes.
 pub fn validate(doc: &AutoCommit) -> Result<(), String> {
-    PagePart::read(doc)
+    NoteList::read(doc)
         .map(drop)
         .map_err(|error| error.to_string())
 }
 
 /// The notebook and the notes its `parts` keep, as the window shows them.
 #[must_use]
-pub fn workspace(notebook: &Notebook, parts: &[(u64, Rc<PagePart>)]) -> Workspace {
+pub fn workspace(notebook: &Notebook, parts: &[(u64, Rc<NoteList>)]) -> Workspace {
     Workspace::of(notebook, parts, &Workspace::default())
 }
 
 /// The notes the part `doc` holds as the window shows them, with no tags,
 /// or why it does not read.
 pub fn project(doc: &AutoCommit) -> Result<Workspace, String> {
-    let part = PagePart::read(doc).map_err(|error| error.to_string())?;
+    let part = NoteList::read(doc).map_err(|error| error.to_string())?;
     Ok(workspace(&Notebook::default(), &[(0, Rc::new(part))]))
 }
 
@@ -70,7 +70,7 @@ pub fn project(doc: &AutoCommit) -> Result<Workspace, String> {
 /// as the window shows them, or why either does not read.
 pub fn project_in(notebook: &AutoCommit, part: &AutoCommit) -> Result<Workspace, String> {
     let tags = Notebook::read(notebook).map_err(|error| error.to_string())?;
-    let held = PagePart::read(part).map_err(|error| error.to_string())?;
+    let held = NoteList::read(part).map_err(|error| error.to_string())?;
     Ok(workspace(&tags, &[(0, Rc::new(held))]))
 }
 
@@ -78,9 +78,14 @@ pub fn project_in(notebook: &AutoCommit, part: &AutoCommit) -> Result<Workspace,
 /// out: what it reads of the notes filled in against that part and
 /// `notebook`, or why it is refused.
 pub fn prepared(doc: &AutoCommit, notebook: &Notebook, action: &Action) -> Result<Action, String> {
-    let held = PagePart::read(doc).map_err(|error| error.to_string())?;
+    let held = NoteList::read(doc).map_err(|error| error.to_string())?;
     let mut action = action.clone();
-    crate::part::prepare(&mut action, notebook, &[(0, Rc::new(held))], None)?;
+    crate::note_list::prepare(
+        std::slice::from_mut(&mut action),
+        notebook,
+        &[(0, Rc::new(held))],
+        None,
+    )?;
     Ok(action)
 }
 
@@ -130,7 +135,7 @@ fn page(doc: &AutoCommit, id: PageId) -> Option<Page> {
 /// keeps the note.
 #[must_use]
 pub fn page_body(doc: &AutoCommit, id: PageId) -> Option<ObjId> {
-    crate::part::body_object(doc, id)
+    crate::note_list::body_object(doc, id)
 }
 
 /// Note `id`'s body, kept in the part `doc`, as the editor shows it, a block
@@ -172,7 +177,7 @@ pub fn page_stored_blocks(doc: &AutoCommit, id: PageId) -> Vec<StoredBlock> {
 /// The pictures the `parts` keep whose bytes are readable now, by the
 /// `asset:` source the notes show them by.
 #[must_use]
-pub fn images(parts: &[(u64, Rc<PagePart>)]) -> std::collections::HashMap<String, Vec<u8>> {
+pub fn images(parts: &[(u64, Rc<NoteList>)]) -> std::collections::HashMap<String, Vec<u8>> {
     let content = crate::notebook::content();
-    crate::notebook::image_snapshot(&crate::part::images(parts), &content)
+    crate::notebook::image_snapshot(&crate::note_list::images(parts), &content)
 }

@@ -52,7 +52,7 @@ fn asked(question: &chat::question::Question) -> Option<[u8; 32]> {
 pub(super) fn questions(
     workspace: &str,
     record: &str,
-    part: &chat::parts::ChatPart,
+    part: &chat::parts::ChatMessages,
 ) -> Vec<([u8; 32], QuestionUpdate)> {
     let mut found = Vec::new();
     for (id, message) in part.messages.iter() {
@@ -99,7 +99,7 @@ fn telling(
     told: String,
 ) -> ToTell {
     let secret = question.kind.0 == chat::question::SECRET;
-    let answering = ui::resource::chain_resource_id(&chat::parts::chain());
+    let answering = collab_types::document::chain_resource_id(&chat::parts::chain());
     let actions = if secret {
         Vec::new()
     } else {
@@ -119,7 +119,7 @@ fn telling(
                         app: CHAT.to_owned(),
                         record: String::new(),
                         resource: answering.clone(),
-                        action: chat::parts::ChatPart::ANSWER_QUESTION.id().to_owned(),
+                        action: chat::parts::ChatMessages::ANSWER_QUESTION.id().to_owned(),
                     },
                     arguments,
                 }
@@ -152,13 +152,15 @@ pub(super) fn at_message(workspace: &str, part: &str, id: &Id) -> About {
         workspace: workspace.to_owned(),
         app: CHAT.to_owned(),
         record: part.to_owned(),
-        resource: tilo_resource::items::item_resource_id::<chat::parts::ChatPart>("messages", id),
+        resource: tilo_resource::items::item_resource_id::<chat::parts::ChatMessages>(
+            "messages", id,
+        ),
     }
 }
 
 /// Whether `record` is a part of Chat's messages.
 fn is_part(record: &str) -> bool {
-    ui::resource::DocumentId::parse(record)
+    collab_types::document::DocumentId::parse(record)
         .is_some_and(|part| chat::parts::part_index(&part).is_some())
 }
 
@@ -252,7 +254,7 @@ impl Feeder {
         // follows waits on a person's own model and their log.
         let found = {
             let mut doc = automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
-            let part = crate::workspace_bots::opened::<chat::parts::ChatPart>(&mut doc)?;
+            let part = crate::workspace_bots::opened::<chat::parts::ChatMessages>(&mut doc)?;
             questions(workspace, record, &part)
         };
         // What waits in each person's log, read once a person.
@@ -364,7 +366,7 @@ mod tests {
             at: 2,
             why: String::new(),
         });
-        let mut part = chat::parts::ChatPart::default();
+        let mut part = chat::parts::ChatMessages::default();
         for (id, message) in [
             ("m0", message("Nine mails sorted since seven.", None)),
             (

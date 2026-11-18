@@ -1,32 +1,15 @@
-//! Facts: what a record states about itself to be checked against a
-//! request, by convention a read named [`FACTS`] that takes nothing
-//! (`#[resource(facts = path)]`), and what changed between two of them
-//! ([`changes`]).
-//!
-//! A check compares data rather than pictures: a task's check turn is shown
-//! the facts of the records the task changed, and what changed since an
-//! earlier task exported one; a planning model's `read_view` compares two
-//! answers of one read (the facts now and as an export made them).
+//! Facts: what a record states about itself, by convention a read named
+//! [`FACTS`] that takes nothing (`#[resource(facts = path)]`), and what
+//! changed between two of them ([`changes`]): an export states the facts of
+//! what it exported, which are compared as data rather than pictures.
 
 use serde_json::Value;
-use tilo_actions::api::ActionDescriptor;
 
 /// The read a record states its facts with.
 pub const FACTS: &str = "facts";
 
 /// The most changes [`changes`] lists before it counts the rest.
 pub const MOST_CHANGES: usize = 40;
-
-/// The descriptor of `descriptors` that reads the facts of the record's
-/// own resource: a read named [`FACTS`] that needs no argument.
-#[must_use]
-pub fn facts_read(descriptors: &[ActionDescriptor]) -> Option<&ActionDescriptor> {
-    descriptors.iter().find(|descriptor| {
-        descriptor.address.action == FACTS
-            && crate::apps::readable(descriptor)
-            && descriptor.params.iter().all(|param| !param.required)
-    })
-}
 
 /// What differs from `before` to `after`, a line per value, each named by
 /// its path (`shots[1].in: 1 -> 0.5`): objects key by key, lists item by
@@ -42,17 +25,6 @@ pub fn changes(before: &Value, after: &Value) -> Vec<String> {
         found.push(format!("… and {more} more"));
     }
     found
-}
-
-/// [`changes`] as one line: `nothing changed` when there are none.
-#[must_use]
-pub fn changes_text(before: &Value, after: &Value) -> String {
-    let found = changes(before, after);
-    if found.is_empty() {
-        "nothing changed".to_owned()
-    } else {
-        found.join("; ")
-    }
 }
 
 fn walk(path: &str, before: &Value, after: &Value, found: &mut Vec<String>) {
@@ -116,7 +88,7 @@ fn child(path: &str, key: &str) -> String {
 /// A value as a change line shows it: compact JSON, cut at 200 characters.
 fn shown(value: &Value) -> String {
     const MOST: usize = 200;
-    let text = crate::planner::compact(value).to_string();
+    let text = value.to_string();
     if text.chars().count() <= MOST {
         return text;
     }

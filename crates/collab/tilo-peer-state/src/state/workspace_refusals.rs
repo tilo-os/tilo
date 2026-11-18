@@ -229,7 +229,11 @@ impl PeerWorkspaceMut<'_> {
                     .map_err(|e| e.to_string())?;
             }
         }
-        candidate.commit();
+        super::commit_governance(
+            &mut candidate,
+            Some(&caller.user_public_key),
+            super::now_secs(now),
+        );
         self.peer.core.workspace_doc = Some(candidate.into());
         Ok(true)
     }
@@ -280,7 +284,11 @@ impl PeerWorkspaceMut<'_> {
         candidate
             .delete(&entries, &entry)
             .map_err(|e| e.to_string())?;
-        candidate.commit();
+        super::commit_governance(
+            &mut candidate,
+            Some(&caller.user_public_key),
+            super::now_secs(now),
+        );
         self.peer.core.workspace_doc = Some(candidate.into());
         Ok(true)
     }
@@ -292,7 +300,7 @@ impl PeerWorkspaceMut<'_> {
     ///
     /// # Errors
     /// As [`Self::record_own_write_refusal`], and for a message that is no
-    /// document write of this workspace.
+    /// document write.
     pub fn refuse_write(
         self,
         caller: &tilo_user_identity::DeviceCert,
@@ -303,7 +311,6 @@ impl PeerWorkspaceMut<'_> {
     ) -> Result<bool, String> {
         let NeighbourMsg::AppDocument {
             app_id,
-            cluster_id,
             document_id,
             envelope,
             ..
@@ -311,9 +318,9 @@ impl PeerWorkspaceMut<'_> {
         else {
             return Err("a refused write is a document".into());
         };
-        if *cluster_id != self.peer.core.workspace {
-            return Err("a refused write is this workspace's".into());
-        }
+        // A verdict is filed in the workspace that refused the change, which is where its author
+        // sent it and reads it, whether or not the document names that workspace: a change of
+        // another workspace's document sent here is refused here, and the author is told there.
         let mut refusal = WriteRefusal {
             workspace: self.peer.core.workspace.clone(),
             app: app_id.clone(),
@@ -321,7 +328,7 @@ impl PeerWorkspaceMut<'_> {
             author: *envelope.author.as_bytes(),
             seq: envelope.seq,
             operation: format!("{}:{}", envelope.artifact.0, envelope.seq),
-            changes: self.unheld_changes(app_id, document_id, &envelope.payload),
+            changes: self.unheld_changes(app_id, document_id, envelope),
             reason: RefusalReason::of(reason),
             detail: reason.into(),
             by: caller.device_public_key,
@@ -366,10 +373,21 @@ impl PeerWorkspaceMut<'_> {
     }
 
     /// The changes of a write this device does not hold on its route, as their
-    /// hashes: what the author's history joins a verdict to. A whole-document
-    /// snapshot names the writes it brings, never the ones already here.
-    fn unheld_changes(&self, app: &str, record: &str, payload: &[u8]) -> Vec<[u8; 32]> {
-        let mut changes = change_hashes(payload);
+    /// hashes: what the author's history joins a verdict to. A sealed write's
+    /// payload is its author's ciphertext, so the changes it claims are the
+    /// ones named, and one claiming none names the changes of its payload. A
+    /// whole-document snapshot names the writes it brings, never the ones
+    /// already here.
+    fn unheld_changes(
+        &self,
+        app: &str,
+        record: &str,
+        envelope: &collab_types::SignedOp,
+    ) -> Vec<[u8; 32]> {
+        let mut changes: Vec<[u8; 32]> = envelope.claims.iter().map(|claim| claim.change).collect();
+        if changes.is_empty() {
+            changes = change_hashes(&envelope.payload);
+        }
         let Some(held) = self.peer.core.documents.get(&super::Route {
             app: app.into(),
             record: record.into(),

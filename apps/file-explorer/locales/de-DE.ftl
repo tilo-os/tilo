@@ -85,10 +85,6 @@ files-residency-metadata-only = nur Metadaten
 files-residency-partly-local = teilweise lokal ({ $bytes } Byte)
 files-residency-local = lokal ({ $bytes } Byte)
 files-property-on-device = Auf diesem Gerät: { $state }
-}, { $conflicts } offene { $conflicts ->
-    [one] Konflikt
-   *[other] Konflikte
-}
 files-properties-collab-summary = Datei- und Freigabedetails
 files-availability-title = Verfügbarkeit von { $name }
 files-availability-title-short = Verfügbarkeit…

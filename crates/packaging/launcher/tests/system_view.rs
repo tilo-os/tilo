@@ -227,7 +227,6 @@ fn argv_for(launch: &Launch<'_>) -> Vec<String> {
         launch.runtime,
         &[],
         None,
-        None,
         &launch.capabilities,
     );
     argv.pop();

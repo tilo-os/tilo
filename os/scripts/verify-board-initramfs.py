@@ -18,7 +18,7 @@ and requires:
     transport and the input layer built into the kernel (modules.builtin):
     no dracut module loads them, so a modular driver leaves a prompt that
     takes no key;
-  * when the sibling-unlock unit is in the initramfs, what its network needs
+  * when the sibling unlock's network is in the initramfs, what it needs
     for Wi-Fi: NetworkManager, its Wi-Fi device plugin, wpa_supplicant and
     the D-Bus activation file NetworkManager starts it through. The dracut
     module installs those optionally, so a missing package would otherwise
@@ -41,7 +41,7 @@ from pathlib import Path
 DEFINITION = Path("usr/lib/tilo/hardware-profile-definition.json")
 FIRMWARE = "usr/lib/firmware"
 FIRMWARE_SUFFIXES = ("", ".xz", ".zst")
-SIBLING_UNLOCK_UNIT = "usr/lib/systemd/system/tilo-sibling-unlock@.service"
+SIBLING_UNLOCK_UNIT = "usr/lib/systemd/system/tilo-unlock-network.service"
 # What the sibling-unlock network needs for Wi-Fi, as patterns over the
 # initramfs's paths (usr/sbin is a symlink to usr/bin on Fedora).
 WIFI_UNLOCK = {

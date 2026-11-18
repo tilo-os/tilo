@@ -948,7 +948,7 @@ mod tests {
         // holds that, so neither loses their place.
         {
             use crate::apps::test_support::{Grantee, Grants as _, KindSet};
-            const NOTES: &str = ui::apps::NOTES;
+            const NOTES: &str = tilo_app_id::apps::NOTES;
             let mut workspace = workspace();
             workspace.allow_agent("scribe", KindSet::READ);
             for app in [APP, NOTES] {
@@ -1344,7 +1344,7 @@ mod tests {
             .expect("the agent acts");
             assert_eq!(app.try_recv().expect("delivered").actor, tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe")));
             let Ok(runtime_collab::event::CollabEvent::RemotePresenceUpdate {
-                payload: ui::collaboration::PresencePayload::Interaction(interaction),
+                payload: collaboration::PresencePayload::Interaction(interaction),
                 ..
             }) = heard.try_recv()
             else {
@@ -1401,7 +1401,7 @@ mod tests {
             let Ok(runtime_collab::event::CollabEvent::RemotePresenceUpdate {
                 member,
                 key,
-                payload: ui::collaboration::PresencePayload::Interaction(interaction),
+                payload: collaboration::PresencePayload::Interaction(interaction),
             }) = heard.try_recv()
             else {
                 panic!("the agent's action shows in its view");
@@ -1409,7 +1409,7 @@ mod tests {
             assert_eq!(member, collab_types::MemberId::agent("scribe"));
             assert_eq!(
                 key,
-                ui::presence::PresenceKey::resource(APP, "files.app", "files.app")
+                collab_types::presence::PresenceKey::resource(APP, "files.app", "files.app")
             );
             assert_eq!(
                 interaction.actor,
@@ -1428,7 +1428,7 @@ mod tests {
             invoke(&state, &shortcut, "5", "new-window", None).expect("the step runs");
             assert_eq!(app.try_recv().expect("delivered").actor, tilo_actions::Actor::Member(tilo_actions::MemberId::person("owner")));
             let Ok(runtime_collab::event::CollabEvent::RemotePresenceUpdate {
-                payload: ui::collaboration::PresencePayload::Interaction(interaction),
+                payload: collaboration::PresencePayload::Interaction(interaction),
                 ..
             }) = heard.try_recv()
             else {
@@ -1480,7 +1480,7 @@ mod tests {
             assert!(invoker.acting.is_agent());
             assert_eq!(invoker.acting.acted_for_person(), Some("owner"));
             let Ok(runtime_collab::event::CollabEvent::RemotePresenceUpdate {
-                payload: ui::collaboration::PresencePayload::Interaction(interaction),
+                payload: collaboration::PresencePayload::Interaction(interaction),
                 ..
             }) = heard.try_recv()
             else {

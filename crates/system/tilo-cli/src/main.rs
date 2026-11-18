@@ -26,7 +26,7 @@ use std::io::{IsTerminal, Write};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 mod agent;
 mod aliases;
 use tilo_api::client as api;
@@ -330,7 +330,8 @@ enum Cmd {
                       your browser: this computer gets a device key of its own, which that tab certifies. On a \
                       computer already set up, a sign-in code (\"Sign in with your agent\") signs that tab in as you.")]
     Login {
-        /// The code your Tilo tab shows, like K7Q-MX2P. Not needed on a computer that holds your
+        /// The code your Tilo tab shows, like K7Q-MX2P, or an invitation link a member sent you,
+        /// which joins their workspace over iroh. Not needed on a computer that holds your
         /// identity (`--new-identity`): it logs itself in, into -w or your own workspace.
         code: Option<String>,
         /// Instead: make a Tilo identity whose root this computer holds (or
@@ -339,8 +340,9 @@ enum Cmd {
         /// keys here, with no browser.
         #[arg(long, conflicts_with_all = ["code", "agent"])]
         new_identity: bool,
-        /// The new identity's name, as workspaces show it.
-        #[arg(long, requires = "new_identity")]
+        /// The new identity's name, as workspaces show it (with `--new-identity`, or with an
+        /// invitation link on a computer that holds no identity yet).
+        #[arg(long)]
         name: Option<String>,
         /// Print the identity as one line of JSON, `{"user_public_key": …,
         /// "name": …}`, for a script that declares the key and wants the name
@@ -803,6 +805,27 @@ fn noun_of(args: &[OsString]) -> Option<String> {
     (noun != "tilo").then(|| noun.to_string())
 }
 
+/// Log to standard error as `RUST_LOG` names targets and levels (`debug`,
+/// `tilo_mcp::timing=debug`), else at `default`. Read as targets and levels: a
+/// filter of regular expressions would link a regex engine into every `tilo`,
+/// which `tilo mcp` holds in memory for as long as an agent runs.
+pub(crate) fn log_to_stderr(default: tracing_subscriber::filter::LevelFilter) {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::util::SubscriberInitExt as _;
+    let targets = std::env::var("RUST_LOG")
+        .ok()
+        .and_then(|filter| filter.parse::<tracing_subscriber::filter::Targets>().ok())
+        .unwrap_or_else(|| tracing_subscriber::filter::Targets::new().with_default(default));
+    let _ = tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_ansi(false),
+        )
+        .with(targets)
+        .try_init();
+}
+
 fn main() -> ExitCode {
     // Started again as the worker that applies documents (`tilo login`'s
     // and `tilo mcp`'s peer): that, before anything else runs.
@@ -930,6 +953,7 @@ fn app_open(args: &[OsString], spelling: &tilo_control::front::Spelling) -> Resu
 
 /// `tilo do`: in the hosted workspace `-w` names, else on this desktop. A
 /// `-w` or `--json` after the action lands in its options, and is taken out.
+/// `--json` answers the same typed shape here and in a hosted workspace.
 fn run_do(
     reach: api::Reach<'_>,
     mut workspace: Option<String>,
@@ -945,12 +969,15 @@ fn run_do(
         workspace = Some(named);
         args.drain(at..=at.saturating_add(1));
     }
-    let Some(workspace) = workspace else {
-        return desktop::run_action(desktop::ActionCmd::Run { action, args }, spelling);
-    };
     let json = reach.json | args.iter().any(|arg| arg == "--json");
     args.retain(|arg| arg != "--json");
     let reach = api::Reach { json, ..reach };
+    let Some(workspace) = workspace else {
+        if json {
+            return desktop::do_json(&action, &args, spelling);
+        }
+        return desktop::run_action(desktop::ActionCmd::Run { action, args }, spelling);
+    };
     hosted::act(reach, &workspace, &action, &args)
 }
 
@@ -1008,6 +1035,15 @@ fn run_hosted(
         key_file,
         json,
     };
+    // Acting as this computer's own login, each command is a call to the process holding its
+    // device's session, started now when none is up.
+    if api_key_absent(api, key_file)
+        && api::desktop_socket().is_none()
+        && acts_as_the_login(&cmd, workspace.is_some())
+        && let Err(error) = mcp::ensure_held()
+    {
+        return Ok(Err(error));
+    }
     Ok(match cmd {
         Cmd::Do { action, args } => Ok(run_do(reach, workspace, action, args, spelling)),
         Cmd::Ls { what, cursor } => workspace
@@ -1057,6 +1093,21 @@ fn run_hosted(
     })
 }
 
+/// Whether `cmd` calls Tilo's API, which without a key is as this computer's login: a `do`
+/// in a named workspace (else it acts on this desktop), an `sdk` or `migrate` into one, and
+/// every other workspace command but `keys export`, which only writes the login's key out.
+fn acts_as_the_login(cmd: &Cmd, named: bool) -> bool {
+    match cmd {
+        Cmd::Do { args, .. } => named || args.iter().any(|arg| arg == "-w" || arg == "--workspace"),
+        Cmd::Sdk { .. } | Cmd::Migrate { .. } => named,
+        Cmd::Keys {
+            cmd: hosted::KeysCmd::Export { .. },
+        } => false,
+        Cmd::Keys { .. } | Cmd::Workspace { .. } | Cmd::View { .. } => true,
+        other => acts_in_a_workspace(other),
+    }
+}
+
 /// Whether these calls act as this computer's own login rather than a key
 /// someone handed over (`--key-file`, `TILO_API_KEY`).
 fn api_key_absent(api: Option<&str>, key_file: Option<&std::path::Path>) -> bool {
@@ -1078,15 +1129,17 @@ fn entered_workspace_note(name: &str) -> String {
 
 /// Which commands act in a workspace, so `-w` means something to them. `do` is
 /// not one: without `-w` it acts on this desktop, which is what a person
-/// typing it there means.
+/// typing it there means. Of the keys, only `mint` does: `create` without `-w`
+/// asks for a key reaching all the person's workspaces, which this computer
+/// approves itself, and `ls`, `revoke` and `export` concern the key in hand.
 fn acts_in_a_workspace(cmd: &Cmd) -> bool {
     matches!(
         cmd,
-        Cmd::Keys { .. }
-            | Cmd::Workspace {
-                cmd: hosted::WorkspaceCmd::People { .. } | hosted::WorkspaceCmd::Servers { .. },
-            }
-            | Cmd::Files { .. }
+        Cmd::Keys {
+            cmd: hosted::KeysCmd::Mint { .. },
+        } | Cmd::Workspace {
+            cmd: hosted::WorkspaceCmd::People { .. } | hosted::WorkspaceCmd::Servers { .. },
+        } | Cmd::Files { .. }
             | Cmd::Run { .. }
             | Cmd::Invocations { .. }
             | Cmd::Ls { .. }
@@ -1118,12 +1171,9 @@ fn list_actions(filter: Vec<String>, spelling: &tilo_control::front::Spelling) -
     desktop::run_action(desktop::ActionCmd::List { filter }, spelling)
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "one arm per command, side by side, so the dispatch reads in one place"
-)]
-fn run(cli: Cli) -> Result<ExitCode> {
-    let spelling = tilo_control::front::Spelling::tilo();
+/// `tilo login` where no tab approves this computer: one that holds the person's identity, or one
+/// following an invitation link. `None` for every other command.
+fn login_without_a_tab(cli: &Cli) -> Option<Result<ExitCode>> {
     if let Cmd::Login {
         code: None,
         new_identity: false,
@@ -1132,18 +1182,44 @@ fn run(cli: Cli) -> Result<ExitCode> {
         ..
     } = &cli.cmd
     {
-        let Some(person) = identity::held()? else {
-            bail!(
+        let Some(person) = (match identity::held() {
+            Ok(person) => person,
+            Err(error) => return Some(Err(error)),
+        }) else {
+            return Some(Err(anyhow!(
                 "Give the code your Tilo tab shows, like `tilo login K7Q-MX2P` (in Tilo, choose \"Set \
                  up with your agent\"). Only a computer that holds your identity logs in without one."
-            );
+            )));
         };
-        return login::login_held(
+        return Some(login::login_held(
             &person,
             agent.as_deref(),
             site.as_deref(),
             cli.workspace.as_deref(),
-        );
+        ));
+    }
+    if let Cmd::Login {
+        code: Some(link),
+        new_identity: false,
+        name,
+        agent,
+        ..
+    } = &cli.cmd
+        && link.contains("invite=")
+    {
+        return Some(login::login_invited(
+            link,
+            name.as_deref(),
+            agent.as_deref(),
+        ));
+    }
+    None
+}
+
+fn run(cli: Cli) -> Result<ExitCode> {
+    let spelling = tilo_control::front::Spelling::tilo();
+    if let Some(logged_in) = login_without_a_tab(&cli) {
+        return logged_in;
     }
     let workspace = workspace_or_entered(&cli)?;
     let cmd = match run_hosted(
@@ -1958,6 +2034,7 @@ mod tests {
             label: "Claude Code on build-box".into(),
             cert: "00".into(),
             host_cert: "00".into(),
+            server_address: None,
         };
         crate::login::store(dir.path(), &key, &device).unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
@@ -1978,6 +2055,29 @@ mod tests {
             workspace_or_entered(&with(members(), Some("jane-doe"), None)).unwrap(),
             Some("jane-doe".to_owned()),
             "`-w` names another"
+        );
+        let create = Cmd::Keys {
+            cmd: hosted::KeysCmd::Create {
+                name: "Visa backend".into(),
+                expires_in: None,
+                no_browser_pages: false,
+            },
+        };
+        assert_eq!(
+            workspace_or_entered(&with(create, None, None)).unwrap(),
+            None,
+            "`keys create` without `-w` asks for a key reaching every workspace"
+        );
+        let mint = Cmd::Keys {
+            cmd: hosted::KeysCmd::Mint {
+                name: None,
+                expires_in: None,
+            },
+        };
+        assert_eq!(
+            workspace_or_entered(&with(mint, None, None)).unwrap(),
+            Some(ENTERED.to_owned()),
+            "`keys mint` makes a key for the workspace the device entered"
         );
         let act = Cmd::Do {
             action: "mute".into(),

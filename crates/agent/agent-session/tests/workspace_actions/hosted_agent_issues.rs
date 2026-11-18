@@ -26,7 +26,7 @@ async fn tool(
         })),
     )
     .await
-    .unwrap_or_else(|_| panic!("{name} answers in time"))
+    .unwrap_or_else(|_| panic!("{name} answers in time: {arguments}"))
     .unwrap_or_else(|| panic!("{name} answers"));
     let result = answer.get("result").cloned().unwrap_or(answer);
     let failed = result
@@ -93,7 +93,7 @@ async fn file_in_page(
     window
         .invoke(
             &ActionAddress::new(
-                ui::resource::chain_resource_id(&tasks::part::chain()),
+                ui::resource::chain_resource_id(&tasks::issue_list::chain()),
                 "create",
             ),
             json!({"title": "Plan the launch", "assignee": format!("agent:{SCOUT}")})
@@ -114,7 +114,7 @@ async fn file_in_page(
     for (part, written) in window.take_document_mutations().unwrap() {
         page.peer.write(route(part.as_str()), &written).unwrap();
     }
-    let part = tasks::part::chain().part(0).as_str().to_owned();
+    let part = tasks::issue_list::chain().part(0).as_str().to_owned();
     let deadline = tilo_test_env::hang_deadline();
     while workspaces
         .resource_document(workspace, TASKS, &part)
@@ -163,7 +163,7 @@ async fn write_note(
         &service,
         &person,
         &route,
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "create-page",
         json!({"title": "Launch checklist"})
             .as_object()
@@ -546,6 +546,64 @@ async fn works_on_its_issue(in_page: bool, public: bool) {
     .await;
     assert!(!failed, "the agent moves the issue: {moved}");
 
+    // The addresses a prompt names, on a workspace whose Tasks has only ever been served:
+    // the kind, its items' collection, and one issue by its item address all reach the chain.
+    for address in [
+        path.as_str(),
+        "tasks.issues.issues",
+        "tasks.issues/issues",
+        "tasks.issues",
+    ] {
+        let (said, failed) = tool(&server, "tilo_read", json!({"path": address})).await;
+        assert!(
+            !failed,
+            "{address} is no app: the kind reaches the issues (it answered {said})"
+        );
+    }
+    for address in ["tasks.issues.issues", "tasks.issues/issues"] {
+        let (said, failed) = tool(&server, "tilo_ls", json!({"path": address})).await;
+        assert!(
+            !failed && said.contains("Plan the launch"),
+            "{address} lists: {said}"
+        );
+    }
+    // An issue named by its number, as a listing and a person write it: the integer the model
+    // sends, the text, and the `#1` a person reads.
+    for issue_number in [json!(1), json!("1"), json!("#1")] {
+        let (read, failed) = tool(
+            &server,
+            "tilo_do",
+            json!({
+                "path": "tasks.issues#assign",
+                "args": {"issue": issue_number, "assignee": format!("agent:{SCOUT}")},
+                "wait_ms": 30_000,
+            }),
+        )
+        .await;
+        assert!(
+            !failed,
+            "the issue's number names it as its address does ({issue_number}): {read}"
+        );
+    }
+    // An issue named by its number, as a listing and a person write it: the integer a model
+    // sends, the text, and the `#1` a person reads.
+    for issue_number in [json!(1), json!("1"), json!("#1")] {
+        let (assigned, failed) = tool(
+            &server,
+            "tilo_do",
+            json!({
+                "path": "tasks.issues#assign",
+                "args": {"issue": issue_number, "assignee": format!("agent:{SCOUT}")},
+                "wait_ms": 30_000,
+            }),
+        )
+        .await;
+        assert!(
+            !failed,
+            "the issue's number names it as its address does ({issue_number}): {assigned}"
+        );
+    }
+
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let held = tracker(workspaces, workspace, &part).await;
@@ -564,5 +622,73 @@ async fn works_on_its_issue(in_page: bool, public: bool) {
             now.comments
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// The names a prompt writes for the issues reach them on a workspace whose Tasks has only ever
+/// been served, never opened: the kind and its collections (`tasks.issues`, `tasks.issues.issues`,
+/// `tasks.issues/issues`), one issue by its item address, and one by the number the UI shows.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_reads_the_issues_by_every_name_a_prompt_writes() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let server = enrol(&root, "tilo-sh", DeviceCapabilities::member());
+    let browser = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let (serving, actions) = crate::harness::hosted::serving_documents_with_actions(
+        &root,
+        &server,
+        state.path(),
+        crate::common::catalogue,
+    )
+    .await;
+    let workspaces = &serving.workspaces().unwrap().clone();
+    let workspace = &workspaces.create("Team").await.unwrap().workspace;
+    let page = Browser::open_at(&serving, &browser, &server, workspace).await;
+    let person = hex::encode(root.verifying_key().to_bytes());
+    make_agent(&page, workspaces, workspace, &person, None).await;
+    let part = file_issue(&actions, workspaces, workspace, &root, (&server, &browser)).await;
+    let filed = tracker(workspaces, workspace, &part).await;
+    let (issue, _) = filed.issues.iter().next().unwrap();
+    let path = tasks::model::issue_resource(issue);
+
+    let id = WorkspaceId::parse(workspace).unwrap();
+    let caller = tilo_actions::remote::Caller::authenticated(
+        root.verifying_key().to_bytes(),
+        browser.cert.device_public_key,
+    )
+    .in_workspace(workspace)
+    .delegated_to(SCOUT.to_owned())
+    .named("Scout")
+    .in_agent_session("agent-session:issue".to_owned())
+    .on_turn(
+        tilo_action_policy::turn::Turn::new(path.clone(), "assigned".to_owned()),
+        Vec::new(),
+    );
+    let tools = WorkspaceActionProvider::new(actions.clone(), id);
+    let server = McpServer::for_turn(tools, caller).unwrap();
+
+    for address in [
+        path.as_str(),
+        "tasks.issues.issues",
+        "tasks.issues/issues",
+        "tasks.issues",
+    ] {
+        let (said, failed) = tool(&server, "tilo_read", json!({"path": address})).await;
+        assert!(!failed, "the kind `{address}` reaches the issues: {said}");
+    }
+    for address in ["tasks.issues.issues", "tasks.issues/issues"] {
+        let (said, failed) = tool(&server, "tilo_ls", json!({"path": address})).await;
+        assert!(
+            !failed && said.contains("Plan the launch"),
+            "`{address}` lists the issues: {said}"
+        );
+    }
+    // The number a listing and a person write for one issue.
+    for address in ["tasks/Issues/1", "tasks.issues/issues/1", "#1"] {
+        let (read, failed) = tool(&server, "tilo_read", json!({"path": address})).await;
+        assert!(
+            !failed && read.contains("Plan the launch"),
+            "`{address}` reads the issue: {read}"
+        );
     }
 }

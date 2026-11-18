@@ -1168,7 +1168,7 @@ fn provision_device(storage: IdentityStorage) -> io::Result<[u8; 32]> {
         &paths,
         storage,
     )?;
-    Ok(tilo_user_identity::persist::load_device_key(&paths)
+    Ok(tilo_device_identity::persist::load_device_key(&paths)
         .map_err(io::Error::other)?
         .verifying_key()
         .to_bytes())
@@ -1198,7 +1198,7 @@ fn admit_device(owner_uid: u32, stage: &mut dyn FnMut(&str)) -> io::Result<[u8; 
             "native admission identity does not own this device",
         ));
     }
-    Ok(tilo_user_identity::persist::load_device_key(&paths)
+    Ok(tilo_device_identity::persist::load_device_key(&paths)
         .map_err(io::Error::other)?
         .verifying_key()
         .to_bytes())

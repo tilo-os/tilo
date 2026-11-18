@@ -413,7 +413,7 @@ impl GovernedWorkspace {
             now,
         )?;
         select_exact_admission(&mut peer)?;
-        let mut seed = tilo_peer_state::workspace_seed(&workspace, authority, &roster, name)?;
+        let mut seed = tilo_peer_state::workspace_seed(&workspace, authority, &roster, name, now)?;
         if device.is_some() {
             // The workspace's records are sealed channels this node opens on
             // first use: a seed record would go out in the clear before its
@@ -2701,11 +2701,20 @@ impl Workspaces {
     ) -> Result<(), String> {
         let message: neighbour_wire::NeighbourMsg =
             postcard::from_bytes(body).map_err(|error| error.to_string())?;
-        if !matches!(message, neighbour_wire::NeighbourMsg::AppDocument { .. }) {
+        let neighbour_wire::NeighbourMsg::AppDocument { cluster_id, .. } = &message else {
             return Ok(());
-        }
+        };
+        // A change names the workspace whose document it writes, and its verdict is filed there: it
+        // is the workspace whose document it refused, and the one its author's session reads the
+        // verdict in. A document of a workspace this server does not keep is filed where the change
+        // was sent instead, so no refusal of a write is left unfiled.
+        let target = if cluster_id != workspace && self.workspace(cluster_id).await.is_ok() {
+            cluster_id.as_str()
+        } else {
+            workspace
+        };
         let state = self
-            .workspace(workspace)
+            .workspace(target)
             .await
             .map_err(|error| error.to_string())?;
         let mut governed = state.lock().await;

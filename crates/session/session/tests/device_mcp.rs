@@ -33,6 +33,7 @@ use serde_json::{Value, json};
 use tilo_actions::remote::PendingPoll;
 use tilo_actions::remote::workspace_activity as wire;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
+use tilo_device_identity::{IdentityPaths, persist};
 use tilo_mcp::devices::{ALPN, NotOpened, open};
 use tilo_peer_state::owner::{self, testing};
 use tilo_peer_state::{PersonalStore, PersonalSync, TransportOrigin};
@@ -41,8 +42,8 @@ use tilo_service::Questions;
 use tilo_session::{AppSocket, Options, Session};
 use tilo_sheets::portal::PortalEffect;
 use tilo_user_identity::{
-    AgentScope, DeviceCapabilities, DeviceCert, IdentityPaths, RevocationEntry, RevocationReason,
-    persist, sign_device_cert, sign_revocation_entry,
+    AgentScope, DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason,
+    sign_device_cert, sign_revocation_entry,
 };
 
 use crate::common::private_home;
@@ -1254,9 +1255,7 @@ fn notes(
             workspace_id: workspace.to_owned(),
             device_certificate: serde_json::to_vec(cert).expect("a certificate is JSON"),
             proof: key
-                .sign(&runtime_identity::collaboration_join_signing_bytes(
-                    workspace,
-                ))
+                .sign(&runtime_identity::collaboration_join_digest(workspace).unwrap())
                 .to_bytes()
                 .to_vec(),
         }

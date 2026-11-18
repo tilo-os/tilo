@@ -154,7 +154,16 @@ impl ActivityDigest {
                 if contains_opaque_id(&title) {
                     title = general_outcome_title(&group.families);
                 }
-                let group_detail = without_opaque_parts(&group.subtitle(recent));
+                // The brief names its authors beside the line, so the line says only what
+                // they did: a row that repeated the name read it twice.
+                let who = group.authors_label();
+                let facts = group
+                    .subtitle_facts(recent)
+                    .into_iter()
+                    .filter(|fact| *fact != who)
+                    .collect::<Vec<_>>()
+                    .join(" \u{00b7} ");
+                let group_detail = without_opaque_parts(&facts);
                 let detail = if title == group.title(recent) {
                     group_detail
                 } else {
@@ -529,7 +538,7 @@ mod tests {
         let digest = ActivityDigest::from_entries(&[first, second], SystemTime::UNIX_EPOCH, 3);
         let brief = &digest.briefs[0];
         assert_eq!(brief.title, "An Launch brief gearbeitet");
-        assert_eq!(brief.detail, "2 Änderungen · Ada · +2 −0 Zeichen");
+        assert_eq!(brief.detail, "2 Änderungen · +2 Zeichen");
 
         use crate::widget::activity_timeline::ChipKind;
         assert_eq!(ChipKind::Governance.label(), "Zugriff");

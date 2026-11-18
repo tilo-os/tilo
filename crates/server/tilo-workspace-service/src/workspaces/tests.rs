@@ -9,8 +9,8 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 pub(crate) use super::fixtures::{
-    admit_view_reader, entry_join, governor, governor_with, restricted_until, signed_pre_admission,
-    test_host, test_host_with_grants,
+    admit_view_reader, device_cert, entry_join, governor, governor_with, restricted_until,
+    signed_pre_admission, test_host, test_host_with_grants,
 };
 
 pub(crate) mod admission_cost;
@@ -49,20 +49,11 @@ async fn a_pre_admission_for_one_person_issues_an_invitation_only_they_can_redee
 
 /// A person's device certificate, as a guest's browser makes one.
 pub(crate) fn guest_device() -> (SigningKey, DeviceCert) {
-    let root = SigningKey::from_bytes(&rand::random());
-    let key = SigningKey::from_bytes(&rand::random());
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: "guest".into(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, &root).unwrap();
-    (key, cert)
+    device_cert(
+        &SigningKey::from_bytes(&rand::random()),
+        "guest",
+        DeviceCapabilities::member(),
+    )
 }
 
 #[tokio::test]
@@ -553,7 +544,7 @@ async fn a_seeded_workspace_default_record_names_the_default_id() {
     // a workspace record (Scratchpad, Notes) seeds its package primary instead.
     let app = "so.tilo.sheets";
     assert!(!catalogue.get(app).unwrap().keeps_workspace_resource());
-    let record = ui::resource::DocumentId::workspace_default()
+    let record = collab_types::document::DocumentId::workspace_default()
         .as_str()
         .to_owned();
     assert!(
@@ -570,9 +561,9 @@ async fn a_seeded_workspace_default_record_names_the_default_id() {
     let doc = automerge::AutoCommit::load(&bytes).unwrap();
     let kind = catalogue.get(app).unwrap().resource_type.clone();
     assert_eq!(
-        ui::resource::identity(&doc),
-        Some(ui::resource::DocumentCheckout::new(
-            ui::resource::DocumentId::workspace_default(),
+        ::collaboration::resource::identity(&doc),
+        Some(collab_types::document::DocumentCheckout::new(
+            collab_types::document::DocumentId::workspace_default(),
             kind
         ))
     );

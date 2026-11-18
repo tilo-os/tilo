@@ -14,7 +14,7 @@
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use tilo_app::framework::{Chain, Chained, PART_ITEMS};
+use tilo_app::framework::{Chain, Chained, PART_ITEMS, PartLimits};
 use tilo_app::prelude::*;
 use tilo_app::resource::{DocumentId, ResourceOwners, ResourceStore};
 use tilo_app::tilo_resource::{Collection, NamesItem};
@@ -113,10 +113,10 @@ fn chain() -> (ResourceStore, Chain<Entries>) {
 /// Add `count` entries, a batch of them per call.
 fn add(chain: &Chain<Entries>, from: usize, count: usize) {
     const BATCH: usize = 500;
-    let mut at = from;
-    while at < from + count {
-        let batch = BATCH.min(from + count - at);
-        let entries = (at..at + batch)
+    let end = from.saturating_add(count);
+    for at in (from..end).step_by(BATCH) {
+        let last = at.saturating_add(BATCH).min(end);
+        let entries = (at..last)
             .map(|n| NewEntry {
                 text: format!("entry {n}: a line of what was bought, and for whom"),
                 amount: i64::try_from(n).unwrap(),
@@ -125,7 +125,6 @@ fn add(chain: &Chain<Entries>, from: usize, count: usize) {
         chain
             .invoke(&Entries::ADD.with(entries::Add { entries }))
             .unwrap();
-        at += batch;
     }
 }
 
@@ -160,13 +159,13 @@ fn change_bytes(
         })
         .collect();
     change();
-    let mut bytes = 0;
-    let mut written = 0;
+    let mut bytes: usize = 0;
+    let mut written: usize = 0;
     for (id, frontier) in parts.iter().zip(&mut frontiers) {
         let (changes, _) = store.replication_delta(id, frontier).unwrap();
         if !changes.is_empty() {
-            written += 1;
-            bytes += changes.len();
+            written = written.saturating_add(1);
+            bytes = bytes.saturating_add(changes.len());
         }
     }
     (bytes, written)
@@ -181,7 +180,7 @@ struct Measured {
 }
 
 fn per(total: Duration, count: u32) -> Duration {
-    total / count
+    total.checked_div(count).unwrap_or_default()
 }
 
 fn measure(store: &ResourceStore, chain: &Chain<Entries>, items: usize) -> Measured {
@@ -199,7 +198,11 @@ fn measure(store: &ResourceStore, chain: &Chain<Entries>, items: usize) -> Measu
 
     // A change to an item of the oldest part, and one of the newest.
     let mut edit_bytes = 0;
-    for id in [&ids[1], &ids[items - 2]] {
+    let oldest = ids.get(1).expect("the oldest part holds a second item");
+    let newest = ids
+        .get(items.saturating_sub(2))
+        .expect("the newest part holds a second item from its end");
+    for id in [oldest, newest] {
         let (bytes, written) = change_bytes(store, chain, || {
             chain
                 .invoke(&Entries::SAY.with(entries::Say {
@@ -218,8 +221,12 @@ fn measure(store: &ResourceStore, chain: &Chain<Entries>, items: usize) -> Measu
     }
 
     // Finding items by id, spread over the whole chain.
-    let probes: Vec<&Id> = ids.iter().step_by((items / 200).max(1)).collect();
-    let _ = chain.find(probes[0]);
+    let probes: Vec<&Id> = ids
+        .iter()
+        .step_by(items.checked_div(200).unwrap_or(0).max(1))
+        .collect();
+    let first_probe = probes.first().expect("a chain of items has a probe");
+    let _ = chain.find(first_probe);
     let started = Instant::now();
     for id in &probes {
         assert!(chain.find(id).is_some());
@@ -231,13 +238,17 @@ fn measure(store: &ResourceStore, chain: &Chain<Entries>, items: usize) -> Measu
     let started = Instant::now();
     for _ in 0..rounds {
         let first = chain.read(&serde_json::json!({ "pageSize": 50 })).unwrap();
-        let cursor = first["nextCursor"].as_str().unwrap().to_owned();
+        let cursor = first
+            .get("nextCursor")
+            .and_then(serde_json::Value::as_str)
+            .expect("a page names the cursor of the one after it")
+            .to_owned();
         let next = chain
             .read(&serde_json::json!({ "pageSize": 50, "cursor": cursor }))
             .unwrap();
         assert!(next.get("nextCursor").is_some(), "{next}");
     }
-    let page = per(started.elapsed(), rounds * 2);
+    let page = per(started.elapsed(), rounds.saturating_mul(2));
 
     Measured {
         items,
@@ -290,4 +301,56 @@ fn bytes_lookup_and_paging_stay_flat_from_one_thousand_to_fifty_thousand_items()
         small.page,
         large.page
     );
+}
+
+/// A chain's typed read answers each item as an inline collection of the
+/// same items holds it (`{id, value}`, as the model writes it), a page at a
+/// time, so one type reads a collection however it is kept.
+#[test]
+fn a_chained_read_answers_its_items_as_the_inline_collection_of_them_reads() {
+    let _limits = PartLimits::scoped(10, usize::MAX);
+    let (_store, chain) = chain();
+    add(&chain, 0, 35);
+    assert_eq!(chain.parts().len(), 4, "the items are kept in four parts");
+
+    // Every page, newest first.
+    let mut read = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = chain
+            .read(&serde_json::json!({ "pageSize": 7, "cursor": cursor }))
+            .unwrap();
+        read.extend(page["entries"].as_array().cloned().unwrap_or_default());
+        match page.get("nextCursor").and_then(serde_json::Value::as_str) {
+            Some(next) => cursor = Some(next.to_owned()),
+            None => break,
+        }
+    }
+    read.reverse();
+
+    // The same items in one inline collection, oldest first.
+    let mut inline = Entries::default();
+    for (_, part) in chain.parts() {
+        for (id, entry) in part.entries.iter() {
+            inline.entries.push(id.clone(), entry.clone());
+        }
+    }
+    let written = Model::to_json(&inline);
+    assert_eq!(read.len(), 35);
+    assert_eq!(serde_json::Value::Array(read), written["entries"]);
+
+    // The fields asked for keep the value to them; the id stays.
+    let narrow = chain
+        .read(&serde_json::json!({ "pageSize": 1, "fields": ["amount"] }))
+        .unwrap();
+    let newest = &written["entries"][34];
+    assert_eq!(
+        narrow["entries"],
+        serde_json::json!([{ "id": newest["id"], "value": { "amount": 34 } }])
+    );
+
+    // A row's id reads its item whole.
+    let id = newest["id"].as_str().unwrap();
+    let item = chain.read(&serde_json::json!({ "item": id })).unwrap();
+    assert_eq!(item["amount"], 34, "{item}");
 }

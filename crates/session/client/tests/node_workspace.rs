@@ -38,6 +38,7 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use neighbour_wire::NeighbourMsg;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
+use tilo_device_identity::{IdentityPaths, persist};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server::ServerConfig;
 use tilo_server::daemon::{Server, ServerIdentity};
@@ -51,7 +52,8 @@ use tilo_server_client::{
 use tilo_server_protocol::workspaces::{
     JoinReply, PreAdmission, Role, WorkspaceNotice, WorkspacesReply, WorkspacesRequest,
 };
-use tilo_user_identity::{IdentityPaths, RevocationList, persist};
+use tilo_user_identity::RevocationList;
+
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader, Lines};
 use tokio::process::{ChildStdin, ChildStdout};
 use tokio::sync::Mutex;
@@ -172,10 +174,10 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     let node = tempfile::tempdir().unwrap();
     let paths = IdentityPaths::under(node.path().join("identity"));
     let state = node.path().join("state");
-    let (device, _) = tilo_user_identity::load_or_create_device_key(&paths).unwrap();
+    let (device, _) = tilo_device_identity::load_or_create_device_key(&paths).unwrap();
     let device = device.verifying_key().to_bytes();
     let session_paths = IdentityPaths::under(node.path().join("session-identity"));
-    let (session, _) = tilo_user_identity::load_or_create_device_key(&session_paths).unwrap();
+    let (session, _) = tilo_device_identity::load_or_create_device_key(&session_paths).unwrap();
     let session = session.verifying_key().to_bytes();
     let session_cert_out = node.path().join("session.cert");
     let install = InstallListener::bind_with_session(
@@ -247,7 +249,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
             .unwrap(),
         node_cert
     );
-    let delivered = tilo_user_identity::persist::read_device_cert(&session_cert_out).unwrap();
+    let delivered = tilo_device_identity::persist::read_device_cert(&session_cert_out).unwrap();
     assert_eq!(delivered, session_cert);
     assert_eq!(delivered.user_public_key, root.public_key);
     assert!(!delivered.capabilities.can_admit_devices);

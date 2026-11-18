@@ -28,15 +28,6 @@ pub use collaboration::history_source::authors::{
 #[cfg(test)]
 use collaboration::history_source::authors::{SHORT_LEN, rgb_to_hue};
 
-/// Where an attributed change sits, for the hover that names its writer: the
-/// folder inside the workspace. The device whose session vouched for the
-/// writer is looked up in the directory itself.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct WriterPlace<'a> {
-    /// The file's parent folder inside the workspace, `/`-rooted.
-    pub folder: Option<&'a str>,
-}
-
 /// Maps automerge actor ids to the people the chrome should name.
 ///
 /// Registrations win over inference: the collaboration layer resolves peer
@@ -256,7 +247,13 @@ impl AuthorDirectory {
                     person(&noted.name)
                         .unwrap_or_else(|| (noted.name.clone(), identity_colour(&noted.name)))
                 };
-                self.register(actor, author_coloured(shown, short_id(&identity), rgb));
+                let author = author_coloured(shown, short_id(&identity), rgb);
+                let author = if agent {
+                    author.with_relation(AuthorRelation::Software)
+                } else {
+                    author
+                };
+                self.register(actor, author);
             }
         });
     }
@@ -320,87 +317,6 @@ impl AuthorDirectory {
             .then(|| self.resolve_identity(&key))
     }
 
-    /// The author of a file version `device` signed for `person`, when the
-    /// device recorded which writer caused it (`attribution`, from the signed
-    /// record): that writer, named on the person's own row — never anybody
-    /// else's person. Without a valid attribution, [`Self::resolve_file_actor`].
-    pub fn resolve_attributed_file_actor(
-        &self,
-        person: &[u8; 32],
-        device: &[u8; 32],
-        attribution: Option<&fs_protocol::FileAttributionV1>,
-    ) -> Option<HistoryAuthor> {
-        self.resolve_attributed_file_actor_in(person, device, attribution, WriterPlace::default())
-    }
-
-    /// [`Self::resolve_attributed_file_actor`] for a version whose file the
-    /// reader sees at `place`: the hover that names the writer also names the
-    /// device whose session vouched for it and the folder the change is in.
-    pub fn resolve_attributed_file_actor_in(
-        &self,
-        person: &[u8; 32],
-        device: &[u8; 32],
-        attribution: Option<&fs_protocol::FileAttributionV1>,
-        place: WriterPlace<'_>,
-    ) -> Option<HistoryAuthor> {
-        let Some(attribution) = attribution.filter(|attribution| attribution.validate().is_ok())
-        else {
-            return self.resolve_file_actor(person, device);
-        };
-        let writer = &attribution.writer;
-        let [red, green, blue] = attribution.color;
-        // An agent with no session acted through the person's Tilo actions,
-        // so it wrote as the agent: the row is the agent's, on behalf of its
-        // person.
-        if let fs_protocol::AttributedWriter::Agent {
-            agent,
-            session: None,
-        } = writer
-        {
-            let agent = HistoryAgent {
-                agent: tilo_actions::MemberId::agent(agent.clone()),
-                label: attribution.label.clone(),
-                rgb: (red, green, blue),
-                person: hex::encode(person),
-            };
-            return Some(self.agent_author(&hex::encode(device), &agent));
-        }
-        // A writer the FUSE caller's process named (an agent session, an app,
-        // a program) wrote through the person's mount: the row is the person's
-        // own, wearing the person's avatar, with the writer named beside it.
-        let person_key = hex::encode(person);
-        let acting = writer
-            .acting()
-            .unwrap_or_else(|| tilo_actions::Acting::person(person_key.clone()));
-        let label = match writer {
-            fs_protocol::AttributedWriter::App(_) => app_name(
-                &attribution.label,
-                crate::i18n::I18nManager::window_locale().as_str(),
-            ),
-            _ => attribution.label.clone(),
-        };
-        let author = self
-            .resolve_identity(&actor_key(&person_key))
-            .with_attribution(
-                HistoryAttribution::new(acting)
-                    .acting_for(person_key.clone(), self.person_name(&person_key))
-                    .written_by(writer.clone(), label)
-                    .from_device(self.device_name(&hex::encode(device)).map(str::to_owned))
-                    .in_folder(place.folder.map(str::to_owned)),
-            );
-        let mut author = author;
-        author.for_reader = self.reader_person().as_deref() == Some(person_key.as_str());
-        Some(author)
-    }
-
-    /// The name the directory has for a person's actor, or the actor
-    /// itself: a hover never prints a bare key where it knows no name.
-    fn person_name(&self, actor: &str) -> String {
-        self.by_actor
-            .get(&actor_key(actor))
-            .map_or_else(|| actor.to_owned(), |author| author.name.clone())
-    }
-
     /// The author a registered agent is: the agent, on behalf of its person,
     /// in the agent's own colour.
     fn agent_author(&self, actor_hex: &str, agent: &HistoryAgent) -> HistoryAuthor {
@@ -440,6 +356,10 @@ impl AuthorDirectory {
             Some(actor @ tilo_actions::Actor::App(_)) => {
                 self.author_from_identity(actor_label(&actor), &handle, "")
             }
+            // An agent is named by its own name, and marked as the software it is.
+            Some(actor @ tilo_actions::Actor::Member(tilo_actions::MemberId::Agent(_))) => self
+                .author_from_identity(actor_label(&actor), &handle, short)
+                .with_relation(AuthorRelation::Software),
             Some(actor) => self.author_from_identity(actor_label(&actor), &handle, short),
             None => self.author_from_identity(handle.clone(), &handle, short),
         }
@@ -538,9 +458,11 @@ impl AuthorDirectory {
                 }
                 None if !self.is_registered(&written_as) => {
                     let mut author = author;
-                    author.name = match actor.id().trim() {
-                        "" => UNKNOWN_AUTHOR_NAME.to_owned(),
-                        id => id.to_owned(),
+                    // An app goes by its own name in the reader's language.
+                    author.name = match (actor, actor.id().trim()) {
+                        (_, "") => UNKNOWN_AUTHOR_NAME.to_owned(),
+                        (tilo_actions::Actor::App(_), _) => actor_label(actor),
+                        (_, id) => id.to_owned(),
                     };
                     author
                 }
@@ -1265,6 +1187,24 @@ mod tests {
         assert_eq!(author.task, None);
         let hover = crate::history_source::sentence::attribution_hover(&author).unwrap_or_default();
         assert!(hover.contains("Workspace folder"), "{hover}");
+    }
+
+    /// A workspace's governance is written under a device's key, which names no person. The entry
+    /// the change carries names the person whose device wrote it, so the history reads them, not
+    /// an unknown member.
+    #[test]
+    fn a_change_under_a_device_key_reads_as_the_person_its_entry_names() {
+        let person = "ada";
+        let mut authors = AuthorDirectory::new();
+        authors.register_member(
+            &tilo_actions::MemberId::person(person),
+            HistoryAuthor::new("Ada", 0.0, "ada00000"),
+        );
+        let entry = tilo_actions::ActionContext::default()
+            .with_invoker(tilo_actions::ActionInvoker::person(person));
+        let author = authors.resolve_entry(&hex::encode([7_u8; 32]), Some(&entry));
+        assert_eq!(author.name, "Ada");
+        assert_ne!(author.name, UNKNOWN_AUTHOR_NAME);
     }
 
     /// An agent that acted for its person outside a recorded session (a change written before

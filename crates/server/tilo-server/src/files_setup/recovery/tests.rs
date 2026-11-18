@@ -2,7 +2,8 @@ use super::*;
 use collab_types::WorkspaceId;
 use collab_types::{Access, CapOverride, Effect, Scope};
 use std::sync::Mutex;
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, persist, sign_device_cert};
+use tilo_device_identity::persist;
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 fn files_grant(person: [u8; 32]) -> CapOverride {
     CapOverride {

@@ -632,7 +632,6 @@ impl PeerGovernanceMut<'_> {
                 .map_err(err)?;
         }
         if changed {
-            doc.commit();
             self.peer.write_governance(doc, &before, key, now)?;
         } else {
             self.peer.core.revocations = verified;
@@ -712,8 +711,15 @@ impl PeerGovernanceMut<'_> {
         let mut document = (**cached).clone();
         document.set_actor(self.peer.workspace_actor_of(key));
         let before = document.get_heads();
-        match crate::governance::admit_invited_member(&mut document, cached, redemption, name, now)?
-        {
+        let author = self.peer.governance_author(key, now);
+        match crate::governance::admit_invited_member(
+            &mut document,
+            cached,
+            redemption,
+            name,
+            author.as_ref(),
+            now,
+        )? {
             crate::governance::AdmissionOutcome::AlreadyApplied => Ok(false),
             crate::governance::AdmissionOutcome::Applied { .. } => {
                 // The workspace's owner is not one of its members: they hold
@@ -803,7 +809,6 @@ impl PeerGovernanceMut<'_> {
             automerge::ScalarValue::Bytes(identity.encode().map_err(err)?),
         )
         .map_err(err)?;
-        doc.commit();
         self.peer.write_governance(doc, &before, key, now)
     }
     /// Take out of the workspace's governance every device row whose
@@ -878,7 +883,6 @@ impl PeerGovernanceMut<'_> {
         for device in devices {
             doc.delete(&identities, hex::encode(device)).map_err(err)?;
         }
-        doc.commit();
         self.peer.write_governance(doc, &before, key, now)
     }
 
@@ -1065,7 +1069,6 @@ impl PeerGovernanceMut<'_> {
         for id in &rows {
             doc.put(&peers, id, name).map_err(err)?;
         }
-        doc.commit();
         self.peer.write_governance(doc, &before, key, now)
     }
     /// Rewrite each administrator's grant still in the shape workspaces held
@@ -1265,7 +1268,6 @@ impl PeerGovernanceMut<'_> {
                 doc.delete(&identities, device.as_str()).map_err(err)?;
             }
         }
-        doc.commit();
         self.peer.write_membership(
             doc,
             &before,

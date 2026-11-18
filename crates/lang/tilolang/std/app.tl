@@ -947,7 +947,7 @@ view history<R>(of: R) {
                                     if newest {
                                         if let run = s.run {
                                             ui.Button(
-                                                phrase("tilolang-history-undo-run"),
+                                                phrase("tilolang-undo"),
                                                 role: .plain,
                                                 size: .small,
                                             ) {
@@ -971,7 +971,7 @@ view history<R>(of: R) {
                                         ) {
                                             if let run = s.run {
                                                 ui.MenuItem(
-                                                    phrase("tilolang-history-undo-run"),
+                                                    phrase("tilolang-history-revert"),
                                                     icon: .undo_2,
                                                 ) {
                                                     on choose: undo(run)

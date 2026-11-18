@@ -894,16 +894,12 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
         | RemoteActionMessage::Observe { .. }
         | RemoteActionMessage::Cancel { .. }
         | RemoteActionMessage::ResourceRead { .. }
-        | RemoteActionMessage::RetiredResourceRequest
-        | RemoteActionMessage::RetiredResourceResponse
         | RemoteActionMessage::FeedbackRequest { .. }
         | RemoteActionMessage::FeedbackResponse { .. }
         | RemoteActionMessage::ConfirmationRequest { .. }
         | RemoteActionMessage::ConfirmationResponse { .. }
         | RemoteActionMessage::Confirm { .. }
         | RemoteActionMessage::ConfirmResponse { .. }
-        | RemoteActionMessage::RetiredResourceWatch { .. }
-        | RemoteActionMessage::RetiredResourceReading { .. }
         | RemoteActionMessage::ContentPutRequest { .. }
         | RemoteActionMessage::ContentPutResponse { .. }
         | RemoteActionMessage::ContentGetRequest { .. }

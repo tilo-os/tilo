@@ -1,13 +1,13 @@
 # Environments: where a shell runs and what it can run
 
-A terminal session, an agent's shell and a legacy app all run *somewhere*. Tilo
+A terminal session, an agent's shell and a Linux app all run *somewhere*. Tilo
 makes that place explicit. Every session is bound to a **target**:
 
 | Target | What it is | Identity and files | Packages |
 |---|---|---|---|
 | **Host** | The machine's own login shell (desktop installs; the owner's shell on Tilo OS) | The real user, the real home | The host's own (rpm-ostree, Flatpak, …) |
 | **Environment** | A sandbox whose `/usr` is a stack of read-only images, on this device or one that takes work | The real uid inside its own namespaces; its workspace's own files as `~` plus directories granted to it | Tool images listed in the environment record |
-| **Legacy VM** | One VM per user and guest OS, for software that needs a whole system | A normal user account in the guest; granted directories shared in | Whatever the guest installs (Flatpak, its package manager) |
+| **Linux VM** | One VM per user and guest OS, for software that needs a whole system | A normal user account in the guest; granted directories shared in | Whatever the guest installs (Flatpak, its package manager) |
 
 The terminal never receives a namespace or a VM. It receives a pty from a
 broker. The broker decides where the session runs, so the same Terminal works
@@ -48,10 +48,10 @@ device's files folder as `~`, for a Terminal in no workspace. See
 |---|---|---|
 | Tilo apps | The launcher sandbox (unchanged) | ~0 |
 | Environments (CLI) | Namespaces + seccomp + Landlock over shared read-only images | ~0 idle (socket activated); images are shared by content address |
-| Legacy apps | A VM on a host with KVM | Real: metered, quota'd, suspended when idle |
+| Linux apps | A VM on a host with KVM | Real: metered, quota'd, suspended when idle |
 | Hosted workspaces' Linux programs | The workspace environment's own Firecracker VM | Real: billed per second while it runs, limited per plan, snapshotted when idle |
 
-A member that takes work runs the first two. A legacy launch is a request to
+A member that takes work runs the first two. A Linux VM launch is a request to
 a member that advertises KVM.
 
 ## The guest helper
@@ -307,12 +307,12 @@ it let in are stopped.
   admitted there only when the person is one of that workspace's people (and
   not blocked in it), and the person still decides on the sheet.
 
-## Legacy VMs
+## Linux VMs
 
 One VM per user per guest OS (`linux`, `windows`). Apps share it the way they
 share a desktop.
 
-- **Lifecycle:** the first legacy launch starts (or resumes) the VM; it grows
+- **Lifecycle:** the first Linux VM launch starts (or resumes) the VM; it grows
   memory on demand (virtio-balloon / virtio-mem) and is snapshotted to disk
   after it has had no windows for a few minutes. Resume is from the snapshot.
 - **Transport:** a guest agent on AF_VSOCK accepts `Launch { argv, cwd, env,
@@ -323,15 +323,15 @@ share a desktop.
   strip. X11 apps use Xwayland inside the guest.
 - **Files:** granted directories are shared with `virtiofsd` (unprivileged) at
   the same paths.
-- **Installing apps:** Flatpak inside the guest; installed legacy apps get a
+- **Installing apps:** Flatpak inside the guest; installed Linux apps get a
   launcher shim in every environment of that user and an entry in search.
 
 A launch from a terminal: `code .` resolves to a shim in the environment's
-`PATH`; the shim asks the broker (`Request::LegacyLaunch { app, args, cwd }`);
-the supervisor asks the legacy VM service to ensure the VM; the guest agent runs
+`PATH`; the shim asks the broker (`Request::LinuxVmLaunch { app, args, cwd }`);
+the supervisor asks the Linux VM service to ensure the VM; the guest agent runs
 `code .` in the same directory; the window appears in the current strip.
 
-The Windows appliance (`crates/windows/windows-vm`) is the `windows` legacy VM;
+The Windows appliance (`crates/windows/windows-vm`) is that service's `windows` guest;
 its guest bridge moves to the same vsock agent protocol.
 
 ## Hosted workspace VMs
@@ -340,19 +340,19 @@ On a host that serves other people's workspaces, a workspace's shell, its own
 commands and Tilo's actions run as everywhere else, and need no VM. A Linux
 program the shell hands on (tier 3: `cargo`, `npm`, `python`) runs in a VM of
 that workspace environment's own, never in a guest sharing the host's kernel
-(`crates/runtime/legacy-vm/src/hosted`).
+(`crates/runtime/linux-vm/src/hosted`).
 
 - **One VM per workspace environment,** with a size (`small` 2 vCPU / 4 GB,
   `default` 4 / 8, `large` 8 / 16, `xlarge` 16 / 32) and a persistent disk of
   50, 50, 110 or 250 GB.
 - **Lifecycle:** the first program boots it; once no program has run for the
   idle limit (30 s by default) it is snapshotted to disk and its process
-  ends; the next program restores it. It is the legacy VM's lifecycle and
+  ends; the next program restores it. It is the Linux VM's lifecycle and
   agent, on Firecracker: a restored VM maps its memory file and reads pages
   as the guest touches them, and a suspend writes only the pages written
   since the last one. The crate docs have the measurements behind the choice.
 - **More than one host:** a VM stays on the host that first woke it, where
-  its disk is. A placer (`tilo-legacy hosted place`) says which host runs a
+  its disk is. A placer (`tilo-linux-vm hosted place`) says which host runs a
   workspace's VM: the one holding it, else the first host with room for one
   more VM, the always-up one first. Each host reports the memory its awake VMs
   really take — what the kernel measures each Firecracker process at, not the
@@ -460,12 +460,12 @@ that workspace environment's own, never in a guest sharing the host's kernel
   install` adds packages) with the tenant account (`tilo`, uid 1000,
   passwordless sudo), git, a compiler, python and uv, node and rust on `PATH`
   for every shell, the headless session with Browser and Chromium, and the
-  same guest agent the legacy VM runs. It has no systemd: PID 1 is
+  same guest agent the Linux VM runs. It has no systemd: PID 1 is
   `hosted-init`, which mounts what a guest needs, grows the filesystem to the
   disk it was given, points DNS at the host's forwarder and hands over to the
   agent. Each VM's disk is a reflinked copy of `rootfs.ext4`. Hosts do not
   build it: CI publishes it, signs it with the release key and pins the digest
-  in `os/hosted-guest-snapshot.env`, and `tilo-legacy hosted fetch-guest`
+  in `os/hosted-guest-snapshot.env`, and `tilo-linux-vm hosted fetch-guest`
   fetches only that digest under `/etc/containers/policy.json`'s
   `sigstoreSigned` scope for `registry.tilo.so/tilo/hosted-guest`.
 - **Browser:** a hosted workspace's Browser runs in the same VM: the first
@@ -475,7 +475,7 @@ that workspace environment's own, never in a guest sharing the host's kernel
   start as copy-on-write clones of a warm template of their size. The exact
   contract — argv, the `TILO_HOSTED_BROWSER` mark, one line of material on
   its stdin, `ready`, `up` and `used` on its stdout — is documented in
-  [`crates/runtime/legacy-vm/src/hosted/browser.rs`](../../crates/runtime/legacy-vm/src/hosted/browser.rs),
+  [`crates/runtime/linux-vm/src/hosted/browser.rs`](../../crates/runtime/linux-vm/src/hosted/browser.rs),
   and the whole of it in [`hosted-browser.md`](../hosted-browser.md).
 - **Linux apps with windows:** opening one (`app.so.tilo.linux#open`, naming
   its desktop file) starts a second headless session in the same VM, as the
@@ -485,14 +485,14 @@ that workspace environment's own, never in a guest sharing the host's kernel
   is a Linux action: it needs the plan and the card.
 - **Served runs:** a program that needs what only its host may hold (a
   person's model, the workspace's actions, a sign-in) is started through the
-  guest agent's serving mode, `tilo-legacy-agent serve-run`
-  ([`served.rs`](../../crates/runtime/legacy-agent/src/served.rs)). It runs as
+  guest agent's serving mode, `tilo-linux-vm-agent serve-run`
+  ([`served.rs`](../../crates/runtime/linux-vm-agent/src/served.rs)). It runs as
   the tenant like any program, so the VM counts it as running and does not
   sleep under it, and nothing bounds how long it lasts. The launcher opens the
   endpoints it was asked for on the VM's loopback, writes their addresses into
   the program's arguments and variables, and carries every request made there
   to the host as frames on its own output
-  (`legacy_agent_protocol::served`); the host answers on its input. An
+  (`linux_vm_protocol::served`); the host answers on its input. An
   endpoint answers only the run's own processes: the launcher finds each
   caller's socket in the kernel's table and among the files of the processes
   it started, and turns anything else away without a byte. What a request
@@ -519,7 +519,7 @@ way a device serves its own:
 - Granted directories map to the workspace's synced files on that member.
 - Sessions are socket-activated and survive the client disconnecting; the
   Terminal re-attaches by session id.
-- A legacy launch goes to a member that advertises `kvm`; its windows reach
+- A Linux VM launch goes to a member that advertises `kvm`; its windows reach
   the requester as a window stream (`surface_stream`), with input routed back.
 
 A member holds a workspace as any device does, so its action service admits the
@@ -553,7 +553,7 @@ one its server has not asked after for ninety seconds.
 ## Terminal
 
 `terminal.session` gains `target: Target` (`Host | Environment { record } |
-Legacy { vm }`). A new tab picks its target (default: the most recently used
+LinuxVm { vm }`). A new tab picks its target (default: the most recently used
 environment); the tab shows a target chip; a session's target is part of its
 synced state, so reopening it on another device re-attaches to the same place
 where possible.

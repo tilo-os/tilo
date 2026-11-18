@@ -297,7 +297,7 @@ fn retry_row(may_pass: bool) -> LiveRow {
     } else {
         (crate::effects::FilesEffect::Up, t("files-open-enclosing"))
     };
-    LiveRow::new(RETRY_ROW, RETRY_ROW, label.clone())
+    LiveRow::typed::<crate::row_types::Retry>(RETRY_ROW, label.clone())
         .operation(crate::effects::row_action(&effect, "invoke", label))
 }
 
@@ -327,7 +327,8 @@ pub(crate) fn published_place_resources(favorites: &[favorites::Favorite]) -> Ve
                 crate::search_provider::OPEN_ACTION,
                 crate::i18n::CATALOG.t("files-shortcuts-open"),
             );
-            LiveRow::new(resource_id, "files.place", favorite.label.clone()).operation(open)
+            LiveRow::typed::<crate::row_types::Place>(resource_id, favorite.label.clone())
+                .operation(open)
         })
         .collect()
 }
@@ -345,9 +346,8 @@ pub(crate) fn published_template_resources(templates: Vec<PathBuf>) -> Vec<LiveR
                 "create",
                 templates::menu_label(&template),
             );
-            LiveRow::new(
+            LiveRow::typed::<crate::row_types::Template>(
                 template_id,
-                "files.template",
                 templates::menu_label(&template),
             )
             .operation(create)
@@ -6957,12 +6957,11 @@ impl FilesState {
     fn nearby_receiver_row(&self, transfer: &ui::collaboration::NearbyTransferStatus) -> LiveRow {
         use ui::collaboration::NearbyTransferPhase;
 
-        let mut resource = LiveRow::new(
+        let mut resource = LiveRow::typed::<crate::row_types::NearbyTransfer>(
             format!(
                 "nearby-transfer:{}",
                 nearby_action_locator("transfer", transfer.handle.as_bytes())
             ),
-            "files.nearby-transfer",
             transfer.name.clone(),
         );
         let mut inspect = crate::effects::row_action(
@@ -7083,27 +7082,30 @@ impl FilesState {
                     crate::i18n::CATALOG.t("files-shortcuts-open"),
                 );
                 open.type_mut().contract.availability = availability;
-                LiveRow::new(resource_id, "files.remote-account", account.label.clone())
-                    .presentation(tilo_actions::ResourcePresentation {
-                        detail: Some(format!("{} at {}", account.kind.label(), account.host)),
-                        badge: account.badge(),
-                        preview: None,
-                    })
-                    .operation(open)
-                    .operation(crate::effects::row_action(
-                        &crate::effects::FilesEffect::AccountDetails {
-                            account: account_id.clone(),
-                        },
-                        "details",
-                        crate::i18n::CATALOG.t("files-account-status"),
-                    ))
-                    .operation(crate::effects::row_action(
-                        &crate::effects::FilesEffect::Reauthenticate {
-                            account: account_id,
-                        },
-                        "reauthenticate",
-                        crate::i18n::CATALOG.t("files-account-reauthenticate"),
-                    ))
+                LiveRow::typed::<crate::row_types::RemoteAccount>(
+                    resource_id,
+                    account.label.clone(),
+                )
+                .presentation(tilo_actions::ResourcePresentation {
+                    detail: Some(format!("{} at {}", account.kind.label(), account.host)),
+                    badge: account.badge(),
+                    preview: None,
+                })
+                .operation(open)
+                .operation(crate::effects::row_action(
+                    &crate::effects::FilesEffect::AccountDetails {
+                        account: account_id.clone(),
+                    },
+                    "details",
+                    crate::i18n::CATALOG.t("files-account-status"),
+                ))
+                .operation(crate::effects::row_action(
+                    &crate::effects::FilesEffect::Reauthenticate {
+                        account: account_id,
+                    },
+                    "reauthenticate",
+                    crate::i18n::CATALOG.t("files-account-reauthenticate"),
+                ))
             })
             .collect()
     }

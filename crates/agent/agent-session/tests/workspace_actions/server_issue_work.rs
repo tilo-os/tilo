@@ -337,7 +337,7 @@ async fn a_task_keeps_its_place_waits_two_days_and_a_restarted_server_goes_on_fr
         &given.service(),
         &given.person(),
         &pages,
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "append-to-note",
         json!({"title": "#1 Plan the launch",
                "markdown": "The venue holds 300 people (source: the venue's own page)."})
@@ -814,7 +814,7 @@ async fn a_server_with_an_agent_founds_the_tracker_of_a_workspace_nobody_opened_
             &ActionService::new(actions.clone(), WorkspaceId::parse(&workspace).unwrap()),
             &person,
             &route,
-            &ui::resource::chain_resource_id(&tasks::part::chain()),
+            &ui::resource::chain_resource_id(&tasks::issue_list::chain()),
             "create",
             arguments.as_object().unwrap().clone(),
         )

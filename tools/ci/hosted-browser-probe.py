@@ -1,6 +1,6 @@
 """Inside a workspace's VM: open a page in Chromium and say how long it took.
 
-Run by tools/ci/hosted-vm-measure.sh through `tilo-legacy hosted run`, as the
+Run by tools/ci/hosted-vm-measure.sh through `tilo-linux-vm hosted run`, as the
 tenant. It starts the image's Chromium engine host the way Browser's session
 does (framed JSON commands on its input, framed events and frames on its
 output), opens one tab on a page, and prints one JSON line: milliseconds from

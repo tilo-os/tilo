@@ -459,6 +459,7 @@ mod tests {
         {
             let (people, mia) = people();
             let state = crate::LocalState::new(crate::component::actor_text(&mia_id()));
+            let doc = automerge::AutoCommit::new();
             let mut field = PersonField::from_state("assignee", &state, people, Some(mia));
             assert_eq!(
                 field.value(),
@@ -466,7 +467,7 @@ mod tests {
                 "the person the binding holds is shown"
             );
             state.set(crate::component::actor_text(&sam_id()));
-            Decorator::sync(&mut field, &(), &());
+            Decorator::sync(&mut field, &doc, &automerge::ROOT);
             assert_eq!(
                 field.value(),
                 Some(&sam_id()),
@@ -474,14 +475,14 @@ mod tests {
             );
             field.inner_mut().open();
             state.set(String::new());
-            Decorator::sync(&mut field, &(), &());
+            Decorator::sync(&mut field, &doc, &automerge::ROOT);
             assert_eq!(
                 field.value(),
                 Some(&sam_id()),
                 "a change while the list is open is not shown yet"
             );
             field.inner_mut().close();
-            assert!(Decorator::update(&mut field, &(), &()));
+            assert!(Decorator::update(&mut field, &doc, &automerge::ROOT));
             assert_eq!(
                 field.value(),
                 None,

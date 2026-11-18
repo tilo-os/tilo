@@ -1,10 +1,25 @@
 //! A mounted document kept current: what the workspace holds of it merged in,
 //! only the changes after the heads it merged last.
 use super::{DocumentRoute, Mounted, Worker, WorkspaceId, WorkspaceState, reads};
+use std::collections::HashSet;
 
 /// Merge into `mounted` what `state` holds of its record and its parts that
 /// changed since it merged them last.
-pub(super) fn catch_up(route: &DocumentRoute, mounted: &mut Mounted, state: &WorkspaceState) {
+///
+/// The document itself is read every time: the request acts on it, and one
+/// read costs the same however much its app keeps. Its parts are read only
+/// when a write landed in them since the last refresh (`changed`), or when
+/// their last merge failed and they are taken whole again; a replica mounted
+/// anew, or taken back from a save, is passed `None` and takes all of them. A
+/// chain held whole is a part per item it keeps, so reading every part each
+/// time made every request cost what the document holds; a part nothing was
+/// written in is already what the replica holds.
+pub(super) fn catch_up(
+    route: &DocumentRoute,
+    mounted: &mut Mounted,
+    state: &WorkspaceState,
+    changed: Option<&HashSet<DocumentRoute>>,
+) {
     match state.update(route, mounted.merged.as_deref()) {
         Ok(Some((mutation, heads))) => {
             // A change that did not merge leaves the replica where it was:
@@ -21,6 +36,9 @@ pub(super) fn catch_up(route: &DocumentRoute, mounted: &mut Mounted, state: &Wor
         Err(error) => tracing::debug!(%error, "workspace actions: a record does not read"),
     }
     for (part, merged) in &mut mounted.parts {
+        if merged.is_some() && changed.is_some_and(|changed| !changed.contains(part)) {
+            continue;
+        }
         let Ok(record) = reads::document_id(&part.document) else {
             continue;
         };
@@ -58,7 +76,7 @@ const HOLD_ROUNDS: usize = 4;
 pub(super) fn hold_parts(holder: &DocumentRoute, mounted: &mut Mounted, state: &WorkspaceState) {
     let mut newest: std::collections::HashMap<ui::resource::DocumentId, (u64, &DocumentRoute)> =
         std::collections::HashMap::new();
-    for route in &state.records {
+    for route in state.documents.iter() {
         if route.app_id != holder.app_id || route.cluster_id != holder.cluster_id {
             continue;
         }
@@ -138,7 +156,8 @@ fn hold_wanted(
                     cluster_id: holder.cluster_id.clone(),
                     document: record.as_str().to_owned(),
                 };
-                (newest.contains_key(&chain) && state.records.contains(&route)).then_some(route)
+                (newest.contains_key(&chain) && state.documents.iter().any(|held| held == &route))
+                    .then_some(route)
             })
             .filter(|route| !mounted.parts.contains_key(route) && !mounted.foreign.contains(route))
             .collect();
@@ -258,7 +277,7 @@ pub(super) fn hand_all_parts(
     state: &WorkspaceState,
 ) {
     let mut handed = 0;
-    for route in &state.records {
+    for route in state.documents.iter() {
         if handed >= HOLD_PARTS
             || route.app_id != holder.app_id
             || route.cluster_id != holder.cluster_id

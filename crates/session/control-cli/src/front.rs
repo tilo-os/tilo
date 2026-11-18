@@ -806,13 +806,50 @@ pub fn run(
     spelling: &Spelling,
     io: &mut Io<'_>,
 ) -> u8 {
+    let Some((mut desktop, action, args)) = wanted(sockets, name, words, spelling, io) else {
+        return 1;
+    };
+    invoke(&mut desktop, &action, &args, spelling, io, false)
+}
+
+/// The action `name` finds, answered as the typed JSON the API answers a
+/// hosted workspace with: one shape for a `--json` caller wherever the action
+/// ran.
+pub fn do_json(
+    sockets: &[ControlSocket],
+    name: &str,
+    words: &[String],
+    spelling: &Spelling,
+    io: &mut Io<'_>,
+) -> u8 {
+    let Some((mut desktop, action, args)) = wanted(sockets, name, words, spelling, io) else {
+        return 1;
+    };
+    invoke(&mut desktop, &action, &args, spelling, io, true)
+}
+
+/// The action `name`, with `words` bound as its arguments, at the desktop
+/// these sockets reach. Says what went wrong, when nothing did.
+fn wanted(
+    sockets: &[ControlSocket],
+    name: &str,
+    words: &[String],
+    spelling: &Spelling,
+    io: &mut Io<'_>,
+) -> Option<(Desktop, Action, serde_json::Value)> {
     let mut desktop = match connect(sockets) {
         Ok(desktop) => desktop,
-        Err(failure) => return report(&failure, spelling, io),
+        Err(failure) => {
+            report(&failure, spelling, io);
+            return None;
+        }
     };
     let action = match find(&mut desktop, name, spelling) {
         Ok(action) => action,
-        Err(failure) => return report(&failure, spelling, io),
+        Err(failure) => {
+            report(&failure, spelling, io);
+            return None;
+        }
     };
     let bound = if action.kind.is_empty() && action.params.is_empty() {
         // Named by its address: the desktop checks the arguments.
@@ -820,17 +857,13 @@ pub fn run(
     } else {
         bind_args(&action, words)
     };
-    let args = match bound {
-        Ok(args) => args,
-        Err(sentence) => return report(&Failure::Said(sentence), spelling, io),
-    };
-    invoke(
-        &mut desktop,
-        &action,
-        &serde_json::Value::Object(args),
-        spelling,
-        io,
-    )
+    match bound {
+        Ok(args) => Some((desktop, action, serde_json::Value::Object(args))),
+        Err(sentence) => {
+            report(&Failure::Said(sentence), spelling, io);
+            None
+        }
+    }
 }
 
 /// Do the desktop's own action `id` of `provider` with `args`, called `title` where the answer
@@ -855,7 +888,7 @@ pub fn run_address(
         subtitle: None,
         params: Vec::new(),
     };
-    invoke(&mut desktop, &action, args, spelling, io)
+    invoke(&mut desktop, &action, args, spelling, io, false)
 }
 
 fn invoke(
@@ -864,6 +897,7 @@ fn invoke(
     args: &serde_json::Value,
     spelling: &Spelling,
     io: &mut Io<'_>,
+    json: bool,
 ) -> u8 {
     let request =
         crate::client::invoke_wire(&action.provider, &action.id, args, None, Some(RUN_WAIT_MS));
@@ -871,7 +905,59 @@ fn invoke(
         Ok(answer) => answer,
         Err(why) => return report(&Failure::Unreachable(why), spelling, io),
     };
-    settle(&answer, action, spelling, io)
+    if json {
+        settle_json(&answer, action, spelling, io)
+    } else {
+        settle(&answer, action, spelling, io)
+    }
+}
+
+/// Say how an invocation went as the typed JSON the API answers with
+/// (`status`, `invocation`, `result`), so a `--json` caller reads one shape
+/// from this desktop and from a hosted workspace. What did not work is said in
+/// words, on standard error, as it is without `--json`.
+fn settle_json(
+    answer: &serde_json::Value,
+    action: &Action,
+    spelling: &Spelling,
+    io: &mut Io<'_>,
+) -> u8 {
+    let Some(receipt) = answer.get("answer") else {
+        return settle(answer, action, spelling, io);
+    };
+    let update = receipt
+        .pointer("/receipt/update")
+        .cloned()
+        .unwrap_or_default();
+    let status = match update
+        .get("state")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+    {
+        "succeeded" => "ok",
+        "accepted" | "running" | "queued" | "pending" => "pending",
+        // A failure, a cancel or a state we do not name says what it is in
+        // words, exactly as it does without `--json`.
+        _ => return settle(answer, action, spelling, io),
+    };
+    let mut typed = serde_json::json!({"status": status});
+    if let Some(fields) = typed.as_object_mut() {
+        if let Some(invocation) = receipt.pointer("/receipt/invocation") {
+            fields.insert("invocation".into(), invocation.clone());
+        }
+        if let Some(result) = update
+            .pointer("/output/value")
+            .filter(|value| !value.is_null())
+        {
+            fields.insert("result".into(), result.clone());
+        }
+    }
+    let _ = writeln!(
+        io.out,
+        "{}",
+        serde_json::to_string_pretty(&typed).unwrap_or_default()
+    );
+    0
 }
 
 /// Say how an invocation went: its result, if it gave one; why it failed;
@@ -1044,7 +1130,14 @@ pub fn open(
         return 1;
     };
     if items.is_empty() {
-        return invoke(&mut desktop, &chosen, &serde_json::json!({}), spelling, io);
+        return invoke(
+            &mut desktop,
+            &chosen,
+            &serde_json::json!({}),
+            spelling,
+            io,
+            false,
+        );
     }
     if chosen.provider != "applications" || chosen.id.contains(':') {
         let _ = writeln!(
@@ -1068,6 +1161,7 @@ pub fn open(
         &serde_json::json!({ "open": items }),
         spelling,
         io,
+        false,
     )
 }
 

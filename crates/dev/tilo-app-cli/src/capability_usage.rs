@@ -1,12 +1,13 @@
 //! Which capabilities an app's code uses, compared with what its
 //! `tilo-app.toml` declares.
 //!
-//! The evidence table is `tools/policy/app_capability_usage.toml`, which the
-//! repository's policy check (`tools/policy/check_app_capabilities.py`) reads
-//! too: production dependencies, `package/feature` selections, source paths
-//! (also inside `use a::{..}` groups) and method calls, each naming the
-//! capability it implies. The code read is the portability lint's: the
-//! shipped module trees without test items.
+//! The evidence table is `tools/policy/app_capability_usage.toml`: production
+//! dependencies, `package/feature` selections, source paths (also inside
+//! `use a::{..}` groups) and method calls, each naming the capability it
+//! implies. The code read is the portability lint's: the shipped module trees
+//! without test items. `tilo-app check` and `tilo-app build` refuse an app
+//! whose code uses a capability its manifest does not declare; the
+//! workspace-wide audit in this crate's tests holds every app to it too.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

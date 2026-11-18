@@ -791,7 +791,7 @@ async fn agents_note_reaches(
     assert!(!failed, "notes#new-note: {made}");
     // The note is kept in a part beside the notebook, which the tab's window
     // follows.
-    tab.follow_chain(NOTES, notes::part::chain().chain_head().as_str());
+    tab.follow_chain(NOTES, notes::note_list::chain().chain_head().as_str());
     let deadline = tilo_test_env::hang_deadline();
     while agents_changes(tab, person) <= before {
         assert!(

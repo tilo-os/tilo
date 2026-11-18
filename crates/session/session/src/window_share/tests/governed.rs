@@ -20,10 +20,10 @@ const PERSON: [u8; 32] = [0x41; 32];
 /// A device of the person's, kept under `root` as a computer keeps its own: the key a session
 /// started there signs with and the certificate the person's root gave it.
 fn provisioned(root: &Path, device: &SigningKey, label: &str) -> DeviceCert {
-    let paths = tilo_user_identity::IdentityPaths::under(root);
+    let paths = tilo_device_identity::IdentityPaths::under(root);
     std::fs::create_dir_all(paths.device_privkey.parent().expect("the key's directory"))
         .expect("the device's key directory");
-    tilo_user_identity::persist::write_device_key(&paths.device_privkey, device)
+    tilo_device_identity::persist::write_device_key(&paths.device_privkey, device)
         .expect("the device's key");
     let person = SigningKey::from_bytes(&PERSON);
     let mut cert = DeviceCert {
@@ -37,7 +37,7 @@ fn provisioned(root: &Path, device: &SigningKey, label: &str) -> DeviceCert {
         issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
-    tilo_user_identity::persist::write_device_cert(&paths.device_cert, &cert)
+    tilo_device_identity::persist::write_device_cert(&paths.device_cert, &cert)
         .expect("the device's certificate");
     cert
 }

@@ -3,24 +3,26 @@
 
 pub mod carried;
 pub mod clock;
+pub mod devices;
 pub mod link;
 mod model;
 pub mod notification;
-pub mod runtime;
 pub mod secrets;
 pub mod speaker_group;
 pub mod unlock;
 pub mod wake;
 
 pub use carried::{CarriedDrag, CarriedOffer, MAX_CARRIED_OFFERS};
+pub use devices::{DeviceAbout, DeviceDisplay, DevicePresence, PersonDevice, PersonDevices};
 pub use model::*;
 
 use getrandom::SysRng;
 use getrandom::rand_core::{Rng as _, UnwrapErr};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _, ser::Error as _};
 
-/// Aggregate state is metadata and small clipboard payloads, never media data.
-pub const MAX_FABRIC_CHECKPOINT_BYTES: usize = 4 * 1024 * 1024;
+/// The largest frame between two of the person's devices: what a device says of itself and the
+/// copies it offers, never media data.
+pub const MAX_FABRIC_FRAME_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_FABRIC_ACTION_BYTES: usize = 64 * 1024;
 const MAX_DEVICE_ID_BYTES: usize = 128;
 

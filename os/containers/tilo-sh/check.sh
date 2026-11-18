@@ -393,7 +393,7 @@ if [[ $hosted == 1 ]]; then
     # template step 9b waits for and step 10's workspace VM starts as a clone
     # of. A probe at another size would warm a template nothing clones.
     guest_says=$(sudo -n podman exec tilo-sh-vm-host-0 setpriv --reuid=10001 --regid=10001 \
-        --init-groups --inh-caps=-all tilo-legacy hosted run --run /run/tilo-hosted \
+        --init-groups --inh-caps=-all tilo-linux-vm hosted run --run /run/tilo-hosted \
         --workspace ws-browser-guest --account "$vm_run_account" \
         --size "${TILO_SH_HOSTED_VM_SIZE:-default}" -- /bin/sh -c \
         'if [ -x /usr/libexec/tilo/browser-session ]; then echo has-session; else echo no-session; fi
@@ -563,7 +563,7 @@ print(found.group(1) if found else "")' "$hosted_workspace" <<<"$(vm_host status
       bash "$here/stack.sh" logs api 2>/dev/null | tail -40 >&2 || true
       fail 'the visa test page did not open in the hosted window (see above)'
     fi
-    VM_HOST_RUN="sudo -n podman exec tilo-sh-vm-host-0 setpriv --reuid=10001 --regid=10001 --init-groups --inh-caps=-all tilo-legacy" \
+    VM_HOST_RUN="sudo -n podman exec tilo-sh-vm-host-0 setpriv --reuid=10001 --regid=10001 --init-groups --inh-caps=-all tilo-linux-vm" \
       VM_HOST_CONTAINER=tilo-sh-vm-host-0 \
       python3 "$here/integration/vm-proofs.py" "$hosted_workspace" "$vm_account" "$work/vm" \
       || {
@@ -573,7 +573,7 @@ print(found.group(1) if found else "")' "$hosted_workspace" <<<"$(vm_host status
         sudo -n podman logs --tail 60 tilo-sh-vm-host-0 >&2 2>/dev/null || true
         echo '--- what the host said of its VMs:' >&2
         sudo -n podman logs tilo-sh-vm-host-0 2>&1 \
-          | grep -E 'tilo-legacy hosted:' | tail -40 >&2 || true
+          | grep -E 'tilo-linux-vm hosted:' | tail -40 >&2 || true
         echo '--- the server said of the Browser:' >&2
         bash "$here/stack.sh" logs server 2>/dev/null \
           | grep -iE 'browser|environment|hosted|session|suspend|stop' | tail -60 >&2 || true

@@ -50,7 +50,7 @@ const AUTO_APPROVAL_CONTEXT: &str = "tilo-unlock auto-approval v1";
 /// with room for a rollback target).
 pub const MAX_ACCEPTED_BOOT_CHAINS: usize = 4;
 
-/// A device's enrolment for one slot, published in its own fabric snapshot.
+/// A device's enrolment for one key of its disk, kept in its own part of the person's store.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnlockEnrolment {
     pub cert: BootKeyCert,
@@ -183,7 +183,7 @@ pub enum DecisionOutcome {
 pub type DecisionKey = ([u8; 32], BootId, SlotId);
 
 /// The owner's answer to one boot's request, kept in the answering device's
-/// own fabric snapshot: it is that device's fact, and their other devices
+/// own part of the person's store: it is that device's fact, and their other devices
 /// carry it to answer the same boot the same way. A boot whose stream went
 /// away before the answer reached it therefore hears the answer instead of
 /// asking again, and a boot whose handler died leaves no question behind.
@@ -208,7 +208,7 @@ impl UnlockDecisionEntry {
         (self.boot_cert_digest, self.boot_id, self.slot)
     }
 
-    /// Written by the device whose snapshot carries it, and in force when the
+    /// Written by the device whose part of the store carries it, and in force when the
     /// answer was made.
     pub fn validate(&self, owner: &DeviceId) -> Result<(), FabricError> {
         if owner.as_str() != hex::encode(self.decided_by)
@@ -235,7 +235,7 @@ pub fn decision_for<'a>(
         .filter(|record| record.valid_until_ns > now_ns)
 }
 
-/// What one device publishes about disk unlock in its fabric snapshot.
+/// What one device keeps about disk unlock in its part of the person's store.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnlockFabricState {
     /// This device's own enrolments, one per slot.
@@ -253,7 +253,7 @@ impl UnlockFabricState {
             || self.auto_approvals.len() > crate::fabric::MAX_DEVICES
             || self.decisions.len() > MAX_UNLOCK_DECISIONS
         {
-            return Err(FabricError::SnapshotTooLarge);
+            return Err(FabricError::TooLarge);
         }
         let mut slots = BTreeSet::new();
         for enrolment in &self.enrolments {

@@ -107,7 +107,7 @@ use tilo_user_identity::{
 mod turn_pages;
 
 /// The app a hosted workspace opens Browser through.
-pub use ui::apps::BROWSER as APP;
+pub use tilo_app_id::apps::BROWSER as APP;
 /// What people read Browser's name as.
 pub const TITLE: &str = "Browser";
 

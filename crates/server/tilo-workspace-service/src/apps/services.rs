@@ -701,10 +701,6 @@ pub struct FileClipboardContext {
     pub(crate) duplicate: SelectedDescriptorSource,
     pub(crate) workspace: String,
     pub(crate) owner: tilo_action_policy::MemberId,
-    /// The agent behind this command, when the broker's ownership of its
-    /// original invocation names an agent acting for the person whose
-    /// session Files runs in. Presentation only.
-    pub(crate) attributed_agent: Option<String>,
     pub(crate) check: Arc<dyn Fn(tilo_actions::ActionKind) -> Result<(), String> + Send + Sync>,
 }
 impl FileClipboardContext {
@@ -731,14 +727,6 @@ impl FileClipboardContext {
     pub fn owner(&self) -> &tilo_action_policy::MemberId {
         &self.owner
     }
-    /// The id of the agent whose invocation this command continues,
-    /// acting for the person whose session Files runs in, as the broker's
-    /// ownership of that invocation names it; `None` for anyone else. What the
-    /// transfer writes is recorded as that agent's, for its person. It grants
-    /// nothing.
-    pub fn attributed_agent(&self) -> Option<&str> {
-        self.attributed_agent.as_deref()
-    }
     /// Recheck the exact caller against live ownership and workspace policy.
     pub fn authorize(&self, permission: tilo_actions::ActionKind) -> Result<(), String> {
         (self.check)(permission)
@@ -752,16 +740,6 @@ pub trait FileClipboardServices: Send + Sync {
         command: runtime_collab::file_clipboard::Command,
     ) -> Result<runtime_collab::file_clipboard::Reply, String>;
     fn disconnect(&self, peer: u64);
-
-    /// Name the agent `agent`, by its id, which the broker took from its own
-    /// ownership of a live Files invocation and that acts for the person whose
-    /// session Files runs in, as the cause of this device's next writes to
-    /// `paths` (absolute paths under the workspace mount; a folder covers
-    /// what is under it). Presentation only: it grants nothing.
-    fn attribute_writes(&self, agent: &str, paths: Vec<String>) -> Result<(), String> {
-        let _ = (agent, paths);
-        Err("write attribution is unavailable".into())
-    }
 }
 
 /// A grant being recorded ([`WorkspaceGrants::record`]): its id once it is in

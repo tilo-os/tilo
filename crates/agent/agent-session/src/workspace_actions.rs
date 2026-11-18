@@ -30,7 +30,7 @@
 //! Document invocations serve the host user's own devices as theirs. Anyone
 //! else the workspace admits, and an agent a person's own device handed its
 //! session to (the host's own person's included), is served within bounds
-//! ([`bounded`]): in a replica of their own on their current access, an
+//! ([`bounded`]): in a replica of their own on their current access, a
 //! agent's bounded as every agent's is; what that replica offers is both
 //! what their listing shows and all the host runs for them; an action that
 //! asks first is put to the person; and nothing is saved that their access
@@ -193,6 +193,12 @@ struct SearchActivity {
     files_warmed: std::sync::atomic::AtomicU64,
     /// Permission reads made for a find's caller while it waited.
     permissions: std::sync::atomic::AtomicU64,
+    /// Requests served while the index was reading a document: what says the reading happens
+    /// beside the serving, not on the thread the requests arrive on, where a write's landing
+    /// held every request of the service's share for the seconds a notebook takes to read.
+    beside_reading: std::sync::atomic::AtomicU64,
+    /// Documents the index's thread is reading now.
+    reading: std::sync::atomic::AtomicU64,
 }
 
 /// The host's page actions over every record of its workspaces.
@@ -204,7 +210,7 @@ pub struct WorkspaceActions {
 
 impl WorkspaceActions {
     /// A service mounting apps from `catalogue`; it answers once
-    /// [`Self::attach`] gives it the host's records.
+    /// [`Self::attach`] gives it the host's documents.
     #[must_use]
     pub fn new(catalogue: CatalogueFactory) -> Self {
         Self {
@@ -261,6 +267,20 @@ impl WorkspaceActions {
     #[must_use]
     pub fn search_documents_warmed(&self) -> u64 {
         self.shared.search.warmed.load(Ordering::Relaxed)
+    }
+
+    /// How many requests were served while the index was reading a document: a document read
+    /// for search never holds the thread a request waits on.
+    #[must_use]
+    pub fn search_served_beside_reading(&self) -> u64 {
+        self.shared.search.beside_reading.load(Ordering::Relaxed)
+    }
+
+    /// How many documents the index is reading now: none once the index holds every document
+    /// the workspace's writes have landed.
+    #[must_use]
+    pub fn search_documents_reading(&self) -> u64 {
+        self.shared.search.reading.load(Ordering::Relaxed)
     }
 
     /// How many of the workspace's folder documents a find read while it waited: none once the
@@ -558,14 +578,10 @@ impl WorkspaceActions {
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }
             | RemoteActionMessage::ResourceReading { .. }
-            | RemoteActionMessage::RetiredResourceRequest
-            | RemoteActionMessage::RetiredResourceResponse
             | RemoteActionMessage::ConfirmationRequest { .. }
             | RemoteActionMessage::ConfirmationResponse { .. }
             | RemoteActionMessage::Confirm { .. }
             | RemoteActionMessage::ConfirmResponse { .. }
-            | RemoteActionMessage::RetiredResourceWatch { .. }
-            | RemoteActionMessage::RetiredResourceReading { .. }
             | RemoteActionMessage::ContentPutResponse { .. }
             | RemoteActionMessage::ContentGetResponse { .. }
             | RemoteActionMessage::ContentLinkResponse { .. }
@@ -767,17 +783,29 @@ type Update = (DocumentMutation, Vec<[u8; 32]>);
 /// A workspace as the session's replica holds it when a request is served.
 struct WorkspaceState {
     workspace: Option<String>,
-    /// Its records, those open on its shared desktop first, then the most
-    /// recently changed.
-    records: Vec<DocumentRoute>,
+    /// Its documents not held open, as the replica last listed them: read
+    /// from whenever a request needs them, never listed again per request.
+    documents: Arc<[DocumentRoute]>,
     engine: Arc<tilo_session_client::engine::Engine>,
     /// How many writes landed in it.
     revision: u64,
 }
 
+/// How many reads of what the replica holds a document of the worker made
+/// since the process started ([`WorkspaceState::update`]): the work a refresh
+/// does to keep what it holds mounted current. A test reads it to prove that
+/// work follows what a write changed, not what the workspace holds.
+static REPLICA_READS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// [`REPLICA_READS`]: how many reads a refresh did so far in this process.
+#[must_use]
+pub fn replica_reads() -> u64 {
+    REPLICA_READS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 impl WorkspaceState {
     fn holds(&self, route: &DocumentRoute) -> bool {
-        self.records.contains(route)
+        self.documents.iter().any(|held| held == route)
     }
 
     /// What changed of the record at `route` since `held`, the heads a
@@ -790,6 +818,7 @@ impl WorkspaceState {
         route: &DocumentRoute,
         held: Option<&[[u8; 32]]>,
     ) -> Result<Option<Update>, String> {
+        REPLICA_READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(
             match self.engine.record_update(
                 &route.cluster_id,
@@ -997,17 +1026,26 @@ impl Workspace {
         match &mut self.documents {
             Some(kept) => WorkspaceState {
                 workspace: Some(kept.workspace().to_owned()),
-                records: kept.people_first(),
+                documents: kept.known(),
                 engine,
                 revision: kept.landings(),
             },
             None => WorkspaceState {
                 workspace: None,
-                records: Vec::new(),
+                documents: Vec::new().into(),
                 engine,
                 revision: 0,
             },
         }
+    }
+
+    /// The documents a write landed in since the last refresh took them: the
+    /// only ones a refresh has to merge into what it holds mounted.
+    fn take_changed(&mut self) -> HashSet<DocumentRoute> {
+        self.documents
+            .as_mut()
+            .map(WorkspaceDocuments::take_changed)
+            .unwrap_or_default()
     }
 
     /// The records of the workspace that `needs` reads and that hold
@@ -1213,9 +1251,14 @@ struct Worker {
     save_grace: Duration,
     /// Writes served since the pace was last measured with the full grace.
     save_probes: u32,
-    /// Whether documents search keeps no entries for wait for the next pass that reads them:
-    /// what the thread builds while no request waits on it ([`Worker::warm_entries`]).
+    /// Whether documents search keeps no entries for wait for the index's own thread to read
+    /// them, or a workspace's folder for the pass over it this thread takes
+    /// ([`Worker::warm_entries`], [`Worker::warm_files`]).
     warming: bool,
+    /// The thread that reads documents for the search index, off this one: a document of a
+    /// notebook of a hundred notes costs seconds to read for search, and every request of this
+    /// share's workspaces waited for it while it was read here.
+    warm: index::Warm,
     /// Each workspace's tree as the last request served on it left it, by
     /// workspace and tree name ([`tree_put::KeptTree`]): the next takes in
     /// only what changed since.
@@ -1355,16 +1398,18 @@ impl Worker {
             save_grace: publish::SAVE_GRACE,
             save_probes: 0,
             warming: false,
+            warm: index::Warm::start(),
         }
     }
 
     fn run(mut self, jobs: &mpsc::Receiver<(Instant, Job)>) {
         loop {
-            // A document whose write landed since the last pass is read for the index here,
-            // between requests, and the folder's chunks likewise: a find answers from the
-            // indexes, never by opening every one while the person waits.
+            // What the index's own thread read since the last pass is taken here, and the
+            // next documents asked for; the folder's chunks are read here, between requests.
+            // A find answers from the indexes, never by opening every one while the person
+            // waits, and no request waits on a document read.
             if self.warming {
-                let entries = self.warm_entries(index::WARM_SLICE);
+                let entries = self.warm_entries();
                 let files = self.warm_files(index::WARM_SLICE);
                 self.warming = !(entries && files);
             }
@@ -1377,10 +1422,10 @@ impl Worker {
             .flatten()
             .min();
             let next = match due {
-                // With documents still to read for the index, the thread never waits: it takes
-                // a request that is queued, else reads the next, so the index is ready as soon
-                // as the workspace is.
-                _ if self.warming => jobs.recv_timeout(Duration::ZERO),
+                // With documents still to read for the index, the thread looks for what was
+                // read and for the requests that came: a request queued is taken at once, and
+                // the index is ready as soon as the workspace is.
+                _ if self.warming => jobs.recv_timeout(index::WARM_POLL),
                 Some(until) => jobs.recv_timeout(until.saturating_duration_since(Instant::now())),
                 None => jobs
                     .recv()
@@ -1430,6 +1475,12 @@ impl Worker {
         if matches!(job, Job::Joined(_)) {
             self.timed(queued, job);
             return;
+        }
+        if self.warm.in_flight() {
+            self.shared
+                .search
+                .beside_reading
+                .fetch_add(1, Ordering::Relaxed);
         }
         if let Some(workspace_id) = job.workspace() {
             let keys = self.keys(&job);
@@ -1655,6 +1706,7 @@ impl Worker {
             ),
             _ => (String::new(), String::new()),
         };
+        let step = job.step_kind();
         self.take(job);
         // What it ended, it ended now, as a listing of runs says.
         self.log().stamp_ended();
@@ -1672,6 +1724,7 @@ impl Worker {
                 kind,
                 parent,
                 named,
+                step = step.unwrap_or("-"),
                 waited_ms = waited.as_millis(),
                 ran_ms = ran.as_millis(),
                 "workspace actions: a request waited or ran long"
@@ -1858,24 +1911,36 @@ impl Worker {
                 .ok_or_else(|| ActionCallError::Unavailable {
                     reason: "the workspace was not joined".into(),
                 })?;
+        let waited = timing_start();
         workspace.wait_for(
             workspace_id,
             needs,
             self.shared.link.get().map(|link| &**link),
         )?;
+        timing_done("refresh.wait", waited);
+        let stating = timing_start();
         let state = workspace.state();
+        timing_done("refresh.state", stating);
+        // Only what a write landed in since the last refresh is merged: what
+        // is held mounted is kept current by its changes, never by reading
+        // every part the app keeps again.
+        let changed = workspace.take_changed();
+        let catching = timing_start();
         for (route, mounted) in &mut self.mounted {
-            catch_up(route, mounted, &state);
+            catch_up(route, mounted, &state, Some(&changed));
         }
         for ((route, _, _), held) in &mut self.bounded {
-            catch_up(route, &mut held.held, &state);
+            catch_up(route, &mut held.held, &state, Some(&changed));
         }
+        timing_done("refresh.catch", catching);
         // A write that landed since the last pass is read for the index as soon as this
         // request is answered, so the next find answers from it.
+        let indexing = timing_start();
         let files_waiting = self.files_unwarmed_any();
         if !self.warming && (self.unindexed_any() || files_waiting) {
             self.warming = true;
         }
+        timing_done("refresh.index", indexing);
         Ok(state)
     }
 
@@ -1919,7 +1984,7 @@ impl Worker {
         let (bytes, heads) = state.document(route)?;
         let record = reads::document_id(&route.document)?;
         let holders: Vec<DocumentRoute> = state
-            .records
+            .documents
             .iter()
             .filter(|held| {
                 held.app_id == route.app_id
@@ -2042,8 +2107,8 @@ impl Worker {
     /// app there is installed and none running, and what a member's agent
     /// names is not found. A record listed here that the replica has not been
     /// sent is asked for when a request names it.
-    fn documents(&self, state: &WorkspaceState, cluster_id: &str) -> Vec<DocumentRoute> {
-        let mut routes: Vec<DocumentRoute> = state.records.clone();
+    fn documents(&mut self, state: &WorkspaceState, cluster_id: &str) -> Vec<DocumentRoute> {
+        let mut routes: Vec<DocumentRoute> = state.documents.to_vec();
         if let Some(held) = self
             .shared
             .link
@@ -2061,12 +2126,41 @@ impl Worker {
                 }
             }
         }
+        // What people have open on the shared desktop first, then the most
+        // recently changed: read here, where a listing is answered, and not
+        // by every request that refreshes the workspace.
+        let routes = match WorkspaceId::parse(cluster_id) {
+            Some(id) => match self.workspaces.get_mut(&id).and_then(|workspace| {
+                workspace
+                    .documents
+                    .as_mut()
+                    .map(|kept| kept.people_first_of(routes.clone()))
+            }) {
+                Some(ordered) => ordered,
+                None => routes,
+            },
+            None => routes,
+        };
         routes
             .into_iter()
             .filter(|route| {
                 self.catalogue
                     .get(&route.app_id)
                     .is_some_and(|app| opens_as_its_own(app, &route.document))
+            })
+            // What this service holds as a document: one another device made and this one
+            // keeps only as retained changes (a window's own document, a sealed one it cannot
+            // open) is no data of the app here, and is neither listed nor offered. A part of a
+            // chain is always kept: a public workspace sends one to this device when its chain
+            // is asked for, and the listing is what asks.
+            .filter(|route| {
+                is_part(&route.document)
+                    || state
+                        .engine
+                        .record(cluster_id, &route.app_id, &route.document)
+                        .ok()
+                        .flatten()
+                        .is_some()
             })
             .collect()
     }

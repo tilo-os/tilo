@@ -116,7 +116,7 @@ pub use content_link::{
 pub use content_put::{
     CONTENT_PUTS_UNAVAILABLE, ContentPut, ContentPutAnswer, ContentPutStep, ContentPuts,
     HostedContentPuts, MAX_CONTENT_PUT_AHEAD, MAX_CONTENT_PUT_CHUNK, MAX_HAVE_HASHES,
-    MAX_HOSTED_CONTENT_PUTS, MAX_OPEN_CONTENT_PUTS, MAX_PUT_MANY_BYTES,
+    MAX_HOSTED_CONTENT_PUTS, MAX_OPEN_CONTENT_PUTS, MAX_PUT_MANY_BYTES, MAX_PUT_MANY_FILES,
 };
 pub use nodes::{
     NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, node_target,
@@ -172,7 +172,8 @@ pub struct RemoteActionTarget {
 /// The provider a workspace's own governance actions (membership, roles, grants,
 /// bans) are answered under. It is the provider's, not an app's, so it is the
 /// one provider a caller names without reading it from a catalogue page.
-pub const WORKSPACE_GOVERNANCE_PROVIDER: &str = "tilo.workspace";
+pub const WORKSPACE_GOVERNANCE_PROVIDER: &str =
+    tilo_action_policy::agent_answers::WORKSPACE_GOVERNANCE_APP;
 /// The resource kind of a workspace's governance resource.
 pub const WORKSPACE_GOVERNANCE_KIND: &str = "workspace.permissions";
 
@@ -1042,11 +1043,6 @@ pub enum RemoteActionMessage {
         invocation: InvocationId,
         result: Result<(), ActionCallError>,
     },
-    /// Retired: records are read through the record API ([`Self::ResourceRead`]). Kept in
-    /// place because the variants after it are encoded by position.
-    RetiredResourceRequest,
-    /// Retired with [`Self::RetiredResourceRequest`].
-    RetiredResourceResponse,
     /// Ask the person, on one of their own devices ([`ConfirmationQuestion`]).
     ConfirmationRequest {
         correlation: u64,
@@ -1056,19 +1052,6 @@ pub enum RemoteActionMessage {
     ConfirmationResponse {
         correlation: u64,
         result: Result<ConfirmationReply, ActionCallError>,
-    },
-    /// Retired: the reading of a resource is a session resource, read over
-    /// the session's services as any app reads one. Kept in place because
-    /// the variants after it are encoded by position.
-    RetiredResourceWatch {
-        /// What the resource is called, as its actions are addressed.
-        resource: String,
-    },
-    /// Retired: what answered [`Self::RetiredResourceWatch`]. Kept in place
-    /// with it.
-    RetiredResourceReading {
-        resource: String,
-        reading: Option<String>,
     },
     /// What the surface offers changed: the page it lists now, sent without
     /// being asked, so the provider that placed it reads what the surface can do
@@ -1490,13 +1473,9 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
         | RemoteActionMessage::CancelResponse { .. }
-        | RemoteActionMessage::RetiredResourceRequest
-        | RemoteActionMessage::RetiredResourceResponse
         | RemoteActionMessage::ResourceReading { .. }
         | RemoteActionMessage::FeedbackResponse { .. }
         | RemoteActionMessage::ConfirmationResponse { .. }
-        | RemoteActionMessage::RetiredResourceWatch { .. }
-        | RemoteActionMessage::RetiredResourceReading { .. }
         | RemoteActionMessage::ContentPutResponse { .. }
         | RemoteActionMessage::ContentGetResponse { .. }
         | RemoteActionMessage::ContentLinkResponse { .. }

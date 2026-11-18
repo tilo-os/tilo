@@ -7,7 +7,8 @@
 //! …/resources/{path}/actions/{action}` with its arguments as the body. The
 //! key is `TILO_API_KEY` (at the server `--api` or `TILO_API_URL` names), a
 //! key file `--key-file` names, or, when this computer logged in (`tilo
-//! login`), its own device key, in process.
+//! login`), its own device: each command a call to the process holding that
+//! device's one session, which a second session would cut off.
 //!
 //! `tilo keys create` is the one command that asks the person: it waits at
 //! the API server's own key page until they approve one in their Tilo.
@@ -229,9 +230,8 @@ pub enum PeopleCmd {
     #[command(
         after_help = "Example:\n  tilo workspace people invite --role editor --email ops@example.com -w Acme\n\n\
                       Following the link signs them in and lands them in the workspace. You invite \
-                      as an editor at most where you administer the workspace, and as an \
-                      administrator or owner where you may make one. No mail is sent: hand the \
-                      link over yourself."
+                      as far as your role in the workspace lets you, an administrator or owner \
+                      where you may make one. No mail is sent: hand the link over yourself."
     )]
     Invite {
         /// viewer, commenter, editor, administrator or owner.
@@ -354,7 +354,11 @@ fn runtime() -> Result<tokio::runtime::Runtime> {
 }
 
 /// Run `future` on a fresh runtime, printing an error as the command's.
+///
+/// The API in process logs as `RUST_LOG` asks, and says nothing without it: a
+/// call's phases (`tilo_mcp::timing=debug`) show where its time goes.
 pub(crate) fn run(future: impl std::future::Future<Output = Result<ExitCode>>) -> ExitCode {
+    crate::log_to_stderr(tracing_subscriber::filter::LevelFilter::OFF);
     match runtime().and_then(|runtime| runtime.block_on(future)) {
         Ok(code) => code,
         Err(error) => {
@@ -492,7 +496,8 @@ fn action_text(answer: &Value) -> String {
 }
 
 /// `tilo ls [path] -w <workspace>`: what the workspace holds, or what `path`
-/// holds, as `tilo_ls` lists it: `cursor` reads on from where a page ended.
+/// holds, as `tilo_ls` lists it: the host's own lines, so a person and an
+/// agent read the same text, and `cursor` reads on from where a page ended.
 pub fn ls(reach: Reach<'_>, workspace: &str, path: Option<&str>, cursor: Option<&str>) -> ExitCode {
     run(async {
         let client = Client::open(reach)?;
@@ -509,8 +514,7 @@ pub fn ls(reach: Reach<'_>, workspace: &str, path: Option<&str>, cursor: Option<
             let _ = write!(route, "?{}", query.join("&"));
         }
         let listed = client.get(&route).await?;
-        let text = listing_text(&listed, &workspace, path);
-        Ok(show(reach.json, &listed, &text))
+        Ok(show(reach.json, &listed, text(&listed, "text")))
     })
 }
 
@@ -527,7 +531,17 @@ pub fn read(reach: Reach<'_>, workspace: &str, path: &str, cursor: Option<&str>)
             let _ = write!(route, "?cursor={}", api::encode_query(cursor));
         }
         let read = client.get(&route).await?;
-        Ok(show(reach.json, &read, &resource_text(&read)))
+        // A read the tool has no lines for (an app's surface) prints the
+        // typed answer as it came, rather than nothing.
+        let said = match read
+            .get("text")
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+        {
+            Some(text) => text.to_owned(),
+            None => serde_json::to_string_pretty(&read).unwrap_or_default(),
+        };
+        Ok(show(reach.json, &read, &said))
     })
 }
 
@@ -605,109 +619,6 @@ pub fn view(
         }
         Ok(show(reach.json, &view, &said))
     })
-}
-
-/// A listing as a person reads it: the lines `tilo_ls` prints, or the same
-/// built from its rows when the host sent no text.
-fn listing_text(listed: &Value, workspace: &str, path: Option<&str>) -> String {
-    let mut said = match listed.get("text").and_then(Value::as_str) {
-        Some(text) if !text.is_empty() => text.to_owned(),
-        _ => listing_rows(listed),
-    };
-    // A listing that goes on says which command reads the rest, whether its
-    // lines came with the answer or were built here.
-    if let Some(cursor) = listed.get("next_cursor").and_then(Value::as_str) {
-        let what = path
-            .map(str::trim)
-            .filter(|path| !path.is_empty())
-            .map(|path| format!("{path} "))
-            .unwrap_or_default();
-        let _ = write!(
-            said,
-            "\nmore: tilo ls {what}--cursor {cursor} -w {workspace}"
-        );
-    }
-    said
-}
-
-/// A listing's rows as lines, for an answer that carries no text to print.
-fn listing_rows(listed: &Value) -> String {
-    let mut said = text(listed, "path").to_owned();
-    if let Some(kind) = listed.get("kind").and_then(Value::as_str) {
-        let _ = write!(said, "  ({kind})");
-    }
-    for row in listed
-        .get("rows")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        let _ = write!(
-            said,
-            "\n{}  {}  {}",
-            text(row, "path"),
-            text(row, "label"),
-            text(row, "kind")
-        );
-    }
-    // What can be done to it, a line each as `tilo_ls` writes them: `#rename(title)  Rename
-    // note`, a `?` marking what may be left out.
-    for action in listed
-        .get("actions")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        let params: Vec<String> = action
-            .get("params")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .map(|param| {
-                let optional = param.get("required").and_then(Value::as_bool) != Some(true);
-                format!("{}{}", text(param, "name"), if optional { "?" } else { "" })
-            })
-            .collect();
-        let _ = write!(said, "\n#{}({})", text(action, "id"), params.join(", "));
-        let label = text(action, "label");
-        if !label.is_empty() {
-            let _ = write!(said, "  {label}");
-        }
-    }
-    said
-}
-
-/// A read as a person reads it: the text `tilo_read` prints, or its fields
-/// and children when the host sent no text.
-fn resource_text(read: &Value) -> String {
-    if let Some(text) = read
-        .get("text")
-        .and_then(Value::as_str)
-        .filter(|text| !text.is_empty())
-    {
-        return text.to_owned();
-    }
-    let mut said = text(read, "path").to_owned();
-    if let Some(kind) = read.get("kind").and_then(Value::as_str) {
-        let _ = write!(said, "  ({kind})");
-    }
-    for (name, value) in read
-        .get("fields")
-        .and_then(Value::as_object)
-        .into_iter()
-        .flatten()
-    {
-        let _ = write!(said, "\n  {name}: {value}");
-    }
-    for child in read
-        .get("children")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        let _ = write!(said, "\n  {}", text(child, "path"));
-    }
-    said
 }
 
 /// `tilo run <file.tl> -w <workspace>`: the program as one task, one step
@@ -1159,9 +1070,9 @@ fn files_under(path: &Path) -> Result<Vec<Uploading>> {
 /// How many files go up at once.
 const UPLOADS_AT_ONCE: usize = 32;
 /// How many files one action puts into the workspace's tree: a folder larger
-/// than this goes in a few runs, each answered well within the bound a
-/// workspace answers an action in.
-const TREE_BATCH_FILES: usize = 10_000;
+/// than this goes in more runs, each answered within the peer's half minute,
+/// whatever a loaded disk makes a node cost.
+const TREE_BATCH_FILES: usize = 2_000;
 /// How many bytes of file entries one change carries: under the 64 MiB one
 /// upload carries, so a large folder goes in a few changes rather than one
 /// no request carries.
@@ -1170,8 +1081,13 @@ const TREE_BATCH_BYTES: usize = 32 * 1024 * 1024;
 /// The most raw bytes one many-files call carries: under the 1 MiB request
 /// and session frame bounds once base64 and hex grow them.
 const MANY_BYTES: usize = 512 * 1024;
-/// How many content hashes one call asks the workspace about.
-const HAVE_HASHES: usize = 6_000;
+/// How many many-files calls go at once. A workspace answers them one after
+/// another, so more in flight only queue: the oldest waits a step for every
+/// call ahead of it, and the peer gives up on one that waits half a minute.
+const CONTENTS_AT_ONCE: usize = 4;
+/// How many content hashes one call asks the workspace about: a small body,
+/// and the session asks the store in [`MAX_HAVE_HASHES`]-sized steps.
+const HAVE_HASHES: usize = 2_000;
 
 /// `file`'s length, as the disk says it.
 fn file_size(file: &Uploading) -> u64 {
@@ -1213,48 +1129,18 @@ pub(crate) async fn upload_all(
     use futures_util::StreamExt as _;
     let count = files.len();
     let total: u64 = files.iter().map(file_size).sum();
-    let name = if count == 1 {
-        files
-            .first()
-            .map_or_else(String::new, |file| file.name.clone())
-    } else {
-        format!("{count} files")
+    let name = match files.as_slice() {
+        [one] => one.name.clone(),
+        _ => format!("{count} files"),
     };
     let mut progress = Progress::new(&name);
     progress.told(0, total);
     // What the workspace already holds needs no upload.
     let hashes: Vec<String> = files.iter().map(hash_of).collect::<Result<_>>()?;
-    let held = already_held(client, workspace, &hashes).await?;
+    let held = held_of(client, workspace, &hashes).await?;
     let mut contents: Vec<Option<String>> = (0..count).map(|_| None).collect();
-    let mut done = 0_u64;
-    let mut smalls: Vec<Vec<usize>> = Vec::new();
-    let mut larges: Vec<usize> = Vec::new();
-    let mut group: Vec<usize> = Vec::new();
-    let mut group_bytes = 0_usize;
-    for (index, file) in files.iter().enumerate() {
-        if held.get(index).copied().unwrap_or(false) {
-            if let (Some(kept), Some(hash)) = (contents.get_mut(index), hashes.get(index)) {
-                *kept = Some(format!("tilo.content:{hash}"));
-            }
-            done = done.saturating_add(file_size(file));
-            progress.told(done.min(total), total);
-            continue;
-        }
-        let len = usize::try_from(file_size(file)).unwrap_or(usize::MAX);
-        if len > MANY_BYTES {
-            larges.push(index);
-        } else {
-            if group_bytes.saturating_add(len) > MANY_BYTES && !group.is_empty() {
-                smalls.push(std::mem::take(&mut group));
-                group_bytes = 0;
-            }
-            group_bytes = group_bytes.saturating_add(len);
-            group.push(index);
-        }
-    }
-    if !group.is_empty() {
-        smalls.push(group);
-    }
+    let (mut done, smalls, larges) = plan(&files, &held, &hashes, &mut contents);
+    progress.told(done.min(total), total);
     // Small files go many to a call, a few calls at a time.
     let mut sending = futures_util::stream::iter(smalls)
         .map(|group| async {
@@ -1274,7 +1160,7 @@ pub(crate) async fn upload_all(
                 .context("storing the files")?;
             anyhow::Ok((group, refs))
         })
-        .buffer_unordered(UPLOADS_AT_ONCE);
+        .buffer_unordered(CONTENTS_AT_ONCE);
     while let Some(sent) = sending.next().await {
         let (group, refs) = sent?;
         for (index, content) in group.into_iter().zip(refs) {
@@ -1288,32 +1174,86 @@ pub(crate) async fn upload_all(
         }
     }
     // A file larger than one many-files call goes up in pieces, a few at a time.
-    send_larges(
-        client,
-        workspace,
-        &files,
-        larges,
-        &mut contents,
-        &mut progress,
-        total,
-    )
-    .await?;
+    let listing = &files;
+    let mut big = futures_util::stream::iter(larges)
+        .map(|index| {
+            let files = listing;
+            async move {
+                let file = files
+                    .get(index)
+                    .ok_or_else(|| anyhow!("a file went missing"))?;
+                let put = client
+                    .upload_file(workspace, &file.path, &mut |_, _| {})
+                    .await
+                    .with_context(|| format!("uploading {}", file.name))?;
+                anyhow::Ok((index, text(&put, "content").to_owned(), file_size(file)))
+            }
+        })
+        .buffer_unordered(UPLOADS_AT_ONCE);
+    while let Some(sent) = big.next().await {
+        let (index, content, len) = sent?;
+        if let Some(kept) = contents.get_mut(index) {
+            *kept = Some(content);
+        }
+        done = done.saturating_add(len);
+        progress.told(done.min(total), total);
+    }
     progress.done();
     drop(sending);
-    let mut uploaded = Vec::with_capacity(count);
-    for (index, file) in files.into_iter().enumerate() {
-        let content = contents
-            .get_mut(index)
-            .and_then(Option::take)
-            .ok_or_else(|| anyhow!("no content reference was answered for {}", file.name))?;
-        uploaded.push((file, content));
-    }
-    Ok(uploaded)
+    drop(big);
+    files
+        .into_iter()
+        .zip(contents)
+        .map(|(file, content)| {
+            let content = content
+                .ok_or_else(|| anyhow!("no content reference was answered for {}", file.name))?;
+            Ok((file, content))
+        })
+        .collect()
 }
 
-/// Which of the `hashes` the workspace already holds: the files they name
-/// need no upload.
-async fn already_held(client: &Client, workspace: &str, hashes: &[String]) -> Result<Vec<bool>> {
+/// What of `files` goes up how: the bytes the workspace holds already, whose
+/// references are put in `contents`; the small files grouped many to a call;
+/// and the files too large for one.
+fn plan(
+    files: &[Uploading],
+    held: &[bool],
+    hashes: &[String],
+    contents: &mut [Option<String>],
+) -> (u64, Vec<Vec<usize>>, Vec<usize>) {
+    let mut done = 0_u64;
+    let mut smalls: Vec<Vec<usize>> = Vec::new();
+    let mut larges: Vec<usize> = Vec::new();
+    let mut group: Vec<usize> = Vec::new();
+    let mut group_bytes = 0_usize;
+    for (index, file) in files.iter().enumerate() {
+        if held.get(index).copied().unwrap_or(false) {
+            if let (Some(kept), Some(hash)) = (contents.get_mut(index), hashes.get(index)) {
+                *kept = Some(format!("tilo.content:{hash}"));
+            }
+            done = done.saturating_add(file_size(file));
+            continue;
+        }
+        let len = usize::try_from(file_size(file)).unwrap_or(usize::MAX);
+        if len > MANY_BYTES {
+            larges.push(index);
+        } else {
+            if group_bytes.saturating_add(len) > MANY_BYTES && !group.is_empty() {
+                smalls.push(std::mem::take(&mut group));
+                group_bytes = 0;
+            }
+            group_bytes = group_bytes.saturating_add(len);
+            group.push(index);
+        }
+    }
+    if !group.is_empty() {
+        smalls.push(group);
+    }
+    (done, smalls, larges)
+}
+
+/// Which of the files hashed `hashes` the workspace holds already, in order.
+async fn held_of(client: &Client, workspace: &str, hashes: &[String]) -> Result<Vec<bool>> {
     let mut held = vec![false; hashes.len()];
     for (at, asks) in hashes.chunks(HAVE_HASHES).enumerate() {
         let answered = client
@@ -1328,42 +1268,6 @@ async fn already_held(client: &Client, workspace: &str, hashes: &[String]) -> Re
         }
     }
     Ok(held)
-}
-
-/// Send the files too large for a many-files call, each on its own, a few at a
-/// time.
-async fn send_larges(
-    client: &Client,
-    workspace: &str,
-    files: &[Uploading],
-    larges: Vec<usize>,
-    contents: &mut [Option<String>],
-    progress: &mut Progress,
-    total: u64,
-) -> Result<()> {
-    use futures_util::StreamExt as _;
-    let mut done = 0_u64;
-    let mut big = futures_util::stream::iter(larges)
-        .map(|index| async move {
-            let file = files
-                .get(index)
-                .ok_or_else(|| anyhow!("a file went missing"))?;
-            let put = client
-                .upload_file(workspace, &file.path, &mut |_, _| {})
-                .await
-                .with_context(|| format!("uploading {}", file.name))?;
-            anyhow::Ok((index, text(&put, "content").to_owned(), file_size(file)))
-        })
-        .buffer_unordered(UPLOADS_AT_ONCE);
-    while let Some(sent) = big.next().await {
-        let (index, content, len) = sent?;
-        if let Some(kept) = contents.get_mut(index) {
-            *kept = Some(content);
-        }
-        done = done.saturating_add(len);
-        progress.told(done.min(total), total);
-    }
-    Ok(())
 }
 
 /// `uploaded` in as few batches as the workspace takes: each a whole run and
@@ -2129,6 +2033,7 @@ mod tests {
             label: "Claude Code on build-box".into(),
             cert: hex::encode(postcard::to_allocvec(&cert).unwrap()),
             host_cert: "00".into(),
+            server_address: None,
         };
         crate::login::store(dir.path(), &key, &device).unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
@@ -2846,63 +2751,19 @@ mod tests {
 
         phase a_listing_and_a_read_print_what_the_host_said;
         {
-            // The host's own text, when it sent one: the lines `tilo_ls` and
-            // `tilo_read` print to an agent.
+            // The host's own text, unrendered: `tilo ls` and `tilo read` print
+            // exactly the lines `tilo_ls` and `tilo_read` answer an agent, so
+            // a person and an agent read one listing. `--json` keeps the typed
+            // answer beside it.
             let listed = serde_json::json!({"path": "notes", "kind": "notes.notebook",
                 "rows": [{"path": "notes/Notebook", "label": "Notebook", "kind": "notes.notebook"}],
                 "text": "notes  (notes.notebook)\nNotebook  notes.notebook"});
             assert_eq!(
-                listing_text(&listed, "jane-doe", None),
+                text(&listed, "text"),
                 "notes  (notes.notebook)\nNotebook  notes.notebook"
             );
-            // A host that sent none: the same, built from its rows.
-            let rows_only = serde_json::json!({"path": "notes", "kind": "notes.notebook",
-                "rows": [{"path": "notes/Notebook", "label": "Notebook",
-                    "kind": "notes.notebook"}]});
-            assert_eq!(
-                listing_text(&rows_only, "jane-doe", None),
-                "notes  (notes.notebook)\nnotes/Notebook  Notebook  notes.notebook"
-            );
-            // Its actions follow, so the listing says what can be done there.
-            let with_actions = serde_json::json!({"path": "notes/Plan", "kind": "notes.page",
-                "rows": [],
-                "actions": [
-                    {"id": "rename", "label": "Rename note",
-                        "params": [{"name": "title", "required": true}]},
-                    {"id": "move-note", "label": "Move note",
-                        "params": [{"name": "parent", "required": false}]},
-                    {"id": "delete", "label": "Delete note", "params": []}]});
-            assert_eq!(
-                listing_text(&with_actions, "jane-doe", None),
-                "notes/Plan  (notes.page)\n#rename(title)  Rename note\n\
-                 #move-note(parent?)  Move note\n#delete()  Delete note"
-            );
-            // A listing that goes on says which command reads it on, whether
-            // its lines came with the answer or the command built them.
-            let paged = serde_json::json!({"path": "notes", "text": "notes  (notes.notebook)",
-                "next_cursor": "1.0.61.30"});
-            assert_eq!(
-                listing_text(&paged, "jane-doe", Some("notes")),
-                "notes  (notes.notebook)\nmore: tilo ls notes --cursor 1.0.61.30 -w jane-doe"
-            );
-            let built = serde_json::json!({"path": "notes",
-                "rows": [{"path": "notes/Notebook", "label": "Notebook",
-                    "kind": "notes.notebook"}],
-                "next_cursor": "40.7"});
-            assert_eq!(
-                listing_text(&built, "jane-doe", Some("notes/Notebook")),
-                "notes\nnotes/Notebook  Notebook  notes.notebook\nmore: tilo ls \
-                 notes/Notebook --cursor 40.7 -w jane-doe"
-            );
-            let read = serde_json::json!({"path": "notes/Notebook/Todo",
-                "kind": "notes.page", "fields": {"title": "Todo"},
-                "children": [{"path": "notes/Notebook/Todo/body"}]});
-            assert_eq!(
-                resource_text(&read),
-                "notes/Notebook/Todo  (notes.page)\n  title: \"Todo\"\n  notes/Notebook/Todo/body"
-            );
-            let said = serde_json::json!({"path": "notes/Notebook/Todo", "text": "# Todo\n"});
-            assert_eq!(resource_text(&said), "# Todo\n");
+            let read = serde_json::json!({"path": "notes/Notebook/Todo", "text": "# Todo\n"});
+            assert_eq!(text(&read, "text"), "# Todo\n");
         }
 
         phase the_people_of_a_workspace_are_a_line_each;

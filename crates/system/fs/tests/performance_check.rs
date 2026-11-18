@@ -25,9 +25,6 @@ const MAX_RANGE_OFFSET: u64 = LARGE_FILE_BYTES as u64 - RANGE_BYTES;
 const REMOTE_APPLY_DELTAS: usize = 512;
 const WARM_DIRECTORY_PASSES: usize = 8;
 
-const CONFLICT_DIRECTORIES: usize = 500;
-const CONFLICT_FILES_PER_DIRECTORY: usize = 100;
-const CONFLICT_NODES_PER_HOLD: usize = 64;
 const COLD_LISTING_LOOKUPS_PER_ENTRY: u64 = 4;
 const WARM_LISTING_LOOKUPS_PER_ENTRY: u64 = 2;
 
@@ -65,50 +62,6 @@ fn assert_ranged_read_work(name: &str, read: u64, manifest_len: u64) {
         (RANGES_BYTES..=RANGES_BYTES.saturating_add(manifest_len)).contains(&read),
         "{name} read {read} B for {RANGE_READS} ranges of {RANGE_BYTES} B"
     );
-}
-
-#[test]
-fn conflict_watch_idle_pass_and_lock_hold_performance_check() {
-    let mut namespace = Namespace::new("perf-conflict").unwrap();
-    for directory in 0..CONFLICT_DIRECTORIES {
-        let parent = namespace
-            .create_dir(ROOT_INO, format!("dir-{directory}"), 1)
-            .expect("create conflict fixture directory");
-        for file in 0..CONFLICT_FILES_PER_DIRECTORY {
-            let content = iroh_blobs::Hash::new(format!("{directory}/{file}"));
-            namespace
-                .create_file(parent, format!("file-{file}"), Some(&content), 1, 1)
-                .expect("create conflict fixture file");
-        }
-    }
-    let nodes = CONFLICT_DIRECTORIES * (1 + CONFLICT_FILES_PER_DIRECTORY);
-    namespace.heads();
-
-    let namespace = Mutex::new(namespace);
-    let mut watch = fs::conflict::NamespaceScan::new();
-    assert!(watch.due(&namespace).is_empty());
-    let scan = watch.last_pass();
-    eprintln!(
-        "WORK conflict-scan-50k: {} nodes in {} lock holds, at most {} per hold",
-        scan.nodes, scan.lock_holds, scan.max_nodes_per_hold
-    );
-    assert_eq!(scan.nodes, nodes, "the scan examined every node once");
-    assert!(
-        scan.max_nodes_per_hold <= CONFLICT_NODES_PER_HOLD,
-        "{} nodes examined under one namespace lock hold (at most {CONFLICT_NODES_PER_HOLD})",
-        scan.max_nodes_per_hold
-    );
-
-    for _ in 0..3 {
-        assert!(watch.due(&namespace).is_empty());
-        let idle = watch.last_pass();
-        assert_eq!(idle.nodes, 0, "an idle pass examined nodes");
-        assert_eq!(
-            idle.lock_holds, 1,
-            "an idle pass took the lock more than once"
-        );
-    }
-    assert_eq!(watch.scans(), 1, "an idle pass scanned");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

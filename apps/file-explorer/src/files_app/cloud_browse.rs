@@ -647,9 +647,8 @@ impl FilesState {
             .entries
             .iter()
             .map(|entry| {
-                let mut row = LiveRow::new(
+                let mut row = LiveRow::typed::<crate::row_types::CloudEntry>(
                     format!("files.cloud-entry:{}", hex::encode(&entry.id)),
-                    "files.cloud-entry",
                     entry.name.clone(),
                 )
                 .operation(crate::effects::row_action(

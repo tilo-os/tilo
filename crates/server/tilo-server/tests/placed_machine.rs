@@ -13,8 +13,8 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
-use legacy_vm::hosted::control::{self, HostLoad, Reply, Request, VmRequest, VmStatus};
-use legacy_vm::hosted::size::VmSize;
+use linux_vm::hosted::control::{self, HostLoad, Reply, Request, VmRequest, VmStatus};
+use linux_vm::hosted::size::VmSize;
 use tilo_actions::remote::{
     ActionProvider as _, Caller, InvokeArgument, InvokeRequest, RemoteActionTarget,
 };

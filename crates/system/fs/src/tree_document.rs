@@ -220,15 +220,15 @@ impl TreePublisher {
         credentials: &PeerCredentials,
         identity: &Path,
     ) -> Result<Self> {
+        let join = tilo_identity_client::collaboration_join_digest(cluster)
+            .context("this device's join encodes")?;
         let presentation = CertifiedJoinIdentity {
             workspace_id: cluster.to_owned(),
             device_certificate: serde_json::to_vec(credentials.cert())
                 .context("this device's certificate is JSON")?,
             proof: credentials
                 .signer()
-                .sign(tilo_identity_client::collaboration_join_signing_bytes(
-                    cluster,
-                ))
+                .sign(join.to_vec())
                 .await
                 .context("this device signs its join")?
                 .to_vec(),
@@ -643,37 +643,26 @@ impl TreePublisher {
             self.ask_for(chunk).await;
             return Ok(());
         }
-        let (resolutions, heads) = {
-            let (bytes, whole) = match mutation {
-                DocumentMutation::Snapshot(bytes) => (bytes, true),
-                DocumentMutation::Incremental(bytes) => (bytes, false),
+        let published: BTreeMap<TreeChunk, Vec<ChangeHash>> = self
+            .records
+            .iter()
+            .map(|(chunk, publisher)| (*chunk, publisher.sent.clone()))
+            .collect();
+        let mut holders = {
+            let bytes = match mutation {
+                DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => bytes,
             };
-            let mut namespace = namespace.lock_recover();
-            let resolutions = namespace
-                .take_documents_and_resolve(vec![(chunk, bytes)])
-                .with_context(|| {
-                    if whole {
-                        "a published record becomes this device's"
-                    } else {
-                        "a published change applies to this device's record"
-                    }
-                })?;
-            (
-                resolutions,
-                namespace
-                    .record_heads()
-                    .get(&chunk)
-                    .cloned()
-                    .unwrap_or_default(),
-            )
+            namespace
+                .lock_recover()
+                .take_published_documents(vec![(chunk, bytes)], &published)
+                .context("a published change applies to this device's tree")?
         };
-        // What the record holds now is what the session sent: only the changes settling it are
-        // this device's to publish.
-        if let Some(record) = self.records.get_mut(&chunk) {
-            record.sent = heads;
-        }
-        for write in resolutions {
-            self.publish_write(write).await?;
+        // The holders have what they had and what the session sent; what this device wrote and
+        // never sent, and what settling the change wrote, goes out with the next publication.
+        for (chunk, publisher) in &mut self.records {
+            if let Some(heads) = holders.remove(chunk) {
+                publisher.sent = heads;
+            }
         }
         // What waited for this record may apply now that the record moved on, in the order it came.
         if let Some(record) = self.records.get_mut(&chunk)
@@ -684,7 +673,7 @@ impl TreePublisher {
             record.unopened = waited;
         }
         // The tree's own record may name chunks this device joined nothing of yet.
-        self.join_records(namespace, tell).await
+        self.publish(namespace, tell).await
     }
 
     /// The change `payload` carries, once every segment of it arrived; `None` for a segment of a

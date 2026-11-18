@@ -5226,7 +5226,7 @@ impl App {
             // follow (the host's view of the app's action authority) moves
             // the permissions' revision on and wakes the loop to show it.
             let _entry = self.enter_wake_scope();
-            crate::permissions::wake_on_outside_change(crate::wake::WakeHandle::new());
+            crate::permissions::wake_loop_on_outside_change(crate::wake::WakeHandle::new());
         }
         let host_appearance = {
             let _entry = self.enter_wake_scope();

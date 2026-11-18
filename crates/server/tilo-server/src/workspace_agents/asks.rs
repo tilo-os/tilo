@@ -30,6 +30,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use collaboration::permissions::MemberId;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::person_asking::{
@@ -43,7 +44,6 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_resource::Resource as _;
 use tilo_server_protocol::WorkspaceId;
 use tilo_workspace_agent::Agent;
-use ui::permissions::MemberId;
 
 use super::{
     Ask, CHAT, HostAgents, Turn, WRITE_WAIT, WorkspaceActionProvider, invoke_named, later,
@@ -321,7 +321,7 @@ async fn post(
         holder,
         asker,
         &route,
-        &ui::resource::chain_resource_id(&chat::parts::chain()),
+        &collab_types::document::chain_resource_id(&chat::parts::chain()),
         "ask",
         arguments,
     )
@@ -417,7 +417,7 @@ struct Found {
 /// How many questions in `parts` carry one ask: those `agent` wrote for
 /// `person` that show `shown`, what this server kept for it.
 fn carrying(
-    parts: &[(String, chat::parts::ChatPart)],
+    parts: &[(String, chat::parts::ChatMessages)],
     (agent, person): (&MemberId, &MemberId),
     shown: &Value,
 ) -> usize {
@@ -438,7 +438,7 @@ fn carrying(
 /// The question this server put about `ask`, in `parts`: the one its agent
 /// wrote for that person that shows exactly what this server kept.
 fn question_of<'a>(
-    parts: &'a [(String, chat::parts::ChatPart)],
+    parts: &'a [(String, chat::parts::ChatMessages)],
     ask: &KeptAsk,
 ) -> Option<(Found, &'a chat::question::Question)> {
     let (agent, person) = (
@@ -479,7 +479,7 @@ fn question_of<'a>(
 pub(super) fn waiting_in(
     workspace: &str,
     document: &str,
-    part: &chat::parts::ChatPart,
+    part: &chat::parts::ChatMessages,
     agents: &BTreeMap<String, Agent>,
 ) -> Vec<(String, Waiting)> {
     part.messages
@@ -488,7 +488,7 @@ pub(super) fn waiting_in(
             let question = message.question.as_ref().filter(|asked| asked.waiting())?;
             let agent = agents.get(message.author.agent_id()?)?;
             let person = question.person.person_id()?.to_owned();
-            let resource = format!("{}/messages/{id}", chat::parts::ChatPart::KIND);
+            let resource = format!("{}/messages/{id}", chat::parts::ChatMessages::KIND);
             let answers = question
                 .answers
                 .iter()
@@ -788,7 +788,7 @@ impl HostAgents {
             return;
         }
         let Ok(Some(held)) = self
-            .read::<chat::parts::ChatPart>(workspace, CHAT, part)
+            .read::<chat::parts::ChatMessages>(workspace, CHAT, part)
             .await
         else {
             return;
@@ -832,7 +832,7 @@ impl HostAgents {
                 let mut arguments = Map::new();
                 arguments.insert("message".into(), json!(id.as_str()));
                 arguments.insert("why".into(), json!(STOPPED));
-                let resource = format!("{}/messages/{id}", chat::parts::ChatPart::KIND);
+                let resource = format!("{}/messages/{id}", chat::parts::ChatMessages::KIND);
                 let taken = invoke_named(
                     &holder,
                     &caller,
@@ -850,7 +850,7 @@ impl HostAgents {
     }
 
     /// Every part of the chat's messages `workspace` holds, by its document.
-    async fn question_parts(&self, workspace: &str) -> Vec<(String, chat::parts::ChatPart)> {
+    async fn question_parts(&self, workspace: &str) -> Vec<(String, chat::parts::ChatMessages)> {
         let routes = self
             .workspaces
             .document_routes(workspace)
@@ -859,13 +859,13 @@ impl HostAgents {
         let mut parts = Vec::new();
         for (app, document) in routes {
             if app != CHAT
-                || ui::resource::DocumentId::parse(&document)
+                || collab_types::document::DocumentId::parse(&document)
                     .is_none_or(|part| chat::parts::part_index(&part).is_none())
             {
                 continue;
             }
             if let Ok(Some(part)) = self
-                .read::<chat::parts::ChatPart>(workspace, CHAT, &document)
+                .read::<chat::parts::ChatMessages>(workspace, CHAT, &document)
                 .await
             {
                 parts.push((document, part));
@@ -921,7 +921,11 @@ impl HostAgents {
         if let Some(told) = told {
             arguments.insert("detail".into(), json!(told));
         }
-        let resource = format!("{}/messages/{}", chat::parts::ChatPart::KIND, found.message);
+        let resource = format!(
+            "{}/messages/{}",
+            chat::parts::ChatMessages::KIND,
+            found.message
+        );
         invoke_named(
             &holder,
             asker,

@@ -40,7 +40,6 @@ pub const MOVED: &[&str] = &[
     "tilo-server",
     "tilo-server-admin",
     "tilo-rollback",
-    "tilo-sibling-unlock",
     "tilo-vm",
 ];
 

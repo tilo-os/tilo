@@ -6,7 +6,7 @@
 //! [`BrowserMeter::record`] the moment one ran. The plans file
 //! (`TILO_HOSTED_PLANS`, the one the hosted-VM service admits by) sets the
 //! free page actions of an account without a card
-//! ([`Sells::browser_free_actions`](legacy_vm::hosted::plan::Sells::browser_free_actions));
+//! ([`Sells::browser_free_actions`](linux_vm::hosted::plan::Sells::browser_free_actions));
 //! the meter reads it on every call, so an operator changes the allowance
 //! without a restart.
 //!
@@ -20,7 +20,7 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use legacy_vm::hosted::plan::{self, Plans};
+use linux_vm::hosted::plan::{self, Plans};
 use tilo_actions::remote::server_account;
 use tilo_server_account::browser_actions::{Log, PageAction};
 use tilo_server_account::{ACTIONS_LOG_ENV, PLANS_ENV, period};

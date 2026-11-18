@@ -870,6 +870,12 @@ pub struct ModalDialog<C: Widget + ?Sized> {
     content_laid_out_in: f64,
     content_origin: Point,
     scroll: f64,
+    /// Where the body's scroll is kept across the trees an app builds for the same sheet
+    /// ([`Self::keeping_scroll`]).
+    kept_scroll: Option<Rc<std::cell::Cell<f64>>>,
+    /// The kept scroll a newly built dialog takes once its content is measured: before then any
+    /// offset clamps to the top.
+    restore_scroll: Option<f64>,
     trim: f64,
     /// The host must place the content again (scroll, window, trim).
     stale: bool,
@@ -925,6 +931,8 @@ impl<C: Widget + 'static> ModalDialog<C> {
             content_laid_out_in: 0.0,
             content_origin: Point::ZERO,
             scroll: 0.0,
+            kept_scroll: None,
+            restore_scroll: None,
             trim: 0.0,
             stale: false,
             remeasure: false,
@@ -1027,6 +1035,16 @@ impl<C: Widget + 'static> ModalDialog<C> {
     #[must_use]
     pub fn appearing(mut self, appearance: crate::motion::Appearance) -> Self {
         self.appear = appearance;
+        self
+    }
+
+    /// Keep the body's scroll in `kept`, and start where it stands: an app that builds a new
+    /// tree whenever its state changes (a choice made far down a long sheet) shows the sheet
+    /// where the person was, never back at its top.
+    #[must_use]
+    pub fn keeping_scroll(mut self, kept: Rc<std::cell::Cell<f64>>) -> Self {
+        self.restore_scroll = Some(kept.get()).filter(|at| *at > 0.0);
+        self.kept_scroll = Some(kept);
         self
     }
 
@@ -1202,6 +1220,16 @@ impl<C: Widget + 'static> ModalDialog<C> {
 }
 
 impl<C: Widget + ?Sized> ModalDialog<C> {
+    /// Tell the kept scroll ([`Self::keeping_scroll`]) where the body stands now, once a kept
+    /// offset has been taken back.
+    fn keep_scroll(&self) {
+        if self.restore_scroll.is_none()
+            && let Some(kept) = &self.kept_scroll
+        {
+            kept.set(self.scroll);
+        }
+    }
+
     fn shut(&mut self, source: crate::tokens::MotionSource) -> bool {
         if !self.up() {
             return false;
@@ -1404,7 +1432,14 @@ impl ModalDialog<dyn Widget> {
         }
         onto_device_pixels(&mut layout);
         let max_scroll = (self.content_size.1 - layout.body.height()).max(0.0);
+        if self.content_size.1 > 0.0
+            && let Some(at) = self.restore_scroll.take()
+        {
+            self.scroll = at;
+            self.stale = true;
+        }
         self.scroll = self.scroll.clamp(0.0, max_scroll);
+        self.keep_scroll();
         self.slots = slots;
         let primary_enabled = self.primary_enabled_now();
         let actions: Vec<_> = self
@@ -1453,6 +1488,7 @@ impl ModalDialog<dyn Widget> {
         self.trim += trim;
         let max_scroll = (self.content_size.1 - layout.body.height()).max(0.0);
         self.scroll = self.scroll.clamp(0.0, max_scroll);
+        self.keep_scroll();
         for key in &mut self.keys {
             key.rect = key.rect - Vec2::new(0.0, trim);
         }
@@ -1619,6 +1655,7 @@ impl ModalDialog<dyn Widget> {
             return false;
         }
         self.scroll = next;
+        self.keep_scroll();
         if self.host_content.is_some() {
             self.stale = true;
         } else {

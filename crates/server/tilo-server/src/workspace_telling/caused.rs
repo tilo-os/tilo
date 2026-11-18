@@ -44,7 +44,7 @@ type Asked = (Cause, Option<String>);
 /// The part does not read.
 fn asked_by(bytes: &[u8], message: &Id, person: &str) -> Result<Option<Asked>, String> {
     let mut doc = automerge::AutoCommit::load(bytes).map_err(|error| error.to_string())?;
-    let part = crate::workspace_bots::opened::<chat::parts::ChatPart>(&mut doc)?;
+    let part = crate::workspace_bots::opened::<chat::parts::ChatMessages>(&mut doc)?;
     Ok(part.messages.get(message).and_then(|held| {
         let cause = held
             .cause

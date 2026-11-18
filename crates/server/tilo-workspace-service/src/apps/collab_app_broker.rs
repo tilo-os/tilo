@@ -115,6 +115,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::mpsc;
 
 use collab_types::inbound::OpAdmission;
+use collab_types::presence::PresenceKey;
 use collab_types::presence::PresencePayload;
 use collab_types::{
     ArtifactId, ArtifactKind, RedactedMarker, SignedOp, ValidationError,
@@ -125,7 +126,6 @@ use collab_types::{DocumentMutation, document_artifact_id, document_attestation_
 use runtime_collab::event::CollabEvent;
 use runtime_collab::wire::ContextUpdate;
 use tilo_action_policy::{ActionKind, Answer, MemberId, TreePath, WorkspacePolicy, roles};
-use ui::presence::PresenceKey;
 
 use crate::apps::collab_broker::{
     AuditEntry, BrokerChannels, CrdtRoute, FanoutState, apply_redaction_from_envelope,
@@ -546,7 +546,7 @@ fn admit_verified_join_at(
 fn person_document_join(app: &str, route: &CrdtRoute) -> Result<(), String> {
     let kind = collab_types::person_resource_type(&route.document_id)
         .ok_or("an app joins the person's workspace only for one of their records")?;
-    if !ui::app_surface::keeps_person_resource(app, kind) {
+    if !collab_types::app_surface::keeps_person_resource(app, kind) {
         return Err(format!(
             "{app} declares no record of the person's of kind {kind}"
         ));
@@ -592,13 +592,12 @@ fn verify_join_presentation(
     let proof = <[u8; 64]>::try_from(presentation.proof.as_slice())
         .map_err(|_| "collaboration join proof must be 64 bytes".to_string())?;
     let workspace = presentation.workspace_id.as_str();
+    let digest = runtime_identity::collaboration_join_digest(workspace)
+        .map_err(|error| format!("collaboration join cannot be encoded: {error}"))?;
     admission_memo::join_proof_verified(&cert.device_public_key, workspace, &proof, || {
         VerifyingKey::from_bytes(&cert.device_public_key)
             .map_err(|_| "device certificate contains an invalid device key".to_string())?
-            .verify(
-                &runtime_identity::collaboration_join_signing_bytes(workspace),
-                &Signature::from_bytes(&proof),
-            )
+            .verify(&digest, &Signature::from_bytes(&proof))
             .map_err(|_| "collaboration join proof was signed by an unknown device".to_string())
     })?;
     // Without an authority to ask who governs the workspace, every foreign device
@@ -1474,7 +1473,7 @@ impl AppBrokerState {
         let admitted = self.current_action_caller(caller)?;
         if request.host != self.invocation_host()?
             || request.invocation.0.is_nil()
-            || request.peer_id == ui::collaboration::CURRENT_CONNECTION_PEER_ID
+            || request.peer_id == collaboration::CURRENT_CONNECTION_PEER_ID
             || [
                 &request.app_id,
                 &request.document_id,
@@ -2488,7 +2487,7 @@ struct ContextSub {
 #[derive(Clone)]
 struct NativeContext {
     admitted: AdmittedJoinIdentity,
-    roster: Vec<ui::collaboration::Member>,
+    roster: Vec<collaboration::Member>,
 }
 
 /// Per-channel subscriber registry, keyed by `join_channel(id)`. A
@@ -5493,7 +5492,7 @@ impl AppBrokerState {
             ),
             owner,
             original: OriginalInvocationData::capture(
-                ui::invocation_scope::PublishedInvocationRequest {
+                collaboration::invocation_scope::PublishedInvocationRequest {
                     wire_id: id,
                     invocation,
                     address: tilo_actions::ActionAddress {
@@ -6737,7 +6736,7 @@ impl AppBrokerState {
     fn fanout_context<'a>(
         channels: impl Iterator<Item = &'a mut ChannelSubscribers>,
         except: u64,
-        members: &[ui::collaboration::Member],
+        members: &[collaboration::Member],
         permissions: &[String],
         apps: &[collab_types::history::NamedApp],
     ) {
@@ -7029,7 +7028,7 @@ impl AppBrokerState {
                 // The colour their member row stores: the one they chose, else the one their
                 // identity derives.
                 let colour = row.map_or_else(
-                    || ui::tokens::PresenceHue::of_identity(&person),
+                    || collab_types::presence::PresenceHue::of_identity(&person),
                     |row| row.colour,
                 );
                 let mut member = collab_types::Member::of_person(
@@ -7059,7 +7058,7 @@ impl AppBrokerState {
         &self,
         route: &CrdtRoute,
         admitted: &AdmittedJoinIdentity,
-    ) -> Result<Vec<ui::collaboration::Member>, String> {
+    ) -> Result<Vec<collaboration::Member>, String> {
         let now = self.policy_now_ns()? / 1_000_000_000;
         let (agents, people) = self
             .membership
@@ -7284,10 +7283,7 @@ impl AppBrokerState {
         admitted: &AdmittedJoinIdentity,
         current: &AdmittedJoinIdentity,
     ) -> Result<bool, String> {
-        fn same_roster(
-            left: &[ui::collaboration::Member],
-            right: &[ui::collaboration::Member],
-        ) -> bool {
+        fn same_roster(left: &[collaboration::Member], right: &[collaboration::Member]) -> bool {
             left.len() == right.len()
                 && left.iter().zip(right).all(|(left, right)| {
                     left.id == right.id
@@ -7601,7 +7597,7 @@ fn joined_resource_type(kind: &str) -> Result<Option<String>, BrokerError> {
     if kind.is_empty() {
         return Ok(None);
     }
-    if !ui::resource::ResourceType::new(kind).is_valid() {
+    if !collab_types::document::ResourceType::new(kind).is_valid() {
         return Err(BrokerError::failed(format!("invalid record kind `{kind}`")));
     }
     Ok(Some(kind.to_owned()))
@@ -7749,7 +7745,7 @@ fn private_display_control(
     route: &CrdtRoute,
     identity: &AdmittedJoinIdentity,
 ) -> Option<runtime_collab::settings::host::DisplayControl> {
-    if route.app_id != ui::apps::SETTINGS || identity.agent_id.is_some() {
+    if route.app_id != tilo_app_id::apps::SETTINGS || identity.agent_id.is_some() {
         return None;
     }
     let registration = identity.worker_registration.clone()?;
@@ -7887,9 +7883,9 @@ fn delegate_realtime_command(
 }
 
 /// The only application that may send files to nearby devices.
-use ui::apps::FILE_EXPLORER as NEARBY_TRANSFER_APP_ID;
+use tilo_app_id::apps::FILE_EXPLORER as NEARBY_TRANSFER_APP_ID;
 /// The only application that may carry Wi-Fi credentials between devices.
-use ui::apps::SETTINGS as WIFI_CONTINUITY_APP_ID;
+use tilo_app_id::apps::SETTINGS as WIFI_CONTINUITY_APP_ID;
 
 fn delegate_wifi_continuity_command(
     services: &ProcessServices,
@@ -7998,7 +7994,7 @@ fn nearby_transfer_change(
 }
 
 /// The only application that manages the person's speaker groups.
-use ui::apps::SETTINGS as SPEAKER_APP_ID;
+use tilo_app_id::apps::SETTINGS as SPEAKER_APP_ID;
 
 /// The wait for the speaker groups' next change past `after` for a
 /// connection on `route_app`: only the certified Settings route may wait, as
@@ -8333,7 +8329,8 @@ fn filter_directory_page(
         .filter_map(|(mut row, answer)| match answer? {
             Answer::Deny if actor.is_agent() => {
                 if let Some(descriptor) = row.descriptor.as_mut() {
-                    descriptor.contract.availability = tilo_actions::Availability::not_allowed();
+                    descriptor.contract.availability =
+                        tilo_actions::Availability::not_allowed(None);
                 }
                 Some(row)
             }
@@ -10476,7 +10473,7 @@ pub mod tests {
     #[tokio::test(start_paused = true)]
     async fn launcher_attestation_decides_on_one_look() {
         use tokio::io::AsyncWriteExt as _;
-        const APP: &str = ui::apps::CALCULATOR;
+        const APP: &str = tilo_app_id::apps::CALCULATOR;
         const WORKSPACE: &str = "5ba25f73-87c5-447f-a5a6-880dc4249a81";
         let launches = Arc::new(RecordedLaunches(Mutex::new(Vec::new())));
         let services = ProcessServices {
@@ -12230,9 +12227,7 @@ pub mod tests {
             workspace_id: workspace.into(),
             device_certificate: serde_json::to_vec(&cert).expect("certificate JSON"),
             proof: device
-                .sign(&runtime_identity::collaboration_join_signing_bytes(
-                    workspace,
-                ))
+                .sign(&runtime_identity::collaboration_join_digest(workspace).unwrap())
                 .to_bytes()
                 .to_vec(),
         }
@@ -12271,9 +12266,9 @@ pub mod tests {
             let route = CrdtRoute::cluster("workspace-a");
             let mut presentation = certified_join("workspace-a", &root, &device);
             presentation.proof = stranger
-                .sign(&runtime_identity::collaboration_join_signing_bytes(
+                .sign(&runtime_identity::collaboration_join_digest(
                     "workspace-a",
-                ))
+                ).unwrap())
                 .to_bytes()
                 .to_vec();
             assert!(
@@ -13114,7 +13109,7 @@ pub mod tests {
         for agent in roster.iter().filter(|row| !row.id.is_person()) {
             assert_eq!(
                 agent.colour,
-                ui::tokens::PresenceHue::of_member(&agent.id),
+                collab_types::presence::PresenceHue::of_member(&agent.id),
                 "{}",
                 agent.id
             );

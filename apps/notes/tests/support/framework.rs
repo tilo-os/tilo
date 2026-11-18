@@ -2,7 +2,7 @@
 //! surface: the app on a fresh profile, a notebook written with its own
 //! actions, and the surface itself for its test hooks.
 use notes::actions::{self, Action};
-use notes::{MainPanel, NotesApp, NotesShell, PageId, PagePart};
+use notes::{MainPanel, NoteList, NotesApp, NotesShell, PageId};
 use ui::framework::testing::TestApp;
 use ui::tilo_resource::Invoke;
 
@@ -14,18 +14,18 @@ pub fn notes() -> TestApp<NotesShell> {
 
 /// Apply a note's `action` through the notes' chain, as a control does.
 pub fn apply(app: &mut TestApp<NotesShell>, action: &Action) {
-    app.invoke_child::<PagePart>(&chain_resource(), Invoke::apply(action).unwrap())
+    app.invoke_child::<NoteList>(&chain_resource(), Invoke::apply(action).unwrap())
         .unwrap();
 }
 
 /// Where the notes' chain is published: what a page's action is invoked on.
 pub fn chain_resource() -> String {
-    notes::part::chain_resource()
+    notes::note_list::chain_resource()
 }
 
 /// The parts of the notes the window holds, oldest first.
-pub fn parts(app: &TestApp<NotesShell>) -> Vec<(u64, std::rc::Rc<PagePart>)> {
-    app.chain_parts::<PagePart>()
+pub fn parts(app: &TestApp<NotesShell>) -> Vec<(u64, std::rc::Rc<NoteList>)> {
+    app.chain_parts::<NoteList>()
 }
 
 /// Read the document of the part keeping note `page`, as the window holds it.
@@ -38,7 +38,7 @@ pub fn part_doc<T>(
     let index = notes::Pages::of(&parts)
         .part_of(&notes::notebook::page_id(page))
         .expect("a part keeps the note");
-    app.read_document_of(&notes::part::chain().part(index), read)
+    app.read_document_of(&notes::note_list::chain().part(index), read)
         .expect("the part is held")
 }
 
@@ -49,7 +49,7 @@ pub fn notes_doc<T>(
     app: &TestApp<NotesShell>,
     read: impl FnOnce(&automerge::AutoCommit) -> T,
 ) -> T {
-    if let Some(held) = app.read_document_of(&notes::part::chain().part(0), Clone::clone) {
+    if let Some(held) = app.read_document_of(&notes::note_list::chain().part(0), Clone::clone) {
         return read(&held);
     }
     let mut empty = automerge::AutoCommit::new();
@@ -64,7 +64,7 @@ pub fn written(app: &TestApp<NotesShell>) -> Vec<(Vec<automerge::ChangeHash>, us
     let mut held = vec![app.read_document(|doc| (doc.base_heads(), doc.pending_ops()))];
     for (index, _) in parts(app) {
         held.extend(
-            app.read_document_of(&notes::part::chain().part(index), |doc| {
+            app.read_document_of(&notes::note_list::chain().part(index), |doc| {
                 (doc.base_heads(), doc.pending_ops())
             }),
         );
@@ -77,7 +77,7 @@ pub fn written(app: &TestApp<NotesShell>) -> Vec<(Vec<automerge::ChangeHash>, us
 pub fn versions(app: &TestApp<NotesShell>) -> Vec<ui::tilo_resource::history::Version> {
     let mut versions = app.versions();
     for (index, _) in parts(app) {
-        versions.extend(app.versions_of(&notes::part::chain().part(index)));
+        versions.extend(app.versions_of(&notes::note_list::chain().part(index)));
     }
     versions.sort_by_key(|version| version.time_ms);
     versions
@@ -138,13 +138,13 @@ pub fn send(app: &mut TestApp<NotesShell>, event: &winit::event::WindowEvent) ->
 
 /// Apply rich-text `op` to `page`'s body, as an agent does: one field edit.
 pub fn edit_body(app: &mut TestApp<NotesShell>, page: PageId, op: &tilo_document::RichTextAction) {
-    let edit = PagePart::paths()
+    let edit = NoteList::paths()
         .pages
         .item(&notes::notebook::page_id(page))
         .body
         .perform(op)
         .unwrap();
-    app.invoke_child::<PagePart>(&chain_resource(), Invoke::edit(&edit).unwrap())
+    app.invoke_child::<NoteList>(&chain_resource(), Invoke::edit(&edit).unwrap())
         .unwrap();
 }
 
@@ -169,7 +169,7 @@ pub fn deliver(from: &mut TestApp<NotesShell>, to: &mut TestApp<NotesShell>) -> 
     let mut changed = from.deliver_changes_to(to).unwrap();
     for (index, _) in parts(from) {
         changed |= from
-            .deliver_resource_to(to, &notes::part::chain().part(index))
+            .deliver_resource_to(to, &notes::note_list::chain().part(index))
             .unwrap();
     }
     changed
@@ -185,7 +185,7 @@ pub fn peer_part(
     let index = notes::Pages::of(&parts)
         .part_of(&notes::notebook::page_id(page))
         .expect("a part keeps the note");
-    let id = notes::part::chain().part(index);
+    let id = notes::note_list::chain().part(index);
     let peer = app.peer_document_of(&id).expect("the part is held");
     (id, peer)
 }
@@ -220,7 +220,7 @@ pub fn stored(app: &TestApp<NotesShell>) -> Vec<Vec<automerge::ChangeHash>> {
     for (index, _) in parts(app) {
         heads.push(
             app.read_document_of(
-                &notes::part::chain().part(index),
+                &notes::note_list::chain().part(index),
                 automerge::AutoCommit::base_heads,
             )
             .unwrap(),

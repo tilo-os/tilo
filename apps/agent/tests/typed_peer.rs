@@ -60,9 +60,9 @@ pub fn endpoint_identity(handle: &str) -> CertifiedEndpointIdentity {
         workspace_id: TEST_WORKSPACE.to_string(),
         device_certificate: serde_json::to_vec(&certificate).expect("certificate JSON"),
         proof: device
-            .sign(&runtime_identity::collaboration_join_signing_bytes(
-                &TEST_WORKSPACE.to_string(),
-            ))
+            .sign(
+                &runtime_identity::collaboration_join_digest(&TEST_WORKSPACE.to_string()).unwrap(),
+            )
             .to_bytes()
             .to_vec(),
     }

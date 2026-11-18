@@ -12,13 +12,13 @@
 //! which a bot never holds: the host enforces those as the workspace's root
 //! through `govern`, held to the workspace's policy.
 
+use collab_types::document::DocumentId;
 use tilo_action_policy::Change;
 use tilo_actions::api::ActionAddress;
 use tilo_actions::entry::Did;
 use tilo_agent_session::Replica;
 use tilo_moderation::{Activity, Moderation, Source, WorkspaceApi, activity_of, destructive_verbs};
 use tilo_resource::Resource;
-use ui::resource::DocumentId;
 
 /// The history group kind a run's steps are recorded under, which the
 /// record's `undo { run }` takes back as one.
@@ -90,7 +90,8 @@ impl<'a, R: Resource> ReplicaApi<'a, R> {
             .into_iter()
             .find(|offered| {
                 offered.address.action == action
-                    && ui::resource::chain_of_resource_id(&offered.address.resource).as_ref()
+                    && collab_types::document::chain_of_resource_id(&offered.address.resource)
+                        .as_ref()
                         == chain
             })
             .map(|offered| offered.address)
@@ -115,7 +116,7 @@ impl<'a, R: Resource> ReplicaApi<'a, R> {
     /// The verbs the chain `chain` publishes as destructive, on itself and
     /// on its items.
     fn destructive_in_chain(&self, chain: &DocumentId) -> Vec<String> {
-        let id = ui::resource::chain_resource_id(chain);
+        let id = collab_types::document::chain_resource_id(chain);
         let resources = self.replica.resources();
         // Published beside the app's resource, among its children; its
         // items carry the verbs on one message.

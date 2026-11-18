@@ -356,7 +356,7 @@ impl Fixture {
             .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
         tilo_identity::provisioning::ensure_collaboration_identity(
             &directory.path().join("config/tilo/identity"),
-            &tilo_user_identity::IdentityPaths::under(directory.path().join("identity")),
+            &tilo_device_identity::IdentityPaths::under(directory.path().join("identity")),
             tilo_identity::provisioning::IdentityStorage::Files,
         )
         .expect("provision the host admission and terminal receipt signer");
@@ -470,9 +470,7 @@ impl Fixture {
             proof: self
                 .native
                 .key
-                .sign(&runtime_identity::collaboration_join_signing_bytes(
-                    &workspace,
-                ))
+                .sign(&runtime_identity::collaboration_join_digest(&workspace).unwrap())
                 .to_bytes()
                 .to_vec(),
         }

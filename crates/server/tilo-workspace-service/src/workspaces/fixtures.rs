@@ -175,19 +175,33 @@ pub fn governor() -> (SigningKey, DeviceCert) {
 /// The certificate cannot be signed.
 #[must_use]
 pub fn governor_with(capabilities: DeviceCapabilities) -> (SigningKey, DeviceCert) {
-    let root = SigningKey::from_bytes(&[1; 32]);
+    device_cert(&SigningKey::from_bytes(&[1; 32]), "home", capabilities)
+}
+
+/// A new device of `root`'s person, labelled `label` and certified with
+/// `capabilities`: the key it signs with and its certificate.
+///
+/// # Panics
+///
+/// The certificate cannot be signed.
+#[must_use]
+pub fn device_cert(
+    root: &SigningKey,
+    label: &str,
+    capabilities: DeviceCapabilities,
+) -> (SigningKey, DeviceCert) {
     let key = SigningKey::from_bytes(&rand::random());
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: key.verifying_key().to_bytes(),
-        device_label: "home".into(),
+        device_label: label.into(),
         capabilities,
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
         issuer: None,
     };
-    sign_device_cert(&mut cert, &root).expect("a fixture certificate signs");
+    sign_device_cert(&mut cert, root).expect("a fixture certificate signs");
     (key, cert)
 }
 

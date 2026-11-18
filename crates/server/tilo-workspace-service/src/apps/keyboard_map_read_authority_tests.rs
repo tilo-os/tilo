@@ -30,10 +30,10 @@ impl tracing::Subscriber for KeyboardReadBridgeProbe {
 
 #[tokio::test(flavor = "current_thread")]
 async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_approval() {
+    use collaboration::portable_storage::{PortableStorage, StorageKey};
+    use collaboration::{CertifiedEndpointIdentity, CollaborationManager};
     use std::{os::fd::IntoRawFd, os::unix::fs::PermissionsExt as _};
     use ui::application::{LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput};
-    use ui::collaboration::{CertifiedEndpointIdentity, CollaborationManager};
-    use ui::portable_storage::{PortableStorage, StorageKey};
     use ui::resource::{DocumentCheckout, DocumentId, ResourceOwners};
     tokio::task::LocalSet::new()
         .run_until(async {
@@ -44,7 +44,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_appr
                     let definition = settings::definition();
                     let record = DocumentId::for_tab(1);
                     let mut document = automerge::AutoCommit::new();
-                    assert!(ui::resource::init_scoped(&mut document, &record, &definition.resource_type, workspace, Some(workspace)));
+                    assert!(collaboration::resource::init_scoped(&mut document, &record, &definition.resource_type, workspace, Some(workspace)));
                     Ok(vec![tilo_peer_state::SeedDocument {
                         app_id: definition.app_id().into(), document_id: record.as_str().into(),
                         kind: definition.resource_type.as_str().into(), bytes: document.save(),
@@ -91,7 +91,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_appr
             let definition = settings::definition();
             let record = DocumentId::parse(&env.route.document_id).unwrap();
             let mut initial = automerge::AutoCommit::new();
-            assert!(ui::resource::init_scoped(&mut initial, &record, &definition.resource_type, &env.route.cluster_id, Some(&env.route.cluster_id)));
+            assert!(collaboration::resource::init_scoped(&mut initial, &record, &definition.resource_type, &env.route.cluster_id, Some(&env.route.cluster_id)));
             let cache = PortableStorage::new("keyboard-read-authority", "device").unwrap();
             cache
                 .hydrate(
@@ -117,8 +117,8 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_appr
                 reveal: None,
             };
             let actor = person_id_for_root(env.cert.user_public_key);
-            let permissions = ui::permissions::SharedPermissions::new(
-                ui::permissions::PermissionContext::permissive(),
+            let permissions = collaboration::permissions::SharedPermissions::new(
+                collaboration::permissions::PermissionContext::permissive(),
             );
             let context = ProcessContext::prepare(
                 definition,
@@ -128,7 +128,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_appr
                     device_id: "device".into(),
                     instance_id: 1,
                     permissions,
-                    author: ui::permissions::MemberId::person(actor.clone()),
+                    author: collaboration::permissions::MemberId::person(actor.clone()),
                     action_context: tilo_actions::ActionContext::default(),
                 },
                 &target,
@@ -154,9 +154,9 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_appr
                 scene.reset();
                 app.surface_frame(&Surface, &mut scene);
                 match app.collaboration_state() {
-                    ui::collaboration::CollaborationState::Ready
-                    | ui::collaboration::CollaborationState::Connecting => {},
-                    ui::collaboration::CollaborationState::Offline(reason) => panic!("actual Settings connection failed: {reason}; publication={:?}; bridge={:?}", app.document_sync_status(), directions.lock().unwrap()),
+                    collaboration::CollaborationState::Ready
+                    | collaboration::CollaborationState::Connecting => {},
+                    collaboration::CollaborationState::Offline(reason) => panic!("actual Settings connection failed: {reason}; publication={:?}; bridge={:?}", app.document_sync_status(), directions.lock().unwrap()),
                 }
                 if let Some(found) =
                     broker
@@ -212,7 +212,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_appr
             tokio::runtime::Handle::current().block_on(local_host_answer(host.invoke(&caller, request.clone())))
                 .unwrap();
             let wire_id = facade.state().remote_job(&caller, &request.invocation).unwrap();
-            let delivered = ui::invocation_scope::PublishedInvocationRequest {
+            let delivered = collaboration::invocation_scope::PublishedInvocationRequest {
                 wire_id, invocation: request.invocation, address: request.target.address.clone(), argument: None,
                 actor: tilo_actions::MemberId::person(actor.clone()).into(), presence: Some(tilo_actions::PresenceId::for_execution(caller.execution_id().unwrap())),
             };
@@ -240,9 +240,9 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_appr
                 scene.reset();
                 app.surface_frame(&Surface, &mut scene);
                 match app.collaboration_state() {
-                    ui::collaboration::CollaborationState::Ready
-                    | ui::collaboration::CollaborationState::Connecting => {},
-                    ui::collaboration::CollaborationState::Offline(reason) => panic!("actual Settings connection failed: {reason}; publication={:?}; bridge={:?}", app.document_sync_status(), directions.lock().unwrap()),
+                    collaboration::CollaborationState::Ready
+                    | collaboration::CollaborationState::Connecting => {},
+                    collaboration::CollaborationState::Offline(reason) => panic!("actual Settings connection failed: {reason}; publication={:?}; bridge={:?}", app.document_sync_status(), directions.lock().unwrap()),
                 }
                 if let Some(state) = host.observe(&caller, &request.invocation)
                     && state.is_terminal()

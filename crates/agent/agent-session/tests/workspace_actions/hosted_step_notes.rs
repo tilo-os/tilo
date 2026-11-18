@@ -16,7 +16,7 @@ fn field<'a>(line: &'a str, name: &str) -> &'a str {
 }
 
 /// What the agent's reply to `message` says the turn is doing now, where it says so.
-fn doing(part: &chat::parts::ChatPart, message: &Id) -> Option<String> {
+fn doing(part: &chat::parts::ChatMessages, message: &Id) -> Option<String> {
     let reply = part
         .messages
         .get(&chat::chat::reply_id(message, &MemberId::agent(SCOUT)))?;

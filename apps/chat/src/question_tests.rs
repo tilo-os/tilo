@@ -8,9 +8,9 @@ use ui::tilo_actions::{Acting, ActionInvoker};
 use ui::tilo_resource::{Id, MemberId, NonBlank, Replica, Resource as _};
 
 use crate::demo::apply_part_doc_as;
-use crate::messages::chat_part;
+use crate::messages::chat_messages;
 use crate::model::ME;
-use crate::parts::ChatPart;
+use crate::parts::ChatMessages;
 use crate::question::{
     ACTION, ALLOW, ALWAYS, Choice, DENY, DONE, DROPPED, Question, QuestionState, STARTED,
 };
@@ -44,8 +44,8 @@ fn draft() -> serde_json::Value {
     }})
 }
 
-fn ask_action() -> chat_part::Ask {
-    chat_part::Ask {
+fn ask_action() -> chat_messages::Ask {
+    chat_messages::Ask {
         channel: Id::from_raw("c_general"),
         text: NonBlank::parse("Jonas asked whether you are raising. Send this answer?")
             .expect("words"),
@@ -60,8 +60,8 @@ fn ask_action() -> chat_part::Ask {
     }
 }
 
-fn answer(message: &Id, answer: &str, device: &str) -> chat_part::AnswerQuestion {
-    chat_part::AnswerQuestion {
+fn answer(message: &Id, answer: &str, device: &str) -> chat_messages::AnswerQuestion {
+    chat_messages::AnswerQuestion {
         message: message.clone(),
         answer: answer.to_owned(),
         device: Some(device.to_owned()),
@@ -98,9 +98,9 @@ impl Part {
         &mut self,
         by: By,
         now_ms: i64,
-        invoke: impl Into<ui::tilo_resource::Invoke<ChatPart>>,
+        invoke: impl Into<ui::tilo_resource::Invoke<ChatMessages>>,
     ) -> Result<(), ui::tilo_actions::ApiError> {
-        let attribute = move |replica: Replica<ChatPart>| match by {
+        let attribute = move |replica: Replica<ChatMessages>| match by {
             By::Person(person) => replica.as_invoker(person),
             By::AgentFor(person) => replica.as_agent_for(AGENT, person),
             By::BotOf(person) => replica.as_bot_for("b_bridge", person),
@@ -110,7 +110,7 @@ impl Part {
 
     /// The one message that asks something, and its question.
     fn asked(&self) -> (Id, Question) {
-        let part = ChatPart::read(&self.doc).expect("the part reads");
+        let part = ChatMessages::read(&self.doc).expect("the part reads");
         part.messages
             .iter()
             .find_map(|(id, message)| Some((id.clone(), message.question.clone()?)))
@@ -120,8 +120,12 @@ impl Part {
     /// The agent asks its person about the mail, at `now_ms`.
     fn asking(now_ms: i64) -> (Self, Id) {
         let mut part = Self::new();
-        part.apply(By::AgentFor(ME), now_ms, ChatPart::ASK.with(ask_action()))
-            .expect("an agent asks the person it acts for");
+        part.apply(
+            By::AgentFor(ME),
+            now_ms,
+            ChatMessages::ASK.with(ask_action()),
+        )
+        .expect("an agent asks the person it acts for");
         let (id, _) = part.asked();
         (part, id)
     }
@@ -142,23 +146,23 @@ fn a_question_is_put_to_the_person_its_asker_acts_for_and_to_nobody_an_argument_
     // A person asks in their own words, and a bot has no person to ask.
     let mut part = Part::new();
     assert!(
-        part.apply(By::Person(ME), 0, ChatPart::ASK.with(ask_action()))
+        part.apply(By::Person(ME), 0, ChatMessages::ASK.with(ask_action()))
             .is_err(),
         "a person acts for nobody"
     );
     assert!(
-        part.apply(By::BotOf(ME), 0, ChatPart::ASK.with(ask_action()))
+        part.apply(By::BotOf(ME), 0, ChatMessages::ASK.with(ask_action()))
             .is_ok(),
         "a bot asks the person who installed it"
     );
     assert_eq!(part.asked().1.person, MemberId::person(ME));
 
     // What it offers is checked where it is asked.
-    let refused = |change: fn(&mut chat_part::Ask)| {
+    let refused = |change: fn(&mut chat_messages::Ask)| {
         let mut ask = ask_action();
         change(&mut ask);
         Part::new()
-            .apply(By::AgentFor(ME), 0, ChatPart::ASK.with(ask))
+            .apply(By::AgentFor(ME), 0, ChatMessages::ASK.with(ask))
             .is_err()
     };
     assert!(refused(|ask| {
@@ -198,7 +202,7 @@ fn only_the_person_asked_answers_themselves_and_the_question_waits_for_them() {
             part.apply(
                 by,
                 later,
-                ChatPart::ANSWER_QUESTION.with(answer(&id, ALLOW, "Laptop"))
+                ChatMessages::ANSWER_QUESTION.with(answer(&id, ALLOW, "Laptop"))
             )
             .is_err(),
             "{who} does not answer"
@@ -209,7 +213,7 @@ fn only_the_person_asked_answers_themselves_and_the_question_waits_for_them() {
         part.apply(
             By::Person(ME),
             later,
-            ChatPart::ANSWER_QUESTION.with(answer(&id, "maybe", "Laptop"))
+            ChatMessages::ANSWER_QUESTION.with(answer(&id, "maybe", "Laptop"))
         )
         .is_err(),
         "an answer it does not offer is no answer"
@@ -218,7 +222,7 @@ fn only_the_person_asked_answers_themselves_and_the_question_waits_for_them() {
     part.apply(
         By::Person(ME),
         later,
-        ChatPart::ANSWER_QUESTION.with(answer(&id, ALLOW, "Phone")),
+        ChatMessages::ANSWER_QUESTION.with(answer(&id, ALLOW, "Phone")),
     )
     .expect("its person answers it");
     let (_, question) = part.asked();
@@ -234,7 +238,7 @@ fn only_the_person_asked_answers_themselves_and_the_question_waits_for_them() {
     part.apply(
         By::Person(ME),
         later + SECOND_MS,
-        ChatPart::ANSWER_QUESTION.with(answer(&id, ALLOW, "Laptop")),
+        ChatMessages::ANSWER_QUESTION.with(answer(&id, ALLOW, "Laptop")),
     )
     .expect("the same answer again is no failure");
     assert_eq!(
@@ -246,7 +250,7 @@ fn only_the_person_asked_answers_themselves_and_the_question_waits_for_them() {
         part.apply(
             By::Person(ME),
             later + SECOND_MS,
-            ChatPart::ANSWER_QUESTION.with(answer(&id, DENY, "Laptop"))
+            ChatMessages::ANSWER_QUESTION.with(answer(&id, DENY, "Laptop"))
         )
         .is_err()
     );
@@ -254,7 +258,7 @@ fn only_the_person_asked_answers_themselves_and_the_question_waits_for_them() {
         part.apply(
             By::AgentFor(ME),
             later + SECOND_MS,
-            ChatPart::WITHDRAW_QUESTION.with(chat_part::WithdrawQuestion {
+            ChatMessages::WITHDRAW_QUESTION.with(chat_messages::WithdrawQuestion {
                 message: id,
                 why: None,
             })
@@ -268,7 +272,7 @@ fn only_the_person_asked_answers_themselves_and_the_question_waits_for_them() {
 fn its_asker_says_what_came_of_the_answer_once() {
     let (mut part, id) = Part::asking(0);
     let settle = |outcome: &str| {
-        ChatPart::SETTLE_QUESTION.with(chat_part::SettleQuestion {
+        ChatMessages::SETTLE_QUESTION.with(chat_messages::SettleQuestion {
             message: id.clone(),
             outcome: outcome.to_owned(),
             detail: None,
@@ -282,7 +286,7 @@ fn its_asker_says_what_came_of_the_answer_once() {
     part.apply(
         By::Person(ME),
         SECOND_MS,
-        ChatPart::ANSWER_QUESTION.with(answer(&id, ALLOW, "Phone")),
+        ChatMessages::ANSWER_QUESTION.with(answer(&id, ALLOW, "Phone")),
     )
     .unwrap();
     assert!(
@@ -328,7 +332,7 @@ fn its_asker_says_what_came_of_the_answer_once() {
 fn a_question_taken_back_stops_waiting_and_keeps_what_was_asked() {
     let (mut part, id) = Part::asking(0);
     let withdraw = |why: Option<&str>| {
-        ChatPart::WITHDRAW_QUESTION.with(chat_part::WithdrawQuestion {
+        ChatMessages::WITHDRAW_QUESTION.with(chat_messages::WithdrawQuestion {
             message: id.clone(),
             why: why.map(str::to_owned),
         })
@@ -362,7 +366,7 @@ fn a_question_taken_back_stops_waiting_and_keeps_what_was_asked() {
         part.apply(
             By::Person(ME),
             2 * SECOND_MS,
-            ChatPart::ANSWER_QUESTION.with(answer(&id, ALLOW, "Phone"))
+            ChatMessages::ANSWER_QUESTION.with(answer(&id, ALLOW, "Phone"))
         )
         .is_err(),
         "a question taken back takes no answer"

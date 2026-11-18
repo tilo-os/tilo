@@ -116,8 +116,8 @@ fn target_label(target: &SessionTarget, environments: &[EnvironmentSummary]) -> 
                 },
                 |env| env.name.clone(),
             ),
-        SessionTarget::Legacy { vm } => crate::i18n::t_args(
-            "terminal-target-legacy",
+        SessionTarget::LinuxVm { vm } => crate::i18n::t_args(
+            "terminal-target-linux-vm",
             &[("vm", ui::i18n::ArgValue::Text(vm.clone()))],
         ),
     }
@@ -129,7 +129,7 @@ pub fn parse_target_argument(raw: &str) -> Option<SessionTarget> {
         None if raw == "host" => SessionTarget::Host,
         None if raw == "environment" => SessionTarget::default_environment(),
         Some(("environment", record)) => SessionTarget::environment(record),
-        Some(("legacy", vm)) => SessionTarget::Legacy { vm: vm.to_owned() },
+        Some(("linux-vm", vm)) => SessionTarget::LinuxVm { vm: vm.to_owned() },
         _ => return None,
     };
     target.is_valid().then_some(target)
@@ -154,10 +154,10 @@ impl TerminalWidget {
         self.sessions.directory = crate::sessions::Directory::Reached;
     }
 
-    /// Report legacy VMs from the legacy VM service; the picker lists them
+    /// Report Linux VMs from the Linux VM service; the picker lists them
     /// only while there are any.
-    pub fn set_legacy_vms(&mut self, vms: Vec<String>) {
-        self.sessions.legacy_vms = vms;
+    pub fn set_linux_vms(&mut self, vms: Vec<String>) {
+        self.sessions.linux_vms = vms;
     }
 
     #[cfg(test)]
@@ -467,7 +467,7 @@ impl TerminalWidget {
         let targets = crate::target::picker_targets(
             &self.sessions.environments,
             true,
-            &self.sessions.legacy_vms,
+            &self.sessions.linux_vms,
         );
         let mut rows = Vec::with_capacity(targets.len() + 1);
         for target in targets {
@@ -1055,7 +1055,7 @@ impl TerminalWidget {
 
     fn open_in(&mut self, raw: &str) -> Result<(), String> {
         let target = parse_target_argument(raw).ok_or_else(|| {
-            format!("`{raw}` is not a target: use environment, environment:<record>, legacy:<vm> or host")
+            format!("`{raw}` is not a target: use environment, environment:<record>, linux-vm:<vm> or host")
         })?;
         self.switch_target(&target, Requester::current())
     }

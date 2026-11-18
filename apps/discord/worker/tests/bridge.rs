@@ -107,7 +107,7 @@ impl Workspace {
     }
 
     /// The chat's first part of messages, read.
-    async fn part_messages(&self) -> chat::parts::ChatPart {
+    async fn part_messages(&self) -> chat::parts::ChatMessages {
         chat::messages::read_part(&self.part().await)
     }
 
@@ -127,7 +127,11 @@ impl Workspace {
     /// holds, the verb going through the chain to the part it changes
     /// (starting the first), each changed part carried to the workspace on its
     /// own route. The ids of the messages it added.
-    async fn part_as(&self, author: &str, invoke: Invoke<chat::parts::ChatPart>) -> Vec<String> {
+    async fn part_as(
+        &self,
+        author: &str,
+        invoke: Invoke<chat::parts::ChatMessages>,
+    ) -> Vec<String> {
         use tilo_agent_session::{Replica, ReplicaActor, Seed};
         use ui::collaboration::DocumentMutation;
         let chat = self
@@ -648,7 +652,7 @@ impl Bridge {
     }
 
     /// Ada does `invoke` to Chat's messages from her own device.
-    async fn as_ada_on_messages(&self, invoke: impl Into<Invoke<chat::parts::ChatPart>>) {
+    async fn as_ada_on_messages(&self, invoke: impl Into<Invoke<chat::parts::ChatMessages>>) {
         self.workspace.part_as(&self.ada, invoke.into()).await;
     }
 
@@ -656,7 +660,7 @@ impl Bridge {
     /// framework's field edit of the message's reactions, as her page makes
     /// it.
     async fn ada_reacts(&self, message: &str, emoji: &str, added: bool) {
-        let reactions = chat::parts::ChatPart::paths()
+        let reactions = chat::parts::ChatMessages::paths()
             .messages
             .item(&Id::from_raw(message))
             .reactions;
@@ -938,8 +942,8 @@ async fn what_ada_does_to_her_messages_in_chat_follows_in_discord() {
 
     // An edit rewrites the webhook's message.
     bridge
-        .as_ada_on_messages(chat::parts::ChatPart::EDIT_MESSAGE.with(
-            chat::messages::chat_part::EditMessage {
+        .as_ada_on_messages(chat::parts::ChatMessages::EDIT_MESSAGE.with(
+            chat::messages::chat_messages::EditMessage {
                 message: Id::from_raw(&first),
                 text: "first, edited".into(),
                 body: None,
@@ -982,8 +986,8 @@ async fn what_ada_does_to_her_messages_in_chat_follows_in_discord() {
     let bytes = b"the minutes".to_vec();
     let blob = bridge.blobs.store(&bytes).unwrap();
     bridge
-        .as_ada_on_messages(
-            chat::parts::ChatPart::POST.with(chat::messages::chat_part::Post {
+        .as_ada_on_messages(chat::parts::ChatMessages::POST.with(
+            chat::messages::chat_messages::Post {
                 message: chat::messages::NewMessage {
                     channel: Id::from_raw(&bridge.general),
                     text: "the notes".into(),
@@ -999,8 +1003,8 @@ async fn what_ada_does_to_her_messages_in_chat_follows_in_discord() {
                     written: None,
                     origin: None,
                 },
-            }),
-        )
+            },
+        ))
         .await;
     let file = settle(&mut runner, "file", || async {
         bridge.in_discord("the notes")
@@ -1010,8 +1014,8 @@ async fn what_ada_does_to_her_messages_in_chat_follows_in_discord() {
 
     // A delete takes the message out of Discord.
     bridge
-        .as_ada_on_messages(chat::parts::ChatPart::DELETE_MESSAGE.with(
-            chat::messages::chat_part::DeleteMessage {
+        .as_ada_on_messages(chat::parts::ChatMessages::DELETE_MESSAGE.with(
+            chat::messages::chat_messages::DeleteMessage {
                 message: Id::from_raw(&first),
             },
         ))
@@ -1042,8 +1046,8 @@ async fn a_deleted_webhook_is_replaced_and_the_message_still_arrives() {
     let bytes = b"the minutes".to_vec();
     let blob = bridge.blobs.store(&bytes).unwrap();
     bridge
-        .as_ada_on_messages(
-            chat::parts::ChatPart::POST.with(chat::messages::chat_part::Post {
+        .as_ada_on_messages(chat::parts::ChatMessages::POST.with(
+            chat::messages::chat_messages::Post {
                 message: chat::messages::NewMessage {
                     channel: Id::from_raw(&bridge.general),
                     text: "after".into(),
@@ -1059,8 +1063,8 @@ async fn a_deleted_webhook_is_replaced_and_the_message_still_arrives() {
                     written: None,
                     origin: None,
                 },
-            }),
-        )
+            },
+        ))
         .await;
     let sent = settle(&mut runner, "post after the webhook is gone", || async {
         bridge.in_discord("after")
@@ -1079,8 +1083,8 @@ async fn a_deleted_webhook_is_replaced_and_the_message_still_arrives() {
 
     // The old webhook's message cannot be edited any more; that is let go.
     bridge
-        .as_ada_on_messages(chat::parts::ChatPart::EDIT_MESSAGE.with(
-            chat::messages::chat_part::EditMessage {
+        .as_ada_on_messages(chat::parts::ChatMessages::EDIT_MESSAGE.with(
+            chat::messages::chat_messages::EditMessage {
                 message: Id::from_raw(&before),
                 text: "before, edited".into(),
                 body: None,

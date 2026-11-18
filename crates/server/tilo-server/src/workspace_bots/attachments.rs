@@ -333,7 +333,7 @@ impl WorkspaceAttachments {
         if write.record == CHAT_RECORD {
             return Some(write.record.clone());
         }
-        let id = ui::resource::DocumentId::parse(&write.record)?;
+        let id = collab_types::document::DocumentId::parse(&write.record)?;
         chat::parts::part_index(&id)
             .is_some()
             .then(|| write.record.clone())

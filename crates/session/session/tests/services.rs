@@ -27,13 +27,12 @@ use tilo_compositor::OutputConfig;
 use tilo_connectivity_service::Connectivity;
 use tilo_connectivity_service::device::{Change, Device, Readings};
 use tilo_service::lines::{self, Remote};
-use tilo_session::platform::fabric::UnlockFabricState;
 use tilo_session::platform::fabric::{
     AudioEndpoint, AudioEndpointKind, EndpointSelector, SpeakerFabricState,
 };
 use tilo_session::platform::fabric::{
-    DeviceFabric, DeviceFabricSnapshot, DeviceId, DeviceKind, DevicePresence,
-    FABRIC_SCHEMA_VERSION, FabricCapabilities, FabricStamp, OwnerSession, PersonalFabricAction,
+    DeviceAbout, DeviceId, DeviceKind, FabricCapabilities, FabricStamp, PersonDevice,
+    PersonDevices, PersonalFabricAction,
 };
 use tilo_session::platform::fabric::{FabricLink, PersonalFabricSendError};
 use tilo_session::{Options, Service, Session};
@@ -202,19 +201,19 @@ fn choosing_headphones_is_an_action_of_the_published_sound() {
     ));
 }
 
-/// The person's device fabric as a stand-in transport keeps it: which of their devices are on it,
-/// each publishing one output speaker groups can be made of.
+/// The person's devices as a stand-in transport keeps them: which of their devices are on it, each
+/// offering one output speaker groups can be made of.
 #[derive(Clone)]
 struct Fabric {
-    converged: Arc<Mutex<DeviceFabric>>,
+    converged: Arc<Mutex<PersonDevices>>,
     local: DeviceId,
 }
 
 impl Fabric {
-    /// This laptop, alone on the fabric.
+    /// This laptop, alone among the person's devices.
     fn laptop() -> Self {
         let fabric = Self {
-            converged: Arc::new(Mutex::new(DeviceFabric::default())),
+            converged: Arc::new(Mutex::new(PersonDevices::default())),
             local: DeviceId::new("this-laptop").expect("a device id"),
         };
         fabric.publish("this-laptop", "This laptop");
@@ -229,14 +228,12 @@ impl Fabric {
         )
     }
 
-    /// Publish `device` on the fabric as it stands now.
+    /// Offer `device` among the person's devices as it stands now.
     fn publish(&self, device: &str, label: &str) {
         let owner = DeviceId::new(device).expect("a device id");
-        let snapshot = DeviceFabricSnapshot {
-            schema_version: FABRIC_SCHEMA_VERSION,
-            owner: owner.clone(),
-            presence: DevicePresence {
-                device: owner.clone(),
+        let mut known = PersonDevice::new(
+            owner,
+            DeviceAbout {
                 label: label.into(),
                 kind: DeviceKind::Laptop,
                 capabilities: FabricCapabilities {
@@ -244,36 +241,20 @@ impl Fabric {
                     audio_group: true,
                     ..FabricCapabilities::default()
                 },
-                online: true,
-                last_seen_unix_ms: 1,
-                wake_routes: Vec::new(),
-                session: OwnerSession::default(),
-                stamp: FabricStamp {
-                    counter: 1,
-                    device: owner,
-                },
             },
-            media: Vec::new(),
-            clipboard: Vec::new(),
-            settings: Vec::new(),
-            wifi: Vec::new(),
-            display: None,
-            speakers: SpeakerFabricState {
-                endpoints: vec![AudioEndpoint {
-                    selector: Self::output(device),
-                    kind: AudioEndpointKind::Output,
-                    label: "Speakers".into(),
-                    is_default: true,
-                }],
-                ..SpeakerFabricState::default()
-            },
-            unlock: UnlockFabricState::default(),
+        );
+        known.online = true;
+        known.last_seen_unix_ms = 1;
+        known.speakers = SpeakerFabricState {
+            endpoints: vec![AudioEndpoint {
+                selector: Self::output(device),
+                kind: AudioEndpointKind::Output,
+                label: "Speakers".into(),
+                is_default: true,
+            }],
+            ..SpeakerFabricState::default()
         };
-        self.converged
-            .lock()
-            .unwrap()
-            .upsert(snapshot)
-            .expect("the snapshot is valid");
+        self.converged.lock().unwrap().insert(known);
     }
 
     /// Another of the person's devices joins the fabric, online.
@@ -281,24 +262,24 @@ impl Fabric {
         self.publish(device, label);
     }
 
-    /// Publish this device's speaker records as its snapshot does: the sets it leads, as the group
-    /// core hands them to the snapshot builder.
+    /// Offer this device's speaker groups as its own part of the person's store holds them: the
+    /// sets it leads, as the group core hands them out.
     fn publishes_its_speaker_sets(&self) {
         let mut converged = self.converged.lock().unwrap();
-        let mut snapshot = converged
-            .snapshots()
+        let mut kept = converged
             .get(&self.local)
             .cloned()
             .expect("this device is published");
-        snapshot.presence.stamp.counter = snapshot.presence.stamp.counter.saturating_add(1);
-        let stamp = snapshot.presence.stamp.clone();
-        snapshot.speakers = tilo_speaker_service::groups::authored_state(
+        kept.speakers = tilo_speaker_service::groups::authored_state(
             &self.local,
-            Some(&snapshot.speakers),
-            &stamp,
+            Some(&kept.speakers),
+            &FabricStamp {
+                counter: 2,
+                device: self.local.clone(),
+            },
             true,
         );
-        converged.upsert(snapshot).expect("the snapshot is valid");
+        converged.insert(kept);
     }
 
     /// The sets Settings' snapshot shows, by name.
@@ -335,7 +316,7 @@ impl Fabric {
 }
 
 impl FabricLink for Fabric {
-    fn device_fabric(&self) -> DeviceFabric {
+    fn devices(&self) -> PersonDevices {
         self.converged.lock().unwrap().clone()
     }
 

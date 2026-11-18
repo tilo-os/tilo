@@ -100,6 +100,42 @@ pub fn action_match_scores<'a>(
     )
 }
 
+/// What a workspace's own action is found by in the desktop palette: its label and the
+/// words its declaration gives, and no one-letter query word ("a", "I"), which appears in
+/// nearly every label. The title of the resource it acts on is not a word to find it by —
+/// every action of a document would answer that document's title — except for the resource's own
+/// `open`, which is the item itself.
+pub fn published_action_match_scores<'a>(
+    needle: &str,
+    actions: impl IntoIterator<Item = (&'a str, &'a [String], Option<&'a str>)>,
+) -> Vec<Option<i32>> {
+    let words: Vec<&str> = needle
+        .split_whitespace()
+        .filter(|word| word.chars().count() > 1)
+        .collect();
+    if words.is_empty() {
+        return actions.into_iter().map(|_| None).collect();
+    }
+    let needle = words.join(" ");
+    ui::search::system::rank_actions_fields(
+        needle.as_str(),
+        actions
+            .into_iter()
+            .map(|(label, keywords, resource_label)| {
+                let mut fields = vec![(label, ui::search::FieldWeight::TITLE)];
+                if let Some(resource_label) = resource_label {
+                    fields.push((resource_label, ui::search::FieldWeight::SUBTITLE));
+                }
+                fields.extend(
+                    keywords
+                        .iter()
+                        .map(|word| (word.as_str(), ui::search::FieldWeight::KEYWORD)),
+                );
+                fields
+            }),
+    )
+}
+
 /// The shared ranker over an action on one item of a record: the item's
 /// name finds it, and its actions come with it.
 pub fn item_action_match_score(needle: &str, item_label: &str) -> Option<i32> {

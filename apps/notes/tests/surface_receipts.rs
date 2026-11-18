@@ -16,7 +16,7 @@ const SURFACE: &[u8] = include_bytes!("../surface.toml");
 
 /// A member's replica of the part the notes are kept in.
 fn part(app: &TestApp<NotesShell>) -> automerge::AutoCommit {
-    app.peer_document_of(&notes::part::chain().part(0))
+    app.peer_document_of(&notes::note_list::chain().part(0))
         .expect("the part is held")
 }
 
@@ -83,7 +83,7 @@ fn editing_a_notes_body_is_decided_by_the_committed_surface() {
     let mut app = TestApp::<NotesShell>::new().unwrap();
     let created = call(
         &mut app,
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "create-page",
         json!({ "title": "Links", "markdown": "[tilo OS](search for the tilo homepage)" }),
     );

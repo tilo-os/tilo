@@ -63,12 +63,20 @@ identifiers = ["RelayMode", "RelayUrl", "RelayMap", "RelayNode", "RelayUrlParseE
 reason = "iroh's NAT and packet relay, and the live session's relaying device: iroh's own infrastructure, and the one Tilo role that keeps the word relay."
 words = ["relay"]
 paths = [
+    "crates/browser/tilo-browser-runtime/src/invited_server.rs",
+    "crates/browser/tilo-browser-runtime/web/entry-page.mjs",
     "crates/browser/tilo-browser-runtime/web/peer.mjs",
+    "crates/browser/tilo-browser-runtime/web/site-host.mjs",
+    "crates/browser/tilo-browser-runtime/web/site-host.test.mjs",
     "crates/browser/tilo-web-desktop/scripts/agent-shell.mjs",
     "crates/dev/test-server/Cargo.toml",
     "crates/dev/test-server/src/lib.rs",
+    "crates/server/tilo-api/src/client/device.rs",
+    "crates/server/tilo-api/src/direct.rs",
+    "crates/server/tilo-api/src/server.rs",
     "crates/server/tilo-server/src/agents.rs",
     "crates/server/tilo-server/src/daemon.rs",
+    "crates/server/tilo-server/src/web_cli.rs",
     "crates/server/tilo-server/src/web/mod.rs",
     "crates/server/tilo-workspace-service/Cargo.toml",
     "crates/platform/tilo-net-p2p/src/lib.rs",
@@ -76,11 +84,14 @@ paths = [
     "crates/session/session/src/sync/client/mod.rs",
     "crates/session/session/src/window_share.rs",
     "crates/system/fs/src/full_replica.rs",
-    "crates/system/tilo-sibling-unlock/Cargo.toml",
+    "crates/system/tilo-auth/Cargo.toml",
+    "crates/system/tilo-cli/src/login.rs",
     "docs/architecture/web-page-actors.md",
     "docs/architecture/workspace.md",
     "docs/device-reach.md",
     "docs/hosted-browser.md",
+    "os/containers/tilo-lounge/README.md",
+    "os/containers/tilo-lounge/entrypoint.sh",
     "os/containers/tilo-server/Containerfile",
     "os/containers/tilo-sh/stack.sh",
     "os/dev-image/usr/lib/systemd/system/tilo-device-admin.service",
@@ -130,18 +141,6 @@ paths = [
 reason = "A participant of a FROST signing or key generation round."
 words = ["participant"]
 paths = ["crates/collab/threshold-identity/*"]
-
-[[allow]]
-reason = "The name the report of a local document action gives its provenance: kept in app documents and sent between an app and the system, read and written by that name."
-words = ["custody"]
-paths = [
-    "crates/runtime/runtime-collab/src/lib.rs",
-    "crates/runtime/runtime-collab/src/local_document_action_transport_tests.rs",
-    "crates/server/tilo-workspace-service/src/apps/local_document_action.rs",
-    "crates/sdk/ui-core/src/app/local_action_persistence.rs",
-    "crates/sdk/ui-core/src/app/local_action_persistence_tests.rs",
-    "crates/sdk/ui-core/src/local_document_action.rs",
-]
 
 [[allow]]
 reason = "An iCalendar or WhatsApp group participant."
@@ -438,6 +437,30 @@ words = ["channel"]
 identifiers = ["sync_channel"]
 
 [[allow]]
+reason = "The standard library's hand-off between the thread that serves requests and the thread that reads documents for the search index."
+words = ["channel"]
+identifiers = ["channel"]
+paths = ["crates/agent/agent-session/src/workspace_actions/index.rs"]
+
+[[allow]]
+reason = "The session engine's own name for what it saved of a document, which the search index reads to publish its entries."
+words = ["record"]
+identifiers = ["record_since"]
+paths = ["crates/agent/agent-session/src/workspace_actions/index.rs"]
+
+[[allow]]
+reason = "The helper that names a document's action provider, as the action service knows it."
+words = ["record"]
+identifiers = ["record_provider"]
+paths = ["crates/agent/agent-session/tests/workspace_actions/search_beside_requests.rs"]
+
+[[allow]]
+reason = "A LUKS key slot: the one of a volume's keys a boot asks a sibling to unlock with."
+words = ["slot"]
+identifiers = ["slot", "SlotId"]
+paths = ["crates/session/session/src/platform/fabric/linux/store_tests.rs"]
+
+[[allow]]
 reason = "A file's name: `./host.mjs` is the module that puts the wasm runtime in a page, and these two files name it in their imports."
 words = ["host"]
 identifiers = ["host"]
@@ -484,7 +507,7 @@ paths = ["crates/runtime/tilo-mcp/src/mcp_serve_tests.rs"]
 [[allow]]
 reason = "A replica test drives the platform's Host API: `migrate` is only on Host, and the tests' own field for it keeps that name while the API is being renamed."
 words = ["host"]
-paths = ["crates/platform/tilolang-tilo/tests/migrations.rs"]
+paths = ["crates/platform/tilolang-tilo/tests/migrations.rs", "crates/platform/tilolang-tilo/tests/gallery.rs"]
 identifiers = ["host"]
 
 [[allow]]
@@ -629,3 +652,15 @@ reason = "The in-sandbox loopback port that carries an app's traffic to the egre
 words = ["relay"]
 identifiers = ["RELAY_PORT"]
 paths = ["crates/session/session/tests/windows_compat.rs"]
+
+[[allow]]
+reason = "TypeScript's built-in `Record<K, V>` type."
+words = ["record"]
+identifiers = ["Record"]
+paths = ["sdk/typescript/**"]
+
+[[allow]]
+reason = "The server fixture's own device, as the shared API fixture names its field (`OnServer::host`)."
+words = ["host"]
+identifiers = ["host"]
+paths = ["crates/agent/agent-session/tests/workspace_actions/key_writes.rs"]

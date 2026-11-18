@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # The hosted VM guest: the one root filesystem every workspace VM on a host that
 # serves other people's workspaces boots (Firecracker,
-# crates/runtime/legacy-vm/src/hosted). It runs the workspace's Linux programs
+# crates/runtime/linux-vm/src/hosted). It runs the workspace's Linux programs
 # and its Browser.
 #
 # It is a root *filesystem*, not a disk and not an installed system: no systemd,
@@ -9,7 +9,7 @@
 # container's filesystem into a raw ext4 (`rootfs.ext4`), which every VM's disk
 # starts as a reflinked copy of, and that the guest grows to its size at boot.
 # PID 1 is os/hosted-guest/hosted-init, which mounts what a guest needs, grows
-# the filesystem and hands over to the guest agent (crates/runtime/legacy-agent)
+# the filesystem and hands over to the guest agent (crates/runtime/linux-vm-agent)
 # — a VM must answer within a few hundred milliseconds of being restored.
 #
 # Fedora 44, the userland every Tilo binary is built for, so the session and
@@ -57,12 +57,12 @@ RUN dnf install -y --setopt=install_weak_deps=False \
 RUN useradd --create-home --uid 1000 --user-group --shell /bin/bash tilo \
  && install -d -o tilo -g tilo /home/tilo/.local /home/tilo/.local/bin /home/tilo/.local/share \
       /home/tilo/.local/state /home/tilo/.cache /home/tilo/.config
-COPY --from=hosted-agent /tilo-legacy-agent /usr/libexec/tilo/tilo-legacy-agent
+COPY --from=hosted-agent /tilo-linux-vm-agent /usr/libexec/tilo/tilo-linux-vm-agent
 COPY os/hosted-guest/hosted-init /usr/libexec/tilo/hosted-init
 RUN set -eu; \
-    chmod 0755 /usr/libexec/tilo/hosted-init /usr/libexec/tilo/tilo-legacy-agent; \
+    chmod 0755 /usr/libexec/tilo/hosted-init /usr/libexec/tilo/tilo-linux-vm-agent; \
     bash -n /usr/libexec/tilo/hosted-init; \
-    agent_says=$(/usr/libexec/tilo/tilo-legacy-agent --user no-such-user 2>&1 || true); \
+    agent_says=$(/usr/libexec/tilo/tilo-linux-vm-agent --user no-such-user 2>&1 || true); \
     case $agent_says in \
       *"no ordinary user"*) echo 'agent: runs on this root filesystem' ;; \
       *) echo "agent: $agent_says"; exit 1 ;; \
@@ -329,7 +329,7 @@ RUN set -eu; \
 
 # node, npm and npx on PATH for every shell and for every program the agent
 # starts, without a shell hook: the agent sets PATH to
-# /usr/local/bin:/usr/bin:/bin (crates/runtime/legacy-agent/src/launch.rs).
+# /usr/local/bin:/usr/bin:/bin (crates/runtime/linux-vm-agent/src/launch.rs).
 ARG NODE_ASSET
 RUN set -eu; \
     v=${NODE_ASSET#node-}; \

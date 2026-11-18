@@ -37,7 +37,7 @@ use tilo_workspace_agent::{Agent, WorkspaceAgents};
 
 use super::asks::{Answered, Asker, Carried, Carries, ServerAsk};
 use super::turn_provider::{Ending, Rows};
-use super::{CHAT, Reply, Turn, TurnProvider, WorkspaceId, read_document};
+use super::{CHAT, Reply, Turn, TurnProvider, WorkspaceId};
 use crate::workspaces::Workspaces;
 use crate::workspaces::hosted_use::HostedTurn;
 use crate::workspaces::person_asking::kept_asks::KeptAsk;
@@ -257,10 +257,11 @@ impl Answers {
     /// The agent that asked `ask`, as the workspace's list of its agents holds it now.
     async fn asker(&self, ask: &KeptAsk) -> Option<Agent> {
         let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-        let kept =
-            read_document::<WorkspaceAgents>(&self.workspaces, &ask.workspace, (CHAT, &list))
-                .await
-                .ok()??;
+        let kept = self
+            .workspaces
+            .read_resource::<WorkspaceAgents>(&ask.workspace, (CHAT, &list))
+            .await
+            .ok()??;
         kept.agents
             .iter()
             .find(|agent| agent.id.0 == ask.agent && agent.is_active())
@@ -282,15 +283,16 @@ impl Answers {
         let mut found = false;
         for (app, document) in routes {
             if app != CHAT
-                || ui::resource::DocumentId::parse(&document)
+                || collab_types::document::DocumentId::parse(&document)
                     .is_none_or(|part| chat::parts::part_index(&part).is_none())
             {
                 continue;
             }
             let read = (CHAT, document.as_str());
-            let Ok(Some(part)) =
-                read_document::<chat::parts::ChatPart>(&self.workspaces, &ask.workspace, read)
-                    .await
+            let Ok(Some(part)) = self
+                .workspaces
+                .read_resource::<chat::parts::ChatMessages>(&ask.workspace, read)
+                .await
             else {
                 continue;
             };

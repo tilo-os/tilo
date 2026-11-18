@@ -30,12 +30,12 @@ use std::time::{Duration, Instant};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
-use tilo_lock::MutexRecover as _;
-use tilo_user_identity::{
-    DeviceCapabilities, DeviceCert, IdentityPaths, adopt_device_key,
+use tilo_device_identity::{
+    IdentityPaths, adopt_device_key,
     persist::{write_device_cert, write_public_key, write_signing_key},
-    sign_device_cert,
 };
+use tilo_lock::MutexRecover as _;
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 const TIMEOUT: Duration = Duration::from_secs(180);
 
@@ -665,7 +665,10 @@ fn provenance(cache: &Path, path: &str) -> Vec<fs_protocol::FileProvenance> {
     let entry = ns
         .entry_at(path)
         .unwrap_or_else(|| panic!("{path} is not a record"));
-    let mut versions = ns.document_history(entry.document_id).unwrap().versions;
+    let mut versions: Vec<_> = ns
+        .document_versions(entry.document_id)
+        .into_values()
+        .collect();
     versions.sort_by_key(|v| v.timestamp_ms);
     versions.into_iter().map(|v| v.provenance).collect()
 }
@@ -678,10 +681,8 @@ fn first_versions(cache: &Path, paths: &[&str]) -> Vec<u64> {
             let entry = ns
                 .entry_at(p)
                 .unwrap_or_else(|| panic!("{p} is not a record"));
-            let snapshot = ns.document_history(entry.document_id).unwrap();
-            snapshot
-                .versions
-                .iter()
+            ns.document_versions(entry.document_id)
+                .values()
                 .filter(|v| v.content_hash.is_some())
                 .map(|v| v.timestamp_ms)
                 .min()

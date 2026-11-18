@@ -23,7 +23,7 @@ de = "Hex-Editor"
 x86_64 = "v3"
 aarch64 = "aarch64"
 
-# What the app's code uses (tools/policy/check_app_capabilities.py checks it).
+# What the app's code uses (tilo-app check holds the code to this list).
 [capabilities]
 optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files"]
 
@@ -58,8 +58,8 @@ mode = "off"
 [sandbox.portals]
 
 [sandbox.services]
-collab = "optional@31"
-tilo-fs = "optional@31"
+collab = "optional@32"
+tilo-fs = "optional@32"
 
 [entrypoint]
 bin             = "bin/hex-editor"

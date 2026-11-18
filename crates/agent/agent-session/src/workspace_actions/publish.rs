@@ -160,9 +160,11 @@ impl Written {
 pub(super) enum Saving {
     /// The host holds every one of them durably.
     Saved,
-    /// The host refused them, or the session ended before it held them:
-    /// why.
+    /// The session ended before the server held them: why. Asked again, the
+    /// action is made again over the session the workspace holds then.
     Failed(String),
+    /// The workspace refused them for good: why, in its words.
+    Refused(String),
     /// Not yet saved, as when held for a record's keys: [`Unsaved::settle`]
     /// says how it ends.
     Pending(Unsaved),
@@ -285,7 +287,7 @@ impl Unsaved {
             .name("write-saved".into())
             .spawn(move || {
                 let outcome = match saved.recv_timeout(bound) {
-                    Ok(outcome) => outcome,
+                    Ok(outcome) => outcome.map_err(Refusal::Refused),
                     Err(tilo_session_client::RecvTimeoutError::Timeout) => {
                         let kept = say_unsaved(&written, asking.as_ref());
                         drop(heard);
@@ -304,7 +306,8 @@ impl Unsaved {
                                 }
                                 Err(tilo_session_client::RecvTimeoutError::Disconnected) => {
                                     break Err(
-                                        "the session ended before the host saved the change".into(),
+                                        "the session ended before the server saved the change"
+                                            .into(),
                                     );
                                 }
                             }
@@ -313,15 +316,25 @@ impl Unsaved {
                         return;
                     }
                     Err(tilo_session_client::RecvTimeoutError::Disconnected) => {
-                        Err("the session ended before the host saved the change".into())
+                        Err(Refusal::Ended(
+                            "the session ended before the server saved the change".into(),
+                        ))
                     }
                 };
-                log_saved(&written, &outcome);
+                let logged = outcome.clone().map_err(|refusal| match refusal {
+                    Refusal::Refused(reason) | Refusal::Ended(reason) => reason,
+                });
+                log_saved(&written, &logged);
                 for heard in &heard {
                     heard.0.set(outcome.is_ok());
                 }
-                settled(outcome.map_err(|reason| {
-                    unsaved_failure(format!("the host did not save the change: {reason}"))
+                settled(outcome.map_err(|refusal| match refusal {
+                    Refusal::Refused(reason) => {
+                        refused_failure(format!("the server did not save the change: {reason}"))
+                    }
+                    Refusal::Ended(reason) => {
+                        unsaved_failure(format!("the server did not save the change: {reason}"))
+                    }
                 }));
             });
         if let Err(error) = watching {
@@ -376,6 +389,14 @@ fn kept_said(
     }
     let theirs = kept.iter().any(|kept| own.contains(&kept.route));
     Some((said.join("; "), theirs))
+}
+
+/// Why writes the server did not save were not: the workspace refused them for
+/// good, or the session ended before the server held them.
+#[derive(Clone)]
+enum Refusal {
+    Refused(String),
+    Ended(String),
 }
 
 fn log_saved(written: &[Written], outcome: &Result<(), String>) {
@@ -515,6 +536,7 @@ impl Worker {
         let (outcome, mut unsaved) = match self.saving(workspace_id) {
             Saving::Saved => return (outcome, None),
             Saving::Failed(reason) => (Err(Outcome::Failed(unsaved_failure(reason))), None),
+            Saving::Refused(reason) => (Err(Outcome::Failed(refused_failure(reason))), None),
             Saving::Pending(unsaved) => (outcome, Some(unsaved)),
         };
         let holders: HashSet<DocumentRoute> =
@@ -551,8 +573,9 @@ impl Worker {
         }
         let waiting = super::timing_start();
         // Asked of the documents the request wrote and of no other: the service's one session
-        // carries every workspace's writes, and a write that waits beside these, in another
-        // workspace or for another document of this one, says nothing about them.
+        // carries every caller's writes, a write that waits beside these, in another workspace
+        // or for another document of this one, says nothing about them, and another caller's
+        // refused write is not this one's.
         let documents: Vec<DocumentRoute> = written.iter().map(Written::route).collect();
         let saved = match self
             .workspaces
@@ -561,12 +584,12 @@ impl Worker {
             .and_then(|workspace| {
                 workspace
                     .peer
-                    .barrier_of_documents(&documents)
+                    .barrier_for(&documents)
                     .map_err(|closed| closed.to_string())
             }) {
             Ok(saved) => saved,
             Err(reason) => {
-                let reason = format!("the host did not save the change: {reason}");
+                let reason = format!("the server did not save the change: {reason}");
                 log_saved(&written, &Err(reason.clone()));
                 super::timing_done("action.save_failed", waiting);
                 return Saving::Failed(reason);
@@ -598,7 +621,7 @@ impl Worker {
                 match outcome {
                     Ok(()) => Saving::Saved,
                     Err(reason) => {
-                        Saving::Failed(format!("the host did not save the change: {reason}"))
+                        Saving::Refused(format!("the server did not save the change: {reason}"))
                     }
                 }
             }
@@ -619,7 +642,7 @@ impl Worker {
                 })
             }
             Err(tilo_session_client::RecvTimeoutError::Disconnected) => {
-                let reason = "the host did not save the change: the session ended".to_owned();
+                let reason = "the server did not save the change: the session ended".to_owned();
                 log_saved(&written, &Err(reason.clone()));
                 super::timing_done("action.save_failed", waiting);
                 Saving::Failed(reason)
@@ -635,7 +658,7 @@ impl Worker {
             let Some(saved) = self
                 .workspaces
                 .get(&workspace_id)
-                .and_then(|workspace| workspace.peer.barrier_of_documents(&documents).ok())
+                .and_then(|workspace| workspace.peer.barrier_for(&documents).ok())
             else {
                 continue;
             };
@@ -887,13 +910,25 @@ fn unconfirmed_failure(kept: Option<&str>) -> ActionFailure {
 }
 
 /// Why an action whose change the host did not save failed. The workspace
-/// took none of it (it refused the change, or the session it rode ended), so
-/// asking again runs it again over the session the workspace holds now.
+/// took none of it (the session it rode ended), so asking again makes it again
+/// over the session the workspace holds now.
 fn unsaved_failure(message: String) -> ActionFailure {
     ActionFailure {
         code: "commit_failed".into(),
         message,
         details: None,
         retryable: true,
+    }
+}
+
+/// Why an action whose change the workspace refused for good failed, in the
+/// workspace's words. Asked again, the same change is refused again, so it is
+/// not retryable, and the invocation keeps the failure for whoever follows it.
+fn refused_failure(message: String) -> ActionFailure {
+    ActionFailure {
+        code: "write_refused".into(),
+        message,
+        details: None,
+        retryable: false,
     }
 }

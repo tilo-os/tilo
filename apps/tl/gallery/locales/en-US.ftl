@@ -19,7 +19,7 @@ d-xttl6aec = Stage
 d-44yujnht = Reactions
 
 d-x3epwv5u = Gallery
-    .doc = The everyday parts of a window: navigation, text and buttons, chips, a card of facts, an
+    .doc = The gallery: a window of every group.
     .noun = { $count ->
         [one] gallery
        *[other] galleries
@@ -255,6 +255,12 @@ d-xv6amesr = Low
 d-jrcgjyzr = Medium
 
 d-fglwr2mx = High
+
+d-ugfyyjbk = Seed
+    .doc = A gallery whose root is made opens filled: the platform applies this once to the root, as it applies every migration, as the root is made and before the window that asked for it is drawn.
+
+d-haqpp6u6 = Fill
+    .doc = What the gallery shows with nothing in it yet: one document of every group, so a person meets the components rather than an empty window.
 
 d-yy2pow4p = Note item
     .doc = Note the item a row opened, in the page's answer.

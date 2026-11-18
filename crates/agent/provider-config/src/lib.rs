@@ -23,6 +23,7 @@ pub mod presets;
 pub mod protocol;
 /// Single-shot model calls in either provider dialect.
 pub mod transform;
+pub mod wire;
 
 /// The section holding the providers of this device and its network, and
 /// the default: this device's.

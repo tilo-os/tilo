@@ -50,7 +50,7 @@ use crate::workspaces::person_model::protocol::ErrorKind;
 use crate::workspaces::person_model::{Interaction, ModelRefusal, Spender};
 
 /// The app that keeps the workspace's record of its agents.
-use ui::apps::CHAT;
+use tilo_app_id::apps::CHAT;
 
 /// Chat's verb that starts a turn of the agents in a conversation.
 const ASK_AGENT: &str = "ask-agent";
@@ -350,7 +350,7 @@ impl Hosted {
                 &WorkspaceActionProvider::new(actions.clone(), workspace),
                 &caller,
                 &route,
-                &ui::resource::chain_resource_id(&chat::parts::chain()),
+                &collab_types::document::chain_resource_id(&chat::parts::chain()),
                 ASK_AGENT,
                 asking.arguments,
             ))

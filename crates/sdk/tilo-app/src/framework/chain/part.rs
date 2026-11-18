@@ -32,7 +32,7 @@ type Action = Box<dyn Any>;
 type Route = (Option<String>, Option<Result<u64, String>>);
 
 type ReadPart = fn(&ResourceStore, &DocumentId) -> Result<Box<dyn HeldPart>, String>;
-type Prepare = fn(&dyn Any, &dyn Any, &dyn Any, &ActionInvoker) -> Result<Action, String>;
+type Prepare = fn(&[&dyn Any], &dyn Any, &dyn Any, &ActionInvoker) -> Result<Vec<Action>, String>;
 type RouteOf = fn(&dyn Any, &dyn Any, &dyn Any) -> Route;
 type Written =
     for<'a> fn(&'a dyn Any) -> Result<(&'a dyn tilo_actions::Action, EncodedAction), ActionError>;
@@ -57,8 +57,6 @@ pub(super) struct PartType {
     pub(super) kind: &'static str,
     pub(super) label: &'static str,
     pub(super) held_whole: bool,
-    /// The fields a row of the listing carries when its caller names none.
-    pub(super) listed: &'static [&'static str],
     pub(super) table: Option<&'static tilo_resource::table::ModelTable>,
     pub(super) initialize: fn(&mut AutoCommit) -> Result<(), String>,
     /// Read the part a document holds, brought up to the resource's storage
@@ -155,7 +153,6 @@ impl<P: Chained> Of<P> {
         kind: P::KIND,
         label: P::LABEL,
         held_whole: P::HELD_WHOLE,
-        listed: P::LISTED,
         table: P::RESOURCE_TABLE,
         initialize: initialize::<P>,
         read: read_part::<P>,
@@ -328,19 +325,25 @@ fn typed<P: Chained>(parts: &[(u64, Rc<dyn Any>)]) -> TypedParts {
 }
 
 fn prepare<P: Chained>(
-    action: &dyn Any,
+    actions: &[&dyn Any],
     base: &dyn Any,
     parts: &dyn Any,
     invoker: &ActionInvoker,
-) -> Result<Box<dyn Any>, String> {
-    let mut action = action_of::<P>(action)?.clone();
+) -> Result<Vec<Action>, String> {
+    let mut prepared = actions
+        .iter()
+        .map(|action| action_of::<P>(*action).cloned())
+        .collect::<Result<Vec<_>, _>>()?;
     P::prepare(
-        &mut action,
+        &mut prepared,
         base_of::<P>(base)?,
         parts_of::<P>(parts),
         invoker,
     )?;
-    Ok(Box::new(action))
+    Ok(prepared
+        .into_iter()
+        .map(|action| Box::new(action) as Action)
+        .collect())
 }
 
 fn route<P: Chained>(action: &dyn Any, base: &dyn Any, parts: &dyn Any) -> Route {

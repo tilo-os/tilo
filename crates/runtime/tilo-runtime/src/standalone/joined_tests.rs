@@ -725,7 +725,7 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
     device_key
         .verifying_key()
         .verify_strict(
-            &runtime_identity::collaboration_join_signing_bytes(&workspace.to_string()),
+            &runtime_identity::collaboration_join_digest(&workspace.to_string()).unwrap(),
             &ed25519_dalek::Signature::from_slice(&presentation.proof).unwrap(),
         )
         .unwrap();
@@ -1058,7 +1058,8 @@ fn a_live_sdk_app_in_a_joined_workspace_gets_its_keys_from_the_device() {
     .unwrap();
 
     // This device's channel service hands the app its route's keys; the
-    // app's write then arrives sealed, kept by the host as ciphertext.
+    // app's write then arrives sealed, kept by the host as ciphertext. The
+    // device seals its files in the workspace too.
     let sealed = tilo_rt::app()
         .block_on(tilo_test_env::within(
             "the SDK app's sealed write at the workspace",
@@ -1066,7 +1067,10 @@ fn a_live_sdk_app_in_a_joined_workspace_gets_its_keys_from_the_device() {
                 loop {
                     if let Ok(heard) = heard.recv().await
                         && heard.author == device.device_public_key
-                        && let NeighbourMsg::AppDocument { envelope, .. } = heard.message
+                        && let NeighbourMsg::AppDocument {
+                            app_id, envelope, ..
+                        } = heard.message
+                        && app_id == SDK_APP
                         && envelope.encryption.is_some()
                     {
                         break *envelope;

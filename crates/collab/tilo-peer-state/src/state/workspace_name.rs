@@ -40,7 +40,6 @@ impl PeerGovernanceMut<'_> {
         let before = doc.get_heads();
         doc.set_actor(self.peer.workspace_actor_of(key));
         doc.put(ROOT, "name", name).map_err(err)?;
-        doc.commit();
         self.peer.write_governance(doc, &before, key, now)?;
         Ok(())
     }

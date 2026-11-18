@@ -236,7 +236,7 @@ mod tests {
     use tilo_actions::InvocationUpdate;
     use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTarget};
 
-    const APP: &str = ui::apps::WORD_PROCESSOR;
+    const APP: &str = tilo_app_id::apps::WORD_PROCESSOR;
 
     /// Starts each launch with the next ticket.
     #[derive(Default)]
@@ -431,7 +431,7 @@ mod tests {
                 .set(provisioning::FILE_SECRETS_ENV, "1");
             provisioning::ensure_collaboration_identity(
                 &config.join("tilo/identity"),
-                &tilo_user_identity::IdentityPaths::under(&system),
+                &tilo_device_identity::IdentityPaths::under(&system),
                 IdentityStorage::Files,
             )
             .unwrap();

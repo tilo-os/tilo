@@ -39,45 +39,6 @@ path, so the wait ends and the paused relay read becomes backpressure on
 the relay server. See `vendor/iroh/TILO-PATCH.md` for the details and an
 upstream-ready description.
 
-## Rig Chat tool-name fragments
-
-`rig-core` 0.44.0 is the checksum-verified MIT registry runtime crate. Its
-OpenAI Chat decoder accumulates tool names per call, ignores empty names and
-identical full-name restatements, and supplies the final name to both the replay
-item and normalized writer. A Chat-only writer API streams arguments under an
-unnamed presentation-only Start before closure; End supplies the final name.
-The transcript validator accepts these unnamed tool Starts. Gateway previews
-remain inert until the provider successfully finishes and authorizes the final
-call. No request-tool prefix guessing, generic name concatenation,
-other-provider change or second SSE decoder is introduced. `vendor/rig-core/PROVENANCE.md` records the
-exact release/checksum and the upstream HEAD inspected for an existing fix.
-Gateway wire fixtures and vendored Chat tests cover fragmented/interleaved names
-and agreement across emitted, normalized and replay calls. Remove the patch
-once upstream provides this behavior.
-
-## Rig Chat thoughts in a message's content
-
-In the same `rig-core`, the Chat decoder and the Chat raw-document reassembler
-read a thought out of the content it stands in: a delta marked
-`extra_content.google.thought` and a content part marked `thought` for every
-dialect, and, under the quirk
-`thought_tags` of the new dialect `GEMINI`, text between `<thought>` and
-`</thought>` at the head of a content. It is the message's reasoning and never
-its answer text. Google's OpenAI-compatible endpoint returns a thought summary
-this way and documents no form for it. The gateway chooses `GEMINI` for that
-endpoint alone, and its `google_rig_tests.rs` covers the forms. Remove the
-patch once upstream reads these thoughts as reasoning.
-
-## Rig Responses instructions placement
-
-In the same `rig-core`, a placement of system messages for OpenAI Responses,
-`FirstInstructions`, lifts only the first into `instructions` and keeps the
-rest of the leading run as `system` items in `input`. The gateway selects it
-for OpenAI's own API so that system context after a planner's stable
-instructions (its apps), which varies, leaves the cached instructions prefix
-intact. Other placements and dialects are unchanged; the gateway's
-`host_backend` tests cover the request it sends.
-
 ## Cast transport
 
 `fcast-sender-sdk` 0.3.0 is the checksum-verified MIT registry release, moved to
@@ -95,7 +56,11 @@ No machine trust setting or persistent access grant changes. See its
 
 `librespot-core` 0.8.0 and `hyper-proxy2` 0.1.0 are checksum-verified MIT
 registry releases. The former moves to quick-xml 0.41 and invalidates a
-non-Premium session without exiting Music. The latter reuses the workspace's
+non-Premium session without exiting Music. It also drops its
+`librespot-oauth` dependency (the interactive OAuth login Music never uses,
+which brought in a second reqwest and oauth2); Music depends on
+`librespot-core` and `librespot-playback` directly instead of the `librespot`
+umbrella crate for the same reason. `hyper-proxy2` reuses the workspace's
 current Rustls/ring dependencies and Tilo's fixed-path native-root loader,
 removing the old certificate-validation and OpenSSL-probing chain. Their
 upstream TLS defaults remain untouched; Music explicitly selects Rustls.

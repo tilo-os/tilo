@@ -29,6 +29,7 @@ pub(super) async fn handle_open_document(
     else {
         return Ok(None);
     };
+    let opened = crate::timing::start();
     let refused = |refusal: tilo_server_protocol::refusal::Refusal| {
         Ok(Some(Envelope::NotAuthorised {
             workspace_id,
@@ -47,17 +48,22 @@ pub(super) async fn handle_open_document(
     {
         return refused(crate::workspace_access::DenyReason::OutOfEnvironmentScope.refusal());
     }
+    let locking = crate::timing::start();
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
         return refused(tilo_server_protocol::refusal::Refusal::NotReady);
     };
+    crate::timing::event("document.open.lock", locking, 0);
     // A chain's head names whichever part is the chain's newest: that part
     // is what is sent.
+    let heading = crate::timing::start();
     let head = {
         let store = ws.lock().await.store.clone();
         tokio::task::spawn_blocking(move || store.chain_head_channel(&channel))
             .await
             .map_err(|error| PeerError::Protocol(format!("record read: {error}")))??
     };
+    crate::timing::event("document.open.head", heading, u64::from(head.is_some()));
+    let admitting = crate::timing::start();
     let (store, governed) = {
         let mut runtime = crate::workspace_io::fresh_membership(&ws).await?;
         if !session.admits(&runtime, peer, WorkspaceOperation::State) {
@@ -105,21 +111,42 @@ pub(super) async fn handle_open_document(
                 .and_then(crate::workspaces::WorkspaceAuthority::workspaces),
         )
     };
+    crate::timing::event("document.open.admission", admitting, 0);
     // Sent whether or not the device holds the head already: an answer of no
     // frames says the chain has no part at all, never "you have it", so a
     // device whose copy has not opened yet never takes the chain as empty.
     let read = head.unwrap_or(channel);
+    let frames = frames_of(store, governed, workspace_id, read).await?;
+    let sent = u32::try_from(frames.len()).unwrap_or(u32::MAX);
+    crate::timing::event("document.open.total", opened, u64::from(sent));
+    answer.extend(frames);
+    Ok(Some(Envelope::DocumentOpened {
+        workspace_id,
+        channel,
+        answer: tilo_server_protocol::DocumentAnswer::Sent { frames: sent },
+    }))
+}
+
+/// Everything `store` retains of the document on `read`, beside the writes
+/// `governed`'s link keeps that the store's copy lacks: a linked member's
+/// write whose copy to the server has not landed yet is kept by the
+/// workspace's link, and sent from there, so a device never hears the document
+/// is absent while the workspace's host keeps it.
+async fn frames_of(
+    store: crate::store::WorkspaceStore,
+    governed: Option<crate::workspaces::Workspaces>,
+    workspace_id: WorkspaceId,
+    read: [u8; 32],
+) -> Result<Vec<Envelope>, PeerError> {
+    let reading = crate::timing::start();
     let frames = tokio::task::spawn_blocking(move || {
         let mut frames = store.record_frames(&read)?;
-        // A linked member's write whose copy to the server has not landed yet
-        // is kept by the workspace's link: sent from there, so the page never
-        // hears the record is absent while the workspace's host keeps it.
         if let Some(governed) = governed {
             match governed.link_frames_lacking(workspace_id, read, &frames) {
                 Ok(lacking) => frames.extend(lacking),
                 Err(error) => {
                     return Err(PeerError::Protocol(format!(
-                        "the workspace link's history of the record: {error}"
+                        "the workspace link's history of the document: {error}"
                     )));
                 }
             }
@@ -127,12 +154,8 @@ pub(super) async fn handle_open_document(
         Ok::<_, PeerError>(frames)
     })
     .await
-    .map_err(|error| PeerError::Protocol(format!("record read: {error}")))??;
-    let sent = u32::try_from(frames.len()).unwrap_or(u32::MAX);
-    answer.extend(frames);
-    Ok(Some(Envelope::DocumentOpened {
-        workspace_id,
-        channel,
-        answer: tilo_server_protocol::DocumentAnswer::Sent { frames: sent },
-    }))
+    .map_err(|error| PeerError::Protocol(format!("document read: {error}")))??;
+    let sent = u64::try_from(frames.len()).unwrap_or(u64::MAX);
+    crate::timing::event("document.open.frames", reading, sent);
+    Ok(frames)
 }

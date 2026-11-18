@@ -498,7 +498,8 @@ fn chat_messages(page: &Link, workspace: &str, channel: &str) -> Vec<chat::model
         let Some(document) = crate::support::resource_of(page, &part) else {
             continue;
         };
-        if let Ok(held) = tilo_app::tilo_resource::Reader::<chat::parts::ChatPart>::read(&document)
+        if let Ok(held) =
+            tilo_app::tilo_resource::Reader::<chat::parts::ChatMessages>::read(&document)
         {
             parts.push((index, std::rc::Rc::clone(held.state())));
         }

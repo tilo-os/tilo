@@ -97,10 +97,16 @@ tilo_test_env::scenario! {
         let listing = app.call_on(&at, "read", json!({})).unwrap().unwrap();
         let held = listing["held"].as_array().unwrap();
         assert_eq!(held.len(), 2);
-        assert_eq!(held[0]["name"], "Re: Quarterly numbers", "newest first");
-        let item = held[1]["item"].as_str().unwrap().to_owned();
-        assert!(item.ends_with(&first), "{item}");
-        let one = app.call_on(&item, "read", json!({})).unwrap().unwrap();
+        assert_eq!(
+            held[0]["value"]["subject"], "Re: Quarterly numbers",
+            "newest first"
+        );
+        let item = held[1]["id"].as_str().unwrap().to_owned();
+        assert_eq!(item, first);
+        let one = app
+            .call_on(&at, "read", json!({ "item": item }))
+            .unwrap()
+            .unwrap();
         assert_eq!(
             one["message"]["body"],
             "They are up.\nSee the attached summary."
@@ -184,7 +190,7 @@ tilo_test_env::scenario! {
         let at = messages(&mut app);
         app.call_on(&at, "archive", json!({ "messages": [&id] })).unwrap();
         app.settle();
-        let history = app.chain_history::<crate::part::MessagePart>();
+        let history = app.chain_history::<crate::message_states::MessageStates>();
         assert!(history.len() >= 2, "{history:?}");
         let held = crate::resource::TestMail::held_by(&app);
         assert_eq!(

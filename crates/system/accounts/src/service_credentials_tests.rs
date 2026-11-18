@@ -134,58 +134,6 @@ fn storage_failures_are_not_reported_as_success_or_absence() {
 }
 
 #[test]
-fn legacy_provider_migration_is_explicit_origin_safe_and_idempotent() {
-    let root = root();
-    let legacy = AccountId::new("agent-provider-profile-1");
-    let mut vault = SecretVault::open_in(&root);
-    vault.put(&legacy, &Secret::password("legacy-key"));
-    vault.try_save().unwrap();
-    let store = ServiceCredentials::open_in(&root);
-    let original = authorization("https://original.example/v1");
-    let changed = authorization("https://changed.example/v1");
-    assert!(matches!(
-        store.migrate_agent_provider("profile-1", &changed, "https://original.example"),
-        Err(BrokerError::Denied)
-    ));
-    assert_eq!(
-        SecretVault::open_in(&root).get(&legacy).unwrap().password,
-        "legacy-key"
-    );
-    let reference = store
-        .migrate_agent_provider("profile-1", &original, "https://original.example")
-        .unwrap();
-    assert!(SecretVault::open_in(&root).get(&legacy).is_none());
-    assert_eq!(
-        store
-            .resolve(&reference, &original)
-            .unwrap()
-            .unwrap()
-            .as_str(),
-        "legacy-key"
-    );
-    store.store(&reference, &original, "replacement").unwrap();
-    assert_eq!(
-        store
-            .migrate_agent_provider("profile-1", &original, "https://original.example")
-            .unwrap(),
-        reference
-    );
-    assert_eq!(
-        store
-            .resolve(&reference, &original)
-            .unwrap()
-            .unwrap()
-            .as_str(),
-        "replacement"
-    );
-    assert!(matches!(
-        store.resolve(&reference, &changed),
-        Err(BrokerError::Denied)
-    ));
-    std::fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
 fn conflicting_same_key_edits_fail_without_rebinding() {
     let root = root();
     let mut first = SecretVault::open_in(&root);

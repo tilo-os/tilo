@@ -145,24 +145,24 @@ fn read(fabric: &SharedLink) -> Vec<PersonalDevice> {
     let local = fabric
         .local_device_fabric_identity()
         .map(|(device, _)| device);
-    let converged = fabric.device_fabric();
+    let converged = fabric.devices();
     let nearby = fabric.nearby_device_ids();
     let mut devices: Vec<PersonalDevice> = converged
-        .snapshots()
+        .devices()
         .values()
-        .map(|snapshot| PersonalDevice {
-            id: snapshot.owner.as_str().to_owned(),
-            label: snapshot.presence.label.clone(),
-            online: snapshot.presence.online,
-            nearby: nearby.contains(&snapshot.owner),
-            local: local.as_ref() == Some(&snapshot.owner),
-            display: snapshot.presence.capabilities.display,
-            wakeable: snapshot
+        .map(|device| PersonalDevice {
+            id: device.device.as_str().to_owned(),
+            label: device.about.label.clone(),
+            online: device.online,
+            nearby: nearby.contains(&device.device),
+            local: local.as_ref() == Some(&device.device),
+            display: device.about.capabilities.display,
+            wakeable: device
                 .presence
                 .wake_routes
                 .iter()
                 .any(|route| route.magic_packet),
-            audio_output: snapshot.presence.capabilities.audio_output,
+            audio_output: device.about.capabilities.audio_output,
         })
         .collect();
     devices.sort_by(|left, right| {

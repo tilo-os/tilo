@@ -23,10 +23,11 @@ use std::path::{Path, PathBuf};
 
 use ed25519_dalek::{Signer as _, SigningKey};
 use runtime_collab::CollabClient;
+use tilo_device_identity::IdentityPaths;
 use tilo_identity::provisioning::FILE_SECRETS_ENV;
 use tilo_service::LoopWake;
 use tilo_session::{AppSocket, Launches, Options, Session};
-use tilo_user_identity::{DeviceCert, IdentityPaths};
+use tilo_user_identity::DeviceCert;
 
 use super::people::Person;
 
@@ -71,8 +72,8 @@ impl Personal {
             .set("HOME", person.home());
         let paths = IdentityPaths::under(person.identity_root());
         let device =
-            tilo_user_identity::persist::load_device_key(&paths).expect("this device's key");
-        let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert)
+            tilo_device_identity::persist::load_device_key(&paths).expect("this device's key");
+        let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
             .expect("this device's certificate");
         let socket = tilo_paths::xdg::service_socket("collab");
         Self {
@@ -130,7 +131,7 @@ impl Other {
         let paths = IdentityPaths::under(root.path());
         let cert = person.certify(&paths, label);
         let device =
-            tilo_user_identity::persist::load_device_key(&paths).expect("the device's key");
+            tilo_device_identity::persist::load_device_key(&paths).expect("the device's key");
         Self {
             paths,
             device,
@@ -147,7 +148,7 @@ pub fn presentation(device: &SigningKey, cert: &DeviceCert, cluster: &str) -> Ve
         workspace_id: cluster.to_owned(),
         device_certificate: serde_json::to_vec(cert).expect("a certificate is JSON"),
         proof: device
-            .sign(&runtime_identity::collaboration_join_signing_bytes(cluster))
+            .sign(&runtime_identity::collaboration_join_digest(cluster).unwrap())
             .to_bytes()
             .to_vec(),
     }

@@ -81,8 +81,8 @@ fn index_database_and_schema(
     let focus = DbEffect::FocusDatabase {
         connection: connection.id,
     };
-    let database =
-        LiveRow::new(&database_id, "database.database", &database_name).operation(focus.bound());
+    let database = LiveRow::typed::<crate::row_types::Database>(&database_id, &database_name)
+        .operation(focus.bound());
     index_resource(
         rows,
         resources,
@@ -97,8 +97,8 @@ fn index_database_and_schema(
             connection: connection.id,
             schema: schema.name.clone(),
         };
-        let schema_resource =
-            LiveRow::new(&schema_id, "database.schema", &schema.name).operation(focus.bound());
+        let schema_resource = LiveRow::typed::<crate::row_types::Schema>(&schema_id, &schema.name)
+            .operation(focus.bound());
         index_resource(
             rows,
             resources,
@@ -134,14 +134,14 @@ fn index_relation(
         table: relation.name.clone(),
     }
     .bound();
-    let resource = LiveRow::new(
-        &relation_id,
-        match relation.kind {
-            crate::model::RelationKind::Table => "database.table",
-            crate::model::RelationKind::View => "database.view",
-        },
-        &relation.name,
-    )
+    let resource = match relation.kind {
+        crate::model::RelationKind::Table => {
+            LiveRow::typed::<crate::row_types::Table>(&relation_id, &relation.name)
+        }
+        crate::model::RelationKind::View => {
+            LiveRow::typed::<crate::row_types::View>(&relation_id, &relation.name)
+        }
+    }
     .operation(browse.clone());
     index_resource(
         rows,
@@ -164,8 +164,8 @@ fn index_relation(
                 ("table", text(&relation.name)),
             ],
         ));
-        let column_resource =
-            LiveRow::new(&column_id, "database.column", &column.name).operation(browse.clone());
+        let column_resource = LiveRow::typed::<crate::row_types::Column>(&column_id, &column.name)
+            .operation(browse.clone());
         index_resource(
             rows,
             resources,
@@ -201,7 +201,7 @@ fn index_current_result(
             generation,
         };
         let mut result_resource =
-            LiveRow::new(&result_id, "database.query-result", result.message())
+            LiveRow::typed::<crate::row_types::QueryResult>(&result_id, result.message())
                 .operation(show.bound())
                 .operation(read.bound().reads_document());
         if result.is_select {
@@ -231,9 +231,8 @@ fn index_transactions(
 ) {
     let transaction_id = catalog_resource_id("transaction", &[&connection.to_string()]);
     let begin = DbEffect::Begin { connection };
-    let transaction = LiveRow::new(
+    let transaction = LiveRow::typed::<crate::row_types::Transaction>(
         &transaction_id,
-        "database.transaction",
         t("db-search-transaction"),
     )
     .operation(begin.bound())
@@ -259,11 +258,7 @@ fn index_query_history(
     let history_id = catalog_resource_id("query-history", &[connection_id]);
     resources.insert(
         history_id.clone(),
-        LiveRow::new(
-            &history_id,
-            "database.query-history",
-            t("db-search-query-history"),
-        ),
+        LiveRow::typed::<crate::row_types::QueryHistory>(&history_id, t("db-search-query-history")),
     );
     for entry in session
         .query_history
@@ -285,8 +280,9 @@ fn index_query_history(
             connection: connection.id,
             generation: entry.generation,
         };
-        let history_entry = LiveRow::new(&entry_id, "database.query-history-entry", &title)
-            .operation(rerun.bound());
+        let history_entry =
+            LiveRow::typed::<crate::row_types::QueryHistoryEntry>(&entry_id, &title)
+                .operation(rerun.bound());
         index_resource(
             rows,
             resources,

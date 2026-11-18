@@ -1610,66 +1610,50 @@ mod tests {
         AudioEndpoint, AudioEndpointKind, EndpointSelector, SpeakerFabricState,
     };
     use crate::platform::fabric::{
-        DeviceFabric, DeviceFabricSnapshot, DeviceId, DeviceKind, DevicePresence,
-        FABRIC_SCHEMA_VERSION, FabricCapabilities, FabricStamp, OwnerSession, PersonalFabricAction,
+        DeviceAbout, DeviceId, DeviceKind, FabricCapabilities, PersonDevice, PersonDevices,
+        PersonalFabricAction,
     };
     use crate::platform::fabric::{FabricLink, PersonalFabricSendError};
 
-    /// This laptop's device fabric, with the one output it publishes.
+    /// This laptop's devices, with the one output it publishes.
     struct Fabric {
         local: DeviceId,
-        converged: DeviceFabric,
+        converged: PersonDevices,
     }
 
     impl Fabric {
         fn laptop() -> Self {
             let local = DeviceId::new("this-laptop").expect("a device id");
-            let mut converged = DeviceFabric::default();
-            converged
-                .upsert(DeviceFabricSnapshot {
-                    schema_version: FABRIC_SCHEMA_VERSION,
-                    owner: local.clone(),
-                    presence: DevicePresence {
-                        device: local.clone(),
-                        label: "This laptop".into(),
-                        kind: DeviceKind::Laptop,
-                        capabilities: FabricCapabilities {
-                            audio_output: true,
-                            audio_group: true,
-                            ..FabricCapabilities::default()
-                        },
-                        online: true,
-                        last_seen_unix_ms: 1,
-                        wake_routes: Vec::new(),
-                        session: OwnerSession::default(),
-                        stamp: FabricStamp {
-                            counter: 1,
-                            device: local.clone(),
-                        },
+            let mut device = PersonDevice::new(
+                local.clone(),
+                DeviceAbout {
+                    label: "This laptop".into(),
+                    kind: DeviceKind::Laptop,
+                    capabilities: FabricCapabilities {
+                        audio_output: true,
+                        audio_group: true,
+                        ..FabricCapabilities::default()
                     },
-                    media: Vec::new(),
-                    clipboard: Vec::new(),
-                    settings: Vec::new(),
-                    wifi: Vec::new(),
-                    display: None,
-                    speakers: SpeakerFabricState {
-                        endpoints: vec![AudioEndpoint {
-                            selector: EndpointSelector::mint(&local, "alsa_output.analog-stereo"),
-                            kind: AudioEndpointKind::Output,
-                            label: "Speakers".into(),
-                            is_default: true,
-                        }],
-                        ..SpeakerFabricState::default()
-                    },
-                    unlock: crate::platform::fabric::UnlockFabricState::default(),
-                })
-                .expect("the snapshot is valid");
+                },
+            );
+            device.online = true;
+            device.last_seen_unix_ms = 1;
+            device.speakers = SpeakerFabricState {
+                endpoints: vec![AudioEndpoint {
+                    selector: EndpointSelector::mint(&local, "alsa_output.analog-stereo"),
+                    kind: AudioEndpointKind::Output,
+                    label: "Speakers".into(),
+                    is_default: true,
+                }],
+                ..SpeakerFabricState::default()
+            };
+            let converged = PersonDevices::new([device], Vec::new());
             Self { local, converged }
         }
     }
 
     impl FabricLink for Fabric {
-        fn device_fabric(&self) -> DeviceFabric {
+        fn devices(&self) -> PersonDevices {
             self.converged.clone()
         }
 

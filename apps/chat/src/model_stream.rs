@@ -402,8 +402,8 @@ impl ChatApp {
         }
         let (changed, events) = attempt.publish();
         for event in events {
-            self.submit_part(crate::parts::ChatPart::STREAM_OUTPUT.with(
-                crate::messages::chat_part::StreamOutput {
+            self.submit_part(crate::parts::ChatMessages::STREAM_OUTPUT.with(
+                crate::messages::chat_messages::StreamOutput {
                     channel: ui::tilo_resource::Id::from_raw(&attempt.channel),
                     reply: attempt.reply.clone(),
                     name: ui::tilo_resource::NonBlank::parse(&crate::i18n::t("chat-model-author")),

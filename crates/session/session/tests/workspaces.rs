@@ -58,12 +58,12 @@ fn list_path(state: &Path) -> std::path::PathBuf {
 /// identity root of the test's own.
 fn this_computer(env: &mut tilo_test_env::ScopedEnv) -> tempfile::TempDir {
     let root = tempfile::tempdir().expect("a directory for this computer's identity");
-    let paths = tilo_user_identity::IdentityPaths::under(root.path());
+    let paths = tilo_device_identity::IdentityPaths::under(root.path());
     std::fs::create_dir_all(paths.device_privkey.parent().expect("the key's directory"))
         .expect("this computer's key directory");
     let person = ed25519_dalek::SigningKey::from_bytes(&[0x21; 32]);
     let device = ed25519_dalek::SigningKey::from_bytes(&tilo_test_env::node_key());
-    tilo_user_identity::persist::write_device_key(&paths.device_privkey, &device)
+    tilo_device_identity::persist::write_device_key(&paths.device_privkey, &device)
         .expect("this computer's device key");
     let mut cert = tilo_user_identity::DeviceCert {
         user_public_key: person.verifying_key().to_bytes(),
@@ -76,7 +76,7 @@ fn this_computer(env: &mut tilo_test_env::ScopedEnv) -> tempfile::TempDir {
         issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
-    tilo_user_identity::persist::write_device_cert(&paths.device_cert, &cert)
+    tilo_device_identity::persist::write_device_cert(&paths.device_cert, &cert)
         .expect("this computer's certificate");
     env.set("TILO_IDENTITY_ROOT", root.path());
     // The name they go by, which the workspace learns of them: never their device's.

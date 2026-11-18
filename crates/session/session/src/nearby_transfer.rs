@@ -92,14 +92,14 @@ pub(crate) fn devices(link: &SharedLink) -> Vec<ScreenshotSendDevice> {
         .local_device_fabric_identity()
         .map(|(device, _)| device);
     let online = link.online_device_ids();
-    let fabric = link.device_fabric();
+    let fabric = link.devices();
     let mut devices: Vec<ScreenshotSendDevice> = fabric
         .online_devices()
-        .filter(|presence| online.contains(&presence.device))
-        .filter(|presence| local.as_ref() != Some(&presence.device))
-        .map(|presence| ScreenshotSendDevice {
-            id: presence.device.as_str().to_owned(),
-            label: presence.label.clone(),
+        .filter(|device| online.contains(&device.device))
+        .filter(|device| local.as_ref() != Some(&device.device))
+        .map(|device| ScreenshotSendDevice {
+            id: device.device.as_str().to_owned(),
+            label: device.about.label.clone(),
         })
         .collect();
     devices.sort_by(|a, b| a.label.cmp(&b.label).then_with(|| a.id.cmp(&b.id)));
@@ -712,10 +712,10 @@ impl NearbyTransfer {
             .link
             .as_ref()
             .map(|link| {
-                link.device_fabric()
-                    .snapshots()
+                link.devices()
+                    .devices()
                     .iter()
-                    .map(|(device, snapshot)| (device.clone(), snapshot.presence.label.clone()))
+                    .map(|(id, device)| (id.clone(), device.about.label.clone()))
                     .collect()
             })
             .unwrap_or_default();
@@ -2350,7 +2350,7 @@ mod transfers_between_devices {
                 hosts: Vec::new(),
                 continuity: permitted(),
                 wake: Arc::new(|| {}),
-                fabric: None,
+                personal: None,
                 relays: test_server::loopback(),
                 lan: None,
             },

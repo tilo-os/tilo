@@ -106,8 +106,12 @@ struct SurfaceWireFrame {
 /// `read_personal_fabric`), and leaves the legacy Postcard enum untouched.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum PersonalFabricPayload {
-    Request,
-    Snapshot(Vec<u8>),
+    /// What the sending device says of itself while it is there: sent when its
+    /// session with a sibling starts and whenever it changes, and never kept.
+    Presence(Box<crate::fabric::DevicePresence>),
+    /// The copies the sending device offers, as it offers them now: sent when
+    /// its session with a sibling starts and whenever they change.
+    Clipboard(Vec<crate::fabric::ClipboardEntry>),
     /// Ephemeral, exact-target command encoded independently of snapshot
     /// schema so it is never persisted or relayed through workspace history.
     Action(Vec<u8>),
@@ -125,10 +129,7 @@ pub enum PersonalFabricPayload {
     },
     /// A device of the person asking for content one of `app_id`'s person
     /// records references. Its scope is the person's, implied by the route.
-    DocumentContentWant {
-        app_id: String,
-        hash: String,
-    },
+    DocumentContentWant { app_id: String, hash: String },
     /// One bounded piece of that content, for the device that asked alone.
     DocumentContentPiece {
         app_id: String,
@@ -137,23 +138,9 @@ pub enum PersonalFabricPayload {
         offset: u64,
         bytes: Vec<u8>,
     },
-    /// Optional owner-authored screen observation, apart from the schema-6
-    /// checkpoint.
-    DisplayConnectors {
-        stamp: crate::fabric::FabricStamp,
-        outputs: Vec<crate::fabric::DisplayConnectorPlacement>,
-    },
-    /// Rich output observations follow the same certified, opt-in route.
-    DisplayOutputs {
-        stamp: crate::fabric::FabricStamp,
-        outputs: Vec<crate::fabric::DisplayOutputObservation>,
-    },
     /// Word to the device that asked ([`Self::DocumentContentWant`]) that this
     /// one keeps none of that content.
-    DocumentContentLacks {
-        app_id: String,
-        hash: String,
-    },
+    DocumentContentLacks { app_id: String, hash: String },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -793,7 +780,7 @@ fn read_personal_fabric(
                 return;
             };
             let bytes = match recv
-                .read_to_end(crate::fabric::MAX_FABRIC_CHECKPOINT_BYTES + 128)
+                .read_to_end(crate::fabric::MAX_FABRIC_FRAME_BYTES + 128)
                 .await
             {
                 Ok(bytes) => bytes,
@@ -1457,7 +1444,7 @@ impl ActorState {
         let Ok(bytes) = postcard::to_allocvec(&wire) else {
             return;
         };
-        if bytes.len() > crate::fabric::MAX_FABRIC_CHECKPOINT_BYTES + 128 {
+        if bytes.len() > crate::fabric::MAX_FABRIC_FRAME_BYTES + 128 {
             tracing::warn!(
                 bytes = bytes.len(),
                 "personal fabric frame exceeds wire limit"
@@ -1465,7 +1452,7 @@ impl ActorState {
             return;
         }
         // A device whose session is down misses the frame: when its session
-        // is back, each side asks the other for its fabric anew.
+        // is back, each side says itself to the other again.
         for (peer, sibling) in &self.siblings {
             if exact_target.is_none_or(|target| *peer == target) && sibling.proved(&user_public_key)
             {
@@ -2627,7 +2614,7 @@ async fn send_nearby_transfer_frame(
         payload: PersonalFabricPayload::NearbyTransfer(frame),
     };
     let bytes = postcard::to_allocvec(&wire).map_err(|_| ())?;
-    if bytes.len() > crate::fabric::MAX_FABRIC_CHECKPOINT_BYTES + 128 {
+    if bytes.len() > crate::fabric::MAX_FABRIC_FRAME_BYTES + 128 {
         return Err(());
     }
     let send = async {
@@ -3591,6 +3578,26 @@ fn host_event(
         HostInbound::Voice(_) | HostInbound::Committed { .. } => return None,
         HostInbound::CommitRefused { refusal, .. } => {
             tracing::warn!(ws = %ws, host = %host, %refusal, "the host did not keep a sealed write");
+            return None;
+        }
+        // The server kept none of what this device published on the session:
+        // its verdict is the workspace's own state, filed where this device
+        // reads the change it is not on.
+        tilo_server_session::Inbound::ChangeRefused {
+            app_id,
+            document_id,
+            changes,
+            refusal,
+            ..
+        } => {
+            tracing::debug!(
+                ws = %ws,
+                app = %app_id,
+                document = %document_id,
+                refused = changes.len(),
+                %refusal,
+                "the server did not keep published changes"
+            );
             return None;
         }
         HostInbound::RemoteAction { from, frame } => {

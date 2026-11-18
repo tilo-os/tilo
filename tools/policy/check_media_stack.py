@@ -52,12 +52,12 @@ CISCO_ENVIRONMENTS = {
     "dist/ci/install-build-deps.sh": "its test profile installs the plugin for the video-editor suites",
     "os/Containerfile.builder": "the CI builder image; runs install-build-deps.sh's test profile",
     "dist/dev/Containerfile.fedora44": "the developer distrobox, built on the developer's own machine",
-    "os/dev/legacy-vm-e2e.sh": "installs into the throwaway CI container of the legacy VM test",
+    "os/dev/linux-vm-e2e.sh": "installs into the throwaway CI container of the Linux VM test",
 }
 # Shipped images whose final stage installs from live Fedora repositories
 # rather than the frozen snapshot. Every entry must exist.
 LIVE_REPOSITORY_IMAGES = {
-    "os/Containerfile.legacy-guest": "the Linux legacy VM guest, on the mirrored fedora-bootc base",
+    "os/Containerfile.linux-guest": "the Linux VM guest, on the mirrored fedora-bootc base",
 }
 CISCO_REPO_REMOVAL = f"rm -f /etc/yum.repos.d/{CISCO_REPO}.repo"
 RESOLVED_CHECK = re.compile(r"\bbash\s+\S*verify-no-cisco-openh264\.sh(?!\s+--repo)")

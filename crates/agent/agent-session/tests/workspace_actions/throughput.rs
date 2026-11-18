@@ -6,6 +6,8 @@
 //! kind) it times, for Tasks issues, Notes pages, chat messages and Files:
 //! - one action at a time: its p50 and p99;
 //! - a bulk call (`group`, as the SDK's `*_many` sends it): records a second;
+//! - where the app takes a list in one call (Tasks' `create-many`): items a
+//!   second sent that way;
 //! - a second device of the same person: how long after the action answers
 //!   the change reaches it.
 //!
@@ -165,6 +167,9 @@ struct Kind {
     listed_as: &'static str,
     action: &'static str,
     args: fn(usize) -> Value,
+    /// The action that makes a list of them in one call, the argument it
+    /// takes the list as and the most one call takes, where the app has one.
+    list: Option<(&'static str, &'static str, usize)>,
 }
 
 fn issue(index: usize) -> Value {
@@ -193,15 +198,16 @@ async fn issue_ids(
     loop {
         let mut newest: Vec<String> = Vec::new();
         for index in 0..16 {
-            let part = tasks::part::chain().part(index).as_str().to_owned();
+            let part = tasks::issue_list::chain().part(index).as_str().to_owned();
             let Ok(Some(bytes)) = workspaces
                 .resource_document(workspace, "so.tilo.tasks", &part)
                 .await
             else {
                 break;
             };
-            let part = tasks::part::IssuePart::read(&automerge::AutoCommit::load(&bytes).unwrap())
-                .unwrap();
+            let part =
+                tasks::issue_list::IssueList::read(&automerge::AutoCommit::load(&bytes).unwrap())
+                    .unwrap();
             let held: Vec<String> = part
                 .issues
                 .iter()
@@ -256,6 +262,7 @@ const KINDS: &[Kind] = &[
         listed_as: "tasks.issues",
         action: "create",
         args: issue,
+        list: Some(("create-many", "issues", 200)),
     },
     Kind {
         name: "notes page",
@@ -264,6 +271,7 @@ const KINDS: &[Kind] = &[
         listed_as: "notes",
         action: "create-page",
         args: note,
+        list: None,
     },
     Kind {
         name: "chat message",
@@ -272,6 +280,7 @@ const KINDS: &[Kind] = &[
         listed_as: "chat.messages",
         action: "post",
         args: message,
+        list: None,
     },
 ];
 
@@ -581,6 +590,31 @@ async fn a_workspace_takes_records_and_files_at_the_same_speed_however_full() {
                     0.0
                 }
             };
+
+            // In lists, one call each, where the app takes one.
+            if let Some((action, field, most)) = kind.list {
+                let listed: Vec<Value> = (0..bulk)
+                    .map(|index| (kind.args)(size + singles + bulk + index))
+                    .collect();
+                let began = Instant::now();
+                for chunk in listed.chunks(most) {
+                    agent
+                        .act(&base, &resource, action, &json!({ field: chunk }))
+                        .await;
+                }
+                let per_s = bulk as f64 / began.elapsed().as_secs_f64();
+                let name = format!("{} {action}", kind.app);
+                eprintln!("{name:>14} at {size:>6}: bulk {per_s:8.0}/s");
+                table.push(Row {
+                    kind: name,
+                    size,
+                    single_p50_ms: 0.0,
+                    single_p99_ms: 0.0,
+                    seed_per_s: 0.0,
+                    bulk_per_s: per_s,
+                    second_device_p50_ms: None,
+                });
+            }
 
             let row = Row {
                 kind: kind.name.to_owned(),

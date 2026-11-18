@@ -17,8 +17,8 @@
 //! it holds the workspace.
 
 use serde_json::Value;
-use tilo_action_policy::roles;
-use tilo_actions::remote::{ActionCallError, CatalogueRow, InvokeRequest};
+use tilo_action_policy::{Answer, roles};
+use tilo_actions::remote::{ActionCallError, Caller, CatalogueRow, InvokeRequest};
 use tilo_actions::{ActionKind, ActionParam, ParamType};
 use tilo_peer_state::join::Role;
 use tilo_server_session::workspaces::BRANCH_OWN_WORKSPACE;
@@ -32,8 +32,8 @@ use tilo_server_session::workspaces::{
 use tilo_user_identity::DeviceCert;
 
 use super::{
-    Args, DEFAULT_INVITATION_HOURS, HOUR_NS, Publisher, ROLES, SECOND_NS, Verb, invalid, refused,
-    request_id,
+    Args, DEFAULT_INVITATION_HOURS, HOUR_NS, Publisher, ROLES, SECOND_NS, Verb, agents, invalid,
+    refused, request_id,
 };
 use crate::service_authority::ServiceOperation;
 use crate::workspaces::authority::WorkspaceOp;
@@ -41,7 +41,7 @@ use crate::workspaces::{IssueInvitationRequest, WorkspaceSummary, Workspaces};
 use tilo_server_protocol::WorkspaceId;
 
 /// The host's own operations.
-pub(super) const HOST: Publisher = Publisher {
+pub(super) const ACCOUNT: Publisher = Publisher {
     provider: HOST_ACTIONS_PROVIDER,
     kind: HOST_WORKSPACES_RESOURCE,
 };
@@ -59,7 +59,7 @@ const OWNER_ROLE: &str = "owner";
 
 /// The host's operations in catalogue order, each with the
 /// [`ServiceOperation`] it is.
-const HOST_VERBS: [(Verb, ServiceOperation); 12] = [
+pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 12] = [
     (
         Verb {
             id: CREATE_WORKSPACE,
@@ -417,72 +417,58 @@ fn first_invitation(
     )))
 }
 
-/// How a caller asks the host's operations.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Asking {
-    /// As the person its device is, or an agent's grant of theirs: what the
-    /// certificate allows.
-    AsPerson,
-    /// As an agent's run on a person's own device: only what reads what the
-    /// host keeps for the person (their workspaces, their list, the
-    /// revocations), never what changes anything.
-    Reading,
-}
-
-impl Asking {
-    fn reaches(self, operation: ServiceOperation) -> bool {
-        match self {
-            Self::AsPerson => true,
-            Self::Reading => matches!(
-                operation,
-                ServiceOperation::ListWorkspaces
-                    | ServiceOperation::ReadPersonalList
-                    | ServiceOperation::ListRevocations
-            ),
-        }
-    }
-}
-
 impl Workspaces {
-    /// The host's operations `device` may run, asked as `asking`.
-    pub(super) fn host_rows(&self, device: &DeviceCert, asking: Asking) -> Vec<CatalogueRow> {
+    /// The host's operations `caller`, on `device`, may run, asked in the
+    /// workspace `workspace_id` carries: what its person may, and of that
+    /// what the grants there do not refuse their agent.
+    pub(super) async fn account_rows(
+        &self,
+        workspace_id: Option<WorkspaceId>,
+        caller: &Caller,
+        device: &DeviceCert,
+    ) -> Vec<CatalogueRow> {
         let now = tilo_clock::unix_now_ns();
         let person = device.user_public_key == self.inner.host.cert.user_public_key;
-        HOST_VERBS
-            .iter()
-            .filter(|(_, operation)| {
-                asking.reaches(*operation)
-                    && (person || !operation.decided_by_its_workspace())
-                    && self.permits(device, None, WorkspaceOp::Host(*operation), now)
-            })
-            .map(|(verb, _)| verb.row(HOST, HOST_WORKSPACES_RESOURCE, LABEL))
-            .collect()
+        let grants = if agents::is_the_person(caller, device) {
+            None
+        } else {
+            Some(self.agent_grants(workspace_id, caller).await)
+        };
+        let mut rows = Vec::new();
+        for (verb, operation) in &ACCOUNT_VERBS {
+            let offered = (person || !operation.decided_by_its_workspace())
+                && self.permits(device, None, WorkspaceOp::Host(*operation), now)
+                && grants.as_ref().is_none_or(|grants| {
+                    grants.answer(&verb.operation(ACCOUNT), now) != Answer::Deny
+                });
+            if offered {
+                rows.push(verb.row(ACCOUNT, HOST_WORKSPACES_RESOURCE, LABEL));
+            }
+        }
+        rows
     }
 
-    /// Run the host operation `request` names as `device`, the certificate
-    /// the server's handshake verified for the caller.
-    pub(super) async fn host_invoke(
+    /// Run the host operation `request` names for `caller` on `device`, the
+    /// certificate the server's handshake verified for it, asked in the
+    /// workspace `workspace_id` carries: an agent's call as its grants there
+    /// answer ([`agents`]).
+    pub(super) async fn account_invoke(
         &self,
+        workspace_id: Option<WorkspaceId>,
+        caller: &Caller,
         device: &DeviceCert,
-        asking: Asking,
         request: &InvokeRequest,
     ) -> Result<Value, ActionCallError> {
-        let address = &request.target.address;
+        let (verb, operation) = self.account_operation(device, request)?;
         let now = tilo_clock::unix_now_ns();
-        let operation = HOST_VERBS
-            .iter()
-            .find(|(verb, _)| verb.id == address.action)
-            .map(|(_, operation)| *operation)
-            .ok_or(ActionCallError::UnknownAction)?;
-        // Unknown and forbidden are the same answer.
-        if address.resource != HOST_WORKSPACES_RESOURCE
-            || !asking.reaches(operation)
-            || !self.permits(device, None, WorkspaceOp::Host(operation), now)
-        {
-            return Err(ActionCallError::UnknownAction);
-        }
         let args = Args::of(&request.argument)?;
         let request_id = request_id(&device.user_public_key, request.invocation);
+        // What needs no answer from an agent's person is checked first; they
+        // are asked last, so their yes is never refused after.
+        self.check_account(device, operation, &args, request_id, now)
+            .await?;
+        self.admit_account(workspace_id, caller, device, verb, request)
+            .await?;
         match operation {
             ServiceOperation::CreateWorkspace => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
@@ -503,14 +489,6 @@ impl Workspaces {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| refused(&error))?;
                 let workspace = args.required_text("workspace")?;
-                // The host's person deletes any workspace it governs; anyone
-                // else one of their own, which their grant reaches.
-                let person = device.user_public_key;
-                let theirs =
-                    person == self.inner.host.cert.user_public_key || self.owns(&person, workspace);
-                if !theirs || !self.lists_to(device, workspace) {
-                    return Err(refused(&Refusal::NotYourOwn.to_reason()));
-                }
                 self.delete(workspace)
                     .await
                     .map_err(|error| refused(&error))?;
@@ -566,6 +544,140 @@ impl Workspaces {
         }
     }
 
+    /// The operation `request` names, which `device` may carry out.
+    /// Unknown and forbidden are the same answer.
+    fn account_operation(
+        &self,
+        device: &DeviceCert,
+        request: &InvokeRequest,
+    ) -> Result<(&'static Verb, ServiceOperation), ActionCallError> {
+        let address = &request.target.address;
+        let (verb, operation) = ACCOUNT_VERBS
+            .iter()
+            .find(|(verb, _)| verb.id == address.action)
+            .ok_or(ActionCallError::UnknownAction)?;
+        if address.resource != HOST_WORKSPACES_RESOURCE
+            || !self.permits(
+                device,
+                None,
+                WorkspaceOp::Host(*operation),
+                tilo_clock::unix_now_ns(),
+            )
+        {
+            return Err(ActionCallError::UnknownAction);
+        }
+        Ok((verb, *operation))
+    }
+
+    /// What the operation `operation` with `args` by `device` is held to
+    /// beyond who may ask for it: a workspace one deletes is theirs, the site let
+    /// in whoever makes a workspace of their own or keeps a list here, and an
+    /// agent's own grant invites nobody but its person into a workspace it
+    /// makes.
+    async fn check_account(
+        &self,
+        device: &DeviceCert,
+        operation: ServiceOperation,
+        args: &Args,
+        request_id: [u8; 32],
+        now: u64,
+    ) -> Result<(), ActionCallError> {
+        let person = device.user_public_key;
+        let entering = match operation {
+            ServiceOperation::CreateWorkspace => {
+                // An agent's grant governs nothing, so it invites nobody: the
+                // first invitation of a workspace it makes is for its own
+                // person (their runtime joins with it).
+                if device.capabilities.agent.is_some()
+                    && first_invitation(args, request_id, now)?
+                        .is_some_and(|(terms, _)| terms.recipient_user_public_key != Some(person))
+                {
+                    return Err(refused(
+                        &"an agent's grant invites only its own person to a workspace it makes",
+                    ));
+                }
+                false
+            }
+            ServiceOperation::DeleteOwnWorkspace => {
+                // The server's person deletes any workspace it governs; anyone
+                // else one of their own, which their grant reaches.
+                let workspace = args.required_text("workspace")?;
+                let theirs =
+                    person == self.inner.host.cert.user_public_key || self.owns(&person, workspace);
+                if !theirs || !self.lists_to(device, workspace) {
+                    return Err(refused(&Refusal::NotYourOwn.to_reason()));
+                }
+                false
+            }
+            // A new workspace of a person's own is made for a person the site
+            // let in: what is theirs already they enter as they are.
+            ServiceOperation::CreateOwnWorkspace => {
+                let makes = device
+                    .capabilities
+                    .agent
+                    .is_none_or(|scope| scope.makes_workspaces());
+                let moving = args.text("workspace")?;
+                let named = args.text("name")?.is_some();
+                makes
+                    && self.own().is_some_and(|own| {
+                        let mine = own.of(&person);
+                        let theirs = |moving: &str| mine.iter().any(|own| own == moving);
+                        if named {
+                            !moving.is_some_and(theirs)
+                        } else {
+                            moving.is_none() && mine.is_empty()
+                        }
+                    })
+            }
+            // A list is kept for a person who takes part here: one the site
+            // let in, or a member of a workspace here, whom an invitation
+            // brought. Anyone else holds nothing here to keep a list of.
+            ServiceOperation::KeepPersonalList => !self.inner.memberships.holds_any(&person),
+            _ => false,
+        };
+        // Anyone can make a root, so a certificate alone is nobody's way past
+        // the site's entry: they hear the entry's own refusal, with its wait
+        // list.
+        if entering && !self.let_in(&person, now).await {
+            return Err(refused(&self.not_let_in().await.to_reason()));
+        }
+        Ok(())
+    }
+
+    /// Let `caller` on `device` have the operation `verb` asks for carried out
+    /// ([`Self::account_invoke`]): asking for one's own workspace that is there
+    /// already enters it, and makes nothing, as every key of the person's does
+    /// to work in it; anything else as [`Self::admit_operation`] lets it.
+    async fn admit_account(
+        &self,
+        workspace_id: Option<WorkspaceId>,
+        caller: &Caller,
+        device: &DeviceCert,
+        verb: &Verb,
+        request: &InvokeRequest,
+    ) -> Result<(), ActionCallError> {
+        let arguments = super::arguments_of(request);
+        let named = arguments
+            .get("workspace")
+            .and_then(Value::as_str)
+            .and_then(WorkspaceId::parse);
+        let entering = match named {
+            Some(id) if verb.id == CREATE_OWN_WORKSPACE => self.held(id).await.is_some(),
+            _ => false,
+        };
+        if entering {
+            return Ok(());
+        }
+        self.admit_operation(
+            workspace_id,
+            caller,
+            device,
+            &verb.operation(ACCOUNT),
+            &arguments,
+        )
+        .await
+    }
+
     /// Read or keep `device`'s person's workspace list, already permitted to.
     async fn personal_invoke(
         &self,
@@ -600,15 +712,6 @@ impl Workspaces {
         let list: PersonalList = args
             .object("list")?
             .ok_or_else(|| invalid("`list` is required"))?;
-        // A list is kept for a person who takes part here: one the site let
-        // in, or a member of a workspace here, whom an invitation brought.
-        // Anyone else holds nothing here to keep a list of.
-        let person = device.user_public_key;
-        if !self.inner.memberships.holds_any(&person)
-            && !self.let_in(&person, tilo_clock::unix_now_ns()).await
-        {
-            return Err(refused(&self.not_let_in().await.to_reason()));
-        }
         let kept = self
             .keep_personal(device, list)
             .map_err(|error| refused(&error))?;
@@ -628,18 +731,10 @@ impl Workspaces {
         let name = args.required_text("name")?;
         let workspace = args.text("workspace")?;
         let first = first_invitation(args, request_id, now)?;
-        // An agent's grant governs nothing, so it invites nobody: the
-        // first invitation of a workspace it makes is for its own
-        // person (their runtime joins with it), and the host issues
-        // it, as the workspace's governor.
+        // An agent's grant governs nothing: the server issues the first
+        // invitation of a workspace it makes, to its own person
+        // ([`Self::check_account`]), as the workspace's governor.
         let inviter = if device.capabilities.agent.is_some() {
-            if first.as_ref().is_some_and(|(terms, _)| {
-                terms.recipient_user_public_key != Some(device.user_public_key)
-            }) {
-                return Err(refused(
-                    &"an agent's grant invites only its own person to a workspace it makes",
-                ));
-            }
             &self.inner.host.cert
         } else {
             device
@@ -839,14 +934,10 @@ impl Workspaces {
             self.summary(first).await.map_err(|error| refused(&error))?
         } else if !makes {
             return Err(refused(&Refusal::NotYourOwn.to_reason()));
-        } else if !self.let_in(&person, now).await {
-            // A new workspace is for a person the site let in. Anyone can
-            // make a root, so a certificate alone is nobody's way past the
-            // entry: they hear the entry's own refusal, with its wait list.
-            return Err(refused(&self.not_let_in().await.to_reason()));
         } else {
-            // Another one: there is no bound on how many a person keeps, and
-            // one they did not name is named in their language.
+            // Another one, for a person the site let in ([`Self::check_account`]):
+            // there is no bound on how many a person keeps, and one they did
+            // not name is named in their language.
             let name = name.map_or_else(|| crate::i18n::workspace_name(language), str::to_owned);
             let summary = self
                 .create_workspace(&name, moving)

@@ -97,9 +97,10 @@ tilo_test_env::scenario! {
             tilo_actions::remote::ActionCallError::NotPermitted,
         ));
         assert!(
-            said.starts_with("not_permitted: not allowed: this workspace's permissions")
-                && said.contains("under Agents")
-                && !said.contains("may not invoke"),
+            said == format!(
+                "not_permitted: {}",
+                tilo_actions::Availability::NOT_ALLOWED_HERE
+            ) && said.contains("Workspace settings → Agents"),
             "{said}"
         );
     }

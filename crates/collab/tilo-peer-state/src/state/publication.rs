@@ -72,28 +72,32 @@ impl StatePeer {
                 );
             }
         }
-        crate::coverage::put_all_with_receipts(
-            self.core
-                .workspace_doc
-                .as_deref_mut()
-                .ok_or("missing workspace governance")?,
-            coverages,
-            |rows| {
-                receipts.extend(sealed_receipts);
-                for (route, _) in dirty {
-                    let route_key = crate::coverage::route_key(&route.app, &route.record);
-                    if sealed.contains(route) {
-                        continue;
-                    }
-                    let covered = rows.get(&route_key).ok_or("missing published coverage")?;
-                    receipts.insert(
-                        route_key,
-                        crate::durability::DurableReceipt::new(covered.clone(), generation)?,
-                    );
+        let author = self.governance_author(key, now);
+        let workspace_doc = self
+            .core
+            .workspace_doc
+            .as_deref_mut()
+            .ok_or("missing workspace governance")?;
+        crate::coverage::put_all_with_receipts(workspace_doc, coverages, |rows| {
+            receipts.extend(sealed_receipts);
+            for (route, _) in dirty {
+                let route_key = crate::coverage::route_key(&route.app, &route.record);
+                if sealed.contains(route) {
+                    continue;
                 }
-                Ok(receipts)
-            },
-        )?;
+                let covered = rows.get(&route_key).ok_or("missing published coverage")?;
+                receipts.insert(
+                    route_key,
+                    crate::durability::DurableReceipt::new(covered.clone(), generation)?,
+                );
+            }
+            Ok(receipts)
+        })?;
+        crate::state::commit_governance(
+            workspace_doc,
+            author.as_ref(),
+            crate::state::now_secs(now),
+        );
         for message in &messages {
             self.receive(key.device_public_key(), message.clone(), now)?;
         }

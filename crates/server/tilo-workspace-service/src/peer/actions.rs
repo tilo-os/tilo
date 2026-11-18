@@ -547,7 +547,9 @@ pub(super) fn session_caller(
         // it governs nothing. It goes by the name the key was certified with.
         None if peer.cert.capabilities.agent.is_some() => {
             Caller::authenticated(peer.user_public_key, peer.device_public_key)
-                .delegated_to(grant_agent_id(&peer.device_public_key))
+                .delegated_to(collab_types::workspace_grant::key_agent_id(
+                    &peer.device_public_key,
+                ))
                 .named(&peer.cert.device_label)
         }
         None => {
@@ -572,9 +574,4 @@ pub(super) fn session_caller(
     } else {
         caller
     })
-}
-
-/// The agent an agent's grant is, by its key: History names its runs.
-fn grant_agent_id(device: &[u8; 32]) -> String {
-    format!("grant-{}", hex::encode(device))
 }

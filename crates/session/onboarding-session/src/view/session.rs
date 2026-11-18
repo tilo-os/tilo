@@ -3,7 +3,7 @@
 //! identity root that minting, restoring and pairing provision into.
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use tilo_user_identity::IdentityPaths;
+use tilo_device_identity::IdentityPaths;
 
 /// Taken from the process environment once, where the shell builds the
 /// view, so nothing behind the view reads the environment again.

@@ -275,10 +275,10 @@ fn device_publisher() -> Option<[u8; 32]> {
     let paths = std::env::var_os("TILO_IDENTITY_ROOT")
         .filter(|root| !root.is_empty())
         .map_or_else(
-            tilo_user_identity::IdentityPaths::default_system,
-            tilo_user_identity::IdentityPaths::under,
+            tilo_device_identity::IdentityPaths::default_system,
+            tilo_device_identity::IdentityPaths::under,
         );
-    match tilo_user_identity::persist::load_device_key(&paths) {
+    match tilo_device_identity::persist::load_device_key(&paths) {
         Ok(key) => Some(key.verifying_key().to_bytes()),
         Err(error) => {
             tracing::debug!(%error, "no device key; tools built here are not trusted by key");

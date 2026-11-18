@@ -99,7 +99,6 @@ impl PeerGovernanceMut<'_> {
         if !changed {
             return Err("the renewed device has no governed identity".into());
         }
-        doc.commit();
         self.peer.write_governance(doc, &before, key, now)?;
         Ok(true)
     }

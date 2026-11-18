@@ -3,7 +3,7 @@
 #
 # It is not systemd: a VM here wakes when a workspace's first command arrives
 # and must answer within a few hundred milliseconds, so boot is this script and
-# then the guest agent (crates/runtime/legacy-agent), nothing else. The kernel
+# then the guest agent (crates/runtime/linux-vm-agent), nothing else. The kernel
 # command line baked into the image is
 #   root=/dev/vda rw init=/usr/libexec/tilo/hosted-init
 # and the host adds what is about this VM alone: its console and
@@ -75,7 +75,7 @@ ip link set lo up || say 'lo stayed down'
 # child of its own. tini is its subreaper, so whatever a program leaves behind
 # is reaped here rather than accumulating against PID 1; this script stays PID 1
 # so that the agent ending is noticed instead of hanging the VM silently.
-/usr/bin/tini -s -- /usr/libexec/tilo/tilo-legacy-agent --user tilo
+/usr/bin/tini -s -- /usr/libexec/tilo/tilo-linux-vm-agent --user tilo
 status=$?
 say "the guest agent exited with status $status; stopping this VM"
 sync

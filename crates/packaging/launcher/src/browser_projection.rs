@@ -221,9 +221,6 @@ pub(crate) fn splice(
     if !eligible(manifest, options) {
         return Ok(None);
     }
-    if matches!(options.identity, crate::run::IdentitySource::None) {
-        return Err(invalid().into());
-    }
     let home = std::env::var_os("HOME").ok_or_else(invalid)?;
     let path = options
         .browser_continuity_host_path

@@ -1,54 +1,50 @@
 //! Frames the GPU has not finished drawing yet.
 //!
-//! The page draws on animation frames, and a browser keeps asking for them
-//! while the GPU still works on earlier frames: a slow GPU (a software one,
-//! a small device's) then queues frame after frame, and what the person did
-//! reaches the screen later and later, seconds behind a dragged window. A
-//! mount draws while fewer than [`IN_FLIGHT`] of its frames are unfinished;
-//! otherwise it keeps what changed for the frame after the GPU catches up,
-//! which then draws all of it at once.
+//! The page draws on animation frames. A submission's completion is a promise
+//! from the browser, and the browser can report it long after the frame it
+//! stands for is on screen — longer still while the page hands nothing more
+//! over. Measured in a browser rasterising through `SwiftShader`, a page that
+//! stopped drawing after two frames saw the next completion 3–14 s later,
+//! while the same page drawing on had every completion in 29–308 ms: opening
+//! a window took 0.7–6 s while it waited, and 0.2–0.5 s drawing on.
 //!
-//! A completion is a promise from the browser, and a promise can go missing:
-//! a device lost under memory pressure, a driver that never answers. Waiting
-//! on it for ever freezes the page — no frame, no status, nothing to show the
-//! person why. So a frame that has been out for longer than [`LOST_AFTER`]
-//! stops holding the page back, the mount draws without it, and says how long
-//! it waited. A slow GPU is not a lost one: however many frames it leaves
-//! out, the page keeps drawing and counting them, and only the device's own
-//! word (WebGPU's `lost`, or an error from it) takes it for lost.
+//! So a mount draws the frame it has ready and never stops for one it has not
+//! been told about. What keeps a slow GPU's queue short is the browser's own
+//! canvas: a surface with no image to hand out says so (an outdated surface, a
+//! texture that timed out, which the frame loop already answers), and the
+//! display takes frames no faster than it presents them. A frame the GPU
+//! leaves unreported is counted and said once it has been out longer than
+//! [`LOST_AFTER`], so a page whose GPU stopped answering still says so; a slow
+//! GPU is not a lost one, and only the device's own word (WebGPU's `lost`, or
+//! an error from it) takes it for lost.
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ui::time::{Duration, Instant};
 
-/// The frames that may be submitted and not yet done. Two keep the CPU's
-/// next frame overlapping the GPU's last one, so a GPU that keeps up with
-/// the display never holds a frame, however late the browser reports work
-/// done.
-pub const IN_FLIGHT: usize = 2;
-
-/// How long a submitted frame may go unreported before it stops holding the
-/// next one back. A page drawing a megapixel through a software rasteriser
-/// takes about half a second for a frame, and [`IN_FLIGHT`] of them are
-/// allowed out, so a page that is merely slow already has an outstanding
-/// frame about a second old whenever a third would queue — the bound has to
-/// sit several frame times past that, or it fires on healthy drawing and
-/// gives up the pacing it is part of. A GPU that keeps up reports in
-/// milliseconds.
+/// How long a submitted frame may go unreported before the page says the GPU
+/// is not answering. What was seen of a software rasteriser that does answer:
+/// frames completed in 29–308 ms with the page drawing on, and in seconds
+/// when the page stopped (which is what kept the answer from coming).
 pub const LOST_AFTER: Duration = Duration::from_secs(6);
 
-/// What a mount's frame loop may do with the frame it is about to draw.
+/// The most frames kept as owed: more than [`LOST_AFTER`] holds at twice the
+/// display's rate, so a GPU that answers only seconds late is still matched to
+/// every frame it finishes. A GPU that never answers leaves every frame here;
+/// the list is a diagnostic, not a reason to grow.
+const MOST_OWED: usize = 512;
+
+/// What a mount's frame loop is told about the frame it is about to draw.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pacing {
-    /// The GPU has room for this frame.
+    /// Nothing to report: the GPU is keeping up, or this is the first frame.
     Draw,
-    /// The GPU is still drawing earlier frames, and said so recently enough.
-    Wait,
-    /// A frame's completion is later than [`LOST_AFTER`]: this frame is drawn
-    /// without waiting for it. `frame` is the one the GPU owes, `waiting` how
-    /// long it has been out, and `stalls` how many frames this has happened
-    /// to since the GPU last reported one.
+    /// The frame the GPU owes has been out longer than [`LOST_AFTER`] and it
+    /// has not said it finished it. The frame is still drawn, and this is
+    /// said. `frame` is the one the GPU owes, `waiting` how long it has been
+    /// out, and `stalls` how many frames this has happened to since the GPU
+    /// last reported one.
     Late {
         frame: u64,
         waiting: Duration,
@@ -75,22 +71,21 @@ pub struct FramePacing {
 }
 
 impl FramePacing {
-    /// What the frame loop may do with the frame it has ready, at `now`.
+    /// What the frame loop is told before it draws its frame, at `now`: the
+    /// frame is drawn either way — a page that stops for a completion is a
+    /// page whose completion comes late — and a frame the GPU has owed for
+    /// longer than [`LOST_AFTER`] is counted as left out and said.
     pub fn verdict(&mut self, now: Instant) -> Pacing {
         self.match_completions();
-        if self.outstanding.len() < IN_FLIGHT {
-            return Pacing::Draw;
-        }
         let Some(&(frame, handed)) = self.outstanding.front() else {
             return Pacing::Draw;
         };
         let waiting = now.saturating_duration_since(handed);
         if waiting < LOST_AFTER {
-            return Pacing::Wait;
+            return Pacing::Draw;
         }
-        // The GPU owes a frame it should have reported long ago: draw without
-        // it rather than wait for ever. It stays owed, so a completion that
-        // does come back is still matched to it.
+        // Counted and given up on rather than waited for; a completion that
+        // does come back is still matched to its frame's number.
         self.outstanding.pop_front();
         self.stalls = self.stalls.saturating_add(1);
         Pacing::Late {
@@ -106,6 +101,10 @@ impl FramePacing {
     pub fn submitted(&mut self, now: Instant) -> Done {
         self.handed = self.handed.saturating_add(1);
         self.outstanding.push_back((self.handed, now));
+        while self.outstanding.len() > MOST_OWED {
+            self.outstanding.pop_front();
+            self.stalls = self.stalls.saturating_add(1);
+        }
         Done(Arc::clone(&self.finished))
     }
 
@@ -113,6 +112,13 @@ impl FramePacing {
     #[must_use]
     pub fn stalls(&self) -> u32 {
         self.stalls
+    }
+
+    /// Frames the GPU still owes: what a silent GPU grows, up to
+    /// [`MOST_OWED`].
+    #[cfg(test)]
+    pub(crate) fn owed(&self) -> usize {
+        self.outstanding.len()
     }
 
     /// Match the completions the GPU reported to the frames they finish, and
@@ -143,13 +149,13 @@ impl Done {
     }
 }
 
-/// What the mount logs when it stops waiting for a frame's completion: which
-/// frame the GPU owes, how long it has been out, and how many it has left out
-/// since it last reported one.
+/// What the mount says about a frame the GPU has owed longer than
+/// [`LOST_AFTER`]: which frame it is, how long it has been out, and how many
+/// it has left out since it last reported one.
 #[must_use]
 pub fn late_note(frame: u64, waiting: Duration, stalls: u32) -> String {
     format!(
-        "Browser runtime: frame {frame} was handed to the GPU {:.1} s ago and it has not reported it drawn; drawing without it ({stalls} left out since it last reported one)",
+        "Browser runtime: frame {frame} was handed to the GPU {:.1} s ago and it has not reported it drawn ({stalls} left out since it last reported one)",
         waiting.as_secs_f64(),
     )
 }
@@ -202,10 +208,6 @@ mod tests {
                 return Pacing::Draw;
             }
             let verdict = self.pacing.verdict(self.now);
-            match verdict {
-                Pacing::Wait => return verdict,
-                Pacing::Draw | Pacing::Late { .. } => {}
-            }
             if let Pacing::Late {
                 frame,
                 waiting,
@@ -227,94 +229,50 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn frames_are_paced_by_what_the_gpu_finished;
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn frames_are_drawn_as_they_come_and_a_silent_gpu_is_said;
 
-        phase keys_typed_while_the_gpu_is_behind_reach_the_next_frame_together;
+        phase every_frame_is_drawn_whatever_the_gpu_has_reported;
+        // A GPU that never answers does not hold a frame back: what the person
+        // did is drawn on the next frame drawn, every time.
         {
             let mut page = Loop::default();
-            page.input('a');
-            page.animation_frame(FRAME);
-            page.input('b');
-            page.animation_frame(FRAME);
-            assert_eq!(
-                page.drawn,
-                [vec!['a'], vec!['b']],
-                "two frames may be in flight"
-            );
-            // The GPU takes many display frames for each: keys keep coming.
-            for key in ['c', 'd', 'e', 'f'] {
+            for key in ['a', 'b', 'c', 'd', 'e', 'f'] {
                 page.input(key);
                 page.animation_frame(FRAME);
             }
-            assert_eq!(page.drawn.len(), 2, "no frame queues behind a busy GPU");
+            assert_eq!(
+                page.drawn,
+                [vec!['a'], vec!['b'], vec!['c'], vec!['d'], vec!['e'], vec!['f']],
+                "each key reaches its own frame, with no completion reported"
+            );
             assert_eq!(
                 page.notes,
                 Vec::<String>::new(),
-                "a GPU a frame behind is late, not lost"
-            );
-            page.gpu_finishes_one();
-            page.animation_frame(FRAME);
-            page.animation_frame(FRAME);
-            assert_eq!(
-                page.drawn,
-                [vec!['a'], vec!['b'], vec!['c', 'd', 'e', 'f']],
-                "exactly one following frame draws every key held for it"
-            );
-            page.gpu_finishes_one();
-            page.gpu_finishes_one();
-            page.animation_frame(FRAME);
-            assert_eq!(page.drawn.len(), 3, "nothing pending draws nothing");
-            page.input('g');
-            page.animation_frame(FRAME);
-            assert_eq!(
-                page.drawn.last(),
-                Some(&vec!['g']),
-                "no key is ever dropped"
+                "a GPU an animation frame behind is not overdue"
             );
         }
 
-        phase a_gpu_that_keeps_up_never_holds_a_frame;
-        {
-            let typed = "every key gets its own frame";
-            let mut page = Loop::default();
-            for key in typed.chars() {
-                page.input(key);
-                page.animation_frame(FRAME);
-                // Done is reported late, after the next frame was submitted.
-                if page.gpu.len() > 1 {
-                    page.gpu_finishes_one();
-                }
-            }
-            assert_eq!(page.drawn.len(), typed.len());
-            assert_eq!(page.notes, Vec::<String>::new());
-        }
-
-        phase a_gpu_that_never_reports_keeps_the_page_drawing_and_says_so;
-        // A GPU that never reports a frame done — a completion lost for good, a
-        // software rasteriser starved of the CPU: the page keeps presenting, and
-        // each frame it stops waiting for is counted and said with the frame's
-        // number and how long it had been out. Slow is not lost: no number of
-        // them makes the page give the device up.
+        phase a_completion_the_gpu_never_reports_is_said_once_it_is_overdue;
+        // A GPU whose completion goes missing for good (a software rasteriser
+        // starved of the CPU, a promise the browser drops): the page keeps
+        // presenting, and says so once the frame it owes is overdue, naming
+        // it, how long it waited, and how many that has happened to.
         {
             let mut page = Loop::default();
-            // A person keeps working — every frame has something to draw — and the
-            // GPU never reports one of them done, for two minutes.
             for _ in 0..7_500 {
                 page.input('x');
                 page.animation_frame(FRAME);
             }
-            assert!(
-                page.drawn.len() >= 10,
-                "a page whose GPU never answers keeps presenting: {} frames, {:?}",
-                page.drawn.len(),
-                page.notes.first()
-            );
             assert_eq!(
-                usize::try_from(page.pacing.stalls()).ok(),
-                Some(page.notes.len()),
-                "every frame the GPU left out was counted and said"
+                page.drawn.len(),
+                7_500,
+                "every frame with something to draw is drawn"
             );
-            let first = page.notes.first().expect("the first stall was said");
+            let first = page.notes.first().expect("the first overdue frame was said");
             assert!(
                 first.starts_with("Browser runtime: frame 1 was handed to the GPU 6.0 s ago"),
                 "the note names the frame and how long it waited: {first}"
@@ -325,35 +283,60 @@ mod tests {
             );
             assert!(
                 page.notes.iter().all(|note| !note.contains("lost")),
-                "no stall says the device is lost: {:?}",
+                "no overdue frame says the device is lost: {:?}",
                 page.notes.last()
             );
-            // The GPU comes back and reports what it owes: the count starts again.
-            while !page.gpu.is_empty() {
-                page.gpu_finishes_one();
-            }
-            page.input('y');
-            page.animation_frame(FRAME);
-            assert_eq!(page.pacing.stalls(), 0, "a GPU that reports is working");
+            assert!(
+                page.pacing.stalls() > 100,
+                "the frames it left out are counted: {}",
+                page.pacing.stalls()
+            );
         }
 
-        phase a_gpu_that_answers_late_is_still_waited_for;
-        // A GPU a second and a half behind is waited for, not given up on: the
-        // bound sits several frame times past what a page drawing a megapixel
-        // takes, so only a completion that never comes reaches it.
+        phase a_gpu_that_reports_keeps_the_count_at_nothing;
         {
             let mut page = Loop::default();
-            for step in 0..400 {
+            for key in ['a', 'b', 'c', 'd'] {
+                page.input(key);
+                page.animation_frame(FRAME);
+                // A GPU that keeps up, reported after the frame went out.
+                page.gpu_finishes_one();
+            }
+            assert_eq!(page.drawn.len(), 4);
+            assert_eq!(page.notes, Vec::<String>::new());
+            assert_eq!(page.pacing.stalls(), 0);
+        }
+
+        phase a_gpu_that_answers_late_is_not_taken_for_lost;
+        // A GPU about a second and a half behind still answers, one frame for
+        // each it is handed: its frames are drawn as they come, and nothing is
+        // counted against it.
+        {
+            let mut page = Loop::default();
+            for _ in 0..400 {
                 page.input('c');
                 page.animation_frame(FRAME);
-                // About every second and a half, as a software rasteriser under
-                // load reports: late, but never silent.
-                if step % 94 == 93 {
+                // 94 frames at 16 ms is the second and a half it lags by.
+                while page.gpu.len() > 94 {
                     page.gpu_finishes_one();
                 }
             }
-            assert_eq!(page.notes, Vec::<String>::new(), "no frame was given up on");
-            assert_eq!(page.pacing.stalls(), 0);
+            assert_eq!(page.drawn.len(), 400, "every frame is drawn");
+            assert_eq!(page.pacing.stalls(), 0, "a GPU that reports is working");
+        }
+
+        phase the_frames_a_silent_gpu_owes_do_not_grow_without_bound;
+        {
+            let mut page = Loop::default();
+            for _ in 0..(MOST_OWED * 3) {
+                page.input('x');
+                page.animation_frame(FRAME);
+            }
+            assert!(
+                page.pacing.owed() <= MOST_OWED,
+                "what the silent GPU owes stays bounded: {}",
+                page.pacing.owed()
+            );
         }
     }
 }

@@ -517,7 +517,7 @@ impl Session<'_> {
                     crate::peer::tell_governor(&workspace, &tap, author, body).await;
                 }
             }
-            Envelope::RetiredPresence {
+            Envelope::Presence {
                 workspace_id,
                 payload,
             } => {

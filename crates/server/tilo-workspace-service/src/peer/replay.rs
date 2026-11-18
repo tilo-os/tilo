@@ -100,7 +100,7 @@ const fn state_frame_workspace(frame: &Envelope) -> Option<(WorkspaceId, bool)> 
         Envelope::Delta { workspace_id, .. }
         | Envelope::Ready { workspace_id, .. }
         | Envelope::WorkspaceBootstrap { workspace_id, .. }
-        | Envelope::RetiredPresence { workspace_id, .. } => Some((*workspace_id, true)),
+        | Envelope::Presence { workspace_id, .. } => Some((*workspace_id, true)),
         Envelope::SyncResponse { workspace_id, .. } => Some((*workspace_id, false)),
         _ => None,
     }

@@ -5,12 +5,12 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
+use tilo_device_identity::persist::IdentityPaths;
 use tilo_secret_service::migrate::{self, GnomeKeyring, Outcome};
 use tilo_secret_service::service::{
     AppRow, BUS_NAME, BusResolver, Core, MANAGEMENT_PATH, Managers, publish,
 };
 use tilo_secret_service::store::{DeviceIdentityKey, DeviceVault, Store};
-use tilo_user_identity::persist::IdentityPaths;
 use tracing::{error, info};
 
 #[derive(Parser)]
@@ -40,7 +40,7 @@ enum Command {
     },
     /// Re-seal this person's store to the machine's new device key. A
     /// branched machine's boot runs it as each person, with the keys on
-    /// standard input (`tilo_user_identity::branch::hand_over`).
+    /// standard input (`tilo_device_identity::branch::hand_over`).
     #[command(hide = true)]
     ResealDevice,
 }
@@ -96,7 +96,7 @@ async fn serve(identity_root: Option<std::path::PathBuf>) -> Result<(), String> 
     let paths = match identity_root {
         Some(root) => {
             let paths = IdentityPaths::under(root);
-            tilo_user_identity::persist::load_or_create_device_key(&paths)
+            tilo_device_identity::persist::load_or_create_device_key(&paths)
                 .map_err(|e| format!("development identity: {e}"))?;
             paths
         }
@@ -149,7 +149,7 @@ async fn serve(identity_root: Option<std::path::PathBuf>) -> Result<(), String> 
 
 fn reseal_device() -> Result<(), String> {
     use std::io::Read as _;
-    use tilo_user_identity::branch::{SealedStore as _, take_over};
+    use tilo_device_identity::branch::{SealedStore as _, take_over};
     let mut input = zeroize::Zeroizing::new(Vec::new());
     std::io::stdin()
         .take(1024)

@@ -1,7 +1,8 @@
 //! What an agent did for a reply, drawn under the reply's words. While the
 //! agent works it is a card that says so and lists each operation as it is
-//! dispatched; once it is done it folds to one line — "Did 3 things" — that
-//! opens the list. The answer itself is the reply's text, never this line.
+//! dispatched; once it is done one operation stays as its own line, and
+//! several fold to one line — "Did 3 things" — that opens the list. The
+//! answer itself is the reply's text, never this line.
 
 use ui::TextRole;
 use ui::paint::PaintCtx;
@@ -19,11 +20,13 @@ pub(super) struct AgentWorkPresentation {
     /// The state, while it says something the reply's text does not: the
     /// agent is still working, or the work did not finish.
     pub(super) summary: Option<String>,
-    /// The folded list's line, once the work ended with operations done.
+    /// The folded list's line, once the work ended with several operations.
     pub(super) did: Option<String>,
-    /// The operations shown: every one while the agent works, the folded
-    /// list's only when it is open.
+    /// The operations shown: every one while the agent works or when only one
+    /// was dispatched, the folded list's only when it is open.
     pub(super) steps: Vec<String>,
+    /// Drawn as a card: the work is under way, or ended without operations.
+    card: bool,
 }
 
 impl AgentWorkPresentation {
@@ -62,9 +65,9 @@ impl AgentWorkPresentation {
             }
         };
         let finished = state.finished();
-        let did = (finished && !work.trace.is_empty())
+        let did = (finished && work.trace.len() > 1)
             .then(|| t_args("chat-agent-work-did", &[("count", work.trace.len().into())]));
-        let steps = if finished && !open {
+        let steps = if did.is_some() && !open {
             Vec::new()
         } else {
             work.trace.iter().map(step_line).collect()
@@ -73,12 +76,8 @@ impl AgentWorkPresentation {
             summary,
             did,
             steps,
+            card: !finished || work.trace.is_empty(),
         })
-    }
-
-    /// Whether it is drawn as a card: the work is still under way.
-    fn card(&self) -> bool {
-        self.did.is_none()
     }
 
     fn lines(&self) -> impl Iterator<Item = (&str, Line)> {
@@ -146,7 +145,7 @@ pub(crate) fn agent_work_accessible_description(work: &AgentWork, words: bool) -
 
 /// The inset around the lines: a card's padding, none for the folded line.
 fn inset(shown: &AgentWorkPresentation, theme: &Theme) -> f64 {
-    if shown.card() {
+    if shown.card {
         f64::from(theme.tokens.spacing.s3)
     } else {
         0.0
@@ -195,7 +194,7 @@ pub(super) fn draw_agent_work(
     let theme = paint.theme;
     let gap = f64::from(theme.tokens.spacing.s2);
     let inset = inset(&shown, theme);
-    if shown.card() {
+    if shown.card {
         CardFace::new().paint(paint, area);
     }
     let width = ui::num::f32_of_f64((area.width() - 2.0 * inset).max(0.0));

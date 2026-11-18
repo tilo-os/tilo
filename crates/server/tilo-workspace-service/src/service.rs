@@ -21,6 +21,7 @@ use iroh::protocol::{AcceptError, DynProtocolHandler, ProtocolHandler};
 use tilo_clock::unix_now_ns;
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_user_identity::{DeviceCert, RevocationList, verify_device_cert_at};
+
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::app_serving::AppActionServer;
@@ -119,12 +120,11 @@ pub enum ServiceError {
 pub type Protocols = Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>;
 
 /// The ALPNs a workspace service answers on.
-const SERVICE_ALPNS: [&[u8]; 5] = [
+const SERVICE_ALPNS: [&[u8]; 4] = [
     ALPN,
     tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN,
     tilo_peer_state::actions::ACTIONS_ALPN,
     tilo_peer_state::direct::DIRECT_ALPN,
-    tilo_peer_state::direct::DIRECT_ALPN_V2,
 ];
 
 /// A service's session stack: its workspaces, the handshake that admits their
@@ -452,11 +452,6 @@ fn service_handlers(
         // link a device runs for itself: the dial names its workspace first.
         (
             tilo_peer_state::direct::DIRECT_ALPN,
-            Arc::new(workspaces.direct()) as Arc<dyn DynProtocolHandler>,
-        ),
-        // A member of an older build, which dials the link before writes were answered.
-        (
-            tilo_peer_state::direct::DIRECT_ALPN_V2,
             Arc::new(workspaces.direct()) as Arc<dyn DynProtocolHandler>,
         ),
     ]
@@ -1029,7 +1024,7 @@ fn policy_roots(policy: &TrustPolicy, own_user: [u8; 32]) -> HashSet<[u8; 32]> {
 
 /// Bundle of identity material a service needs to run. The server daemon's
 /// `main.rs` loads it from
-/// [`tilo_user_identity::persist`] and passed in explicitly so the
+/// [`tilo_device_identity::persist`] and passed in explicitly so the
 /// integration tests can wire a `tempdir`-based identity.
 #[derive(Clone)]
 pub struct ServiceIdentity {

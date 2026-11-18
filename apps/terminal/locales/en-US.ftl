@@ -1,7 +1,7 @@
 terminal-find-scrollback = Find in scrollback
 terminal-target-host = Your shell on this device
 terminal-target-default = Default environment
-terminal-target-legacy = { $vm } virtual machine
+terminal-target-linux-vm = { $vm } virtual machine
 terminal-target-manage = Manage environments…
 terminal-target-choose = Choose where this runs
 terminal-start-failed-title = The shell couldn’t start

@@ -9,9 +9,10 @@ pub(crate) fn certified_signer(
     person: [u8; 32],
 ) -> io::Result<(ed25519_dalek::SigningKey, Vec<u8>)> {
     let paths = tilo_identity::provisioning::collaboration_identity_paths();
-    let signer = tilo_user_identity::persist::load_device_key(&paths).map_err(io::Error::other)?;
+    let signer =
+        tilo_device_identity::persist::load_device_key(&paths).map_err(io::Error::other)?;
     let certificate =
-        tilo_user_identity::persist::read_device_cert(&paths.device_cert_for_user(&person))
+        tilo_device_identity::persist::read_device_cert(&paths.device_cert_for_user(&person))
             .map_err(io::Error::other)?;
     tilo_user_identity::verify_device_cert(&certificate).map_err(io::Error::other)?;
     if certificate.user_public_key != person

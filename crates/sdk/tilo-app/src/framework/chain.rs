@@ -63,7 +63,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
-use tilo_actions::{ActionContext, ActionError, ActionInvoker, OperationKind};
+use tilo_actions::{ActionContext, ActionError, ActionInvoker};
 use tilo_resource::{Invoke, Resource};
 use ui_core::automerge::transaction::Transactable as _;
 use ui_core::automerge::{ChangeHash, ObjType, ROOT, ReadDoc as _, Value};
@@ -83,6 +83,8 @@ mod named;
 mod part;
 mod place;
 mod reading;
+mod routing;
+use routing::{route, route_at};
 mod shares;
 
 use super::made::Made;
@@ -90,6 +92,7 @@ use dispatching::detached_dispatch;
 pub(crate) use dispatching::dispatching;
 use listing::{Listing, Page};
 use part::{HeldPart, PartType, live_of};
+pub(crate) use reading::PastPart;
 use reading::{ChainRead, offer_nested_reads, parse_read_cursor, read_cursor, read_spec};
 use shares::Written;
 
@@ -218,13 +221,19 @@ pub trait Chained: Resource {
     /// so the verb itself still reads only its own part. `invoker` is who
     /// it is invoked by: what an action naming "mine" resolves against (the
     /// one note they made).
+    ///
+    /// `actions` are invoked as one, in order: a single action, or every
+    /// member of a group. What they read across the parts is read once for
+    /// all of them, and each takes up where the one before it left off (a
+    /// new item placed after the one made before it), so a group costs what
+    /// its members do, not its members times every item held.
     fn prepare(
-        action: &mut Self::Action,
+        actions: &mut [Self::Action],
         base: &<Self::Base as Resource>::State,
         parts: &[(u64, Rc<Self::State>)],
         invoker: &ActionInvoker,
     ) -> Result<(), String> {
-        let _ = (action, base, parts, invoker);
+        let _ = (actions, base, parts, invoker);
         Ok(())
     }
 
@@ -266,12 +275,6 @@ pub trait Chained: Resource {
     /// of it (a tracker's issues), where a part is a bound on what one
     /// change costs, not on what a device holds.
     const HELD_WHOLE: bool = false;
-
-    /// The fields a row of the chain's listing carries of its item when its
-    /// caller names none (the read's `fields`): what a person scans a list
-    /// of them by, such as an issue's number, its status and who has it. By
-    /// default a row names its item and says nothing else of it.
-    const LISTED: &'static [&'static str] = &[];
 
     /// Turn what a read's `where` says in the kind's own words into
     /// equalities on its items' fields, where the read is answered: a
@@ -862,8 +865,9 @@ impl ChainCore {
 
     /// Answer the read the chain publishes ([`read_spec`]) from the parts this
     /// device holds: the items of the newest part first, a page at a time,
-    /// each named by the id a read of it takes, with the fields it was asked
-    /// for and only the items its `where` holds of ([`Listing`], `prepare`
+    /// each as an inline collection holds it (`{id, value}`, the value kept
+    /// to the fields asked for), so one type reads both, and only the items
+    /// its `where` holds of ([`Listing`], `prepare`
     /// putting the kind's own words into fields first); or one item's
     /// content, from the part keeping it. A page that reached the oldest part
     /// this device holds asks for the part before it and says so (`earlier`),
@@ -1077,13 +1081,15 @@ impl ChainCore {
     fn follow_parts(&self) -> bool {
         let mut moved = false;
         let generation = self.workspace.store.write_generation();
+        // Nothing held changes, and no earlier part arrives, while the store
+        // takes no write.
         if generation == u64::MAX || self.followed_at.get() != Some(generation) {
             moved = self.follow_held();
+            if self.part.held_whole {
+                self.hold_earlier();
+            }
             self.followed_at
                 .set(Some(self.workspace.store.write_generation()));
-        }
-        if self.part.held_whole {
-            self.hold_earlier();
         }
         if self.due() {
             moved |= self.look();
@@ -1670,6 +1676,11 @@ impl ChainState {
         &self.core.id
     }
 
+    /// Who reads and writes the parts here.
+    pub(crate) fn reader(&self) -> &tilo_resource::MemberId {
+        &self.core.workspace.me
+    }
+
     fn part(&self) -> &'static PartType {
         self.core.part
     }
@@ -1841,7 +1852,10 @@ impl ChainState {
         // As held, without a refresh: this is read while one runs.
         let parts = (part.typed)(&self.held());
         for entry in unsent {
-            let Ok(action) = (part.prepare)(&*entry.action, &*base, &*parts, &entry.invoker) else {
+            let Ok(Some(action)) =
+                (part.prepare)(&[&*entry.action], &*base, &*parts, &entry.invoker)
+                    .map(|mut prepared| prepared.pop())
+            else {
                 continue;
             };
             let Ok((action, encoded)) = (part.written)(&*action) else {
@@ -1887,8 +1901,10 @@ impl ChainState {
         let base = (self.base)();
         let kept = self.parts();
         let parts = (part.typed)(&kept);
-        let action =
-            (part.prepare)(action, &*base, &*parts, invoker).map_err(ActionError::Refused)?;
+        let action = (part.prepare)(&[action], &*base, &*parts, invoker)
+            .map_err(ActionError::Refused)?
+            .pop()
+            .ok_or_else(|| ActionError::Refused("the action was not prepared".into()))?;
         let (place, by_app) = (part.route)(&*action, &*base, &*parts);
         drop(base);
         if let Some(shares) = self
@@ -1978,21 +1994,20 @@ impl ChainState {
         let base = (self.base)();
         let kept = self.parts();
         let parts = (part.typed)(&kept);
-        let mut prepared = Vec::with_capacity(group.len());
+        let members: Vec<&dyn Any> = group.iter().map(|action| &**action).collect();
+        let prepared =
+            (part.prepare)(&members, &*base, &*parts, invoker).map_err(ActionError::Refused)?;
         let mut places = Vec::with_capacity(group.len());
         let mut indices = Vec::with_capacity(group.len());
-        for action in group {
-            let action = (part.prepare)(&**action, &*base, &*parts, invoker)
-                .map_err(ActionError::Refused)?;
-            let (place, by_app) = (part.route)(&*action, &*base, &*parts);
-            let by_app = by_app.or_else(|| self.listed_part(&*action, &kept).map(Ok));
+        for action in &prepared {
+            let (place, by_app) = (part.route)(&**action, &*base, &*parts);
+            let by_app = by_app.or_else(|| self.listed_part(&**action, &kept).map(Ok));
             places.push(place);
-            self.may(&*action)?;
+            self.may(&**action)?;
             indices.push(
-                self.place(&*action, by_app, &kept)
+                self.place(&**action, by_app, &kept)
                     .map_err(ActionError::Refused)?,
             );
-            prepared.push(action);
         }
         drop(base);
         drop(parts);
@@ -2238,42 +2253,6 @@ fn by_part(indices: &[u64]) -> Vec<(u64, Vec<usize>)> {
 #[inline(never)]
 fn part_edit(payload: &[u8]) -> Result<PartEdit, String> {
     tilo_actions::decode_json(payload).map_err(|error| error.to_string())
-}
-
-/// `resource`'s document actions, and those of its children, carried out on
-/// the chain `chain`, each keeping the need it declares. An item's views
-/// and the app's other effects on it stay as the part publishes them,
-/// answered by the app's window: an item of a part opens at the address a
-/// workspace's host knows it by. The chain itself offers only document actions;
-/// the app's own record offers its effects.
-fn route(resource: tilo_actions::ResourceSpec, chain: &str) -> tilo_actions::ResourceSpec {
-    route_at(resource, chain, false)
-}
-
-fn route_at(
-    mut resource: tilo_actions::ResourceSpec,
-    chain: &str,
-    item: bool,
-) -> tilo_actions::ResourceSpec {
-    resource.actions = std::mem::take(&mut resource.actions)
-        .into_iter()
-        .filter_map(|spec| {
-            if spec.kind == OperationKind::Document {
-                Some(super::resources::route_operation(
-                    spec,
-                    CHAIN_ACTION_TYPE,
-                    chain,
-                ))
-            } else {
-                item.then_some(spec)
-            }
-        })
-        .collect();
-    resource.children = std::mem::take(&mut resource.children)
-        .into_iter()
-        .map(|child| route_at(child, chain, true))
-        .collect();
-    resource
 }
 
 /// A chain of records the app keeps beside its own, held for a view or

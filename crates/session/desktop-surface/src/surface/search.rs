@@ -166,9 +166,9 @@ pub trait SearchHost {
     /// ([`Scope::Everywhere`]): then the rows of every workspace are offered
     /// too, each saying which workspace it is in. Called as search opens,
     /// inside the desktop's update pass: it reads what the host keeps, never
-    /// the desktop's own tree. A search over the workspace and one over
-    /// every workspace ask it; an app's own search and the applications
-    /// alone ([`Self::applications`]) do not.
+    /// the desktop's own tree. A search over the workspace, one over every
+    /// workspace and a window group's new tab ask it; an app's own search
+    /// does not.
     fn feed(&self, workspace: &str, scope: &Scope) -> SearchHostFeed;
     /// The apps this host opens, each an id a launch accepts, whether or not a search is over a
     /// workspace: a window group's new tab and the empty shell's launchpad list the applications
@@ -892,8 +892,8 @@ impl DesktopSurface {
 
     /// Open search at `scope` , with `query` typed: over what the desktop has open in the workspace
     /// in front ([`Scope::Workspace`]), over every workspace ([`Scope::Everywhere`]), over what an
-    /// app's window holds ([`Scope::InApp`]), or over the applications a window group's new tab may
-    /// show ([`Scope::WindowGroup`]).
+    /// app's window holds ([`Scope::InApp`]), or over what a window group's new tab may show
+    /// ([`Scope::WindowGroup`]): the workspace's documents and actions as well as its apps.
     pub(super) fn open_search(&mut self, doc: &AutoCommit, scope: Scope, query: Option<String>) {
         // An app's search runs in that app's window; a window group's applications open into it.
         // The others stand over the shell.
@@ -923,9 +923,12 @@ impl DesktopSurface {
                 let (data, usage) = self.shell_search_data(doc, &scope);
                 (scope, None, data, usage)
             }
+            // A window group's new tab searches as the workspace does, into the group: its box
+            // promises what the workspace holds (apps, windows, documents and actions), and a
+            // page whose workspace another device serves keeps none of those documents itself.
             (scope @ Scope::WindowGroup(_), _) => {
-                let data = self.applications_search_data(&scope);
-                (scope, window, data, None)
+                let (data, usage) = self.shell_search_data(doc, &scope);
+                (scope, window, data, usage)
             }
             (scope @ (Scope::Workspace | Scope::Everywhere), _) => {
                 let (data, usage) = self.shell_search_data(doc, &scope);
@@ -1082,18 +1085,6 @@ impl DesktopSurface {
     /// because the session is what starts them, so without the host's list
     /// the applications scope would list nothing and the person could not
     /// open anything from it.
-    fn applications_search_data(&self, scope: &Scope) -> SearchData {
-        let mut applications = self.tiles.search_applications();
-        if let Some(host) = self.shared.borrow().search_host.clone() {
-            applications.extend(host.applications());
-        }
-        SearchData {
-            applications,
-            scope: scope.clone(),
-            ..SearchData::default()
-        }
-    }
-
     /// What the desktop has open now and what its host adds: over the workspace in front, or over
     /// every workspace.
     fn shell_search_data(

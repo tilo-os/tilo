@@ -249,7 +249,7 @@ class Endpoint:
         """How an invocation stands now, or, with `cancel`, stop it."""
         if cancel:
             return await self.json(
-                "POST", self._invocation_path(invocation) + "/cancel", json={}, grouped=False
+                "POST", self._invocation_path(invocation) + "/cancel", grouped=False
             )
         return await self.json(
             "GET", self._invocation_path(invocation), query={"wait": 0}, grouped=False
@@ -292,7 +292,7 @@ class Endpoint:
         """Take back what an invocation changed: the one call, or every call of
         its group."""
         return await self.json(
-            "POST", self._invocation_path(invocation) + "/undo", json={}, grouped=False
+            "POST", self._invocation_path(invocation) + "/undo", grouped=False
         )
 
     async def program(

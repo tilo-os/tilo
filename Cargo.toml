@@ -6,7 +6,6 @@ exclude = [
     "vendor/hexane",
     "vendor/iroh-blobs",
     "vendor/buffa-build",
-    "vendor/rig-core",
     "tools/web/wasm-split",
     "fuzz",
     # A wasm32 library `tilolang bench --library` runs; built by its own build.sh.
@@ -170,6 +169,7 @@ members = [
 
     # Agent
     "crates/agent/agent-session",
+    "crates/agent/agent-turn",
     "crates/agent/agent-web-tools",
     "crates/agent/connector",
     "crates/agent/local-model-service",
@@ -218,6 +218,7 @@ members = [
     "crates/collab/tilo-callstream",
     "crates/collab/tilo-live",
     "crates/collab/tilo-unlock-protocol",
+    "crates/collab/tilo-device-identity",
     "crates/collab/tilo-user-identity",
     "crates/collab/workspace-join",
 
@@ -380,9 +381,9 @@ members = [
 
     # Runtime
     "crates/runtime/cli",
-    "crates/runtime/legacy-agent",
-    "crates/runtime/legacy-agent-protocol",
-    "crates/runtime/legacy-vm",
+    "crates/runtime/linux-vm-agent",
+    "crates/runtime/linux-vm-protocol",
+    "crates/runtime/linux-vm",
     "crates/runtime/runtime-collab",
     # Opt-in dynamic SDK; excluded from default-members.
     "crates/runtime/runtime-dylib",
@@ -551,7 +552,6 @@ members = [
     "crates/system/tilo-auth",
     "crates/system/tilo-rollback",
     "crates/system/tilo-seal",
-    "crates/system/tilo-sibling-unlock",
     "crates/system/tilo-startup-metrics",
     "crates/system/tinker",
     "crates/system/tts",
@@ -1367,7 +1367,7 @@ incremental = false
 # log reads them there.
 [profile.release.package.tilo-rollback]
 strip = "symbols"
-[profile.release.package.tilo-sibling-unlock]
+[profile.release.package.tilo-auth]
 strip = "symbols"
 [profile.release.package.tilo-boot-signin]
 strip = "symbols"
@@ -1582,9 +1582,6 @@ hexane = { path = "vendor/hexane" }
 # The content store's metadata database keeps the page cache its owner bounds, not redb's
 # default gigabyte. See vendor/iroh-blobs/TILO-PATCH.md.
 iroh-blobs = { path = "vendor/iroh-blobs" }
-# Assemble fragmented OpenAI Chat tool names consistently in Rig's decoder.
-# Exact registry baseline and removal condition: vendor/rig-core/PROVENANCE.md.
-rig-core = { path = "vendor/rig-core" }
 # Build outputs must not become Cargo inputs; see vendor/buffa-build/PROVENANCE.md.
 buffa-build = { path = "vendor/buffa-build" }
 # Verify Cast TLS handshake signatures and bound cancellation; identity

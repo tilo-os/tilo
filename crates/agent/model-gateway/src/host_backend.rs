@@ -4,8 +4,8 @@
 //! file paths or keys. Sandboxed apps use `Complete` over their launcher-issued
 //! capability. Host CLI credentials are adopted into the shared, origin/purpose
 //! bound credential store, then resolved only here; rotating files are adopted
-//! again before each attempt. Provider encoding/decoding is the gateway's Rig
-//! adapter, not a second HTTP implementation.
+//! again before each attempt. Provider encoding/decoding is the one wire codec
+//! ([`agent_provider_config::wire`]), not a second HTTP implementation.
 //!
 //! This module is a child of `service` so both entry points share its private
 //! transport policy. Only this deliberately host-only facade is re-exported.
@@ -76,7 +76,7 @@ impl ApiKey {
             "host-model-{}",
             openai::idempotency_key(&[endpoint.as_bytes()])
         );
-        let authorization = ServiceAuthorization::new(SERVICE_NAME, &purpose, endpoint)
+        let authorization = ServiceAuthorization::new(crate::SERVICE_NAME, &purpose, endpoint)
             .map_err(|error| credential_error(&error))?;
         let reference = authorization
             .credential_ref("operator")
@@ -307,8 +307,7 @@ async fn complete_with_http(
     credentials: &ServiceCredentials,
     pooled: &reqwest::Client,
 ) -> Result<neutral::ModelResponse, neutral::ModelError> {
-    let mut request = rig_adapter::neutral_request(turn.1.clone())?;
-    request.additional_params = Some(turn.2.clone());
+    let extra = turn.2.as_object();
     let mut headers = reqwest::header::HeaderMap::new();
     if target.needs_idempotency_key() {
         if key.is_empty() {
@@ -334,18 +333,25 @@ async fn complete_with_http(
             .checked_duration_since(Instant::now())
             .filter(|left| !left.is_zero())
             .ok_or_else(|| neutral::ModelError::new(neutral::ErrorKind::TimedOut))?;
-        let failure = match rig_adapter::host_complete(
-            &http,
-            profile,
-            secret.as_deref().map(String::as_str),
-            turn.0,
-            request.clone(),
-            budget,
+        let failure = match provider_call::turn(
+            &provider_call::Post {
+                client: &http,
+                profile,
+                url: agent_provider_config::wire::url(profile),
+                secret: secret.as_deref().map(String::as_str),
+                model: turn.0,
+                budget,
+                resend: false,
+                signs: None,
+            },
+            turn.1,
+            extra,
             target, // Host retries resolve ownership anew and retain their idempotency key.
+            None,
         )
         .await
         {
-            Ok(response) => return rig_adapter::neutral_response(response),
+            Ok(response) => return Ok(response),
             Err(failure) => failure,
         };
         let asked = match failure.again {
@@ -520,13 +526,11 @@ impl PersonProviders {
         } else {
             &self.public
         };
-        let request = rig_adapter::neutral_request(turn.request.clone())?;
         let call = PlanCall {
             profile_id: &turn.profile.id,
             model_id: turn.model,
             timeout: turn.timeout,
             stream: true,
-            deltas: true,
             trace: None,
         };
         let mut emit = |frame: &Response| {
@@ -542,15 +546,15 @@ impl PersonProviders {
         if let Some(quiet) = turn.quiet {
             timing.signs.let_go_after(quiet);
         }
-        rig_adapter::complete_with(
+        provider_call::complete_with(
             http,
             &call,
             (turn.profile, secret),
-            request,
+            turn.request,
             &mut emit,
             (
                 timing,
-                rig_adapter::Carry {
+                provider_call::Carry {
                     resend: true,
                     callers_deadline: true,
                 },
@@ -569,7 +573,7 @@ mod tests {
     use super::*;
 
     #[tokio::test(flavor = "current_thread")]
-    async fn rig_retries_a_metered_turn_with_rotated_ownership_and_one_key() {
+    async fn a_metered_turn_is_retried_with_rotated_ownership_and_one_key() {
         use std::io::{BufRead as _, Read as _, Write as _};
         for (target, refusal) in [
             (Target::Standard, "429 Too Many Requests"),
@@ -792,7 +796,7 @@ mod tests {
             .send()
             .await
             .unwrap_err();
-        let failure = rig_adapter::send_failure(&refused);
+        let failure = provider_call::send_failure(&refused);
         assert!(failure.unprocessed && !failure.outcome_unknown);
         assert_eq!(failure.again, Again::Soon(None));
         assert_eq!(failure.model_error.kind, neutral::ErrorKind::Transport);

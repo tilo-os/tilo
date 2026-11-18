@@ -323,10 +323,10 @@ pub(crate) async fn member_approval_as(
     let user_public_key =
         device.map_or_else(|| root.device_public_key(), |cert| cert.user_public_key);
     let issued_at_ns = tilo_clock::unix_now_ns();
-    let message = MemberApproval::signed_message(&user_public_key, issued_at_ns, &request)
+    let digest = MemberApproval::signed_digest(&user_public_key, issued_at_ns, &request)
         .map_err(|error| CertifyError::Request(error.to_string()))?;
     let signature = root
-        .sign(message)
+        .sign(digest.to_vec())
         .await
         .map_err(|error| CertifyError::Request(error.0))?;
     Ok(MemberApproval {
@@ -602,6 +602,25 @@ mod tests {
             Err(CertifyError::Request(_))
         ));
         assert!(matches!(lasting(page_ns), Err(CertifyError::Request(_))));
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "dial")]
+    async fn a_refused_signature_issues_no_approval() {
+        struct Refusing;
+
+        impl DeviceSigner for Refusing {
+            fn device_public_key(&self) -> [u8; 32] {
+                SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes()
+            }
+
+            fn sign(&self, _message: Vec<u8>) -> collab_types::signer::SignFuture<'_> {
+                Box::pin(async { Err(collab_types::signer::SignError("locked".into())) })
+            }
+        }
+
+        let approved = member_approval(&Refusing, ApproverRequest::ListPending).await;
+        assert!(matches!(approved, Err(CertifyError::Request(_))));
     }
 
     #[tokio::test]

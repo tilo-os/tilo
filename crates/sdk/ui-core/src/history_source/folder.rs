@@ -21,10 +21,10 @@ use crate::widget::history::HistoryEntry;
 /// hold more changes than one history pane shows, and the pane is what bounds it.
 pub const LIMIT: usize = 500;
 
-/// The records a folder's changes are read from: the workspace's tree, its own record
+/// The documents a folder's changes are read from: the workspace's tree, its own document
 /// (chunk 0) and each chunk of it.
-pub trait FolderRecords {
-    /// The whole tree as the records hold it, every chunk's nodes together: what names
+pub trait FolderChunks {
+    /// The whole tree as its documents hold it, every chunk's nodes together: what names
     /// each file and walks its path. `None` when the tree cannot be read now.
     fn tree(&self) -> Option<fs_protocol::tree::Tree>;
 
@@ -56,25 +56,25 @@ pub struct FolderChange {
     pub entry: HistoryEntry,
 }
 
-/// Every change the folder `records` hold, oldest first, the newest [`LIMIT`] of them: each
+/// Every change `folder` holds, oldest first, the newest [`LIMIT`] of them: each
 /// node named by its path, and authored by whoever the change names.
 #[must_use]
-pub fn entries<R: FolderRecords>(records: &R, authors: &AuthorDirectory) -> Vec<HistoryEntry> {
-    changes(records, authors, None)
+pub fn entries<R: FolderChunks>(folder: &R, authors: &AuthorDirectory) -> Vec<HistoryEntry> {
+    changes(folder, authors, None)
         .into_iter()
         .map(|change| change.entry)
         .collect()
 }
 
-/// The changes the folder `records` hold, oldest first, the newest [`LIMIT`] of them; only
+/// The changes `folder` holds, oldest first, the newest [`LIMIT`] of them; only
 /// those of the file whose document id is `file`, when one is given.
 #[must_use]
-pub fn changes<R: FolderRecords>(
-    records: &R,
+pub fn changes<R: FolderChunks>(
+    folder: &R,
     authors: &AuthorDirectory,
     file: Option<FileDocumentId>,
 ) -> Vec<FolderChange> {
-    let Some(tree) = records.tree() else {
+    let Some(tree) = folder.tree() else {
         return Vec::new();
     };
     let focus = match file {
@@ -90,7 +90,7 @@ pub fn changes<R: FolderRecords>(
     };
     let chunks = match file {
         Some(file) => BTreeSet::from([file.chunk()]),
-        None => records.chunks(&tree),
+        None => folder.chunks(&tree),
     };
     let source = HistorySource::new()
         .with_authors(authors.clone())
@@ -98,7 +98,7 @@ pub fn changes<R: FolderRecords>(
         .without_resource_genesis();
     let mut listed = Vec::new();
     for chunk in chunks {
-        let Some(rows) = records.read_chunk(chunk, |doc| chunk_changes(&source, doc)) else {
+        let Some(rows) = folder.read_chunk(chunk, |doc| chunk_changes(&source, doc)) else {
             continue;
         };
         for (hash, entry) in rows {
@@ -155,12 +155,45 @@ fn named_by_path(mut entry: HistoryEntry, tree: &fs_protocol::tree::Tree) -> His
     if tree.node(&item.id).is_none() {
         return entry;
     }
-    item.label = fs_protocol::tree::path_of(tree, &item.id);
-    if let Some(summary) = super::sentence::step_summary(context) {
+    let path = fs_protocol::tree::path_of(tree, &item.id);
+    item.label.clone_from(&path);
+    let summary = file_sentence(context, &path).or_else(|| super::sentence::step_summary(context));
+    if let Some(summary) = summary {
         entry.target = super::sentence::step_target(context, &summary);
         entry.summary = summary;
     }
     entry
+}
+
+/// What a change of one file did, as History says it ("Edited docs/plan.md"): the verb the
+/// change's file actions share, or the one that says the most of a file made, deleted or put
+/// back in the same change. `None` for a change that is not of the tree.
+fn file_sentence(context: &tilo_actions::ActionContext, path: &str) -> Option<String> {
+    let tree_verb = |did: &tilo_actions::Did| match did {
+        tilo_actions::Did::Verb(verb) if verb.action.kind == fs_protocol::tree::TREE_KIND => {
+            Some(verb.action.action.clone())
+        }
+        _ => None,
+    };
+    let verbs: Vec<String> = match context.what.as_ref()? {
+        tilo_actions::Did::Group(group) => group.distinct.iter().filter_map(tree_verb).collect(),
+        did => tree_verb(did).into_iter().collect(),
+    };
+    use fs_protocol::file_action::verbs;
+    let verb = [
+        verbs::NEW_FOLDER,
+        verbs::NEW_FILE,
+        verbs::TRASH,
+        verbs::RESTORE,
+        verbs::MOVE,
+        verbs::WRITE,
+    ]
+    .into_iter()
+    .find(|verb| verbs.iter().any(|did| did == verb))?;
+    Some(crate::i18n::widget_format(
+        &format!("history-folder-did-{verb}"),
+        &[("file", path.into())],
+    ))
 }
 
 /// Who last changed each node whose changes `doc` holds: the changing actor (hex) and the
@@ -199,9 +232,9 @@ pub fn entries_in(doc: &AutoCommit, authors: &AuthorDirectory) -> Vec<HistoryEnt
     entries(&OneDocument(doc), authors)
 }
 
-/// Every change a folder kept in chunks holds, oldest first: `index` is the tree's own record
+/// Every change a folder kept in chunks holds, oldest first: `index` is the tree's own document
 /// and `chunks` the documents of the chunks this device holds, each read on its own. Chunk
-/// records are never merged into one document: one writer's changes to two chunks share its
+/// documents are never merged into one: one writer's changes to two chunks share its
 /// actor, and one document cannot hold both.
 #[must_use]
 pub fn entries_in_chunks(
@@ -218,7 +251,7 @@ struct Chunked<'a> {
     chunks: &'a [(TreeChunk, AutoCommit)],
 }
 
-impl FolderRecords for Chunked<'_> {
+impl FolderChunks for Chunked<'_> {
     fn tree(&self) -> Option<fs_protocol::tree::Tree> {
         let mut tree = fs_protocol::tree::TreeChunks::default();
         tree.read_index(self.index);
@@ -239,7 +272,7 @@ impl FolderRecords for Chunked<'_> {
 /// A folder held in one document: every node together, as a tree was before it was chunked.
 struct OneDocument<'a>(&'a AutoCommit);
 
-impl FolderRecords for OneDocument<'_> {
+impl FolderChunks for OneDocument<'_> {
     fn tree(&self) -> Option<fs_protocol::tree::Tree> {
         <fs_protocol::tree::FilesTree as tilo_resource::Resource>::read(self.0).ok()
     }
@@ -264,7 +297,7 @@ mod tests {
     use fs_protocol::tree::{Placing, ROOT_ID, Tree};
     use tilo_actions::ActionInvoker;
 
-    use super::{FolderRecords, changes, entries};
+    use super::{FolderChunks, changes, entries};
     use crate::history_source::AuthorDirectory;
 
     /// A tree kept in two chunks, each a document of its own, as a page holds them.
@@ -273,7 +306,7 @@ mod tests {
         tree: Tree,
     }
 
-    impl FolderRecords for TwoChunks {
+    impl FolderChunks for TwoChunks {
         fn tree(&self) -> Option<Tree> {
             Some(self.tree.clone())
         }
@@ -287,9 +320,10 @@ mod tests {
         }
     }
 
-    /// Write `action` into `doc` as the executor does for an agent's call: one change, named.
-    fn apply_as_agent(doc: &mut AutoCommit, action: &FileAction) {
-        let invoker = ActionInvoker::agent("helper");
+    /// Write `action` into `doc` as the executor does for the call of agent `agent`: one
+    /// change, named.
+    fn apply_as_agent(doc: &mut AutoCommit, action: &FileAction, agent: &str) {
+        let invoker = ActionInvoker::agent(agent);
         let context = fs_protocol::file_action::change_context("tree", action.described(), None)
             .with_invoker(invoker);
         let encoded = tilo_actions::EncodedAction {
@@ -339,7 +373,8 @@ mod tests {
         )
         .unwrap();
         second.commit();
-        for node in [&plan.id, &notes.id] {
+        // Two agents, so History keeps each change a row of its own.
+        for (node, agent) in [(&plan.id, "helper"), (&notes.id, "helper-2")] {
             apply_as_agent(
                 &mut second,
                 &FileAction::Write {
@@ -351,6 +386,7 @@ mod tests {
                     revision: None,
                     keep_preview: false,
                 },
+                agent,
             );
         }
         (
@@ -368,13 +404,18 @@ mod tests {
     fn a_folder_names_each_change_by_its_path_and_its_author() {
         let (two, _) = two_chunks();
         let rows = entries(&two, &AuthorDirectory::new());
-        let labels: Vec<String> = rows
+        let mut labels: Vec<String> = rows
             .iter()
             .filter_map(|row| row.target.as_ref().map(|target| target.label.clone()))
             .collect();
+        labels.sort();
         assert_eq!(labels, ["docs/plan.md", "notes.txt"], "{rows:#?}");
         assert!(
-            rows.iter().all(|row| row
+            rows.iter().any(|row| row.summary == "Edited docs/plan.md"),
+            "a change says what it did to the file: {rows:#?}"
+        );
+        assert!(
+            rows.iter().filter(|row| row.target.is_some()).all(|row| row
                 .context
                 .as_ref()
                 .and_then(|context| context.invoker.as_ref())

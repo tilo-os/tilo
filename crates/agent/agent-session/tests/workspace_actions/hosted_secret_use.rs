@@ -279,7 +279,7 @@ impl Hosted {
             .expect("the workspace's chat");
         let held = chat::chat::Chat::read(&automerge::AutoCommit::load(&saved).unwrap()).unwrap();
         let person = self.person();
-        let answering = chat::messages::chat_part::AnswerQuestion {
+        let answering = chat::messages::chat_messages::AnswerQuestion {
             message: message.clone(),
             answer: answer.to_owned(),
             device: Some("browser".to_owned()),
@@ -301,7 +301,7 @@ impl Hosted {
                         &held,
                         |replica| replica.as_invoker(&person),
                         None,
-                        chat::parts::ChatPart::ANSWER_QUESTION.with(answering),
+                        chat::parts::ChatMessages::ANSWER_QUESTION.with(answering),
                     )
                     .map_err(|error| format!("{error:?}"))
                 },

@@ -103,12 +103,11 @@ pub struct WebArgs {
     pub packet_relay: Option<SocketAddr>,
     /// The `https://` origin an ingress publishes the packet relay at, in front
     /// of `--packet-relay`: the URL the host advertises, which pages dial. By
-    /// default that is the bind address's own `http://`.
-    #[arg(
-        long = "packet-relay-url",
-        value_name = "URL",
-        requires = "packet_relay"
-    )]
+    /// default that is the bind address's own `http://`. Without
+    /// `--packet-relay`, the server is reached through the packet relay at
+    /// this URL and has none of its own: how a server behind a router nobody
+    /// dials into is reached from anywhere.
+    #[arg(long = "packet-relay-url", value_name = "URL")]
     pub packet_relay_url: Option<String>,
     /// The web entry (ending in `/`, e.g. `https://app.example/`) where the
     /// Tilo app opens this host's links: announced in catalogue locators,
@@ -266,13 +265,11 @@ impl AgentArgs {
                 env("TILO_AGENT_API_KEY_FILE"),
             ),
         )
-        .map_err(|error| anyhow::anyhow!("--agent-model: {error}"))?
-        .with_items_from(&env)
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
+        .map_err(|error| anyhow::anyhow!("--agent-model: {error}"))?;
         tracing::info!(model = %model.describe(), state = %state_dir.display(), "agents on this host");
         Ok(Some(tilo_server::agents::AgentOptions {
             state_dir,
-            model,
+            model: model.make_turns(),
             catalogue: None,
             feedback_reviewer: None,
             shell: None,
@@ -643,14 +640,14 @@ pub async fn await_certificate(
     let (Some(token_file), Some(listen)) = (&args.install_token_file, args.web) else {
         return Ok(());
     };
-    let paths = tilo_user_identity::IdentityPaths::under(identity_root);
+    let paths = tilo_device_identity::IdentityPaths::under(identity_root);
     if paths.device_cert.is_file() {
         return Ok(());
     }
     let token = std::fs::read_to_string(token_file)
         .with_context(|| format!("read {}", token_file.display()))?;
     let (device, _) =
-        tilo_user_identity::load_or_create_device_key(&paths).context("create the device key")?;
+        tilo_device_identity::load_or_create_device_key(&paths).context("create the device key")?;
     println!(
         "{}",
         serde_json::json!({
@@ -660,7 +657,7 @@ pub async fn await_certificate(
     );
     let session = match (session_device(args)?, &args.session_identity_root) {
         (Some(public_key), Some(root)) => {
-            let paths = tilo_user_identity::IdentityPaths::under(root);
+            let paths = tilo_device_identity::IdentityPaths::under(root);
             Some(tilo_server::web::install::SessionDevice {
                 public_key,
                 cert_out: paths.device_cert,

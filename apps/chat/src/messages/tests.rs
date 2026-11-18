@@ -6,7 +6,8 @@ use ui::tilo_resource::Id;
 
 use super::*;
 use crate::demo::Workspace;
-use crate::parts::{PART_TEXT_BYTES, part_index};
+use crate::parts::part_index;
+use ui::framework::PART_BYTES as PART_TEXT_BYTES;
 
 /// A post as long as one may be: a part fills after a few dozen of them.
 fn long_post(n: usize) -> String {
@@ -29,8 +30,8 @@ fn fill_part(workspace: &mut Workspace, part: u64) -> String {
     panic!("part {part} never filled");
 }
 
-fn react(message: &str, emoji: &str) -> ui::tilo_resource::Invoke<ChatPart> {
-    ChatPart::paths()
+fn react(message: &str, emoji: &str) -> ui::tilo_resource::Invoke<ChatMessages> {
+    ChatMessages::paths()
         .messages
         .item(&Id::from_raw(message))
         .reactions
@@ -38,8 +39,8 @@ fn react(message: &str, emoji: &str) -> ui::tilo_resource::Invoke<ChatPart> {
         .into()
 }
 
-fn edit(message: &str, text: &str) -> ui::tilo_resource::Invoke<ChatPart> {
-    ChatPart::EDIT_MESSAGE.with(chat_part::EditMessage {
+fn edit(message: &str, text: &str) -> ui::tilo_resource::Invoke<ChatMessages> {
+    ChatMessages::EDIT_MESSAGE.with(chat_messages::EditMessage {
         message: Id::from_raw(message),
         text: text.into(),
         body: None,
@@ -158,7 +159,7 @@ fn a_post_is_read_against_the_chat_record_where_it_is_invoked() {
 #[test]
 fn the_window_chain_rolls_over_and_reads_across_its_parts() {
     let chat = Rc::new(crate::demo::demo());
-    let chain: Chain<ChatPart> = Chain::detached(
+    let chain: Chain<ChatMessages> = Chain::detached(
         "so.tilo.chat",
         &ui::tilo_resource::MemberId::person(crate::model::ME),
         move || Rc::clone(&chat),
@@ -262,8 +263,8 @@ fn read_marks_are_positions_in_the_chain() {
 /// anyone posted.
 struct TwoDevices {
     workspace: String,
-    poster: Chain<ChatPart>,
-    guest: Chain<ChatPart>,
+    poster: Chain<ChatMessages>,
+    guest: Chain<ChatMessages>,
     guest_store: ui::resource::ResourceStore,
     guest_backend: Rc<durable_store::MemoryStore>,
     /// The resource the guest's window shows beside the chain.
@@ -462,7 +463,7 @@ tilo_test_env::scenario! {
     // read.
     {
         let channel = Id::from_raw("c_direct");
-        let mut part = ChatPart::default();
+        let mut part = ChatMessages::default();
         for (id, author, ts) in [
             ("m_one", "ada", 100),
             ("m_two", "bo", 50),
@@ -502,7 +503,7 @@ tilo_test_env::scenario! {
         let chat = crate::demo::demo();
         // A part holding one message written with a time after every post that
         // follows: a read that ordered by a clock would show it last.
-        let mut seeded = ChatPart::default();
+        let mut seeded = ChatMessages::default();
         seeded.messages.push(
             Id::from_raw("m_seeded"),
             crate::chat::Message::new(

@@ -72,25 +72,4 @@ impl<T: Transport> ProviderAdmin for AdministrationClient<T> {
                 .map(|_| ())
         })
     }
-    fn migrate_api_key(
-        &self,
-        profile_id: String,
-        original_endpoint: String,
-    ) -> AdminFuture<'_, ()> {
-        Box::pin(async move {
-            self.call(Request::MigrateApiKey {
-                profile_id,
-                original_endpoint,
-            })
-            .await
-            .map(|_| ())
-        })
-    }
-    fn remove_legacy_api_key(&self, profile_id: String) -> AdminFuture<'_, ()> {
-        Box::pin(async move {
-            self.call(Request::RemoveLegacyApiKey { profile_id })
-                .await
-                .map(|_| ())
-        })
-    }
 }

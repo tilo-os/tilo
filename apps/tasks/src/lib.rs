@@ -32,10 +32,10 @@ mod board;
 mod filter;
 mod import_inbox;
 mod issue;
+pub mod issue_list;
 mod list;
 pub mod locales;
 mod note;
-pub mod part;
 mod program_step;
 mod project;
 #[cfg(feature = "samples")]
@@ -53,17 +53,17 @@ use ui::framework::{Actions, Chain, EffectCx, Effected, Parts};
 use ui::prelude::*;
 use ui::widget::{NavItem, NavSection};
 
+pub use issue_list::{IssueList, Issues};
 pub use model::Tracker;
 pub use model::{NOTES, TasksEffect};
 use model::{Status, area_resource};
-pub use part::{IssuePart, Issues};
 
 /// What the window reads: the tracker's projects and the parts its issues
 /// are kept in, as they stand.
 #[derive(Clone, Default)]
 pub(crate) struct Tasks {
     pub(crate) tracker: Rc<Tracker>,
-    pub(crate) parts: Parts<IssuePart>,
+    pub(crate) parts: Parts<IssueList>,
     /// The issues read across the parts, kept for every version of the
     /// window's state: each reads it forward from what changed
     /// ([`Issues::sync`]), never anew.
@@ -87,7 +87,7 @@ impl Tasks {
 /// forward to `parts` from what changed, never read anew.
 pub(crate) fn read_issues<'a>(
     index: &'a std::cell::RefCell<Issues>,
-    parts: &Parts<IssuePart>,
+    parts: &Parts<IssueList>,
 ) -> IssuesRead<'a> {
     let behind = index.try_borrow().is_ok_and(|index| !index.follows(parts));
     if behind && let Ok(mut index) = index.try_borrow_mut() {
@@ -127,19 +127,19 @@ pub(crate) struct Window {
     pub(crate) tasks: LocalState<Tasks>,
     /// The issues as the window reads them, shared by every version of `tasks`.
     pub(crate) index: Rc<std::cell::RefCell<Issues>>,
-    pub(crate) chain: Option<Chain<IssuePart>>,
+    pub(crate) chain: Option<Chain<IssueList>>,
     /// The chain's published actions, for the controls bound to them.
-    pub(crate) actions: Option<Actions<IssuePart>>,
+    pub(crate) actions: Option<Actions<IssueList>>,
 }
 
 impl Window {
     fn of(cx: &ViewCx<Tracker>) -> Self {
-        let chain = cx.chain::<IssuePart>();
+        let chain = cx.chain::<IssueList>();
         let index = Rc::new(std::cell::RefCell::new(Issues::default()));
         let kept = Rc::clone(&index);
         let tasks = match &chain {
             Some(chain) => {
-                cx.chain_value(chain, move |tracker: &Tracker, parts: &Parts<IssuePart>| {
+                cx.chain_value(chain, move |tracker: &Tracker, parts: &Parts<IssueList>| {
                     Tasks {
                         tracker: Rc::new(tracker.clone()),
                         parts: Rc::clone(parts),
@@ -151,7 +151,7 @@ impl Window {
             // the parts are not part of the resource it shows.
             None => cx.value(|tracker: &Tracker| Tasks {
                 tracker: Rc::new(tracker.clone()),
-                parts: Parts::<IssuePart>::default(),
+                parts: Parts::<IssueList>::default(),
                 index: Rc::default(),
             }),
         };
@@ -166,7 +166,7 @@ impl Window {
 
     /// Carry `invoke` out on the issues, as the person: a refusal is told
     /// where the window tells its person what was refused.
-    pub(crate) fn submit(&self, invoke: ui::tilo_resource::Invoke<IssuePart>) {
+    pub(crate) fn submit(&self, invoke: ui::tilo_resource::Invoke<IssueList>) {
         if let Some(chain) = &self.chain {
             chain.dispatcher().submit(invoke);
         }
@@ -258,7 +258,7 @@ impl ResourceApp for App {
 
     /// The issues, kept in parts beside the tracker.
     fn resources(resources: &mut ui::framework::Resources<'_>) {
-        resources.chain::<IssuePart>();
+        resources.chain::<IssueList>();
     }
 
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
@@ -448,7 +448,7 @@ pub(crate) fn new_issue(
     // The issue is made from what the field parses to: nothing while it is
     // blank, so the button is disabled and Enter does nothing until there is
     // a title.
-    let create = IssuePart::CREATE.try_map(move |title: String| {
+    let create = IssueList::CREATE.try_map(move |title: String| {
         Some(crate::model::NewIssue {
             parent: parent.as_ref().map(ui::tilo_resource::items::Ref::from),
             status,
@@ -519,7 +519,7 @@ fn router(cx: &ViewCx<Tracker>, nav: &Nav, window: &Window) {
             return Ok::<(), Refusal>(());
         }
         // An issue, by the address its part publishes it under.
-        if let Some((_, issue)) = ui::tilo_resource::items::item_of_resource::<IssuePart>(anchor) {
+        if let Some((_, issue)) = ui::tilo_resource::items::item_of_resource::<IssueList>(anchor) {
             opener.project.set(None);
             opener.open(&issue);
             return Ok::<(), Refusal>(());

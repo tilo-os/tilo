@@ -555,7 +555,7 @@ mod tests {
         reason = "one story: the draft, the attachment the device keeps, and the host's copy going"
     )]
     async fn an_attachment_a_draft_named_comes_back_from_the_device_that_uploaded_it() {
-        const APP: &str = ui::apps::CHAT;
+        const APP: &str = tilo_app_id::apps::CHAT;
         let state = tempfile::tempdir().unwrap();
         let server = host(state.path()).await;
         let workspaces = server.workspaces().unwrap().clone();

@@ -1,6 +1,6 @@
 //! A machine copied from one of a person's devices, in a workspace a site
 //! hosts: the copy re-keys at boot through the production re-key
-//! (`tilo_user_identity::branch::settle`), its person certifies the new key,
+//! (`tilo_device_identity::branch::settle`), its person certifies the new key,
 //! and both run as real sessions. What either opens on the workspace's shared
 //! shell — a record sealed under the workspace's channel keys — the other
 //! shows, before and after both restart, and the source stays the member it

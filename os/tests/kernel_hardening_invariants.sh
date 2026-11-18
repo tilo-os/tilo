@@ -752,7 +752,7 @@ for unit in tilo-server tilo-fs-replica tilo-local-model; do
     || bad "$unit.service can see other users' processes (ProtectProc=invisible missing)"
 done
 grep -Fq 'libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0)' \
-  "$repo/crates/collab/tilo-user-identity/src/persist.rs" \
+  "$repo/crates/collab/tilo-device-identity/src/persist.rs" \
   || bad 'identity key holders no longer turn non-dumpable'
 [ "$fail" -ne 0 ] || ok 'process visibility: per-service ProtectProc, non-dumpable key holders, no global hidepid'
 
@@ -1184,7 +1184,7 @@ case("tilo-scope-remapped-identity", field(tilo, "signedIdentity", {
     "type": "remapIdentity", "prefix": tilo, "signedPrefix": "registry.example/any"}))
 case("tilo-scope-extra-key-data", field(tilo, "keyData", "a2V5"))
 case("tilo-tag-accepts-anything", scope(tilo + ":latest", accept))
-case("legacy-guest-accepts-anything", scope("registry.tilo.so/tilo/legacy-guest", accept))
+case("linux-guest-accepts-anything", scope("registry.tilo.so/tilo/linux-guest", accept))
 case("hosted-guest-accepts-anything", scope("registry.tilo.so/tilo/hosted-guest", accept))
 # A namespace scope governs every Tilo repository without one of its own.
 case("tilo-namespace-accepts-anything", scope("registry.tilo.so/tilo", accept))
@@ -1236,7 +1236,7 @@ policy = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 policy["default"] = [{"type": "reject"}]
 docker = policy["transports"]["docker"]
 for name in list(docker):
-    if name.rsplit("/", 1)[-1] in ("legacy-guest", "hosted-guest", "tilo-vm", "tilo-ci",
+    if name.rsplit("/", 1)[-1] in ("linux-guest", "hosted-guest", "tilo-vm", "tilo-ci",
                                   "tilo-dev"):
         del docker[name]
 pathlib.Path(sys.argv[2]).write_text(json.dumps(policy, indent=2), encoding="utf-8")

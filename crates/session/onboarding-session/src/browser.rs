@@ -49,8 +49,8 @@ fn authorized_device(identity: &Path, certificate: &[u8]) -> io::Result<([u8; 32
     }
     let active = runtime_identity::resolve_active_identity(identity).ok_or_else(failure)?;
     let metadata = runtime_identity::load_metadata_from_path(&active).map_err(|_| failure())?;
-    let cert =
-        tilo_user_identity::persist::read_device_cert(&paths.device_cert).map_err(|_| failure())?;
+    let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
+        .map_err(|_| failure())?;
     let proof_cert: tilo_user_identity::DeviceCert =
         serde_json::from_slice(certificate).map_err(|_| failure())?;
     let now = u64::try_from(
@@ -471,8 +471,8 @@ pub mod fixtures {
         )
         .unwrap();
         unsigned.verify_unchanged().unwrap();
-        let key = tilo_user_identity::persist::load_device_key(&paths).unwrap();
-        let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert).unwrap();
+        let key = tilo_device_identity::persist::load_device_key(&paths).unwrap();
+        let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert).unwrap();
         let proof = unsigned
             .sign(&key, serde_json::to_vec(&cert).unwrap())
             .unwrap();
@@ -548,8 +548,8 @@ pub mod fixtures {
             projection.clone(),
         )
         .unwrap();
-        let key = tilo_user_identity::persist::load_device_key(&paths).unwrap();
-        let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert).unwrap();
+        let key = tilo_device_identity::persist::load_device_key(&paths).unwrap();
+        let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert).unwrap();
         let proof = unsigned
             .sign(&key, serde_json::to_vec(&cert).unwrap())
             .unwrap();

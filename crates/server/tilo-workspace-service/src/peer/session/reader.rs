@@ -8,7 +8,7 @@ use crate::peer::{
     RETENTION_PREFIX_FRAME_CAP, ReplayWrite, SessionCtx, SessionReader, StateDelivery, Subscribed,
     Subscription, answered_as_replay, audit_subscriber_access, buffered_retention_prefix,
     commit_run_key, eligible_checkpoint_prefix, handle_commit_run, handle_delta_prefix,
-    handle_envelope, mpsc, resume_document, subscribe, trace_native_publication, unserved_private,
+    handle_envelope, mpsc, resume_document, subscribe, trace_native_publication,
 };
 use std::collections::VecDeque;
 
@@ -193,7 +193,15 @@ impl<R: tokio::io::AsyncRead + Unpin> Inbound<'_, R> {
                     match frame {
                         EnvelopeV2::State(Envelope::Ping) => cx.heartbeats.owe(),
                         EnvelopeV2::State(_) => self.defer(frame)?,
-                        ref frame => return Err(unserved_private(frame)),
+                        // `SessionReader::read_next` turns these into `State`
+                        // values before returning.
+                        EnvelopeV2::UnsignedDelta { .. }
+                        | EnvelopeV2::PresenceBatch { .. }
+                        | EnvelopeV2::CodedDelta { .. } => {
+                            return Err(PeerError::Protocol(
+                                "a coded frame escaped its session reader".into(),
+                            ));
+                        }
                     }
                 }
             }
@@ -222,7 +230,15 @@ impl<R: tokio::io::AsyncRead + Unpin> Inbound<'_, R> {
                     match frame {
                         EnvelopeV2::State(Envelope::Ping) => cx.heartbeats.owe(),
                         EnvelopeV2::State(_) => self.defer(frame)?,
-                        ref frame => return Err(unserved_private(frame)),
+                        // `SessionReader::read_next` turns these into `State`
+                        // values before returning.
+                        EnvelopeV2::UnsignedDelta { .. }
+                        | EnvelopeV2::PresenceBatch { .. }
+                        | EnvelopeV2::CodedDelta { .. } => {
+                            return Err(PeerError::Protocol(
+                                "a coded frame escaped its session reader".into(),
+                            ));
+                        }
                     }
                     // Give the sole writer a turn even when the
                     // peer supplies an always-ready state flood.
@@ -331,7 +347,15 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
                         );
                     }
                 }
-                ref frame => return Err(unserved_private(frame)),
+                // `SessionReader::read_next` turns these into `State` values
+                // before returning.
+                EnvelopeV2::UnsignedDelta { .. }
+                | EnvelopeV2::PresenceBatch { .. }
+                | EnvelopeV2::CodedDelta { .. } => {
+                    return Err(PeerError::Protocol(
+                        "a coded frame escaped its session reader".into(),
+                    ));
+                }
             }
         }
     }

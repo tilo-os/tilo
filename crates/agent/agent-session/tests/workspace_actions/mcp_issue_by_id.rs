@@ -115,7 +115,7 @@ async fn issues_held(
 ) -> Vec<(String, String)> {
     let mut held = Vec::new();
     for index in 0..16 {
-        let part = tasks::part::chain().part(index).as_str().to_owned();
+        let part = tasks::issue_list::chain().part(index).as_str().to_owned();
         let Ok(Some(bytes)) = workspaces
             .resource_document(workspace, "so.tilo.tasks", &part)
             .await
@@ -123,7 +123,8 @@ async fn issues_held(
             break;
         };
         let part =
-            tasks::part::IssuePart::read(&automerge::AutoCommit::load(&bytes).unwrap()).unwrap();
+            tasks::issue_list::IssueList::read(&automerge::AutoCommit::load(&bytes).unwrap())
+                .unwrap();
         held.extend(
             part.issues
                 .iter()

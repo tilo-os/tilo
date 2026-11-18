@@ -51,7 +51,7 @@ pub struct NoteHeader {
     actions: Option<ui::framework::Actions<Notebook>>,
     /// What the reactions invoke on the note: the actions of the notes'
     /// chain, once the window holds it.
-    pages: Option<ui::framework::Actions<crate::part::PagePart>>,
+    pages: Option<ui::framework::Actions<crate::note_list::NoteList>>,
 }
 
 impl NoteHeader {
@@ -62,13 +62,13 @@ impl NoteHeader {
     }
 
     /// Bind the reactions to the notes' chain's `pages` actions.
-    pub fn attach_pages(&mut self, pages: ui::framework::Actions<crate::part::PagePart>) {
+    pub fn attach_pages(&mut self, pages: ui::framework::Actions<crate::note_list::NoteList>) {
         self.pages = Some(pages);
         self.stale = true;
     }
 
     /// The notes' chain's actions the reactions are bound to, once attached.
-    pub fn pages(&self) -> Option<ui::framework::Actions<crate::part::PagePart>> {
+    pub fn pages(&self) -> Option<ui::framework::Actions<crate::note_list::NoteList>> {
         self.pages.clone()
     }
 
@@ -207,7 +207,10 @@ impl NoteHeader {
         let page = crate::notebook::page_id(reactions.page);
         let toggled = self.pages.as_ref().and_then(|actions| {
             actions.edit_binding_with(
-                crate::part::PagePart::paths().pages.item(&page).reactions,
+                crate::note_list::NoteList::paths()
+                    .pages
+                    .item(&page)
+                    .reactions,
                 |field, toggle: ReactionToggle| {
                     Ok(if toggle.react {
                         field.react(toggle.emoji)

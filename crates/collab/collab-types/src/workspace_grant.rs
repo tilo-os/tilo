@@ -44,6 +44,8 @@ pub struct WorkspaceGrant {
     pub revoked_ms: Option<u64>,
 }
 
+pub use tilo_action_policy::{key_agent_id, key_of_agent};
+
 impl WorkspaceGrant {
     /// The id a key's grant is known by wherever it is read: its device key's
     /// digest, so every API server and every holder derive the same grant

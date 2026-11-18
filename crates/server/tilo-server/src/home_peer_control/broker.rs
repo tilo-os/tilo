@@ -545,7 +545,7 @@ fn approve_enrollment(
             .arg("--identity-dir")
             .arg(identity_dir)
             .args(["--person-uid", &uid.to_string()]);
-        if tilo_user_identity::IdentityPaths::under(&identity_root)
+        if tilo_device_identity::IdentityPaths::under(&identity_root)
             .user_privkey
             .exists()
         {
@@ -628,7 +628,7 @@ fn approve_personal_device(
         .args(["--expected-service", expected_service]);
     // A seed under the identity root is opened by whoever owns that root, as
     // before. Without one the approval signs with the person's record.
-    if tilo_user_identity::IdentityPaths::under(&identity_root)
+    if tilo_device_identity::IdentityPaths::under(&identity_root)
         .user_privkey
         .exists()
     {

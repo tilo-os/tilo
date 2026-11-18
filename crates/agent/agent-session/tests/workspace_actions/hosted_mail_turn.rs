@@ -420,13 +420,13 @@ async fn a_question_its_agent_edited_sends_nothing(hosted: &Hosted, servers: &Se
     let (question, held) = it_asks_to_send(hosted, ("mail-6", "mail-7"), words).await;
     let hidden = held.text.replace("\nCopy to: cy@example.test", "");
     assert_ne!(hidden, held.text, "{}", held.text);
-    let edit = chat::messages::chat_part::EditMessage {
+    let edit = chat::messages::chat_messages::EditMessage {
         message: question.clone(),
         text: hidden,
         body: None,
         mentions: None,
     };
-    let edited = chat::parts::ChatPart::EDIT_MESSAGE.with(edit);
+    let edited = chat::parts::ChatMessages::EDIT_MESSAGE.with(edit);
     assert!(
         writes_as(hosted, Other::HerAgent, edited).await,
         "an agent edits what it wrote"
@@ -514,7 +514,7 @@ enum Other<'a> {
 async fn writes_as(
     hosted: &Hosted,
     who: Other<'_>,
-    change: impl Into<ui::tilo_resource::Invoke<chat::parts::ChatPart>>,
+    change: impl Into<ui::tilo_resource::Invoke<chat::parts::ChatMessages>>,
 ) -> bool {
     let saved = hosted
         .workspaces
@@ -556,13 +556,13 @@ async fn writes_as(
 
 /// `who` answers the question `message` asks with `answer`: whether the document took it.
 async fn answers_as(hosted: &Hosted, who: Other<'_>, message: &Id, answer: &str) -> bool {
-    let answering = chat::messages::chat_part::AnswerQuestion {
+    let answering = chat::messages::chat_messages::AnswerQuestion {
         message: message.clone(),
         answer: answer.to_owned(),
         device: Some("browser".to_owned()),
         detail: None,
     };
-    let answered = chat::parts::ChatPart::ANSWER_QUESTION.with(answering);
+    let answered = chat::parts::ChatMessages::ANSWER_QUESTION.with(answering);
     writes_as(hosted, who, answered).await
 }
 

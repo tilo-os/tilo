@@ -245,13 +245,13 @@ fn a_real_prepared_package_reaches_a_new_identity_and_returns_a_verified_receipt
         joined_metadata.group_public_key,
         source_identity.public_key()
     );
-    let joined_paths = tilo_user_identity::persist::IdentityPaths::under(&destination_system);
+    let joined_paths = tilo_device_identity::persist::IdentityPaths::under(&destination_system);
     assert!(
         !joined_paths.user_privkey.exists(),
         "the joining device never receives the source root key"
     );
     let joined_cert =
-        tilo_user_identity::persist::read_device_cert(&joined_paths.device_cert).unwrap();
+        tilo_device_identity::persist::read_device_cert(&joined_paths.device_cert).unwrap();
     assert_eq!(joined_cert.user_public_key, source_identity.public_key());
     assert!(tilo_user_identity::verify_device_cert(&joined_cert).is_ok());
     let received = received.unwrap();
@@ -471,7 +471,7 @@ fn a_wrong_join_approval_releases_no_identity_until_the_exact_request_is_approve
     });
     assert!(runtime_identity::resolve_active_identity(&identity).is_none());
     assert!(
-        !tilo_user_identity::persist::IdentityPaths::under(&system)
+        !tilo_device_identity::persist::IdentityPaths::under(&system)
             .user_pubkey
             .exists()
     );
@@ -561,7 +561,7 @@ fn a_certificate_signed_by_another_root_releases_no_identity() {
         "a certificate that does not verify under the source root installs nothing"
     );
     assert!(
-        !tilo_user_identity::persist::IdentityPaths::under(&system)
+        !tilo_device_identity::persist::IdentityPaths::under(&system)
             .user_pubkey
             .exists()
     );
@@ -612,7 +612,7 @@ fn a_join_for_another_operation_releases_no_identity() {
         "the source refuses a bootstrap for another operation"
     );
     assert!(
-        !tilo_user_identity::persist::IdentityPaths::under(&system)
+        !tilo_device_identity::persist::IdentityPaths::under(&system)
             .user_pubkey
             .exists()
     );

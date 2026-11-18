@@ -266,7 +266,6 @@ fn the_launcher_runs_a_built_app_on_the_runtime_binary_over_its_payload() {
         None,
         &[],
         None,
-        None,
         &launcher::capabilities::CapabilityPlan::empty(),
     );
     assert_eq!(

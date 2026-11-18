@@ -870,7 +870,7 @@ impl Joined {
     /// The fixture is the only holder here; every run is admitted after.
     pub(in crate::standalone) fn install_identity_paths(
         &self,
-        paths: tilo_user_identity::persist::IdentityPaths,
+        paths: tilo_device_identity::persist::IdentityPaths,
     ) {
         let identity = &raw const self.identity;
         // SAFETY: no run has been admitted yet, so nothing reads this store

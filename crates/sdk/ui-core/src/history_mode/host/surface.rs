@@ -594,31 +594,31 @@ impl Widget for HistoryHost {
             *ctx.handled = true;
             return;
         }
-        if let Some(toolbar) = self.toolbar_node {
-            self.toolbar
-                .handle_event(event, &mut ctx.reborrow(ctx.path, toolbar));
-        }
-        if let Some(timeline) = self.timeline_node
+        // Every part of History stands in a region of its own, and each is told as if it were the
+        // only one: a part that acted on the event (the timeline dropping the row a pointer left)
+        // must not hide it from the parts beside it, or their controls never learn the pointer is
+        // over them and a press on one goes nowhere.
+        let mut handled = *ctx.handled;
+        route_to_part(
+            &mut self.toolbar,
+            self.toolbar_node,
+            event,
+            ctx,
+            &mut handled,
+        );
+        if let Some(node) = self.timeline_node
             && (!matches!(
                 event,
                 WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
             ) || self.timeline.is_focused())
         {
-            self.timeline
-                .handle_event(event, &mut ctx.reborrow(ctx.path, timeline));
+            route_to_part(&mut self.timeline, Some(node), event, ctx, &mut handled);
         }
-        if let Some(footer) = self.footer_node {
-            self.footer
-                .handle_event(event, &mut ctx.reborrow(ctx.path, footer));
-        }
-        if let Some(banner) = self.banner_node {
-            self.banner
-                .handle_event(event, &mut ctx.reborrow(ctx.path, banner));
-        }
-        if let Some(canvas) = self.canvas_node {
-            self.canvas_mut()
-                .handle_event(event, &mut ctx.reborrow(ctx.path, canvas));
-        }
+        route_to_part(&mut self.footer, self.footer_node, event, ctx, &mut handled);
+        route_to_part(&mut self.banner, self.banner_node, event, ctx, &mut handled);
+        let canvas = self.canvas_node;
+        route_to_part(self.canvas_mut(), canvas, event, ctx, &mut handled);
+        *ctx.handled = handled;
     }
     fn children(&self) -> Vec<&dyn Widget> {
         if let Some(panel) = &self.review {
@@ -713,4 +713,20 @@ impl Widget for HistoryHost {
         }
         dirty
     }
+}
+
+/// Hand `event` to one part of History, keeping its answer apart from the parts before it.
+fn route_to_part(
+    part: &mut dyn Widget,
+    node: Option<NodeId>,
+    event: &WindowEvent,
+    ctx: &mut crate::widget::EventCtx<'_>,
+    handled: &mut bool,
+) {
+    let Some(node) = node else {
+        return;
+    };
+    *ctx.handled = false;
+    part.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+    *handled |= *ctx.handled;
 }

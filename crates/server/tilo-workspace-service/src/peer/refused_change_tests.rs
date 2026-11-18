@@ -146,6 +146,28 @@ impl Lounge {
         }
     }
 
+    /// `message`, the member's write of the document, as the session of a
+    /// page or a desktop publishes it: a change the server fans out, with no
+    /// commit of its own to answer.
+    fn delta(&self, message: &NeighbourMsg) -> Envelope {
+        match self.commit(message, [0; 16]) {
+            Envelope::Commit {
+                workspace_id,
+                author_device_public_key,
+                authored_at_ns,
+                delta,
+                ..
+            } => Envelope::Delta {
+                workspace_id,
+                author_device_public_key,
+                authored_at_ns,
+                delta,
+                signature: [0; 64],
+            },
+            other => panic!("a commit is what a change is published as, got {other:?}"),
+        }
+    }
+
     /// The member's `seq`-numbered change setting the record's title to
     /// `title` written in the clear, which a record the workspace seals does
     /// not take.
@@ -409,6 +431,213 @@ async fn a_refused_change_is_never_kept_and_the_same_sequence_still_applies() {
         }
     })
     .await;
+    drop(lounge.workspaces);
+    lounge.server.shutdown().await;
+}
+
+/// A change the workspace refuses answers the session that wrote it: the
+/// document, the changes it carried, and why. Another member's session reads
+/// nothing of it, and a change the workspace keeps is refused no one.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    clippy::significant_drop_tightening,
+    reason = "the server a test binds has to outlive every step it drives, and its shutdown takes it by value"
+)]
+async fn a_refused_change_answers_its_author_alone() {
+    let lounge = lounge().await;
+    let (runtime, holds) = lounge.publishing().await;
+    let user = lounge.governor.user_public_key;
+    let peer = peer_of(&lounge.member, user);
+    let session = holds.ctx(&user, &lounge.governor);
+
+    // The workspace's own governance has not taken the device in yet, so the
+    // change it publishes is one the workspace refuses.
+    let refused = lounge.in_the_clear(1, "in the clear");
+    let body = postcard::to_stdvec(&refused).unwrap();
+    let answer = handle_delta(
+        &peer,
+        &session,
+        &[lounge.workspace_id],
+        lounge.delta(&refused),
+    )
+    .await
+    .unwrap();
+    let Some(Envelope::ChangeRefused {
+        workspace_id,
+        app_id,
+        cluster_id,
+        document_id,
+        changes,
+        refusal,
+    }) = answer
+    else {
+        panic!("a change the workspace refuses answers its author, got {answer:?}");
+    };
+    assert_eq!(workspace_id, lounge.workspace_id);
+    let NeighbourMsg::AppDocument {
+        app_id: sent_app,
+        document_id: sent_document,
+        ..
+    } = &refused
+    else {
+        panic!("a document write is a document")
+    };
+    assert_eq!(
+        (app_id.as_str(), cluster_id.as_str(), document_id.as_str()),
+        (
+            sent_app.as_str(),
+            lounge.workspace.as_str(),
+            sent_document.as_str()
+        ),
+        "the refusal names the document the change writes"
+    );
+    assert!(
+        matches!(
+            refusal,
+            tilo_server_protocol::refusal::Refusal::NotGranted(_)
+                | tilo_server_protocol::refusal::Refusal::NotAMember(_)
+        ),
+        "the workspace's own reason for refusing it, got {refusal}"
+    );
+    // The change itself, as its author's history names it: the writer claimed
+    // none, so the payload's own changes are named.
+    let mutation = {
+        let NeighbourMsg::AppDocument { envelope, .. } = postcard::from_bytes(&body).unwrap()
+        else {
+            panic!("a document write is a document")
+        };
+        envelope.payload
+    };
+    let wrote: Vec<[u8; 32]> = collab_types::parse_changes(
+        match collab_types::DocumentMutation::decode(&mutation).unwrap() {
+            collab_types::DocumentMutation::Snapshot(bytes)
+            | collab_types::DocumentMutation::Incremental(bytes) => bytes,
+        }
+        .as_slice(),
+    )
+    .unwrap()
+    .iter()
+    .map(|change| change.hash().0)
+    .collect();
+    assert_eq!(
+        changes, wrote,
+        "the refusal names the change it did not keep"
+    );
+    // Neither kept nor forwarded: the workspace holds nothing of it, so no
+    // other member's session is ever sent it.
+    assert!(
+        lounge.kept().await.is_empty(),
+        "the refused change left nothing of the document in the workspace"
+    );
+
+    // The workspace admits the device, and what it writes lands: no refusal
+    // answers it, and the other member's session reads it.
+    admit_view_reader(
+        &lounge.workspaces,
+        &lounge.workspace,
+        &lounge.governor_key,
+        &lounge.member,
+    )
+    .await;
+    lounge.publishing_again(&runtime, &holds).await;
+    project_access(&lounge.workspaces, &lounge.workspace).await;
+    let ((), sealed) = lounge.writer.seal(&lounge.workspace, |document| {
+        document
+            .put(automerge::ROOT, "title", "sealed")
+            .expect("the fixture's write");
+        document.commit_edit("fixture", "title");
+    });
+    let answer = handle_delta(
+        &peer,
+        &session,
+        &[lounge.workspace_id],
+        lounge.delta(&sealed),
+    )
+    .await
+    .unwrap();
+    assert!(
+        answer.is_none(),
+        "a change the workspace keeps is refused no one, got {answer:?}"
+    );
+    tilo_test_env::within("the workspace keeps the change", async {
+        while lounge.kept().await.is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    drop(lounge.workspaces);
+    lounge.server.shutdown().await;
+}
+
+/// The sequences of the verdicts `workspaces` holds on `author`'s writes in
+/// `workspace`.
+async fn filed(
+    workspaces: &crate::workspaces::Workspaces,
+    workspace: &str,
+    author: [u8; 32],
+) -> Vec<u64> {
+    let Some(state) = workspaces.state(workspace).await else {
+        panic!("the server keeps {workspace}")
+    };
+    state
+        .workspace()
+        .write_refusals()
+        .into_iter()
+        .filter(|refusal| refusal.author == author)
+        .map(|refusal| refusal.seq)
+        .collect()
+}
+
+/// A refusal is filed in the workspace whose document it refused, where its
+/// author's session reads the verdict, and in the workspace the change was
+/// sent to when this server keeps no copy of the one the document names.
+#[tokio::test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the server a test binds has to outlive every step it drives, and its shutdown takes it by value"
+)]
+async fn a_refusal_is_filed_in_the_workspace_its_document_belongs_to() {
+    let lounge = lounge().await;
+    let annex = lounge.workspaces.create("Annex").await.unwrap().workspace;
+    let refused = lounge.in_the_clear(1, "in the clear");
+    let filing = |cluster: String, seq: u64| {
+        let mut message = refused.clone();
+        let NeighbourMsg::AppDocument {
+            cluster_id,
+            envelope,
+            ..
+        } = &mut message
+        else {
+            panic!("a document write is a document")
+        };
+        *cluster_id = cluster;
+        envelope.seq = seq;
+        postcard::to_stdvec(&message).unwrap()
+    };
+    for (cluster, seq) in [(annex.clone(), 8), ("another workspace".to_owned(), 9)] {
+        lounge
+            .workspaces
+            .publish_refusal(&lounge.workspace, &filing(cluster, seq), "no permission")
+            .await
+            .unwrap();
+    }
+    // The verdict of the Annex document is Annex's, and the one naming a
+    // workspace this server does not keep is the workspace the change was sent
+    // to's own: one verdict per route and author, the highest sequence.
+    let author = lounge.member.device_public_key;
+    let annex_filed = filed(&lounge.workspaces, &annex, author).await;
+    let sent_filed = filed(&lounge.workspaces, &lounge.workspace, author).await;
+    assert_eq!(
+        annex_filed,
+        [8],
+        "the verdict of another workspace's document is filed in the workspace it names"
+    );
+    assert_eq!(
+        sent_filed,
+        [9],
+        "a document of a workspace this server does not keep is filed where the change was sent"
+    );
     drop(lounge.workspaces);
     lounge.server.shutdown().await;
 }

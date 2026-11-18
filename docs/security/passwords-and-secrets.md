@@ -45,12 +45,9 @@ Resolution returns `Zeroizing<String>`; status never returns the key.
 
 The trusted service boundary constructs authorization from authenticated caller
 context and the approved configuration, not from untrusted RPC arguments.
-`migrate_agent_provider` adopts existing `agent-provider-<profile>` entries only
-when the supplied original endpoint matches the authorization. Old entries have
-no origin metadata: callers must retain the original approved endpoint or ask
-for explicit adoption; they must not infer it from a newly edited profile.
-Adoption and old-entry removal share one vault write; retries preserve a newer
-bound entry. No second provider vault is created.
+Credentials written without an origin binding are not read or adopted; the
+person enters the key again for the bound origin. No second provider vault is
+created.
 
 Use `tilo_secrets::SecretStore::for_app` for platform-owned ownership material.
 Both native and browser callers have async `get`, `put` and `delete`; secrets are

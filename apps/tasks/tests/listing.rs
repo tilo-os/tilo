@@ -17,7 +17,7 @@ use std::collections::BTreeSet;
 
 use common::{chain, held};
 use serde_json::{Value, json};
-use tasks::{App, IssuePart};
+use tasks::{App, IssueList};
 use ui::prelude::*;
 
 const DAY_MS: i64 = 86_400_000;
@@ -42,8 +42,22 @@ fn refused(app: &mut TestApp<App>, arguments: Value) -> String {
     format!("{error:?}")
 }
 
-fn rows(page: &Value) -> Vec<Value> {
+/// The entries a page answers, `{id, value}` as the issues collection holds
+/// them.
+fn entries(page: &Value) -> Vec<Value> {
     page["issues"].as_array().cloned().unwrap_or_default()
+}
+
+/// The issues a page answers, each its value with its `id` beside its fields.
+fn rows(page: &Value) -> Vec<Value> {
+    entries(page)
+        .into_iter()
+        .map(|entry| {
+            let mut row = entry["value"].clone();
+            row["id"] = entry["id"].clone();
+            row
+        })
+        .collect()
 }
 
 /// The issues a page answers, by name, in its order.
@@ -51,9 +65,9 @@ fn names(page: &Value) -> Vec<String> {
     rows(page)
         .iter()
         .map(|row| {
-            row["name"]
+            row["title"]
                 .as_str()
-                .expect("a row names its issue")
+                .expect("a row has its issue's title")
                 .to_owned()
         })
         .collect()
@@ -124,7 +138,7 @@ fn one_read_says_where_every_issue_stands_and_who_has_it() {
     );
     let row = |name: &str| {
         rows.iter()
-            .find(|row| row["name"] == name)
+            .find(|row| row["title"] == name)
             .cloned()
             .unwrap_or_else(|| panic!("a row for {name}: {page}"))
     };
@@ -146,34 +160,14 @@ fn one_read_says_where_every_issue_stands_and_who_has_it() {
     assert_eq!(notes["labels"], json!(["launch"]), "{notes}");
     assert_eq!(notes["area"]["label"], "Launch", "{notes}");
 
-    // The issue it stands under, as that issue's own address ends.
+    // The issue it stands under, by that issue's id.
     let outline = row("Outline");
     assert_eq!(outline["status"], "done");
     let parent = outline["parent"].as_str().expect("its parent");
     assert!(
-        notes["item"]
-            .as_str()
-            .is_some_and(|item| item.ends_with(parent)),
+        notes["id"].as_str().is_some_and(|id| parent.ends_with(id)),
         "{outline} under {notes}"
     );
-
-    // What an issue has no value of its row leaves out, and a row says
-    // nothing it was not asked: not the description, not the thread.
-    let tidy = row("Tidy the backlog");
-    assert_eq!(tidy["status"], "backlog");
-    for absent in [
-        "assignee",
-        "assigned_by",
-        "parent",
-        "due_ms",
-        "priority",
-        "area",
-    ] {
-        assert!(tidy.get(absent).is_none(), "{absent} in {tidy}");
-    }
-    for unasked in ["body", "comments", "title", "links"] {
-        assert!(notes.get(unasked).is_none(), "{unasked} in {notes}");
-    }
 }
 
 #[test]
@@ -197,7 +191,7 @@ fn a_row_says_what_an_issue_waits_for_and_since_when() {
     let page = read(&mut app, json!({}));
     let row = rows(&page)
         .into_iter()
-        .find(|row| row["name"] == "Write the notes")
+        .find(|row| row["title"] == "Write the notes")
         .expect("its row");
     let work = &row["work"];
     assert_eq!(
@@ -209,9 +203,9 @@ fn a_row_says_what_an_issue_waits_for_and_since_when() {
     // An issue no work was kept on says nothing of it.
     let tidy = rows(&page)
         .into_iter()
-        .find(|row| row["name"] == "Tidy the backlog")
+        .find(|row| row["title"] == "Tidy the backlog")
         .expect("its row");
-    assert!(tidy.get("work").is_none(), "{tidy}");
+    assert!(tidy["work"].is_null(), "{tidy}");
 
     // And the issues that wait until then are asked for as such.
     assert_eq!(
@@ -309,24 +303,22 @@ fn a_caller_names_the_fields_a_row_carries() {
         &mut app,
         json!({ "fields": ["title", "status"], "where": { "status": "done" } }),
     );
-    let rows = rows(&page);
-    assert_eq!(rows.len(), 1, "{page}");
+    let entries = entries(&page);
+    assert_eq!(entries.len(), 1, "{page}");
     assert_eq!(
-        keys(&rows[0]),
-        ["item", "name", "status", "title"]
-            .map(str::to_owned)
-            .into_iter()
-            .collect()
+        keys(&entries[0]),
+        ["id", "value"].map(str::to_owned).into_iter().collect()
     );
-    assert_eq!(rows[0]["title"], "Outline");
+    assert_eq!(
+        keys(&entries[0]["value"]),
+        ["status", "title"].map(str::to_owned).into_iter().collect()
+    );
+    assert_eq!(entries[0]["value"]["title"], "Outline");
 
-    // No fields: a row names its issue and nothing else.
+    // No fields: an entry names its issue and nothing else.
     let page = read(&mut app, json!({ "fields": [] }));
-    for row in &crate::rows(&page) {
-        assert_eq!(
-            keys(row),
-            ["item", "name"].map(str::to_owned).into_iter().collect()
-        );
+    for entry in &crate::entries(&page) {
+        assert_eq!(keys(&entry["value"]), BTreeSet::new(), "{entry}");
     }
 
     // A field the issues do not have is refused with the ones they have.
@@ -385,7 +377,10 @@ fn a_long_tracker_is_read_a_page_at_a_time_also_with_a_where() {
 #[test]
 fn the_read_goes_through_every_part_of_a_tracker() {
     ui::i18n::I18nManager::init("en-US");
-    let before = tasks::part::PART_ISSUES - 1;
+    // Parts of 500 issues, and the first one full: what is made next
+    // starts the second.
+    let _parts = ui::framework::PartLimits::scoped(500, usize::MAX);
+    let before = 500;
     let mut app = TestApp::<App>::drive(&format!("issues-{before}")).expect("open");
     app.call_on(
         &chain(),
@@ -397,7 +392,7 @@ fn the_read_goes_through_every_part_of_a_tracker() {
         ] }),
     )
     .expect("the issues");
-    let parts = app.chain_parts::<IssuePart>();
+    let parts = app.chain_parts::<IssueList>();
     assert_eq!(parts.len(), 2);
     let total = held(&app).len();
 
@@ -415,10 +410,10 @@ fn the_read_goes_through_every_part_of_a_tracker() {
         let page = read(&mut app, arguments);
         reads += 1;
         for row in rows(&page) {
-            first.get_or_insert_with(|| row["name"].as_str().unwrap().to_owned());
+            first.get_or_insert_with(|| row["title"].as_str().unwrap().to_owned());
             assert!(row.get("status").is_some(), "{row}");
             assert!(
-                seen.insert(row["item"].as_str().unwrap().to_owned()),
+                seen.insert(row["id"].as_str().unwrap().to_owned()),
                 "an issue is answered once"
             );
         }
@@ -454,12 +449,12 @@ fn the_read_goes_through_every_part_of_a_tracker() {
     let page = read(&mut app, json!({ "where": { "status": "cancelled" } }));
     let found: BTreeSet<String> = rows(&page)
         .iter()
-        .map(|row| row["item"].as_str().unwrap().to_owned())
+        .map(|row| row["id"].as_str().unwrap().to_owned())
         .collect();
     assert_eq!(
         found,
         [&old, &new]
-            .map(tasks::model::issue_resource)
+            .map(|id| id.as_str().to_owned())
             .into_iter()
             .collect()
     );

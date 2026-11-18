@@ -1,5 +1,5 @@
 //! A served run through a workspace's machine: the hosted-VM service admits
-//! it, the guest's agent launches the real `tilo-legacy-agent serve-run`, and
+//! it, the guest's agent launches the real `tilo-linux-vm-agent serve-run`, and
 //! the run's frames cross the launch's relayed streams both ways.
 
 #![allow(
@@ -8,8 +8,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use legacy_agent_protocol::link::AgentLink;
-use legacy_agent_protocol::{AGENT_PORT, GuestMessage, HostMessage, client};
+use linux_vm_protocol::link::AgentLink;
+use linux_vm_protocol::{AGENT_PORT, GuestMessage, HostMessage, client};
 
 use super::wire::{FromRun, ToRun};
 use super::*;
@@ -26,7 +26,7 @@ echo "input ended"
 /// What an agent program from before it served runs does when it is started
 /// as one: it tries to be the agent, and ends.
 const OLD_AGENT: &str = r"#!/bin/sh
-echo 'tilo-legacy-agent: listen on vsock port 7110: Address already in use' >&2
+echo 'tilo-linux-vm-agent: listen on vsock port 7110: Address already in use' >&2
 exit 1
 ";
 
@@ -37,7 +37,7 @@ fn shells(dir: &Path) -> (WorkspaceShells, PathBuf) {
     let target = HostedTarget {
         socket: fake_service(dir, vm.clone()),
         account: "acct-1".into(),
-        size: legacy_vm::hosted::size::VmSize::default(),
+        size: linux_vm::hosted::size::VmSize::default(),
         plans: None,
     };
     (WorkspaceShells::new(dir.join("state"), Some(target)), vm)
@@ -101,7 +101,7 @@ tilo_test_env::scenario! {
         let dir = tempfile::tempdir().unwrap();
         let (shells, vm) = shells(dir.path());
         let program = tilo_test_env::script(dir.path().join("repeats"), REPEATS).unwrap();
-        let agent = tilo_test_env::sibling_binary("legacy-agent", "tilo-legacy-agent");
+        let agent = tilo_test_env::sibling_binary("linux-vm-agent", "tilo-linux-vm-agent");
         let run = shells.serve_run("ws1", None, serving(program.path(), &agent)).unwrap();
         assert_eq!(
             frame(&run),
@@ -119,7 +119,7 @@ tilo_test_env::scenario! {
         // not after the thirty seconds an idle machine is given and not after the six hours a
         // command used to be followed for. The machine's own lifecycle decides, on its own clock.
         assert_eq!(running(&vm), 1);
-        let mut life = legacy_vm::lifecycle::Lifecycle::new(30);
+        let mut life = linux_vm::lifecycle::Lifecycle::new(30);
         life.wake().unwrap();
         life.agent_ready();
         for seconds in [0, 31, 6 * 60 * 60 + 1, 3 * 24 * 60 * 60] {
@@ -151,7 +151,7 @@ tilo_test_env::scenario! {
         let dir = tempfile::tempdir().unwrap();
         let (shells, vm) = shells(dir.path());
         let program = tilo_test_env::script(dir.path().join("repeats"), REPEATS).unwrap();
-        let agent = tilo_test_env::sibling_binary("legacy-agent", "tilo-legacy-agent");
+        let agent = tilo_test_env::sibling_binary("linux-vm-agent", "tilo-linux-vm-agent");
         let run = shells.serve_run("ws1", None, serving(program.path(), &agent)).unwrap();
         assert!(matches!(frame(&run), FromRun::Ready { .. }));
         assert!(matches!(frame(&run), FromRun::Started { .. }));
@@ -196,7 +196,7 @@ tilo_test_env::scenario! {
         let dir = tempfile::tempdir().unwrap();
         let (shells, vm) = shells(dir.path());
         let program = tilo_test_env::script(dir.path().join("repeats"), REPEATS).unwrap();
-        let agent = tilo_test_env::sibling_binary("legacy-agent", "tilo-legacy-agent");
+        let agent = tilo_test_env::sibling_binary("linux-vm-agent", "tilo-linux-vm-agent");
         let run = shells.serve_run("ws1", None, serving(program.path(), &agent)).unwrap();
         assert!(matches!(frame(&run), FromRun::Ready { .. }));
         let FromRun::Started { pid } = frame(&run) else {

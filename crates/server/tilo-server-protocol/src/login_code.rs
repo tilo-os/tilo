@@ -62,6 +62,7 @@
 //! valid, as a revocation takes effect from its time on.
 
 use serde::{Deserialize, Serialize};
+use tilo_user_identity::canonical::{CanonicalError, signing_digest};
 
 /// Makes a code.
 pub const CREATE_ROUTE: &str = "/login-code";
@@ -230,17 +231,29 @@ pub struct Claim {
     pub cert: String,
     /// Unix-epoch nanoseconds the claim was signed at.
     pub signed_at_ns: u64,
-    /// The device key's Ed25519 signature over [`claim_message`], hex.
+    /// The device key's Ed25519 signature over [`claim_digest`], hex.
     pub signature: String,
 }
 
-/// What a device signs to claim the code resolved with `report`.
-#[must_use]
-pub fn claim_message(report: &str, signed_at_ns: u64) -> Vec<u8> {
-    let mut message = b"tilo-login-claim-v1\0".to_vec();
-    message.extend_from_slice(report.as_bytes());
-    message.extend_from_slice(&signed_at_ns.to_le_bytes());
-    message
+/// What a device signs to claim the code resolved with `report`: the BLAKE3
+/// digest of the claim's domain label, the report and the time.
+///
+/// # Errors
+///
+/// [`CanonicalError::Serialize`] when the claim cannot be encoded.
+pub fn claim_digest(report: &str, signed_at_ns: u64) -> Result<[u8; 32], CanonicalError> {
+    #[derive(Serialize)]
+    struct View<'a> {
+        report: &'a str,
+        signed_at_ns: u64,
+    }
+    signing_digest(
+        b"tilo-login-claim-v2\0",
+        &View {
+            report,
+            signed_at_ns,
+        },
+    )
 }
 
 /// A claim taken.
@@ -316,7 +329,7 @@ pub struct ClaimedFor {
 }
 
 /// What a person's root asks of their stand-in on this host. Each is signed
-/// by the root ([`StandInRequest::signed_message`]).
+/// by the root ([`StandInRequest::signed_digest`]).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum StandInRequest {
@@ -341,16 +354,31 @@ pub enum StandInRequest {
 }
 
 impl StandInRequest {
-    /// What the root signs for [`Self::Key`] and [`Self::Retire`]: the
+    /// The digest the root signs for [`Self::Key`] and [`Self::Retire`]: the
     /// operation, the person's root and the time.
-    #[must_use]
-    pub fn signed_message(op: &str, user: &[u8; 32], signed_at_ns: u64) -> Vec<u8> {
-        let mut message = b"tilo-stand-in-v1\0".to_vec();
-        message.extend_from_slice(op.as_bytes());
-        message.push(0);
-        message.extend_from_slice(user);
-        message.extend_from_slice(&signed_at_ns.to_le_bytes());
-        message
+    ///
+    /// # Errors
+    ///
+    /// [`CanonicalError::Serialize`] when the request cannot be encoded.
+    pub fn signed_digest(
+        op: &str,
+        user: &[u8; 32],
+        signed_at_ns: u64,
+    ) -> Result<[u8; 32], CanonicalError> {
+        #[derive(Serialize)]
+        struct View<'a> {
+            op: &'a str,
+            user: &'a [u8; 32],
+            signed_at_ns: u64,
+        }
+        signing_digest(
+            b"tilo-stand-in-v2\0",
+            &View {
+                op,
+                user,
+                signed_at_ns,
+            },
+        )
     }
 }
 

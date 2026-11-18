@@ -77,6 +77,8 @@ fn agent_work_thread_survives_pointer_navigation_and_projects_updates() {
             .trace[0]
             .clone();
         applied_step.outcome = AgentStepOutcome::Applied;
+        let mut bounds = applied_step.clone();
+        (bounds.id, bounds.label) = ("step_bounds".into(), "Set bounds".into());
         doc.apply_part_as(
             &crate::resource::demo_agent(),
             crate::testing::record_work(
@@ -87,7 +89,7 @@ fn agent_work_thread_survives_pointer_navigation_and_projects_updates() {
                     },
                     crate::demo::NOW,
                 )
-                .with_trace(vec![applied_step]),
+                .with_trace(vec![applied_step, bounds]),
             ),
         )
         .unwrap();
@@ -96,7 +98,7 @@ fn agent_work_thread_survives_pointer_navigation_and_projects_updates() {
         render_frame(&mut app, width, height);
         assert_eq!(
             description(&app),
-            "Did one thing; Applied: Add function",
+            "Did 2 things; Applied: Add function; Applied: Set bounds",
             "the state update retains the previously recorded dispatch evidence"
         );
         let reply = app

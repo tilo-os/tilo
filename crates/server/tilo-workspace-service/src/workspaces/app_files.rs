@@ -123,4 +123,34 @@ impl Workspaces {
         std::fs::rename(&partial, &path).map_err(|error| error.to_string())?;
         Ok(Uploaded::Complete)
     }
+
+    /// Keep the package `bytes` whole for `workspace`, by its BLAKE3 hash:
+    /// what `install-app` then names as the version's `file`, for members to
+    /// fetch. A server given the file in pieces of its own
+    /// ([`APP_FILE_PIECE_BYTES`]) ends with the same file.
+    ///
+    /// A test's way to hand the server a package without a device's session;
+    /// what a caller may do it through is the workspace's `upload-app-file`.
+    ///
+    /// # Errors
+    /// A file that is empty or too large, or one this server could not write.
+    #[cfg(feature = "test-support")]
+    pub fn keep_app_file(&self, workspace: &str, bytes: &[u8]) -> Result<String, String> {
+        let file = blake3::hash(bytes).to_hex().to_string();
+        let total = bytes.len() as u64;
+        if total == 0 || total > MAX_APP_FILE_BYTES {
+            return Err(format!(
+                "a package file is 1 byte to {} MiB",
+                MAX_APP_FILE_BYTES / 1024 / 1024
+            ));
+        }
+        let mut offset = 0_u64;
+        for piece in bytes.chunks(APP_FILE_PIECE_BYTES) {
+            offset = match self.upload_app_file(workspace, &file, offset, total, piece)? {
+                Uploaded::Partial(next) => next,
+                Uploaded::Complete => total,
+            };
+        }
+        Ok(file)
+    }
 }

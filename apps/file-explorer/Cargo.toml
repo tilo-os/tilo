@@ -156,6 +156,7 @@ tilo-process = { path = "../../crates/platform/tilo-process" }
 
 [target.'cfg(unix)'.dev-dependencies]
 tilo-fs = { path = "../../crates/system/fs" }
+iroh-blobs.workspace = true
 fuser.workspace = true
 iroh.workspace = true
 # Endpoints with no relay or directory at all, for tests whose peers are all this machine's.

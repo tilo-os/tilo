@@ -16,6 +16,7 @@ use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, Caller, CatalogueQuery, InvokeRequest, ReceiptStatus,
 };
 use tilo_peer_state::join::{Role, decode_and_verify_invitation};
+use tilo_server_protocol::certify::ConfirmationAnswer;
 use tilo_server_protocol::workspaces::JoinReply;
 use tilo_server_session::workspaces::{
     CREATE_OWN_WORKSPACE, CreatedWorkspace, DELETE_WORKSPACE, HOST_ACTIONS_PROVIDER,
@@ -27,6 +28,7 @@ use tilo_user_identity::{
 };
 
 use super::super::ServiceWorkspaceActions;
+use super::super::agents::tests::Person;
 use super::super::tests::{caller, settled};
 use crate::workspaces::tests::{governor, guest_device, test_host};
 use crate::workspaces::{IssueInvitationRequest, OwnWorkspaceOffer, WaitListSecrets, Workspaces};
@@ -607,6 +609,8 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
+    // Its person allows what their agents ask of them.
+    workspaces.ask_people(Person::answering(ConfirmationAnswer::AllowOnce));
     let home = open(workspaces).await;
     let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
@@ -938,26 +942,18 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
     join(workspaces, &created, &backend).await;
     let workspace = &created.workspace;
 
-    // It invites as an Editor at most, and does nothing else of governance.
+    // It governs as Ada does: she owns the workspace, so it invites at
+    // whatever role she may give.
     let invite = |role: &str| json!({ "role": role });
-    let above = govern(
+    govern(
         &host,
         workspace,
         &backend,
         governance::INVITE,
         invite("moderator"),
     )
-    .await;
-    assert!(
-        matches!(above, Err(ActionCallError::Refused { .. })),
-        "{above:?}"
-    );
-    let unban = json!({"person": hex::encode([3; 32])});
-    let unban = govern(&host, workspace, &backend, governance::UNBAN, unban).await;
-    assert!(
-        matches!(unban, Err(ActionCallError::UnknownAction)),
-        "{unban:?}"
-    );
+    .await
+    .unwrap();
     let issued = govern(
         &host,
         workspace,
@@ -969,23 +965,28 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
     .unwrap();
     let invitation = hex::decode(issued["invitation"].as_str().unwrap()).unwrap();
 
-    // An agent Ada connected through consent invites nobody.
+    // An agent Ada connected through consent enters, and asks her first
+    // before it invites anyone.
     let consented_key = SigningKey::from_bytes(&rand::random());
     let all = DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces);
     let consented = certified(&ada, &consented_key, all);
+    let ada_asked = Person::answering(ConfirmationAnswer::AllowOnce);
+    workspaces.ask_people(ada_asked.clone());
     let entering = own_as_key(&host, &consented, json!({"workspace": workspace.workspace})).await;
     join(workspaces, &entering, &consented).await;
-    let by_agent = govern(
+    govern(
         &host,
         workspace,
         &consented,
         governance::INVITE,
         invite("viewer"),
     )
-    .await;
-    assert!(
-        matches!(by_agent, Err(ActionCallError::UnknownAction)),
-        "{by_agent:?}"
+    .await
+    .unwrap();
+    assert_eq!(
+        ada_asked.asked().len(),
+        1,
+        "inviting; entering asks nothing"
     );
 
     // Rosa, another person, follows the link on a page of hers: an Editor.
@@ -1343,6 +1344,8 @@ async fn only_its_owner_deletes_a_workspace_and_everything_it_kept_goes_with_it(
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
+    // Its person allows what their agents ask of them.
+    workspaces.ask_people(Person::answering(ConfirmationAnswer::AllowOnce));
     let home = open(workspaces).await;
     let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
@@ -1619,6 +1622,8 @@ fn waits(result: &Result<impl std::fmt::Debug, ActionCallError>) {
 #[tokio::test]
 async fn a_fresh_root_and_its_keys_are_refused_with_the_wait_list() {
     let (host, workspaces, _, stranger, _state) = held_host().await;
+    // Its person allows what their agents ask of them.
+    workspaces.ask_people(Person::answering(ConfirmationAnswer::AllowOnce));
     waits(&create_own(&host, &stranger, json!({})).await);
     waits(&create_own(&host, &stranger, json!({"name": "Mine"})).await);
     let root = SigningKey::from_bytes(&rand::random());
@@ -1666,6 +1671,8 @@ async fn a_fresh_root_and_its_keys_are_refused_with_the_wait_list() {
 #[tokio::test]
 async fn a_person_let_in_makes_as_many_workspaces_as_they_like() {
     let (host, workspaces, lounge, stranger, _state) = held_host().await;
+    // Its person allows what their agents ask of them.
+    workspaces.ask_people(Person::answering(ConfirmationAnswer::AllowOnce));
     let root = SigningKey::from_bytes(&rand::random());
     let person = root.verifying_key().to_bytes();
     let page = certified(

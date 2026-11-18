@@ -7,8 +7,8 @@ use ui::winit::event::{Ime, WindowEvent};
 fn fixture() -> (TestApp<notes::NotesShell>, notes::PageId) {
     let mut app = TestApp::<notes::NotesShell>::new().unwrap();
     let page = notes::PageId::new_v4();
-    app.invoke_child::<notes::PagePart>(
-        &notes::part::chain_resource(),
+    app.invoke_child::<notes::NoteList>(
+        &notes::note_list::chain_resource(),
         Invoke::apply(&actions::create_page_action(page, None, "Slash text")).unwrap(),
     )
     .unwrap();

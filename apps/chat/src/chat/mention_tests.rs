@@ -6,8 +6,8 @@ use ui::widget::BlockContent;
 use ui::widget::marks::{Mark, MarkSpan};
 
 use super::tests::{ADA, Talk, id};
-use crate::messages::{NewMessage, chat_part};
-use crate::parts::ChatPart;
+use crate::messages::{NewMessage, chat_messages};
+use crate::parts::ChatMessages;
 
 const BO: &str = "u_bo";
 
@@ -22,7 +22,7 @@ fn a_mention_in_a_message_is_found_in_the_record_the_workspace_sent() {
         Mark::Mention(ui::tilo_resource::MemberId::person(BO)),
     )];
     let body = vec![tilo_rich_text::clip_of_content(&paragraph)];
-    ada.apply(ChatPart::POST.with(chat_part::Post {
+    ada.apply(ChatMessages::POST.with(chat_messages::Post {
         message: NewMessage {
             channel: id("c_chat"),
             text: message_text.into(),
@@ -67,7 +67,7 @@ fn a_direct_message_is_news_for_the_person_it_is_addressed_to() {
         ui::tilo_resource::MemberId::person(ADA),
         ui::tilo_resource::MemberId::person(BO),
     ]);
-    ada.apply(ChatPart::POST.with(chat_part::Post {
+    ada.apply(ChatMessages::POST.with(chat_messages::Post {
         message: NewMessage {
             channel: to_bo,
             text: "Have a look at this plan".into(),
@@ -105,7 +105,7 @@ fn a_typed_name_mentions_the_member_the_workspace_calls_that() {
     members.push((carla.clone(), "Carla".to_owned()));
     ui::tilo_resource::members::know(members);
     let message_text = "@Carla can you look";
-    ada.apply(ChatPart::POST.with(chat_part::Post {
+    ada.apply(ChatMessages::POST.with(chat_messages::Post {
         message: NewMessage {
             channel: id("c_chat"),
             text: message_text.into(),

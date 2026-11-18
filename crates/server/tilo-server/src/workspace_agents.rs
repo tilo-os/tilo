@@ -161,6 +161,9 @@ pub struct WorkspaceActionProvider {
     kept_to: Option<sub_agents::Own>,
     /// What its own services answered, for a caller that follows an invocation.
     answered: OwnAnswers,
+    /// What the person asked of the turn this serves, in their words: the purpose History
+    /// keeps with each change the turn makes, so its agent session reads as what it was asked.
+    purpose: Option<String>,
 }
 
 /// What the services answered here have said, kept for whoever follows the invocation. They
@@ -224,7 +227,17 @@ impl WorkspaceActionProvider {
             kept_to: None,
             initiative: None,
             answered: OwnAnswers::default(),
+            purpose: None,
         }
+    }
+
+    /// This service, for a turn its person asked `asked` of: every invocation it carries out
+    /// that says no purpose of its own has that one ([`tilo_actions::ActionContext::purpose`]).
+    #[must_use]
+    fn serving_ask(mut self, asked: &str) -> Self {
+        let asked = asked.trim();
+        self.purpose = (!asked.is_empty()).then(|| asked.to_owned());
+        self
     }
 
     /// This service, answering also for `initiative`: the server's own actions on what a
@@ -235,7 +248,7 @@ impl WorkspaceActionProvider {
         self
     }
 
-    /// This host, answering also for `events`: the host's own actions on a person's scheduled
+    /// This service, answering also for `events`: this server's own actions on a person's scheduled
     /// work and events, listed and taken beside the workspace's resources.
     #[must_use]
     pub fn offering(mut self, events: Option<PersonEvents>) -> Self {
@@ -357,8 +370,14 @@ impl ActionProvider for WorkspaceActionProvider {
     fn invoke(
         &self,
         caller: &Caller,
-        request: InvokeRequest,
+        mut request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        if let Some(purpose) = &self.purpose {
+            let context = request.context.get_or_insert_with(Default::default);
+            if context.purpose.is_none() {
+                context.purpose = Some(purpose.clone());
+            }
+        }
         if let Some(own) = &self.kept_to
             && !sub_agents::admits(own, caller, &request)
         {
@@ -557,7 +576,7 @@ pub enum Ask {
     },
 }
 
-/// One turn the host owes an agent: who asks what, of whom.
+/// One turn the server owes an agent: who asks what, of whom.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Turn {
     pub agent: Agent,
@@ -1001,13 +1020,13 @@ impl HostAgents {
         let mut team = self.team(workspace, agents).await?;
         for (app, record) in routes {
             if app != CHAT
-                || ui::resource::DocumentId::parse(record)
+                || collab_types::document::DocumentId::parse(record)
                     .is_none_or(|part| chat::parts::part_index(&part).is_none())
             {
                 continue;
             }
             let Some(part) = self
-                .read::<chat::parts::ChatPart>(workspace, CHAT, record)
+                .read::<chat::parts::ChatMessages>(workspace, CHAT, record)
                 .await?
             else {
                 continue;
@@ -1038,7 +1057,7 @@ impl HostAgents {
                     known.as_ref(),
                     &summons.conversation,
                     &summons.message,
-                    &ui::permissions::MemberId::agent(&summons.agent),
+                    &collaboration::permissions::MemberId::agent(&summons.agent),
                     request,
                 );
                 asks.turns.push(Turn {
@@ -1102,9 +1121,9 @@ impl HostAgents {
         let mut kept = Vec::new();
         for (app, record) in routes {
             if app != TASKS
-                || ui::resource::DocumentId::parse(record)
+                || collab_types::document::DocumentId::parse(record)
                     .and_then(|id| id.chain_part())
-                    .is_none_or(|(chain, _)| chain != tasks::part::chain())
+                    .is_none_or(|(chain, _)| chain != tasks::issue_list::chain())
             {
                 continue;
             }
@@ -1122,7 +1141,7 @@ impl HostAgents {
         let mut parts = Vec::new();
         for (document, bytes) in kept {
             let mut doc = automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
-            let part = crate::workspace_bots::opened::<tasks::part::IssuePart>(&mut doc)?;
+            let part = crate::workspace_bots::opened::<tasks::issue_list::IssueList>(&mut doc)?;
             parts.push((document, part));
         }
         let asks = tasks_model::agent_asks_at(
@@ -1190,7 +1209,9 @@ impl HostAgents {
         app: &str,
         document: &str,
     ) -> Result<Option<R::State>, String> {
-        read_document::<R>(&self.workspaces, workspace, (app, document)).await
+        self.workspaces
+            .read_resource::<R>(workspace, (app, document))
+            .await
     }
 
     /// Answer `turn` in `workspace`: tell the person it is taken, work through the agent's tools
@@ -1235,7 +1256,8 @@ impl HostAgents {
             provider: WorkspaceActionProvider::new(self.actions.clone(), workspace_id)
                 .offering(self.events.clone())
                 .offering_initiative(self.initiative.clone())
-                .keeping_to(self.own_of(workspace, turn).await),
+                .keeping_to(self.own_of(workspace, turn).await)
+                .serving_ask(&turn.request),
             person: Caller::authenticated(person, device).in_workspace(workspace),
             workspace: workspace.to_owned(),
             workspace_id,
@@ -1306,7 +1328,7 @@ impl HostAgents {
             return false;
         };
         match self
-            .read::<chat::parts::ChatPart>(workspace, CHAT, part)
+            .read::<chat::parts::ChatMessages>(workspace, CHAT, part)
             .await
         {
             Ok(Some(held)) => {
@@ -1529,7 +1551,7 @@ impl HostAgents {
         // Only what a session needs of the issue is taken from its document: an issue's rich
         // text does not travel between threads, and this turn does.
         let kept = self
-            .read::<tasks::part::IssuePart>(workspace, TASKS, &document)
+            .read::<tasks::issue_list::IssueList>(workspace, TASKS, &document)
             .await
             .ok()
             .flatten()
@@ -1769,13 +1791,15 @@ struct TurnScope {
 
 impl TurnScope {
     /// Where `turn`'s answer is written, as its agent acting for the person inside that turn.
+    /// The turn is one agent session of its agent's, as a connected agent's work is: each ask
+    /// its own, which History groups its changes under and Console lists as one.
     fn reply(&self, turn: &Turn) -> Reply {
         let session = format!(
             "agent-session:host-{}",
             blake3::hash(
                 format!(
-                    "{}\0{}\0{}",
-                    self.workspace, turn.conversation, turn.agent.id.0
+                    "{}\0{}\0{}\0{}",
+                    self.workspace, turn.conversation, turn.agent.id.0, turn.cause
                 )
                 .as_bytes()
             )
@@ -1849,7 +1873,7 @@ impl Reply {
         let mut arguments = Map::new();
         arguments.insert("message".into(), json!(message));
         arguments.insert("work".into(), json!({"state": "doing", "did": did}));
-        let resource = format!("{}/messages/{message}", chat::parts::ChatPart::KIND);
+        let resource = format!("{}/messages/{message}", chat::parts::ChatMessages::KIND);
         let request = invocation_of(
             target_named(&route, &resource, KEEP_WORK),
             InvokeArgument::Json(arguments),
@@ -1989,7 +2013,7 @@ impl Reply {
         arguments.insert("message".into(), json!(message));
         arguments.insert("source".into(), source.clone());
         arguments.insert("reads".into(), reads.clone());
-        let resource = format!("{}/messages/{message}", chat::parts::ChatPart::KIND);
+        let resource = format!("{}/messages/{message}", chat::parts::ChatMessages::KIND);
         match invoke_named(
             &self.provider,
             &self.caller,
@@ -2027,7 +2051,7 @@ impl Reply {
         if let Some(say) = say.map(str::trim).filter(|say| !say.is_empty()) {
             arguments.insert("say".into(), json!(say));
         }
-        let resource = format!("{}/messages/{message}", chat::parts::ChatPart::KIND);
+        let resource = format!("{}/messages/{message}", chat::parts::ChatMessages::KIND);
         match invoke_named(
             &self.provider,
             &self.caller,
@@ -2076,27 +2100,8 @@ pub async fn workspace_agent(
         return Vec::new();
     }
     let workspace = workspace.to_string();
-    let document = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-    let kept = match read_document::<WorkspaceAgents>(workspaces, &workspace, (CHAT, &document))
-        .await
-    {
-        Ok(agents) => agents.and_then(|agents| {
-            agents
-                .agents
-                .find(&tilo_resource::Id::from_raw(agent.to_owned()))
-                .cloned()
-        }),
-        Err(error) => {
-            tracing::warn!(%workspace, %agent, %error, "the workspace's agents could not be read: the agent may do nothing");
-            return nothing(&workspace);
-        }
-    };
-    if let Some(kept) = kept {
-        return if kept.is_active() {
-            kept.turn_rules(&workspace)
-        } else {
-            nothing(&workspace)
-        };
+    if let Some(bound) = workspaces.kept_bound(&workspace, agent).await {
+        return bound;
     }
     let (Some(user), Some(name)) = (caller.user_public_key(), caller.agent_name()) else {
         return Vec::new();
@@ -2107,33 +2112,6 @@ pub async fn workspace_agent(
         tracing::warn!(%workspace, %agent, %error, "a computer's agent is not listed in the workspace's agents");
     }
     Vec::new()
-}
-
-/// The document `document` of `app` in `workspace` as the governor holds it, read as `R`; `None`
-/// where the workspace has none.
-async fn read_document<R: tilo_resource::Resource>(
-    workspaces: &Workspaces,
-    workspace: &str,
-    (app, document): (&str, &str),
-) -> Result<Option<R::State>, String> {
-    let Some(bytes) = workspaces
-        .resource_document(workspace, app, document)
-        .await
-        .map_err(|error| error.to_string())?
-    else {
-        return Ok(None);
-    };
-    let mut doc = automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
-    crate::workspace_bots::opened::<R>(&mut doc).map(Some)
-}
-
-/// Every action anywhere in `workspace` refused: what a retired agent may do.
-fn nothing(workspace: &str) -> Vec<tilo_action_policy::Rule> {
-    vec![tilo_action_policy::Rule::new(
-        tilo_action_policy::TreePath::workspace(workspace).rest(),
-        tilo_action_policy::KindSet::ALL,
-        tilo_action_policy::Answer::Deny,
-    )]
 }
 
 /// Add the computer's agent `agent` named `name` to `workspace`'s list of its agents, kept by
@@ -2752,7 +2730,7 @@ async fn call_tool(
 
 /// Today, `YYYY-MM-DD`, as an agent's keeper counts the days its spending is charged to.
 pub(crate) fn today() -> String {
-    ui::clock::today().to_string()
+    tilo_clock::local::today().to_string()
 }
 
 /// `micros` millionths of the currency, as a person reads an amount.

@@ -25,7 +25,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::workspaces::WorkspaceMachines;
-use legacy_vm::hosted::control::{self, ENVIRONMENT, Reply, Request, VmRequest};
+use linux_vm::hosted::control::{self, ENVIRONMENT, Reply, Request, VmRequest};
 use tilo_actions::remote::environment_machines::{
     self, BranchMachine, DeleteMachine, MachineBranched,
 };
@@ -297,8 +297,8 @@ mod tests {
     use std::os::unix::net::UnixListener;
     use std::sync::Mutex;
 
-    use legacy_vm::hosted::control::{HostLoad, VmStatus};
-    use legacy_vm::hosted::size::VmSize;
+    use linux_vm::hosted::control::{HostLoad, VmStatus};
+    use linux_vm::hosted::size::VmSize;
 
     use super::*;
 

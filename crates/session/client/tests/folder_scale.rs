@@ -5,8 +5,8 @@
 //! A computer's folder writes its tree through its session as the records the tree is kept in
 //! (`fs_protocol::tree`): the tree's own record and its chunks, each change going to the chunk
 //! of the file it changes, a burst of writes leaving as one write per record. The test writes
-//! a repository's worth of files the way a checkout does, folder after folder, each file with
-//! its version and the agent that wrote it, and compares the first thousands of files with the
+//! a repository's worth of files the way a checkout does, folder after folder, each file
+//! named for the agent that wrote it, and compares the first thousands of files with the
 //! last thousands: the time each write takes until the host has it, the bytes it sends, what
 //! the host keeps on disk for it, what a reader following the folder reads for it, and how the
 //! process's memory grows.
@@ -26,7 +26,7 @@ use std::time::Instant;
 use automerge::AutoCommit;
 use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
-use fs_protocol::{FileActor, TreeChunk, TreeChunks};
+use fs_protocol::{TreeChunk, TreeChunks};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_fs::namespace::{Namespace, ROOT_INO};
 use tilo_peer_state::document_frame::DocumentRoute;
@@ -125,48 +125,25 @@ struct Writer {
     namespace: Namespace,
     /// What each record has of this namespace's changes.
     sent: BTreeMap<TreeChunk, Vec<automerge::ChangeHash>>,
-    actor: FileActor,
     /// Bytes handed to the session.
     bytes: usize,
 }
 
 impl Writer {
-    /// Write one file into `folder`, with its version and the agent that wrote it.
+    /// Write one file into `folder`, as the agent that wrote it.
     fn file(&mut self, folder: u64, n: usize) {
-        let ino = self
-            .namespace
+        let agent = tilo_actions::ActionInvoker::agent(format!("agent-{}", n % 3))
+            .named(Some(format!("Agent {}", n % 3)));
+        let _acting = tilo_fs::namespace::acting_as(Some(
+            tilo_actions::ActionContext::default().with_invoker(agent),
+        ));
+        self.namespace
             .create_file(
                 folder,
                 format!("file-{n}.rs"),
                 Some(&iroh_blobs::Hash::new(n.to_le_bytes())),
                 n as u64,
                 1_790_000_000_000 + n as u64,
-            )
-            .unwrap();
-        let document_id = self.namespace.document_id_for(ino).unwrap();
-        let version = fs_protocol::FileVersionV1 {
-            id: fs_protocol::FileVersionId::new(),
-            document_id,
-            parents: Vec::new(),
-            actor: self.actor,
-            timestamp_ms: 1_790_000_000_000 + n as u64,
-            content_hash: Some(fs_protocol::ContentHash([7; 32])),
-            metadata_hash: fs_protocol::ContentHash([9; 32]),
-            provenance: fs_protocol::FileProvenance::Create,
-        };
-        let version_id = version.id;
-        assert!(self.namespace.append_version(version).unwrap());
-        self.namespace
-            .attribute_version(
-                document_id,
-                &fs_protocol::FileVersionAttributionV1 {
-                    version_id,
-                    attribution: fs_protocol::FileAttributionV1 {
-                        writer: fs_protocol::AttributedWriter::agent(format!("agent-{}", n % 3)),
-                        label: format!("Agent {}", n % 3),
-                        color: [1, 2, 3],
-                    },
-                },
             )
             .unwrap();
     }
@@ -369,10 +346,6 @@ async fn a_write_costs_the_same_in_a_folder_of_twenty_thousand_files() {
         workspace: company.workspace.clone(),
         namespace: Namespace::new("laptop").unwrap(),
         sent: BTreeMap::new(),
-        actor: FileActor {
-            person: collab_types::Ed25519PublicKey([1; 32]),
-            device: collab_types::Ed25519PublicKey([2; 32]),
-        },
         bytes: 0,
     };
     let landed = reader_link
@@ -461,14 +434,16 @@ async fn a_write_costs_the_same_in_a_folder_of_twenty_thousand_files() {
         .find(|(_, node)| node.name == "file-19999.rs")
         .and_then(|(_, node)| node.document_id)
         .unwrap();
-    let doc = reader.docs.get(&sample.chunk()).unwrap();
-    let versions = fs_protocol::history::document_versions(doc, sample);
-    assert_eq!(versions.len(), 1);
-    assert_eq!(versions.values().next().unwrap().actor, writer.actor);
-    let attributed = fs_protocol::history::record_attributions(doc, sample);
-    assert_eq!(
-        attributed.values().next().unwrap().attribution.label,
-        "Agent 1"
+    let mut doc = reader.docs.get(&sample.chunk()).unwrap().clone();
+    let named: Vec<String> = doc
+        .get_changes(&[])
+        .into_iter()
+        .filter_map(|change| tilo_actions::ActionContext::from_change_message(change.message()?))
+        .filter_map(|context| context.invoker?.name)
+        .collect();
+    assert!(
+        named.iter().any(|name| name == "Agent 1"),
+        "the file's chunk names the agent that wrote it: {named:?}"
     );
 
     // The last thousand files cost what the first thousand did. A shared machine stalls now and
@@ -582,10 +557,6 @@ async fn a_checkout_is_never_refused_and_never_holds_another_member_up() {
         workspace: company.workspace.clone(),
         namespace: Namespace::new("laptop").unwrap(),
         sent: BTreeMap::new(),
-        actor: FileActor {
-            person: collab_types::Ed25519PublicKey([1; 32]),
-            device: collab_types::Ed25519PublicKey([2; 32]),
-        },
         bytes: 0,
     };
     let mut folder = ROOT_INO;

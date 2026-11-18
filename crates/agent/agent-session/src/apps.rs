@@ -251,13 +251,9 @@ pub enum ReplicaActor {
         sandbox: Vec<collab_types::caps::CapOverride>,
         /// When the policy was read, for grant expiry.
         unix_time: u64,
-        /// The agent acting for the person, by its agent id, when one is.
-        agent: Option<String>,
-        /// The name that agent goes by, as its admission certified it.
+        /// The name the agent acting for the person goes by, as its admission certified it,
+        /// when an agent acts (`access`'s acting names it, in its session).
         agent_name: Option<String>,
-        /// The agent's session that acted, when one did: History names the session's writer
-        /// beside the person, as the person's files name it.
-        agent_session: Option<String>,
     },
 }
 
@@ -475,7 +471,8 @@ impl Replica {
         let kind = catalogue
             .kind(app_id)
             .ok_or_else(|| AppError::UnknownApp(app_id.to_owned()))?;
-        let for_agent = matches!(actor, ReplicaActor::Member { agent: Some(_), .. });
+        let for_agent =
+            matches!(&actor, ReplicaActor::Member { access, .. } if access.acting.is_agent());
         let runs_effects = !matches!(actor, ReplicaActor::Bot { .. });
         let automated =
             for_agent || matches!(actor, ReplicaActor::Agent { .. } | ReplicaActor::Bot { .. });
@@ -1640,14 +1637,13 @@ fn replica_access(
     let permissions = match actor {
         ReplicaActor::Agent { person, name } => {
             let id = member.id();
-            // The agent is who the changes are by, for the person it acts for, under the name its
-            // delegation gives it.
-            invoker = tilo_actions::ActionInvoker::agent(id)
-                .acting_for(person.id().to_owned())
+            // The delegation its person handed it is its acting's own, and the agent is who the
+            // changes are by, for the person it acts for, under the name its delegation gives it:
+            // its changes name that acting, so every receiver decides them as this replica does.
+            let acting = policy::Acting::handed_agent(id, person.id());
+            invoker = tilo_actions::ActionInvoker::admitted(&acting)
                 .named(Some(name).filter(|name| !name.trim().is_empty()));
             let permissions = PermissionContext::member_of(workspace, &person, Role::Editor);
-            // The delegation its person handed it is its acting's own.
-            let acting = policy::Acting::handed_agent(id, person.id());
             match permissions.access().clone().as_acting(acting) {
                 Some(access) => permissions.with_access(access),
                 None => permissions.read_only(),
@@ -1664,23 +1660,15 @@ fn replica_access(
             access,
             sandbox,
             unix_time,
-            agent,
             agent_name,
-            agent_session,
         } => {
-            let person = access.person_id().unwrap_or_default().to_owned();
-            let permissions = member_permissions(access, sandbox, unix_time);
-            if let Some(agent) = agent {
-                // Named as the host admitted it (`Caller::acting`), so
-                // History reads the agent, for the person.
-                invoker = tilo_actions::ActionInvoker::agent(agent)
-                    .acting_for(person)
-                    .named(agent_name);
-                if let Some(session) = agent_session {
-                    invoker.acting = invoker.acting.in_session(session);
-                }
+            if access.acting.is_agent() {
+                // The agent's changes name it as it was admitted (`Caller::acting`): for the
+                // person, in its session, with the delegation its person handed it. So History
+                // reads the agent, and every receiver decides its changes as this access does.
+                invoker = tilo_actions::ActionInvoker::admitted(&access.acting).named(agent_name);
             }
-            permissions
+            member_permissions(access, sandbox, unix_time)
         }
     };
     (invoker, permissions)

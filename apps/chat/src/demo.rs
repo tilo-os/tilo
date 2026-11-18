@@ -10,9 +10,9 @@ use ui::tilo_actions::ApiError;
 use ui::tilo_resource::{Atom, Id, Invoke, ModelError, Replica};
 
 use crate::chat::{Category, Chat, Conversation, Message, Revision, chat};
-use crate::messages::{Messages, chat_part};
+use crate::messages::{Messages, chat_messages};
 use crate::model::{ChannelKind, EditEntry};
-use crate::parts::ChatPart;
+use crate::parts::ChatMessages;
 
 /// Deterministic "now" for the demo so a screenshot is stable: 2026-06-30
 /// 10:40 UTC, just before the capture clock's 10:42.
@@ -398,9 +398,9 @@ pub fn demo() -> Chat {
 /// The demo conversation, as the first part of the chat's messages, with
 /// `me` as the person reading it.
 #[must_use]
-pub fn demo_part(me: &str) -> ChatPart {
+pub fn demo_part(me: &str) -> ChatMessages {
     let members = demo_members(me);
-    let mut part = ChatPart::default();
+    let mut part = ChatMessages::default();
     let mine = |id: &str| {
         if id == crate::model::ME {
             me.to_owned()
@@ -526,11 +526,11 @@ pub fn write(doc: &mut AutoCommit, chat: &Chat) -> Result<(), ModelError> {
 
 /// Write `part` into `doc`, a document holding no part yet, as one change:
 /// a part of the chat's messages as a tool or a test holds it.
-pub fn write_part(doc: &mut AutoCommit, part: &ChatPart) -> Result<(), ModelError> {
+pub fn write_part(doc: &mut AutoCommit, part: &ChatMessages) -> Result<(), ModelError> {
     use ui::tilo_resource::Fields as _;
-    <ChatPart as ui::tilo_resource::Resource>::initialize(doc)?;
+    <ChatMessages as ui::tilo_resource::Resource>::initialize(doc)?;
     commit_genesis(doc);
-    let before = ChatPart::read_fields(doc, &automerge::ROOT)?;
+    let before = ChatMessages::read_fields(doc, &automerge::ROOT)?;
     let mut after = before.clone();
     for (id, message) in part.messages.iter() {
         add(&mut after.messages, id, message.clone())?;
@@ -585,7 +585,7 @@ pub fn seed_workspace(workspace: &mut Workspace) -> Result<(), ApiError> {
 /// through the chain to the part it changes ([`Workspace::apply_part_as`]).
 pub struct Workspace {
     pub chat: AutoCommit,
-    parts: Option<ui::framework::Chain<ChatPart>>,
+    parts: Option<ui::framework::Chain<ChatMessages>>,
     /// The chat resource as the chain's actions read it: refreshed before
     /// each of them.
     base: std::rc::Rc<std::cell::RefCell<std::rc::Rc<Chat>>>,
@@ -643,7 +643,7 @@ impl Workspace {
 
     /// The chain the messages are held in, for a window over this workspace.
     #[must_use]
-    pub fn chain(&self) -> Option<ui::framework::Chain<ChatPart>> {
+    pub fn chain(&self) -> Option<ui::framework::Chain<ChatMessages>> {
         self.parts.clone()
     }
 
@@ -712,7 +712,7 @@ impl Workspace {
     pub fn apply_part_as(
         &mut self,
         author: &ui::tilo_resource::MemberId,
-        invoke: Invoke<ChatPart>,
+        invoke: Invoke<ChatMessages>,
     ) -> Result<u64, ApiError> {
         self.apply_part_at(author, ui::tilo_resource::origin_now_ms(), invoke)
     }
@@ -725,7 +725,7 @@ impl Workspace {
         &mut self,
         author: &ui::tilo_resource::MemberId,
         now_ms: i64,
-        invoke: impl Into<Invoke<ChatPart>>,
+        invoke: impl Into<Invoke<ChatMessages>>,
     ) -> Result<u64, ApiError> {
         let invoke = invoke.into();
         let chain = self
@@ -745,7 +745,7 @@ impl Workspace {
     /// Write `part` into part `index` of the messages as it stands: a test's
     /// or a tool's fixture of messages by several people, which no one
     /// person's verb makes ([`ui::framework::Chain::write_start`]).
-    pub fn write_part(&mut self, index: u64, part: &ChatPart) -> Result<(), ApiError> {
+    pub fn write_part(&mut self, index: u64, part: &ChatMessages) -> Result<(), ApiError> {
         self.parts
             .as_ref()
             .ok_or_else(|| ApiError::Failed("the workspace holds no messages".into()))?
@@ -818,8 +818,8 @@ pub fn start(doc: &mut AutoCommit, me: &str) -> Result<(), ApiError> {
 
 /// `post` of `text` in `channel`, optionally in the thread of `parent`.
 #[must_use]
-pub fn post(channel: &str, text: &str, parent: Option<&str>) -> Invoke<ChatPart> {
-    ChatPart::POST.with(chat_part::Post {
+pub fn post(channel: &str, text: &str, parent: Option<&str>) -> Invoke<ChatMessages> {
+    ChatMessages::POST.with(chat_messages::Post {
         message: crate::messages::NewMessage {
             channel: Id::from_raw(channel),
             text: text.into(),
@@ -843,7 +843,7 @@ pub fn apply_part_doc(
     part: &mut AutoCommit,
     chat: &Chat,
     author: &str,
-    invoke: impl Into<Invoke<ChatPart>>,
+    invoke: impl Into<Invoke<ChatMessages>>,
 ) -> Result<(), ApiError> {
     apply_part_doc_as(
         part,
@@ -863,9 +863,9 @@ pub fn apply_part_doc(
 pub fn apply_part_doc_as(
     part: &mut AutoCommit,
     chat: &Chat,
-    attribute: impl FnOnce(Replica<ChatPart>) -> Replica<ChatPart>,
+    attribute: impl FnOnce(Replica<ChatMessages>) -> Replica<ChatMessages>,
     now_ms: Option<i64>,
-    invoke: impl Into<Invoke<ChatPart>>,
+    invoke: impl Into<Invoke<ChatMessages>>,
 ) -> Result<(), ApiError> {
     use automerge::ReadDoc as _;
     use ui::framework::Chained as _;
@@ -878,20 +878,21 @@ pub fn apply_part_doc_as(
         .map_err(|error| ApiError::Failed(error.to_string()))?
         .is_none()
     {
-        <ChatPart as ui::tilo_resource::Resource>::initialize(part)
+        <ChatMessages as ui::tilo_resource::Resource>::initialize(part)
             .map_err(|error| ApiError::Failed(error.to_string()))?;
         commit_genesis(part);
     }
     let mut action = invoke
         .build(now_ms.unwrap_or_else(ui::tilo_resource::origin_now_ms))
         .map_err(ApiError::InvalidArguments)?;
-    let mut replica = attribute(Replica::<ChatPart>::from_doc(std::mem::take(part)))
+    let mut replica = attribute(Replica::<ChatMessages>::from_doc(std::mem::take(part)))
         .in_app(<crate::ChatShell as ui::framework::ResourceApp>::ID, "Chat");
     let prepared = replica
         .invoker()
         .ok_or_else(|| ApiError::Failed("no one is named to act".to_owned()))
         .and_then(|invoker| {
-            ChatPart::prepare(&mut action, chat, &[], &invoker).map_err(ApiError::Failed)
+            ChatMessages::prepare(std::slice::from_mut(&mut action), chat, &[], &invoker)
+                .map_err(ApiError::Failed)
         });
     if let Err(error) = prepared {
         *part = std::mem::take(replica.doc_mut());

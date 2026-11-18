@@ -1,18 +1,15 @@
-//! A planning model at an endpoint the trusted host was given, and the
-//! choice of model an agent plans with.
+//! The model an agent works with on a host, and the endpoint a trusted host
+//! was given.
 //!
-//! [`OpenAiModel`] plans in the same conversation as
-//! [`super::GatewayModel`]; its turns go through the model gateway's
-//! trusted-host client ([`CompletionClient`]), which resolves the key and
-//! encodes the provider's wire format. A call still running after the
-//! hedge delay ([`crate::profile::HEDGE_ENV`], off unless set) is sent
-//! again, and whichever answers first is the answer.
+//! An endpoint's turns go through the model gateway's trusted-host client
+//! ([`CompletionClient`]), which resolves the key and encodes the provider's
+//! wire format. A call still running after the hedge delay
+//! ([`crate::profile::HEDGE_ENV`], off unless set) is sent again, and
+//! whichever answers first is the answer.
 
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use tilo_agent::surface::Catalogue;
-use tilo_agent::tools::Answer;
 use tilo_lock::MutexRecover as _;
 use tilo_model_gateway::host_backend::protocol::{
     ErrorKind, ModelError, ModelRequest, ModelResponse,
@@ -20,165 +17,20 @@ use tilo_model_gateway::host_backend::protocol::{
 use tilo_model_gateway::host_backend::{CompletionClient, ProviderProtocol};
 use tilo_model_gateway::openai::Target as ApiTarget;
 
-use super::converse::{self, Attempt, PlanTurns, record_usage};
-use super::{
-    ApiKey, Briefing, GatewayModel, ModelPlanner, NoPlanReads, PlanModel, ReadView, ScriptedModel,
-};
+use super::turns::{Attempt, PlanTurns, record_usage};
+use super::{ApiKey, GatewayTurns, MakeTurns};
 
 /// The model Tilo Cloud meters when `cloud:` names no other.
 pub const CLOUD_MODEL: &str = "gpt-4.1-mini-2025-04-14";
 
-/// How long one plan may take: several reasoning turns, each of which a
-/// real model may spend half a minute on.
-const PLAN_TIMEOUT: Duration = Duration::from_secs(600);
+/// Turns pictures on (`1`, `on`) or off (`0`, `off`) for an endpoint's
+/// model, whatever its provider's default ([`PlanTurns::sees`]).
+pub const VISION_ENV: &str = "TILO_AGENT_VISION";
 
-/// A model behind an OpenAI-compatible endpoint with tool calls (`OpenAI`,
-/// vLLM, llama.cpp, Ollama, LM Studio, `OpenRouter`, Tilo Cloud's metered
-/// machine endpoint), planning as [`GatewayModel`] does: through chat
-/// completions, or Responses at `OpenAI`'s own API, whose reasoning models
-/// call tools only there ([`crate::profile::OPENAI_API_ENV`]). It
-/// calls the endpoint from this process with the key it was given: for a
-/// host operator's own endpoint, a Cloud machine's host and local
-/// development, not a sandboxed app.
-pub struct OpenAiModel {
-    turns: EndpointTurns,
-    timeout: Duration,
-    /// Whether it is shown pictures, set outright
-    /// ([`crate::vision::VISION_ENV`]); `None` leaves its default.
-    vision: Option<bool>,
-    /// The most tokens one answer may take, as its endpoint's catalogue
-    /// declares it; `None` asks the planner's default.
-    output_tokens: Option<u32>,
-}
-
-impl OpenAiModel {
-    /// Chat completions at `base_url` (`…/v1`) with `model`, shaped for
-    /// `target`.
-    #[must_use]
-    pub fn new(
-        base_url: &str,
-        model: &str,
-        api_key: ApiKey,
-        timeout: Duration,
-        target: ApiTarget,
-    ) -> Self {
-        let base = base_url.trim_end_matches('/');
-        let endpoint = if base.ends_with("/chat/completions") {
-            base.to_owned()
-        } else {
-            format!("{base}/chat/completions")
-        };
-        Self {
-            turns: EndpointTurns {
-                endpoint,
-                model: model.to_owned(),
-                api_key,
-                target,
-                profile: crate::profile::Profile::default(),
-                protocol: ProviderProtocol::OpenAiCompatible,
-                vault: None,
-                idle: Arc::new(Mutex::new(Vec::new())),
-            },
-            timeout,
-            vision: None,
-            output_tokens: None,
-        }
-    }
-
-    /// Claude through Anthropic's Messages API at `base_url` (the API's
-    /// origin, `https://api.anthropic.com`; a trailing `/v1` is dropped),
-    /// planning as [`GatewayModel`] does. Anthropic always needs a key.
-    #[must_use]
-    pub fn anthropic(base_url: &str, model: &str, api_key: ApiKey, timeout: Duration) -> Self {
-        let base = base_url.trim_end_matches('/');
-        let origin = base
-            .strip_suffix("/v1/messages")
-            .or_else(|| base.strip_suffix("/v1"))
-            .unwrap_or(base);
-        let mut planner = Self::new(base_url, model, api_key, timeout, ApiTarget::Standard);
-        origin.clone_into(&mut planner.turns.endpoint);
-        planner.turns.protocol = ProviderProtocol::Anthropic;
-        planner
-    }
-
-    /// Adopt the key into the vault under the config root `root` rather
-    /// than the user's (see [`CompletionClient::with_credentials_in`]).
-    #[must_use]
-    pub fn with_vault(mut self, root: Option<std::path::PathBuf>) -> Self {
-        self.turns.vault = root;
-        self
-    }
-
-    /// Opt-in provider hints and hedging, filtered by the gateway target's
-    /// field allowlist.
-    #[must_use]
-    pub fn with_profile(mut self, profile: crate::profile::Profile) -> Self {
-        self.turns.profile = profile;
-        self
-    }
-
-    /// Show it pictures (`Some(true)`) or not (`Some(false)`), whatever its
-    /// default; `None` leaves the default.
-    #[must_use]
-    pub fn with_vision(mut self, vision: Option<bool>) -> Self {
-        self.vision = vision;
-        self
-    }
-}
-
-impl PlanModel for OpenAiModel {
-    fn choose(
-        &mut self,
-        task: &str,
-        catalogue: &Catalogue,
-        most_steps: usize,
-    ) -> Result<Answer, String> {
-        self.choose_briefed(
-            task,
-            &Briefing::default(),
-            catalogue,
-            most_steps,
-            &mut NoPlanReads,
-        )
-    }
-
-    fn choose_briefed(
-        &mut self,
-        task: &str,
-        briefing: &Briefing,
-        catalogue: &Catalogue,
-        most_steps: usize,
-        read: &mut ReadView<'_>,
-    ) -> Result<Answer, String> {
-        let sees = self.sees();
-        converse::plan(
-            &mut self.turns,
-            &converse::Asked {
-                task,
-                briefing,
-                catalogue,
-                most_steps,
-                sees,
-                output_tokens: self.output_tokens,
-                timeout: self.timeout,
-            },
-            read,
-        )
-    }
-
-    /// `OpenAI`'s own endpoint and Tilo Cloud take pictures; another server
-    /// (a local model) is assumed not to unless it is said to
-    /// ([`crate::vision::VISION_ENV`]).
-    fn sees(&self) -> bool {
-        self.vision.unwrap_or_else(|| {
-            self.turns.target == ApiTarget::CloudMetered
-                || self.turns.protocol == ProviderProtocol::Anthropic
-                || self.turns.endpoint.starts_with("https://api.openai.com/")
-        })
-    }
-}
-
-/// The turns of an [`OpenAiModel`]: the trusted host's own client, each
+/// The turns of a model behind an OpenAI-compatible endpoint with tool calls
+/// (`OpenAI`, vLLM, llama.cpp, Ollama, LM Studio, `OpenRouter`, Tilo Cloud's
+/// metered machine endpoint) or Anthropic's Messages API: the trusted host's
+/// own client, called from this process with the key it was given, each
 /// kept between turns so later ones reuse its connection.
 struct EndpointTurns {
     endpoint: String,
@@ -188,8 +40,9 @@ struct EndpointTurns {
     profile: crate::profile::Profile,
     /// The wire the endpoint speaks.
     protocol: ProviderProtocol,
-    /// The config root whose vault adopts the key; `None` the user's.
-    vault: Option<std::path::PathBuf>,
+    /// Whether it is shown pictures, set outright ([`VISION_ENV`]); `None`
+    /// leaves its default.
+    vision: Option<bool>,
     /// Clients not carrying a call now. A hedge needs a second one, and a
     /// call that lost to it hands its client back when it ends.
     idle: Arc<Mutex<Vec<CompletionClient>>>,
@@ -212,9 +65,6 @@ impl EndpointTurns {
         }
         if let Some(api) = self.profile.openai_api() {
             client = client.with_openai_api(api);
-        }
-        if let Some(root) = &self.vault {
-            client = client.with_credentials_in(root);
         }
         Ok(client)
     }
@@ -247,10 +97,8 @@ impl EndpointTurns {
             tier: self.tier(),
         };
         let (idle, answers) = (Arc::clone(&self.idle), answers.clone());
-        // The agent's name, and its part of a coordinated task, follow the
-        // call into the usage log.
+        // The agent's name follows the call into the usage log.
         let name = std::thread::current().name().map(str::to_owned);
-        let role = converse::plan_role();
         let mut thread = std::thread::Builder::new();
         if let Some(name) = name {
             thread = thread.name(name);
@@ -267,15 +115,13 @@ impl EndpointTurns {
                     &key,
                     deadline,
                 );
-                converse::as_role(role, || {
-                    record_usage(
-                        (&call.model, call.tier.as_deref()),
-                        &call.request,
-                        started.elapsed(),
-                        &answer,
-                        attempt,
-                    );
-                });
+                record_usage(
+                    (&call.model, call.tier.as_deref()),
+                    &call.request,
+                    started.elapsed(),
+                    &answer,
+                    attempt,
+                );
                 idle.lock_recover().push(client);
                 let _ = answers.send(answer);
             })
@@ -363,16 +209,27 @@ impl PlanTurns for EndpointTurns {
     fn model(&self) -> &str {
         &self.model
     }
+
+    /// `OpenAI`'s own endpoint, Anthropic's and Tilo Cloud take pictures;
+    /// another server (a local model) is assumed not to unless it is said to
+    /// ([`VISION_ENV`]).
+    fn sees(&self) -> bool {
+        self.vision.unwrap_or_else(|| {
+            self.target == ApiTarget::CloudMetered
+                || self.protocol == ProviderProtocol::Anthropic
+                || self.endpoint.starts_with("https://api.openai.com/")
+        })
+    }
 }
 
-/// Which model plans an agent's natural-language tasks on a host.
+/// Which model an agent works with on a host.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModelChoice {
     /// The provider selected in Settings, through `tilo-model-gateway`.
     Settings,
-    /// [`ScriptedModel`].
+    /// No model: a host whose agents are given no task to work on (a test's).
     Scripted,
-    /// [`OpenAiModel`] at a base URL.
+    /// A model behind an OpenAI-compatible endpoint at a base URL.
     OpenAi {
         /// `…/v1`.
         base_url: String,
@@ -382,10 +239,8 @@ pub enum ModelChoice {
         api_key: ApiKey,
         /// A plain provider, or Tilo Cloud's metered machine endpoint.
         target: ApiTarget,
-        /// The config root whose vault adopts the key; `None` the user's.
-        vault: Option<std::path::PathBuf>,
     },
-    /// [`OpenAiModel::anthropic`] — Claude through Anthropic's Messages API.
+    /// Claude through Anthropic's Messages API.
     Anthropic {
         /// The API's origin (`https://api.anthropic.com`).
         base_url: String,
@@ -393,29 +248,8 @@ pub enum ModelChoice {
         model: String,
         /// The key, which Anthropic always wants.
         api_key: ApiKey,
-        /// The config root whose vault adopts the key; `None` the user's.
-        vault: Option<std::path::PathBuf>,
-    },
-    /// Two models: the items of a coordinated task planned by `items`
-    /// ([`crate::profile::DECOMPOSE_ITEM_MODEL_ENV`]), everything else
-    /// (whole tasks, the coordinator's turns) by `coordinator`.
-    Decomposed {
-        /// The agent's own model.
-        coordinator: Box<ModelChoice>,
-        /// An [`Self::OpenAi`] or [`Self::Anthropic`] model.
-        items: Box<ModelChoice>,
     },
 }
-
-/// How a model's profile is made of its id and the settings
-/// ([`crate::profile::Profile::resolve`] or `resolve_items`).
-type Resolve = fn(&str, &dyn Fn(&str) -> Option<String>) -> crate::profile::Profile;
-
-/// The Messages API a `claude-` item model is asked at, unless its endpoint
-/// is named.
-const ANTHROPIC_API: &str = "anthropic:https://api.anthropic.com";
-/// The API any other item model is asked at, unless its endpoint is named.
-const OPENAI_API: &str = "openai:https://api.openai.com/v1";
 
 impl ModelChoice {
     /// `settings`, `scripted`, `openai:<base url>`, `cloud:<base url>`
@@ -446,7 +280,6 @@ impl ModelChoice {
                     base_url: base_url.to_owned(),
                     model: model.to_owned(),
                     api_key,
-                    vault: None,
                 })
             }
             _ => {
@@ -478,136 +311,8 @@ impl ModelChoice {
                     model: model.to_owned(),
                     api_key,
                     target,
-                    vault: None,
                 })
             }
-        }
-    }
-
-    /// This choice, the items of its coordinated tasks planned by the model
-    /// [`crate::profile::DECOMPOSE_ITEM_MODEL_ENV`] names in `env`, when it
-    /// names one; unchanged otherwise.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the item model cannot be asked: no key where its
-    /// provider needs one, a key file that is not there, an endpoint that is
-    /// not one. Never the key.
-    pub fn with_items_from(self, env: &dyn Fn(&str) -> Option<String>) -> Result<Self, String> {
-        use crate::profile::{
-            DECOMPOSE_ITEM_API_KEY_ENV, DECOMPOSE_ITEM_API_KEY_FILE_ENV, DECOMPOSE_ITEM_MODEL_ENV,
-            DECOMPOSE_ITEM_URL_ENV,
-        };
-        let set = |name: &str| {
-            env(name)
-                .map(|value| value.trim().to_owned())
-                .filter(|value| !value.is_empty())
-        };
-        let Some(model) = set(DECOMPOSE_ITEM_MODEL_ENV) else {
-            return Ok(self);
-        };
-        let named = set(DECOMPOSE_ITEM_URL_ENV);
-        let spec = named.clone().unwrap_or_else(|| {
-            if model.starts_with("claude") {
-                ANTHROPIC_API.to_owned()
-            } else {
-                OPENAI_API.to_owned()
-            }
-        });
-        let api_key = ApiKey::from_env(
-            set(DECOMPOSE_ITEM_API_KEY_ENV),
-            set(DECOMPOSE_ITEM_API_KEY_FILE_ENV),
-        );
-        // A provider's own API always wants a key; only an operator's own
-        // OpenAI-compatible endpoint (a local server) may take none.
-        let keyless = named
-            .as_deref()
-            .is_some_and(|spec| spec.starts_with("openai:"));
-        match &api_key {
-            ApiKey::None if !keyless => {
-                return Err(format!(
-                    "{DECOMPOSE_ITEM_MODEL_ENV} ({model}) needs its key in \
-                     {DECOMPOSE_ITEM_API_KEY_ENV} or {DECOMPOSE_ITEM_API_KEY_FILE_ENV}"
-                ));
-            }
-            ApiKey::File(path) if !path.is_file() => {
-                return Err(format!(
-                    "{DECOMPOSE_ITEM_API_KEY_FILE_ENV} names no file: the key of \
-                     {DECOMPOSE_ITEM_MODEL_ENV} ({model}) is missing"
-                ));
-            }
-            _ => {}
-        }
-        let items = Self::parse(&spec, Some(&model), api_key)
-            .map_err(|error| format!("{DECOMPOSE_ITEM_MODEL_ENV} ({model}): {error}"))?;
-        if !matches!(items, Self::OpenAi { .. } | Self::Anthropic { .. }) {
-            return Err(format!(
-                "{DECOMPOSE_ITEM_URL_ENV}: expected openai:<base url>, cloud:<base url> or \
-                 anthropic:<base url>"
-            ));
-        }
-        Ok(Self::Decomposed {
-            coordinator: Box::new(self),
-            items: Box::new(items),
-        })
-    }
-
-    /// This choice adopting its key into the vault under the config root
-    /// `root` rather than the user's: a run that keeps no credential past
-    /// itself (a benchmark), or a session without the platform's secret
-    /// store. The key never leaves the host's process for an agent's worker.
-    #[must_use]
-    pub fn keeping_keys_in(self, root: std::path::PathBuf) -> Self {
-        match self {
-            Self::Decomposed { coordinator, items } => Self::Decomposed {
-                coordinator: Box::new(coordinator.keeping_keys_in(root.clone())),
-                items: Box::new(items.keeping_keys_in(root)),
-            },
-            mut choice => {
-                if let Self::OpenAi { vault, .. } | Self::Anthropic { vault, .. } = &mut choice {
-                    *vault = Some(root);
-                }
-                choice
-            }
-        }
-    }
-
-    /// A planner over this model, built on the agent's own thread. The
-    /// profile (preset and explicit settings) says whether its tasks are
-    /// checked once done, whether they are coordinated and how much of what
-    /// the apps can do their plans are told.
-    #[must_use]
-    pub fn planner(&self) -> ModelPlanner {
-        let env = |name: &str| std::env::var(name).ok();
-        match self {
-            Self::Scripted => ModelPlanner::new(Box::new(ScriptedModel)),
-            Self::OpenAi { .. } | Self::Anthropic { .. } => {
-                let Some((model, profile)) = self.endpoint_model(crate::profile::Profile::resolve)
-                else {
-                    return ModelPlanner::new(Box::new(Unconfigured));
-                };
-                ModelPlanner::new(Box::new(model))
-                    .checking_work(profile.checks_work())
-                    .decomposing(profile.decomposes())
-                    .cataloguing(profile.catalog())
-            }
-            Self::Decomposed { coordinator, items } => {
-                let planner = coordinator.planner();
-                match items.endpoint_model(crate::profile::Profile::resolve_items) {
-                    Some((model, _)) => planner.with_item_model(Box::new(model)),
-                    None => planner,
-                }
-            }
-            Self::Settings => match tilo_agent::providers::default_selection() {
-                Some(selection) => {
-                    let profile = crate::profile::Profile::resolve(&selection.model.id, &env);
-                    ModelPlanner::new(Box::new(GatewayModel::new(selection, PLAN_TIMEOUT)))
-                        .checking_work(profile.checks_work())
-                        .decomposing(profile.decomposes())
-                        .cataloguing(profile.catalog())
-                }
-                None => ModelPlanner::new(Box::new(Unconfigured)),
-            },
         }
     }
 
@@ -615,53 +320,80 @@ impl ModelChoice {
     /// for the Settings provider, the trusted host's own client for an endpoint it was given.
     /// `None` for a choice no model answers (scripted, or Settings with no provider chosen).
     #[must_use]
-    pub fn turns(&self) -> Option<Box<dyn super::PlanTurns>> {
+    pub fn turns(&self) -> Option<Box<dyn PlanTurns>> {
         match self {
             Self::Scripted => None,
             Self::OpenAi { .. } | Self::Anthropic { .. } => self
-                .endpoint_model(crate::profile::Profile::resolve)
-                .map(|(model, _)| Box::new(model.turns) as Box<dyn super::PlanTurns>),
-            Self::Decomposed { coordinator, .. } => coordinator.turns(),
-            Self::Settings => tilo_agent::providers::default_selection().map(|selection| {
-                Box::new(super::GatewayTurns::new(selection)) as Box<dyn super::PlanTurns>
-            }),
+                .endpoint_turns()
+                .map(|turns| Box::new(turns) as Box<dyn PlanTurns>),
+            Self::Settings => tilo_agent::providers::default_selection()
+                .map(|selection| Box::new(GatewayTurns::new(selection)) as Box<dyn PlanTurns>),
         }
     }
 
-    /// The endpoint model this choice names, with the profile `resolve`
-    /// makes of the process's settings for it; `None` for a choice that
-    /// names no endpoint.
-    fn endpoint_model(&self, resolve: Resolve) -> Option<(OpenAiModel, crate::profile::Profile)> {
+    /// [`Self::turns`], made afresh on the thread of each agent that asks.
+    #[must_use]
+    pub fn make_turns(self) -> MakeTurns {
+        Arc::new(move || self.turns())
+    }
+
+    /// The turns of the endpoint this choice names, with the profile the
+    /// process's settings make for its model; `None` for a choice that names
+    /// no endpoint.
+    fn endpoint_turns(&self) -> Option<EndpointTurns> {
         let env = |name: &str| std::env::var(name).ok();
-        let vision = crate::vision::vision_setting(env(crate::vision::VISION_ENV).as_deref());
-        let (model, profile) = match self {
+        let (endpoint, model, api_key, target, protocol) = match self {
             Self::OpenAi {
                 base_url,
                 model,
                 api_key,
                 target,
-                vault,
-            } => (
-                OpenAiModel::new(base_url, model, api_key.clone(), PLAN_TIMEOUT, *target)
-                    .with_vault(vault.clone()),
-                resolve(model, &env),
-            ),
+            } => {
+                let base = base_url.trim_end_matches('/');
+                let endpoint = if base.ends_with("/chat/completions") {
+                    base.to_owned()
+                } else {
+                    format!("{base}/chat/completions")
+                };
+                (
+                    endpoint,
+                    model,
+                    api_key,
+                    *target,
+                    ProviderProtocol::OpenAiCompatible,
+                )
+            }
             Self::Anthropic {
                 base_url,
                 model,
                 api_key,
-                vault,
-            } => (
-                OpenAiModel::anthropic(base_url, model, api_key.clone(), PLAN_TIMEOUT)
-                    .with_vault(vault.clone()),
-                resolve(model, &env),
-            ),
-            Self::Settings | Self::Scripted | Self::Decomposed { .. } => return None,
+            } => {
+                // The API's origin: a trailing `/v1` or `/v1/messages` is dropped.
+                let base = base_url.trim_end_matches('/');
+                let origin = base
+                    .strip_suffix("/v1/messages")
+                    .or_else(|| base.strip_suffix("/v1"))
+                    .unwrap_or(base);
+                (
+                    origin.to_owned(),
+                    model,
+                    api_key,
+                    ApiTarget::Standard,
+                    ProviderProtocol::Anthropic,
+                )
+            }
+            Self::Settings | Self::Scripted => return None,
         };
-        Some((
-            model.with_profile(profile.clone()).with_vision(vision),
-            profile,
-        ))
+        Some(EndpointTurns {
+            endpoint,
+            model: model.clone(),
+            api_key: api_key.clone(),
+            target,
+            profile: crate::profile::Profile::resolve(model, &env),
+            protocol,
+            vision: vision_setting(env(VISION_ENV).as_deref()),
+            idle: Arc::new(Mutex::new(Vec::new())),
+        })
     }
 
     /// A short description for logs and status.
@@ -669,7 +401,7 @@ impl ModelChoice {
     pub fn describe(&self) -> String {
         match self {
             Self::Settings => "the Settings provider".into(),
-            Self::Scripted => "the scripted model".into(),
+            Self::Scripted => "no model".into(),
             Self::OpenAi {
                 base_url,
                 model,
@@ -682,24 +414,16 @@ impl ModelChoice {
             | Self::Anthropic {
                 base_url, model, ..
             } => format!("{model} at {base_url}"),
-            Self::Decomposed { coordinator, items } => format!(
-                "{}, the items of coordinated tasks by {}",
-                coordinator.describe(),
-                items.describe()
-            ),
         }
     }
 }
 
-/// No provider selected in Settings.
-struct Unconfigured;
-
-impl PlanModel for Unconfigured {
-    fn choose(&mut self, _: &str, _: &Catalogue, _: usize) -> Result<Answer, String> {
-        Err(
-            "no agent model is configured: choose a provider and default model in \
-             Settings, or start the host with --agent-model"
-                .into(),
-        )
+/// Whether pictures are turned on or off for every endpoint's model
+/// ([`VISION_ENV`]), as `setting` reads.
+fn vision_setting(setting: Option<&str>) -> Option<bool> {
+    match setting?.trim().to_ascii_lowercase().as_str() {
+        "1" | "on" | "true" | "yes" => Some(true),
+        "0" | "off" | "false" | "no" => Some(false),
+        _ => None,
     }
 }

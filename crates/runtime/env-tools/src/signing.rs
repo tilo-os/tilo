@@ -7,13 +7,13 @@
 use std::path::Path;
 
 use tilo_app_package::SigningIdentity;
-use tilo_user_identity::IdentityPaths;
+use tilo_device_identity::IdentityPaths;
 
 pub fn device_identity() -> anyhow::Result<SigningIdentity> {
     let paths = std::env::var_os("TILO_IDENTITY_ROOT")
         .filter(|v| !v.is_empty())
         .map_or_else(IdentityPaths::default_system, IdentityPaths::under);
-    let key = tilo_user_identity::persist::load_device_key(&paths)?;
+    let key = tilo_device_identity::persist::load_device_key(&paths)?;
     Ok(SigningIdentity::from_signing_key(key))
 }
 

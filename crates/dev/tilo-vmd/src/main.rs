@@ -238,7 +238,7 @@ fn display_apply(outputs: &[tilo_vm_protocol::OutputSpec], timeout: u64) -> Exit
 fn device_owner(identity: &std::path::Path, device_root: &std::path::Path) -> ExitCode {
     match tilo_identity::provisioning::active_identity_owns_device(
         identity,
-        &tilo_user_identity::IdentityPaths::under(device_root),
+        &tilo_device_identity::IdentityPaths::under(device_root),
     ) {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,

@@ -218,9 +218,8 @@ impl FilesState {
                 } else {
                     t("files-drive-external")
                 };
-                LiveRow::new(
+                LiveRow::typed::<crate::row_types::Drive>(
                     format!("files.drive:{}", drive.id),
-                    "files.drive",
                     place.label,
                 )
                 .presentation(tilo_actions::ResourcePresentation {

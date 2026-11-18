@@ -63,7 +63,7 @@ pub enum MigrateCmd {
     /// Connect a source that needs signing in: Google Drive, `OneDrive` and Dropbox in the browser
     /// (the link is opened or printed, and this finishes by itself); iCloud, Nextcloud, `WebDAV`,
     /// a mail account (IMAP), Outline, Linear and Forgejo with a password or key typed at a hidden
-    /// prompt (or read from --key-file). It is kept in this computer's vault and never printed.
+    /// prompt (or read from --secret-file). It is kept in this computer's vault and never printed.
     Connect {
         /// gdrive, onedrive, dropbox, icloud, nextcloud, webdav, mail, outline, linear or forgejo.
         service: String,
@@ -74,9 +74,10 @@ pub enum MigrateCmd {
         /// The account: a mail address, an Apple ID, a Nextcloud or `WebDAV` user name.
         #[arg(long)]
         login: Option<String>,
-        /// A file holding the key or password, which the person made.
+        /// A file holding the key or password, which the person made (not `--key-file`, which
+        /// names the key a hosted workspace is reached with).
         #[arg(long, value_name = "FILE")]
-        key_file: Option<PathBuf>,
+        secret_file: Option<PathBuf>,
     },
     /// List what a source holds, with counts, and keep the review for `choose` and `start`.
     Review {
@@ -208,13 +209,13 @@ pub fn run_into(cmd: MigrateCmd, json: bool, target: &Target) -> Result<ExitCode
             service,
             url,
             login,
-            key_file,
+            secret_file,
         } => connect(
             &place,
             registry::named(&service)?,
             url.as_deref(),
             login.as_deref(),
-            key_file.as_deref(),
+            secret_file.as_deref(),
         )?,
         MigrateCmd::Review { source, profile } => {
             let review = review(&place, &home, &source, profile.as_deref())?;
@@ -292,11 +293,11 @@ fn connect(
     source: &'static Source,
     url: Option<&str>,
     login: Option<&str>,
-    key_file: Option<&Path>,
+    secret_file: Option<&Path>,
 ) -> Result<Value> {
     match source.engine {
-        Engine::Service => services::connect(place, source.key, url, login, key_file),
-        Engine::Cloud => clouds::connect(place, source, url, login, key_file),
+        Engine::Service => services::connect(place, source.key, url, login, secret_file),
+        Engine::Cloud => clouds::connect(place, source, url, login, secret_file),
         Engine::Folders | Engine::Thunderbird | Engine::Browsers => Ok(json!({
             "source": source.key,
             "said": format!(
@@ -1133,7 +1134,7 @@ fn secret(prompt: &str, file: Option<&Path>) -> Result<zeroize::Zeroizing<String
         .filter(|_| std::io::stdin().is_terminal() || std::env::var_os("TILO_ASK_TTY").is_some());
     let Some(tty) = tty.as_mut() else {
         bail!(
-            "the key is typed by the person, never passed by an agent: ask them to run this in their terminal, or to save the key in a file and pass --key-file"
+            "the key is typed by the person, never passed by an agent: ask them to run this in their terminal, or to save the key in a file and pass --secret-file"
         );
     };
     read_hidden(tty, prompt)

@@ -6,7 +6,7 @@ use super::*;
 /// Make a note titled `title` with `markdown` as its body.
 fn note(app: &mut ui::framework::testing::TestApp<crate::NotesShell>, title: &str, markdown: &str) {
     app.call_on(
-        &crate::part::chain_resource(),
+        &crate::note_list::chain_resource(),
         "create-page",
         serde_json::json!({ "title": title, "markdown": markdown }),
     )
@@ -30,7 +30,7 @@ fn append_to_note_adds_markdown_to_the_note_named_by_title_ignoring_case() {
     note(&mut app, "Meeting notes", "First point.");
     let answer = app
         .call_on(
-            &crate::part::chain_resource(),
+            &crate::note_list::chain_resource(),
             "append-to-note",
             serde_json::json!({ "title": "meeting NOTES", "markdown": "- follow up with Sam" }),
         )
@@ -59,7 +59,7 @@ fn append_to_note_refuses_a_title_no_note_carries() {
     note(&mut app, "Groceries", "Milk");
     let refused = app
         .call_on(
-            &crate::part::chain_resource(),
+            &crate::note_list::chain_resource(),
             "append-to-note",
             serde_json::json!({ "title": "Errands", "markdown": "Bread" }),
         )
@@ -84,7 +84,7 @@ fn call_by(
 ) -> Result<serde_json::Value, ui::tilo_actions::ApiError> {
     let answer = app.call_by(
         agent(who),
-        &crate::part::chain_resource(),
+        &crate::note_list::chain_resource(),
         action,
         arguments,
     );
@@ -333,7 +333,7 @@ fn an_agents_writes_answer_the_characters_they_wrote() {
         let output = app
             .call_by(
                 agent("helper"),
-                &crate::part::chain_resource(),
+                &crate::note_list::chain_resource(),
                 action,
                 arguments,
             )
@@ -391,7 +391,7 @@ fn write_note_makes_the_note_read_as_the_markdown_keeping_what_reads_the_same() 
         crate::read::page_block_snapshots(doc, page)
     });
     app.call_on(
-        &crate::part::chain_resource(),
+        &crate::note_list::chain_resource(),
         "write-note",
         serde_json::json!({
             "page": page.to_string(),

@@ -93,7 +93,7 @@ COPY bin/fs /usr/bin/fs
 COPY bin/tilo-api /usr/libexec/tilo/tilo-api
 # The API server looks for it beside itself.
 COPY bin/tilolang-process /usr/libexec/tilo/tilolang-process
-COPY bin/tilo-legacy /usr/libexec/tilo/tilo-legacy
+COPY bin/tilo-linux-vm /usr/libexec/tilo/tilo-linux-vm
 COPY bin/tilo-hosted-jail /usr/libexec/tilo/tilo-hosted-jail
 COPY bin/tilo-esp-write /usr/libexec/tilo-esp-write
 COPY bin/tilo-image-trust /usr/libexec/tilo/tilo-image-trust
@@ -105,8 +105,8 @@ COPY bin/tilo-board-successor /usr/libexec/tilo-board-successor
 # chain, or another of the owner's devices releasing its half), tilo-rollback
 # holds the TPM's generation keyslots and floor, tilo-boot-signin is the sign-in
 # screen tilo-root-discover steps aside from on a machine nobody signs in to,
-# and tilo-sibling-unlock enrols the sibling factor from the owner's session.
-COPY bin/tilo-auth bin/tilo-boot-signin bin/tilo-rollback bin/tilo-sibling-unlock /usr/libexec/tilo/
+# and enrols the sibling factor from the owner's session.
+COPY bin/tilo-auth bin/tilo-boot-signin bin/tilo-rollback /usr/libexec/tilo/
 # The jail helper is root-owned and runnable only by the service's group (10001,
 # os/usr/lib/sysusers.d/tilo-hosted.conf; numeric here because the accounts are
 # made further down). Its capabilities are given by tilo-hosted.service at start
@@ -119,12 +119,12 @@ RUN chown 0:10001 /usr/libexec/tilo/tilo-hosted-jail \
     && chmod 0755 /usr/libexec/tilo/tilo-server /usr/libexec/tilo/tilo-server-admin \
         /usr/libexec/tilo/tilo-enroll /usr/libexec/tilo/tilo-api \
         /usr/libexec/tilo/tilolang-process \
-        /usr/libexec/tilo/tilo-legacy /usr/libexec/tilo/tilo-image-trust \
+        /usr/libexec/tilo/tilo-linux-vm /usr/libexec/tilo/tilo-image-trust \
         /usr/libexec/tilo-esp-write /usr/libexec/tilo-image-policy-check \
         /usr/libexec/tilo-board-successor /usr/bin/fs \
         /usr/libexec/tilo/tilo-auth /usr/libexec/tilo/tilo-boot-signin \
-        /usr/libexec/tilo/tilo-rollback /usr/libexec/tilo/tilo-sibling-unlock \
-    && for name in tilo-server tilo-server-admin tilo-enroll tilo-legacy; do \
+        /usr/libexec/tilo/tilo-rollback \
+    && for name in tilo-server tilo-server-admin tilo-enroll tilo-linux-vm; do \
          ln -s ../libexec/tilo/"$name" /usr/bin/"$name"; \
        done \
     && ln -s ../libexec/tilo/tilo-image-trust /usr/bin/tilo-image-trust \
@@ -163,15 +163,14 @@ COPY os/usr/libexec/tilo-hosted-prepare os/usr/libexec/tilo-hosted-serve \
      os/usr/libexec/tilo-root-discover \
      /usr/libexec/
 # Finding and opening the root. The same dracut modules the desktop image builds
-# into its initramfs: 91tilo-rollback carries tilo-auth, tilo-rollback's unlock
-# helper and tilo-root-discover, and 92tilo-sibling-unlock the NetworkManager
-# that reaches the owner's other devices. bootc install generates this image's
+# into its initramfs: 91tilo-rollback carries tilo-auth (which also asks the
+# owner's other devices to release their half), tilo-rollback's unlock helper,
+# tilo-root-discover and the network that reaches those devices. bootc install generates this image's
 # initramfs from them, so an installed server's boot can open its own root.
 COPY os/usr/lib/systemd/system-generators/tilo-rollback-unlock-generator \
      os/usr/lib/systemd/system-generators/tilo-root-generator \
      /usr/lib/systemd/system-generators/
 COPY os/usr/lib/dracut/modules.d/91tilo-rollback /usr/lib/dracut/modules.d/91tilo-rollback
-COPY os/usr/lib/dracut/modules.d/92tilo-sibling-unlock /usr/lib/dracut/modules.d/92tilo-sibling-unlock
 # The public half of the key that signs a generation's PCR prediction: what a
 # TPM keyslot is sealed to, and what early boot verifies the prediction against.
 COPY keys/tpm2-pcr-signing.public.pem /usr/share/tilo/tpm2-pcr-signing.public.pem
@@ -189,7 +188,7 @@ RUN chmod 0755 /usr/local/bin/build-initramfs.sh /usr/local/bin/verify-board-ini
     && set -- /usr/lib/modules/*/vmlinuz \
     && [ "$#" -eq 1 ] && [ -f "$1" ] \
     && kver="$(basename "$(dirname "$1")")" \
-    && TILO_INITRAMFS_MODULES="crypt systemd-cryptsetup tpm2-tss tilo-rollback tilo-sibling-unlock" \
+    && TILO_INITRAMFS_MODULES="crypt systemd-cryptsetup tpm2-tss tilo-rollback" \
        bash /usr/local/bin/build-initramfs.sh "$kver"
 RUN chmod 0755 /usr/libexec/tilo-hosted-prepare /usr/libexec/tilo-hosted-serve \
         /usr/libexec/tilo-server-health /usr/libexec/tilo-server-update-window \
@@ -206,8 +205,7 @@ RUN chmod 0755 /usr/libexec/tilo-hosted-prepare /usr/libexec/tilo-hosted-serve \
         /usr/libexec/tilo-root-discover \
         /usr/lib/systemd/system-generators/tilo-rollback-unlock-generator \
         /usr/lib/systemd/system-generators/tilo-root-generator \
-        /usr/lib/dracut/modules.d/91tilo-rollback/module-setup.sh \
-        /usr/lib/dracut/modules.d/92tilo-sibling-unlock/module-setup.sh
+        /usr/lib/dracut/modules.d/91tilo-rollback/module-setup.sh
 
 # ---- Units ------------------------------------------------------------------
 COPY os/usr/lib/systemd/system/tilo-server.service \

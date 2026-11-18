@@ -7,9 +7,9 @@ use ui::tilo_resource::{Id, MemberId, NonBlank, Replica, Resource as _};
 
 use crate::demo::apply_part_doc_as;
 use crate::message_view::{MAX_EARLIER, MAX_READS, MAX_SOURCE_BYTES, View, line, named};
-use crate::messages::chat_part;
+use crate::messages::chat_messages;
 use crate::model::ME;
-use crate::parts::ChatPart;
+use crate::parts::ChatMessages;
 use crate::resource::Chat;
 
 /// The agent the person talks with.
@@ -58,9 +58,9 @@ impl Part {
     fn apply(
         &mut self,
         by: By,
-        invoke: impl Into<ui::tilo_resource::Invoke<ChatPart>>,
+        invoke: impl Into<ui::tilo_resource::Invoke<ChatMessages>>,
     ) -> Result<(), ui::tilo_actions::ApiError> {
-        let attribute = move |replica: Replica<ChatPart>| match by {
+        let attribute = move |replica: Replica<ChatMessages>| match by {
             By::Person(person) => replica.as_invoker(person),
             By::AgentFor(agent, person) => replica.as_agent_for(agent, person),
             By::BotOf(person) => replica.as_bot_for(BOT, person),
@@ -75,8 +75,8 @@ impl Part {
         )
     }
 
-    fn read(&self) -> ChatPart {
-        ChatPart::read(&self.doc).expect("the part reads")
+    fn read(&self) -> ChatMessages {
+        ChatMessages::read(&self.doc).expect("the part reads")
     }
 
     /// The view the message `id` carries now.
@@ -115,8 +115,8 @@ fn names(apps: &[&str]) -> Vec<String> {
     apps.iter().map(|app| (*app).to_owned()).collect()
 }
 
-fn post_view(source: &str, reads: &[&str]) -> ui::tilo_resource::Invoke<ChatPart> {
-    ChatPart::POST_VIEW.with(chat_part::PostView {
+fn post_view(source: &str, reads: &[&str]) -> ui::tilo_resource::Invoke<ChatMessages> {
+    ChatMessages::POST_VIEW.with(chat_messages::PostView {
         channel: Id::from_raw(GENERAL),
         text: NonBlank::parse("The projects, as they stand").expect("words"),
         source: source.to_owned(),
@@ -130,8 +130,8 @@ fn answer(
     source: &str,
     reads: &[&str],
     say: Option<&str>,
-) -> ui::tilo_resource::Invoke<ChatPart> {
-    ChatPart::ANSWER_WITH_VIEW.with(chat_part::AnswerWithView {
+) -> ui::tilo_resource::Invoke<ChatMessages> {
+    ChatMessages::ANSWER_WITH_VIEW.with(chat_messages::AnswerWithView {
         message: message.clone(),
         source: source.to_owned(),
         reads: names(reads),
@@ -139,8 +139,8 @@ fn answer(
     })
 }
 
-fn rewrite(message: &Id, source: &str, reads: &[&str]) -> ui::tilo_resource::Invoke<ChatPart> {
-    ChatPart::REWRITE_VIEW.with(chat_part::RewriteView {
+fn rewrite(message: &Id, source: &str, reads: &[&str]) -> ui::tilo_resource::Invoke<ChatMessages> {
+    ChatMessages::REWRITE_VIEW.with(chat_messages::RewriteView {
         message: message.clone(),
         source: source.to_owned(),
         reads: names(reads),

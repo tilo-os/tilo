@@ -297,13 +297,13 @@ fn a_pending_write_settles_as_its_save_does() {
     let refused = settle(Some(Some(Err("workspace membership changed".into()))));
     assert!(
         matches!(&refused, InvocationUpdate::Failed { error, .. }
-            if error.message.contains("workspace membership changed") && error.retryable),
-        "a write the host refuses fails with its reason: {refused:?}"
+            if error.message.contains("workspace membership changed") && !error.retryable),
+        "a refused write fails for good, with its reason: {refused:?}"
     );
     let ended = settle(None);
     assert!(
         matches!(&ended, InvocationUpdate::Failed { error, .. }
-            if error.message.contains("session ended")),
+            if error.message.contains("session ended") && error.retryable),
         "a write whose session ended unsaved fails: {ended:?}"
     );
     let silent = settle(Some(None));

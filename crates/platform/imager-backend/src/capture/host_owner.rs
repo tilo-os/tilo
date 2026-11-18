@@ -5,7 +5,7 @@ use launcher::{
         self, CaptureAdmission, CaptureOutputAdmission, ConnectedService, QuiescentExit,
         ServiceAuthority, ServiceCancellation, ServiceLaunch, ServiceLeaseKey,
     },
-    run::{IdentitySource, LaunchMode, RunError, RunOptions},
+    run::{LaunchMode, RunError, RunOptions},
 };
 use std::{fs::File, io, path::Path, sync::Arc};
 
@@ -123,7 +123,6 @@ impl CaptureHostOwner {
                 mode: LaunchMode::Service {
                     passthrough_argv: Vec::new(),
                 },
-                identity: IdentitySource::None,
                 ..RunOptions::default()
             },
         };

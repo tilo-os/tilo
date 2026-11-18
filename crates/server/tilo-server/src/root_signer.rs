@@ -1,30 +1,17 @@
 //! The person's root, held by this device, for enrollment and host retirement.
 
 use anyhow::{Context, bail};
-use tilo_user_identity::{IdentityPaths, StatementSigner};
+use tilo_device_identity::IdentityPaths;
+use tilo_user_identity::StatementSigner;
 
-/// The person's root held here, on top of the identity crate's signer: every
-/// statement this crate issues is signed through [`StatementSigner`], and the
-/// pairing handshake's answer, which is domain-separated bytes rather than a
-/// statement's digest, is signed by [`RootSigner::sign_message`].
-pub trait RootSigner: StatementSigner {
-    /// Ed25519-sign `message` as the person's root, without exporting it.
-    fn sign_message(&self, message: &[u8]) -> anyhow::Result<[u8; 64]>;
-}
+/// The person's root held here. Every statement this crate issues is signed
+/// through [`StatementSigner`], the one signing path a person's statements
+/// share.
+pub trait RootSigner: StatementSigner {}
 
-impl RootSigner for ed25519_dalek::SigningKey {
-    fn sign_message(&self, message: &[u8]) -> anyhow::Result<[u8; 64]> {
-        use ed25519_dalek::Signer as _;
-        Ok(self.sign(message).to_bytes())
-    }
-}
+impl RootSigner for ed25519_dalek::SigningKey {}
 
-impl RootSigner for runtime_identity::SigningIdentity {
-    fn sign_message(&self, message: &[u8]) -> anyhow::Result<[u8; 64]> {
-        self.sign(message)
-            .map_err(|error| anyhow::anyhow!("sign with the identity record: {error}"))
-    }
-}
+impl RootSigner for runtime_identity::SigningIdentity {}
 
 /// Open the root signer, falling back to an identity record only for an absent seed.
 pub fn load_root(
@@ -39,7 +26,7 @@ pub fn load_root(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound
     );
     let Some(identity_dir) = identity_dir.filter(|_| seed_absent) else {
-        let root = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)
+        let root = tilo_device_identity::persist::read_owned_signing_key(&paths.user_privkey)
             .context(MISSING_ROOT)?;
         return Ok(Box::new(root));
     };

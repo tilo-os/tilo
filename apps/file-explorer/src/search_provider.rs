@@ -102,13 +102,15 @@ impl PlacesSearch {
             .1
             .clone();
         Some(
-            LiveRow::new(id, "files.place", favorite.label).operation(crate::effects::row_action(
-                &crate::effects::FilesEffect::OpenItem {
-                    item: id.to_owned(),
-                },
-                OPEN_ACTION,
-                crate::i18n::CATALOG.t("files-shortcuts-open"),
-            )),
+            LiveRow::typed::<crate::row_types::Place>(id, favorite.label).operation(
+                crate::effects::row_action(
+                    &crate::effects::FilesEffect::OpenItem {
+                        item: id.to_owned(),
+                    },
+                    OPEN_ACTION,
+                    crate::i18n::CATALOG.t("files-shortcuts-open"),
+                ),
+            ),
         )
     }
 
@@ -216,13 +218,15 @@ impl CollaborativeResourceSearch {
     pub(crate) fn resource(&self, id: &str) -> Option<LiveRow> {
         let record = self.snapshot.read().ok()?.records.get(id)?.clone();
         Some(
-            LiveRow::new(id, "files.record", record.name).operation(crate::effects::row_action(
-                &crate::effects::FilesEffect::Reveal {
-                    record: record.document_id.to_string(),
-                },
-                REVEAL_ACTION,
-                crate::i18n::CATALOG.t("files-reveal"),
-            )),
+            LiveRow::typed::<crate::row_types::Document>(id, record.name).operation(
+                crate::effects::row_action(
+                    &crate::effects::FilesEffect::Reveal {
+                        record: record.document_id.to_string(),
+                    },
+                    REVEAL_ACTION,
+                    crate::i18n::CATALOG.t("files-reveal"),
+                ),
+            ),
         )
     }
 }
@@ -277,7 +281,7 @@ impl RemoteAccountSearch {
     pub(crate) fn resource(&self, id: &str) -> Option<LiveRow> {
         let account = self.snapshot.read().ok()?.accounts.get(id)?.clone();
         Some(
-            LiveRow::new(id, "files.remote-account", account.label).operation(
+            LiveRow::typed::<crate::row_types::RemoteAccount>(id, account.label).operation(
                 crate::effects::row_action(
                     &crate::effects::FilesEffect::AccountDetails {
                         account: account.id.to_string(),

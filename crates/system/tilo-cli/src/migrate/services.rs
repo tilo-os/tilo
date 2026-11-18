@@ -35,8 +35,8 @@ pub const MAIL: &str = "mail";
 /// Where an email account joins the person's accounts (Mail's, which the person allows).
 const ADD_ACCOUNT: &str = "mail/mail.mailbox#add-account";
 
-const IMPORT_MARKDOWN: &str = "notes/notes.notebook#import-markdown";
-const MOVE_NOTE: &str = "notes/notes.notebook#move-note";
+const IMPORT_MARKDOWN: &str = "notes/notes.pages#import-markdown";
+const MOVE_NOTE: &str = "notes/notes.pages#move-note";
 const CREATE_ISSUE: &str = "tasks/tasks.issues#create";
 const CREATE_AREA: &str = "tasks/tasks.tracker#create-area";
 const SET_PROJECT: &str = "tasks/tasks.issues#set-project";
@@ -86,7 +86,7 @@ pub fn connect(
     source: &str,
     url: Option<&str>,
     login: Option<&str>,
-    key_file: Option<&Path>,
+    secret_file: Option<&Path>,
 ) -> Result<Value> {
     let kind = kind(source)?;
     let server = url.unwrap_or_default().to_owned();
@@ -108,7 +108,7 @@ pub fn connect(
         ServiceKind::Forgejo => "Forgejo access token".to_owned(),
         ServiceKind::Mail => format!("Password of {login}"),
     };
-    let secret = super::secret(&format!("{what} (it is not shown): "), key_file)?;
+    let secret = super::secret(&format!("{what} (it is not shown): "), secret_file)?;
     if secret.is_empty() {
         bail!("nothing was typed");
     }

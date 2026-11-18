@@ -4,7 +4,7 @@ version = "0.1.2"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Tilo app store — surfaces Tilo registry entries and legacy Flatpak apps in one list."
+description = "Tilo app store — surfaces Tilo registry entries and Linux Flatpak apps in one list."
 
 
 [lib]

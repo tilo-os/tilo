@@ -25,6 +25,7 @@ use iroh::endpoint::{Connection, Endpoint};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{EndpointAddr, RelayMode};
 use tilo_compositor::OutputConfig;
+use tilo_device_identity::IdentityPaths;
 use tilo_identity::device_fleet::DeviceFleetStore;
 use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_server_client::frame::{read_frame, write_frame};
@@ -36,7 +37,7 @@ use tilo_server_protocol::certify::{
 };
 use tilo_service::Questions;
 use tilo_session::Options;
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, IdentityPaths, RevocationList};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 
 /// The person's identity and this device's certificate, in a directory of its own, as the desktop's
 /// own start reads it.
@@ -75,7 +76,7 @@ fn person() -> Person {
     let profile = registry
         .certified_identity()
         .expect("this device's person is known");
-    let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert)
+    let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
         .expect("this device's certificate");
     let store = DeviceFleetStore::from_env().expect("the device fleet");
     let now = tilo_clock::unix_now_ns();

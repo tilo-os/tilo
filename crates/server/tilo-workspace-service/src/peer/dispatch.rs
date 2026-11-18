@@ -1,14 +1,13 @@
 //! The inbound dispatcher: [`handle_envelope`] for the state queue
-//! ([`Envelope`]), and [`unserved_private`] for the frames a v2 peer sends
-//! that this build does not serve.
+//! ([`Envelope`]).
 
 use super::{
-    Arc, AuthenticatedPeer, Envelope, EnvelopeV2, PeerError, RemoteActionRoute, ReplayCatchup,
-    ReplayHandle, ReplayTicket, SessionCtx, Subscription, handle_agent_session, handle_commit,
-    handle_compaction, handle_content_want, handle_delta, handle_host_action, handle_host_hello,
-    handle_host_said, handle_live_join, handle_open_document, handle_presence,
-    handle_remote_action, handle_subscribe, handle_sync_request, handle_unsubscribe, handle_voice,
-    handle_workspaces, route_document_content,
+    Arc, AuthenticatedPeer, Envelope, PeerError, RemoteActionRoute, ReplayCatchup, ReplayHandle,
+    ReplayTicket, SessionCtx, Subscription, handle_agent_session, handle_commit, handle_compaction,
+    handle_content_want, handle_delta, handle_host_action, handle_host_hello, handle_host_said,
+    handle_live_join, handle_open_document, handle_presence, handle_remote_action,
+    handle_subscribe, handle_sync_request, handle_unsubscribe, handle_voice, handle_workspaces,
+    route_document_content,
 };
 #[cfg(test)]
 use super::{ReplayWrite, answered_as_replay, finish_replay_write};
@@ -92,7 +91,7 @@ pub(super) async fn handle_envelope(
             handle_unsubscribe(peer, session, subscribed, workspace_id).await
         }
         env @ Envelope::Delta { .. } => handle_delta(peer, session, subscribed, env).await,
-        env @ Envelope::RetiredPresence { .. } => {
+        env @ Envelope::Presence { .. } => {
             handle_presence(peer, session, subscribed, env).await
         }
         env @ Envelope::DocumentContentWant { .. } => {
@@ -141,7 +140,7 @@ pub(super) async fn handle_envelope(
         env @ Envelope::OpenDocument { .. } => {
             handle_open_document(peer, session, subscribed, env, answer).await
         }
-        Envelope::RetiredLiveJoin { workspace_id } => {
+        Envelope::LiveJoin { workspace_id } => {
             handle_live_join(peer, session, subscribed, workspace_id).await
         }
         env @ Envelope::HostSaid { .. } => {
@@ -173,9 +172,9 @@ pub(super) async fn handle_envelope(
         | Envelope::RemoteActionUndeliverable { .. }
         | Envelope::Committed { .. }
         | Envelope::CommitRefused { .. }
+        | Envelope::ChangeRefused { .. }
         | Envelope::LiveLeave { .. }
-        | Envelope::RetiredLive { .. }
-        | Envelope::RetiredLiveMember { .. }
+        | Envelope::LiveMember { .. }
         | Envelope::Position { .. }
         | Envelope::VoiceCallResult { .. }
         | Envelope::VoiceGranted { .. }
@@ -188,24 +187,8 @@ pub(super) async fn handle_envelope(
         | Envelope::AgentSessionStopped
         // Only the host answers an entry, once, before the session.
         | Envelope::Entered(_)
-        // Who is here is the live session's alone: a device that still asks the host
-        // is answered by nobody.
-        | Envelope::RetiredHereRequest { .. }
-        | Envelope::RetiredHereReply { .. }
         | Envelope::FetchGrant { .. }
         // The person's list is the host's to send, never a device's to set.
         | Envelope::PersonalList { .. } => Ok(None),
     }
-}
-
-/// The v2 queue carries state frames and heartbeats only. Actions reach
-/// another device on its own connection now, so a peer that sends one of
-/// their frames speaks a protocol this build does not serve: the session
-/// ends rather than dropping what it cannot route.
-pub(super) fn unserved_private(frame: &EnvelopeV2) -> PeerError {
-    tracing::warn!(
-        retired = frame.is_retired(),
-        "peer session closed: a peer sent an action frame this build does not serve"
-    );
-    PeerError::Protocol("action frames are not served on this connection".into())
 }

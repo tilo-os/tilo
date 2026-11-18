@@ -10,7 +10,7 @@ mod tests {
 
     const OWNER: &str = "owner-person";
     const WORKSPACE: &str = "workspace-7";
-    const WRITER: &str = ui::apps::WORD_PROCESSOR;
+    const WRITER: &str = tilo_app_id::apps::WORD_PROCESSOR;
 
     /// Admit `action` on `surface` for `person` at `now`: whether it asks.
     fn authorize_person_published(
@@ -132,7 +132,7 @@ mod tests {
                     w.admit(member, role);
                 }
                 let person = if role == Role::Owner { OWNER } else { member };
-                let window = ui::permissions::PermissionContext::from_access(
+                let window = collaboration::permissions::PermissionContext::from_access(
                     tilo_action_policy::MemberAccess::person(w.policy.clone(), person),
                 )
                 .at_unix_time(10);
@@ -162,7 +162,7 @@ mod tests {
                     .with_contract(contract.clone());
                     let answer = window.invocation_answer(WRITER, &resource, &spec, None, None);
                     let windowed =
-                        match ui::permissions::admit_in_window(answer, &spec, window.asker(), false) {
+                        match collaboration::permissions::admit_in_window(answer, &spec, window.asker(), false) {
                             Ok(()) => Answered::Runs,
                             Err(ApiError::ConfirmationRequired) => Answered::AsksFirst,
                             Err(_) => Answered::Refused,

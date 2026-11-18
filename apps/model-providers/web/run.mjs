@@ -53,7 +53,6 @@ try {
             }
             credentials.set(request.profile_id, request.api_key); break;
           case 'remove_api_key': credentials.delete(request.profile_id); break;
-          case 'remove_legacy_api_key': break;
           default: throw Error(`unexpected administration request: ${request.verb}`);
         }
         res.writeHead(200, {'content-type':'application/x-ndjson'}).end(JSON.stringify({ok:true, ...(output === undefined ? {} : {output:JSON.stringify(output)})})+'\n');

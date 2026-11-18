@@ -89,7 +89,7 @@ fn views_then_answers(
 }
 
 /// The id of the agent's reply to the message `to`.
-fn reply_to(part: &chat::parts::ChatPart, to: &Id) -> Id {
+fn reply_to(part: &chat::parts::ChatMessages, to: &Id) -> Id {
     let agent = MemberId::agent(SCOUT);
     part.messages
         .iter()

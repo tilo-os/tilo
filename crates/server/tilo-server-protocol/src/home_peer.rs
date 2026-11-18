@@ -81,7 +81,7 @@ pub fn remember_personal_device(path: &Path, device_public_key: [u8; 32]) -> io:
         tilo_files::native::atomic::write_with_mode(
             path,
             &encoded,
-            tilo_user_identity::persist::PUBLIC_FILE_MODE,
+            tilo_device_identity::persist::PUBLIC_FILE_MODE,
         )
     }
     #[cfg(not(unix))]

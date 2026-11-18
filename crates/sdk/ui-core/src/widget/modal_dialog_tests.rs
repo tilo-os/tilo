@@ -1574,6 +1574,50 @@ tilo_test_env::scenario! {
         assert!(d.scroll_offset().abs() < 1e-9);
     }
 
+    phase a_rebuilt_sheet_keeps_where_its_body_was_scrolled;
+    // An app builds a new tree whenever its state changes: a choice made far down a long sheet
+    // builds a new dialog, which starts where the person was, not back at its top.
+    {
+        let _settled = crate::motion::testing::settled();
+        let theme = Theme::dark();
+        let kept = Rc::new(Cell::new(0.0));
+        let tall = || CountingContent {
+            height: 2000.0,
+            ..CountingContent::default()
+        };
+        let mut d = ModalDialog::new("Agents", tall())
+            .open(true)
+            .keeping_scroll(Rc::clone(&kept));
+        lay_out(&mut d, WINDOW, &theme);
+        present(&mut d, WINDOW, &theme);
+        let body = d.layout.clone().expect("laid out").body;
+        dispatch(&mut d, &cursor_at(body.center()));
+        for _ in 0..4 {
+            dispatch(&mut d, &wheel(-3.0));
+        }
+        let scrolled = d.scroll_offset();
+        assert!(scrolled > 0.0 && (kept.get() - scrolled).abs() < 0.5);
+        let mut rebuilt = ModalDialog::new("Agents", tall())
+            .open(true)
+            .keeping_scroll(Rc::clone(&kept));
+        lay_out(&mut rebuilt, WINDOW, &theme);
+        present(&mut rebuilt, WINDOW, &theme);
+        lay_out(&mut rebuilt, WINDOW, &theme);
+        assert!(
+            (rebuilt.scroll_offset() - scrolled).abs() < 0.5,
+            "the rebuilt sheet stands where the person was: {} of {scrolled}",
+            rebuilt.scroll_offset()
+        );
+        assert!(
+            (rebuilt.content().get_rect().y0 - (rebuilt.body_rect().y0 - scrolled)).abs() < 0.5,
+            "and its content is placed there"
+        );
+        // A sheet without one starts at its top.
+        let mut fresh = ModalDialog::new("Agents", tall()).open(true);
+        lay_out(&mut fresh, WINDOW, &theme);
+        assert!(fresh.scroll_offset().abs() < 1e-9);
+    }
+
     phase a_header_stays_put_while_the_body_scrolls_under_it;
     // A strip the caller passes as the sheet's header stays where it is while
     // the body scrolls under it: the wheel moves what the body holds, never the

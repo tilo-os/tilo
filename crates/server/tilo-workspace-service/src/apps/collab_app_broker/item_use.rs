@@ -35,18 +35,19 @@ pub(super) fn delegate_item_use(
         return Some(Err(refused()));
     }
     let service = service.cloned();
-    let answering: crate::apps::services::ItemAnswering = if context.app_id() == ui::apps::BROWSER {
-        match &service {
-            Some(service) => service.item_use(context, command.clone()),
-            None => return Some(Err(refused())),
-        }
-    } else {
-        // Whoever keeps the vault is never asked for another app.
-        Box::pin(std::future::ready(Ok(Reply::item_refused(
-            invocation,
-            ITEMS_ARE_BROWSERS,
-        ))))
-    };
+    let answering: crate::apps::services::ItemAnswering =
+        if context.app_id() == tilo_app_id::apps::BROWSER {
+            match &service {
+                Some(service) => service.item_use(context, command.clone()),
+                None => return Some(Err(refused())),
+            }
+        } else {
+            // Whoever keeps the vault is never asked for another app.
+            Box::pin(std::future::ready(Ok(Reply::item_refused(
+                invocation,
+                ITEMS_ARE_BROWSERS,
+            ))))
+        };
     let context = context.clone();
     let answer: wire::Answer<zeroize::Zeroizing<Vec<u8>>> = Box::pin(async move {
         let reply = answering.await.map_err(|_| refused())?;

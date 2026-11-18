@@ -25,7 +25,7 @@ import {mountWaitList} from './wait-list.mjs';
 import {handToNativeHost} from './native-host.mjs';
 import {boot, grammar} from './entry.mjs';
 import {applicationName, loadRuntime, mountDesktop, prefetchApplication, prefetchApplications, prefetchDesktop, prepareGpu, reportPageErrors} from './host.mjs';
-import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspace, openInvitation, profileDevice, withDeviceKey} from './peer.mjs';
+import {connectPeer, httpsPost, identityProfile, inspectInvitation, invitedServer, joinWorkspace, openInvitation, profileDevice, withDeviceKey} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {idbStorage, openDeviceKey} from './device-key.mjs';
 import {createIdentityActions, setupOrigin, syncProfile} from './identity-actions.mjs';
@@ -42,7 +42,7 @@ import {deviceRemoved} from './session-refusal.mjs';
 import {rendererUnavailable} from './webgpu-safety.mjs';
 import {createWorkspaceActions, invitedLine} from './workspace-actions.mjs';
 import {sameEntry} from './entered-workspaces.mjs';
-import {siteHost} from './site-host.mjs';
+import {isInvitedServer, invitedOrigin, nameInvitedServer, siteServer} from './site-host.mjs';
 import {
   chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, entryWorkspace, enteredWorkspaces, forgetDeletedWorkspace, forgetGoneWorkspaces,
   heldWorkspaces, hostDeviceOf, hostToReconnect, joinGranted, joinViaHost, keepJoinedHost, keepOwnedHost,
@@ -59,7 +59,7 @@ const hex = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '0'
 /** The host's certificate, as the page's site names it (`site-host.mjs`) or else as the host
  * says; a workspace that just started refuses briefly. */
 async function hostCertificate(runtime, origin, {timeoutMs = 15_000} = {}) {
-  const named = siteHost(origin);
+  const named = siteServer(origin);
   if (named) return named.info.hostCert;
   const deadline = Date.now() + timeoutMs;
   for (let delay = 100; ; delay = Math.min(delay * 2, 1000)) {
@@ -201,7 +201,9 @@ function invitationCard(offer, inviterColour) {
     } else {
       from.append('You’re invited to');
     }
-    const workspace = element('h2', 'tilo-invite-workspace', offer.workspaceName);
+    // An invitation read on its own (a server reached only over iroh) does not carry the
+    // workspace's name: the server says it once the person is in.
+    const workspace = element('h2', 'tilo-invite-workspace', offer.workspaceName || (inviter ? 'their workspace' : 'a workspace'));
     workspace.id = 'tilo-invite-workspace';
     const head = element('div', 'tilo-invite-head');
     head.append(from, workspace);
@@ -1166,6 +1168,28 @@ export async function startEntryPage({mode}) {
         wait: () => Promise.reject(new Error('the home workspace did not let this device in'))});
     },
     inspectInvitation: (origin, invitation) => inspectInvitation(origin, invitation, {runtime}),
+    // An invitation a link names no other server beside, whose server the page's own site does
+    // not name either, is that server's own word on where it is: a server reached only over iroh
+    // (behind a NAT, through a packet relay) is dialled as the invitation says, never asked over
+    // HTTP, and what it offers is read from the invitation.
+    invitedServer: async (invitation, origin) => {
+      if (new URL(origin).origin !== globalThis.location.origin && !siteServer(origin)) return null;
+      runtime ??= await loadRuntime();
+      let invited;
+      try {
+        invited = await invitedServer(invitation, {runtime});
+      } catch (error) {
+        console.warn('admission: the invitation names no server to dial', error?.message ?? error);
+        return null;
+      }
+      if (!invited) return null;
+      const device = JSON.stringify(invited.info?.hostCert?.device_public_key ?? null);
+      if (JSON.stringify(siteServer(origin)?.info?.hostCert?.device_public_key ?? null) === device) return null;
+      const at = invitedOrigin(invited.endpoint);
+      if (!at) return null;
+      nameInvitedServer(at, invited.info);
+      return {origin: at, offer: invited.offer};
+    },
     // A link's `invite` names the invitation its host keeps: the page opens
     // it before anything reads it.
     openInvitation: (origin, secret) => openInvitation(origin, secret, {runtime}),
@@ -1183,7 +1207,8 @@ export async function startEntryPage({mode}) {
       // The workspace signs the name it knows for who asked. When it knows
       // none, the card waits for the name their profile keeps.
       const signed = typeof offer.inviter?.name === 'string' ? offer.inviter.name.trim() : '';
-      if (!offer.inviter || signed) return invitationCard(offer, colour);
+      // A server reached only over iroh has no web origin to ask their profile of.
+      if (!offer.inviter || signed || isInvitedServer(origin)) return invitationCard(offer, colour);
       return inviterName(offer.inviter, origin).then(name =>
         invitationCard({...offer, inviter: {...offer.inviter, name}}, colour));
     },
@@ -2567,7 +2592,7 @@ function hostNamed(error, origin) {
 function pairingAt({origin, identity, runtime, link}) {
   if (!runtime?.PairingHost || !link) return null;
   let host = null;
-  const asked = async () => siteHost(origin)?.info ?? JSON.parse(await runtime.hostInfo(httpsPost(origin)));
+  const asked = async () => siteServer(origin)?.info ?? JSON.parse(await runtime.hostInfo(httpsPost(origin)));
   const at = () => (host ??= asked().then(info => {
     const {address} = info;
     if (!address) throw new Error('this host takes no device connections');

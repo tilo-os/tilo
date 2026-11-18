@@ -75,6 +75,11 @@ NATIVE_TEST_FEATURES = {
     # host's enrollment answer, which the session's own owner tests need too,
     # so they build with the fixtures and internals behind `test-support`.
     "tilo-peer-state": ("test-support",),
+    # The person's own store carried to their other devices is driven through
+    # the device build's app broker, which `apps` links; the test's target is
+    # declared `required-features = ["apps"]`, so a check that does not name
+    # the feature never compiles it.
+    "tilo-workspace-service": ("apps",),
 }
 
 # Packages whose tested features above are not their default build. The

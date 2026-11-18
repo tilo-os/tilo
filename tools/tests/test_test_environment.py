@@ -282,7 +282,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         # through that server's own keeper of coding agents.
         machine = scripts.pop("machine-siblings")
         self.assertEqual(machine["command"], ["bash", "tools/build-sibling-binaries.sh",
-                                              "legacy-agent:tilo-legacy-agent"])
+                                              "linux-vm-agent:tilo-linux-vm-agent"])
         for profile in ("default", "ci"):
             rules = [rule for rule in config["profile"][profile]["scripts"]
                      if rule["setup"] == "machine-siblings"]

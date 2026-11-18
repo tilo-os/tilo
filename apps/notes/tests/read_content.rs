@@ -26,7 +26,7 @@ fn a_note_written_through_actions_reads_back_through_actions() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
     app.call_on(
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "new-note",
         serde_json::json!({ "title": "Groceries" }),
     )
@@ -34,14 +34,14 @@ fn a_note_written_through_actions_reads_back_through_actions() {
 
     let notebook = read(&mut app, json!({}));
     assert_eq!(notebook["kind"], "notes.notebook");
-    let notes = read_notes(&mut app, &notes::part::chain_resource());
+    let notes = read_notes(&mut app, &notes::note_list::chain_resource());
     assert_eq!(notes["kind"], "notes.pages");
     let pages = notes["pages"].as_array().expect("pages");
     let page = pages
         .iter()
-        .find(|page| page["name"] == "Groceries")
+        .find(|page| page["value"]["title"] == "Groceries")
         .unwrap_or_else(|| panic!("the new note is not listed: {notes}"));
-    let item = page["item"].as_str().expect("item id").to_owned();
+    let item = page["id"].as_str().expect("item id").to_owned();
 
     let id = crate::framework_support::notes_doc(&app, |doc| {
         read::list_pages(doc)
@@ -58,7 +58,14 @@ fn a_note_written_through_actions_reads_back_through_actions() {
         },
     );
 
-    let note = read_notes(&mut app, &item);
+    let note = app
+        .call_on(
+            &notes::note_list::chain_resource(),
+            "read",
+            json!({ "item": item }),
+        )
+        .unwrap_or_else(|error| panic!("read of {item} refused: {error:?}"))
+        .expect("read answers a value");
     assert_eq!(note["kind"], "notes.page");
     assert_eq!(note["title"], "Groceries");
     let markdown = note["markdown"].as_str().expect("the body as Markdown");
@@ -77,7 +84,7 @@ fn a_note_written_through_actions_reads_back_through_actions() {
     );
 
     let missing = app.call_on(
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "read",
         json!({ "item": "notes.page:not-a-page" }),
     );
@@ -91,7 +98,7 @@ fn a_viewer_reads_the_notebook() {
     let mut app = TestApp::<NotesShell>::with_role(Role::Viewer).unwrap();
     let notebook = read(&mut app, json!({}));
     assert!(notebook["tags"].is_array(), "{notebook}");
-    let notes = read_notes(&mut app, &notes::part::chain_resource());
+    let notes = read_notes(&mut app, &notes::note_list::chain_resource());
     assert_eq!(notes["kind"], "notes.pages", "{notes}");
 }
 
@@ -132,7 +139,7 @@ fn note_and_body_reads_are_bound_document_projections() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
     app.call_on(
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "new-note",
         json!({"title": "Public note"}),
     )
@@ -173,7 +180,7 @@ fn editor_inspection_reuses_the_native_observer_and_writes_nothing() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
     app.call_on(
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "new-note",
         serde_json::json!({ "title": "Private fixture title" }),
     )
@@ -238,14 +245,14 @@ fn editor_inspection_preserves_actual_wrong_page_and_stale_cache_evidence() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
     app.call_on(
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "new-note",
         serde_json::json!({ "title": "First private fixture" }),
     )
     .unwrap();
     let first = crate::framework_support::shown(&app).pages()[0].id;
     app.call_on(
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "new-note",
         serde_json::json!({ "title": "Second private fixture" }),
     )
@@ -305,7 +312,7 @@ fn a_viewer_inspects_editor_without_gaining_note_mutation_rights() {
     assert!(observed["body_hash"].is_null());
     assert!(
         app.call_on(
-            &notes::part::chain_resource(),
+            &notes::note_list::chain_resource(),
             "new-note",
             serde_json::json!({ "title": "Not permitted" })
         )
@@ -323,7 +330,7 @@ fn a_past_version_reads_and_shows_its_note() {
     let mut app = TestApp::<NotesShell>::new().unwrap();
     let created = app
         .call_on(
-            &notes::part::chain_resource(),
+            &notes::note_list::chain_resource(),
             "create-page",
             json!({ "title": "Kumquat plans", "markdown": "Marker kumquat parade" }),
         )

@@ -340,7 +340,7 @@ async fn post(reply: &Reply, conversation: &str, words: &str) -> bool {
         &reply.provider,
         &reply.caller,
         &route,
-        &ui::resource::chain_resource_id(&chat::parts::chain()),
+        &collab_types::document::chain_resource_id(&chat::parts::chain()),
         "post",
         arguments,
     )
@@ -758,7 +758,7 @@ impl super::HostAgents {
             return (turn.request.clone(), None);
         };
         let Ok(Some(held)) = self
-            .read::<chat::parts::ChatPart>(workspace, CHAT, part)
+            .read::<chat::parts::ChatMessages>(workspace, CHAT, part)
             .await
         else {
             return (turn.request.clone(), None);

@@ -5,23 +5,16 @@
 //! actor, so every change is attributed to it. It never sees a pixel and
 //! never touches a pointer.
 //!
-//! *Which* published operations answer a request is decided by a model
-//! (`model`) that discovers, invokes and observes the live, permission-filtered
-//! catalogue the applications publish — the same one a person reaches from
-//! the palette — through a handful of generic tools (`tools`). There are no
-//! agent-only recipes: every id it names is checked against what a tool
-//! showed it and against the catalogue again at dispatch, and the broker
-//! authorizes each step. Model turns run that as a step-by-step loop
-//! (`session::agent_loop`). Without a model, a deterministic word match over
-//! the same live catalogue decides, and which path ran is recorded.
+//! A turn is answered the way every agent in Tilo works: through the
+//! workspace's MCP tools (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`,
+//! `tilo_view`, …), served here over the session's action API on the agent's
+//! own connection, which the broker decides as the turn's
+//! ([`tilo_agent_turn`]). Beside them the agent searches and reads the web
+//! with its own two tools. What the turn does, and what it says, is written
+//! in the conversation that asked (`session::conversation`).
 //!
-//! What the turn does, and what it says, is written in the conversation that
-//! asked (`session::conversation`): the reply to the person's message is
-//! told the run's state, its steps, and — when the turn ends — its words.
-//!
-//! The point is the shape, not the vocabulary: anything that can speak an
-//! app's actions can drive that app, in the background, without competing
-//! with anyone for the screen.
+//! It also answers the AI transforms the workspace's shortcuts and apps ask
+//! of it ([`transform`]).
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -42,31 +35,12 @@
     )
 )]
 
-// Reuse the production-broker integration fixture in private Session tests.
-#[cfg(test)]
-extern crate self as tilo_agent;
-
 /// The agent's catalogue of the sentences it writes into a conversation.
 pub mod i18n;
 pub mod model;
-pub mod pages;
-pub mod plan;
-pub mod programs;
 pub mod providers;
 pub mod session;
-pub mod skills;
-pub mod surface;
-pub mod tools;
 pub mod transform;
 pub mod wire;
 
 pub use session::{Config, Session};
-
-/// The machine this agent runs on, as a run's receipt records it: the host
-/// name, so a person reading the issue sees which device paid for a step.
-/// It is a hint, never an identity; a machine with no host name reports
-/// `unknown` rather than nothing.
-#[must_use]
-pub fn device_name() -> String {
-    tilo_paths::session::host_name().unwrap_or_else(|| "unknown".to_owned())
-}

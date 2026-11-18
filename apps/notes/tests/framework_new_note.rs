@@ -41,16 +41,16 @@ fn the_controls_that_press_the_notebooks_actions_declare_them() {
     app.settle();
     let empty = pressed(&mut app);
     assert!(
-        empty
-            .iter()
-            .any(|address| address.resource == notes::part::chain_resource()
-                && address.action == "new-note"),
+        empty.iter().any(
+            |address| address.resource == notes::note_list::chain_resource()
+                && address.action == "new-note"
+        ),
         "the page tree's + presses the notebook's New note: {empty:?}"
     );
 
     // The marker an agent's action draws rests on that control: the action
     // resolves to the "+" and to nothing else.
-    let address = notes::PagePart::NEW_NOTE.on(notes::part::chain_resource());
+    let address = notes::NoteList::NEW_NOTE.on(notes::note_list::chain_resource());
     let routes = app.harness().action_ui_routes(&address);
     let [route] = routes.as_slice() else {
         panic!("the window binds one control to New note: {routes:?}");
@@ -66,7 +66,7 @@ fn the_controls_that_press_the_notebooks_actions_declare_them() {
     let locus = app
         .harness()
         .semantic_locus(&ui::headless::agent_acting(
-            &notes::part::chain_resource(),
+            &notes::note_list::chain_resource(),
             "new-note",
         ))
         .expect("the agent's invocation finds the control it presses");
@@ -85,10 +85,10 @@ fn the_controls_that_press_the_notebooks_actions_declare_them() {
         "a row's + presses the notebook's New child: {with_a_row:?}"
     );
     assert!(
-        with_a_row
-            .iter()
-            .any(|address| address.resource == notes::part::chain_resource()
-                && address.action == "new-note"),
+        with_a_row.iter().any(
+            |address| address.resource == notes::note_list::chain_resource()
+                && address.action == "new-note"
+        ),
         "and the page tree's + still presses New note: {with_a_row:?}"
     );
 }
@@ -220,7 +220,7 @@ fn a_note_another_actor_makes_never_opens_this_windows_title() {
         surface(&mut app, |notes| notes.selected_for_test()).expect("the person's note is open");
     app.call_by(
         agent,
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "new-note",
         serde_json::json!({ "title": "Launch notes" }),
     )
@@ -257,8 +257,8 @@ fn the_published_surface_validates_as_the_host_checks_it() {
     app.settle();
     let open = app.harness().component_contract_violations();
     assert!(open.is_empty(), "a note open for editing: {open:#?}");
-    app.invoke_child::<notes::PagePart>(
-        &notes::part::chain_resource(),
+    app.invoke_child::<notes::NoteList>(
+        &notes::note_list::chain_resource(),
         Invoke::apply(&create_page_action(PageId::new_v4(), None, "Second")).unwrap(),
     )
     .unwrap();
@@ -274,7 +274,7 @@ fn the_published_surface_validates_as_the_host_checks_it() {
 fn a_note_made_over_actions_publishes_its_edits_and_they_edit_it() {
     let mut app = fresh();
     app.call_on(
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "new-note",
         serde_json::json!({ "title": "Groceries" }),
     )
@@ -302,7 +302,7 @@ fn a_note_made_over_actions_publishes_its_edits_and_they_edit_it() {
         );
     }
     assert!(
-        published(&notes::part::chain_resource(), "field-edit"),
+        published(&notes::note_list::chain_resource(), "field-edit"),
         "the notes publish the edits of every note's body: {surface:#}"
     );
 
@@ -326,7 +326,7 @@ fn notes_made_one_after_another_over_actions_stay_in_order() {
     let mut app = fresh();
     for title in ["First", "Second", "Third"] {
         app.call_on(
-            &notes::part::chain_resource(),
+            &notes::note_list::chain_resource(),
             "new-note",
             serde_json::json!({ "title": title }),
         )
@@ -399,7 +399,7 @@ fn assert_shows(app: &mut TestApp<NotesShell>, titles: &[&str]) {
 fn notes_created_at_once_on_two_replicas_converge_and_stay_shown() {
     let mut app = fresh();
     app.call_on(
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "new-note",
         serde_json::json!({ "title": "Existing" }),
     )
@@ -408,7 +408,7 @@ fn notes_created_at_once_on_two_replicas_converge_and_stay_shown() {
     let existing = crate::framework_support::shown(&app).pages()[0].id;
     let (part, mut peer) = crate::framework_support::peer_part(&app, existing);
     app.call_on(
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "new-note",
         serde_json::json!({ "title": "Mine" }),
     )
@@ -436,7 +436,7 @@ fn notes_created_at_once_on_two_replicas_converge_and_stay_shown() {
 
     // A note made afterwards still goes last.
     app.call_on(
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "new-note",
         serde_json::json!({ "title": "Later" }),
     )
@@ -451,13 +451,13 @@ fn notes_created_at_once_on_two_replicas_converge_and_stay_shown() {
 fn undoing_a_create_after_a_later_note_keeps_the_notebook_shown() {
     let mut app = fresh();
     app.call_on(
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "new-note",
         serde_json::json!({ "title": "First" }),
     )
     .unwrap();
     app.call_on(
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "new-note",
         serde_json::json!({ "title": "Mine" }),
     )
@@ -492,7 +492,7 @@ fn undoing_a_create_after_a_later_note_keeps_the_notebook_shown() {
 fn ctrl_n_then_typing_names_the_note_and_enter_goes_on_to_its_body() {
     let mut app = fresh();
     app.call_on(
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "new-note",
         serde_json::json!({ "title": "Inbox" }),
     )
@@ -566,7 +566,7 @@ fn ctrl_n_then_typing_names_the_note_and_enter_goes_on_to_its_body() {
 fn ctrl_n_twice_makes_two_top_level_notes() {
     let mut app = fresh();
     app.call_on(
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "new-note",
         serde_json::json!({ "title": "Inbox" }),
     )
@@ -597,7 +597,7 @@ fn ctrl_n_twice_makes_two_top_level_notes() {
 fn slash_sub_note_turns_a_line_into_a_linked_note_inside() {
     let mut app = fresh();
     app.call_on(
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "new-note",
         serde_json::json!({ "title": "Trips" }),
     )

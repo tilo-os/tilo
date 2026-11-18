@@ -56,6 +56,31 @@ impl ServiceAuthorization {
     }
 }
 
+/// The service a model provider's API key is bound to: the model service
+/// that sends it, on a Tilo computer and on a server alike.
+pub const MODEL_SERVICE: &str = "model-gateway";
+
+/// What a model provider's API key is kept for.
+const PROVIDER_API_KEY: &str = "provider-api-key";
+
+/// Where a model provider's API key is kept: under the provider's id
+/// (`profile_id`), bound to the model service, to being that provider's key,
+/// and to the origin of its `endpoint`. A Tilo computer and a server keep a
+/// person's keys in this one way, and a key never follows an endpoint edited
+/// to point at another origin: it is not found there, and has to be entered
+/// again.
+///
+/// # Errors
+/// The endpoint names no origin, or the id is no provider id.
+pub fn provider_api_key(
+    profile_id: &str,
+    endpoint: &str,
+) -> Result<(CredentialRef, ServiceAuthorization), BrokerError> {
+    let authorization = ServiceAuthorization::new(MODEL_SERVICE, PROVIDER_API_KEY, endpoint)?;
+    let reference = authorization.credential_ref(profile_id)?;
+    Ok((reference, authorization))
+}
+
 #[derive(Serialize, Deserialize)]
 struct Entry {
     authorization: ServiceAuthorization,
@@ -285,67 +310,6 @@ impl ServiceCredentials {
         vault.remove(&Self::key(reference));
         vault.try_save().map_err(BrokerError::Storage)?;
         Ok(true)
-    }
-
-    fn legacy_agent_key(profile_id: &str) -> Result<AccountId, BrokerError> {
-        ServiceAuthorization::new(
-            "model-gateway",
-            "provider-api-key",
-            "https://unused.example",
-        )?
-        .credential_ref(profile_id)?;
-        Ok(AccountId::new(format!("agent-provider-{profile_id}")))
-    }
-
-    pub fn legacy_agent_provider_status(&self, profile_id: &str) -> Result<bool, BrokerError> {
-        let key = Self::legacy_agent_key(profile_id)?;
-        Ok(self.vault()?.get(&key).is_some())
-    }
-
-    /// Remove only the explicitly selected unbound provider entry.
-    /// Bound credentials are never affected, including after an endpoint edit.
-    pub fn remove_legacy_agent_provider(&self, profile_id: &str) -> Result<bool, BrokerError> {
-        let key = Self::legacy_agent_key(profile_id)?;
-        let mut vault = self.vault()?;
-        let removed = vault.remove(&key);
-        if removed {
-            vault.try_save().map_err(BrokerError::Storage)?;
-        }
-        Ok(removed)
-    }
-
-    /// Explicitly adopt a legacy `agent-provider-{profile_id}` entry. The trusted
-    /// configuration owner must supply the original endpoint, not a newly edited
-    /// endpoint: old entries carried no origin binding. Never guess that origin.
-    /// Existing bound entries win, making retries idempotent.
-    pub fn migrate_agent_provider(
-        &self,
-        profile_id: &str,
-        authorization: &ServiceAuthorization,
-        original_origin: &str,
-    ) -> Result<CredentialRef, BrokerError> {
-        let reference = authorization.credential_ref(profile_id)?;
-        if authorization.origin != canonical_origin(original_origin)? {
-            return Err(BrokerError::Denied);
-        }
-        let mut vault = self.vault()?;
-        let legacy = Self::legacy_agent_key(profile_id)?;
-        if Self::entry(&vault, &reference, authorization)?.is_some() {
-            // A bound replacement wins, but explicit adoption must not leave
-            // an obsolete unbound copy behind.
-            if vault.remove(&legacy) {
-                vault.try_save().map_err(BrokerError::Storage)?;
-            }
-            return Ok(reference);
-        }
-        let secret = vault.get(&legacy).ok_or(BrokerError::NotFound)?;
-        if secret.password.is_empty() {
-            return Err(BrokerError::CorruptItem);
-        }
-        Self::put(&mut vault, &reference, authorization, &secret.password)?;
-        vault.remove(&legacy);
-        vault.try_save().map_err(BrokerError::Storage)?;
-        Ok(reference)
     }
 }
 

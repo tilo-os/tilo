@@ -51,6 +51,9 @@ tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
 # HTTPS to a site and a host, as every client of the server makes its requests.
 tilo-server-client = { path = "../../server/tilo-server-client" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+# `tilo login <invitation link>` reads the signed invitation and the server's iroh address in it.
+tilo-workspace-join = { path = "../../collab/workspace-join" }
+tilo-delivery-protocol = { path = "../../server/tilo-delivery-protocol" }
 tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
 # Reads the PEM certificates a test names for HTTPS to trust (`tilo login`).
 rustls.workspace = true
@@ -112,6 +115,7 @@ zeroize.workspace = true
 # A Thunderbird message read for Mail's `deliver-message`: who, what, when and its words.
 mail-parser = "0.11.4"
 tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
+tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 fuser.workspace = true

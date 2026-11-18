@@ -139,14 +139,6 @@ pub trait BlobBackend: Send + Sync + 'static {
     fn refresh_public(self: Arc<Self>) -> BlobFuture<u32> {
         Box::pin(async { 0 })
     }
-
-    /// The session names the agent behind this device's next writes to some
-    /// paths ([`BlobClient::attribute_writes`]). Only a session connection
-    /// reaches this; a backend without write attribution refuses it.
-    fn attribute_writes(&self, attribution: WriteAttribution) -> Result<(), BlobError> {
-        let _ = attribution;
-        Err(BlobError::Refused("write attribution unsupported".into()))
-    }
 }
 
 fn no_public_content() -> BlobError {
@@ -508,28 +500,6 @@ impl ServeObject for SessionServer {
                         on_runtime(&self.runtime, Arc::clone(&self.backend).refresh_public())
                             .await?;
                     Ok(FsReply::Refreshed(refreshed))
-                }
-                FsRequest::SessionAttributeWrites {
-                    paths,
-                    agent,
-                    label,
-                    color,
-                    ttl_ms,
-                } => {
-                    if paths.len() > MAX_ATTRIBUTION_PATHS {
-                        return Err("too many attributed paths".into());
-                    }
-                    let attribution = WriteAttribution {
-                        paths,
-                        agent,
-                        label,
-                        color,
-                        ttl: Duration::from_millis(u64::from(ttl_ms)),
-                    };
-                    self.backend
-                        .attribute_writes(attribution)
-                        .map_err(|error| error.to_string())?;
-                    Ok(FsReply::Empty)
                 }
                 _ => Err("unexpected session media request".into()),
             }

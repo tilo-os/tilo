@@ -857,6 +857,7 @@ impl SearchStream {
     pub fn rows(&self) -> Vec<Hit> {
         let mut merged = self.kept();
         system::order_hits(&mut merged, |hit| (&hit.kind, hit.availability()));
+        document_leads_its_actions(&mut merged);
         merged.into_iter().map(|(hit, _)| hit).collect()
     }
 
@@ -865,6 +866,7 @@ impl SearchStream {
     pub fn groups(&self) -> Vec<KindGroup<Hit>> {
         let mut merged = self.kept();
         system::order_hits(&mut merged, |hit| (&hit.kind, hit.availability()));
+        document_leads_its_actions(&mut merged);
         system::group_by_kind(
             merged.into_iter().map(|(hit, _)| hit).collect(),
             |hit| &hit.kind,
@@ -1082,6 +1084,39 @@ impl std::fmt::Debug for SearchStream {
             .field("rows", &self.merged.len())
             .finish_non_exhaustive()
     }
+}
+
+/// A document that is a row is itself the answer: the actions on it come after it, not
+/// above the thing they act on.
+fn document_leads_its_actions(merged: &mut Vec<(Hit, f32)>) {
+    let documents: std::collections::HashSet<String> = merged
+        .iter()
+        .filter_map(|(hit, _)| match hit.thing() {
+            Thing::Resource(id) => Some(id),
+            _ => None,
+        })
+        .collect();
+    if documents.is_empty() {
+        return;
+    }
+    let mut out = Vec::with_capacity(merged.len());
+    let mut deferred: HashMap<String, Vec<(Hit, f32)>> = HashMap::new();
+    for (hit, strength) in merged.drain(..) {
+        match hit.thing() {
+            Thing::Action { resource, .. } if documents.contains(&resource) => {
+                deferred.entry(resource).or_default().push((hit, strength));
+            }
+            Thing::Resource(id) => {
+                out.push((hit, strength));
+                if let Some(actions) = deferred.remove(&id) {
+                    out.extend(actions);
+                }
+            }
+            _ => out.push((hit, strength)),
+        }
+    }
+    out.extend(deferred.into_values().flatten());
+    *merged = out;
 }
 
 /// One frame of a search: hand the sources to `workers`, take the answers

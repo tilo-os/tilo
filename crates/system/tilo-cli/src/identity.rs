@@ -15,13 +15,14 @@ use std::time::Duration;
 use anyhow::{Context as _, Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
 use serde_json::Value;
-use tilo_server_client::https::{self, Origin};
-use tilo_session_client::device::{self, Entering, Held};
-use tilo_user_identity::persist::{
+use tilo_device_identity::IdentityPaths;
+use tilo_device_identity::persist::{
     read_device_cert, read_public_key, read_signing_key, write_device_cert, write_public_key,
     write_signing_key,
 };
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, IdentityPaths, SignInProof};
+use tilo_server_client::https::{self, Origin};
+use tilo_session_client::device::{self, Entering, Held};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, SignInProof};
 
 use crate::login;
 

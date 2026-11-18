@@ -404,7 +404,6 @@ impl StatePeer {
                 doc.delete(&programs, hash).map_err(err)?;
             }
         }
-        doc.commit();
         let membership = (!changes.is_empty())
             .then_some(crate::members::MembershipOpCommand::Project { changes });
         self.write_membership(doc, &before, key, now, membership)
@@ -502,7 +501,6 @@ impl StatePeer {
                 .map_err(err)?,
             None => doc.delete(&requests, entry).map_err(err)?,
         }
-        doc.commit();
         self.write_governance(doc, &before, key, now)
     }
 }

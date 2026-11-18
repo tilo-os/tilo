@@ -19,8 +19,8 @@ use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, ActionCx, Bytes, Id, JsonSchema, Model, Refusal, Set};
 
 use crate::actions::bounded_text;
+use crate::message_states::MessageStates;
 use crate::model::{Addr, Folder, Message, MessageId, normalize_subject};
-use crate::part::MessagePart;
 use crate::resource::{
     MAX_DRAFT_ADDRESS_CHARS, MAX_DRAFT_BODY_CHARS, MAX_DRAFT_SUBJECT_CHARS, Mail, MessageState,
 };
@@ -253,7 +253,7 @@ pub struct Delivery {
 /// Refuses a message held already, or an answer to a message not held.
 pub(crate) fn prepare_delivery(
     delivery: &mut Delivery,
-    parts: &[(u64, std::rc::Rc<MessagePart>)],
+    parts: &[(u64, std::rc::Rc<MessageStates>)],
 ) -> Result<(), String> {
     // Dated as it is delivered, here, so its id is the same on every replica
     // and known before it is written.
@@ -423,7 +423,7 @@ fn quoted(text: &str) -> String {
         .join("\n")
 }
 
-impl MessagePart {
+impl MessageStates {
     /// Keep `delivery` as a held message in its folder; the id it is kept
     /// under. Refused when the same message is held already.
     pub(crate) fn deliver(&mut self, cx: &ActionCx, delivery: &Delivery) -> Result<Id, Refusal> {
@@ -1132,7 +1132,7 @@ pub(crate) fn answer_part(
     if action != "deliver-message" {
         return None;
     }
-    let part = <MessagePart as tilo_resource::Resource>::read(doc).ok()?;
+    let part = <MessageStates as tilo_resource::Resource>::read(doc).ok()?;
     changes.iter().find_map(|patch| {
         let automerge::PatchAction::PutMap { key, .. } = &patch.action else {
             return None;
@@ -1152,7 +1152,7 @@ pub(crate) fn answer_part(
 pub(crate) fn effect(
     effect: &crate::actions::MailEffect,
     mail: &Mail,
-    messages: &MessagePart,
+    messages: &MessageStates,
 ) -> Option<ui::framework::EffectAnswer> {
     use crate::actions::MailEffect;
     let answer = match effect {

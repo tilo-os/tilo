@@ -29,9 +29,9 @@ use winit::event::{Modifiers, WindowEvent};
 
 use crate::app::{ChatApp, Hit};
 use crate::i18n::{t, t_args};
-use crate::messages::{NewMessage, chat_part};
+use crate::messages::{NewMessage, chat_messages};
 use crate::model::Message;
-use crate::parts::ChatPart;
+use crate::parts::ChatMessages;
 use crate::question::{DECLINED, FILLED, Question, QuestionState, SECRET};
 use crate::question_card::{Line, QuestionShown, Reader};
 
@@ -657,7 +657,7 @@ impl ChatApp {
         };
         let given = self.try_apply_part(
             doc,
-            ChatPart::ANSWER_QUESTION.with(chat_part::AnswerQuestion {
+            ChatMessages::ANSWER_QUESTION.with(chat_messages::AnswerQuestion {
                 message: ui::tilo_resource::Id::from_raw(message),
                 answer: answer.to_owned(),
                 device: self.device.clone().filter(|device| !device.is_empty()),
@@ -667,7 +667,7 @@ impl ChatApp {
         if given.is_ok() {
             self.apply_part(
                 doc,
-                ChatPart::POST.with(chat_part::Post {
+                ChatMessages::POST.with(chat_messages::Post {
                     message: NewMessage {
                         channel: ui::tilo_resource::Id::from_raw(channel),
                         text: t(words),

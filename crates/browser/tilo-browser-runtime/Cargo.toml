@@ -76,6 +76,8 @@ tilo-sheets = { version = "0.1.0", path = "../../session/sheets" }
 tilo-workspace-directory = { version = "0.1.0", path = "../../session/workspace-directory" }
 # The invitation behind a short link, opened from what a site's shelf keeps.
 tilo-workspace-join = { version = "0.1.0", path = "../../collab/workspace-join" }
+# The server an invitation names, read from its own signed address in it.
+tilo-delivery-protocol = { path = "../../server/tilo-delivery-protocol" }
 serde.workspace = true
 serde_json.workspace = true
 # Large records verified in the page's worker before they load (src/record_verify.rs).

@@ -20,7 +20,7 @@ pub(super) async fn the_assistant_rewords(hosted: &Hosted, message: &Id, words: 
         .expect("the workspace's chat");
     let held = chat::chat::Chat::read(&automerge::AutoCommit::load(&saved).unwrap()).unwrap();
     let person = hosted.person();
-    let rewording = chat::messages::chat_part::EditMessage {
+    let rewording = chat::messages::chat_messages::EditMessage {
         message: message.clone(),
         text: words.to_owned(),
         body: None,
@@ -43,7 +43,7 @@ pub(super) async fn the_assistant_rewords(hosted: &Hosted, message: &Id, words: 
                     &held,
                     |replica| replica.as_agent_for(SCOUT, &person),
                     None,
-                    chat::parts::ChatPart::EDIT_MESSAGE.with(rewording),
+                    chat::parts::ChatMessages::EDIT_MESSAGE.with(rewording),
                 )
                 .map_err(|error| format!("{error:?}"))
             },

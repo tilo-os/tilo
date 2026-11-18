@@ -160,15 +160,24 @@ impl Bound {
         Ok(tilo_action_policy::Rule::new(node, kinds, answer))
     }
 
-    /// Whether this narrows rather than widens: an outside effect is never carried
-    /// out unasked, whatever the person granting it may do
+    /// Whether its person may give it: an outside effect is carried out unasked
+    /// only within their own account
     /// ([`tilo_action_policy::agent_answers::may_give`]).
-    fn narrows(&self) -> Result<bool, Refusal> {
+    fn may_be_given(&self) -> Result<bool, Refusal> {
+        use tilo_action_policy::agent_answers::{AnswerScope, may_give};
         let rule = self.rule()?;
+        let app = match AnswerScope::of_node(&rule.node) {
+            Some(
+                AnswerScope::App { app }
+                | AnswerScope::Kind { app, .. }
+                | AnswerScope::Action { app, .. },
+            ) => app,
+            None => String::new(),
+        };
         Ok(rule
             .kinds
             .iter()
-            .all(|kind| tilo_action_policy::agent_answers::may_give(kind, rule.answer)))
+            .all(|kind| may_give(&app, kind, rule.answer)))
     }
 }
 
@@ -627,9 +636,9 @@ impl WorkspaceAgents {
             )));
         }
         for rule in &bound {
-            if !rule.narrows()? {
+            if !rule.may_be_given()? {
                 return Err(Refusal::new(
-                    "an agent never runs an outside effect unasked",
+                    "an agent acts unasked on an outside effect only within its person's own account",
                 ));
             }
         }
@@ -845,9 +854,9 @@ impl WorkspaceAgents {
                 )));
             }
             for rule in &agent.bound {
-                if !rule.narrows()? {
+                if !rule.may_be_given()? {
                     return Err(Refusal::new(
-                        "an agent never runs an outside effect unasked",
+                        "an agent acts unasked on an outside effect only within its person's own account",
                     ));
                 }
             }

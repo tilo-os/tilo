@@ -120,27 +120,30 @@ SEARCH_RESOURCE = "desktop:search"
 HANG_BOUND = float(os.environ.get("TILO_TEST_HANG_BOUND_SECS", "30"))
 # The one output a nested session's sound has (tilo_media::audio::SESSION_SINK).
 SESSION_SINK = "tilo-sink"
-# What the person asks the agent, and the one reply the test-only model gives. The request is a
-# question, which an agent answers in its reply: a request for work in an application would have
-# to be carried out there, and this model only answers.
+# What the person asks the agent, and the reply the test-only model ends with once it listed the
+# workspace's apps, read one and made a note through the workspace's MCP tools (TOOL_TURNS).
 REQUEST = "What is left for the release?"
 FIXED_REPLY = "Three tasks are left in the release. (This is the e2e test model's fixed reply.)"
 TEST_MODEL = "e2e-fixed-reply"
+# The tool calls the test-only model makes before it replies, one a turn: it lists the apps, reads
+# Notes and makes a note, through the tools every agent works with (crates/runtime/tilo-mcp).
+TOOL_TURNS = [
+    ("tilo_ls", {}),
+    ("tilo_read", {"path": "notes"}),
+    ("tilo", {"program": "notes.new_note(notes.notebook)", "confirm": True}),
+]
 # Chat's messages as the workspace's record holds them: what was said and in which
 # conversation (apps/chat/src/record.rs, `derived:messages`).
 CHAT_MESSAGES = "derived:part.0@derived:messages@derived:default@tab:0000000000000000"
-# The agent loop's own tool that finishes a turn with the answer its person reads
-# (apps/agent/src/tools.rs, `PLAN`).
-FINISH = "plan"
 # What the session and its apps log when the ask or the run's own steps are refused
 # (crates/session/session/src/send_to.rs, apps.rs, apps/agent/src/session).
 RUN_REFUSALS = [
     "an app action was not delivered",
     "a send did not land",
     "an agent did not start",
-    "refused a run that answers no turn",
-    "the conversation refused the run's report",
-    "the conversation's `record-work` refused its arguments",
+    "refused a turn that answers no message",
+    "the conversation refused the turn's step",
+    "the conversation offers no such action on the turn's message",
 ]
 
 
@@ -179,8 +182,8 @@ def wait_for(what: str, check: Callable[[], Any], seen: Callable[[], Any] | None
 # --- the test-only model -------------------------------------------------------------------
 
 class TestOnlyFixedReplyModel:
-    """A loopback OpenAI-compatible endpoint for this test alone: every turn of the agent's loop
-    finishes with FIXED_REPLY, and each turn it was asked is kept."""
+    """A loopback OpenAI-compatible endpoint for this test alone: the agent's turn makes the calls
+    of TOOL_TURNS, one a round, then finishes with FIXED_REPLY; each round it was asked is kept."""
 
     def __init__(self) -> None:
         self.task_turns: list[list[dict[str, Any]]] = []
@@ -196,12 +199,20 @@ class TestOnlyFixedReplyModel:
     def respond(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         with self.lock:
             self.task_turns.append(messages)
-            turn = len(self.task_turns)
-        # The loop's finish tool: a turn that answers without an action is the person's reply. Its
-        # call id is the turn's, as a provider's is, so a later turn's call is not taken for one
-        # already consumed.
-        return [{"type": "tool_use", "id": f"toolu_e2e_finish_{turn}", "name": FINISH,
-                 "input": {"reply": FIXED_REPLY, "done": True}}]
+        # Each round answers the one before: the n-th round of a turn makes the n-th call, and the
+        # round after the last answers in words, which is the person's reply.
+        made = sum(1 for message in messages if message.get("role") == "assistant")
+        if made < len(TOOL_TURNS):
+            name, arguments = TOOL_TURNS[made]
+            return [{"type": "tool_use", "id": f"toolu_e2e_{len(self.task_turns)}", "name": name,
+                     "input": arguments}]
+        return [{"type": "text", "text": FIXED_REPLY}]
+
+    def tool_answers(self) -> list[str]:
+        """What the tools answered the turn, as the model read it on its last round."""
+        with self.lock:
+            last = self.task_turns[-1] if self.task_turns else []
+        return [str(message.get("content")) for message in last if message.get("role") == "tool"]
 
     @property
     def port(self) -> int:
@@ -703,7 +714,13 @@ def check_ask(session: Session, model: TestOnlyFixedReplyModel) -> dict:
                               f"{[m['text'][:80] for m in said(session)]}\n{session.log_tail()}")
     if refused := refusals(session):
         raise Failed("the ask or the run's own steps were refused:\n" + "\n".join(refused[:8]))
+    answers = model.tool_answers()
+    if len(answers) != len(TOOL_TURNS):
+        raise Failed(f"the model read {len(answers)} tool answers, not {len(TOOL_TURNS)}: {answers}")
+    if "notes" not in answers[0]:
+        raise Failed(f"tilo_ls did not list Notes: {answers[0][:400]}")
     return {"send": row["id"], "turns": len(model.task_turns),
+            "tools": [answer[:160] for answer in answers],
             "answer": answer["text"][:120]}
 
 

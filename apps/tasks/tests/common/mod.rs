@@ -6,7 +6,7 @@ use tasks::App;
 use ui::prelude::*;
 
 /// The issues the app's parts keep, as its store holds them.
-pub struct Held(Vec<(u64, std::rc::Rc<tasks::IssuePart>)>);
+pub struct Held(Vec<(u64, std::rc::Rc<tasks::IssueList>)>);
 
 impl Held {
     pub fn issues(&self) -> tasks::Issues {
@@ -49,10 +49,10 @@ impl Held {
 }
 
 pub fn held(app: &TestApp<App>) -> Held {
-    Held(app.chain_parts::<tasks::IssuePart>())
+    Held(app.chain_parts::<tasks::IssueList>())
 }
 
 /// Where the issues' actions are published: the chain of their parts.
 pub fn chain() -> String {
-    ui::resource::chain_resource_id(&tasks::part::chain())
+    ui::resource::chain_resource_id(&tasks::issue_list::chain())
 }

@@ -45,6 +45,8 @@ hex.workspace = true
 uuid.workspace = true
 
 # Browser peers mint ids from JavaScript's entropy source.
+tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
+
 [target.'cfg(target_family = "wasm")'.dependencies]
 uuid = { workspace = true, features = ["js"] }
 

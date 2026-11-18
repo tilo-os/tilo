@@ -10,7 +10,7 @@ use launcher::{
         TargetProjectionAdmission, TargetProjectionAuthority, TargetProjectionCredentials,
         TargetProjectionEndpoint,
     },
-    run::{IdentitySource, LaunchMode, RunOptions},
+    run::{LaunchMode, RunOptions},
 };
 use runtime_fs::{
     DirEntry, EntryKind, Metadata, OpenMode,
@@ -162,7 +162,6 @@ fn launch(service: TrustedCaptureService, worker: &Worker, argument: &str) -> Se
             expected_package_hash: Some(service.package_hash.clone()),
             app_id: Some(owned_service::RETAINED_IO_PACKAGE_ID.into()),
             data_home: Some(worker.working.path().into()),
-            identity: IdentitySource::None,
             mode: LaunchMode::Service {
                 passthrough_argv: vec![argument.into()],
             },

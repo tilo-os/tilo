@@ -1,12 +1,12 @@
 //! Speaker groups: several outputs on a person's certified devices playing as
 //! one stereo pair, surround set, or set of points around a room.
 //!
-//! A group is authored by the device that created it (its leader) and roams
-//! in that device's fabric snapshot, exactly like a display placement: no
-//! other device can forge or edit it. Membership is the other half. Each
+//! A group is authored by the device that created it (its leader) and kept
+//! in that device's own part of the person's store: no other device can
+//! forge or edit it. Membership is the other half. Each
 //! member device asks its own user once ("Join 'Living room' as the right
 //! speaker?") and, on approval, authors a [`SpeakerMembership`] in *its* own
-//! snapshot. A member plays for a group only while both records agree on the
+//! part. A member plays for a group only while both records agree on the
 //! group, the output and the role, so changing a member's role or output asks
 //! again, and leaving, deleting the group or disabling media continuity ends
 //! it.
@@ -14,7 +14,7 @@
 //! Calibration may listen with the microphones of any of the person's
 //! devices, not only the leader's. Each such device asks its own user once
 //! ("Let the shell use this microphone to calibrate 'Living room'?") and, on
-//! approval, authors a [`SpeakerListener`] in its own snapshot, bound to the
+//! approval, authors a [`SpeakerListener`] in its own part, bound to the
 //! group, its leader and that one microphone.
 //!
 //! Outputs are named by [`EndpointSelector`]s the owning compositor mints from
@@ -524,7 +524,7 @@ impl SpeakerListener {
     }
 }
 
-/// The speaker-group slice of one device's fabric snapshot.
+/// What one device keeps of speaker groups in its part of the person's store.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpeakerFabricState {
     /// Outputs and microphones this device offers, named by selector.
@@ -545,7 +545,7 @@ impl SpeakerFabricState {
             || self.memberships.len() > MAX_SPEAKER_MEMBERSHIPS
             || self.listeners.len() > MAX_SPEAKER_LISTENERS
         {
-            return Err(FabricError::SnapshotTooLarge);
+            return Err(FabricError::TooLarge);
         }
         for endpoint in &self.endpoints {
             endpoint.validate()?;
@@ -1042,6 +1042,6 @@ mod tests {
                 .collect(),
             ..SpeakerFabricState::default()
         };
-        assert_eq!(crowded.validate(&owner), Err(FabricError::SnapshotTooLarge));
+        assert_eq!(crowded.validate(&owner), Err(FabricError::TooLarge));
     }
 }

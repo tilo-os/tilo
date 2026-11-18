@@ -23,9 +23,9 @@ use crate::chat::chat;
 use crate::effects::ChatEffect;
 use crate::identity::LocalIdentity;
 #[cfg(feature = "samples")]
-use crate::messages::chat_part;
+use crate::messages::chat_messages;
 #[cfg(feature = "samples")]
-use crate::parts::ChatPart;
+use crate::parts::ChatMessages;
 
 impl Chat {
     /// What search finds in the chat record: the workspace's channels,
@@ -33,7 +33,7 @@ impl Chat {
     /// the item it names.
     ///
     /// The messages are the messages' own document to offer
-    /// ([`ChatPart::search`](crate::parts::ChatPart::search)): they are kept
+    /// ([`ChatMessages::search`](crate::parts::ChatMessages::search)): they are kept
     /// in parts beside this resource, and a device that never opened Chat finds
     /// them there.
     #[must_use]
@@ -202,7 +202,7 @@ impl ResourceApp for ChatShell {
 
     /// The chat's messages, kept in parts beside the workspace's chat resource.
     fn resources(resources: &mut ui::framework::Resources<'_>) {
-        resources.chain::<crate::parts::ChatPart>();
+        resources.chain::<crate::parts::ChatMessages>();
         // What the person is writing and has not sent: their own document in
         // the workspace, so a window that shows Chat and a device that only
         // reads its resources find the drafts alike.
@@ -271,7 +271,7 @@ impl ResourceApp for ChatShell {
         // Where an answer to a question says it was pressed.
         app.device = cx.device().map(str::to_owned);
         app.attach_framework(cx.dispatcher());
-        if let Some(chain) = cx.chain::<crate::parts::ChatPart>() {
+        if let Some(chain) = cx.chain::<crate::parts::ChatMessages>() {
             app.attach_chain(chain);
         }
         if live {
@@ -409,8 +409,8 @@ impl ResourceApp for ChatShell {
 pub(crate) fn part_scenario(
     scenario: Option<&str>,
 ) -> (
-    Option<ChatPart>,
-    Vec<(ui::tilo_resource::MemberId, Invoke<ChatPart>)>,
+    Option<ChatMessages>,
+    Vec<(ui::tilo_resource::MemberId, Invoke<ChatMessages>)>,
 ) {
     let me = crate::model::ME;
     if scenario == Some("starter") {
@@ -423,7 +423,7 @@ pub(crate) fn part_scenario(
             // Three days of the design crit before the conversation the demo
             // shows, so a capture of the list is a capture of a thread no window
             // holds.
-            let mut part = ChatPart::default();
+            let mut part = ChatMessages::default();
             for (id, message) in long_thread_posts(me) {
                 part.messages.push(id, message);
             }
@@ -504,7 +504,7 @@ fn long_thread_posts(me: &str) -> Vec<(Id, crate::chat::Message)> {
 
 /// Provider output fixtures use the same durable action as a live host stream.
 #[cfg(feature = "samples")]
-pub(crate) fn provider_stream_scenario(scenario: &str) -> Vec<Invoke<ChatPart>> {
+pub(crate) fn provider_stream_scenario(scenario: &str) -> Vec<Invoke<ChatMessages>> {
     use crate::agent_stream::{AgentFinish, AgentOutput, AgentStreamEvent};
     let mut events = vec![
         AgentOutput::Progress { label: "Reading the selected document".into() },
@@ -533,7 +533,7 @@ pub(crate) fn provider_stream_scenario(scenario: &str) -> Vec<Invoke<ChatPart>> 
         .into_iter()
         .enumerate()
         .map(|(index, event)| {
-            ChatPart::STREAM_OUTPUT.with(chat_part::StreamOutput {
+            ChatMessages::STREAM_OUTPUT.with(chat_messages::StreamOutput {
                 channel: Id::from_raw("c_crit"),
                 reply: "shot_agent_stream".into(),
                 name: ui::tilo_resource::NonBlank::parse(&crate::i18n::t("chat-model-author")),
@@ -631,14 +631,14 @@ pub(crate) fn agent_summons() -> (Id, crate::chat::Message) {
 /// On the demo conversation holding [`agent_summons`]: the agent's resource
 /// of the work it took on, by the agent.
 #[cfg(feature = "samples")]
-pub(crate) fn agent_work_part_steps() -> Vec<(ui::tilo_resource::MemberId, Invoke<ChatPart>)> {
+pub(crate) fn agent_work_part_steps() -> Vec<(ui::tilo_resource::MemberId, Invoke<ChatMessages>)> {
     vec![(demo_agent(), agent_work(&Id::from_raw(DEMO_SUMMONS)))]
 }
 
 /// The demo agent's resource of the work `summons` asked of it.
 #[cfg(feature = "samples")]
-pub(crate) fn agent_work(summons: &Id) -> Invoke<ChatPart> {
-    ChatPart::RECORD_WORK.with(chat_part::RecordWork {
+pub(crate) fn agent_work(summons: &Id) -> Invoke<ChatMessages> {
+    ChatMessages::RECORD_WORK.with(chat_messages::RecordWork {
         message: summons.clone(),
         work: crate::chat::WorkUpdate {
             state: "doing".into(),

@@ -386,12 +386,13 @@ impl Directory {
             .storage
             .open_read(OsStr::new("keypair.bin"), Privacy::Inherit)?;
         let before = file.metadata()?;
-        let key = tilo_user_identity::persist::read_device_key_from_file(&file).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "Current device key is unavailable",
-            )
-        })?;
+        let key =
+            tilo_device_identity::persist::read_device_key_from_file(&file).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "Current device key is unavailable",
+                )
+            })?;
         let after = file.metadata()?;
         let named = self
             .storage

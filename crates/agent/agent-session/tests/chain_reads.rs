@@ -97,13 +97,13 @@ fn read(
     .unwrap_or_else(|| panic!("{resource} answers what it read"))
 }
 
-/// The messages one page of a read answers, by the name each is shown under.
+/// The messages one page of a read answers, by their text.
 fn names(page: &serde_json::Value) -> Vec<String> {
     page.get("messages")
         .and_then(serde_json::Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|message| message.get("name").and_then(serde_json::Value::as_str))
+        .filter_map(|message| message["value"]["text"].as_str())
         .map(str::to_owned)
         .collect()
 }
@@ -118,11 +118,11 @@ fn rows_of(surveyed: &[CatalogueRow], query: &CatalogueQuery) -> Vec<CatalogueRo
 fn a_chat_reads_and_lists_the_messages_of_every_part_its_host_holds() {
     let mut record = founded();
     let held = held(&mut record);
-    // One part takes the messages posted while it is the head, until it holds
-    // a part's worth of text: the posts that fill it, and then the part the
-    // chain starts next, which is the head from then on.
+    // One part takes the messages posted while it is the head, as long as
+    // they fit in it: the post that would overflow it starts the next part,
+    // which is the head from then on.
     let mut filled = 0;
-    while filled * chat::chat::MAX_MESSAGE_TEXT_BYTES <= chat::parts::PART_TEXT_BYTES {
+    while filled * chat::chat::MAX_MESSAGE_TEXT_BYTES <= ui::framework::PART_BYTES {
         let text = format!(
             "{filled}: {}",
             "x".repeat(chat::chat::MAX_MESSAGE_TEXT_BYTES.saturating_sub(4))
@@ -156,7 +156,7 @@ fn a_chat_reads_and_lists_the_messages_of_every_part_its_host_holds() {
     let newest = at("second of the newest part");
     let newest_part = at("first of the newest part");
     let oldest_part = at("0: ");
-    let filled_part = at(&format!("{}: ", filled.saturating_sub(1)));
+    let filled_part = at(&format!("{}: ", filled.saturating_sub(2)));
     assert!(
         newest.min(newest_part) < oldest_part.min(filled_part),
         "the newest part's messages come first, then the part before: \

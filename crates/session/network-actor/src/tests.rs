@@ -160,7 +160,7 @@ tilo_test_env::scenario! {
             }),
         };
         let encoded = postcard::to_allocvec(&wire).unwrap();
-        assert!(encoded.len() < crate::fabric::MAX_FABRIC_CHECKPOINT_BYTES);
+        assert!(encoded.len() < crate::fabric::MAX_FABRIC_FRAME_BYTES);
         let decoded: PersonalFabricWireFrame = postcard::from_bytes(&encoded).unwrap();
         let PersonalFabricPayload::NearbyTransfer(PersonalNearbyTransferFrame::Chunk {
             transfer_id,
@@ -370,16 +370,16 @@ async fn two_devices_keep_one_connection_for_their_session_both_ways() {
         .await;
         cmd.send(NetCmd::PublishPersonalFabric {
             user_public_key: root,
-            payload: PersonalFabricPayload::Request,
+            payload: PersonalFabricPayload::Presence(Box::default()),
         })
         .await
         .unwrap();
-        wait_for_event("the other device's fabric request", rx, |event| {
+        wait_for_event("the other device's presence", rx, |event| {
             matches!(
                 event,
                 NetEvent::PersonalFabric {
                     peer,
-                    payload: PersonalFabricPayload::Request,
+                    payload: PersonalFabricPayload::Presence(_),
                     ..
                 } if *peer == from
             )
@@ -474,8 +474,8 @@ impl Drop for Sleeper {
 
 /// A device asleep for longer than its connection's idle timeout loses its
 /// session, and its sibling drops it. On waking the two are linked again
-/// soon, each side hears the other join, and what the device asks for on
-/// that join reaches its sibling.
+/// soon, each side hears the other join, and what the device says of itself
+/// on that join reaches its sibling.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_device_asleep_past_the_idle_timeout_is_linked_again_on_waking() {
     let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -518,16 +518,16 @@ async fn a_device_asleep_past_the_idle_timeout_is_linked_again_on_waking() {
     b.cmd
         .send(NetCmd::PublishPersonalFabric {
             user_public_key: b.root,
-            payload: PersonalFabricPayload::Request,
+            payload: PersonalFabricPayload::Presence(Box::default()),
         })
         .await
         .unwrap();
-    wait_for_event("B's request after waking", &mut a.rx, |event| {
+    wait_for_event("B's presence after waking", &mut a.rx, |event| {
         matches!(
             event,
             NetEvent::PersonalFabric {
                 peer,
-                payload: PersonalFabricPayload::Request,
+                payload: PersonalFabricPayload::Presence(_),
                 ..
             } if *peer == b_id
         )
@@ -587,16 +587,16 @@ async fn a_restarted_device_hears_its_siblings_fabric_at_once() {
         .cmd
         .send(NetCmd::PublishPersonalFabric {
             user_public_key: a.root,
-            payload: PersonalFabricPayload::Request,
+            payload: PersonalFabricPayload::Presence(Box::default()),
         })
         .await
         .unwrap();
-    wait_for_event("the restarted device's request", &mut a.rx, |event| {
+    wait_for_event("the restarted device's presence", &mut a.rx, |event| {
         matches!(
             event,
             NetEvent::PersonalFabric {
                 peer,
-                payload: PersonalFabricPayload::Request,
+                payload: PersonalFabricPayload::Presence(_),
                 ..
             } if *peer == b_id
         )
@@ -633,24 +633,24 @@ async fn personal_fabric_unknown_extension_preserves_following_streams() {
     let connection = a.connect(b.addr(), FIXTURE_ALPN).await.unwrap();
     let frame = PersonalFabricWireFrame {
         user_public_key: [0xA5; 32],
-        payload: PersonalFabricPayload::Snapshot(vec![1, 2, 3]),
+        payload: PersonalFabricPayload::Presence(Box::default()),
     };
     let valid = postcard::to_allocvec(&frame).unwrap();
-    assert_eq!(valid[32], 1, "the legacy Snapshot payload tag stays fixed");
+    assert_eq!(valid[32], 0, "the first payload kind's tag stays fixed");
     let mut future = valid.clone();
-    future[32] = 9; // First unsupported tag after optional connector observations.
+    future[32] = 9; // The first payload kind this version does not know.
     assert!(postcard::from_bytes::<PersonalFabricWireFrame>(&future).is_err());
     for bytes in [&future, &valid] {
         let (mut stream, _) = connection.open_bi().await.unwrap();
         stream.write_all(bytes).await.unwrap();
         stream.finish().unwrap();
     }
-    let event = tilo_test_env::within("valid checkpoint after unknown extension", events.recv())
+    let event = tilo_test_env::within("the frame after an unknown kind", events.recv())
         .await
         .unwrap();
     assert!(matches!(event, InternalEvent::PersonalFabric {
-        payload: PersonalFabricPayload::Snapshot(bytes), ..
-    } if bytes == vec![1, 2, 3]));
+        payload: PersonalFabricPayload::Presence(presence), ..
+    } if presence.as_ref() == &crate::fabric::DevicePresence::default()));
     connection.close(0u32.into(), b"fixture complete");
     router.shutdown().await.unwrap();
     a.close().await;
@@ -1041,7 +1041,7 @@ async fn personal_fabric_reaches_members_and_streams_verified_media() {
         cmd_a
             .send(NetCmd::PublishPersonalFabric {
                 user_public_key: root,
-                payload: PersonalFabricPayload::Snapshot(vec![1, 2, 3]),
+                payload: PersonalFabricPayload::Presence(Box::default()),
             })
             .await
             .unwrap();
@@ -1053,9 +1053,10 @@ async fn personal_fabric_reaches_members_and_streams_verified_media() {
                 event,
                 NetEvent::PersonalFabric {
                     user_public_key,
-                    payload: PersonalFabricPayload::Snapshot(bytes),
+                    payload: PersonalFabricPayload::Presence(presence),
                     ..
-                } if user_public_key == root && bytes == vec![1, 2, 3]
+                } if user_public_key == root
+                    && presence.as_ref() == &crate::fabric::DevicePresence::default()
             ) {
                 break;
             }

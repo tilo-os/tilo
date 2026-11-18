@@ -33,7 +33,7 @@ fn a_reaction_on_another_replica_converges_and_shows_in_the_header() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
     app.call_on(
-        &notes::part::chain_resource(),
+        &notes::note_list::chain_resource(),
         "new-note",
         serde_json::json!({ "title": "Plan" }),
     )
@@ -46,8 +46,8 @@ fn a_reaction_on_another_replica_converges_and_shows_in_the_header() {
 
     // Bob reacts on his replica.
     let (part, peer) = crate::framework_support::peer_part(&app, page);
-    let mut bob = Replica::<notes::PagePart>::from_doc(peer).as_author("bob");
-    let field = notes::PagePart::paths()
+    let mut bob = Replica::<notes::NoteList>::from_doc(peer).as_author("bob");
+    let field = notes::NoteList::paths()
         .pages
         .item(&notes::notebook::page_id(page))
         .reactions;

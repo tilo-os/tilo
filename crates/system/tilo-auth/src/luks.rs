@@ -1,9 +1,12 @@
-//! A person's system-volume keyslot and the `tilo-signin` token that mirrors
-//! their record into the LUKS2 header, where the boot can read it before the
-//! root is open; and the device's `tilo-comforts` token, which carries the
-//! login screens' comforts to the boot (docs/security/sign-in.md §3.4).
+//! The system volume's LUKS2 header, and the one place that reads and writes
+//! it with cryptsetup: a person's keyslot and the `tilo-signin` token that
+//! mirrors their record, where the boot can read it before the root is open;
+//! the device's `tilo-comforts` token, which carries the login screens'
+//! comforts to the boot (docs/security/sign-in.md §3.4); and the
+//! `tilo-sibling-unlock` token with its keyslot (docs/device-reach.md).
 
 use crate::record::{Factor, Record, SecretKind};
+use crate::sibling::token::{self as sibling_token, Token as SiblingToken};
 use crate::wrapper::{Entry, Kind, Wrapper};
 use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -109,6 +112,69 @@ pub fn tokens(runner: &dyn Runner, device: &Path) -> Result<Vec<(u32, SigninToke
     }
     found.sort_by_key(|(_, t)| t.uid);
     Ok(found)
+}
+
+/// The volume's sibling-unlock token; `None` when it has no sibling factor.
+///
+/// # Errors
+///
+/// The header cannot be read, or carries a malformed or more than one
+/// sibling-unlock token.
+pub fn sibling(runner: &dyn Runner, device: &Path) -> Result<Option<SiblingToken>> {
+    Ok(sibling_token::find(&metadata(runner, device)?)?.map(|(_, token)| token))
+}
+
+/// Write the sibling-unlock token, replacing the one there is in one header
+/// write, so a failure leaves the old one in place rather than none.
+pub fn write_sibling(
+    runner: &dyn Runner,
+    ws: &Workspace,
+    device: &Path,
+    token: &SiblingToken,
+) -> Result<u32> {
+    let existing = sibling_token::find(&metadata(runner, device)?)?.map(|(id, _)| id);
+    let json = zeroize::Zeroizing::new(
+        serde_json::to_vec(token).context("encoding the sibling-unlock token")?,
+    );
+    import(
+        runner,
+        ws,
+        device,
+        existing,
+        &json,
+        "writing the sibling-unlock token",
+    )
+}
+
+/// Remove the sibling-unlock token, if there is one.
+pub fn remove_sibling(runner: &dyn Runner, device: &Path) -> Result<()> {
+    let Some((id, _)) = sibling_token::find(&metadata(runner, device)?)? else {
+        return Ok(());
+    };
+    let id = id.to_string();
+    require(
+        runner,
+        "cryptsetup",
+        &argv!["token", "remove", "--token-id", &id, device.as_os_str()],
+        "removing the sibling-unlock token",
+    )?;
+    Ok(())
+}
+
+/// The volume's UUID as its 16 bytes.
+pub fn uuid(runner: &dyn Runner, device: &Path) -> Result<[u8; 16]> {
+    let out = require(
+        runner,
+        "cryptsetup",
+        &argv!["luksUUID", device.as_os_str()],
+        "reading the volume's UUID",
+    )?;
+    let text = out.stdout_utf8();
+    let digits: String = text.trim().chars().filter(|c| *c != '-').collect();
+    let mut bytes = [0_u8; 16];
+    hex::decode_to_slice(&digits, &mut bytes)
+        .with_context(|| format!("{:?} is not a UUID", text.trim()))?;
+    Ok(bytes)
 }
 
 /// Write `token`, replacing the person's existing `tilo-signin` token if
@@ -266,27 +332,37 @@ pub fn add_slot(
     };
     let slot = *slot;
     if !verify_passphrase(runner, ws, device, passphrase, Some(slot))? {
-        let undo = ws.put("signin-undo.key", passphrase)?;
-        let slot_s = slot.to_string();
-        let _ = runner.run(
-            "cryptsetup",
-            &argv![
-                "luksKillSlot",
-                "--batch-mode",
-                "--key-file",
-                undo.as_os_str(),
-                device.as_os_str(),
-                &slot_s,
-            ],
-            None,
-        );
-        let _ = std::fs::remove_file(&undo);
+        let _ = kill_slot(runner, ws, device, slot, Some(passphrase));
         bail!(
             "the new keyslot {slot} does not open {}; removed it again",
             device.display()
         );
     }
     Ok(slot)
+}
+
+/// Remove `slot`, with a passphrase of the volume where the caller has one.
+pub fn kill_slot(
+    runner: &dyn Runner,
+    ws: &Workspace,
+    device: &Path,
+    slot: u32,
+    passphrase: Option<&[u8]>,
+) -> Result<()> {
+    let auth_file = passphrase.map(|p| ws.put("kill-auth.key", p)).transpose()?;
+    let slot_s = slot.to_string();
+    let mut args = argv!["luksKillSlot", "--batch-mode"];
+    if let Some(file) = &auth_file {
+        args.push(OsStr::new("--key-file"));
+        args.push(file.as_os_str());
+    }
+    args.push(device.as_os_str());
+    args.push(OsStr::new(&slot_s));
+    let result = require(runner, "cryptsetup", &args, "removing a keyslot");
+    if let Some(file) = &auth_file {
+        let _ = std::fs::remove_file(file);
+    }
+    result.map(drop)
 }
 
 pub fn opens(

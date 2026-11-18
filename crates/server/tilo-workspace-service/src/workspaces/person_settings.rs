@@ -48,7 +48,6 @@ use tilo_actions::remote::{
 };
 use tilo_mail_session::{Attachment, Leaving};
 use tilo_net::proxy::host::Destinations;
-use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
 
 use super::person_models::kept_location;
@@ -449,7 +448,7 @@ impl Workspaces {
                         {
                             Ok(sent)
                         } else {
-                            self.ask_before_sending(person, agent.agent, caller, &shown)
+                            self.ask_person(person, shown.question(agent.agent, caller))
                                 .await?;
                             self.send_in_workspace(
                                 Some(agent.workspace),
@@ -465,33 +464,6 @@ impl Workspaces {
                 answer(&sent)
             }
             _ => Err(ActionCallError::UnknownAction),
-        }
-    }
-
-    /// Put a message an agent would send to its person and wait for their
-    /// answer: only their allowing it lets it leave. A host with nobody to
-    /// ask through, and a question nobody answered, say that the person's
-    /// confirmation is still wanted.
-    async fn ask_before_sending(
-        &self,
-        person: [u8; 32],
-        agent: &str,
-        caller: &Caller,
-        shown: &sending::Shown,
-    ) -> Result<(), ActionCallError> {
-        let asker = self
-            .inner
-            .asks_people
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-            .ok_or_else(ActionCallError::confirmation_required)?;
-        match asker.ask(person, shown.question(agent, caller)).await {
-            Ok(ConfirmationAnswer::AllowOnce) => Ok(()),
-            Ok(ConfirmationAnswer::Deny) => Err(ActionCallError::Refused {
-                reason: "the person did not allow it".into(),
-            }),
-            Err(_) => Err(ActionCallError::confirmation_required()),
         }
     }
 
@@ -1474,23 +1446,22 @@ async fn mark_with(session: Session, root: &Path, marking: MarkMail) -> Result<(
 }
 
 /// The providers the person keeps, their models and what runs where.
-pub(super) fn providers(root: &Path) -> Result<ModelProviders, String> {
+pub(super) fn providers(root: &Path) -> ModelProviders {
     let config = provider_config(root);
-    let vault = credentials(root)?;
-    Ok(providers_of(&config, &vault))
+    providers_of(&config, &ProviderKeys::of(root))
 }
 
-/// `config`'s providers as the pane reads them, with `vault` saying which
+/// `config`'s providers as the pane reads them, with `keys` saying which
 /// keys are kept.
 fn providers_of(
     config: &agent_provider_config::ProviderConfig,
-    vault: &accounts::AccountCredentials,
+    keys: &ProviderKeys,
 ) -> ModelProviders {
     ModelProviders {
         providers: config
             .profiles
             .iter()
-            .map(|profile| view_of(profile, vault))
+            .map(|profile| view_of(profile, keys))
             .collect(),
         default_provider: config.default_profile.clone(),
         assignments: config
@@ -1508,7 +1479,7 @@ fn providers_of(
 /// One provider as the pane reads it.
 pub(super) fn view_of(
     profile: &agent_provider_config::ProviderProfile,
-    vault: &accounts::AccountCredentials,
+    keys: &ProviderKeys,
 ) -> ProviderView {
     ProviderView {
         id: profile.id.clone(),
@@ -1522,9 +1493,7 @@ pub(super) fn view_of(
             }
         },
         endpoint: profile.endpoint.clone(),
-        configured: vault
-            .get(&key_id(&profile.id))
-            .is_some_and(|secret| !secret.password.is_empty()),
+        configured: keys.kept(profile),
         models: profile
             .models
             .iter()
@@ -1556,9 +1525,72 @@ pub(super) fn save_provider_config(
     config.save_in(&*store).map_err(|error| error.to_string())
 }
 
-/// The vault id a provider's key is kept under, apart from every account's.
-pub(super) fn key_id(provider: &str) -> accounts::AccountId {
-    accounts::AccountId::from(format!("provider:{provider}"))
+/// The person's provider keys in their vault, each kept as a Tilo computer
+/// keeps it: bound to its provider's endpoint origin
+/// ([`accounts::provider_api_key`]), so a key is only ever sent where it was
+/// entered for.
+pub(super) struct ProviderKeys(accounts::ServiceCredentials);
+
+impl ProviderKeys {
+    /// The keys in the person's vault under `root`.
+    pub(super) fn of(root: &Path) -> Self {
+        Self(accounts::ServiceCredentials::open_in(root))
+    }
+
+    /// The key `profile` is asked with: none where none is kept for its
+    /// endpoint's origin.
+    pub(super) fn get(
+        &self,
+        profile: &agent_provider_config::ProviderProfile,
+    ) -> Result<Option<zeroize::Zeroizing<String>>, String> {
+        let (reference, authorization) = binding(profile)?;
+        match self.0.resolve(&reference, &authorization) {
+            Ok(key) => Ok(key.filter(|key| !key.is_empty())),
+            // Kept for another origin: never sent here.
+            Err(accounts::secrets::BrokerError::Denied) => Ok(None),
+            Err(error) => Err(key_error(&error)),
+        }
+    }
+
+    /// Whether a key is kept for `profile`.
+    pub(super) fn kept(&self, profile: &agent_provider_config::ProviderProfile) -> bool {
+        self.get(profile).is_ok_and(|key| key.is_some())
+    }
+
+    pub(super) fn put(
+        &self,
+        profile: &agent_provider_config::ProviderProfile,
+        key: &str,
+    ) -> Result<(), String> {
+        let (reference, authorization) = binding(profile)?;
+        self.0
+            .store(&reference, &authorization, key)
+            .map_err(|error| key_error(&error))
+    }
+
+    fn remove(&self, profile: &agent_provider_config::ProviderProfile) -> Result<(), String> {
+        let (reference, authorization) = binding(profile)?;
+        self.0
+            .remove(&reference, &authorization)
+            .map(drop)
+            .map_err(|error| key_error(&error))
+    }
+}
+
+fn binding(
+    profile: &agent_provider_config::ProviderProfile,
+) -> Result<(accounts::CredentialRef, accounts::ServiceAuthorization), String> {
+    accounts::provider_api_key(&profile.id, &profile.endpoint)
+        .map_err(|_| "A provider's endpoint is a URL".to_owned())
+}
+
+fn key_error(error: &accounts::secrets::BrokerError) -> String {
+    match error {
+        accounts::secrets::BrokerError::Denied => {
+            "A key kept for this provider belongs to another address".to_owned()
+        }
+        _ => "The vault cannot be read".to_owned(),
+    }
 }
 
 /// Keep the provider `adding` names, at an address this host calls
@@ -1591,34 +1623,32 @@ pub(super) fn add_provider(
         enabled: true,
         ..Default::default()
     };
-    let view = view_of(&profile, &credentials(root)?);
+    let view = view_of(&profile, &ProviderKeys::of(root));
     config.profiles.push(profile);
     save_provider_config(root, &config)?;
     Ok(view)
 }
 
 pub(super) fn set_key(root: &Path, setting: SetKey) -> Result<ProviderView, String> {
-    if setting.key.trim().is_empty() {
+    let SetKey { provider, key } = setting;
+    let key = zeroize::Zeroizing::new(key);
+    if key.trim().is_empty() {
         return Err("An API key cannot be empty".into());
     }
     let mut config = provider_config(root);
     let profile = config
         .profiles
         .iter_mut()
-        .find(|profile| profile.id == setting.provider)
+        .find(|profile| profile.id == provider)
         .ok_or_else(|| "That provider is not kept here".to_owned())?;
     profile.credential = Some(agent_provider_config::SecretReference::provider_api_key(
         &profile.id,
     ));
     let profile = profile.clone();
+    let keys = ProviderKeys::of(root);
+    keys.put(&profile, key.trim())?;
     save_provider_config(root, &config)?;
-    let mut vault = credentials(root)?;
-    vault.put(
-        &key_id(&setting.provider),
-        &accounts::Secret::password(setting.key),
-    );
-    vault.try_save()?;
-    Ok(view_of(&profile, &vault))
+    Ok(view_of(&profile, &keys))
 }
 
 pub(super) fn remove_key(root: &Path, provider: &str) -> Result<ProviderView, String> {
@@ -1628,20 +1658,21 @@ pub(super) fn remove_key(root: &Path, provider: &str) -> Result<ProviderView, St
         .iter()
         .find(|profile| profile.id == provider)
         .ok_or_else(|| "That provider is not kept here".to_owned())?;
-    let mut vault = credentials(root)?;
-    if vault.remove(&key_id(provider)) {
-        vault.try_save()?;
-    }
-    Ok(view_of(profile, &vault))
+    let keys = ProviderKeys::of(root);
+    keys.remove(profile)?;
+    Ok(view_of(profile, &keys))
 }
 
 pub(super) fn remove_provider(root: &Path, provider: &str) -> Result<ModelProviders, String> {
     let mut config = provider_config(root);
-    let before = config.profiles.len();
+    let removed = config
+        .profiles
+        .iter()
+        .find(|profile| profile.id == provider)
+        .cloned()
+        .ok_or_else(|| "That provider is not kept here".to_owned())?;
+    ProviderKeys::of(root).remove(&removed)?;
     config.profiles.retain(|profile| profile.id != provider);
-    if config.profiles.len() == before {
-        return Err("That provider is not kept here".into());
-    }
     if config.default_profile.as_deref() == Some(provider) {
         config.default_profile = None;
     }
@@ -1649,11 +1680,7 @@ pub(super) fn remove_provider(root: &Path, provider: &str) -> Result<ModelProvid
         .interaction_models
         .retain(|_, chosen| chosen.profile != provider);
     save_provider_config(root, &config)?;
-    let mut vault = credentials(root)?;
-    if vault.remove(&key_id(provider)) {
-        vault.try_save()?;
-    }
-    providers(root)
+    Ok(providers(root))
 }
 
 pub(super) fn set_assignment(
@@ -1672,7 +1699,7 @@ pub(super) fn set_assignment(
         .set_interaction_model(kind, chosen)
         .map_err(str::to_owned)?;
     save_provider_config(root, &config)?;
-    providers(root)
+    Ok(providers(root))
 }
 
 #[cfg(test)]
@@ -1750,18 +1777,13 @@ mod tests {
                 file.display()
             );
         }
-        let listed = providers(root.path()).expect("the providers read back");
+        let listed = providers(root.path());
         let json = serde_json::to_string(&listed).unwrap();
         assert!(!json.contains("sk-live-secret"), "{json}");
         assert!(json.contains("\"configured\":true"), "{json}");
 
         remove_key(root.path(), &added.id).expect("the key is removed");
-        assert!(
-            !providers(root.path())
-                .expect("the providers read back")
-                .providers[0]
-                .configured
-        );
+        assert!(!providers(root.path()).providers[0].configured);
     }
 
     /// A provider removed takes its key with it, and its model choices stop
@@ -1789,12 +1811,48 @@ mod tests {
         .expect("the key is kept");
         let remaining = remove_provider(root.path(), &added.id).expect("the provider is removed");
         assert!(remaining.providers.is_empty());
+        let (reference, authorization) =
+            accounts::provider_api_key(&added.id, "https://api.anthropic.com").unwrap();
         assert!(
-            credentials(root.path())
+            !accounts::ServiceCredentials::open_in(root.path())
+                .status(&reference, &authorization)
                 .expect("the vault")
-                .get(&key_id(&added.id))
-                .is_none()
         );
+    }
+
+    /// A key is kept for its provider's endpoint origin, as a Tilo computer
+    /// keeps it: pointed elsewhere, the provider has no key until one is
+    /// entered for the new address, and the old one is never sent there.
+    #[test]
+    fn a_key_does_not_follow_an_edited_endpoint() {
+        let root = temp_root();
+        let added = add_provider(
+            root.path(),
+            &person_models::AddProvider {
+                name: "Mine".into(),
+                protocol: person_models::Protocol::OpenAiCompatible,
+                endpoint: "https://models.example.com/v1".into(),
+            },
+            Destinations::Public,
+        )
+        .expect("a provider is added");
+        let kept = set_key(
+            root.path(),
+            SetKey {
+                provider: added.id,
+                key: "sk-for-example".into(),
+            },
+        )
+        .expect("the key is kept");
+        assert!(kept.configured);
+
+        let mut config = provider_config(root.path());
+        config.profiles[0].endpoint = "https://elsewhere.example.net/v1".into();
+        save_provider_config(root.path(), &config).unwrap();
+        let moved = &provider_config(root.path()).profiles[0];
+        assert_eq!(ProviderKeys::of(root.path()).get(moved).unwrap(), None);
+        let listed = providers(root.path());
+        assert!(!listed.providers[0].configured, "{listed:?}");
     }
 
     /// A provider without a name or a URL is refused before anything is
@@ -1814,12 +1872,7 @@ mod tests {
             );
             assert!(refused.is_err(), "{name} {endpoint}");
         }
-        assert!(
-            providers(root.path())
-                .expect("the providers")
-                .providers
-                .is_empty()
-        );
+        assert!(providers(root.path()).providers.is_empty());
     }
 
     /// A mail account's stored metadata never holds its password; a removal

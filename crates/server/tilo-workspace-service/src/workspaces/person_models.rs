@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agent_provider_config::presets::{Authentication, Preset};
+use agent_provider_config::protocol::{ModelError, ModelRequest, ModelResponse};
 use agent_provider_config::{
     AgentModel, EndpointLocation, Interaction, ModelDescriptor, ProviderConfig, ProviderProfile,
     capabilities, transform,
@@ -38,14 +39,16 @@ use tilo_user_identity::DeviceCert;
 
 use super::Workspaces;
 use super::person_settings::{
-    add_provider, answer, argument, credentials, key_id, provider_argument, provider_config,
-    providers, remove_key, remove_provider, save_provider_config, set_assignment, set_key, view_of,
+    ProviderKeys, add_provider, answer, argument, provider_argument, provider_config, providers,
+    remove_key, remove_provider, save_provider_config, set_assignment, set_key, view_of,
 };
 
 /// The most of a provider's list of models read.
 const MAX_MODEL_LIST_BYTES: usize = 2 * 1024 * 1024;
 /// How long a provider may take to list its models.
 const MODEL_LIST_TIMEOUT: Duration = Duration::from_secs(20);
+/// The longest a window's turn of the person's model may take.
+const TURN_TIMEOUT: Duration = Duration::from_secs(120);
 /// The longest id a model named by hand has.
 const MAX_MODEL_ID_BYTES: usize = 256;
 
@@ -84,7 +87,11 @@ impl Workspaces {
         let root = self.person_settings_root(&person);
         let reach = self.model_reach();
         let changed = match request.target.address.action.as_str() {
-            person_models::LIST => return answer(&providers(&root)),
+            person_models::LIST => return answer(&Ok(providers(&root))),
+            person_models::ASK => {
+                let asked: ModelRequest = argument(request, "a model request")?;
+                return self.ask_person_model(person, workspace_id, &asked).await;
+            }
             person_models::ADD_PROVIDER => {
                 let adding: person_models::AddProvider = argument(request, "a provider to add")?;
                 answer(&add_provider(&root, &adding, reach.destinations))
@@ -138,6 +145,35 @@ impl Workspaces {
     }
 }
 
+impl Workspaces {
+    /// One turn of `person`'s own model, for a window of theirs that has no
+    /// model service of its own (a page): the model they chose for a request,
+    /// asked with the key their vault keeps for its provider, as every
+    /// model call this host makes for them is. The answer is the turn or
+    /// the reason there is none, as a model failure the window shows.
+    async fn ask_person_model(
+        &self,
+        person: [u8; 32],
+        workspace_id: Option<collab_types::WorkspaceId>,
+        asked: &ModelRequest,
+    ) -> Result<Value, ActionCallError> {
+        let mut model = self.person_model(person, Interaction::Request);
+        if let Some(workspace) = workspace_id {
+            model = model.working_in(workspace);
+        }
+        let now = tilo_clock::now();
+        let deadline = now.checked_add(TURN_TIMEOUT).unwrap_or(now);
+        let answered: Result<ModelResponse, ModelError> = model
+            .answer(asked, deadline, &mut |_| {})
+            .await
+            .map(|answer| answer.response)
+            .map_err(|refusal| refusal.model_error());
+        serde_json::to_value(answered).map_err(|error| ActionCallError::Refused {
+            reason: error.to_string(),
+        })
+    }
+}
+
 fn not_kept() -> String {
     "That provider is not kept here".to_owned()
 }
@@ -188,7 +224,7 @@ fn add_preset(root: &Path, adding: &AddPreset) -> Result<ProviderView, String> {
         .ok_or_else(|| "That provider is not one this host adds by name".to_owned())?;
     let profile = preset.profile();
     let mut config = provider_config(root);
-    let view = view_of(&profile, &credentials(root)?);
+    let view = view_of(&profile, &ProviderKeys::of(root));
     config.profiles.push(profile);
     save_provider_config(root, &config)?;
     Ok(view)
@@ -231,10 +267,7 @@ pub(super) async fn take_key(
         .into_iter()
         .find(|profile| profile.id == setting.provider)
         .ok_or_else(not_kept)?;
-    let kept = credentials(root)?
-        .get(&key_id(&profile.id))
-        .map(|secret| secret.password)
-        .filter(|kept| !kept.is_empty());
+    let kept = ProviderKeys::of(root).get(&profile)?;
     // The kept key typed again replaces nothing and asks nobody. The two
     // are compared by their hashes, which compare in constant time.
     let replaces = !setting.key.trim().is_empty()
@@ -308,15 +341,12 @@ async fn refresh_models(
         .into_iter()
         .find(|profile| profile.id == provider)
         .ok_or_else(not_kept)?;
-    let key = credentials(root)?
-        .get(&key_id(provider))
-        .map(|secret| secret.password)
-        .filter(|key| !key.is_empty());
-    let listed = match listing(&profile, key.as_deref(), reach).await {
+    let key = ProviderKeys::of(root).get(&profile)?;
+    let listed = match listing(&profile, key.as_deref().map(String::as_str), reach).await {
         Ok(listed) => listed,
         Err(problem) => {
             return Ok(ListedModels {
-                provider: view_of(&profile, &credentials(root)?),
+                provider: view_of(&profile, &ProviderKeys::of(root)),
                 problem: Some(problem),
             });
         }
@@ -335,7 +365,7 @@ async fn refresh_models(
     let kept = kept.clone();
     save_provider_config(root, &config)?;
     Ok(ListedModels {
-        provider: view_of(&kept, &credentials(root)?),
+        provider: view_of(&kept, &ProviderKeys::of(root)),
         problem: None,
     })
 }
@@ -483,7 +513,7 @@ fn add_model(root: &Path, adding: &AddModel) -> Result<ProviderView, String> {
     }
     let profile = profile.clone();
     save_provider_config(root, &config)?;
-    Ok(view_of(&profile, &credentials(root)?))
+    Ok(view_of(&profile, &ProviderKeys::of(root)))
 }
 
 /// Keep how hard `setting`'s provider is asked to think, or with no level,
@@ -533,7 +563,7 @@ fn set_reasoning(root: &Path, setting: &SetReasoning) -> Result<ProviderView, St
     };
     let profile = profile.clone();
     save_provider_config(root, &config)?;
-    Ok(view_of(&profile, &credentials(root)?))
+    Ok(view_of(&profile, &ProviderKeys::of(root)))
 }
 
 fn set_default(root: &Path, choosing: &SetDefault) -> Result<ModelProviders, String> {
@@ -553,7 +583,7 @@ fn set_default(root: &Path, choosing: &SetDefault) -> Result<ModelProviders, Str
     profile.default_model = Some(choosing.model.clone());
     config.default_profile = Some(choosing.provider.clone());
     save_provider_config(root, &config)?;
-    providers(root)
+    Ok(providers(root))
 }
 
 /// One model for every kind `choosing` names, or none of them changed.
@@ -575,7 +605,7 @@ fn set_assignments(root: &Path, choosing: SetAssignments) -> Result<ModelProvide
             .map_err(str::to_owned)?;
     }
     save_provider_config(root, &config)?;
-    providers(root)
+    Ok(providers(root))
 }
 
 #[cfg(test)]
@@ -749,7 +779,7 @@ mod tests {
             );
             assert!(refused.is_err(), "{slug} is not added by name on a host");
         }
-        assert_eq!(providers(root.path()).unwrap().providers.len(), 4);
+        assert_eq!(providers(root.path()).providers.len(), 4);
     }
 
     /// The host asks an OpenAI-compatible provider for its models with the
@@ -782,7 +812,7 @@ mod tests {
         assert!(!answered.contains(KEY), "{answered}");
 
         // The list is kept: a reading has it, and asks the provider nothing.
-        let read = providers(root.path()).unwrap();
+        let read = providers(root.path());
         assert_eq!(ids(&read.providers[0]), ["large", "small"]);
         assert!(fake.drain_requests().is_empty());
     }
@@ -835,7 +865,7 @@ mod tests {
         assert_eq!(refused.problem, Some(ListingProblem::KeyRefused));
         assert_eq!(ids(&refused.provider), ["large", "small"]);
         assert_eq!(
-            ids(&providers(root.path()).unwrap().providers[0]),
+            ids(&providers(root.path()).providers[0]),
             ["large", "small"]
         );
 
@@ -1031,7 +1061,7 @@ mod tests {
             );
             assert!(refused.is_err(), "{endpoint} is kept");
         }
-        assert!(providers(root.path()).unwrap().providers.is_empty());
+        assert!(providers(root.path()).providers.is_empty());
         // The operator's leave reaches the host's own network, there alone
         // without TLS.
         assert!(kept_location("http://127.0.0.1:8000/v1", Destinations::Any).is_ok());
@@ -1190,7 +1220,7 @@ mod tests {
         let root = temp_root();
         let (first, second) = chosen(root.path());
 
-        let read = providers(root.path()).unwrap();
+        let read = providers(root.path());
         assert_eq!(read.default_provider.as_deref(), Some(first.as_str()));
         let default_model = read
             .providers
@@ -1238,7 +1268,7 @@ mod tests {
     fn half_a_choice_changes_nothing_and_a_cleared_one_follows_the_default() {
         let root = temp_root();
         let (first, second) = chosen(root.path());
-        let read = providers(root.path()).unwrap();
+        let read = providers(root.path());
 
         assert!(
             set_default(
@@ -1253,7 +1283,7 @@ mod tests {
         assert!(choose(root.path(), &["request", "errand"], &second, "sub").is_err());
         assert!(choose(root.path(), &[], &second, "sub").is_err());
         assert!(choose(root.path(), &["task"], &second, "main").is_err());
-        assert_eq!(providers(root.path()).unwrap(), read);
+        assert_eq!(providers(root.path()), read);
 
         let following = set_assignments(
             root.path(),

@@ -20,12 +20,9 @@ use std::time::Duration;
 
 use tilo_compositor::Selection;
 use tilo_compositor::clipboard_history::TEXT_MIME;
-use tilo_session::platform::fabric::SpeakerFabricState;
-use tilo_session::platform::fabric::UnlockFabricState;
 use tilo_session::platform::fabric::{
-    ClipboardEntry, ClipboardPayload, DeviceFabric, DeviceFabricSnapshot, DeviceId, DeviceKind,
-    DevicePresence, FABRIC_SCHEMA_VERSION, FabricCapabilities, FabricStamp, OwnerSession,
-    PersonalFabricAction,
+    ClipboardEntry, ClipboardPayload, DeviceAbout, DeviceId, DeviceKind, FabricCapabilities,
+    FabricStamp, PersonDevice, PersonDevices, PersonalFabricAction,
 };
 use tilo_session::platform::fabric::{FabricLink, PersonalFabricSendError, SharedLink};
 use tilo_session::{CLIPBOARD_RESOURCE, Options, Session};
@@ -35,10 +32,10 @@ fn this_device() -> DeviceId {
     DeviceId::new("this-pc").expect("a device id")
 }
 
-/// The fabric as a stand-in transport keeps it, and what the session offered it.
+/// The person's devices as a stand-in transport keeps them, and what the session offered it.
 #[derive(Default)]
 struct Fabric {
-    converged: DeviceFabric,
+    converged: PersonDevices,
     shared: Vec<ClipboardEntry>,
 }
 
@@ -74,45 +71,30 @@ impl FakeLink {
             },
         )
         .expect("a shareable copy");
-        let snapshot = DeviceFabricSnapshot {
-            schema_version: FABRIC_SCHEMA_VERSION,
-            owner: origin.clone(),
-            presence: DevicePresence {
-                device: origin,
+        let mut known = PersonDevice::new(
+            origin,
+            DeviceAbout {
                 label: device.to_owned(),
                 kind: DeviceKind::Laptop,
                 capabilities: FabricCapabilities {
                     clipboard: true,
                     ..FabricCapabilities::default()
                 },
-                online: true,
-                last_seen_unix_ms: created_unix_ms,
-                wake_routes: Vec::new(),
-                session: OwnerSession::default(),
-                stamp: FabricStamp {
-                    counter: created_unix_ms,
-                    device: DeviceId::new(device).expect("a device id"),
-                },
             },
-            media: Vec::new(),
-            clipboard: vec![entry],
-            settings: Vec::new(),
-            wifi: Vec::new(),
-            display: None,
-            speakers: SpeakerFabricState::default(),
-            unlock: UnlockFabricState::default(),
-        };
+        );
+        known.online = true;
+        known.last_seen_unix_ms = created_unix_ms;
+        known.clipboard = vec![entry];
         self.fabric
             .lock()
             .expect("the fabric")
             .converged
-            .upsert(snapshot)
-            .expect("the snapshot is valid");
+            .insert(known);
     }
 }
 
 impl FabricLink for FakeLink {
-    fn device_fabric(&self) -> DeviceFabric {
+    fn devices(&self) -> PersonDevices {
         self.fabric.lock().expect("the fabric").converged.clone()
     }
 

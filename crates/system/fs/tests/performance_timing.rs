@@ -42,11 +42,6 @@ const MEDIA_STATUS_SLO: Duration = Duration::from_millis(5); // first run 0.75
 const MEDIA_TAIL_READ_SLO: Duration = Duration::from_millis(40); // first run 17.6
 const MEDIA_TAIL_READ_SHARE_OF_WHOLE_LOAD: f64 = 1.0 / 8.0;
 
-const CONFLICT_DIRECTORIES: usize = 500;
-const CONFLICT_FILES_PER_DIRECTORY: usize = 100;
-const IDLE_CONFLICT_SLO: Duration = Duration::from_millis(5);
-const CONFLICT_SCAN_MEAN_HOLD_SLO: Duration = Duration::from_millis(10);
-const CONFLICT_SCAN_LONGEST_HOLD_SLO: Duration = Duration::from_millis(200);
 const ATTEMPTS: usize = 3;
 fn require_enabled() -> bool {
     if std::env::var(ENABLE_ENV).as_deref() == Ok("1") {
@@ -125,82 +120,6 @@ fn thumbnail_fixture() -> Vec<u8> {
         "encode deterministic image fixture"
     );
     encoded
-}
-
-#[test]
-fn conflict_watch_idle_pass_and_lock_hold_performance_check() {
-    if !require_enabled() {
-        return;
-    }
-    let mut namespace = Namespace::new("perf-conflict").unwrap();
-    for directory in 0..CONFLICT_DIRECTORIES {
-        let parent = namespace
-            .create_dir(ROOT_INO, format!("dir-{directory}"), 1)
-            .expect("create conflict fixture directory");
-        for file in 0..CONFLICT_FILES_PER_DIRECTORY {
-            let content = iroh_blobs::Hash::new(format!("{directory}/{file}"));
-            namespace
-                .create_file(parent, format!("file-{file}"), Some(&content), 1, 1)
-                .expect("create conflict fixture file");
-        }
-    }
-    let nodes = CONFLICT_DIRECTORIES * (1 + CONFLICT_FILES_PER_DIRECTORY);
-    namespace.heads();
-
-    let started = Instant::now();
-    assert!(fs::conflict::detect(&namespace).is_empty());
-    eprintln!(
-        "PERF conflict-detect-50k: {:.3} ms under one lock hold (each pass before #3985)",
-        started.elapsed().as_secs_f64() * 1_000.0
-    );
-
-    let namespace = Mutex::new(namespace);
-    let mut watch = fs::conflict::NamespaceScan::new();
-    assert!(watch.due(&namespace).is_empty());
-    let scan = watch.last_pass();
-    assert!(
-        scan.nodes >= nodes,
-        "the scan examined {} nodes",
-        scan.nodes
-    );
-    assert!(
-        scan.lock_holds > scan.nodes / fs::conflict::SCAN_STEP_NODES,
-        "{} nodes in only {} lock holds",
-        scan.nodes,
-        scan.lock_holds
-    );
-    eprintln!(
-        "PERF conflict-scan-50k: {} nodes in {} lock holds, {:.3} ms held in all",
-        scan.nodes,
-        scan.lock_holds,
-        scan.total_hold.as_secs_f64() * 1_000.0
-    );
-    let steps = u32::try_from(scan.lock_holds).expect("lock holds fit u32");
-    report(
-        "conflict-scan-mean-lock-hold-50k",
-        scan.total_hold / steps,
-        CONFLICT_SCAN_MEAN_HOLD_SLO,
-    );
-    report(
-        "conflict-scan-longest-lock-hold-50k",
-        scan.longest_hold,
-        CONFLICT_SCAN_LONGEST_HOLD_SLO,
-    );
-
-    let mut slowest = Duration::ZERO;
-    for _ in 0..3 {
-        let started = Instant::now();
-        assert!(watch.due(&namespace).is_empty());
-        slowest = slowest.max(started.elapsed());
-        let idle = watch.last_pass();
-        assert_eq!(idle.nodes, 0, "an idle pass examined nodes");
-        assert_eq!(
-            idle.lock_holds, 1,
-            "an idle pass took the lock more than once"
-        );
-    }
-    assert_eq!(watch.scans(), 1, "an idle pass scanned");
-    report("conflict-idle-pass-50k", slowest, IDLE_CONFLICT_SLO);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

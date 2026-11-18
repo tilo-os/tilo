@@ -211,13 +211,30 @@ pub const fn default_answer(kind: ActionKind, consequential: bool) -> Answer {
     }
 }
 
-/// Whether an agent may be given `answer` for actions of `kind`: an outside
-/// effect is never carried out unasked, so for one an agent asks first or is
-/// denied. What every list of an agent's answers offers, and what its keeper's
-/// bound is held to.
+/// The provider a workspace's own governance is published under: its members,
+/// roles, invitations and settings.
+pub const WORKSPACE_GOVERNANCE_APP: &str = "tilo.workspace";
+/// The provider a server publishes a person's own workspaces there under:
+/// creating, listing, entering and deleting them.
+pub const ACCOUNT_APP: &str = "tilo.host";
+
+/// Whether an agent may be given `answer` for actions of `kind` in `app`.
+///
+/// What the person's own account holds is theirs to allow: their workspaces on
+/// a server ([`ACCOUNT_APP`]) and the governance of a workspace
+/// ([`WORKSPACE_GOVERNANCE_APP`]). The server holds every such call to what the
+/// person may do themselves, so their agent never reaches further than they
+/// do. Any other app's outside effect reaches other people's data or
+/// accounts (it sends, publishes or calls a service), so it is never carried
+/// out unasked: the agent asks first or is denied.
+///
+/// What every list of an agent's answers offers, and what its keeper's bound
+/// is held to.
 #[must_use]
-pub const fn may_give(kind: ActionKind, answer: Answer) -> bool {
-    !matches!((kind, answer), (ActionKind::Outside, Answer::Allow))
+pub fn may_give(app: &str, kind: ActionKind, answer: Answer) -> bool {
+    kind != ActionKind::Outside
+        || answer != Answer::Allow
+        || [ACCOUNT_APP, WORKSPACE_GOVERNANCE_APP].contains(&app)
 }
 
 /// The answer a delegate's `decision` gives an action, held to the action's

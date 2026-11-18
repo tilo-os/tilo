@@ -1215,9 +1215,12 @@ async fn a_find_answers_from_the_index_kept_as_documents_land() {
         assert!(!failed, "{file}: {answered}");
     }
     // The index is kept as the documents land: no find is asked, and the service reads them
-    // between the requests that wrote them.
+    // between the requests that wrote them, on a thread of its own: it is done when every
+    // document was read and none is still being read.
     let deadline = tilo_test_env::hang_deadline();
-    while served.actions.search_documents_warmed() < notes as u64 {
+    while served.actions.search_documents_warmed() < notes as u64
+        || served.actions.search_documents_reading() > 0
+    {
         assert!(
             Instant::now() < deadline,
             "the documents are read for the index: {} of {notes} read",

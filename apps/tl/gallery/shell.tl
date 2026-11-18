@@ -107,10 +107,7 @@ view shell_parts(g: Gallery) {
 
 /// The shell group, with three apps pinned to the dock.
 scenario "shell parts" {
-    let g = root Gallery
-    g.chrome_apps.insert(Pinned(title: "Notes"))
-    g.chrome_apps.insert(Pinned(title: "Tasks"))
-    g.chrome_apps.insert(Pinned(title: "Mail"))
+    fill(root Gallery)
 }
 
 /// Note the item moved, in the window's last answer.

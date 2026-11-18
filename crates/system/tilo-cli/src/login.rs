@@ -20,6 +20,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tilo_api::server::ServerAddress;
 use tilo_server_client::CertifyError;
 use tilo_server_client::HttpClient;
 use tilo_server_client::LinkError;
@@ -55,6 +56,10 @@ pub(crate) const LOGIN_ENDED: &str = "This computer's Tilo login has ended: ask 
 /// What a tilo that speaks another version than the server says.
 pub(crate) const TOO_OLD: &str = "This tilo is too old for your workspace: install it again with \
      `curl -fsSL https://tilo.sh | sh`.";
+
+/// What a device joined over iroh keeps where a web origin would be: the server's endpoint id
+/// after it, since such a server has no origin.
+const IROH_ONLY: &str = "iroh:";
 
 /// What a server that answers nothing usable says.
 pub(crate) const UNREACHED: &str =
@@ -271,6 +276,23 @@ fn certify_said(error: &CertifyError) -> String {
 }
 
 /// What a server that answered nothing usable says.
+/// What an invitation the workspace's server did not take says to the person.
+fn invitation_said(error: &CertifyError) -> String {
+    match error {
+        CertifyError::Denied(reason) => {
+            format!("{reason}. Ask the person who invited you for a new link.")
+        }
+        CertifyError::Codec(_) => TOO_OLD.to_owned(),
+        CertifyError::Transport(link) => link_said(link),
+        CertifyError::Auth(error) => auth_said(error),
+        CertifyError::Expired
+        | CertifyError::Request(_)
+        | CertifyError::Sign(_)
+        | CertifyError::Iroh(_)
+        | CertifyError::Io(_) => UNREACHED.to_owned(),
+    }
+}
+
 fn link_said(error: &LinkError) -> String {
     match error {
         LinkError::Unavailable(_) | LinkError::Refused(_) => UNREACHED.to_owned(),
@@ -357,6 +379,9 @@ fn runtime() -> Result<tokio::runtime::Runtime> {
 
 /// Enter the workspace `device` names, as that device.
 pub(crate) async fn connect(key: &SigningKey, device: &Device) -> Result<Entered> {
+    if let Some(address) = &device.server_address {
+        return connect_over_iroh(key, device, address).await;
+    }
     let link = PairingLink::parse(&format!(
         "{}#/@{}/w/{}?pair={}",
         device.site,
@@ -365,9 +390,9 @@ pub(crate) async fn connect(key: &SigningKey, device: &Device) -> Result<Entered
         device.user
     ))
     .map_err(|error| anyhow!(error))?;
-    let host_web = Origin::new(&http(), &device.host_origin);
-    let info = https::host_info(&host_web).await.map_err(|error| {
-        debug_why("asking the workspace's host", &error);
+    let server_web = Origin::new(&http(), &device.host_origin);
+    let info = https::host_info(&server_web).await.map_err(|error| {
+        debug_why("asking the workspace's server", &error);
         anyhow!(UNREACHED)
     })?;
     let host = info
@@ -386,6 +411,204 @@ pub(crate) async fn connect(key: &SigningKey, device: &Device) -> Result<Entered
     };
     let entry = entry_at(&Origin::new(&http(), &device.site), &device.host_origin).await;
     Ok(Entered::enter(entry.as_ref(), &signed, Arc::new(key.clone())).await?)
+}
+
+/// [`connect`] to a server its invitation named over iroh: dialed at its signed address, with
+/// nothing asked of a web origin it may not have.
+async fn connect_over_iroh(
+    key: &SigningKey,
+    device: &Device,
+    address: &ServerAddress,
+) -> Result<Entered> {
+    let signed = signed_over_iroh(device, address)?;
+    Ok(Entered::enter(None, &signed, Arc::new(key.clone())).await?)
+}
+
+/// `device` signed in at the server dialed over iroh at `address`.
+fn signed_over_iroh(device: &Device, address: &ServerAddress) -> Result<SignIn> {
+    let (cert, server_cert) = device.certs()?;
+    Ok(SignIn {
+        link: PairingLink {
+            site: device.site.clone(),
+            host_origin: device.host_origin.clone(),
+            workspace: uuid::Uuid::parse_str(&device.workspace)
+                .map_err(|_| anyhow!(LOGIN_ENDED))?,
+            user_public_key: cert.user_public_key,
+            invite: None,
+        },
+        agent: device.agent.clone(),
+        label: device.label.clone(),
+        host: tilo_server_client::Host::published(address),
+        cert,
+        host_cert: server_cert,
+    })
+}
+
+/// The signed invitation a link carries in its fragment (`#/w/<workspace>?invite=<text>`), as the
+/// bytes the server signed.
+fn invitation_in(link: &str) -> Result<Vec<u8>> {
+    use base64::Engine as _;
+    let text = link
+        .split_once('#')
+        .map(|(_, fragment)| fragment)
+        .and_then(|fragment| fragment.split_once('?'))
+        .and_then(|(_, query)| {
+            query
+                .split('&')
+                .find_map(|pair| pair.strip_prefix("invite="))
+        })
+        .filter(|text| !text.is_empty())
+        .ok_or_else(|| {
+            anyhow!(
+                "This link carries no invitation: ask the person who invited you for the whole \
+                 link, the part after # included."
+            )
+        })?;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(text.trim_end_matches('='))
+        .map_err(|_| anyhow!("This link's invitation is damaged: ask for it again."))
+}
+
+/// The server an invitation names, where it is dialed over iroh: one that holds the workspace's
+/// keys, since only such a server lets a new member in.
+fn invited_server(
+    grant: &tilo_workspace_join::InviteGrant,
+) -> Result<tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1> {
+    let servers: Vec<_> = grant
+        .transport
+        .iter()
+        .filter_map(|hint| {
+            tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1::from_transport_hint(hint)
+                .ok()
+        })
+        .filter(|server| server.workspace_id == grant.workspace_id)
+        .collect();
+    servers
+        .iter()
+        .find(|server| server.holds_keys)
+        .or_else(|| servers.first())
+        .cloned()
+        .ok_or_else(|| anyhow!("This invitation names no server to dial: ask for a new one."))
+}
+
+/// Redeem `invitation` on a session with the server at `address`, as `device` shown to the
+/// workspace's people as `shown_as`: the workspace's name, which the server answers.
+async fn redeem_over_iroh(
+    key: &SigningKey,
+    device: &Device,
+    address: &ServerAddress,
+    invitation: &[u8],
+    shown_as: &str,
+) -> Result<Option<String>> {
+    let signed = signed_over_iroh(device, address)?;
+    let session = Entered::connect(&signed, Arc::new(key.clone()));
+    let admitted = async {
+        session.connected().await.map_err(|refusal| {
+            debug_why("dialing the workspace's server", &refusal);
+            anyhow!(
+                "The workspace's server can't be reached from here right now: the computer \
+                 it is on may be asleep or offline. Try again in a minute."
+            )
+        })?;
+        session.redeem(invitation, shown_as).await.map_err(|error| {
+            debug_why("redeeming the invitation", &error);
+            anyhow!("{}", invitation_said(&error))
+        })
+    }
+    .await;
+    session.close();
+    Ok(Some(admitted?.name))
+}
+
+/// `tilo login <invitation link>`: this computer joins the workspace a member invited the person
+/// into, as the person kept here (made now, named `name`, when there is none). The link carries
+/// the signed invitation and, in it, the server's own signed iroh address, so the server is dialed
+/// over iroh (through its packet relay when it is behind a NAT) and nothing is fetched from a web
+/// origin: a server on someone's laptop is joined as one in a data centre is.
+///
+/// # Errors
+/// The link carries no valid invitation, the server is not reached, or the workspace refuses it.
+pub fn login_invited(link: &str, name: Option<&str>, agent: Option<&str>) -> Result<ExitCode> {
+    trust_test_certificates()?;
+    let invitation = invitation_in(link)?;
+    let verified = tilo_workspace_join::decode_and_verify_invitation(
+        &invitation,
+        None,
+        &tilo_user_identity::RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )
+    .map_err(|error| {
+        debug_why("reading the invitation", &error);
+        anyhow!("This invitation is not valid any more: ask the person who sent it for a new one.")
+    })?;
+    let grant = verified.grant().clone();
+    let server = invited_server(&grant)?;
+    let (person, made) = crate::identity::ensure(name.or(grant.invitee_name.as_deref()))?;
+    if made {
+        println!(
+            "This computer now holds a Tilo identity for {}: `tilo login --new-identity` prints its key.",
+            person.name
+        );
+    }
+    let agent =
+        agent
+            .filter(|name| !name.trim().is_empty())
+            .map_or_else(agent::detect_here, |name| {
+                let named = agent::named(name);
+                agent::Agent {
+                    tool: named.tool.or_else(|| agent::detect_here().tool),
+                    ..named
+                }
+            });
+    let key = SigningKey::from_bytes(&rand::random());
+    let label = label(&agent.name, &hostname());
+    let cert = held_device_cert(&person, &key, &label)?;
+    let address = ServerAddress {
+        endpoint_addr: server.endpoint_addr.clone(),
+        relay_url: server
+            .packet_relay_url
+            .parse::<iroh::RelayUrl>()
+            .ok()
+            .map(|url| url.to_string()),
+        web: None,
+    };
+    let shown_as = if person.name.is_empty() {
+        label.clone()
+    } else {
+        person.name.clone()
+    };
+    let device = Device {
+        site: format!("{DEFAULT_SITE}/"),
+        host_origin: format!("{IROH_ONLY}{}", server.endpoint_addr.id),
+        workspace: grant.workspace_id.to_string(),
+        workspace_name: None,
+        user: hex::encode(person.root.verifying_key().to_bytes()),
+        agent: agent.name.clone(),
+        label,
+        cert: hex::encode(postcard::to_allocvec(&cert)?),
+        host_cert: hex::encode(postcard::to_allocvec(&server.device_certificate)?),
+        server_address: Some(address.clone()),
+    };
+    let runtime = runtime()?;
+    let workspace_name = runtime.block_on(redeem_over_iroh(
+        &key,
+        &device,
+        &address,
+        &invitation,
+        &shown_as,
+    ))?;
+    let device = Device {
+        workspace_name,
+        ..device
+    };
+    store(&device_dir()?, &key, &device)?;
+    println!(
+        "Joined: this computer is one of {}'s devices, \"{}\", in the workspace.\n{}",
+        person.name,
+        device.label,
+        which_agent(&agent.name)
+    );
+    entered_after_login(&runtime, &key, &device, &agent)
 }
 
 /// The site `--site` or [`SITE_ENV`] names, else [`DEFAULT_SITE`], as an
@@ -408,7 +631,7 @@ fn site_origin(flag: Option<&str>) -> Result<String> {
 ///
 /// A site that answers nothing, or nothing this tilo reads, is said as it
 /// is: Tilo cannot be reached from here right now.
-async fn home_host(site: &Origin) -> Result<String> {
+async fn home_server(site: &Origin) -> Result<String> {
     let (status, body) = site.get("/entry.json").await.map_err(|error| {
         debug_why(&format!("reading {}'s entry.json", site.name()), &error);
         anyhow!(UNREACHED)
@@ -426,11 +649,11 @@ async fn home_host(site: &Origin) -> Result<String> {
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!(UNREACHED))?;
     let url = tilo_net::Url::parse(origin).map_err(|error| {
-        debug_why("reading the site's host address", &error);
+        debug_why("reading the site's server address", &error);
         anyhow!(UNREACHED)
     })?;
     if !tilo_net::secure_origin(&url) {
-        debug_why("the site's host address", &origin);
+        debug_why("the site's server address", &origin);
         bail!(UNREACHED);
     }
     Ok(url.origin().ascii_serialization())
@@ -768,7 +991,7 @@ pub fn login(code: &str, agent: Option<&str>, site: Option<&str>) -> Result<Exit
     let site = site_origin(site)?;
     let runtime = runtime()?;
     runtime.block_on(async {
-        let host_origin = home_host(&Origin::new(&http(), &site)).await?;
+        let host_origin = home_server(&Origin::new(&http(), &site)).await?;
         let host = Origin::new(&http(), &host_origin);
         let resolved = resolve(&host, &code).await?;
         let reporter = Reporter {
@@ -806,6 +1029,7 @@ fn device_of(signed: &SignIn) -> Result<Device> {
         label: signed.label.clone(),
         cert: hex::encode(postcard::to_allocvec(&signed.cert)?),
         host_cert: hex::encode(postcard::to_allocvec(&signed.host_cert)?),
+        server_address: None,
     })
 }
 
@@ -822,14 +1046,14 @@ async fn set_up(reporter: &Reporter<'_>, link: &str, agent: &Agent) -> Result<Ex
     let link = PairingLink::parse(link).map_err(|error| anyhow!(error))?;
     let dir = device_dir()?;
     let key = SigningKey::from_bytes(&rand::random());
-    let host_web = Origin::new(&http(), &link.host_origin);
+    let server_web = Origin::new(&http(), &link.host_origin);
     eprintln!("Waiting for the person's tab to approve this computer…");
-    let signed = certify(&host_web, &link, &agent.name, &key).await?;
+    let signed = certify(&server_web, &link, &agent.name, &key).await?;
     // The server names this computer: the name asked for, or the next numbered
     // one another device of the person reads by.
     let label = signed.label.clone();
     let mut device = device_of(&signed)?;
-    device.workspace_name = workspace_name(&host_web, &device.workspace).await;
+    device.workspace_name = workspace_name(&server_web, &device.workspace).await;
     store(&dir, &key, &device)?;
     // The tab follows this login; what the agent confirms afterwards is told
     // to it through what is kept here.
@@ -966,7 +1190,83 @@ pub fn login_held(
             });
     let site = site_origin(site)?;
     let runtime = runtime()?;
-    let (key, device) = runtime.block_on(held_device(person, &agent, &site, workspace))?;
+    let (key, device) = runtime.block_on(async {
+        let origin = home_server(&Origin::new(&http(), &site)).await?;
+        let server = Origin::new(&http(), &origin);
+        let info = https::host_info(&server).await.map_err(|error| {
+            debug_why("asking the site's server", &error);
+            anyhow!(UNREACHED)
+        })?;
+        let dialed = info
+            .address
+            .as_ref()
+            .map(tilo_server_client::Host::published)
+            .ok_or_else(|| anyhow!("{origin} takes no device connections"))?;
+        let key = SigningKey::from_bytes(&rand::random());
+        let label = label(&agent.name, &hostname());
+        let cert = held_device_cert(person, &key, &label)?;
+        let user = person.user();
+        let unentered = PairingLink::parse(&format!(
+            "{site}/#/@{}/w/{}?pair={user}",
+            host_of(&origin),
+            uuid::Uuid::nil()
+        ))
+        .map_err(|error| anyhow!(error))?;
+        let signed = SignIn {
+            link: unentered,
+            agent: agent.name.clone(),
+            label: label.clone(),
+            host: dialed,
+            cert: cert.clone(),
+            host_cert: info.host_cert.clone(),
+        };
+        let session = Entered::connect(&signed, Arc::new(key.clone()));
+        let chosen = async {
+            session
+                .connected()
+                .await
+                .map_err(|refusal| anyhow!("{refusal}"))?;
+            let mut list = session
+                .personal_list(
+                    &tilo_server_session::workspaces::WorkspaceLabels::new(),
+                    None,
+                )
+                .await
+                .map_err(|refusal| anyhow!("{refusal}"))?;
+            // The person's list of devices takes this key in, as when a tab approves one.
+            list.devices
+                .push(tilo_server_session::workspaces::PersonalDevice {
+                    cert: cert.clone(),
+                    name: None,
+                    revoked: false,
+                    browser: None,
+                    agent: Some(agent.name.clone()),
+                    last_active_ms: None,
+                    online: false,
+                });
+            session
+                .keep_personal(&list)
+                .await
+                .map_err(|refusal| anyhow!("{refusal}"))?;
+            choose_workspace(&list.workspaces, workspace)
+        }
+        .await;
+        session.close();
+        let (id, name) = chosen?;
+        let device = Device {
+            site: format!("{site}/"),
+            host_origin: origin,
+            workspace: id,
+            workspace_name: Some(name),
+            user,
+            agent: agent.name.clone(),
+            label,
+            cert: hex::encode(postcard::to_allocvec(&cert)?),
+            host_cert: hex::encode(postcard::to_allocvec(&info.host_cert)?),
+            server_address: None,
+        };
+        anyhow::Ok((key, device))
+    })?;
     let dir = device_dir()?;
     store(&dir, &key, &device)?;
     println!(
@@ -976,15 +1276,26 @@ pub fn login_held(
         device.label,
         which_agent(&agent.name)
     );
+    entered_after_login(&runtime, &key, &device, &agent)
+}
+
+/// After a login without a tab: Tilo's tools added to the agent, the workspace entered once to say
+/// it opens, its folder put on this computer, and what to do next.
+fn entered_after_login(
+    runtime: &tokio::runtime::Runtime,
+    key: &SigningKey,
+    device: &Device,
+    agent: &Agent,
+) -> Result<ExitCode> {
     let tilo = std::env::current_exe().context("finding this program")?;
-    let tools = add_tools(&agent, &tilo, &agent::System);
+    let tools = add_tools(agent, &tilo, &agent::System);
     let place = format!(
         "{} on {}",
         device.workspace_name.as_deref().unwrap_or("the workspace"),
         host_of(&device.host_origin)
     );
     runtime.block_on(async {
-        match connect_retrying(&key, &device).await {
+        match connect_retrying(key, device).await {
             Ok(entered) => {
                 println!("Entered {place}.");
                 entered.close();
@@ -1009,93 +1320,8 @@ pub fn login_held(
         }
     }
     println!();
-    println!("{}", next_steps(&agent, &tools, &tilo));
+    println!("{}", next_steps(agent, &tools, &tilo));
     Ok(ExitCode::SUCCESS)
-}
-
-/// The device key and the device entry of a login here: the site's server lets this device
-/// connect, the person's list of devices takes its key in, and the device enters `workspace` by
-/// name or id, else the person's own workspace there.
-async fn held_device(
-    person: &crate::identity::Person,
-    agent: &agent::Agent,
-    site: &str,
-    workspace: Option<&str>,
-) -> Result<(SigningKey, Device)> {
-    let origin = home_host(&Origin::new(&http(), site)).await?;
-    let server = Origin::new(&http(), &origin);
-    let info = https::host_info(&server).await.map_err(|error| {
-        debug_why("asking the site's server", &error);
-        anyhow!(UNREACHED)
-    })?;
-    let dialed = info
-        .address
-        .as_ref()
-        .map(tilo_server_client::Host::published)
-        .ok_or_else(|| anyhow!("{origin} takes no device connections"))?;
-    let key = SigningKey::from_bytes(&rand::random());
-    let label = label(&agent.name, &hostname());
-    let cert = held_device_cert(person, &key, &label)?;
-    let user = person.user();
-    let unentered = PairingLink::parse(&format!(
-        "{site}/#/@{}/w/{}?pair={user}",
-        host_of(&origin),
-        uuid::Uuid::nil()
-    ))
-    .map_err(|error| anyhow!(error))?;
-    let signed = SignIn {
-        link: unentered,
-        agent: agent.name.clone(),
-        label: label.clone(),
-        host: dialed,
-        cert: cert.clone(),
-        host_cert: info.host_cert.clone(),
-    };
-    let session = Entered::connect(&signed, Arc::new(key.clone()));
-    let chosen = async {
-        session
-            .connected()
-            .await
-            .map_err(|refusal| anyhow!("{refusal}"))?;
-        let mut list = session
-            .personal_list(
-                &tilo_server_session::workspaces::WorkspaceLabels::new(),
-                None,
-            )
-            .await
-            .map_err(|refusal| anyhow!("{refusal}"))?;
-        // The person's list of devices takes this key in, as when a tab approves one.
-        list.devices
-            .push(tilo_server_session::workspaces::PersonalDevice {
-                cert: cert.clone(),
-                name: None,
-                revoked: false,
-                browser: None,
-                agent: Some(agent.name.clone()),
-                last_active_ms: None,
-                online: false,
-            });
-        session
-            .keep_personal(&list)
-            .await
-            .map_err(|refusal| anyhow!("{refusal}"))?;
-        choose_workspace(&list.workspaces, workspace)
-    }
-    .await;
-    session.close();
-    let (id, name) = chosen?;
-    let device = Device {
-        site: format!("{site}/"),
-        host_origin: origin,
-        workspace: id,
-        workspace_name: Some(name),
-        user,
-        agent: agent.name.clone(),
-        label,
-        cert: hex::encode(postcard::to_allocvec(&cert)?),
-        host_cert: hex::encode(postcard::to_allocvec(&info.host_cert)?),
-    };
-    Ok((key, device))
 }
 
 /// A member device certificate for `key`, signed by the person's root.
@@ -1163,6 +1389,10 @@ fn names_of(listed: &[tilo_server_session::workspaces::PersonalWorkspace]) -> St
 }
 
 pub(crate) fn host_of(origin: &str) -> &str {
+    // A server joined over iroh has no web name: it is the workspace's own.
+    if origin.starts_with(IROH_ONLY) {
+        return "its server";
+    }
     // A server on this computer is plain http, which a link names by its
     // address alone, as it names an https server by its name.
     origin
@@ -1190,7 +1420,27 @@ mod tests {
             label: "Claude Code on build-box".into(),
             cert: "00".into(),
             host_cert: "00".into(),
+            server_address: None,
         }
+    }
+
+    #[test]
+    fn an_invitation_link_carries_its_invitation_in_the_fragment() {
+        assert_eq!(
+            invitation_in(
+                "https://tilo.sh/#/w/6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b?invite=c2lnbmVk"
+            )
+            .unwrap(),
+            b"signed"
+        );
+        assert!(
+            invitation_in("https://tilo.sh/?invite=c2lnbmVk").is_err(),
+            "outside the fragment"
+        );
+        assert!(
+            invitation_in("https://tilo.sh/#/w/x?invite=").is_err(),
+            "an empty one"
+        );
     }
 
     tilo_test_env::scenario! {
@@ -1294,7 +1544,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_code_resolves_at_its_host_and_every_step_reaches_the_tab() {
+    async fn a_code_resolves_at_its_server_and_every_step_reaches_the_tab() {
         let host = FakeHost::new(|route, _| match route {
             protocol::RESOLVE_ROUTE => (
                 200,
@@ -1418,7 +1668,7 @@ mod tests {
             let signature = ed25519_dalek::Signature::from_bytes(
                 &hex::decode(&claim.signature).unwrap().try_into().unwrap(),
             );
-            let message = protocol::claim_message(&claim.report, claim.signed_at_ns);
+            let message = protocol::claim_digest(&claim.report, claim.signed_at_ns).unwrap();
             if public.verify_strict(&message, &signature).is_ok() && claim.cert == "00" {
                 (200, json!({"expires_at_ms": 5}))
             } else {

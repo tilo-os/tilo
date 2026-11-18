@@ -263,7 +263,7 @@ tilo_test_env::scenario! {
 
     phase the_device_identity_releases_a_key_bound_to_device_person_and_salt;
     {
-        use tilo_user_identity::persist::load_or_create_device_key;
+        use tilo_device_identity::persist::load_or_create_device_key;
         let dir = tempfile::tempdir().unwrap();
         let paths = IdentityPaths::under(dir.path().join("system"));
         let salt = dir.path().join("home/secrets/salt");
@@ -307,8 +307,8 @@ tilo_test_env::scenario! {
     // under the new key with every item it held, the old key no longer opens
     // it, and a vault the old key never sealed is left as it was.
     {
-        use tilo_user_identity::branch::{self, Branch, Machine, Resealed, SealedStore as _, Settled};
-        use tilo_user_identity::persist::{load_or_create_device_key, read_device_key};
+        use tilo_device_identity::branch::{self, Branch, Machine, Resealed, SealedStore as _, Settled};
+        use tilo_device_identity::persist::{load_or_create_device_key, read_device_key};
 
         let dir = tempfile::tempdir().unwrap();
         let paths = IdentityPaths::under(dir.path().join("system"));

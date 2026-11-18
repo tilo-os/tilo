@@ -28,12 +28,10 @@
 //! All are the workspace's own governance actions (`tilo.workspace`'s
 //! `invite`, `member.add`, `member.list`, `invitation.list`, `member.name`
 //! and `wait-list.*`), asked of its host over the key's session, and the host
-//! decides who may, and keeps who asked: a person's server key brings people
-//! into the workspaces its person administers, inviting as an Editor at most
-//! and adding or inviting an administrator or an owner only where its person
-//! may make one; an agent's grant and a key for one workspace do not. A
-//! person names themself, from any key of theirs, in a workspace they are a
-//! member of. The link is the one a person's shell hands over: the invitation
+//! decides who may, and keeps who asked: a person's server key does what its
+//! person may, and an agent what its grants there let it, asking its person
+//! first unless they allowed it. A person names themself, from any key of
+//! theirs, in a workspace they are a member of. The link is the one a person's shell hands over: the invitation
 //! sealed onto the site's shelf (`https://<site>/i/<handle>#<key>`), or, where
 //! the site keeps nothing, the invitation's own text after the workspace's
 //! route. Following it opens the site's sign-in, with a passkey or by
@@ -144,9 +142,8 @@ impl Session {
             workspace,
             verb,
             arguments,
-            "a key you created, reaching all your workspaces, brings people into the ones you \
-             administer: it invites as an editor at most, and adds or invites an administrator \
-             or an owner where you may make one",
+            "a key you created acts as you, as far as your role in the workspace goes; an \
+             agent asks you first unless you allowed it in the workspace's settings, under Agents",
         )
         .await
     }
@@ -463,6 +460,17 @@ impl crate::Server {
         invitation: &[u8],
         expires_at_ns: u64,
     ) -> String {
+        // A server reached only over iroh has no site a stranger can fetch
+        // from: the link carries the signed invitation itself, whose
+        // addresses are the server's own, signed by it, and the page or
+        // `tilo login` that follows it dials the server with them.
+        if let Some(entry) = &self.config.invite_entry {
+            let text = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(invitation);
+            return format!(
+                "{}/#/w/{workspace}?invite={text}",
+                entry.trim_end_matches('/')
+            );
+        }
         let entry = self.config.web_entry.trim_end_matches('/');
         // The site's shelf keeps the origin the invitation admits into, never a
         // bare name: a shelf refuses what is not an origin.

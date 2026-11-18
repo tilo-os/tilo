@@ -1020,9 +1020,6 @@ fn validate_import_destination(destination: &ImportDestination) -> Result<(), Re
     Ok(())
 }
 
-/// How long an agent's change waits to be attributed before it is written anyway.
-const WRITE_ATTRIBUTION_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
-
 fn runs_tracked(op: &FileOp) -> bool {
     matches!(
         op,
@@ -1058,26 +1055,6 @@ fn carry_out_tracked(
     Effected::settled(&crate::file_ops::execute_tracked(
         &task.op, reverting, &report,
     ))
-}
-
-fn carry_out_attributed(
-    (task, reverting, attribution): (
-        FileTask,
-        Option<Vec<Change>>,
-        Option<ui::invocation_scope::WriteAttributionReceipt>,
-    ),
-    progress: &ui::framework::Progress,
-) -> Effected {
-    if let Some(attribution) = attribution
-        && let Err(error) = attribution.wait(WRITE_ATTRIBUTION_WAIT)
-    {
-        tracing::debug!(%error, "these writes stay the person's");
-    }
-    if runs_tracked(&task.op) {
-        carry_out_tracked(&task, reverting.as_deref(), progress)
-    } else {
-        carry_out(&task, reverting.as_deref())
-    }
 }
 
 fn carry_out(task: &FileTask, reverting: Option<&[Change]>) -> Effected {
@@ -1210,6 +1187,8 @@ fn carry_out_queued(
     cx: &ViewCx<FileExplorer>,
     native: Rc<std::cell::RefCell<Vec<crate::files_app::UndoRequest>>>,
 ) -> Option<ui::framework::Projection> {
+    // An agent's call on the workspace's own folder is done to its tree as that agent.
+    let folder = cx.folder_history();
     cx.device().map(|device| {
         let me = device.to_owned();
         cx.outbox_awaited(
@@ -1240,12 +1219,23 @@ fn carry_out_queued(
                             |(), answer, _| Ok(answer),
                         ));
                     }
-                    let attribution =
-                        cx.attribute_writes(task.op.written_paths(reverting.as_deref()));
-                    if runs_tracked(&task.op) || attribution.is_some() {
-                        let work = (task, reverting, attribution);
+                    if let (Some(folder), Some(invoker)) = (&folder, cx.invoker())
+                        && !invoker.acting.is_person()
+                        && reverting.is_none()
+                        && let Some(outcome) = crate::tree_ops::carry_out(
+                            &task.op,
+                            &crate::model::workspace_roots(),
+                            folder,
+                            &invoker,
+                        )
+                    {
+                        return Ok(Effected::settled(&outcome));
+                    }
+                    if runs_tracked(&task.op) {
                         return Ok(cx.thread(
-                            move |progress| carry_out_attributed(work, &progress),
+                            move |progress| {
+                                carry_out_tracked(&task, reverting.as_deref(), &progress)
+                            },
                             |(), answer, _| Ok(answer),
                         ));
                     }

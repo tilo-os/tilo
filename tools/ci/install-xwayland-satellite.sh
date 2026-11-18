@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build xwayland-satellite from its pinned upstream source with Tilo's patches
 # (os/external-assets/xwayland-satellite/README.md) and install it under a
-# prefix. The OS image, every CI builder and the legacy VM guest install the
+# prefix. The OS image, every CI builder and the Linux VM guest install the
 # same build to /usr.
 #
 # The caller owns fetching the source into the asset cache and installing the

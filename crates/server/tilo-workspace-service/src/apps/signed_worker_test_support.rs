@@ -195,9 +195,7 @@ pub fn presentation(workspace: &str, cert: &DeviceCert, key: &SigningKey) -> Vec
         workspace_id: workspace.into(),
         device_certificate: serde_json::to_vec(cert).unwrap(),
         proof: key
-            .sign(&runtime_identity::collaboration_join_signing_bytes(
-                workspace,
-            ))
+            .sign(&runtime_identity::collaboration_join_digest(workspace).unwrap())
             .to_bytes()
             .to_vec(),
     }
@@ -260,7 +258,7 @@ pub async fn join_worker(
     peer: u64,
 ) -> (
     Connection,
-    ui::invocation_scope::PublishedInvocationAuthorizer,
+    collaboration::invocation_scope::PublishedInvocationAuthorizer,
 ) {
     let (socket, authorize) = state
         .connect_local_worker_with_authorizer(route.clone(), cert)
@@ -381,7 +379,7 @@ impl OriginalWorkspace {
             .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
         tilo_identity::provisioning::ensure_collaboration_identity(
             &fixture_root.path().join("config/tilo/identity"),
-            &tilo_user_identity::IdentityPaths::under(fixture_root.path().join("identity")),
+            &tilo_device_identity::IdentityPaths::under(fixture_root.path().join("identity")),
             tilo_identity::provisioning::IdentityStorage::Files,
         )
         .expect("provision real host receipt signer");
@@ -477,7 +475,7 @@ impl OriginalWorkspace {
         peer: u64,
     ) -> (
         Connection,
-        ui::invocation_scope::PublishedInvocationAuthorizer,
+        collaboration::invocation_scope::PublishedInvocationAuthorizer,
     ) {
         join_worker(
             &self.state,

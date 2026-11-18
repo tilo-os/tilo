@@ -169,11 +169,10 @@ ADVICE = {
 }
 
 # Sources whose string literals are written for an agent's model, not shown to
-# a person: the agent's tools (their schemas, descriptions and the operation
-# summaries it is handed). A path ending in "/" names a directory.
+# a person: what the agent is told before a turn. A path ending in "/" names a
+# directory.
 MODEL_TEXT = (
-    "apps/agent/src/tools.rs",
-    "apps/agent/src/tools/",
+    "apps/agent/src/session/turn.rs",
 )
 # The rules about string literals a person reads.
 TEXT_RULES = ("glyph-join", "glyph-icon")

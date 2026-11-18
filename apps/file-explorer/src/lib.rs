@@ -80,6 +80,8 @@ pub mod recent;
 pub mod remote_accounts;
 #[cfg(feature = "desktop")]
 pub mod resource;
+#[cfg(feature = "desktop")]
+pub(crate) mod row_types;
 #[cfg(feature = "samples")]
 pub mod scenarios;
 
@@ -98,6 +100,9 @@ pub mod views;
 
 /// The workspace's files, as a page shows them.
 pub mod tree;
+/// Someone else's call on the workspace's folder, done to its tree as them.
+#[cfg(feature = "desktop")]
+mod tree_ops;
 
 #[cfg(feature = "desktop")]
 pub use command::{CommandSink, FileCommand};
@@ -126,3 +131,5 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
 mod action_icons_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod action_keywords_tests;
+#[cfg(all(test, unix))]
+mod folder_history_tests;

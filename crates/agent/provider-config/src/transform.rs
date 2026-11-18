@@ -1,17 +1,19 @@
-//! One single-shot model call in either provider dialect: the request body,
-//! the endpoint URL, the authentication headers and the answer text; and
+//! One single-shot model call (a system instruction and one input, answered
+//! with text), the endpoint URL and authentication headers of a profile, and
 //! the provider's model list.
 //!
-//! These are pure pieces with no HTTP client, so every Tilo process that asks
-//! a provider for one answer (the per-user model gateway, a host summarising
-//! activity) speaks the same dialects through the same code instead of each
-//! carrying its own vendor-specific request shapes.
+//! These are pure pieces with no HTTP client. A single-shot ask is an
+//! ordinary model turn written and read by the one wire codec
+//! ([`crate::wire`]), plus the few fields only such an ask sets (its
+//! sampling and the shape of its answer), so every Tilo process that asks a
+//! provider for one answer speaks the same dialects through the same code.
 
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use zeroize::Zeroizing;
 
+use crate::protocol::{Content, Message, ModelRequest, Role, StopReason, ToolChoice};
 use crate::{
-    KeyHeader, ModelDescriptor, OpenAiApi, ProviderProfile, ProviderProtocol, SignInIssuer,
+    KeyHeader, ModelDescriptor, OpenAiApi, ProviderProfile, ProviderProtocol, SignInIssuer, wire,
 };
 
 /// The Anthropic Messages API version every request names.
@@ -62,124 +64,6 @@ pub struct Ask<'a> {
     pub max_tokens: Option<u32>,
     pub sampling: Sampling,
     pub output: Output<'a>,
-}
-
-/// The provider request body for `ask`.
-pub fn body(protocol: ProviderProtocol, ask: &Ask<'_>) -> Value {
-    let user = json!({ "role": "user", "content": ask.input });
-    let mut body = match protocol {
-        ProviderProtocol::Anthropic => {
-            let mut body = json!({ "model": ask.model, "messages": [user] });
-            if !ask.instructions.is_empty()
-                && let Some(object) = body.as_object_mut()
-            {
-                object.insert("system".into(), json!(ask.instructions));
-            }
-            body
-        }
-        ProviderProtocol::OpenAiCompatible => {
-            let mut messages = Vec::with_capacity(2);
-            if !ask.instructions.is_empty() {
-                messages.push(json!({ "role": "system", "content": ask.instructions }));
-            }
-            messages.push(user);
-            json!({ "model": ask.model, "messages": messages })
-        }
-    };
-    if let Some(object) = body.as_object_mut() {
-        if let Some(max_tokens) = ask.max_tokens {
-            object.insert("max_tokens".into(), Value::from(max_tokens));
-        }
-        match ask.sampling {
-            Sampling::Deterministic => {
-                object.insert("temperature".into(), Value::from(0));
-            }
-            Sampling::ProviderDefault => {}
-            Sampling::ProviderDefaultNoThinking => {
-                if protocol == ProviderProtocol::Anthropic {
-                    object.insert("thinking".into(), json!({ "type": "disabled" }));
-                }
-            }
-        }
-        match ask.output {
-            Output::Text => {}
-            Output::JsonObject => {
-                if protocol == ProviderProtocol::OpenAiCompatible {
-                    object.insert("response_format".into(), json!({ "type": "json_object" }));
-                }
-            }
-            Output::Schema { schema, effort } => {
-                if protocol == ProviderProtocol::Anthropic {
-                    object.insert(
-                        "output_config".into(),
-                        json!({
-                            "effort": effort,
-                            "format": { "type": "json_schema", "schema": schema }
-                        }),
-                    );
-                }
-            }
-        }
-    }
-    body
-}
-
-/// The answer text out of a provider response no longer than `max_bytes`.
-/// A refusal or a cut-off answer is an error rather than text: the caller
-/// would otherwise validate half an answer.
-pub fn answer(protocol: ProviderProtocol, body: &str, max_bytes: usize) -> Result<String, String> {
-    let value: Value =
-        serde_json::from_str(body).map_err(|_| "provider response was unreadable".to_string())?;
-    answer_value(protocol, &value, max_bytes)
-}
-
-/// The answer text out of a parsed provider response; see [`answer`].
-pub fn answer_value(
-    protocol: ProviderProtocol,
-    value: &Value,
-    max_bytes: usize,
-) -> Result<String, String> {
-    let text = match protocol {
-        ProviderProtocol::Anthropic => {
-            match value.get("stop_reason").and_then(Value::as_str) {
-                Some("refusal") => return Err("the model declined the transform".into()),
-                Some("max_tokens") => return Err("the model's answer was cut off".into()),
-                _ => {}
-            }
-            value
-                .get("content")
-                .and_then(Value::as_array)
-                .and_then(|blocks| {
-                    blocks
-                        .iter()
-                        .find(|block| block.get("type").and_then(Value::as_str) == Some("text"))
-                })
-                .and_then(|block| block.get("text"))
-                .and_then(Value::as_str)
-        }
-        ProviderProtocol::OpenAiCompatible => {
-            let choice = value
-                .get("choices")
-                .and_then(Value::as_array)
-                .and_then(|choices| choices.first());
-            if choice
-                .and_then(|choice| choice.get("finish_reason"))
-                .and_then(Value::as_str)
-                == Some("length")
-            {
-                return Err("the model's answer was cut off".into());
-            }
-            choice
-                .and_then(|choice| choice.get("message"))
-                .and_then(|message| message.get("content"))
-                .and_then(Value::as_str)
-        }
-    }
-    .ok_or_else(|| "provider response carried no answer text".to_string())?;
-    if text.len() > max_bytes {
-        return Err("the model's answer exceeds its size limit".into());
-    }
-    Ok(text.to_string())
 }
 
 /// The request URL for a provider base `endpoint`, which may already name
@@ -313,80 +197,132 @@ pub fn responses_url(profile: &ProviderProfile) -> String {
     }
 }
 
-/// The request URL for `profile`: [`url()`], or its Responses route.
-pub fn profile_url(profile: &ProviderProfile) -> String {
-    if speaks_responses(profile) {
-        responses_url(profile)
-    } else {
-        url(profile.protocol, &profile.endpoint)
+/// The most a single-shot ask's answer is allowed when it names no bound.
+const DEFAULT_MAX_TOKENS: u32 = 4096;
+
+impl Ask<'_> {
+    /// The turn this ask is: its instruction and its input, no tools.
+    fn request(&self) -> ModelRequest {
+        let mut messages = Vec::with_capacity(2);
+        if !self.instructions.is_empty() {
+            messages.push(Message::text(Role::System, self.instructions));
+        }
+        messages.push(Message::text(Role::User, self.input));
+        ModelRequest {
+            messages,
+            tools: Vec::new(),
+            tool_choice: ToolChoice::None,
+            max_output_tokens: self.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
+        }
+    }
+
+    /// The fields only a single-shot ask sets, on `api`'s wire.
+    fn fields(&self, api: wire::Api) -> Map<String, Value> {
+        let mut fields = Map::new();
+        match self.sampling {
+            Sampling::Deterministic => {
+                fields.insert("temperature".into(), Value::from(0));
+            }
+            Sampling::ProviderDefault => {}
+            Sampling::ProviderDefaultNoThinking => {
+                if api == wire::Api::Anthropic {
+                    fields.insert("thinking".into(), json!({ "type": "disabled" }));
+                }
+            }
+        }
+        match (self.output, api) {
+            (Output::JsonObject, wire::Api::Chat) => {
+                fields.insert("response_format".into(), json!({ "type": "json_object" }));
+            }
+            (Output::JsonObject, wire::Api::Responses | wire::Api::ChatGpt) => {
+                fields.insert(
+                    "text".into(),
+                    json!({ "format": { "type": "json_object" } }),
+                );
+            }
+            (Output::Schema { schema, effort }, wire::Api::Anthropic) => {
+                fields.insert(
+                    "output_config".into(),
+                    json!({
+                        "effort": effort,
+                        "format": { "type": "json_schema", "schema": schema }
+                    }),
+                );
+            }
+            _ => {}
+        }
+        fields
     }
 }
 
-/// The request body of `ask` for `profile`: [`body`], or a Responses
-/// request. That one always streams and is never stored, as the `ChatGPT`
-/// backend requires, and names neither a temperature nor an output limit,
-/// which its reasoning models refuse; [`profile_answer`] reads the stream
-/// and still bounds the answer.
-pub fn profile_body(profile: &ProviderProfile, ask: &Ask<'_>) -> Value {
-    if !speaks_responses(profile) {
-        return body(profile.protocol, ask);
-    }
-    json!({
-        "model": ask.model,
-        "instructions": ask.instructions,
-        "input": [{
-            "type": "message",
-            "role": "user",
-            "content": [{ "type": "input_text", "text": ask.input }]
-        }],
-        "text": { "format": { "type": "json_object" } },
-        "stream": true,
-        "store": false
-    })
-}
-
-/// The answer text of a response to [`profile_body`]; see [`answer`].
+/// The request body of `ask` for `profile`, on the wire its turns take
+/// ([`wire::Api::of`]).
 ///
 /// # Errors
 ///
-/// As [`answer`].
+/// The ask is no request the profile's wire can carry.
+pub fn profile_body(profile: &ProviderProfile, ask: &Ask<'_>) -> Result<Value, String> {
+    let fields = ask.fields(wire::Api::of(profile));
+    wire::body(
+        profile,
+        ask.model,
+        &ask.request(),
+        wire::Ask {
+            streaming: false,
+            extra: Some(&fields),
+        },
+    )
+    .map_err(|error| error.message)
+}
+
+/// The answer text of `body`, a provider's response to [`profile_body`] of
+/// `ask`: whole, or the stream of a wire that always streams. A refusal or a
+/// cut-off answer is an error rather than text: the caller would otherwise
+/// validate half an answer.
+///
+/// # Errors
+///
+/// The response is no answer, a refusal, cut off, without text, or longer
+/// than `max_bytes`.
 pub fn profile_answer(
     profile: &ProviderProfile,
+    ask: &Ask<'_>,
     body: &str,
     max_bytes: usize,
 ) -> Result<String, String> {
-    if !speaks_responses(profile) {
-        return answer(profile.protocol, body, max_bytes);
+    let request = ask.request();
+    let api = wire::Api::of(profile);
+    let response = if api.always_streams() {
+        let mut stream = wire::Stream::new(api);
+        let mut deltas = Vec::new();
+        stream
+            .push(body.as_bytes(), &mut deltas)
+            .and_then(|()| stream.finish(&request, &mut deltas))
+            .map_err(|error| error.model_error().message)
+    } else {
+        wire::response(profile, &request, body).map_err(|error| error.message)
     }
-    let response = responses_result(body)?;
-    match response.get("status").and_then(Value::as_str) {
-        Some("incomplete") => return Err("the model's answer was cut off".into()),
-        Some("failed" | "cancelled") => return Err("the model's answer failed".into()),
-        _ => {}
-    }
-    let mut text = String::new();
-    for item in response
-        .get("output")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter(|item| item.get("type").and_then(Value::as_str) == Some("message"))
-    {
-        for part in item
-            .get("content")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            match part.get("type").and_then(Value::as_str) {
-                Some("refusal") => return Err("the model declined the transform".into()),
-                Some("output_text") => {
-                    text.push_str(part.get("text").and_then(Value::as_str).unwrap_or_default());
-                }
-                _ => {}
-            }
+    .map_err(|why| {
+        if why.is_empty() {
+            "provider response was unreadable".to_owned()
+        } else {
+            why
         }
+    })?;
+    match response.stop_reason {
+        StopReason::Refusal => return Err("the model declined the transform".into()),
+        StopReason::OutputLimit => return Err("the model's answer was cut off".into()),
+        StopReason::EndTurn | StopReason::ToolCalls => {}
     }
+    let text: String = response
+        .message
+        .content
+        .iter()
+        .filter_map(|content| match content {
+            Content::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
     if text.is_empty() {
         return Err("provider response carried no answer text".into());
     }
@@ -394,31 +330,6 @@ pub fn profile_answer(
         return Err("the model's answer exceeds its size limit".into());
     }
     Ok(text)
-}
-
-/// The final response object of a Responses reply: the `response` of its
-/// terminal stream event, or the body itself when it did not stream.
-fn responses_result(body: &str) -> Result<Value, String> {
-    let unreadable = || "provider response was unreadable".to_string();
-    if let Ok(value) = serde_json::from_str::<Value>(body) {
-        return Ok(value);
-    }
-    let mut last = None;
-    for line in body.lines() {
-        let Some(data) = line.strip_prefix("data:") else {
-            continue;
-        };
-        let Ok(event) = serde_json::from_str::<Value>(data.trim()) else {
-            continue;
-        };
-        if matches!(
-            event.get("type").and_then(Value::as_str),
-            Some("response.completed" | "response.incomplete" | "response.failed")
-        ) {
-            last = event.get("response").cloned();
-        }
-    }
-    last.ok_or_else(unreadable)
 }
 
 /// The URL listing `profile`'s models: its own path under the endpoint, or
@@ -621,10 +532,21 @@ mod tests {
         }
     }
 
+    fn hosted(protocol: ProviderProtocol) -> ProviderProfile {
+        ProviderProfile {
+            endpoint: "https://models.example.test/v1".into(),
+            ..ProviderProfile::hosted(protocol)
+        }
+    }
+
+    fn sent(protocol: ProviderProtocol, ask: &Ask<'_>) -> Value {
+        profile_body(&hosted(protocol), ask).unwrap()
+    }
+
     #[test]
     fn bodies_carry_one_turn_no_tools_and_the_chosen_sampling() {
         for protocol in ProviderProtocol::ALL.iter().copied() {
-            let body = body(protocol, &ask(Sampling::Deterministic));
+            let body = sent(protocol, &ask(Sampling::Deterministic));
             assert_eq!(body["model"], "model-x");
             assert_eq!(body["max_tokens"], 200);
             assert_eq!(body["temperature"], 0);
@@ -634,20 +556,20 @@ mod tests {
             assert!(body.to_string().contains("the input"));
             assert!(body.to_string().contains("be brief"));
         }
-        let anthropic = body(
+        let anthropic = sent(
             ProviderProtocol::Anthropic,
             &ask(Sampling::ProviderDefaultNoThinking),
         );
         assert!(anthropic.get("temperature").is_none());
         assert_eq!(anthropic["thinking"], json!({ "type": "disabled" }));
-        assert_eq!(anthropic["system"], "be brief");
-        let openai = body(
+        assert!(anthropic["system"].to_string().contains("be brief"));
+        let openai = sent(
             ProviderProtocol::OpenAiCompatible,
             &ask(Sampling::ProviderDefaultNoThinking),
         );
         assert!(openai.get("temperature").is_none());
         assert!(openai.get("thinking").is_none());
-        let plain = body(ProviderProtocol::Anthropic, &ask(Sampling::ProviderDefault));
+        let plain = sent(ProviderProtocol::Anthropic, &ask(Sampling::ProviderDefault));
         assert!(plain.get("temperature").is_none());
         assert!(plain.get("thinking").is_none());
     }
@@ -660,64 +582,62 @@ mod tests {
             schema: &schema,
             effort: "low",
         };
-        let anthropic = body(ProviderProtocol::Anthropic, &structured);
+        let anthropic = sent(ProviderProtocol::Anthropic, &structured);
         assert_eq!(anthropic["output_config"]["effort"], "low");
         assert_eq!(anthropic["output_config"]["format"]["type"], "json_schema");
         assert_eq!(anthropic["output_config"]["format"]["schema"], schema);
-        let openai = body(ProviderProtocol::OpenAiCompatible, &structured);
+        let openai = sent(ProviderProtocol::OpenAiCompatible, &structured);
         assert!(openai.get("output_config").is_none());
 
         let mut object = ask(Sampling::Deterministic);
         object.output = Output::JsonObject;
         assert_eq!(
-            body(ProviderProtocol::OpenAiCompatible, &object)["response_format"]["type"],
+            sent(ProviderProtocol::OpenAiCompatible, &object)["response_format"]["type"],
             "json_object"
         );
         assert!(
-            body(ProviderProtocol::Anthropic, &object)
+            sent(ProviderProtocol::Anthropic, &object)
                 .get("response_format")
                 .is_none()
         );
-
-        let mut unbounded = ask(Sampling::Deterministic);
-        unbounded.max_tokens = None;
-        assert!(
-            body(ProviderProtocol::OpenAiCompatible, &unbounded)
-                .get("max_tokens")
-                .is_none()
+        let mut responses = hosted(ProviderProtocol::OpenAiCompatible);
+        responses.openai_api = Some(OpenAiApi::Responses);
+        assert_eq!(
+            profile_body(&responses, &object).unwrap()["text"]["format"]["type"],
+            "json_object"
         );
 
         let mut silent = ask(Sampling::Deterministic);
         silent.instructions = "";
         assert!(
-            body(ProviderProtocol::Anthropic, &silent)
+            sent(ProviderProtocol::Anthropic, &silent)
                 .get("system")
                 .is_none()
         );
-        let messages = body(ProviderProtocol::OpenAiCompatible, &silent);
+        let messages = sent(ProviderProtocol::OpenAiCompatible, &silent);
         assert_eq!(messages["messages"].as_array().map(Vec::len), Some(1));
     }
 
     #[test]
     fn answers_are_the_text_and_never_a_refusal_a_fragment_or_oversized() {
-        let anthropic = r#"{"stop_reason":"end_turn","content":[{"type":"thinking","thinking":""},{"type":"text","text":"{\"result\":1}"}]}"#;
-        assert_eq!(
-            answer(ProviderProtocol::Anthropic, anthropic, 64).unwrap(),
-            r#"{"result":1}"#
-        );
-        assert!(answer(ProviderProtocol::Anthropic, anthropic, 4).is_err());
+        let asked = ask(Sampling::Deterministic);
+        let anthropic = hosted(ProviderProtocol::Anthropic);
+        let answer = |profile: &ProviderProfile, body: &str, most: usize| {
+            profile_answer(profile, &asked, body, most)
+        };
+        let said = r#"{"stop_reason":"end_turn","content":[{"type":"thinking","thinking":""},{"type":"text","text":"{\"result\":1}"}]}"#;
+        assert_eq!(answer(&anthropic, said, 64).unwrap(), r#"{"result":1}"#);
+        assert!(answer(&anthropic, said, 4).is_err());
         let refused = r#"{"stop_reason":"refusal","content":[]}"#;
-        assert!(answer(ProviderProtocol::Anthropic, refused, 64).is_err());
+        assert!(answer(&anthropic, refused, 64).is_err());
         let cut = r#"{"stop_reason":"max_tokens","content":[{"type":"text","text":"{"}]}"#;
-        assert!(answer(ProviderProtocol::Anthropic, cut, 64).is_err());
-        let openai = r#"{"choices":[{"finish_reason":"stop","message":{"content":"{}"}}]}"#;
-        assert_eq!(
-            answer(ProviderProtocol::OpenAiCompatible, openai, 64).unwrap(),
-            "{}"
-        );
+        assert!(answer(&anthropic, cut, 64).is_err());
+        let openai = hosted(ProviderProtocol::OpenAiCompatible);
+        let whole = r#"{"choices":[{"finish_reason":"stop","message":{"content":"{}"}}]}"#;
+        assert_eq!(answer(&openai, whole, 64).unwrap(), "{}");
         let truncated = r#"{"choices":[{"finish_reason":"length","message":{"content":"{"}}]}"#;
-        assert!(answer(ProviderProtocol::OpenAiCompatible, truncated, 64).is_err());
-        assert!(answer(ProviderProtocol::OpenAiCompatible, "not json", 64).is_err());
+        assert!(answer(&openai, truncated, 64).is_err());
+        assert!(answer(&openai, "not json", 64).is_err());
     }
 
     #[test]
@@ -854,7 +774,7 @@ mod tests {
         let chatgpt = crate::presets::Preset::CHATGPT.profile();
         assert!(speaks_responses(&chatgpt));
         assert_eq!(
-            profile_url(&chatgpt),
+            wire::url(&chatgpt),
             "https://chatgpt.com/backend-api/codex/responses"
         );
         let token = jwt(&json!({
@@ -879,7 +799,8 @@ mod tests {
             .is_none()
         );
 
-        let body = profile_body(&chatgpt, &ask(Sampling::Deterministic));
+        let asked = ask(Sampling::Deterministic);
+        let body = profile_body(&chatgpt, &asked).unwrap();
         assert_eq!(body["instructions"], "be brief");
         assert_eq!(body["input"][0]["content"][0]["text"], "the input");
         assert_eq!(
@@ -897,15 +818,20 @@ mod tests {
             "[{\"type\":\"output_text\",\"text\":\"{\\\"a\\\":1}\"}]}]}}\n\n"
         );
         assert_eq!(
-            profile_answer(&chatgpt, streamed, 64).unwrap(),
+            profile_answer(&chatgpt, &asked, streamed, 64).unwrap(),
             r#"{"a":1}"#
         );
-        assert!(profile_answer(&chatgpt, streamed, 3).is_err());
-        let cut = r#"{"status":"incomplete","output":[]}"#;
-        assert!(profile_answer(&chatgpt, cut, 64).is_err());
-        let refused = r#"{"status":"completed","output":[{"type":"message","content":[{"type":"refusal","refusal":"no"}]}]}"#;
-        assert!(profile_answer(&chatgpt, refused, 64).is_err());
-        assert!(profile_answer(&chatgpt, "event: ping\n\n", 64).is_err());
+        assert!(profile_answer(&chatgpt, &asked, streamed, 3).is_err());
+        let event = |response: &str| {
+            format!("data: {{\"type\":\"response.completed\",\"response\":{response}}}\n\n")
+        };
+        let cut = event(r#"{"status":"incomplete","output":[]}"#);
+        assert!(profile_answer(&chatgpt, &asked, &cut, 64).is_err());
+        let refused = event(
+            r#"{"status":"completed","output":[{"type":"message","content":[{"type":"refusal","refusal":"no"}]}]}"#,
+        );
+        assert!(profile_answer(&chatgpt, &asked, &refused, 64).is_err());
+        assert!(profile_answer(&chatgpt, &asked, "event: ping\n\n", 64).is_err());
     }
 
     #[test]
@@ -914,10 +840,7 @@ mod tests {
         let openai = Preset::OPENAI.profile();
         assert_eq!(openai_api(&openai), Some(OpenAiApi::Responses));
         assert!(!speaks_responses(&openai));
-        assert_eq!(
-            profile_url(&openai),
-            "https://api.openai.com/v1/chat/completions"
-        );
+        assert_eq!(wire::url(&openai), "https://api.openai.com/v1/responses");
         assert_eq!(
             responses_url(&openai),
             "https://api.openai.com/v1/responses"
@@ -974,7 +897,7 @@ mod tests {
             .collect();
         assert!(names.contains(&"copilot-integration-id") && names.contains(&"editor-version"));
         assert_eq!(
-            profile_url(&copilot),
+            wire::url(&copilot),
             "https://api.githubcopilot.com/chat/completions"
         );
     }

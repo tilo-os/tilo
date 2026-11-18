@@ -251,6 +251,96 @@ async fn a_device_in_a_session_redeems_an_invitation_on_another_stream_of_its_co
     host.server.shutdown().await;
 }
 
+/// An invitation's answer the connection lost is asked for again under the same request: the host
+/// answers with the admission it made, never that the invitation is spent, so a device whose first
+/// answer did not reach it is let in rather than turned away by its own redemption.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_invitation_asked_again_under_the_same_request_admits_the_device_it_admitted() {
+    use tilo_server_protocol::entering::{Entered, Entering as Entry, Through};
+    let (alice, _) = UserIdentity::generate("Alice", 1);
+    let host_device = enrol(&alice, "alice-home", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
+    let workspaces = host.server.workspaces().unwrap();
+    let acme = workspaces.create("Acme").await.unwrap();
+    let beta = workspaces.create("Beta").await.unwrap();
+    let host_cert = host_device.cert.clone();
+    let bob = new_key();
+    let user = bob.verifying_key().to_bytes();
+    let key = new_key();
+    let (invitation, token) = entry_grant(&host, &alice, &host_device, &acme.workspace, user).await;
+    let (cert, entry) = invitation_entry(
+        &host_cert,
+        &invitation,
+        &key,
+        entering(None, Some(&bob), &token),
+    )
+    .await
+    .unwrap();
+    let device = Device::over(
+        PeerConfig {
+            host: host.iroh(),
+            cert,
+            host_cert: host_cert.clone(),
+            revocations: RevocationList::new(),
+            entering: Some(entry),
+        },
+        Arc::new(key.clone()),
+        "Firefox on Linux",
+    );
+    entered(device.session()).await.unwrap();
+    let issued = workspaces
+        .issue(
+            &beta.workspace,
+            &host_device.cert,
+            tilo_server::workspaces::IssueInvitationRequest {
+                request_id: [9; 32],
+                role: tilo_peer_state::join::Role::Editor,
+                recipient_user_public_key: None,
+                invitee_name: None,
+                expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
+                inviter_name: Some("Alice".into()),
+            },
+        )
+        .await
+        .unwrap()
+        .signed_invitation;
+    let asked = Entry {
+        workspace: beta.workspace.clone(),
+        name: "Bob".into(),
+        request_id: [7; 32],
+        through: Through::Invitation {
+            invitation: issued.clone(),
+            token: None,
+        },
+    };
+    for ask in ["first", "again"] {
+        let (done, receive) = tilo_session_client::answer();
+        device
+            .session()
+            .send(Cmd::Enter(asked.clone(), done))
+            .unwrap();
+        let answer = receive.await.unwrap().unwrap();
+        assert!(
+            matches!(&answer, Entered::Admitted { workspace, .. } if *workspace == beta.workspace),
+            "{ask}: {answer:?}"
+        );
+    }
+    // Under another request, the spent invitation admits nobody.
+    let (done, receive) = tilo_session_client::answer();
+    let other = Entry {
+        request_id: [8; 32],
+        ..asked
+    };
+    device.session().send(Cmd::Enter(other, done)).unwrap();
+    let answer = receive.await.unwrap().unwrap();
+    assert!(matches!(answer, Entered::Refused(_)), "{answer:?}");
+    device.close();
+
+    drop(host.web);
+    host.server.shutdown().await;
+}
+
 #[tokio::test]
 async fn a_held_certificate_serves_only_from_the_same_host_for_the_same_person_while_it_lasts() {
     let (alice, _) = UserIdentity::generate("Alice", 1);

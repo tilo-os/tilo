@@ -35,381 +35,6 @@ fn stamp(device: &str, counter: u64) -> FabricStamp {
         device: id(device),
     }
 }
-fn snapshot(device: &str, counter: u64, x: i32, caps: FabricCapabilities) -> DeviceFabricSnapshot {
-    let owner = id(device);
-    DeviceFabricSnapshot {
-        schema_version: FABRIC_SCHEMA_VERSION,
-        owner: owner.clone(),
-        presence: DevicePresence {
-            device: owner.clone(),
-            label: device.into(),
-            kind: DeviceKind::Laptop,
-            capabilities: caps,
-            online: true,
-            last_seen_unix_ms: 10,
-            wake_routes: Vec::new(),
-            session: OwnerSession::default(),
-            stamp: stamp(device, counter),
-        },
-        media: Vec::new(),
-        clipboard: Vec::new(),
-        settings: Vec::new(),
-        wifi: Vec::new(),
-        display: Some(DisplayPlacement {
-            outputs: Vec::new(),
-            device: owner,
-            rect: DisplayRect {
-                x,
-                y: 0,
-                width: 1000,
-                height: 800,
-            },
-            scale_milli: 1000,
-            stamp: stamp(device, counter),
-        }),
-        unlock: crate::fabric::unlock::UnlockFabricState::default(),
-        speakers: crate::fabric::speaker_group::SpeakerFabricState::default(),
-    }
-}
-
-fn arranged_setting(device: &str, counter: u64, displays: Value) -> RoamingSetting {
-    let mut value = serde_json::Map::new();
-    value.insert("displays".into(), displays);
-    RoamingSetting {
-        key: settings_store::person_displays::PLACEMENTS_KEY.into(),
-        value: Value::Object(value),
-        stamp: stamp(device, counter),
-    }
-}
-
-#[test]
-fn display_placements_merge_concurrent_edits_in_both_delivery_orders() {
-    let entry = |output: &str, x: i32, rev: u64| {
-        serde_json::json!({
-            "device": "desktop", "output": output, "enabled": true,
-            "order": 0, "placed": true, "x": x, "y": 0, "rev": rev
-        })
-    };
-    let mut desktop = snapshot("desktop", 9, 0, FabricCapabilities::default());
-    desktop.settings.push(arranged_setting(
-        "desktop",
-        9,
-        serde_json::json!([entry("DP-1", 100, 3), entry("DP-2", 0, 1)]),
-    ));
-    let mut laptop = snapshot("laptop", 10, 1000, FabricCapabilities::default());
-    laptop.settings.push(arranged_setting(
-        "laptop",
-        10,
-        serde_json::json!([entry("DP-1", 0, 1), entry("DP-2", 200, 3)]),
-    ));
-    let mut first = DeviceFabric::default();
-    first.upsert(desktop.clone()).unwrap();
-    first.upsert(laptop.clone()).unwrap();
-    let mut second = DeviceFabric::default();
-    second.upsert(laptop).unwrap();
-    second.upsert(desktop).unwrap();
-    let records = first.merged_setting_records();
-    assert_eq!(records, second.merged_setting_records());
-    let record = &records[settings_store::person_displays::PLACEMENTS_KEY];
-    assert_eq!(record.stamp, stamp("laptop", 10));
-    let placement = settings_store::person_displays::Placements::from_value(&record.value).unwrap();
-    assert_eq!(placement.displays.len(), 2);
-    assert_eq!(placement.displays[0].x, 100);
-    assert_eq!(placement.displays[1].x, 200);
-    // A later fabric publication must not beat a newer per-display edit.
-    let mut stale = snapshot("tablet", 100, 2000, FabricCapabilities::default());
-    stale.settings.push(arranged_setting(
-        "tablet",
-        100,
-        serde_json::json!([entry("DP-1", -300, 2)]),
-    ));
-    first.upsert(stale).unwrap();
-    assert_eq!(
-        first.merged_settings()[settings_store::person_displays::PLACEMENTS_KEY],
-        record.value
-    );
-}
-
-#[test]
-fn display_placements_reject_malformed_fabric_records() {
-    for displays in [
-        serde_json::json!(false),
-        serde_json::json!([{
-            "device": "desktop", "output": "DP-1", "enabled": true,
-            "order": 0, "placed": true, "x": i32::MIN, "y": 0, "rev": 1
-        }]),
-    ] {
-        let mut source = snapshot("desktop", 1, 0, FabricCapabilities::default());
-        source
-            .settings
-            .push(arranged_setting("desktop", 1, displays));
-        assert_eq!(
-            DeviceFabric::default().upsert(source),
-            Err(FabricError::InvalidRoamingSetting)
-        );
-    }
-}
-
-#[test]
-fn display_connectors_round_trip_as_their_pinned_bytes() {
-    let payload = crate::PersonalFabricPayload::DisplayConnectors {
-        stamp: stamp("peer", 1),
-        outputs: Vec::new(),
-    };
-    let pinned = hex::decode("0701047065657200").unwrap();
-    assert_eq!(postcard::to_allocvec(&payload).unwrap(), pinned);
-    let decoded: crate::PersonalFabricPayload = postcard::from_bytes(&pinned).unwrap();
-    assert!(matches!(decoded,
-        crate::PersonalFabricPayload::DisplayConnectors { outputs, .. }
-            if outputs.is_empty()));
-}
-
-fn rich_display_fixture() -> (DeviceFabricSnapshot, DisplayOutputObservation) {
-    let mut source = snapshot("peer", 2, 960, FabricCapabilities::default());
-    let facts = DisplayOutputObservation {
-        connector: "DP-1".into(),
-        output: settings_store::person_displays::DeviceOutput {
-            id: "monitor:panel".into(),
-            name: "Panel".into(),
-            builtin: false,
-            x: 0,
-            y: 0,
-            width: 1000,
-            height: 800,
-            mode_width: 2000,
-            mode_height: 1600,
-            refresh_mhz: 59_940,
-            scale_milli: 2000,
-            connected: true,
-            enabled: true,
-        },
-    };
-    source
-        .display
-        .as_mut()
-        .unwrap()
-        .outputs
-        .push(DisplayConnectorPlacement {
-            connector: facts.connector.clone(),
-            label: "DP-1".into(),
-            rect: DisplayRect {
-                x: 0,
-                y: 0,
-                width: 1000,
-                height: 800,
-            },
-            scale_milli: 2000,
-        });
-    (source, facts)
-}
-
-#[test]
-fn rich_display_observations_bind_owner_revision_geometry_and_checkpoint() {
-    let (mut source, facts) = rich_display_fixture();
-    let owner = source.owner.clone();
-    let revision = source.display.as_ref().unwrap().stamp.clone();
-    let mut fabric = DeviceFabric::default();
-    fabric.upsert(source.clone()).unwrap();
-    let checkpoint = fabric.encode_checkpoint().unwrap();
-    for stamp in [stamp("stranger", 2), stamp("peer", 1)] {
-        assert_eq!(
-            fabric.observe_display_outputs(&owner, &stamp, vec![facts.clone()]),
-            Err(FabricError::ForeignAuthorship)
-        );
-    }
-    let mut wrong = facts.clone();
-    wrong.output.width += 1;
-    assert_eq!(
-        fabric.observe_display_outputs(&owner, &revision, vec![wrong]),
-        Err(FabricError::InvalidDisplayPlacement)
-    );
-    assert_eq!(
-        fabric.observe_display_outputs(&owner, &revision, Vec::new()),
-        Err(FabricError::InvalidDisplayPlacement)
-    );
-    assert!(
-        fabric
-            .observe_display_outputs(&owner, &revision, vec![facts.clone()])
-            .unwrap()
-    );
-    assert!(
-        !fabric
-            .observe_display_outputs(&owner, &revision, vec![facts.clone()])
-            .unwrap()
-    );
-    assert_eq!(fabric.encode_checkpoint().unwrap(), checkpoint);
-    assert!(
-        DeviceFabric::decode_checkpoint(&checkpoint)
-            .unwrap()
-            .display_outputs(&owner)
-            .is_none()
-    );
-    let mut conflicting = facts.clone();
-    conflicting.output.refresh_mhz = 60_000;
-    assert_eq!(
-        fabric.observe_display_outputs(&owner, &revision, vec![conflicting]),
-        Err(FabricError::ConflictingRevision)
-    );
-    source.presence.online = false;
-    source.presence.stamp.counter = 3;
-    fabric.upsert(source.clone()).unwrap();
-    let devices = fabric.person_devices(&owner);
-    assert_eq!(devices[0].outputs, vec![facts.output]);
-    assert!(!devices[0].online);
-    source.presence.stamp.counter = 4;
-    source.display.as_mut().unwrap().stamp.counter = 4;
-    fabric.upsert(source).unwrap();
-    assert!(fabric.display_outputs(&owner).is_none());
-    assert!(fabric.person_devices(&owner)[0].outputs.is_empty());
-    assert!(fabric.remove_device(&owner));
-    assert!(fabric.person_devices(&owner).is_empty());
-}
-
-#[test]
-fn rich_display_observations_reject_unbounded_and_duplicate_metadata() {
-    let (source, facts) = rich_display_fixture();
-    let owner = source.owner.clone();
-    let revision = source.display.as_ref().unwrap().stamp.clone();
-    let mut fabric = DeviceFabric::default();
-    fabric.upsert(source).unwrap();
-    for invalid in [
-        {
-            let mut item = facts.clone();
-            item.output.x = i32::MIN;
-            vec![item]
-        },
-        vec![facts.clone(); settings_store::person_displays::MAX_DEVICE_OUTPUTS + 1],
-    ] {
-        assert_eq!(
-            fabric.observe_display_outputs(&owner, &revision, invalid),
-            Err(FabricError::InvalidDisplayPlacement)
-        );
-    }
-    assert_eq!(
-        fabric.observe_display_outputs(&owner, &revision, vec![facts.clone(), facts]),
-        Err(FabricError::DuplicateItem)
-    );
-}
-
-#[test]
-fn connector_extension_keeps_schema_six_display_bytes() {
-    let peer = DeviceId::new("peer").unwrap();
-    let display = DisplayPlacement {
-        device: peer.clone(),
-        rect: DisplayRect {
-            x: 960,
-            y: 0,
-            width: 1280,
-            height: 720,
-        },
-        scale_milli: 1000,
-        stamp: FabricStamp {
-            counter: 1,
-            device: peer,
-        },
-        outputs: vec![DisplayConnectorPlacement {
-            connector: "DP-1".into(),
-            label: "Panel".into(),
-            rect: DisplayRect {
-                x: 0,
-                y: 0,
-                width: 1280,
-                height: 720,
-            },
-            scale_milli: 1250,
-        }],
-    };
-    // Fixed schema-6 Postcard bytes: owner, aggregate rect, scale, stamp.
-    let previous = hex::decode("0470656572800f00800ad005e807010470656572").unwrap();
-    assert_eq!(FABRIC_SCHEMA_VERSION, 8);
-    assert_eq!(postcard::to_allocvec(&display).unwrap(), previous);
-    let decoded: DisplayPlacement = postcard::from_bytes(&previous).unwrap();
-    assert!(
-        decoded.outputs.is_empty(),
-        "legacy peers retain their aggregate-screen behavior"
-    );
-    assert_eq!(decoded.rect, display.rect);
-}
-
-#[test]
-fn connector_observations_require_the_exact_owner_display_revision() {
-    let caps = FabricCapabilities {
-        display: true,
-        pointer: true,
-        ..Default::default()
-    };
-    let mut local = snapshot("peer", 2, 960, caps);
-    let display = local.display.as_mut().unwrap();
-    let owner = display.device.clone();
-    let stamp = display.stamp.clone();
-    let outputs = vec![DisplayConnectorPlacement {
-        connector: "DP-1".into(),
-        label: "Panel".into(),
-        rect: DisplayRect {
-            x: 0,
-            y: 0,
-            width: 960,
-            height: 540,
-        },
-        scale_milli: 1250,
-    }];
-    let mut fabric = DeviceFabric::default();
-    fabric.upsert(local.clone()).unwrap();
-    let mut stale = stamp.clone();
-    stale.counter -= 1;
-    assert!(
-        fabric
-            .observe_display_connectors(&owner, &stale, outputs.clone())
-            .is_err()
-    );
-    assert!(
-        fabric
-            .observe_display_connectors(&DeviceId::new("other").unwrap(), &stamp, outputs.clone())
-            .is_err()
-    );
-    assert!(
-        fabric
-            .observe_display_connectors(&owner, &stamp, outputs.clone())
-            .unwrap()
-    );
-    assert!(
-        !fabric
-            .observe_display_connectors(&owner, &stamp, outputs.clone())
-            .unwrap()
-    );
-    let mut conflict = outputs;
-    conflict[0].rect.x = 50;
-    assert!(
-        fabric
-            .observe_display_connectors(&owner, &stamp, conflict)
-            .is_err()
-    );
-    assert!(
-        !fabric.upsert(local.clone()).unwrap(),
-        "duplicate schema-6 checkpoints retain the optional observation"
-    );
-    local.presence.stamp.counter += 1;
-    fabric.upsert(local).unwrap();
-    assert_eq!(
-        fabric
-            .snapshots()
-            .get(&owner)
-            .unwrap()
-            .display
-            .as_ref()
-            .unwrap()
-            .outputs
-            .len(),
-        1
-    );
-    fabric.remove_device(&owner);
-    assert!(
-        fabric
-            .observe_display_connectors(&owner, &stamp, Vec::new())
-            .is_err(),
-        "revoked or forgotten peers cannot retain observations"
-    );
-}
 
 #[test]
 #[allow(
@@ -593,9 +218,15 @@ fn clipboard_and_nearby_payloads_are_bounded_and_tamper_checked() {
         )
         .unwrap();
         entry.payload = ClipboardPayload::Text("changed".into());
-        let mut source = snapshot("phone", 1, 0, FabricCapabilities::default());
-        source.clipboard.push(entry);
-        assert_eq!(source.validate(), Err(FabricError::ClipboardHashMismatch));
+        assert_eq!(
+            entry.validate(&id("phone")),
+            Err(FabricError::ClipboardHashMismatch)
+        );
+        assert_eq!(
+            entry.validate(&id("laptop")),
+            Err(FabricError::ForeignAuthorship),
+            "another device's copy is not this one's to validate"
+        );
     }
 
     fn nearby_transfer_actions_bind_nonzero_ids_and_bounded_manifests() {
@@ -675,127 +306,20 @@ fn clipboard_and_nearby_payloads_are_bounded_and_tamper_checked() {
 }
 
 #[test]
-fn roaming_settings_accept_only_audited_leaves_and_resolve_deterministically() {
-    fn local_hardware_settings_do_not_roam() {
-        for key in [
-            "tilo.device.name",
-            "tilo.display.scale",
-            "tilo.network.interface.mac",
-            "tilo.storage.mount.usb",
-            "tilo.input_device.tablets",
-            "tilo.audio_device.output_device",
-            "tilo.agent_providers.config",
-        ] {
-            let mut source = snapshot("desktop", 1, 0, FabricCapabilities::default());
-            source.settings.push(RoamingSetting {
-                key: key.into(),
-                value: Value::Bool(true),
-                stamp: stamp("desktop", 1),
-            });
-            assert_eq!(source.validate(), Err(FabricError::InvalidRoamingSetting));
-        }
-    }
-
-    fn only_audited_personal_setting_leaves_are_accepted() {
-        for key in [
-            "tilo.accessibility.screen_reader",
-            "tilo.appearance.studio",
-            "tilo.locale.measurement",
-            "tilo.notifications.per_app",
-            "tilo.input.keyboard_layouts",
-            "tilo.audio.mono_output",
-            "tilo.display_person.night_light_temperature",
-            "tilo.shortcuts.bindings",
-            "tilo.desktop_controls.vim_mode",
-            "tilo.quick_settings.controls",
-            "tilo.text_assistance.auto_correct",
-        ] {
-            assert!(valid_setting_key(key), "expected {key} to roam");
-        }
-        for key in [
-            "tilo.appearance_device.wallpaper_path",
-            "tilo.input_device.keyboard_model",
-            "tilo.audio_device.input_device",
-            "tilo.display.auto_brightness",
-            "tilo.power.auto_suspend",
-            "tilo.updates.auto",
-            "tilo.security.local_credential",
-            "tilo.input",
-        ] {
-            assert!(!valid_setting_key(key), "expected {key} to stay local");
-        }
-    }
-
-    fn newest_roaming_setting_wins_deterministically() {
-        let mut old = snapshot("desktop", 1, 0, FabricCapabilities::default());
-        old.settings.push(RoamingSetting {
-            key: "tilo.appearance.mode".into(),
-            value: Value::Bool(false),
-            stamp: stamp("desktop", 1),
-        });
-        let mut new = snapshot("laptop", 2, 1000, FabricCapabilities::default());
-        new.settings.push(RoamingSetting {
-            key: "tilo.appearance.mode".into(),
-            value: Value::Bool(true),
-            stamp: stamp("laptop", 2),
-        });
-        let mut fabric = DeviceFabric::default();
-        fabric.upsert(old).unwrap();
-        fabric.upsert(new).unwrap();
-        assert_eq!(
-            fabric.merged_settings()["tilo.appearance.mode"],
-            Value::Bool(true)
-        );
-    }
-
-    fn equal_revision_conflicts_fail_instead_of_using_arrival_order() {
-        let mut fabric = DeviceFabric::default();
-        let first = snapshot("laptop", 1, 0, FabricCapabilities::default());
-        let mut conflicting = first.clone();
-        conflicting.presence.label = "Different".into();
-        fabric.upsert(first).unwrap();
-        assert_eq!(
-            fabric.upsert(conflicting),
-            Err(FabricError::ConflictingRevision)
-        );
-    }
-
-    fn persisted_checkpoint_round_trips_only_validated_state() {
-        let mut fabric = DeviceFabric::default();
-        fabric
-            .upsert(snapshot("laptop", 4, 0, FabricCapabilities::default()))
-            .unwrap();
-        let encoded = fabric.encode_checkpoint().unwrap();
-        assert_eq!(DeviceFabric::decode_checkpoint(&encoded).unwrap(), fabric);
-
-        let mut trailing = encoded;
-        trailing.push(0xff);
-        assert_eq!(
-            DeviceFabric::decode_checkpoint(&trailing),
-            Err(FabricError::InvalidCheckpoint)
-        );
-    }
-
-    local_hardware_settings_do_not_roam();
-    only_audited_personal_setting_leaves_are_accepted();
-    newest_roaming_setting_wins_deterministically();
-    equal_revision_conflicts_fail_instead_of_using_arrival_order();
-    persisted_checkpoint_round_trips_only_validated_state();
-}
-
-#[test]
-fn wifi_records_are_sealed_typed_and_legacy_safe() {
+fn wifi_credentials_are_sealed_and_typed() {
     fn wifi_secrets_must_be_sealed() {
-        let mut source = snapshot("phone", 1, 0, FabricCapabilities::default());
-        source.wifi.push(WifiCredential {
+        let credential = WifiCredential {
             network_id: [1; 32],
             ssid: "Home".into(),
             security: os_actions::WifiSecurity::Wpa3,
             sealed_secret: Vec::new(),
             nonce: [2; 24],
             stamp: stamp("phone", 1),
-        });
-        assert_eq!(source.validate(), Err(FabricError::InvalidWifiCredential));
+        };
+        assert_eq!(
+            credential.validate(),
+            Err(FabricError::InvalidWifiCredential)
+        );
     }
 
     fn typed_wifi_security_decodes_the_legacy_string_postcard_shape() {
@@ -823,7 +347,7 @@ fn wifi_records_are_sealed_typed_and_legacy_safe() {
         assert_eq!(postcard::to_allocvec(&decoded).unwrap(), bytes);
     }
 
-    fn legacy_enterprise_record_is_retained_but_cannot_supply_a_password() {
+    fn an_enterprise_entry_never_supplies_a_password() {
         let key = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
         let owner_text = hex::encode(key.verifying_key().to_bytes());
         let owner = id(&owner_text);
@@ -839,6 +363,7 @@ fn wifi_records_are_sealed_typed_and_legacy_safe() {
             },
         )
         .unwrap();
+        assert_eq!(credential.validate(), Ok(()));
         // Version 1 allowed this string even though its secret lacked the EAP
         // identity and CA policy needed to safely recreate the profile.
         credential.security = os_actions::WifiSecurity::Enterprise;
@@ -847,55 +372,11 @@ fn wifi_records_are_sealed_typed_and_legacy_safe() {
             crate::fabric::secrets::open_wifi_credential(&credential, &key),
             Err(crate::fabric::secrets::WifiSecretError::InvalidCredential)
         );
-
-        let mut source = snapshot(&owner_text, 1, 0, FabricCapabilities::default());
-        source.wifi.push(credential);
-        source.settings.push(RoamingSetting {
-            key: "tilo.appearance.mode".into(),
-            value: Value::String("Nord".into()),
-            stamp: FabricStamp {
-                counter: 1,
-                device: owner,
-            },
-        });
-        let mut fabric = DeviceFabric::default();
-        fabric.upsert(source).unwrap();
-
-        assert_eq!(
-            fabric.merged_settings()["tilo.appearance.mode"],
-            Value::String("Nord".into())
-        );
     }
 
     wifi_secrets_must_be_sealed();
     typed_wifi_security_decodes_the_legacy_string_postcard_shape();
-    legacy_enterprise_record_is_retained_but_cannot_supply_a_password();
-}
-
-#[test]
-fn a_device_that_went_away_keeps_its_place_until_back() {
-    let caps = FabricCapabilities {
-        display: true,
-        pointer: true,
-        ..FabricCapabilities::default()
-    };
-    let tablet = snapshot("tablet", 1, 1000, caps);
-    let mut fabric = DeviceFabric::default();
-    fabric.upsert(snapshot("laptop", 1, 0, caps)).unwrap();
-    fabric.upsert(tablet.clone()).unwrap();
-    assert!(fabric.mark_departed(&id("tablet")));
-    let gone = &fabric.snapshots()[&id("tablet")];
-    assert!(!gone.presence.online && gone.display.is_some());
-    // Its last revision again, from itself: it is back.
-    assert_eq!(fabric.upsert(tablet), Ok(true));
-    // A restart keeps only this device online.
-    let restored = fabric.restored(Some(&id("laptop")));
-    let online: Vec<_> = restored
-        .online_devices()
-        .map(|p| p.device.clone())
-        .collect();
-    assert_eq!(online, vec![id("laptop")]);
-    assert!(restored.snapshots().contains_key(&id("tablet")));
+    an_enterprise_entry_never_supplies_a_password();
 }
 
 #[test]
@@ -1492,37 +973,36 @@ fn speaker_group_wire_rejects_zero_identities_and_bad_names() {
 }
 
 #[test]
-fn a_snapshot_cannot_carry_a_group_led_by_another_device() {
+fn a_group_led_by_another_device_is_refused() {
     use crate::fabric::speaker_group::{
-        EndpointSelector, SpeakerGroup, SpeakerGroupId, SpeakerGroupMember, SpeakerRole,
-        SpeakerTrim, StereoSide,
+        EndpointSelector, SpeakerFabricState, SpeakerGroup, SpeakerGroupId, SpeakerGroupMember,
+        SpeakerRole, SpeakerTrim, StereoSide,
     };
-    let mut laptop = snapshot("laptop", 1, 0, FabricCapabilities::default());
     let member = |device: &str, side| SpeakerGroupMember {
         device: id(device),
         output: EndpointSelector([9; 16]),
         role: SpeakerRole::Stereo(side),
         trim: SpeakerTrim::default(),
     };
-    laptop.speakers.groups.push(SpeakerGroup {
+    let group = SpeakerGroup {
         id: SpeakerGroupId([5; 16]),
-        name: "Living room".into(),
+        name: "Studio pair".into(),
         leader: id("tablet"),
         members: vec![
             member("laptop", StereoSide::Left),
             member("tablet", StereoSide::Right),
         ],
         stamp: stamp("laptop", 1),
-    });
-    assert_eq!(laptop.validate(), Err(FabricError::ForeignAuthorship));
-    laptop.speakers.groups[0].leader = id("laptop");
-    assert_eq!(laptop.validate(), Ok(()));
-    let mut fabric = DeviceFabric::default();
-    fabric.upsert(laptop).unwrap();
-    let group = fabric.speaker_group(SpeakerGroupId([5; 16])).unwrap();
+    };
+    let mut state = SpeakerFabricState {
+        groups: vec![group],
+        ..SpeakerFabricState::default()
+    };
     assert_eq!(
-        fabric.admit_speaker_group(group),
-        Err(FabricError::IneligibleSpeakerMember),
-        "the laptop does not offer that output"
+        state.validate(&id("laptop")),
+        Err(FabricError::ForeignAuthorship),
+        "a device does not write a group another device leads"
     );
+    state.groups[0].leader = id("laptop");
+    assert_eq!(state.validate(&id("laptop")), Ok(()));
 }

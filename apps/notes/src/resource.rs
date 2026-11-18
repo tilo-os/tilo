@@ -1,5 +1,5 @@
 //! The notes app on the framework: the [`Notebook`] resource, the parts its
-//! notes are kept in ([`PagePart`]), its window and what launching it on a
+//! notes are kept in ([`NoteList`]), its window and what launching it on a
 //! Markdown file does.
 
 use crate::metadata::CATALOG;
@@ -14,8 +14,8 @@ use ui::tilo_resource::Invoke;
 use crate::app::NotesApp;
 use crate::effect::NotesEffect;
 use crate::model::PageId;
+use crate::note_list::{NoteList, note_list};
 pub use crate::notebook::Notebook;
-use crate::part::{PagePart, page_part};
 use ui::widget::Element;
 
 /// Framework app: the notes widget is the window over [`Notebook`].
@@ -41,7 +41,7 @@ impl ResourceApp for NotesShell {
 
     /// The notes, kept in parts beside the notebook.
     fn resources(resources: &mut ui::framework::Resources<'_>) {
-        resources.chain::<PagePart>();
+        resources.chain::<NoteList>();
     }
 
     fn view(cx: &mut ViewCx<Notebook>) -> Element {
@@ -52,7 +52,7 @@ impl ResourceApp for NotesShell {
         // A note's save status sits in its header row beside the title, on
         // the note's own save status surface, so the window paints none.
         let mut app = NotesApp::empty_surface(&author, cx.save_status());
-        let chain = cx.chain::<PagePart>();
+        let chain = cx.chain::<NoteList>();
         let notes = chain.and_then(|chain| {
             let actions = cx.resource_actions(&chain)?;
             Some(crate::app::Notes { chain, actions })
@@ -71,7 +71,7 @@ impl ResourceApp for NotesShell {
         // the address the part keeping it publishes it under.
         let mut open = app.opener();
         cx.on_open(move |anchor: &str| {
-            let (_, page) = ui::tilo_resource::items::item_of_resource::<PagePart>(anchor)
+            let (_, page) = ui::tilo_resource::items::item_of_resource::<NoteList>(anchor)
                 .ok_or_else(|| ui::tilo_resource::Refusal::new("there is no such note"))?;
             open(&page)
         });
@@ -140,7 +140,7 @@ impl ResourceApp for NotesShell {
 
 /// Import the Markdown file the app is launched on as a note, kept in the
 /// notes' `chain`; a file imported before opens the note it became.
-fn import_launched(input: &LaunchInput<'_>, chain: &ui::framework::Chain<PagePart>) {
+fn import_launched(input: &LaunchInput<'_>, chain: &ui::framework::Chain<NoteList>) {
     let Some((page, file)) = launched_note(input) else {
         return;
     };
@@ -170,7 +170,7 @@ fn import_launched(input: &LaunchInput<'_>, chain: &ui::framework::Chain<PagePar
         |path| crate::app::adopt_canonical_markdown_assets(std::path::Path::new(path), markdown),
     );
     let imported = chain.invoke(
-        &PagePart::IMPORT_MARKDOWN.with(page_part::ImportMarkdown {
+        &NoteList::IMPORT_MARKDOWN.with(note_list::ImportMarkdown {
             title,
             markdown,
             images: assets

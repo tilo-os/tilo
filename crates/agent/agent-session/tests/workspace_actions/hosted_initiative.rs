@@ -150,7 +150,7 @@ async fn furnished(
         .prepare_application(workspace, &governor, &catalogue, TASKS, &tracker_document)
         .await
         .unwrap();
-    tasks::part::chain().part(0).as_str().to_owned()
+    tasks::issue_list::chain().part(0).as_str().to_owned()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -616,7 +616,7 @@ async fn files(actions: &WorkspaceActions, workspace: &str, person: &Caller, tit
             cluster_id: workspace.to_owned(),
             document: workspace_resource(&catalogue, TASKS),
         },
-        &ui::resource::chain_resource_id(&tasks::part::chain()),
+        &ui::resource::chain_resource_id(&tasks::issue_list::chain()),
         "create",
         serde_json::json!({"title": title})
             .as_object()

@@ -252,7 +252,7 @@ impl Sends {
         let mut found = false;
         for (app, document) in routes {
             if app != CHAT
-                || ui::resource::DocumentId::parse(&document)
+                || collab_types::document::DocumentId::parse(&document)
                     .is_none_or(|part| chat::parts::part_index(&part).is_none())
             {
                 continue;
@@ -267,7 +267,8 @@ impl Sends {
             let Ok(mut held) = automerge::AutoCommit::load(&saved) else {
                 continue;
             };
-            let Ok(part) = crate::workspace_bots::opened::<chat::parts::ChatPart>(&mut held) else {
+            let Ok(part) = crate::workspace_bots::opened::<chat::parts::ChatMessages>(&mut held)
+            else {
                 continue;
             };
             for (_, message) in part.messages.iter() {

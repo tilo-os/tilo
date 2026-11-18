@@ -2,15 +2,15 @@
 # The hosted VM guest: an uncompressed Firecracker kernel and the raw ext4
 # root filesystem every workspace VM's disk starts as (os/Containerfile.hosted-guest),
 # published as one single-layer OCI image whose digest
-# os/hosted-guest-snapshot.env pins; `tilo-legacy hosted fetch-guest` fetches
+# os/hosted-guest-snapshot.env pins; `tilo-linux-vm hosted fetch-guest` fetches
 # only that digest.
 #
 #   hosted-guest.sh kernel OUT          build vmlinux from the pinned kernel.org
 #                                       source and this repository's configuration
 #                                       into OUT, asserting every required option
 #                                       against the resolved config (CI builder)
-#   hosted-guest.sh agent OUT           build the guest agent into OUT — the legacy
-#                                       VM's agent, built by the legacy VM's script
+#   hosted-guest.sh agent OUT           build the guest agent into OUT — the Linux
+#                                       VM's agent, built by the Linux VM's script
 #   hosted-guest.sh session COMPILED OUT
 #                                       the guest's Tilo session into OUT/usr: the
 #                                       session, its surface apps, the launcher, the
@@ -56,7 +56,7 @@ session_components=(tilo-session control launcher install app-package runtime-bu
 # and the engine version its Browser requires.
 inputs_digest() {
   find os/Containerfile.hosted-guest os/hosted-guest os/external-assets/github-assets.tsv \
-    crates/runtime/legacy-agent crates/runtime/legacy-agent-protocol \
+    crates/runtime/linux-vm-agent crates/runtime/linux-vm-protocol \
     crates/session crates/packaging os/components.toml \
     os/scripts/install-components.py os/scripts/pack-apps.sh \
     os/scripts/signed-records.py os/scripts/collect-runtime-dependencies.py \
@@ -167,9 +167,9 @@ case ${1:-} in
     du -h "$out/vmlinux"
     ;;
   agent)
-    # The same agent binary as the legacy VM's, built by the same script: one
+    # The same agent binary as the Linux VM's, built by the same script: one
     # guest agent, one build, whichever hypervisor boots it.
-    bash "$repo_root/tools/ci/publish/legacy-guest.sh" agent "${2:?usage: hosted-guest.sh agent OUT}"
+    bash "$repo_root/tools/ci/publish/linux-guest.sh" agent "${2:?usage: hosted-guest.sh agent OUT}"
     ;;
   session)
     compiled=${2:?usage: hosted-guest.sh session COMPILED OUT}
@@ -229,7 +229,7 @@ case ${1:-} in
     # here rather than on a host: the init and agent, the toolchains, the
     # session, Browser and its engine.
     test -x "$root/usr/libexec/tilo/hosted-init"
-    test -x "$root/usr/libexec/tilo/tilo-legacy-agent"
+    test -x "$root/usr/libexec/tilo/tilo-linux-vm-agent"
     test -s "$root/home/tilo/.cargo/bin/rustup"
     test -x "$root/usr/bin/tilo-session"
     test -x "$root/usr/libexec/tilo/browser-session"

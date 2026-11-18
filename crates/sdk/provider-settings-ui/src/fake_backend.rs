@@ -113,24 +113,6 @@ impl ProviderAdmin for FakeAdminBackend {
             Ok(())
         })
     }
-
-    fn migrate_api_key(&self, id: String, original_endpoint: String) -> AdminFuture<'_, ()> {
-        Box::pin(async move {
-            self.ready().await?;
-            if original_endpoint != "https://api.anthropic.com" {
-                return Err(ModelError::new(ErrorKind::InvalidRequest));
-            }
-            self.state
-                .lock_recover()
-                .keys
-                .insert(id, CredentialStatus::Configured);
-            Ok(())
-        })
-    }
-
-    fn remove_legacy_api_key(&self, id: String) -> AdminFuture<'_, ()> {
-        self.remove_api_key(id)
-    }
 }
 
 impl FakeAdminBackend {

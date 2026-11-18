@@ -14,8 +14,11 @@ from urllib.parse import unquote
 
 import httpx
 
+from openapi_contract import Contract
 from tilo.types.pdf_viewer import Document
 from tilo.types.tasks import Tracker
+
+contract = Contract()
 
 TODO = "notes/Todo"
 PDF = "pdf-viewer/application.pdf"
@@ -212,6 +215,13 @@ class FakeApi:
             "body": body,
         }
         self.requests.append(call)
+        response = self.answer_of(request, call)
+        # What the SDK sent and what this fake answers have to be what
+        # `docs/api/openapi.json` describes.
+        contract.check(call, response)
+        return response
+
+    def answer_of(self, request: httpx.Request, call: dict[str, Any]) -> httpx.Response:
         if request.url.path in ("/keys/new", "/keys/poll"):
             return self.device(request, call)
         authorization = request.headers.get("authorization", "")
@@ -329,7 +339,11 @@ class FakeApi:
             data = self.contents.get(content)
             if data is None:
                 return self.refuse(404, "not_found", f"the workspace has no {content}")
-            return httpx.Response(200, content=data, headers=self.headers())
+            return httpx.Response(
+                200,
+                content=data,
+                headers={"content-type": "application/octet-stream", **self.headers()},
+            )
         if after == "events":
             return self.stream(self.events, call)
         if after == "invocations" and request.method == "GET":
@@ -478,7 +492,7 @@ class FakeApi:
                 },
             )
         rows = [
-            {"path": f"{TODO}/c01e", "name": "Buy milk", "id": "notes.block:c01e", "key": "notes.page/body/blocks/c01e", "label": "Buy milk", "kind": "notes.Block", "has_children": False, "actions": [{"id": "toggle-checkbox", "label": "Done", "kind": "undoable", "params": [{"name": "id", "ty": "text", "required": True}]}]},
+            {"path": f"{TODO}/c01e", "name": "Buy milk", "id": "notes.block:c01e", "key": "notes.page/body/blocks/c01e", "label": "Buy milk", "kind": "notes.Block", "has_children": False, "actions": ["toggle-checkbox"]},
             {"path": f"{TODO}/c02f", "name": "Buy bread", "id": "notes.block:c02f", "key": "notes.page/body/blocks/c02f", "label": "Buy bread", "kind": "notes.Block", "has_children": False, "actions": []},
         ]
         limit = query.get("limit")
@@ -491,6 +505,7 @@ class FakeApi:
                     "kind": self.kinds.get(path, "notes.Page"),
                     "rows": rows[:1],
                     "actions": self.actions_of(path),
+                    "kinds": self.listing_kinds(),
                     "next_cursor": "1",
                 },
             )
@@ -502,6 +517,7 @@ class FakeApi:
                     "kind": self.kinds.get(path, "notes.Page"),
                     "rows": rows[1:],
                     "actions": self.actions_of(path),
+                    "kinds": self.listing_kinds(),
                 },
             )
         return self.answer(
@@ -511,8 +527,17 @@ class FakeApi:
                 "kind": self.kinds.get(path, "notes.Page"),
                 "rows": rows,
                 "actions": self.actions_of(path),
+                "kinds": self.listing_kinds(),
             },
         )
+
+    def listing_kinds(self) -> dict[str, Any]:
+        """The actions a row of each kind offers, named once for the listing."""
+        return {
+            "notes.Block": [
+                {"id": "toggle-checkbox", "label": "Done", "kind": "undoable", "params": [{"name": "id", "ty": "text", "required": True}]}
+            ]
+        }
 
     def actions_of(self, path: str) -> list[dict[str, Any]]:
         return [

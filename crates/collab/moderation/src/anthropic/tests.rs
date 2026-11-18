@@ -27,14 +27,16 @@ fn the_profile_defaults_to_the_small_model_and_reads_its_key_from_the_store() {
         "claude-sonnet-5-5"
     );
 
-    let body = judge.body(&Case {
-        person: tilo_action_policy::MemberId::person("p"),
-        reports: Vec::new(),
-        activity: Vec::new(),
-        earlier: Vec::new(),
-    });
+    let body = judge
+        .body(&Case {
+            person: tilo_action_policy::MemberId::person("p"),
+            reports: Vec::new(),
+            activity: Vec::new(),
+            earlier: Vec::new(),
+        })
+        .unwrap();
     assert_eq!(body["model"], crate::DEFAULT_MODEL);
-    assert_eq!(body["system"], INSTRUCTIONS);
+    assert_eq!(body["system"][0]["text"], INSTRUCTIONS);
     assert_eq!(body["output_config"]["format"]["type"], "json_schema");
     assert_eq!(body["messages"][0]["role"], "user");
 }
@@ -60,21 +62,4 @@ fn a_mounted_key_is_kept_in_the_store_and_never_shown() {
         .unwrap()
         .unwrap();
     assert_eq!(kept.expose(), b"sk-mounted");
-}
-
-#[test]
-fn an_answer_is_its_text_unless_refused_or_cut_off() {
-    let ended = serde_json::json!({
-        "stop_reason": "end_turn",
-        "content": [
-            {"type": "thinking", "thinking": ""},
-            {"type": "text", "text": "{\"outcome\":\"no-action\"}"}
-        ]
-    });
-    assert_eq!(answer(&ended).unwrap(), "{\"outcome\":\"no-action\"}");
-    for stop in ["refusal", "max_tokens"] {
-        let refused = serde_json::json!({"stop_reason": stop, "content": []});
-        assert!(answer(&refused).is_err());
-    }
-    assert!(answer(&serde_json::json!({"content": [{"type": "text", "text": " "}]})).is_err());
 }

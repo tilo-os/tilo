@@ -678,7 +678,6 @@ fn spawn_document_media(
     socket: &Path,
     store: &Arc<ContentStore>,
     cache_dir: Option<&Path>,
-    attributions: (Arc<fs::write_attribution::WriteAttributions>, PathBuf),
 ) -> Option<std::thread::JoinHandle<()>> {
     // The device's one document-media service also keeps the device's copies
     // of public files, beside the content store whose budget evicts them.
@@ -697,8 +696,7 @@ fn spawn_document_media(
     let media = match public {
         Some(public) => fs::document_media::DocumentMedia::with_public(Arc::clone(store), public),
         None => fs::document_media::DocumentMedia::new(Arc::clone(store)),
-    }
-    .with_write_attributions(attributions);
+    };
     match fs::document_media::serve_socket(socket, media) {
         Ok(handle) => Some(handle),
         Err(error) => {
@@ -907,7 +905,7 @@ fn export_home_peer(
         serde_json::from_str(&capability_json).context("capability list is not valid JSON")?;
     let capabilities: collab_types::FsAuthority = serde_json::from_str(&capability_json)?;
     let paths = identity_paths();
-    let governor = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)
+    let governor = tilo_device_identity::persist::read_owned_signing_key(&paths.user_privkey)
         .context("read workspace governor key")?;
     server_workspace_ids.sort_unstable();
     server_workspace_ids.dedup();
@@ -1409,17 +1407,9 @@ async fn serve(
         .as_ref()
         .map(|authority| authority.handle())
         .or_else(|| acl.as_ref().map(|(handle, _)| handle.clone()));
-    // The session names the agent behind writes it runs for, over the same
-    // session-only socket; the mount attributes its versions accordingly.
-    let write_attributions = Arc::new(fs::write_attribution::WriteAttributions::default());
-    let media = blob_sock.as_deref().and_then(|socket| {
-        spawn_document_media(
-            socket,
-            &store,
-            cache_dir.as_deref(),
-            (Arc::clone(&write_attributions), mount_point.clone()),
-        )
-    });
+    let media = blob_sock
+        .as_deref()
+        .and_then(|socket| spawn_document_media(socket, &store, cache_dir.as_deref()));
     let _media = media
         .as_ref()
         .and_then(|_| blob_sock.clone())
@@ -1462,7 +1452,7 @@ async fn serve(
     let persist = np.clone().map(|p| spawn_persist(namespace.clone(), p));
     let mount_outcome = run_mount(
         MountConfig {
-            checked_history_workspace: workspace_id,
+            workspace_id,
             mount_point,
             namespace_path: np.clone(),
             predictive_cache_root: cache_dir.clone(),
@@ -1475,12 +1465,10 @@ async fn serve(
         MountServices {
             namespace: namespace.clone(),
             hydrator,
-            namespace_persistence: np.clone(),
             acl,
             availability,
             eviction_queue,
             history,
-            write_attributions: Some(write_attributions),
             rebind: managed_service.then_some(rebind_rx),
         },
     )
@@ -1569,17 +1557,9 @@ async fn mount(
 
     let workspace_id = ticket.workspace_id();
     let workspace_args = acl.as_ref().map(|(handle, _)| handle.clone());
-    // The session names the agent behind writes it runs for, over the same
-    // session-only socket; the mount attributes its versions accordingly.
-    let write_attributions = Arc::new(fs::write_attribution::WriteAttributions::default());
-    let media = blob_sock.as_deref().and_then(|socket| {
-        spawn_document_media(
-            socket,
-            &store,
-            cache_dir.as_deref(),
-            (Arc::clone(&write_attributions), mount_point.clone()),
-        )
-    });
+    let media = blob_sock
+        .as_deref()
+        .and_then(|socket| spawn_document_media(socket, &store, cache_dir.as_deref()));
     let _media = media
         .as_ref()
         .and_then(|_| blob_sock.clone())
@@ -1603,7 +1583,7 @@ async fn mount(
     let persist = np.clone().map(|p| spawn_persist(namespace.clone(), p));
     run_mount(
         MountConfig {
-            checked_history_workspace: workspace_id,
+            workspace_id,
             mount_point,
             namespace_path: np.clone(),
             predictive_cache_root: cache_dir,
@@ -1616,12 +1596,10 @@ async fn mount(
         MountServices {
             namespace: namespace.clone(),
             hydrator,
-            namespace_persistence: np.clone(),
             acl,
             availability,
             eviction_queue,
             history,
-            write_attributions: Some(write_attributions),
             rebind: None,
         },
     )
@@ -1802,11 +1780,11 @@ fn fuse_worker_threads() -> usize {
         })
 }
 
-/// Where and how [`run_mount`] mounts a workspace: the workspace its history is checked against,
+/// Where and how [`run_mount`] mounts a workspace: the workspace it is,
 /// the mount point and cache root, optional thumbnail, share-control and storage-accounting
 /// endpoints, and the backend.
 struct MountConfig {
-    checked_history_workspace: uuid::Uuid,
+    workspace_id: uuid::Uuid,
     mount_point: PathBuf,
     /// Where the namespace is persisted, if anywhere: `fsync`, `fsyncdir` and native changesets
     /// write it there before they return.
@@ -1822,14 +1800,10 @@ struct MountConfig {
 struct MountServices {
     namespace: Arc<Mutex<Namespace>>,
     hydrator: Arc<Hydrator>,
-    /// Where the mount's document is persisted, so a commit is durable before
-    /// it answers.
-    namespace_persistence: Option<PathBuf>,
     acl: Option<(AclHandle, IdentityKey)>,
     availability: Option<Arc<Mutex<fs::AvailabilityRegistry>>>,
     eviction_queue: Option<Arc<tokio::sync::Mutex<fs::eviction::EvictionQueue>>>,
     history: Option<fs_protocol::FileActor>,
-    write_attributions: Option<Arc<fs::write_attribution::WriteAttributions>>,
     rebind: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,
 }
 
@@ -1839,7 +1813,7 @@ struct MountServices {
 )]
 async fn run_mount(config: MountConfig, services: MountServices) -> Result<MountOutcome> {
     let MountConfig {
-        checked_history_workspace,
+        workspace_id,
         mount_point,
         namespace_path: durable_namespace_path,
         predictive_cache_root,
@@ -1852,12 +1826,10 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     let MountServices {
         namespace,
         hydrator,
-        namespace_persistence,
         acl,
         availability,
         eviction_queue,
         history,
-        write_attributions,
         mut rebind,
     } = services;
     // Before anything is served: from here on a stop signal ends the mount through the final save
@@ -1891,16 +1863,11 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     let signalled_namespace = Arc::clone(&namespace);
     #[cfg(target_os = "linux")]
     let signalled_availability = availability.clone();
-    let fs = QuickFS::new(namespace, hydrator, heuristics)
-        .with_checked_history_workspace(checked_history_workspace);
+    let fs = QuickFS::new(namespace, hydrator, heuristics);
     let fs = if allow_history_baseline {
         fs
     } else {
         fs.without_history_baseline()
-    };
-    let fs = match namespace_persistence {
-        Some(path) => fs.with_namespace_persistence(path),
-        None => fs,
     };
     let fs = match availability {
         Some(registry) => fs.with_availability(registry),
@@ -1912,10 +1879,6 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     };
     let fs = match history {
         Some(actor) => fs.with_history(actor)?,
-        None => fs,
-    };
-    let fs = match write_attributions {
-        Some(attributions) => fs.with_write_attributions(attributions),
         None => fs,
     };
     // Who writes, from the process each request comes from: an agent session, an app, another
@@ -1945,7 +1908,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     };
     // What this device learned about files opened together survives the restart, per workspace.
     let fs = match predictive_cache_root.as_ref() {
-        Some(root) => fs.with_kept_prefetch_history(root, checked_history_workspace),
+        Some(root) => fs.with_kept_prefetch_history(root, workspace_id),
         None => fs,
     };
     fs.resume_pending_evictions();
@@ -1954,10 +1917,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     let unsaved_dir = predictive_cache_root
         .as_ref()
         .filter(|_| !read_only)
-        .map(|root| {
-            root.join("unsaved-writes")
-                .join(checked_history_workspace.to_string())
-        });
+        .map(|root| root.join("unsaved-writes").join(workspace_id.to_string()));
     let fs = match unsaved_dir {
         Some(dir) => match fs::unsaved::UnsavedStore::open(&dir) {
             Ok(store) => {
@@ -1982,10 +1942,9 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     // Written bytes of open files are staged in sparse files beside the cache rather than in
     // memory, so a large write never has to fit in RAM.
     let fs = match predictive_cache_root.as_ref().filter(|_| !read_only) {
-        Some(root) => fs.with_write_stage_dir(
-            root.join("write-stage")
-                .join(checked_history_workspace.to_string()),
-        ),
+        Some(root) => {
+            fs.with_write_stage_dir(root.join("write-stage").join(workspace_id.to_string()))
+        }
         None => fs,
     };
 
@@ -2001,7 +1960,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
             mount_point
                 .file_name()
                 .and_then(|name| name.to_str())
-                .map_or_else(|| checked_history_workspace.to_string(), str::to_owned),
+                .map_or_else(|| workspace_id.to_string(), str::to_owned),
         )
         .with_cache_policy(Arc::clone(&cache_policies))
     });
@@ -2037,7 +1996,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
         && let Some(cfg) = native_config(
             args,
             *device,
-            checked_history_workspace,
+            workspace_id,
             &mount_point,
             predictive_cache_root.as_deref(),
             read_only,

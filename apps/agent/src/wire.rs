@@ -28,9 +28,6 @@ pub struct Link {
     /// Wakes from the transport when an event arrives, so a receive blocks
     /// instead of polling. `None` for a transport that cannot wake.
     wake: Option<Wake>,
-    /// Waits the link has blocked in, for a test that proves it sleeps.
-    #[cfg(test)]
-    waits: std::cell::Cell<u64>,
 }
 
 enum LastPublication {
@@ -44,6 +41,8 @@ struct Wake {
     /// Closes the route when dropped, so it lives as long as the link.
     _scope: ui::wake::WakeScope,
     rx: mpsc::Receiver<()>,
+    /// Rings this wake from elsewhere in the process.
+    tx: Option<mpsc::Sender<()>>,
 }
 
 impl Wake {
@@ -52,6 +51,7 @@ impl Wake {
     fn around<T>(connect: impl FnOnce() -> T) -> (T, Self) {
         let mut scope = ui::wake::WakeScope::new();
         let (tx, rx) = mpsc::channel();
+        let ring = tx.clone();
         let tx = std::sync::Mutex::new(tx);
         // A fresh scope has no destination yet, so binding cannot fail.
         let _ = scope.bind(move |_| {
@@ -61,7 +61,14 @@ impl Wake {
             let _entered = scope.enter();
             connect()
         };
-        (connected, Self { _scope: scope, rx })
+        (
+            connected,
+            Self {
+                _scope: scope,
+                rx,
+                tx: Some(ring),
+            },
+        )
     }
 }
 
@@ -84,8 +91,6 @@ impl Link {
             last_publication: LastPublication::None,
             cancelled: HashSet::new(),
             wake,
-            #[cfg(test)]
-            waits: std::cell::Cell::new(0),
         }
     }
 
@@ -274,8 +279,6 @@ impl Link {
     /// cannot wake is polled: a correlated reply is on the critical path of
     /// every step, so it is noticed within ~1 ms, not 5.
     fn wait_for_wake(&self, most: Duration) {
-        #[cfg(test)]
-        self.waits.set(self.waits.get().saturating_add(1));
         match &self.wake {
             Some(wake) => {
                 let _ = wake.rx.recv_timeout(most);
@@ -350,10 +353,18 @@ impl Link {
         }
     }
 
-    /// Waits this link has blocked in, as a test counts them.
-    #[cfg(test)]
-    pub(crate) fn waits(&self) -> u64 {
-        self.waits.get()
+    /// What wakes a wait on this link from another thread: something the link should carry is
+    /// waiting, or something it waits for is done. `None` for a transport that cannot wake.
+    #[must_use]
+    pub fn ringer(&self) -> Option<mpsc::Sender<()>> {
+        self.wake.as_ref().and_then(|wake| wake.tx.clone())
+    }
+
+    /// Block until the transport or a [`Self::ringer`] has news, or `most` passes, taking
+    /// in whatever the transport delivered meanwhile.
+    pub fn wait(&mut self, most: Duration) {
+        self.wait_for_wake(most);
+        self.pump();
     }
 
     /// The next catalogue republication already queued, without waiting, with every
@@ -379,38 +390,15 @@ impl Link {
     }
 }
 
-/// A test transport's wake: rung when the transport has more to deliver, so a link
-/// waiting on it sleeps between deliveries instead of asking on a timer.
 #[cfg(test)]
-#[derive(Clone)]
-pub(crate) struct TestWake(mpsc::Sender<()>);
-
-#[cfg(test)]
-impl TestWake {
-    /// Tell the link something is waiting: its next receive polls the transport.
-    pub(crate) fn ring(&self) {
-        let _ = self.0.send(());
-    }
-}
-
-/// A test transport's wake and the receive end a test link waits on. Keep the
-/// wake for as long as the link: a dropped one leaves the link nothing to wait on.
-#[cfg(test)]
-pub(crate) fn test_wake() -> (TestWake, mpsc::Receiver<()>) {
+pub(crate) fn test_link(transport: impl ui::collaboration::PeerTransport + 'static) -> Link {
     let (tx, rx) = mpsc::channel();
-    (TestWake(tx), rx)
-}
-
-#[cfg(test)]
-pub(crate) fn test_link(
-    transport: impl ui::collaboration::PeerTransport + 'static,
-    wake: mpsc::Receiver<()>,
-) -> Link {
     Link::with_manager(
         CollaborationManager::with_peer_transport(transport),
         Some(Wake {
             _scope: ui::wake::WakeScope::new(),
-            rx: wake,
+            rx,
+            tx: Some(tx),
         }),
     )
 }
@@ -516,13 +504,9 @@ mod tests {
         // A stop the broker asks for is known at once wherever the agent looks, and the session
         // loop still reads it, so whatever serves the invocation stops it too.
         {
-            let (_wake, rx) = test_wake();
-            let mut link = test_link(
-                Courier {
-                    events: vec![CollabEvent::InvocationCancellation { id: 7 }],
-                },
-                rx,
-            );
+            let mut link = test_link(Courier {
+                events: vec![CollabEvent::InvocationCancellation { id: 7 }],
+            });
             assert!(!link.cancelled(8));
             assert!(link.cancelled(7));
             assert!(matches!(
@@ -539,9 +523,7 @@ mod tests {
         // its place for the session loop.
         {
             let change = CatalogueChange::snapshot(&[]);
-            let (_wake, rx) = test_wake();
-            let mut link = test_link(
-                Courier {
+            let mut link = test_link(Courier {
                     events: vec![
                         CollabEvent::RemoteCursorMoved {
                             member: ui::permissions::MemberId::person("one"),
@@ -552,9 +534,7 @@ mod tests {
                             change: change.clone(),
                         },
                     ],
-                },
-                rx,
-            );
+                });
             assert_eq!(
                 link.next_catalogue(ui::time::now()),
                 Some(change),

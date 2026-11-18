@@ -19,11 +19,11 @@ use tilo_server_client::frame::FrameError;
 use tilo_server_protocol::transport::{Envelope, MAX_FRAME_BYTES};
 
 /// Discriminant of [`EnvelopeV2::UnsignedDelta`].
-const UNSIGNED_DELTA_KIND: u8 = 11;
+const UNSIGNED_DELTA_KIND: u8 = 1;
 /// Discriminant of [`EnvelopeV2::PresenceBatch`].
-const PRESENCE_BATCH_KIND: u8 = 12;
+const PRESENCE_BATCH_KIND: u8 = 2;
 /// Discriminant of [`EnvelopeV2::CodedDelta`].
-const CODED_DELTA_KIND: u8 = 13;
+const CODED_DELTA_KIND: u8 = 3;
 
 mod delta;
 mod presence;
@@ -38,31 +38,6 @@ pub use presence::{
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum EnvelopeV2 {
     State(Envelope),
-    /// Retired: a device opened the broker private connection in a workspace. Actions
-    /// travel to another device on its own connection now; nothing sends
-    /// this, and its place is kept so stored bytes still decode.
-    RetiredEnableActions,
-    /// Retired: the host's answer to [`Self::RetiredEnableActions`].
-    RetiredActionsReady,
-    /// Retired: an action a source device sent unsigned, before a delivery
-    /// carried its signature.
-    RetiredDirected,
-    /// Retired: the host refused to deliver an action.
-    RetiredUnavailable,
-    /// Retired: [`Self::RetiredDirected`] with the source user the server
-    /// attested.
-    RetiredDelivered,
-    /// Retired: a connection spoke the broker's protocol extensions.
-    RetiredEnableBrokerClient,
-    /// Retired: a connection named the durable broker host of its workspace.
-    RetiredRegisterBroker,
-    /// Retired: [`Self::RetiredDelivered`] carrying the source's certificate.
-    RetiredCertifiedDelivered,
-    /// Retired: an action its source device signed.
-    RetiredSignedDirected,
-    /// Retired: [`Self::RetiredSignedDirected`] with the signing device's
-    /// certificate.
-    RetiredCertifiedSignedDelivered,
     /// `State(Envelope::Delta { signature: [0; 64], .. })` without the
     /// signature. [`SessionReader`] returns it as that `State` value, so
     /// nothing past the session boundary sees this variant.
@@ -75,7 +50,7 @@ pub enum EnvelopeV2 {
     },
     /// Presence payloads for one workspace, each coded against the session's
     /// presence slots ([`PresenceItem`]). [`SessionReader`] returns one
-    /// `State(Envelope::RetiredPresence)` per item, in order.
+    /// `State(Envelope::Presence)` per item, in order.
     PresenceBatch {
         workspace_id: WorkspaceId,
         items: Vec<PresenceItem>,
@@ -87,27 +62,6 @@ pub enum EnvelopeV2 {
         slot: u16,
         segments: Vec<DeltaSegment>,
     },
-}
-
-impl EnvelopeV2 {
-    /// Whether this frame is one of the retired private-connection frames: a
-    /// device's action connection went with the host that routed it, so a peer
-    /// sending one speaks a protocol this build does not serve.
-    pub const fn is_retired(&self) -> bool {
-        matches!(
-            self,
-            Self::RetiredEnableActions
-                | Self::RetiredActionsReady
-                | Self::RetiredDirected
-                | Self::RetiredUnavailable
-                | Self::RetiredDelivered
-                | Self::RetiredEnableBrokerClient
-                | Self::RetiredRegisterBroker
-                | Self::RetiredCertifiedDelivered
-                | Self::RetiredSignedDirected
-                | Self::RetiredCertifiedSignedDelivered
-        )
-    }
 }
 
 /// # Errors
@@ -184,7 +138,7 @@ impl<R: tokio::io::AsyncRead + Unpin> SessionReader<R> {
                     for item in items {
                         let payload = self.presence.expand(item)?;
                         self.expanded
-                            .push_back(EnvelopeV2::State(Envelope::RetiredPresence {
+                            .push_back(EnvelopeV2::State(Envelope::Presence {
                                 workspace_id,
                                 payload,
                             }));
@@ -468,7 +422,7 @@ mod tests {
         .concat();
         let mut reader = SessionReader::new(std::io::Cursor::new(wire));
         let presence = |payload: &[u8]| {
-            Some(EnvelopeV2::State(Envelope::RetiredPresence {
+            Some(EnvelopeV2::State(Envelope::Presence {
                 workspace_id: WorkspaceId::from_u128(300),
                 payload: payload.to_vec(),
             }))
@@ -559,43 +513,6 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn retired_private_frames_keep_their_places() {
-        // The private connection's ten frames are gone; each keeps its
-        // discriminant so a frame a peer of the old build sends still
-        // decodes as the tombstone in its place.
-        for (kind, frame) in [
-            (1, EnvelopeV2::RetiredEnableActions),
-            (2, EnvelopeV2::RetiredActionsReady),
-            (3, EnvelopeV2::RetiredDirected),
-            (4, EnvelopeV2::RetiredUnavailable),
-            (5, EnvelopeV2::RetiredDelivered),
-            (6, EnvelopeV2::RetiredEnableBrokerClient),
-            (7, EnvelopeV2::RetiredRegisterBroker),
-            (8, EnvelopeV2::RetiredCertifiedDelivered),
-            (9, EnvelopeV2::RetiredSignedDirected),
-            (10, EnvelopeV2::RetiredCertifiedSignedDelivered),
-        ] {
-            let payload = [kind];
-            assert_eq!(
-                encode(&frame).unwrap(),
-                [vec![1, 0, 0, 0], payload.to_vec()].concat()
-            );
-            assert_eq!(decode(&payload).unwrap(), frame);
-            assert!(frame.is_retired());
-        }
-        assert!(!EnvelopeV2::State(Envelope::Ping).is_retired());
-        assert!(
-            !EnvelopeV2::UnsignedDelta {
-                workspace_id: WorkspaceId::from_u128(1),
-                author_device_public_key: [0; 32],
-                authored_at_ns: 1,
-                delta: Vec::new(),
-            }
-            .is_retired()
-        );
-    }
-
     #[tokio::test]
     async fn a_frame_longer_than_the_bound_is_rejected_before_its_body() {
         let data = [
@@ -612,7 +529,7 @@ mod tests {
             Err(FrameError::TooLarge(_))
         ));
         assert_eq!(reader.payload.len(), 0);
-        let state = EnvelopeV2::State(Envelope::RetiredPresence {
+        let state = EnvelopeV2::State(Envelope::Presence {
             workspace_id: WorkspaceId::from_u128(7),
             payload: vec![0; 64 * 1024],
         });
@@ -625,7 +542,7 @@ mod tests {
         use tokio::io::AsyncWriteExt;
         let (mut writer, read) = tokio::io::duplex(1024);
         let mut reader = SessionReader::new(read);
-        let frame = EnvelopeV2::State(Envelope::RetiredPresence {
+        let frame = EnvelopeV2::State(Envelope::Presence {
             workspace_id: WorkspaceId::from_u128(7),
             payload: vec![9; 32],
         });

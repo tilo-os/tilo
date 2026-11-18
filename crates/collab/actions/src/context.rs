@@ -593,21 +593,46 @@ impl ContinuedAction {
             None => edit(&[]),
             Some(_) => return None,
         };
-        action.write()
+        let mut token = action.write()?;
+        // Who made the gesture, when not the signing person: what every
+        // receiver decides each of its changes as. A person's own keystrokes
+        // carry nothing more.
+        if let Some(invoker) = &entry.invoker {
+            let tree = serde_json::to_value(&invoker.acting).ok()?;
+            token.push(INVOKER_MARK);
+            token.push_str(&hex::encode(crate::compact::encode(&tree)));
+        }
+        Some(token)
+    }
+
+    /// Who made the gesture a continuation `message` continues, as its token
+    /// names them: `None` for a person's own keystrokes, or a token that does
+    /// not read.
+    #[must_use]
+    pub fn invoker_of_message(message: &str) -> Option<crate::Acting> {
+        let rest = message.strip_prefix(CONTINUATION_PREFIX)?;
+        let (_, invoker) = rest.split(' ').nth(1)?.split_once(INVOKER_MARK)?;
+        let text = crate::compact::decode(std::str::from_utf8(&hex::decode(invoker).ok()?).ok()?)?;
+        serde_json::from_str(&text).ok()
     }
 
     /// The claim a continuation `message` writes.
     #[must_use]
     pub fn of_message(message: &str) -> Option<Self> {
         let rest = message.strip_prefix(CONTINUATION_PREFIX)?;
-        Self::parse(rest.split(' ').nth(1)?)
+        let token = rest.split(' ').nth(1)?;
+        Self::parse(
+            token
+                .split_once(INVOKER_MARK)
+                .map_or(token, |(claim, _)| claim),
+        )
     }
 
     /// The token this claim writes, read back by [`Self::parse`].
     fn write(&self) -> Option<String> {
         /// A name as the token carries it; the separators end it.
         fn name(text: &str) -> Option<&str> {
-            (!text.contains([' ', ':', '/'])).then_some(text)
+            (!text.contains([' ', ':', '/', INVOKER_MARK])).then_some(text)
         }
         fn write_step(token: &mut String, at: usize, step: &PathStep) -> Option<()> {
             if at > 0 {
@@ -700,6 +725,10 @@ impl ContinuedAction {
         })
     }
 }
+
+/// What separates a continuation's claim from the invoker it names: the
+/// invoker's tree, in its [`crate::compact`] form, as hex.
+const INVOKER_MARK: char = '~';
 
 /// The gesture `gesture` as a continuation writes it: its [`crate::compact`]
 /// form.

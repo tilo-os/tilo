@@ -251,17 +251,7 @@ fn main() -> anyhow::Result<()> {
         );
         cli.app = "so.tilo.agent".into();
     }
-    // What this run's invitation actually was: write on the app it was
-    // asked to join, and nothing else. Widening this is a deployment
-    // decision, not something a headless member grants itself.
     let agent_id = cli.agent_id.clone().unwrap_or_else(|| cli.name.clone());
-    let permissions = {
-        ui::permissions::PermissionContext::agent_granted_at(
-            &agent_id,
-            &[ui::permissions::TreePath::root().app(cli.app.clone())],
-            ui::permissions::KindSet::READ_UNDOABLE,
-        )
-    };
     let provider = cli
         .provider
         .as_deref()
@@ -282,7 +272,6 @@ fn main() -> anyhow::Result<()> {
         name: cli.name,
         model: !cli.no_model,
         model_timeout: Duration::from_millis(model_timeout_ms),
-        permissions,
         content: device_content(),
         // A launched agent inherits the launcher's admission
         // (`TILO_SVC_COLLAB_FD`); an explicit endpoint is a harness's, which

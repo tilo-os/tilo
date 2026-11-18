@@ -33,12 +33,13 @@ use runtime_collab::{
     ActionCatalogue, CatalogueChange, CollabClient, ExportedAction, ExportedInput,
 };
 use tilo_actions::remote::browser::READY;
+use tilo_device_identity::IdentityPaths;
 use tilo_identity::provisioning::FILE_SECRETS_ENV;
 use tilo_server_protocol::hosted::Material;
 use tilo_session::apps::Apps;
 use tilo_session::hosted_browser::HostedBrowser;
 use tilo_session::{AppActions, AppSocket, Launches, Options, Session};
-use tilo_user_identity::{DeviceCert, IdentityPaths};
+use tilo_user_identity::DeviceCert;
 
 use crate::common::people::{Person, Site};
 use collab_types::WorkspaceId;
@@ -69,7 +70,7 @@ fn material(
     let paths = IdentityPaths::under(root.path());
     let device = person.certify(&paths, "Browser");
     let key =
-        tilo_user_identity::persist::load_device_key(&paths).expect("the handed device's key");
+        tilo_device_identity::persist::load_device_key(&paths).expect("the handed device's key");
     let opens = record.to_owned();
     let material = Material {
         workspace: workspace.to_owned(),
@@ -205,9 +206,10 @@ fn browser(
             workspace_id: workspace.to_owned(),
             device_certificate: serde_json::to_vec(cert).expect("a certificate is JSON"),
             proof: key
-                .sign(&runtime_identity::collaboration_join_signing_bytes(
-                    workspace,
-                ))
+                .sign(
+                    &runtime_identity::collaboration_join_digest(workspace)
+                        .expect("a workspace's join digest"),
+                )
                 .to_bytes()
                 .to_vec(),
         }

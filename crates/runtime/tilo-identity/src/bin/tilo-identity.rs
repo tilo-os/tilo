@@ -24,12 +24,13 @@ mod unix {
     use clap::{Parser, Subcommand, ValueEnum};
     use serde_json::{Value, json};
     use tilo_actions::remote::identity_admin::FleetDevice;
+    use tilo_device_identity::IdentityPaths;
     use tilo_identity::device_admin::DeviceKind;
     use tilo_identity::device_admin::{self, Approval, PersonPaths};
     use tilo_identity::device_fleet::DeviceFleetStore;
     use tilo_identity::provisioning::{self, IdentityStorage, ProvisionOutcome};
     use tilo_identity::registry::{IdentityProfile, IdentityRegistryStore};
-    use tilo_user_identity::{DeviceCert, IdentityPaths};
+    use tilo_user_identity::DeviceCert;
 
     /// How long `pair` and `approve` wait at most, as the pairing window
     /// `tilo-enroll` keeps open.
@@ -233,7 +234,7 @@ mod unix {
 
         /// This device's valid certificate for `identity`, if it holds one.
         fn device_cert(&self, identity: &IdentityProfile) -> Option<DeviceCert> {
-            tilo_user_identity::persist::read_device_cert(
+            tilo_device_identity::persist::read_device_cert(
                 &self.device.device_cert_for_user(&identity.user_public_key),
             )
             .ok()
@@ -393,7 +394,7 @@ mod unix {
             Cmd::Pair { label, timeout } => {
                 let label = label
                     .or_else(|| {
-                        tilo_user_identity::branch::pending_label(&IdentityPaths::under(
+                        tilo_device_identity::branch::pending_label(&IdentityPaths::under(
                             &context.person.root,
                         ))
                         .ok()
@@ -582,7 +583,7 @@ mod unix {
                 "choose a new path; a backup never replaces a file",
             ));
         }
-        if tilo_user_identity::persist::read_device_key(&context.device.device_privkey).is_err() {
+        if tilo_device_identity::persist::read_device_key(&context.device.device_privkey).is_err() {
             return Err(guided(
                 format!(
                     "this device's key at {} is missing or this account cannot read it",

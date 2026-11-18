@@ -84,100 +84,6 @@ struct VersionSnapshot {
     kind: FileType,
 }
 
-fn keep_both_uuid(
-    domain: &[u8],
-    workspace_id: uuid::Uuid,
-    source_document: fs_protocol::FileDocumentId,
-    conflict_id: uuid::Uuid,
-    selected_version: fs_protocol::FileVersionId,
-    actor: fs_protocol::FileActor,
-) -> uuid::Uuid {
-    let mut hash = blake3::Hasher::new();
-    hash.update(b"tilo.collaborative-fs.keep-both.v2\0");
-    hash.update(domain);
-    hash.update(workspace_id.as_bytes());
-    hash.update(source_document.0.as_bytes());
-    hash.update(conflict_id.as_bytes());
-    hash.update(selected_version.0.as_bytes());
-    hash.update(actor.person.as_bytes());
-    hash.update(actor.device.as_bytes());
-    let mut bytes = [0_u8; 16];
-    bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
-    bytes[6] = (bytes[6] & 0x0f) | 0x50;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    uuid::Uuid::from_bytes(bytes)
-}
-
-fn merge_uuid(
-    domain: &[u8],
-    workspace_id: uuid::Uuid,
-    source_document: fs_protocol::FileDocumentId,
-    conflict_id: uuid::Uuid,
-    versions: &[fs_protocol::FileVersionId],
-    actor: fs_protocol::FileActor,
-) -> uuid::Uuid {
-    let mut versions = versions.to_vec();
-    versions.sort_unstable();
-    let mut hash = blake3::Hasher::new();
-    hash.update(b"tilo.collaborative-fs.merge.v2\0");
-    hash.update(domain);
-    hash.update(workspace_id.as_bytes());
-    hash.update(source_document.0.as_bytes());
-    hash.update(conflict_id.as_bytes());
-    for version in versions {
-        hash.update(version.0.as_bytes());
-    }
-    hash.update(actor.person.as_bytes());
-    hash.update(actor.device.as_bytes());
-    let mut bytes = [0_u8; 16];
-    bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
-    bytes[6] = (bytes[6] & 0x0f) | 0x50;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    uuid::Uuid::from_bytes(bytes)
-}
-
-fn keep_both_name(
-    source_name: impl AsRef<[u8]>,
-    target_document: fs_protocol::FileDocumentId,
-) -> fs_protocol::FileNameV1 {
-    let source_name = source_name.as_ref();
-    let simple = target_document.0.simple().to_string();
-    let suffix = format!(".keep-both-{}", simple.get(..12).unwrap_or(&simple));
-    let max_prefix = fs_protocol::files::MAX_FILE_NAME_BYTES.saturating_sub(suffix.len());
-    let prefix_len = source_name.len().min(max_prefix);
-    let mut name = source_name
-        .get(..prefix_len)
-        .unwrap_or(source_name)
-        .to_vec();
-    name.extend_from_slice(suffix.as_bytes());
-    name.into()
-}
-
-#[cfg(test)]
-mod exact_conflict_name_tests {
-    use super::*;
-
-    #[test]
-    fn keep_both_suffix_preserves_invalid_utf8_and_bounds_the_result() {
-        let record = fs_protocol::FileDocumentId(uuid::Uuid::from_u128(7));
-        let original = [b'f', 0xff, b'o'];
-        let name = keep_both_name(original, record);
-        assert!(name.as_bytes().starts_with(&original));
-        assert!(name.as_bytes().ends_with(b".keep-both-000000000000"));
-        assert!(name.as_bytes().len() <= fs_protocol::MAX_FILE_NAME_BYTES);
-
-        let long = keep_both_name(vec![0xfe; fs_protocol::MAX_FILE_NAME_BYTES * 2], record);
-        assert_eq!(long.as_bytes().len(), fs_protocol::MAX_FILE_NAME_BYTES);
-        assert!(long.as_bytes().ends_with(b".keep-both-000000000000"));
-    }
-}
-
-/// Where this mount's document lives, so a commit can make itself durable before it
-/// answers.
-struct NamespacePersistence {
-    namespace_path: std::path::PathBuf,
-}
-
 /// Commit bookkeeping for one in-memory write buffer. `generation` counts mutations of
 /// the buffer; a buffer whose latest generation is committed is clean and may be
 /// dropped when its last handle closes.
@@ -452,33 +358,13 @@ fn unsaved_copy_name_for(name: &[u8], digest: &blake3::Hash) -> Vec<u8> {
     out
 }
 
-/// Most files whose last writer is remembered; past it all are forgotten at once.
-const LAST_WRITERS: usize = 65_536;
-
-/// Who a request writes for, once noted.
-#[derive(Clone)]
-enum NotedWriter {
-    /// The person at this device: the version's signature names them already.
-    Person,
-    Attributed(fs_protocol::FileAttributionV1),
-}
-
-thread_local! {
-    /// Who the request this thread answers writes for, while it is answered.
-    static CURRENT_WRITER: std::cell::RefCell<Option<NotedWriter>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-/// Clears this thread's writer when the request it was noted for returns, and with it whom
-/// the request's file actions are done by.
-struct WriterNote(bool, Option<crate::namespace::ActingAs>);
+/// Whom the file actions of the request this thread answers are done by, until the request
+/// returns.
+struct WriterNote(Option<crate::namespace::ActingAs>);
 
 impl Drop for WriterNote {
     fn drop(&mut self) {
-        if self.0 {
-            CURRENT_WRITER.with(|current| *current.borrow_mut() = None);
-        }
-        self.1.take();
+        self.0.take();
     }
 }
 
@@ -603,12 +489,6 @@ impl AclVisibleDocumentIndex {
     }
 }
 
-#[path = "checked_restore.rs"]
-mod checked_restore;
-#[path = "history_jobs.rs"]
-mod history_jobs;
-#[path = "history_read.rs"]
-mod history_read;
 pub mod native_ops;
 mod unavailable;
 mod write_stage;
@@ -673,15 +553,8 @@ pub struct QuickFS {
     eviction_queue: Option<Arc<tokio::sync::Mutex<EvictionQueue>>>,
 
     history: Option<fs_protocol::FileActor>,
-    write_attributions: Option<Arc<crate::write_attribution::WriteAttributions>>,
     /// Who writes, from the process each request names ([`crate::writer`]).
     writers: Option<Arc<crate::writer::WriterResolver>>,
-    /// The last writer of each file, for versions committed after its request returned.
-    last_writers: Mutex<HashMap<u64, fs_protocol::FileAttributionV1>>,
-    namespace_persistence: Option<NamespacePersistence>,
-    history_jobs: history_jobs::HistoryJobs,
-    checked_history_workspace: Option<uuid::Uuid>,
-    mount_lifetime: uuid::Uuid,
     /// Makes the namespace on disk hold the current placements: run after a record group
     /// is durable (native backend), and by `fsync`/`fsyncdir`.
     durability_hook: std::sync::OnceLock<DurabilityHook>,
@@ -742,13 +615,7 @@ impl QuickFS {
             eviction_queue: None,
 
             history: None,
-            write_attributions: None,
             writers: None,
-            last_writers: Mutex::new(HashMap::new()),
-            namespace_persistence: None,
-            history_jobs: history_jobs::HistoryJobs::default(),
-            checked_history_workspace: None,
-            mount_lifetime: uuid::Uuid::new_v4(),
             durability_hook: std::sync::OnceLock::new(),
             changeset_open: AtomicBool::new(false),
             announce_held: AtomicBool::new(false),
@@ -2146,17 +2013,6 @@ impl QuickFS {
         Ok(self)
     }
 
-    /// Attribute this mount's versions of the paths the desktop session leases to the
-    /// agent each lease names ([`crate::write_attribution`]).
-    #[must_use]
-    pub fn with_write_attributions(
-        mut self,
-        attributions: Arc<crate::write_attribution::WriteAttributions>,
-    ) -> Self {
-        self.write_attributions = Some(attributions);
-        self
-    }
-
     /// Name who writes from the process each request comes from: an agent session, a
     /// Tilo app, another program, or the person ([`crate::writer`]).
     #[must_use]
@@ -2165,105 +2021,22 @@ impl QuickFS {
         self
     }
 
-    /// Note who process `pid` writes for, for the rest of this request on this thread
-    /// and, with `ino`, for the versions of that file committed later.
-    fn note_writer(&self, pid: u32, ino: Option<u64>) -> WriterNote {
+    /// Note who process `pid` writes for, for the rest of this request on this thread: the
+    /// file actions it makes are done by them.
+    fn note_writer(&self, pid: u32) -> WriterNote {
         let Some(writers) = &self.writers else {
-            return WriterNote(false, None);
+            return WriterNote(None);
         };
         let writer = writers.resolve(pid);
-        let acting = crate::namespace::acting_as(
-            writer
-                .invoker()
-                .map(|invoker| tilo_actions::ActionContext::default().with_invoker(invoker)),
-        );
-        let attribution = writer.attribution();
-        if let Some(ino) = ino {
-            let mut last = self.last_writers.lock_recover();
-            if last.len() >= LAST_WRITERS {
-                last.clear();
-            }
-            match &attribution {
-                Some(attribution) => last.insert(ino, attribution.clone()),
-                None => last.remove(&ino),
-            };
-        }
-        let noted = attribution.map_or(NotedWriter::Person, NotedWriter::Attributed);
-        CURRENT_WRITER.with(|current| *current.borrow_mut() = Some(noted));
-        WriterNote(true, Some(acting))
-    }
-
-    /// Who wrote `record`'s version: the request being answered on this thread, else
-    /// the last writer of its file.
-    fn writer_of(
-        &self,
-        record: fs_protocol::FileDocumentId,
-    ) -> Option<fs_protocol::FileAttributionV1> {
-        self.writers.as_ref()?;
-        match CURRENT_WRITER.with(|current| current.borrow().clone()) {
-            Some(NotedWriter::Person) => return None,
-            Some(NotedWriter::Attributed(attribution)) => return Some(attribution),
-            None => {}
-        }
-        let ino = self.ns().ino_for_document_id(record)?;
-        self.last_writers.lock_recover().get(&ino).cloned()
-    }
-
-    /// Record who caused this device's `version` in the record's own history: the agent
-    /// a session lease names for `path` (or the record's current path), else the writer
-    /// the request came from. A failure leaves the version the person's and never fails
-    /// the write.
-    fn attribute_version(&self, version: &fs_protocol::FileVersionV1, path: Option<&str>) {
-        // Most writes happen with no lease at all: they cost no path lookup.
-        let leased = self
-            .write_attributions
+        let person = self
+            .history
             .as_ref()
-            .filter(|attributions| !attributions.is_idle())
-            .and_then(|attributions| {
-                let path = if let Some(path) = path {
-                    Some(path.to_owned())
-                } else {
-                    let namespace = self.ns();
-                    namespace
-                        .ino_for_document_id(version.document_id)
-                        .and_then(|ino| namespace.path_for(ino))
-                };
-                path.and_then(|path| attributions.for_path(&path))
-            });
-        let Some(attribution) = leased.or_else(|| self.writer_of(version.document_id)) else {
-            return;
-        };
-        let attributed = fs_protocol::FileVersionAttributionV1 {
-            version_id: version.id,
-            attribution,
-        };
-        let recorded = {
-            let mut namespace = self.ns();
-            let recorded = namespace.attribute_version(version.document_id, &attributed);
-            if recorded.as_ref().is_ok_and(|recorded| *recorded) {
-                namespace.note_change();
-            }
-            recorded
-        };
-        if let Err(error) = recorded {
-            eprintln!(
-                "could not attribute version {:?} of {:?}: {error}",
-                version.id, version.document_id
-            );
-        }
-    }
-
-    fn attribute_versions(&self, versions: &[fs_protocol::FileVersionV1], path: Option<&str>) {
-        for version in versions {
-            self.attribute_version(version, path);
-        }
-    }
-
-    /// Keep the path of this mount's document, so a commit writes it out before answering.
-    #[must_use]
-    pub fn with_namespace_persistence(mut self, namespace_path: std::path::PathBuf) -> Self {
-        self.namespace_persistence = Some(NamespacePersistence { namespace_path });
-        self
+            .map(|actor| hex::encode(actor.person.0));
+        WriterNote(Some(crate::namespace::acting_as(
+            writer
+                .invoker(person.as_deref())
+                .map(|invoker| tilo_actions::ActionContext::default().with_invoker(invoker)),
+        )))
     }
 
     fn ensure_history_baseline(&self) -> Result<(), crate::namespace::history::HistoryError> {
@@ -2410,18 +2183,6 @@ impl QuickFS {
         provenance: fs_protocol::FileProvenance,
         timestamp_ms: u64,
     ) -> Result<fs_protocol::FileVersionId, crate::namespace::history::HistoryError> {
-        self.append_version_at(snapshot, provenance, timestamp_ms, timestamp_ms)
-    }
-
-    /// [`Self::append_version`] with the signed metadata stamped at `observed_at_ms`, the
-    /// version's modification time, which peers materialise as the file's mtime.
-    fn append_version_at(
-        &self,
-        snapshot: VersionSnapshot,
-        provenance: fs_protocol::FileProvenance,
-        timestamp_ms: u64,
-        observed_at_ms: u64,
-    ) -> Result<fs_protocol::FileVersionId, crate::namespace::history::HistoryError> {
         let Some(actor) = &self.history else {
             return Ok(fs_protocol::FileVersionId::new());
         };
@@ -2439,10 +2200,8 @@ impl QuickFS {
         };
         {
             let mut namespace = self.ns();
-            namespace.append_version(version.clone())?;
+            namespace.append_version(version)?;
         }
-        let _ = observed_at_ms;
-        self.attribute_version(&version, None);
         if let Some(registry) = &self.availability {
             let mut registry = registry.lock_recover();
             if let Some(mut record) = registry.get(snapshot.document_id).cloned() {
@@ -2453,40 +2212,6 @@ impl QuickFS {
             }
         }
         Ok(id)
-    }
-
-    fn mount_workspace(&self) -> Result<uuid::Uuid, i32> {
-        self.checked_history_workspace
-            .filter(|workspace| !workspace.is_nil())
-            .ok_or(libc::ENOTSUP)
-    }
-
-    /// Apply one multi-record mutation to this mount's document: the whole namespace it
-    /// produces is durable before anything answers, and the mount publishes it once.
-    fn commit_manifest(
-        &self,
-        manifest: &fs_protocol::FileMutationTransactionManifest,
-    ) -> Result<(), i32> {
-        {
-            let mut namespace = self.ns();
-            let mut candidate = namespace.clone();
-            candidate.note_change();
-            let delta = candidate.apply_manifest(manifest).map_err(|_| EIO)?;
-            if delta.is_none() {
-                return Ok(());
-            }
-            if let Some(persistence) = &self.namespace_persistence {
-                crate::durable_backup::write(
-                    &persistence.namespace_path,
-                    &candidate.save(),
-                    |bytes| Namespace::from_bytes("checked-restore-validator", bytes).is_ok(),
-                )
-                .map_err(|_| EIO)?;
-            }
-            *namespace = candidate;
-        }
-        self.publish();
-        Ok(())
     }
 
     fn document_version(
@@ -2505,15 +2230,6 @@ impl QuickFS {
         if let Err(error) = self.append_version(snapshot, provenance, now_ms()) {
             eprintln!("could not append durable file history for inode {ino}: {error}");
         }
-    }
-
-    fn history_projection_for(&self, ino: u64) -> Option<Vec<u8>> {
-        self.history.as_ref()?;
-        let document_id = self.ns().document_id_for(ino)?;
-        self.ns()
-            .document_history_projection(document_id)?
-            .to_xattr_bytes()
-            .ok()
     }
 
     /// The namespace owns the record and path index. This only fingerprints its current
@@ -2839,774 +2555,6 @@ impl QuickFS {
     /// Read a bounded immutable version for an app-native history preview. Never changes
     /// heads, and is addressable only through a version id the caller's history projection
     /// already exposed.
-    fn history_version_preview(
-        &self,
-        ino: u64,
-        version_id: fs_protocol::FileVersionId,
-    ) -> Result<Vec<u8>, i32> {
-        self.check_access(ino, Access::Read)?;
-        self.history.as_ref().ok_or(libc::ENOTSUP)?;
-        let document_id = self.ns().document_id_for(ino).ok_or(ENOENT)?;
-        let (version, _) = self.ns().document_version(document_id, version_id);
-        let version = version.ok_or(EINVAL)?;
-        let Some(content_hash) = version.content_hash else {
-            return Ok(Vec::new());
-        };
-        let limit = u64::try_from(fs_protocol::MAX_HISTORY_PREVIEW_BYTES)
-            .unwrap_or(u64::MAX)
-            .saturating_add(1);
-        let bytes = self
-            .hydrator
-            .block_on(self.hydrator.read(Hash::from(content_hash.0), 0, limit))
-            .map_err(|_| EIO)?;
-        if bytes.len() > fs_protocol::MAX_HISTORY_PREVIEW_BYTES {
-            return Err(libc::E2BIG);
-        }
-        Ok(bytes)
-    }
-
-    /// Run the bounded deterministic merge check the commit path uses, but expose only a
-    /// small explanation for File Explorer. Read-only: a failed or stale preflight leaves the
-    /// conflict exactly as it was.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the bounded preflight keeps access checks, exact immutable-version hydration, deterministic merge classification, and the validated wire projection in one auditable read-only path"
-    )]
-    fn history_merge_preflight(&self, ino: u64, conflict_id: uuid::Uuid) -> Result<Vec<u8>, i32> {
-        self.check_access(ino, Access::Read)?;
-        self.history.as_ref().ok_or(libc::ENOTSUP)?;
-        let (document_id, source_name) = {
-            let namespace = self.ns();
-            (
-                namespace.document_id_for(ino).ok_or(ENOENT)?,
-                namespace.file_name_for(ino).ok_or(EIO)?,
-            )
-        };
-        let extension = std::str::from_utf8(source_name.as_bytes())
-            .ok()
-            .and_then(|name| {
-                name.rsplit_once('.')
-                    .map(|(_, ext)| ext.to_ascii_lowercase())
-            })
-            .ok_or(libc::ENOTSUP)?;
-        if !matches!(extension.as_str(), "txt" | "qdoc" | "tilo-doc") {
-            return Err(libc::ENOTSUP);
-        }
-        let state = self.ns().document_history(document_id).ok_or(EINVAL)?;
-        let conflict = state
-            .conflicts
-            .iter()
-            .find(|conflict| conflict.id == conflict_id)
-            .filter(|conflict| {
-                conflict.status == fs_protocol::ConflictStatus::Open && conflict.versions.len() == 2
-            })
-            .ok_or(EINVAL)?;
-        let load = |version_id| -> Result<Vec<u8>, i32> {
-            let version = state
-                .versions
-                .iter()
-                .find(|value| value.id == version_id)
-                .ok_or(EINVAL)?;
-            let Some(hash) = version.content_hash else {
-                return Ok(Vec::new());
-            };
-            let limit = u64::try_from(crate::conflict_merge::MAX_MERGE_INPUT_BYTES)
-                .unwrap_or(u64::MAX)
-                .saturating_add(1);
-            let bytes = self
-                .hydrator
-                .block_on(self.hydrator.read(Hash::from(hash.0), 0, limit))
-                .map_err(|_| EIO)?;
-            if bytes.len() > crate::conflict_merge::MAX_MERGE_INPUT_BYTES {
-                return Err(libc::E2BIG);
-            }
-            Ok(bytes)
-        };
-        let first_id = *conflict.versions.first().ok_or(EINVAL)?;
-        let second_id = *conflict.versions.get(1).ok_or(EINVAL)?;
-        let first = crate::conflict_merge::ExactMergeInput {
-            version_id: first_id,
-            bytes: load(first_id)?,
-        };
-        let second = crate::conflict_merge::ExactMergeInput {
-            version_id: second_id,
-            bytes: load(second_id)?,
-        };
-        let preflight = if matches!(extension.as_str(), "qdoc" | "tilo-doc") {
-            crate::conflict_merge::preflight_exact(first, second, None)
-        } else {
-            let base_id =
-                crate::conflict_merge::exact_common_base(&state.versions, first_id, second_id)
-                    .map_err(|_| libc::ENOTSUP)?;
-            crate::conflict_merge::preflight_exact(
-                first,
-                second,
-                Some(crate::conflict_merge::ExactMergeBase {
-                    version_id: base_id,
-                    bytes: load(base_id)?,
-                }),
-            )
-        };
-        let (safe, explanation, diff_summary) = match preflight {
-            crate::conflict_merge::MergePreflight::Safe {
-                result,
-                explanation,
-            } => (
-                true,
-                explanation.to_string(),
-                format!(
-                    "Both immutable revisions are included in a {} byte proposed result.",
-                    result.bytes.len()
-                ),
-            ),
-            crate::conflict_merge::MergePreflight::NeedsReview { explanation, .. } => (
-                false,
-                explanation.to_string(),
-                "No proposed content was produced; choose a version or keep both after reviewing the diff."
-                    .to_string(),
-            ),
-        };
-        let projection = fs_protocol::MergePreflightProjectionV1 {
-            schema_version: fs_protocol::MERGE_PREFLIGHT_VERSION,
-            conflict_id,
-            safe,
-            explanation,
-            diff_summary,
-        };
-        projection.validate().map_err(|_| EIO)?;
-        let bytes = serde_json::to_vec(&projection).map_err(|_| EIO)?;
-        if bytes.len() > fs_protocol::MAX_MERGE_PREFLIGHT_BYTES {
-            return Err(libc::E2BIG);
-        }
-        Ok(bytes)
-    }
-
-    /// Resolve an open signed conflict by copying one exact immutable member into a new,
-    /// attributed result version. The request always names the member it saw: `KeepCurrent`
-    /// is rejected if that member stopped being the current signed revision, and `UseOther`
-    /// if it names current, so a delayed UI request is never silently reinterpreted.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "conflict resolution is one ordered validation, publication, and projection transaction"
-    )]
-    fn resolve_conflict(
-        &self,
-        ino: u64,
-        conflict_id: uuid::Uuid,
-        strategy: fs_protocol::ConflictStrategy,
-        version_id: fs_protocol::FileVersionId,
-    ) -> Result<(), i32> {
-        self.check_access(ino, Access::Write)?;
-        if self.write_buffers.lock_recover().contains_key(&ino) {
-            return Err(EBUSY);
-        }
-        if strategy == fs_protocol::ConflictStrategy::Merge {
-            return self.resolve_conflict_merge(ino, conflict_id, version_id);
-        }
-        if strategy == fs_protocol::ConflictStrategy::KeepBoth {
-            return self.resolve_conflict_keep_both(ino, conflict_id, version_id);
-        }
-        if !matches!(
-            strategy,
-            fs_protocol::ConflictStrategy::KeepCurrent | fs_protocol::ConflictStrategy::UseOther
-        ) {
-            // KeepBoth needs a signed two-record transaction and Merge needs a
-            // codec-produced result. Neither can be represented truthfully by
-            // this one-record control operation.
-            return Err(libc::ENOTSUP);
-        }
-        let actor = self.history.as_ref().ok_or(libc::ENOTSUP)?;
-        let (document_id, expected_revision) = {
-            let namespace = self.ns();
-            (
-                namespace.document_id_for(ino).ok_or(ENOENT)?,
-                namespace.observed_content_revision(ino).ok_or(EIO)?,
-            )
-        };
-        if expected_revision.document_id != document_id {
-            return Err(EIO);
-        }
-        let state = self.ns().document_history(document_id).ok_or(EINVAL)?;
-        let conflict = state
-            .conflicts
-            .iter()
-            .find(|conflict| conflict.id == conflict_id)
-            .cloned()
-            .ok_or(EINVAL)?;
-        if conflict.status != fs_protocol::ConflictStatus::Open
-            || !conflict.versions.contains(&version_id)
-        {
-            return Err(EINVAL);
-        }
-        match strategy {
-            fs_protocol::ConflictStrategy::KeepCurrent
-                if version_id != expected_revision.version_id =>
-            {
-                return Err(EBUSY);
-            }
-            fs_protocol::ConflictStrategy::UseOther
-                if version_id == expected_revision.version_id =>
-            {
-                return Err(EINVAL);
-            }
-            _ => {}
-        }
-        let selected = state
-            .versions
-            .iter()
-            .find(|version| version.id == version_id)
-            .cloned()
-            .ok_or(EINVAL)?;
-        // The selected member is already content-addressed: once it is
-        // local, the result points at it by hash, without reading it back.
-        self.history_content_local(ino, conflict_id, &[selected.content_hash])?;
-        let byte_len = self.local_version_len(selected.content_hash).ok_or(EIO)?;
-        let result_hash = selected.content_hash.map(|hash| Hash::from(hash.0));
-        let result_snapshot = self
-            .replacement_snapshot(ino, result_hash, byte_len)
-            .ok_or(EIO)?;
-
-        // The signed replica requires a resolution result to descend from
-        // every member of the conflict. Preserve any additional current heads
-        // as parents too so the resolution does not disconnect later work.
-        let mut parents = state.heads;
-        parents.extend(conflict.versions.iter().copied());
-        parents.sort_unstable();
-        parents.dedup();
-        if parents.len() > fs_protocol::files::MAX_VERSION_PARENTS {
-            return Err(libc::ENOTSUP);
-        }
-        let timestamp_ms = now_ms();
-        let result_version = fs_protocol::FileVersionV1 {
-            id: fs_protocol::FileVersionId::new(),
-            document_id,
-            parents,
-            actor: *actor,
-            timestamp_ms,
-            content_hash: result_snapshot.content_hash,
-            metadata_hash: result_snapshot.metadata_hash,
-            provenance: fs_protocol::FileProvenance::ConflictResolution,
-        };
-        let resolution = fs_protocol::ConflictResolution {
-            strategy,
-            result: result_version.id,
-            actor: *actor,
-            timestamp_ms,
-        };
-        let mut resolved = conflict;
-        resolved.status = fs_protocol::ConflictStatus::Resolved;
-        resolved.resolution = Some(resolution.clone());
-
-        let converged = fs_protocol::ContentRevisionV1 {
-            schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-            document_id,
-            version_id: result_version.id,
-            content_hash: result_snapshot.content_hash,
-            byte_len: result_snapshot.byte_len,
-            metadata_hash: result_snapshot.metadata_hash,
-        };
-        {
-            let mut namespace = self.ns();
-            namespace
-                .append_version(result_version.clone())
-                .map_err(|_| EIO)?;
-            namespace
-                .resolve_history_conflict(document_id, conflict_id, &resolution)
-                .map_err(|_| EIO)?;
-            if namespace.document_id_for(ino) != Some(document_id)
-                || namespace.observed_content_revision(ino) != Some(expected_revision)
-            {
-                return Err(EBUSY);
-            }
-            if !namespace.set_content_revision(ino, &converged, timestamp_ms) {
-                return Err(EIO);
-            }
-            namespace.note_change();
-        }
-        self.attribute_version(&result_version, None);
-        self.publish();
-        if let Some(registry) = &self.availability {
-            let mut registry = registry.lock_recover();
-            if let Some(mut record) = registry.get(document_id).cloned() {
-                record.current_version = Some(converged.version_id);
-                registry.put(record).map_err(|_| EIO)?;
-            }
-        }
-        Ok(())
-    }
-
-    #[allow(
-        clippy::significant_drop_tightening,
-        clippy::too_many_lines,
-        reason = "the exact two-record merge replacement is one auditable signed transaction"
-    )]
-    fn resolve_conflict_merge(
-        &self,
-        ino: u64,
-        conflict_id: uuid::Uuid,
-        selected_version: fs_protocol::FileVersionId,
-    ) -> Result<(), i32> {
-        let actor = self.history.as_ref().ok_or(libc::ENOTSUP)?;
-        let workspace_id = self.mount_workspace()?;
-        let (document_id, current_revision, parent_document, source_name) = {
-            let mut namespace = self.ns();
-            let document_id = namespace.document_id_for(ino).ok_or(ENOENT)?;
-            let current = namespace.observed_content_revision(ino).ok_or(EIO)?;
-            let parent = namespace
-                .parent_ino(ino)
-                .and_then(|parent| namespace.document_id_for(parent))
-                .ok_or(EIO)?;
-            let name = namespace.file_name_for(ino).ok_or(EIO)?;
-            (document_id, current, parent, name)
-        };
-        let extension = std::str::from_utf8(source_name.as_bytes())
-            .ok()
-            .and_then(|name| {
-                name.rsplit_once('.')
-                    .map(|(_, ext)| ext.to_ascii_lowercase())
-            })
-            .ok_or(libc::ENOTSUP)?;
-        if !matches!(extension.as_str(), "txt" | "qdoc" | "tilo-doc") {
-            return Err(libc::ENOTSUP);
-        }
-        let state = self.ns().document_history(document_id).ok_or(EINVAL)?;
-        let conflict = state
-            .conflicts
-            .iter()
-            .find(|conflict| conflict.id == conflict_id)
-            .ok_or(EINVAL)?;
-        let result_id = fs_protocol::FileVersionId(merge_uuid(
-            b"result",
-            workspace_id,
-            document_id,
-            conflict_id,
-            &conflict.versions,
-            *actor,
-        ));
-        if let Some(resolution) = &conflict.resolution {
-            return if resolution.strategy == fs_protocol::ConflictStrategy::Merge
-                && resolution.result == result_id
-                && current_revision.version_id == result_id
-            {
-                Ok(())
-            } else {
-                Err(EBUSY)
-            };
-        }
-        if conflict.status != fs_protocol::ConflictStatus::Open
-            || conflict.versions.len() != 2
-            || !conflict.versions.contains(&selected_version)
-            || !conflict.versions.contains(&current_revision.version_id)
-            || selected_version == current_revision.version_id
-        {
-            return Err(EINVAL);
-        }
-        let content = |version_id| -> Result<Option<fs_protocol::ContentHash>, i32> {
-            state
-                .versions
-                .iter()
-                .find(|value| value.id == version_id)
-                .map(|version| version.content_hash)
-                .ok_or(EINVAL)
-        };
-        let first_id = *conflict.versions.first().ok_or(EINVAL)?;
-        let second_id = *conflict.versions.get(1).ok_or(EINVAL)?;
-        let document = matches!(extension.as_str(), "qdoc" | "tilo-doc");
-        let base_id = if document {
-            None
-        } else {
-            Some(
-                crate::conflict_merge::exact_common_base(&state.versions, first_id, second_id)
-                    .map_err(|_| libc::ENOTSUP)?,
-            )
-        };
-        let mut inputs = vec![content(first_id)?, content(second_id)?];
-        if let Some(base_id) = base_id {
-            inputs.push(content(base_id)?);
-        }
-        self.history_content_local(ino, conflict_id, &inputs)?;
-        // An input the merge would refuse for its size is not read into memory at all.
-        let load = |version_id| -> Result<Vec<u8>, i32> {
-            let version = content(version_id)?;
-            let len = self.local_version_len(version).ok_or(EIO)?;
-            if usize::try_from(len)
-                .ok()
-                .is_none_or(|len| len > crate::conflict_merge::MAX_MERGE_INPUT_BYTES)
-            {
-                return Err(libc::ENOTSUP);
-            }
-            self.local_version_bytes(version).ok_or(EIO)
-        };
-        let first = crate::conflict_merge::ExactMergeInput {
-            version_id: first_id,
-            bytes: load(first_id)?,
-        };
-        let second = crate::conflict_merge::ExactMergeInput {
-            version_id: second_id,
-            bytes: load(second_id)?,
-        };
-        let merged = if let Some(base_id) = base_id {
-            let preflight = crate::conflict_merge::preflight_exact(
-                first,
-                second,
-                Some(crate::conflict_merge::ExactMergeBase {
-                    version_id: base_id,
-                    bytes: load(base_id)?,
-                }),
-            );
-            let crate::conflict_merge::MergePreflight::Safe { result, .. } = preflight else {
-                return Err(libc::ENOTSUP);
-            };
-            (result.codec == crate::conflict_merge::DeterministicMergeCodec::PlainUtf8ThreeWayV1)
-                .then_some(result)
-                .ok_or(libc::ENOTSUP)?
-        } else {
-            let preflight = crate::conflict_merge::preflight_exact(first, second, None);
-            let crate::conflict_merge::MergePreflight::Safe { result, .. } = preflight else {
-                // A failed preflight is deliberately indistinguishable from an unsupported
-                // merge at the FUSE boundary: the open signed conflict remains untouched for
-                // Keep Both or manual review.
-                return Err(libc::ENOTSUP);
-            };
-            (result.codec == crate::conflict_merge::DeterministicMergeCodec::TiloDocAutomergeV1)
-                .then_some(result)
-                .ok_or(libc::ENOTSUP)?
-        };
-        let hash = self
-            .write_content_blocking(&merged.bytes)
-            .map_err(|_| EIO)?;
-        let snapshot = self
-            .replacement_snapshot(ino, hash, merged.bytes.len() as u64)
-            .ok_or(EIO)?;
-        let timestamp_ms = conflict
-            .versions
-            .iter()
-            .filter_map(|id| state.versions.iter().find(|version| version.id == *id))
-            .map(|version| version.timestamp_ms)
-            .max()
-            .and_then(|value| value.checked_add(1))
-            .ok_or(EINVAL)?;
-        let mut parents = state.heads.clone();
-        parents.extend(conflict.versions.iter().copied());
-        parents.sort_unstable();
-        parents.dedup();
-        if parents.len() > fs_protocol::files::MAX_VERSION_PARENTS {
-            return Err(libc::ENOTSUP);
-        }
-        let proposed_version = fs_protocol::FileVersionV1 {
-            id: result_id,
-            document_id,
-            parents,
-            actor: *actor,
-            timestamp_ms,
-            content_hash: snapshot.content_hash,
-            metadata_hash: snapshot.metadata_hash,
-            provenance: fs_protocol::FileProvenance::ConflictResolution,
-        };
-        let mut transaction_file = fs_protocol::TransactionFile {
-            document_id,
-            role: fs_protocol::TransactionFileRole::MergeSource,
-            expected_version: current_revision.version_id,
-            proposed_binding: fs_protocol::FileBindingV1 {
-                schema_version: fs_protocol::FILE_BINDING_VERSION,
-                document_id,
-                parent: Some(parent_document),
-                name: source_name.clone(),
-                kind: fs_protocol::FileNodeKind::File,
-                tombstoned: false,
-                actor: *actor,
-                observed_at_ms: timestamp_ms,
-            },
-            proposed_content_revision: Some(fs_protocol::ContentRevisionV1 {
-                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-                document_id,
-                version_id: result_id,
-                content_hash: snapshot.content_hash,
-                byte_len: snapshot.byte_len,
-                metadata_hash: snapshot.metadata_hash,
-            }),
-            proposed_version,
-            projection_hash: fs_protocol::ContentHash([0; 32]),
-        };
-        transaction_file.projection_hash = transaction_file
-            .computed_projection_hash()
-            .map_err(|_| EIO)?;
-        let codec = match merged.codec {
-            crate::conflict_merge::DeterministicMergeCodec::TiloDocAutomergeV1 => {
-                fs_protocol::ConflictMergeCodecV1::TiloDocAutomergeV1
-            }
-            crate::conflict_merge::DeterministicMergeCodec::PlainUtf8ThreeWayV1 => {
-                fs_protocol::ConflictMergeCodecV1::PlainUtf8ThreeWayV1
-            }
-        };
-        let manifest = fs_protocol::FileMutationTransactionManifest {
-            schema_version: fs_protocol::files::FILE_MUTATION_TRANSACTION_VERSION_V2,
-            transaction_id: merge_uuid(
-                b"transaction",
-                workspace_id,
-                document_id,
-                conflict_id,
-                &conflict.versions,
-                *actor,
-            ),
-            workspace_id,
-            actor: *actor,
-            timestamp_ms,
-            operation: fs_protocol::FileMutationOperation::MergeContentConflict {
-                source_document: document_id,
-                parent_document,
-                source_name,
-                conflict_id,
-                conflict_versions: conflict.versions.clone(),
-                current_version: current_revision.version_id,
-                base_version: merged.base_version,
-                codec,
-            },
-            files: vec![transaction_file],
-        };
-        let attributed: Vec<_> = manifest
-            .files
-            .iter()
-            .map(|transaction_file| transaction_file.proposed_version.clone())
-            .collect();
-        self.commit_manifest(&manifest)?;
-        self.attribute_versions(&attributed, None);
-        Ok(())
-    }
-
-    #[allow(
-        clippy::significant_drop_tightening,
-        clippy::too_many_lines,
-        reason = "the exact keep-both replacement is one auditable signed transaction"
-    )]
-    fn resolve_conflict_keep_both(
-        &self,
-        ino: u64,
-        conflict_id: uuid::Uuid,
-        selected_version: fs_protocol::FileVersionId,
-    ) -> Result<(), i32> {
-        let actor = self.history.as_ref().ok_or(libc::ENOTSUP)?;
-        let workspace_id = self.mount_workspace()?;
-        let (source_document, current_revision, parent_document, source_name, source_path) = {
-            let mut namespace = self.ns();
-            let source_document = namespace.document_id_for(ino).ok_or(ENOENT)?;
-            let current_revision = namespace.observed_content_revision(ino).ok_or(EIO)?;
-            let parent_ino = namespace.parent_ino(ino).ok_or(EIO)?;
-            let parent_document = namespace.document_id_for(parent_ino).ok_or(EIO)?;
-            let source_path = namespace.path_for(ino).ok_or(EIO)?;
-            let source_name = namespace.file_name_for(ino).ok_or(EIO)?;
-            (
-                source_document,
-                current_revision,
-                parent_document,
-                source_name,
-                source_path,
-            )
-        };
-        let derive = |domain: &[u8]| {
-            keep_both_uuid(
-                domain,
-                workspace_id,
-                source_document,
-                conflict_id,
-                selected_version,
-                *actor,
-            )
-        };
-        let target_document = fs_protocol::FileDocumentId(derive(b"target-record"));
-        let target_version_id = fs_protocol::FileVersionId(derive(b"target-version"));
-        let result_version_id = fs_protocol::FileVersionId(derive(b"source-result"));
-        let transaction_id = derive(b"transaction");
-        let state = self.ns().document_history(source_document).ok_or(EINVAL)?;
-        let conflict = state
-            .conflicts
-            .iter()
-            .find(|conflict| conflict.id == conflict_id)
-            .ok_or(EINVAL)?;
-        if let Some(resolution) = &conflict.resolution {
-            return if resolution.strategy == fs_protocol::ConflictStrategy::KeepBoth
-                && resolution.result == result_version_id
-                && self
-                    .ns()
-                    .ensure_ino_for_document_id(target_document)
-                    .is_some()
-            {
-                Ok(())
-            } else {
-                Err(EBUSY)
-            };
-        }
-        if conflict.status != fs_protocol::ConflictStatus::Open
-            || conflict.versions.len() != 2
-            || !conflict.versions.contains(&current_revision.version_id)
-            || !conflict.versions.contains(&selected_version)
-            || selected_version == current_revision.version_id
-        {
-            return Err(EINVAL);
-        }
-        let selected = state
-            .versions
-            .iter()
-            .find(|version| version.id == selected_version)
-            .ok_or(EINVAL)?;
-        let current = state
-            .versions
-            .iter()
-            .find(|version| version.id == current_revision.version_id)
-            .ok_or(EBUSY)?;
-        if current.content_hash != current_revision.content_hash {
-            return Err(EBUSY);
-        }
-        // The sibling points at the selected member by hash; only its length is needed, once
-        // its bytes are local.
-        self.history_content_local(ino, conflict_id, &[selected.content_hash])?;
-        let selected_len = self.local_version_len(selected.content_hash).ok_or(EIO)?;
-        let timestamp_ms = conflict
-            .versions
-            .iter()
-            .filter_map(|id| state.versions.iter().find(|version| version.id == *id))
-            .map(|version| version.timestamp_ms)
-            .max()
-            .and_then(|timestamp| timestamp.checked_add(1))
-            .ok_or(EINVAL)?;
-        let target_name = keep_both_name(&source_name, target_document);
-        let parent_path = source_path
-            .rsplit_once('/')
-            .map_or("", |(parent, _)| parent);
-        let target_path = if parent_path.is_empty() {
-            format!(
-                "/{}",
-                crate::namespace::escape_path_name(target_name.as_bytes())
-            )
-        } else {
-            format!(
-                "{parent_path}/{}",
-                crate::namespace::escape_path_name(target_name.as_bytes())
-            )
-        };
-        let metadata_hash = |path: String, byte_len: u64| -> Result<_, i32> {
-            let bytes = postcard::to_allocvec(&VersionMetadataDigest {
-                path: Some(path),
-                kind: 2,
-                byte_len,
-                deleted: false,
-            })
-            .map_err(|_| EIO)?;
-            Ok(fs_protocol::ContentHash(*blake3::hash(&bytes).as_bytes()))
-        };
-        let source_metadata_hash = metadata_hash(source_path, current_revision.byte_len)?;
-        let target_metadata_hash = metadata_hash(target_path, selected_len)?;
-        let mut parents = state.heads.clone();
-        parents.extend(conflict.versions.iter().copied());
-        parents.sort_unstable();
-        parents.dedup();
-        if parents.len() > fs_protocol::files::MAX_VERSION_PARENTS {
-            return Err(libc::ENOTSUP);
-        }
-        let source_version = fs_protocol::FileVersionV1 {
-            id: result_version_id,
-            document_id: source_document,
-            parents,
-            actor: *actor,
-            timestamp_ms,
-            content_hash: current.content_hash,
-            metadata_hash: source_metadata_hash,
-            provenance: fs_protocol::FileProvenance::ConflictResolution,
-        };
-        let target_version = fs_protocol::FileVersionV1 {
-            id: target_version_id,
-            document_id: target_document,
-            parents: Vec::new(),
-            actor: *actor,
-            timestamp_ms,
-            content_hash: selected.content_hash,
-            metadata_hash: target_metadata_hash,
-            provenance: fs_protocol::FileProvenance::Create,
-        };
-        let mut source_file = fs_protocol::TransactionFile {
-            document_id: source_document,
-            role: fs_protocol::TransactionFileRole::KeepBothSource,
-            expected_version: current_revision.version_id,
-            proposed_binding: fs_protocol::FileBindingV1 {
-                schema_version: fs_protocol::FILE_BINDING_VERSION,
-                document_id: source_document,
-                parent: Some(parent_document),
-                name: source_name.clone(),
-                kind: fs_protocol::FileNodeKind::File,
-                tombstoned: false,
-                actor: *actor,
-                observed_at_ms: timestamp_ms,
-            },
-            proposed_content_revision: Some(fs_protocol::ContentRevisionV1 {
-                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-                document_id: source_document,
-                version_id: result_version_id,
-                content_hash: current.content_hash,
-                byte_len: current_revision.byte_len,
-                metadata_hash: source_metadata_hash,
-            }),
-            proposed_version: source_version,
-            projection_hash: fs_protocol::ContentHash([0; 32]),
-        };
-        source_file.projection_hash = source_file.computed_projection_hash().map_err(|_| EIO)?;
-        let mut sibling_file = fs_protocol::TransactionFile {
-            document_id: target_document,
-            role: fs_protocol::TransactionFileRole::KeepBothSibling,
-            expected_version: selected_version,
-            proposed_binding: fs_protocol::FileBindingV1 {
-                schema_version: fs_protocol::FILE_BINDING_VERSION,
-                document_id: target_document,
-                parent: Some(parent_document),
-                name: target_name.clone(),
-                kind: fs_protocol::FileNodeKind::File,
-                tombstoned: false,
-                actor: *actor,
-                observed_at_ms: timestamp_ms,
-            },
-            proposed_content_revision: Some(fs_protocol::ContentRevisionV1 {
-                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-                document_id: target_document,
-                version_id: target_version_id,
-                content_hash: selected.content_hash,
-                byte_len: selected_len,
-                metadata_hash: target_metadata_hash,
-            }),
-            proposed_version: target_version,
-            projection_hash: fs_protocol::ContentHash([0; 32]),
-        };
-        sibling_file.projection_hash = sibling_file.computed_projection_hash().map_err(|_| EIO)?;
-        let mut files = vec![source_file, sibling_file];
-        files.sort_by_key(|transaction_file| transaction_file.document_id);
-        let manifest = fs_protocol::FileMutationTransactionManifest {
-            schema_version: fs_protocol::files::FILE_MUTATION_TRANSACTION_VERSION_V2,
-            transaction_id,
-            workspace_id,
-            actor: *actor,
-            timestamp_ms,
-            operation: fs_protocol::FileMutationOperation::KeepBothContentConflict {
-                source_document,
-                sibling_document: target_document,
-                parent_document,
-                source_name,
-                sibling_name: target_name,
-                conflict_id,
-                conflict_versions: conflict.versions.clone(),
-                selected_version,
-            },
-            files,
-        };
-        // Who caused these versions, when an agent did, is recorded once the transaction
-        // committed them.
-        let attributed: Vec<_> = manifest
-            .files
-            .iter()
-            .map(|transaction_file| transaction_file.proposed_version.clone())
-            .collect();
-        self.commit_manifest(&manifest)?;
-        self.attribute_versions(&attributed, None);
-        Ok(())
-    }
-
     #[allow(
         clippy::significant_drop_tightening,
         reason = "namespace and availability snapshots must describe one coherent record revision"
@@ -4302,13 +3250,6 @@ impl QuickFS {
         }
     }
 
-    /// Content-chunk and ingest `data`, returning the manifest hash. `Ok(None)` for empty data;
-    /// `Err` if ingest fails, so callers never persist a non-empty file with a missing hash.
-    fn write_content_blocking(&self, data: &[u8]) -> io::Result<Option<Hash>> {
-        self.store_version_blocking(VersionSource::Bytes(data), None)
-            .map(|stored| stored.map(|(hash, _)| hash))
-    }
-
     /// Stores one version's content and returns its content id and length (`None` when empty).
     /// `previous` is the file's current content, whose chunk tier the new version keeps.
     fn store_version_blocking(
@@ -4400,7 +3341,7 @@ impl QuickFS {
         let snapshot = self
             .replacement_snapshot(ino, hash, byte_len)
             .ok_or_else(|| io::Error::from_raw_os_error(ENOENT))?;
-        self.append_version_at(snapshot, fs_protocol::FileProvenance::Edit, now_ms(), stamp)
+        self.append_version(snapshot, fs_protocol::FileProvenance::Edit, now_ms())
             .map_err(|error| match error {
                 crate::namespace::history::HistoryError::CapacityExhausted(detail) => {
                     eprintln!("inode {ino}: {detail}");
@@ -5365,7 +4306,7 @@ impl Filesystem for QuickFS {
 
     fn open(&self, req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
         let _writer = (!matches!(flags.acc_mode(), OpenAccMode::O_RDONLY))
-            .then(|| self.note_writer(req.pid(), Some(ino.0)));
+            .then(|| self.note_writer(req.pid()));
         let opened_path = {
             let ns = self.ns();
             ns.getattr(ino.0).and_then(|_| ns.path_for(ino.0))
@@ -5459,7 +4400,7 @@ impl Filesystem for QuickFS {
         flags: i32,
         reply: ReplyCreate,
     ) {
-        let mut writer = self.note_writer(req.pid(), None);
+        let mut writer = self.note_writer(req.pid());
         let name_bytes = name.as_bytes();
         if let Err(e) = self.check_new_name(parent.0, name_bytes) {
             reply.error(to_errno(e));
@@ -5479,7 +4420,7 @@ impl Filesystem for QuickFS {
         };
         self.publish();
         drop(writer);
-        writer = self.note_writer(req.pid(), Some(attr.ino.0));
+        writer = self.note_writer(req.pid());
         self.document_version(attr.ino.0, fs_protocol::FileProvenance::Create, None);
         drop(writer);
         let handle = self.next_file_handle.fetch_add(1, Ordering::Relaxed);
@@ -5534,7 +4475,7 @@ impl Filesystem for QuickFS {
         _lock_owner: LockOwner,
         reply: ReplyEmpty,
     ) {
-        let _writer = self.note_writer(req.pid(), None);
+        let _writer = self.note_writer(req.pid());
         match self.flush_inode(ino.0) {
             Ok(()) => reply.ok(),
             Err(errno) => reply.error(to_errno(errno)),
@@ -5549,7 +4490,7 @@ impl Filesystem for QuickFS {
         _datasync: bool,
         reply: ReplyEmpty,
     ) {
-        let _writer = self.note_writer(req.pid(), None);
+        let _writer = self.note_writer(req.pid());
         match self.fsync_inode(ino.0) {
             Ok(()) => reply.ok(),
             Err(errno) => reply.error(to_errno(errno)),
@@ -5620,9 +4561,7 @@ impl Filesystem for QuickFS {
         _flags: Option<BsdFileFlags>,
         reply: ReplyAttr,
     ) {
-        let _writer = size
-            .is_some()
-            .then(|| self.note_writer(req.pid(), Some(ino.0)));
+        let _writer = size.is_some().then(|| self.note_writer(req.pid()));
         // Truncation is a write; everything else here is ignored anyway, but a `setattr` on
         // something outside the view must not describe it, so the visibility check runs regardless.
         if !self.ino_in_view(ino.0) {
@@ -5667,7 +4606,7 @@ impl Filesystem for QuickFS {
         umask: u32,
         reply: ReplyEntry,
     ) {
-        let _writer = self.note_writer(req.pid(), None);
+        let _writer = self.note_writer(req.pid());
         let name = name.as_bytes();
         if let Err(e) = self.check_new_name(parent.0, name) {
             reply.error(to_errno(e));
@@ -5701,12 +4640,12 @@ impl Filesystem for QuickFS {
     }
 
     fn unlink(&self, req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
-        let _writer = self.note_writer(req.pid(), None);
+        let _writer = self.note_writer(req.pid());
         self.remove_entry(parent, name, false, reply);
     }
 
     fn rmdir(&self, req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
-        let _writer = self.note_writer(req.pid(), None);
+        let _writer = self.note_writer(req.pid());
         self.remove_entry(parent, name, true, reply);
     }
 
@@ -5720,11 +4659,7 @@ impl Filesystem for QuickFS {
         flags: RenameFlags,
         reply: ReplyEmpty,
     ) {
-        let moved = self
-            .ns()
-            .lookup(parent.0, name.as_bytes())
-            .map(|attr| attr.ino.0);
-        let _writer = self.note_writer(req.pid(), moved);
+        let _writer = self.note_writer(req.pid());
         let name = name.as_bytes();
         let newname = newname.as_bytes();
         #[cfg(target_os = "linux")]
@@ -5783,29 +4718,6 @@ impl Filesystem for QuickFS {
             }
             return;
         }
-        if name.to_str() == Some(fs_protocol::files::CHECKED_HISTORY_RESTORE_XATTR) {
-            match self.checked_restore_xattr(ino.0, value) {
-                Ok(()) => reply.ok(),
-                Err(errno) => reply.error(to_errno(errno)),
-            }
-            return;
-        }
-        if let Some(id) = name
-            .to_str()
-            .and_then(|name| name.strip_prefix(fs_protocol::files::HISTORY_JOB_XATTR_PREFIX))
-        {
-            let result = match uuid::Uuid::parse_str(id) {
-                Ok(id) if value == fs_protocol::files::HISTORY_JOB_CANCEL => {
-                    self.cancel_history_job(ino.0, id)
-                }
-                _ => Err(EINVAL),
-            };
-            match result {
-                Ok(()) => reply.ok(),
-                Err(errno) => reply.error(to_errno(errno)),
-            }
-            return;
-        }
         if name.to_str() == Some(fs_protocol::AVAILABILITY_CONTROL_XATTR) {
             let result = match value {
                 b"retry" => self.retry_transfer(ino.0),
@@ -5821,32 +4733,6 @@ impl Filesystem for QuickFS {
             match result {
                 Ok(()) => reply.ok(),
                 Err(errno) => reply.error(to_errno(errno)),
-            }
-            return;
-        }
-        if name.to_str() == Some(fs_protocol::HISTORY_CONTROL_XATTR) {
-            if value.len() > fs_protocol::MAX_HISTORY_CONTROL_BYTES {
-                reply.error(to_errno(libc::E2BIG));
-                return;
-            }
-            let Ok(request) = serde_json::from_slice::<fs_protocol::HistoryControlRequestV1>(value)
-            else {
-                reply.error(to_errno(EINVAL));
-                return;
-            };
-            if request.schema_version != fs_protocol::HISTORY_CONTROL_VERSION {
-                reply.error(to_errno(EINVAL));
-                return;
-            }
-            match request.operation {
-                fs_protocol::HistoryControlOperationV1::ResolveConflict {
-                    conflict_id,
-                    strategy,
-                    version_id,
-                } => match self.resolve_conflict(ino.0, conflict_id, strategy, version_id) {
-                    Ok(()) => reply.ok(),
-                    Err(errno) => reply.error(to_errno(errno)),
-                },
             }
             return;
         }
@@ -5892,106 +4778,6 @@ impl Filesystem for QuickFS {
             }
             return;
         }
-        if let Some(name) = name
-            .to_str()
-            .filter(|name| name.starts_with(fs_protocol::files::HISTORY_READ_XATTR))
-        {
-            use fs_protocol::files::{FileHistoryReadQueryV1 as Query, FileHistoryReadResponseV1};
-            let query = match Query::parse_xattr(name) {
-                Ok(query) => query,
-                Err(error) => {
-                    reply.error(to_errno(history_read::errno(error)));
-                    return;
-                }
-            };
-            if let Query::Preview {
-                frontier,
-                version_id,
-            } = query
-            {
-                match self.read_file_history_preview_at_frontier(ino.0, frontier, version_id) {
-                    Ok(bytes) => reply_xattr_bytes(reply, &bytes, size),
-                    Err(error) => reply.error(to_errno(history_read::errno(error))),
-                }
-            } else {
-                let response = FileHistoryReadResponseV1 {
-                    schema_version: 1,
-                    result: self.read_file_history(ino.0, query),
-                };
-                match serde_json::to_vec(&response) {
-                    Ok(bytes) if bytes.len() <= fs_protocol::files::MAX_HISTORY_READ_BYTES => {
-                        reply_xattr_bytes(reply, &bytes, size);
-                    }
-                    _ => reply.error(to_errno(EIO)),
-                }
-            }
-            return;
-        }
-        if name.to_str() == Some(fs_protocol::files::CHECKED_HISTORY_REVIEW_XATTR) {
-            let projection = fs_protocol::files::CheckedHistoryReviewResponseV1 {
-                schema_version: 1,
-                result: self.checked_history_review(ino.0),
-            };
-            match serde_json::to_vec(&projection) {
-                Ok(bytes) => reply_xattr_bytes(reply, &bytes, size),
-                Err(_) => reply.error(to_errno(EIO)),
-            }
-            return;
-        }
-        if let Some(id) = name
-            .to_str()
-            .and_then(|name| name.strip_prefix(fs_protocol::files::HISTORY_JOB_XATTR_PREFIX))
-        {
-            match uuid::Uuid::parse_str(id)
-                .map_err(|_| EINVAL)
-                .and_then(|id| self.history_job_xattr(ino.0, id))
-            {
-                Ok(bytes) => reply_xattr_bytes(reply, &bytes, size),
-                Err(errno) => reply.error(to_errno(errno)),
-            }
-            return;
-        }
-        if let Some(id) = name.to_str().and_then(|name| {
-            name.strip_prefix(fs_protocol::files::CHECKED_HISTORY_RESULT_XATTR_PREFIX)
-        }) {
-            let Ok(id) = uuid::Uuid::parse_str(id) else {
-                reply.error(to_errno(EINVAL));
-                return;
-            };
-            let projection = fs_protocol::files::CheckedHistoryResponseV1 {
-                schema_version: 1,
-                outcome: self.checked_history_result(ino.0, id),
-            };
-            match serde_json::to_vec(&projection) {
-                Ok(bytes) => reply_xattr_bytes(reply, &bytes, size),
-                Err(_) => reply.error(to_errno(EIO)),
-            }
-            return;
-        }
-        if let Some(version) = name
-            .to_str()
-            .and_then(|name| name.strip_prefix(fs_protocol::HISTORY_PREVIEW_XATTR_PREFIX))
-            .and_then(|id| uuid::Uuid::parse_str(id).ok())
-            .map(fs_protocol::FileVersionId)
-        {
-            match self.history_version_preview(ino.0, version) {
-                Ok(bytes) => reply_xattr_bytes(reply, &bytes, size),
-                Err(errno) => reply.error(to_errno(errno)),
-            }
-            return;
-        }
-        if let Some(conflict_id) = name
-            .to_str()
-            .and_then(|name| name.strip_prefix(fs_protocol::MERGE_PREFLIGHT_XATTR_PREFIX))
-            .and_then(|id| uuid::Uuid::parse_str(id).ok())
-        {
-            match self.history_merge_preflight(ino.0, conflict_id) {
-                Ok(bytes) => reply_xattr_bytes(reply, &bytes, size),
-                Err(errno) => reply.error(to_errno(errno)),
-            }
-            return;
-        }
-
         if name.to_str() == Some(fs_protocol::THUMB_XATTR) {
             match self.thumbnail_for(ino.0) {
                 // The kernel caps an xattr value at 64 KiB: report an oversize preview as absent so
@@ -6115,14 +4901,6 @@ impl Filesystem for QuickFS {
             }
             return;
         }
-
-        if name.to_str() == Some(fs_protocol::HISTORY_XATTR) {
-            match self.history_projection_for(ino.0) {
-                Some(bytes) => reply_xattr_bytes(reply, &bytes, size),
-                None => reply.error(to_errno(libc::ENODATA)),
-            }
-            return;
-        }
         if name.to_str() == Some(fs_protocol::PIN_XATTR) {
             let Some(registry) = &self.availability else {
                 reply.error(to_errno(libc::ENODATA));
@@ -6216,19 +4994,6 @@ impl Filesystem for QuickFS {
             buf.push(0);
         }
 
-        if self.history.is_some() && self.ns().document_id_for(ino.0).is_some() {
-            buf.extend_from_slice(fs_protocol::HISTORY_XATTR.as_bytes());
-            buf.push(0);
-            buf.extend_from_slice(fs_protocol::HISTORY_CONTROL_XATTR.as_bytes());
-            buf.push(0);
-            if self.namespace_persistence.is_some() {
-                buf.extend_from_slice(fs_protocol::files::CHECKED_HISTORY_REVIEW_XATTR.as_bytes());
-                buf.push(0);
-                buf.extend_from_slice(fs_protocol::files::CHECKED_HISTORY_RESTORE_XATTR.as_bytes());
-                buf.push(0);
-            }
-        }
-
         if size == 0 {
             reply.size(u32::try_from(buf.len()).unwrap_or(u32::MAX));
         } else if (size as usize) < buf.len() {
@@ -6247,9 +5012,6 @@ mod tests;
 
 #[cfg(test)]
 mod durability_tests;
-
-#[cfg(test)]
-mod write_attribution_tests;
 
 #[cfg(test)]
 mod prediction_tests;

@@ -36,7 +36,7 @@
 #   5. tilo-hosted-serve, the start this image and the server OS share: the
 #      guest (the image the release key signed, fetched once per digest;
 #      TILO_VM_GUEST_REF overrides the one this build pins) and then
-#      `tilo-legacy hosted serve`, jailed, which suspends every VM when the
+#      `tilo-linux-vm hosted serve`, jailed, which suspends every VM when the
 #      eviction notice (TILO_VM_EVICT_NOTICE) appears and on SIGTERM, admits
 #      VMs by the memory they really take of the node's (TILO_VM_MEMORY_MIB,
 #      or auto: all of it) less the reserve it keeps

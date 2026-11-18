@@ -469,8 +469,32 @@ fn refresh_heads_allocation_growth_independent_of_real_graph_size_in_all_documen
     );
 }
 
-/// Documents kept beside the owned one, as a chain's parts are.
+/// Documents kept beside the owned one, as a chain's parts are: each previewed by its body at the
+/// version, and restored by writing that body back.
 struct Parts(std::rc::Rc<std::cell::RefCell<Vec<AutoCommit>>>);
+impl Parts {
+    fn part(index: usize) -> crate::history_mode::HistoryPart {
+        crate::history_mode::HistoryPart {
+            chain: "lines".into(),
+            index: u64::try_from(index).unwrap(),
+        }
+    }
+    fn body_at(
+        &self,
+        part: &crate::history_mode::HistoryPart,
+        heads: &[automerge::ChangeHash],
+    ) -> String {
+        let index = usize::try_from(part.index).unwrap();
+        self.0.borrow()[index]
+            .clone()
+            .fork_at(heads)
+            .unwrap()
+            .get(ROOT, "body")
+            .unwrap()
+            .and_then(|(value, _)| value.into_string().ok())
+            .unwrap_or_default()
+    }
+}
 impl crate::history_mode::HistoryParts for Parts {
     fn heads(&self) -> Vec<automerge::ChangeHash> {
         self.0
@@ -479,8 +503,45 @@ impl crate::history_mode::HistoryParts for Parts {
             .flat_map(AutoCommit::base_heads)
             .collect()
     }
-    fn documents(&self) -> Vec<AutoCommit> {
-        self.0.borrow().clone()
+    fn documents(&self) -> Vec<(crate::history_mode::HistoryPart, AutoCommit)> {
+        self.0
+            .borrow()
+            .iter()
+            .enumerate()
+            .map(|(index, part)| (Self::part(index), part.clone()))
+            .collect()
+    }
+    fn preview(
+        &self,
+        version: crate::history_mode::PartVersion<'_>,
+    ) -> Result<Box<dyn crate::history_mode::HistoryPreview>, String> {
+        let mut shown = AutoCommit::new();
+        shown
+            .put(ROOT, "body", self.body_at(version.part, version.heads))
+            .unwrap();
+        crate::history_mode::host_tests::preview(crate::history_mode::PreviewInput {
+            snapshot: crate::history_mode::HistorySnapshot {
+                bytes: std::sync::Arc::from(shown.save()),
+                heads: version.heads.to_vec(),
+                side: PreviewSide::After,
+                selection: Vec::new(),
+            },
+            initial_view: version.view,
+            assets: crate::history_mode::FrozenPreviewAssets::default(),
+        })
+    }
+    fn restore(
+        &self,
+        part: &crate::history_mode::HistoryPart,
+        heads: &[automerge::ChangeHash],
+        _: &crate::permissions::MemberId,
+    ) -> Result<(), String> {
+        let body = self.body_at(part, heads);
+        let index = usize::try_from(part.index).unwrap();
+        let mut parts = self.0.borrow_mut();
+        parts[index].put(ROOT, "body", body).unwrap();
+        parts[index].commit();
+        Ok(())
     }
 }
 
@@ -493,7 +554,7 @@ fn typed_at(document: &mut AutoCommit, seconds: i64) {
 }
 
 #[test]
-fn history_lists_the_parts_beside_the_document_in_time_order_a_page_at_a_time() {
+fn history_lists_previews_and_restores_the_parts_beside_the_document() {
     let mut fixture = BoundFixture::new();
     let outer = outer();
     let mut part = AutoCommit::new();
@@ -546,13 +607,75 @@ fn history_lists_the_parts_beside_the_document_in_time_order_a_page_at_a_time() 
         crate::history_source::entry_id_from_hash(&newest.to_string())
     );
 
-    // A part's change has no version of the document to preview: choosing it leaves the
-    // timeline as it was, and History settles.
+    // Choosing a part's change shows the part as that change left it.
+    let chosen = history.timeline.entries()[0].clone();
     history.timeline.set_selection(Some((0, 0)));
     history.refresh(&outer);
-    history.refresh(&outer);
-    assert!(history.timeline_selection().is_empty());
+    assert_eq!(history.timeline_selection(), [chosen.id]);
+    let part = Parts::part(0);
+    assert_eq!(
+        history
+            .controller
+            .as_ref()
+            .and_then(crate::history_mode::HistoryController::selected_part),
+        Some(&part)
+    );
+    let shown_body = {
+        let heads = history
+            .controller
+            .as_ref()
+            .unwrap()
+            .snapshot()
+            .unwrap()
+            .heads()
+            .to_vec();
+        Parts(std::rc::Rc::clone(&parts)).body_at(&part, &heads)
+    };
+    assert!(shown_body.starts_with("typed at"), "{shown_body}");
+    let shown = history
+        .after
+        .preview
+        .as_ref()
+        .expect("the part's version is previewed")
+        .accessibility()
+        .description;
+    assert!(shown.contains(&shown_body), "{shown}");
     assert!(!history.needs_refresh(&outer, 900.0));
+
+    // Restoring it writes the part back as it was, as a new change of the part.
+    let changes = parts.borrow()[0].clone().get_changes(&[]).len();
+    let review = history
+        .controller
+        .as_ref()
+        .unwrap()
+        .review_restore()
+        .unwrap();
+    history
+        .controller
+        .as_ref()
+        .unwrap()
+        .restore_part(&review, &crate::permissions::MemberId::person("ada"))
+        .unwrap();
+    let mut restored = parts.borrow()[0].clone();
+    assert_eq!(restored.get_changes(&[]).len(), changes + 1);
+    assert_eq!(
+        restored
+            .get(ROOT, "body")
+            .unwrap()
+            .and_then(|(value, _)| value.into_string().ok()),
+        Some(shown_body)
+    );
+    // A review of a version the part moved past since is refused.
+    assert_eq!(
+        history
+            .controller
+            .as_ref()
+            .unwrap()
+            .restore_part(&review, &crate::permissions::MemberId::person("ada")),
+        Err(crate::history_mode::HistoryError::StaleLiveHeads)
+    );
+    history.commands.borrow_mut().push_back(Command::Now);
+    history.refresh(&outer);
 
     // An earlier page lists the rest.
     history.commands.borrow_mut().push_back(Command::Earlier);
@@ -563,7 +686,7 @@ fn history_lists_the_parts_beside_the_document_in_time_order_a_page_at_a_time() 
         .iter()
         .map(|entry| entry.id)
         .collect();
-    assert_eq!(all.len(), typed + 1 + own.len());
+    assert_eq!(all.len(), typed + 2 + own.len());
     assert!(
         own.iter().all(|id| all.contains(id)),
         "the document's own changes are listed too"

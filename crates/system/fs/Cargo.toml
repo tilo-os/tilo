@@ -186,6 +186,7 @@ runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal", def
 tilo-identity-client = { version = "0.1.0", path = "../../runtime/tilo-identity-client", default-features = false, optional = true }
 # The tree's changes seal under the record's content keys, as an app's do.
 key-group = { version = "0.1.0", path = "../../collab/key-group", optional = true }
+tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
 
 [dev-dependencies]
 tilo-content-device = { version = "0.1.0", path = "../content-device" }

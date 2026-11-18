@@ -108,7 +108,7 @@ Requires:       upower
 # Rootless Xwayland maps legacy X11 windows into ordinary Wayland toplevels,
 # preserving applications the user installed before adding Tilo.
 Requires:       xwayland-satellite
-# Legacy VMs (tilo-legacy): each app's windows reach the compositor through a
+# Linux VMs (tilo-linux-vm): each app's windows reach the compositor through a
 # waypipe client over vsock, and granted directories are shared into the VM by
 # an unprivileged virtiofsd.
 Requires:       waypipe
@@ -261,8 +261,8 @@ ln -s ../libexec/tilo/tilo-model-http %{buildroot}%{_bindir}/tilo-model-http
 install -Dpm 0755 apps/libexec/tilo-cli-shim %{buildroot}%{_libexecdir}/tilo-cli-shim
 install -Dpm 0755 apps/libexec/tilo-package-service %{buildroot}%{_libexecdir}/tilo-package-service
 install -Dpm 0755 apps/libexec/tilo-ush %{buildroot}%{_libexecdir}/tilo-ush
-install -Dpm 0755 apps/bin/tilo-legacy %{buildroot}%{_libexecdir}/tilo/tilo-legacy
-ln -s ../libexec/tilo/tilo-legacy %{buildroot}%{_bindir}/tilo-legacy
+install -Dpm 0755 apps/bin/tilo-linux-vm %{buildroot}%{_libexecdir}/tilo/tilo-linux-vm
+ln -s ../libexec/tilo/tilo-linux-vm %{buildroot}%{_bindir}/tilo-linux-vm
 for unit in tilo-package-service tilo-models tilo-model-gateway tilo-ush; do
     install -Dpm 0644 apps/systemd-user/$unit.service \
         %{buildroot}%{_userunitdir}/$unit.service
@@ -345,7 +345,7 @@ test ! -e %{buildroot}%{_prefix}/lib/tilo-runtime/.gc.lock
 grep -q '/usr/lib/tilo-apps/bin' %{buildroot}%{_sysconfdir}/profile.d/tilo-apps.sh
 test -s %{buildroot}%{_sysconfdir}/tilo/runtime-bundle-trusted-publishers.txt
 # What the ush supervisor runs, at the paths it looks for it.
-test -x %{buildroot}%{_bindir}/tilo-legacy
+test -x %{buildroot}%{_bindir}/tilo-linux-vm
 for unit in tilo-package-service tilo-models tilo-model-gateway tilo-ush; do
     test -f %{buildroot}%{_userunitdir}/$unit.service
     test -f %{buildroot}%{_userunitdir}/$unit.socket
@@ -399,8 +399,8 @@ done
 %{_libexecdir}/tilo-cli-shim
 %{_libexecdir}/tilo-package-service
 %{_libexecdir}/tilo-ush
-%{_bindir}/tilo-legacy
-%{_libexecdir}/tilo/tilo-legacy
+%{_bindir}/tilo-linux-vm
+%{_libexecdir}/tilo/tilo-linux-vm
 %{_userunitdir}/tilo-package-service.service
 %{_userunitdir}/tilo-package-service.socket
 %{_userunitdir}/tilo-models.service

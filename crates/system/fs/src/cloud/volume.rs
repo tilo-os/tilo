@@ -1699,8 +1699,7 @@ impl CloudVolume {
     ) -> Result<(), Error> {
         let bytes = hash_file(staged)?;
         let copy_name = String::from_utf8_lossy(
-            crate::conflict::conflict_name(item.name.as_bytes(), &iroh_blobs::Hash::from(bytes))
-                .as_bytes(),
+            conflict_name(item.name.as_bytes(), &iroh_blobs::Hash::from(bytes)).as_bytes(),
         )
         .into_owned();
         let copy = match self.send_file(
@@ -2273,6 +2272,21 @@ fn file_revision(info: cloud_source::RevisionInfo) -> FileRevision {
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
     serde_json::from_slice(&fs::read(path).ok()?).ok()
+}
+
+/// The name a cloud upload that lost a race to a concurrent remote change is kept under beside
+/// the remote's: `name` with a 128-bit (32 hex) prefix of the losing content's hash, so every
+/// device that meets the race names the copy alike.
+fn conflict_name(name: &[u8], loser: &iroh_blobs::Hash) -> fs_protocol::FileNameV1 {
+    let hex = hex::encode(loser.as_bytes());
+    let hash_prefix = hex.as_bytes().get(..32).unwrap_or(hex.as_bytes());
+    let suffix = [b".sync-conflict-".as_slice(), hash_prefix].concat();
+    let prefix_len = name
+        .len()
+        .min(fs_protocol::MAX_FILE_NAME_BYTES.saturating_sub(suffix.len()));
+    let mut out = name.get(..prefix_len).unwrap_or(name).to_vec();
+    out.extend_from_slice(&suffix);
+    out.into()
 }
 
 #[cfg(test)]

@@ -46,7 +46,6 @@ tilo_test_env::scenario! {
                 passthrough_argv: vec![],
             },
             expected_package_hash: Some("not-an-installed-package".into()),
-            identity: IdentitySource::None,
             ..RunOptions::default()
         };
         let mut variants = Vec::new();
@@ -55,9 +54,6 @@ tilo_test_env::scenario! {
         variants.push(opts);
         let mut opts = strict.clone();
         opts.expected_package_hash = None;
-        variants.push(opts);
-        let mut opts = strict.clone();
-        opts.identity = IdentitySource::UserStore;
         variants.push(opts);
         let mut opts = strict.clone();
         opts.landlock_enforce = false;
@@ -87,7 +83,6 @@ tilo_test_env::scenario! {
                 passthrough_argv: vec![],
             },
             expected_package_hash: Some("not-an-installed-package".into()),
-            identity: IdentitySource::None,
             // Omitted app id means no installation lookup can touch user state.
             app_id: None,
             ..RunOptions::default()
@@ -115,7 +110,6 @@ tilo_test_env::scenario! {
                 passthrough_argv: vec![],
             },
             no_services: true,
-            identity: IdentitySource::None,
             ..RunOptions::default()
         };
         assert_eq!(

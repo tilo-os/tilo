@@ -1509,12 +1509,19 @@ fn set_aside_failed(record: &ui_core::resource::DocumentId, error: &str) -> Stri
 /// was given, past which anything its view writes while it opens is refused
 /// ([`refuse_written_on_open`]).
 /// The storage keys `mutation` writes, top down to what it put or deleted, in
-/// `doc`: forked, so the document itself is not touched.
+/// `doc`. Changes are read from their own operations ([`keys_written_by`]);
+/// anything else (a whole document) is applied to a fork, so the document
+/// itself is not touched.
 fn changed_keys_of(
     doc: &mut ui_core::automerge::AutoCommit,
     mutation: &DocumentMutation,
 ) -> Result<Vec<Vec<String>>, String> {
     use ui_core::automerge::PatchAction;
+    if let DocumentMutation::Incremental(bytes) = mutation
+        && let Some(keys) = keys_written_by(doc, bytes)
+    {
+        return Ok(keys);
+    }
     let key = |prop: &ui_core::automerge::Prop| match prop {
         ui_core::automerge::Prop::Map(key) => key.clone(),
         ui_core::automerge::Prop::Seq(index) => index.to_string(),
@@ -1547,6 +1554,96 @@ fn changed_keys_of(
             keys
         })
         .collect())
+}
+
+/// The storage keys the changes in `bytes` write, each top down to what it
+/// put or deleted, read from their operations: an object they make is placed
+/// where they make it, any other where `doc` holds it. Nothing of `doc` is
+/// copied or applied to, so the answer costs the changes, not the document.
+/// Changes `doc` holds already write nothing new. `None` when the bytes are
+/// not changes, or an operation is on an object neither `doc` nor the changes
+/// hold (they build on changes `doc` has not got).
+fn keys_written_by(
+    doc: &mut ui_core::automerge::AutoCommit,
+    bytes: &[u8],
+) -> Option<Vec<Vec<String>>> {
+    use std::collections::HashMap;
+    use ui_core::automerge::legacy::{Key, ObjectId, OpType};
+    use ui_core::automerge::{Prop, ReadDoc};
+    let map_key = |key: &Key| match key {
+        Key::Map(key) => Some(key.to_string()),
+        Key::Seq(_) => None,
+    };
+    let changes = ui_core::automerge::Automerge::parse_changes(bytes).ok()?;
+    // Each object the changes make, by its id: where it is made.
+    let mut made: HashMap<String, (ObjectId, Option<String>)> = HashMap::new();
+    let mut ops = Vec::new();
+    for change in &changes {
+        if doc.get_change_meta_by_hash(&change.hash()).is_some() {
+            continue;
+        }
+        let actor = change.actor_id().to_hex_string();
+        let start = change.start_op().get();
+        for (offset, op) in change.decode().operations.into_iter().enumerate() {
+            if matches!(op.action, OpType::Make(_)) {
+                let counter = start.saturating_add(u64::try_from(offset).ok()?);
+                made.insert(
+                    format!("{counter}@{actor}"),
+                    (op.obj.clone(), map_key(&op.key)),
+                );
+            }
+            ops.push(op);
+        }
+    }
+    let mut paths: HashMap<String, Vec<String>> = HashMap::new();
+    let mut path_of = |obj: &ObjectId| -> Option<Vec<String>> {
+        // Up through what the changes make, to the root or an object `doc`
+        // holds, whose path `doc` names.
+        let mut above: Vec<Option<String>> = Vec::new();
+        let mut at = obj.clone();
+        let base = loop {
+            let ObjectId::Id(id) = &at else {
+                break Vec::new();
+            };
+            let name = id.to_string();
+            if let Some(known) = paths.get(&name) {
+                break known.clone();
+            }
+            if let Some((parent, key)) = made.get(&name) {
+                above.push(key.clone());
+                at = parent.clone();
+                if above.len() > made.len() {
+                    return None;
+                }
+                continue;
+            }
+            let (held, _) = doc.import(&name).ok()?;
+            let mut keys: Vec<String> = doc
+                .parents(&held)
+                .ok()?
+                .map(|parent| match parent.prop {
+                    Prop::Map(key) => key,
+                    Prop::Seq(index) => index.to_string(),
+                })
+                .collect();
+            keys.reverse();
+            paths.insert(name, keys.clone());
+            break keys;
+        };
+        let mut path = base;
+        path.extend(above.into_iter().rev().flatten());
+        if let ObjectId::Id(id) = obj {
+            paths.insert(id.to_string(), path.clone());
+        }
+        Some(path)
+    };
+    ops.iter()
+        .map(|op| {
+            let mut path = path_of(&op.obj)?;
+            path.extend(map_key(&op.key));
+            Some(path)
+        })
+        .collect()
 }
 
 /// The member `invoker` is: an automation opens no view of its own.
@@ -1619,3 +1716,6 @@ fn written_on_open(
         .collect();
     (!wrote.is_empty()).then(|| wrote.join(", "))
 }
+
+#[cfg(test)]
+mod tests;

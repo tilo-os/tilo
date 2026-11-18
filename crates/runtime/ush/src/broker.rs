@@ -75,7 +75,7 @@ pub enum Request {
     },
     Status,
     Restart,
-    LegacyLaunch {
+    LinuxVmLaunch {
         app: String,
         args: Vec<String>,
         cwd: PathBuf,
@@ -177,10 +177,10 @@ struct HostCommand {
 
 fn host_command_for(host_root: &Path, policy: &Policy, req: &Request) -> Option<HostCommand> {
     let (operation, program, args, mutating) = match req {
-        Request::LegacyLaunch { app, args, cwd } => (
-            "legacy-launch",
-            LEGACY_PROGRAM,
-            legacy_launch_args(policy, app, args, cwd)?,
+        Request::LinuxVmLaunch { app, args, cwd } => (
+            "linux-vm-launch",
+            LINUX_VM_PROGRAM,
+            linux_vm_launch_args(policy, app, args, cwd)?,
             false,
         ),
         Request::AppUpdate { package } => {
@@ -229,7 +229,7 @@ fn host_command_for(host_root: &Path, policy: &Policy, req: &Request) -> Option<
         _ => return None,
     };
     let time_limit = match operation {
-        "legacy-launch" => None,
+        "linux-vm-launch" => None,
         _ if mutating => Some(UPDATE_TIME_LIMIT),
         _ => Some(QUERY_TIME_LIMIT),
     };
@@ -243,23 +243,23 @@ fn host_command_for(host_root: &Path, policy: &Policy, req: &Request) -> Option<
     })
 }
 
-const LEGACY_PROGRAM: &str = "tilo-legacy";
+const LINUX_VM_PROGRAM: &str = "tilo-linux-vm";
 
 fn host_program_dir(program: &str) -> &'static str {
-    if program == LEGACY_PROGRAM {
+    if program == LINUX_VM_PROGRAM {
         "usr/libexec/tilo"
     } else {
         "usr/bin"
     }
 }
 
-/// `tilo-legacy launch <app> --cwd <cwd> [--share-cwd] -- <args…>`.
+/// `tilo-linux-vm launch <app> --cwd <cwd> [--share-cwd] -- <args…>`.
 ///
 /// The directory a command is typed in is shared with the VM for that launch
 /// only when the user trusted it to this runtime for writing: a guest cannot
 /// widen what the VM sees beyond what the person already granted here.
 /// `None` for an app name that is not a plain identifier or a relative cwd.
-fn legacy_launch_args(
+fn linux_vm_launch_args(
     policy: &Policy,
     app: &str,
     args: &[String],
@@ -450,21 +450,21 @@ impl BrokerState {
                 self.log("restart", None, true, None);
                 Response::Ok
             }
-            Request::LegacyLaunch { app, args, cwd } => self.legacy_launch(&app, &args, &cwd),
+            Request::LinuxVmLaunch { app, args, cwd } => self.linux_vm_launch(&app, &args, &cwd),
             Request::FileAction { action, run } => {
                 crate::file_actions::brokered(self, &action, run.as_ref())
             }
         }
     }
 
-    fn legacy_launch(&self, app: &str, args: &[String], cwd: &Path) -> Response {
-        if legacy_launch_args(&self.environment.policy(), app, args, cwd).is_some() {
+    fn linux_vm_launch(&self, app: &str, args: &[String], cwd: &Path) -> Response {
+        if linux_vm_launch_args(&self.environment.policy(), app, args, cwd).is_some() {
             Response::Denied {
                 reason: HOST_COMMAND_NEEDS_SOCKET.into(),
             }
         } else {
-            let reason = format!("{app:?} is not a legacy app name");
-            self.log("legacy-launch", Some(app), false, Some(&reason));
+            let reason = format!("{app:?} is not a Linux VM app name");
+            self.log("linux-vm-launch", Some(app), false, Some(&reason));
             Response::Denied { reason }
         }
     }
@@ -1705,10 +1705,10 @@ pub(crate) mod tests {
     }
 
     tilo_test_env::scenario! {
-        /// The grants the broker reads and writes: legacy launches, trusted directories and allowed hosts.
+        /// The grants the broker reads and writes: Linux VM launches, trusted directories and allowed hosts.
         fn grants_are_resolved_validated_and_kept_in_the_record;
 
-        phase legacy_shims_reach_the_vm_only_with_the_users_own_grants;
+        phase linux_vm_shims_reach_the_vm_only_with_the_users_own_grants;
         {
             use collab_types::caps::{CapOverride, Scope};
             let policy = Policy::new(vec![
@@ -1720,7 +1720,7 @@ pub(crate) mod tests {
                 .through(crate::RUNTIME_APP_ID),
             ]);
             {
-                let args = legacy_launch_args(
+                let args = linux_vm_launch_args(
                     &policy,
                     "code",
                     &[".".to_string()],
@@ -1742,7 +1742,7 @@ pub(crate) mod tests {
                 let command = host_command_for(
                     Path::new("/"),
                     &policy,
-                    &Request::LegacyLaunch {
+                    &Request::LinuxVmLaunch {
                         app: "code".into(),
                         args: Vec::new(),
                         cwd: "/var/home/you/src".into(),
@@ -1751,22 +1751,22 @@ pub(crate) mod tests {
                 .unwrap();
                 assert_eq!(
                     command.binary,
-                    PathBuf::from("/usr/libexec/tilo/tilo-legacy")
+                    PathBuf::from("/usr/libexec/tilo/tilo-linux-vm")
                 );
                 assert!(!command.mutating);
                 assert_eq!(command.time_limit, None);
             }
             // phase: an untrusted directory is named but not shared
             {
-                let args = legacy_launch_args(&policy, "code", &[], Path::new("/var/home/you/secret"))
+                let args = linux_vm_launch_args(&policy, "code", &[], Path::new("/var/home/you/secret"))
                     .unwrap();
                 assert!(!args.contains(&"--share-cwd".to_string()));
             }
             {
                 for app in ["--image", "../x", "", "a b"] {
-                    assert!(legacy_launch_args(&policy, app, &[], Path::new("/x")).is_none());
+                    assert!(linux_vm_launch_args(&policy, app, &[], Path::new("/x")).is_none());
                 }
-                assert!(legacy_launch_args(&policy, "code", &[], Path::new("src")).is_none());
+                assert!(linux_vm_launch_args(&policy, "code", &[], Path::new("src")).is_none());
             }
         }
 

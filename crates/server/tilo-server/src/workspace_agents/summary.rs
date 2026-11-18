@@ -144,7 +144,7 @@ impl HostAgents {
         };
         let (Ok(Some(chat)), Ok(Some(held))) = (
             self.read::<chat::chat::Chat>(workspace, CHAT, "").await,
-            self.read::<chat::parts::ChatPart>(workspace, CHAT, part)
+            self.read::<chat::parts::ChatMessages>(workspace, CHAT, part)
                 .await,
         ) else {
             return false;
@@ -155,7 +155,7 @@ impl HostAgents {
             None,
             &tilo_resource::Id::from_raw(fold.conversation.clone()),
             &tilo_resource::Id::from_raw(message.clone()),
-            &ui::permissions::MemberId::agent(&turn.agent.id.0),
+            &collaboration::permissions::MemberId::agent(&turn.agent.id.0),
             String::new(),
         );
         now.fold.as_ref() == Some(fold)

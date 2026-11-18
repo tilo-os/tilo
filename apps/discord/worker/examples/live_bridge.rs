@@ -292,7 +292,7 @@ impl Workspace {
     }
 
     /// `who` does `invoke` to Chat's messages from their own device.
-    async fn act_on_messages(&self, who: &str, invoke: Invoke<chat::parts::ChatPart>) {
+    async fn act_on_messages(&self, who: &str, invoke: Invoke<chat::parts::ChatMessages>) {
         let who = who.to_owned();
         self.part_as(move |part, chat| {
             chat::demo::apply_part_doc(part, chat, &who, invoke).map_err(|error| error.to_string())
@@ -674,12 +674,14 @@ async fn live(token: String, guild_id: String) -> usize {
     workspace
         .act_on_messages(
             &workspace.ada,
-            chat::parts::ChatPart::EDIT_MESSAGE.with(chat::messages::chat_part::EditMessage {
-                message: Id::from_raw(&first),
-                text: "hello from Tilo, edited".into(),
-                body: None,
-                mentions: None,
-            }),
+            chat::parts::ChatMessages::EDIT_MESSAGE.with(
+                chat::messages::chat_messages::EditMessage {
+                    message: Id::from_raw(&first),
+                    text: "hello from Tilo, edited".into(),
+                    body: None,
+                    mentions: None,
+                },
+            ),
         )
         .await;
     let edited = settle(&mut runner, "edit", || async {
@@ -695,7 +697,7 @@ async fn live(token: String, guild_id: String) -> usize {
     workspace
         .act_on_messages(
             &workspace.ada,
-            chat::parts::ChatPart::paths()
+            chat::parts::ChatMessages::paths()
                 .messages
                 .item(&Id::from_raw(&first))
                 .reactions
@@ -746,7 +748,7 @@ async fn live(token: String, guild_id: String) -> usize {
     workspace
         .act_on_messages(
             &workspace.ada,
-            chat::parts::ChatPart::POST.with(chat::messages::chat_part::Post {
+            chat::parts::ChatMessages::POST.with(chat::messages::chat_messages::Post {
                 message: chat::messages::NewMessage {
                     channel: Id::from_raw(&general),
                     text: "notes from Tilo".into(),
@@ -790,9 +792,11 @@ async fn live(token: String, guild_id: String) -> usize {
     workspace
         .act_on_messages(
             &workspace.ada,
-            chat::parts::ChatPart::DELETE_MESSAGE.with(chat::messages::chat_part::DeleteMessage {
-                message: Id::from_raw(&doomed),
-            }),
+            chat::parts::ChatMessages::DELETE_MESSAGE.with(
+                chat::messages::chat_messages::DeleteMessage {
+                    message: Id::from_raw(&doomed),
+                },
+            ),
         )
         .await;
     let deleted = settle(&mut runner, "delete", || async {

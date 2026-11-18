@@ -26,12 +26,12 @@
 use std::collections::BTreeMap;
 
 use chat::chat::{Chat, Message, reply_id_at};
+use collaboration::permissions::MemberId;
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_resource::{Id, Resource as _};
 use tilo_workspace_agent::{Agent, Stands, WorkspaceAgents, sub};
-use ui::permissions::MemberId;
 
 use super::{
     Ask, Asks, CHAT, HostAgents, Outcome, Turn, WorkspaceActionProvider, WorkspaceId, going,
@@ -302,7 +302,11 @@ pub(super) fn admits(own: &Own, caller: &Caller, request: &InvokeRequest) -> boo
     let [answer, question, words] = sub::OWN_WRITES;
     let action = target.address.action.as_str();
     if action == answer {
-        let answered = format!("{}/messages/{}", chat::parts::ChatPart::KIND, turn.message);
+        let answered = format!(
+            "{}/messages/{}",
+            chat::parts::ChatMessages::KIND,
+            turn.message
+        );
         return target.address.resource == answered;
     }
     let InvokeArgument::Json(given) = &request.argument else {
@@ -440,7 +444,7 @@ impl Team {
 
     /// Take in one part of the chat's messages, the document `document`: what it holds of what
     /// the list owes, and what stands in the conversations of the sub-agents worked here.
-    pub(super) fn read(&mut self, document: &str, chat: &Chat, part: &chat::parts::ChatPart) {
+    pub(super) fn read(&mut self, document: &str, chat: &Chat, part: &chat::parts::ChatMessages) {
         let Some(roster) = &self.roster else {
             return;
         };
@@ -922,15 +926,19 @@ impl HostAgents {
         let (Some(sub), Ask::Message { part, .. }) = (&turn.agent.sub, &turn.ask) else {
             return false;
         };
-        let Some(asked_in) =
-            ui::resource::DocumentId::parse(part).and_then(|part| chat::parts::part_index(&part))
+        let Some(asked_in) = collab_types::document::DocumentId::parse(part)
+            .and_then(|part| chat::parts::part_index(&part))
         else {
             return false;
         };
         let me = MemberId::agent(&turn.agent.id.0);
         for index in asked_in..asked_in.saturating_add(4) {
             let Ok(Some(held)) = self
-                .read::<chat::parts::ChatPart>(workspace, CHAT, chat::parts::part(index).as_str())
+                .read::<chat::parts::ChatMessages>(
+                    workspace,
+                    CHAT,
+                    chat::parts::part(index).as_str(),
+                )
                 .await
             else {
                 break;
@@ -1106,7 +1114,7 @@ async fn ask_agent(
         service,
         caller,
         &route,
-        &ui::resource::chain_resource_id(&chat::parts::chain()),
+        &collab_types::document::chain_resource_id(&chat::parts::chain()),
         "ask-agent",
         arguments,
     )

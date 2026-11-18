@@ -12,7 +12,7 @@ pub enum SessionTarget {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         record: Option<String>,
     },
-    Legacy {
+    LinuxVm {
         vm: String,
     },
 }
@@ -58,7 +58,7 @@ impl SessionTarget {
             Self::Environment { record } => record
                 .as_deref()
                 .is_none_or(tilo_environment::is_record_key),
-            Self::Legacy { vm } => tilo_environment::is_record_key(vm),
+            Self::LinuxVm { vm } => tilo_environment::is_record_key(vm),
         }
     }
 
@@ -68,7 +68,7 @@ impl SessionTarget {
             Self::Environment { record } => Some(tilo_environment::Target::Environment {
                 record: record.clone(),
             }),
-            Self::Legacy { .. } => None,
+            Self::LinuxVm { .. } => None,
         }
     }
 
@@ -94,12 +94,12 @@ pub struct EnvironmentSummary {
     pub grants: Vec<(String, bool)>,
 }
 
-/// Every target the picker offers, in order: each environment, the device's own shell, then legacy
-/// VMs (only when the legacy VM service reports any).
+/// Every target the picker offers, in order: each environment, the device's own shell, then Linux
+/// VMs (only when the Linux VM service reports any).
 pub fn picker_targets(
     environments: &[EnvironmentSummary],
     host_available: bool,
-    legacy_vms: &[String],
+    linux_vms: &[String],
 ) -> Vec<SessionTarget> {
     let mut out: Vec<SessionTarget> = environments
         .iter()
@@ -112,10 +112,10 @@ pub fn picker_targets(
         out.push(SessionTarget::Host);
     }
     out.extend(
-        legacy_vms
+        linux_vms
             .iter()
             .filter(|vm| tilo_environment::is_record_key(vm))
-            .map(|vm| SessionTarget::Legacy { vm: vm.clone() }),
+            .map(|vm| SessionTarget::LinuxVm { vm: vm.clone() }),
     );
     out
 }
@@ -208,7 +208,7 @@ impl RecentTarget {
     }
 
     /// Remember `target` if it is an environment; the device's own shell and
-    /// legacy VMs are never the default for a new tab.
+    /// Linux VMs are never the default for a new tab.
     pub fn remember(&self, target: &SessionTarget) {
         if !matches!(target, SessionTarget::Environment { .. }) {
             return;
@@ -239,7 +239,7 @@ mod tests {
                 SessionTarget::Host,
                 SessionTarget::default_environment(),
                 SessionTarget::environment("work"),
-                SessionTarget::Legacy { vm: "linux".into() },
+                SessionTarget::LinuxVm { vm: "linux".into() },
             ] {
                 assert_eq!(SessionTarget::decode(&target.encode()), Some(target));
             }
@@ -257,7 +257,7 @@ mod tests {
             );
             for bad in [
                 r#"{"kind":"environment","record":"../etc"}"#,
-                r#"{"kind":"legacy","vm":""}"#,
+                r#"{"kind":"linux-vm","vm":""}"#,
                 r#"{"kind":"nonsense"}"#,
                 "not json",
             ] {
@@ -265,14 +265,14 @@ mod tests {
             }
             assert_eq!(
                 SessionTarget::decode(&format!(
-                    r#"{{"kind":"legacy","vm":"{}"}}"#,
+                    r#"{{"kind":"linux-vm","vm":"{}"}}"#,
                     "a".repeat(2000)
                 )),
                 None
             );
         }
 
-        phase the_supervisor_serves_and_carries_every_target_but_legacy_vms;
+        phase the_supervisor_serves_and_carries_every_target_but_linux_vms;
         {
             assert_eq!(
                 SessionTarget::Host.to_supervisor(),
@@ -290,12 +290,12 @@ mod tests {
                 "a location stored while environments could run elsewhere means this device"
             );
             assert_eq!(
-                SessionTarget::Legacy { vm: "linux".into() }.to_supervisor(),
+                SessionTarget::LinuxVm { vm: "linux".into() }.to_supervisor(),
                 None
             );
         }
 
-        phase the_picker_lists_environments_then_the_host_then_legacy_vms_when_reported;
+        phase the_picker_lists_environments_then_the_host_then_linux_vms_when_reported;
         {
             let work = EnvironmentSummary {
                 key: "work".into(),
@@ -316,7 +316,7 @@ mod tests {
                 vec![
                     SessionTarget::environment("work"),
                     SessionTarget::Host,
-                    SessionTarget::Legacy { vm: "linux".into() }
+                    SessionTarget::LinuxVm { vm: "linux".into() }
                 ]
             );
         }
@@ -340,11 +340,11 @@ mod tests {
         );
 
         recent.remember(&SessionTarget::Host);
-        recent.remember(&SessionTarget::Legacy { vm: "linux".into() });
+        recent.remember(&SessionTarget::LinuxVm { vm: "linux".into() });
         assert_eq!(
             recent.load(),
             Some(SessionTarget::environment("work")),
-            "the host shell and legacy VMs are chosen each time, never remembered"
+            "the host shell and Linux VMs are chosen each time, never remembered"
         );
 
         assert_eq!(

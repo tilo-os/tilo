@@ -1,8 +1,8 @@
-//! This session's way onto the person's certified devices: the fabric state it holds
-//! ([`FabricRuntime`](super::FabricRuntime)), the commands that carry it to their other
-//! devices, and what a service on the fabric can ask of them.
-//! A session that took part as nobody — no certificate of the person's — keeps no fabric and is
-//! handed to nothing: there would be no device to name as the author of what it copies.
+//! This session's way onto the person's certified devices: what lasts of each is in the person's
+//! own store ([`super::store`]), what each says while it is there arrives on its session with this
+//! one ([`super::live`]), and what a service on them can ask of them goes as an action to one.
+//! A session that took part as nobody (no certificate of the person's) has none of this and is
+//! handed to nothing: there would be no device to name as the author of what it shares.
 
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,15 +13,19 @@ use iroh::EndpointId;
 use settings_store::continuity_privacy::ContinuityCapability;
 use tilo_lock::MutexRecover as _;
 use tilo_network_actor::PersonalFabricPayload;
+use tilo_peer_state::PersonalSync;
 
+use super::live::Live;
+use super::store;
 use super::{
-    ClipboardEntry, ContinuityNotificationProjection, DeviceFabric, FabricLink, FabricRuntime,
-    MediaSourceLocator, NearbySpoolOffer, OwnerSession, PersonalFabricAction,
-    PersonalFabricActionEnvelope, PersonalFabricSendError, SharedLink, UnlockFabricState,
-    WakeRoute, clock, open_wifi_credential,
+    ClipboardEntry, ContinuityNotificationProjection, DeviceAbout, DeviceKind, FabricCapabilities,
+    FabricLink, MediaSourceLocator, NearbySpoolOffer, OwnerSession, PersonDevices,
+    PersonalFabricAction, PersonalFabricActionEnvelope, PersonalFabricSendError, SharedLink,
+    UnlockFabricState, WakeRoute, clock, open_wifi_credential,
 };
-use crate::platform::fabric::{DeviceId, nonzero};
-use crate::sync::HostOutbox;
+use crate::platform::fabric::{DeviceId, FabricStamp, nonzero};
+/// Where this session's frames leave for the person's other devices.
+type Outbox = crate::sync::HostOutbox;
 
 /// What the person lets of this device continue on their other devices: each
 /// facet's switch of their `continuity` settings, under the master switch,
@@ -91,11 +95,40 @@ impl Continuity {
     }
 }
 
-/// The session's own link to the person's other devices: the fabric it converges, and the way its
-/// frames leave.
+/// What this device says of itself that lasts, as its first session writes it: what the person
+/// calls it, and what it does for their other devices. Input, display and speaker groups are not
+/// offered here, so they are not claimed.
+fn about(label: &str) -> DeviceAbout {
+    DeviceAbout {
+        label: label.to_owned(),
+        kind: DeviceKind::Desktop,
+        capabilities: FabricCapabilities {
+            // What the person copies here reaches their other devices, and what they play here can
+            // go on playing on them.
+            clipboard: true,
+            audio_output: true,
+            video_output: true,
+            ..FabricCapabilities::default()
+        },
+    }
+}
+
+/// The session's own link to the person's other devices: what they say live, their store, and the
+/// way this device's frames leave.
 pub(crate) struct SessionFabric {
-    runtime: Arc<Mutex<FabricRuntime>>,
-    outgoing: HostOutbox,
+    live: Mutex<Live>,
+    /// The person's own store, where what lasts of each of their devices is kept. A session without
+    /// one keeps nothing of its own and reads only this device.
+    personal: Option<PersonalSync>,
+    /// The person's devices as the store last read, and the store's change count then: read again
+    /// only when the store moved.
+    kept: Mutex<Option<(u64, PersonDevices)>>,
+    /// Whether what this device says of itself, and the copies it offers, moved since the person's
+    /// other devices were last told.
+    said_moved: AtomicBool,
+    offered_moved: AtomicBool,
+    label: String,
+    outgoing: Outbox,
     /// The person's root key: a frame goes only to the devices that proved a certificate of it.
     user_public_key: [u8; 32],
     /// This device's key: what a credential one of the person's devices sealed for it opens with.
@@ -104,8 +137,6 @@ pub(crate) struct SessionFabric {
     /// This session's Nearby Send, once the session made it: where the bytes of a transfer one of
     /// the person's devices offers or streams come in.
     nearby: Mutex<Option<Arc<crate::nearby_transfer::NearbyTransfer>>>,
-    /// Where this device's fabric is kept for its next run, if anywhere.
-    kept: Option<std::path::PathBuf>,
     /// The endpoints heard on this device's local network, of which the person's devices are
     /// reachable without a server.
     lan: tilo_endpoint_reachability::Nearby,
@@ -114,30 +145,77 @@ pub(crate) struct SessionFabric {
 impl std::fmt::Debug for SessionFabric {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SessionFabric")
-            .field("online", &self.runtime.lock_recover().online_device_ids())
+            .field("online", &self.live.lock_recover().online_device_ids())
             .finish_non_exhaustive()
     }
 }
 
-impl SessionFabric {
-    pub(crate) fn new(
-        runtime: FabricRuntime,
-        outgoing: HostOutbox,
+/// How this device reaches the person's other devices, as the session hands it over.
+pub(crate) struct Reach {
+    pub(crate) outgoing: Outbox,
+    pub(crate) user_public_key: [u8; 32],
+    pub(crate) device_signing_key: ed25519_dalek::SigningKey,
+    pub(crate) continuity: Continuity,
+    pub(crate) lan: tilo_endpoint_reachability::Nearby,
+}
+
+#[cfg(test)]
+impl Reach {
+    /// A reach for a test, whose frames go nowhere but the list it returns with: each call reads
+    /// what the link sent since the last.
+    pub(crate) fn listened(
         user_public_key: [u8; 32],
         device_signing_key: ed25519_dalek::SigningKey,
         continuity: Continuity,
-        kept: Option<std::path::PathBuf>,
-        lan: tilo_endpoint_reachability::Nearby,
-    ) -> Arc<Self> {
-        Arc::new(Self {
-            runtime: Arc::new(Mutex::new(runtime)),
-            outgoing,
+    ) -> (Self, impl FnMut() -> Vec<PersonalFabricPayload>) {
+        let (outgoing, mut frames) = tokio::sync::mpsc::unbounded_channel();
+        let reach = Self {
+            outgoing: Outbox::of(outgoing),
             user_public_key,
             device_signing_key,
             continuity,
+            lan: tilo_endpoint_reachability::Nearby::new(Arc::new(|| {})),
+        };
+        let sent = move || {
+            let mut sent = Vec::new();
+            while let Ok(command) = frames.try_recv() {
+                if let crate::sync::HostCmd::Fabric { payload, .. } = command {
+                    sent.push(payload);
+                }
+            }
+            sent
+        };
+        (reach, sent)
+    }
+}
+
+impl SessionFabric {
+    /// The link of `device`, called `label`, onto the person's devices, with what lasts of them in
+    /// `personal`: this device says what it is there at once.
+    pub(crate) fn new(
+        device: DeviceId,
+        label: String,
+        personal: Option<PersonalSync>,
+        reach: Reach,
+    ) -> Arc<Self> {
+        if let Some(personal) = &personal
+            && let Err(error) = store::keep_own(personal, store::ABOUT, &about(&label))
+        {
+            tracing::warn!(%error, "what this device is was not kept for the person's devices");
+        }
+        Arc::new(Self {
+            live: Mutex::new(Live::new(device)),
+            personal,
+            kept: Mutex::new(None),
+            said_moved: AtomicBool::new(false),
+            offered_moved: AtomicBool::new(false),
+            label,
+            outgoing: reach.outgoing,
+            user_public_key: reach.user_public_key,
+            device_signing_key: reach.device_signing_key,
+            continuity: reach.continuity,
             nearby: Mutex::new(None),
-            kept,
-            lan,
+            lan: reach.lan,
         })
     }
 
@@ -147,32 +225,39 @@ impl SessionFabric {
     }
 
     /// One of the person's devices proved itself on its session with this one. What it proves is
-    /// the grant to tell it this device's fabric, so it is told at once: both sides announce on the
-    /// session's start and neither has to ask first. Two devices can bring up a connection each and
-    /// keep one of them, so what either said on the other is lost: each asks the other for its
-    /// fabric again, and the answer comes whether or not anything changed.
+    /// the grant to tell it what this device says of itself, so it is told at once: both sides say
+    /// themselves on the session's start and neither has to ask. Two devices can bring up a
+    /// connection each and keep one of them, so what either said on the other is lost: each says
+    /// itself again on every one.
     pub(crate) fn sibling(
         &self,
         peer: EndpointId,
         certs: &[tilo_user_identity::DeviceCert],
         revocations: &[tilo_user_identity::RevocationEntry],
     ) {
-        self.runtime
-            .lock_recover()
-            .sibling(peer, certs, revocations);
-        self.announce(false);
-        self.publish(Some(peer), PersonalFabricPayload::Request);
+        let (presence, clipboard) = {
+            let mut live = self.live.lock_recover();
+            if live.sibling(peer, certs, revocations).is_none() {
+                return;
+            }
+            (live.own_presence().clone(), live.own_clipboard().to_vec())
+        };
+        self.publish(
+            Some(peer),
+            PersonalFabricPayload::Presence(Box::new(presence)),
+        );
+        if !clipboard.is_empty() {
+            self.publish(Some(peer), PersonalFabricPayload::Clipboard(clipboard));
+        }
     }
 
-    /// The session with one of the person's devices ended: it is no longer here, and what it said
-    /// stays as what it last said.
+    /// The session with one of the person's devices ended: it is no longer here.
     pub(crate) fn sibling_left(&self, peer: EndpointId) {
-        self.runtime.lock_recover().sibling_left(peer);
+        self.live.lock_recover().sibling_left(peer);
     }
 
-    /// Take one frame of the fabric a device sent on its session, at the moment the transport took
-    /// it: what it says of itself, an action for this device, or its request for this device's
-    /// fabric.
+    /// Take one frame a device sent on its session, at the moment the transport took it: what it
+    /// says of itself, the copies it offers, an action for this device, or the bytes of a transfer.
     pub(crate) fn arrived(
         &self,
         peer: EndpointId,
@@ -180,20 +265,29 @@ impl SessionFabric {
         received: Instant,
     ) {
         match payload {
-            PersonalFabricPayload::Snapshot(bytes) => {
-                let taken = self.runtime.lock_recover().snapshot(peer, bytes);
+            PersonalFabricPayload::Presence(presence) => {
+                let taken = self
+                    .live
+                    .lock_recover()
+                    .presence(peer, (**presence).clone());
                 if let Err(error) = taken {
-                    tracing::warn!(%error, %peer, "a device sent a snapshot this session does not take");
+                    tracing::warn!(%error, %peer, "a device said something of itself this session does not take");
+                }
+            }
+            PersonalFabricPayload::Clipboard(entries) => {
+                let taken = self.live.lock_recover().clipboard(peer, entries.clone());
+                if let Err(error) = taken {
+                    tracing::warn!(%error, %peer, "a device offered copies this session does not take");
                 }
             }
             PersonalFabricPayload::Action(bytes) => {
-                let taken = self.runtime.lock_recover().action(peer, bytes);
+                let taken = self.live.lock_recover().action(peer, bytes);
                 match taken {
-                    Ok(Some(action)) => {
+                    Ok(action) => {
                         // A clock probe is answered where its frame arrived,
                         // and a report is measured from there: the exchange is
                         // worth only the timestamps it carries.
-                        let device = self.runtime.lock_recover().device_behind(peer);
+                        let device = self.live.lock_recover().device_behind(peer);
                         if let Some(device) = device
                             && clock::arrived(self, &device, &action, received)
                         {
@@ -201,50 +295,23 @@ impl SessionFabric {
                         }
                         tracing::debug!(%peer, action = ?action, "an action from one of the person's devices");
                     }
-                    Ok(None) => {}
                     Err(error) => {
                         tracing::warn!(%error, %peer, "a device sent an action this session does not take");
                     }
-                }
-            }
-            // The other side has none of this device's fabric yet: it gets what this device says of
-            // itself, whether or not anything changed since the last announcement.
-            PersonalFabricPayload::Request => self.announce(false),
-            // Where one of the person's devices says its outputs stand, and what their hardware
-            // says: the fabric admits both for the exact revision the device's own record carries,
-            // and the shared layout reads them from there.
-            PersonalFabricPayload::DisplayConnectors { stamp, outputs } => {
-                let taken = self.runtime.lock_recover().observe_display_connectors(
-                    peer,
-                    stamp,
-                    outputs.clone(),
-                );
-                if let Err(error) = taken {
-                    tracing::warn!(%error, %peer, "a device's outputs are not taken as they stand");
-                }
-            }
-            PersonalFabricPayload::DisplayOutputs { stamp, outputs } => {
-                let taken = self.runtime.lock_recover().observe_display_outputs(
-                    peer,
-                    stamp,
-                    outputs.clone(),
-                );
-                if let Err(error) = taken {
-                    tracing::warn!(%error, %peer, "a device's output facts are not taken");
                 }
             }
             // The bytes of a Nearby Send this device took: the transfer engine holds them for the
             // device that proved itself here.
             PersonalFabricPayload::NearbyTransfer(frame) => {
                 let nearby = self.nearby.lock_recover().clone();
-                let device = self.runtime.lock_recover().device_behind(peer);
+                let device = self.live.lock_recover().device_behind(peer);
                 if let (Some(nearby), Some(device)) = (nearby, device) {
                     nearby.frame(&device, frame);
                 }
             }
-            // What the person's devices carry for each other beyond the fabric state this session
-            // keeps — records — belongs to their own peer networks; this session routes none of it and
-            // drops it rather than half-handling it.
+            // What the person's devices carry for each other of their records belongs to their
+            // own store's links; this session routes none of it and drops it rather than
+            // half-handling it.
             PersonalFabricPayload::Document { .. }
             | PersonalFabricPayload::DocumentContentWant { .. }
             | PersonalFabricPayload::DocumentContentPiece { .. }
@@ -252,55 +319,54 @@ impl SessionFabric {
         }
     }
 
-    /// Tell the person's other devices what this device says of itself, when its record moved since
-    /// the last announcement or because another device asked for it.
-    pub(crate) fn announce(&self, if_changed: bool) {
-        let mut runtime = self.runtime.lock_recover();
-        if if_changed && !runtime.changed() {
-            return;
+    /// Tell the person's other devices what this device says of itself and the copies it offers,
+    /// when either moved since they were last told, and keep the speaker groups this device leads
+    /// and joined in its part of the person's store when they moved: the session's pass calls this
+    /// once it offered the clipboard, so a copy leaves on the pass that made it.
+    pub(crate) fn announce(&self) {
+        if self.said_moved.swap(false, Ordering::Relaxed) {
+            let presence = self.live.lock_recover().own_presence().clone();
+            self.publish(None, PersonalFabricPayload::Presence(Box::new(presence)));
         }
-        let _ = runtime.changed();
-        if let Ok(snapshot) = runtime.own_snapshot() {
-            self.publish(None, PersonalFabricPayload::Snapshot(snapshot));
+        if self.offered_moved.swap(false, Ordering::Relaxed) {
+            let clipboard = self.live.lock_recover().own_clipboard().to_vec();
+            self.publish(None, PersonalFabricPayload::Clipboard(clipboard));
         }
-        // What this device said is kept before it is said again: its next run continues from
-        // here, at a revision past every one it announced.
-        let checkpoint = self
-            .kept
-            .as_ref()
-            .and_then(|_| runtime.device_fabric().encode_checkpoint().ok());
-        drop(runtime);
-        if let (Some(path), Some(checkpoint)) = (&self.kept, checkpoint)
-            && let Err(error) = keep_checkpoint(path, &checkpoint)
-        {
-            tracing::warn!(%error, path = %path.display(), "this device's fabric was not kept");
-        }
-        self.announce_display();
+        self.keep_speakers();
     }
 
-    /// Tell the person's other devices where this device's displays stand and what their hardware
-    /// says, on the revision its record announced.
-    fn announce_display(&self) {
-        let display = self.runtime.lock_recover().local_display();
-        let Some((stamp, connectors, outputs)) = display else {
+    /// Keep the speaker groups this device leads and joined, the memberships it gave and the
+    /// outputs it offers in its part of the person's store, when they moved. Nothing is offered
+    /// while Media continuity is off.
+    fn keep_speakers(&self) {
+        let Some(personal) = &self.personal else {
             return;
         };
-        self.publish(
-            None,
-            PersonalFabricPayload::DisplayConnectors {
-                stamp: stamp.clone(),
-                outputs: connectors,
+        let local = self.live.lock_recover().local().clone();
+        let kept = self
+            .devices()
+            .get(&local)
+            .map(|device| device.speakers.clone());
+        let speakers = tilo_speaker_service::groups::authored_state(
+            &local,
+            kept.as_ref(),
+            &FabricStamp {
+                counter: 1,
+                device: local.clone(),
             },
+            self.continuity.media_permitted(),
         );
-        self.publish(
-            None,
-            PersonalFabricPayload::DisplayOutputs { stamp, outputs },
-        );
+        if kept.as_ref() == Some(&speakers) {
+            return;
+        }
+        if let Err(error) = store::keep_own(personal, store::SPEAKERS, &speakers) {
+            tracing::warn!(%error, "this device's speaker groups were not kept");
+        }
     }
 
     /// The actions addressed to this device since the last call, for the session's pass to route.
     pub(crate) fn take_actions(&self) -> Vec<PersonalFabricActionEnvelope> {
-        self.runtime.lock_recover().take_actions()
+        self.live.lock_recover().take_actions()
     }
 
     /// Probe the clock of every peer something here holds in sync, and forget every estimate while
@@ -309,52 +375,75 @@ impl SessionFabric {
         clock::pump(self, self.continuity.media_permitted());
     }
 
+    /// Change what this device says of itself with `change`, telling the person's other devices on
+    /// the next announcement when it changed. Returns whether it did.
+    fn say(&self, what: &str, change: impl FnOnce(&mut super::DevicePresence)) -> bool {
+        let said = self.live.lock_recover().say(change);
+        match said {
+            Ok(changed) => {
+                if changed {
+                    self.said_moved.store(true, Ordering::Relaxed);
+                }
+                changed
+            }
+            Err(error) => {
+                tracing::warn!(%error, what, "this device's word to the others was not taken");
+                false
+            }
+        }
+    }
+
     fn publish(&self, target: Option<EndpointId>, payload: PersonalFabricPayload) {
         self.outgoing.fabric(self.user_public_key, target, payload);
     }
 }
 
-/// Write `checkpoint` to `path` whole or not at all, readable by this account alone: a run cut off
-/// mid-write leaves the one before.
-fn keep_checkpoint(path: &std::path::Path, checkpoint: &[u8]) -> std::io::Result<()> {
-    use std::io::Write as _;
-    use std::os::unix::fs::OpenOptionsExt as _;
-    let dir = path
-        .parent()
-        .ok_or_else(|| std::io::Error::other("no directory"))?;
-    std::fs::create_dir_all(dir)?;
-    let staged = path.with_extension("fabric.new");
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&staged)?;
-    file.write_all(checkpoint)?;
-    file.sync_all()?;
-    std::fs::rename(&staged, path)
-}
-
 impl FabricLink for SessionFabric {
-    fn device_fabric(&self) -> DeviceFabric {
-        self.runtime.lock_recover().device_fabric().clone()
+    fn devices(&self) -> PersonDevices {
+        let mut kept = match &self.personal {
+            Some(personal) => {
+                let seen = *personal.changes().borrow();
+                let mut cache = self.kept.lock_recover();
+                match cache.as_ref() {
+                    Some((at, devices)) if *at == seen => devices.clone(),
+                    _ => {
+                        let (devices, wifi) = store::kept(personal);
+                        let devices = PersonDevices::new(devices, wifi);
+                        *cache = Some((seen, devices.clone()));
+                        devices
+                    }
+                }
+            }
+            None => PersonDevices::default(),
+        };
+        let live = self.live.lock_recover();
+        // This device is the person's whether or not their store reached it yet.
+        if !kept.contains(live.local()) {
+            kept.insert(super::PersonDevice::new(
+                live.local().clone(),
+                about(&self.label),
+            ));
+        }
+        live.overlay(&mut kept);
+        kept
     }
 
     fn online_device_ids(&self) -> BTreeSet<DeviceId> {
-        self.runtime.lock_recover().online_device_ids()
+        self.live.lock_recover().online_device_ids()
     }
 
     fn nearby_device_ids(&self) -> BTreeSet<DeviceId> {
         let heard = self.lan.heard();
-        self.runtime.lock_recover().nearby_device_ids(&heard)
+        let known = self.devices();
+        self.live.lock_recover().nearby_device_ids(&heard, &known)
     }
 
     fn local_device_fabric_identity(&self) -> Option<(DeviceId, String)> {
-        self.runtime.lock_recover().local_identity()
+        Some((self.live.lock_recover().local().clone(), self.label.clone()))
     }
 
     fn device_behind(&self, endpoint: iroh::EndpointId) -> Option<DeviceId> {
-        self.runtime.lock_recover().device_behind(endpoint)
+        self.live.lock_recover().device_behind(endpoint)
     }
 
     fn try_send_personal_fabric_action(
@@ -363,22 +452,19 @@ impl FabricLink for SessionFabric {
         action: PersonalFabricAction,
     ) -> Result<[u8; 16], PersonalFabricSendError> {
         let (request_id, endpoint, bytes) = {
-            let runtime = self.runtime.lock_recover();
-            let Some((local, _)) = runtime.local_identity() else {
-                return Err(PersonalFabricSendError::Rejected(
-                    "this session is no certified device of the person's".into(),
-                ));
-            };
+            let live = self.live.lock_recover();
+            let local = live.local().clone();
             if &local == target {
                 return Err(PersonalFabricSendError::Rejected(
                     "an action needs one of the person's other devices".into(),
                 ));
             }
-            let Some(endpoint) = runtime.endpoint_of(target) else {
+            let Some(endpoint) = live.endpoint_of(target) else {
                 return Err(PersonalFabricSendError::Rejected(
                     "that device has no session with this one".into(),
                 ));
             };
+            drop(live);
             let request_id = nonzero::<16>();
             let envelope = PersonalFabricActionEnvelope {
                 request_id,
@@ -392,11 +478,7 @@ impl FabricLink for SessionFabric {
                 .map_err(|error| PersonalFabricSendError::Rejected(error.to_string()))?;
             let bytes = postcard::to_allocvec(&envelope)
                 .map_err(|error| PersonalFabricSendError::Rejected(error.to_string()))?;
-            // The fabric is this device's own state, not the transport's: the frame leaves with the
-            // lock released.
-            let built = (request_id, endpoint, bytes);
-            drop(runtime);
-            built
+            (request_id, endpoint, bytes)
         };
         self.publish(Some(endpoint), PersonalFabricPayload::Action(bytes));
         Ok(request_id)
@@ -415,7 +497,7 @@ impl FabricLink for SessionFabric {
         offer: NearbySpoolOffer,
     ) -> Result<(), PersonalFabricSendError> {
         let endpoint = self
-            .runtime
+            .live
             .lock_recover()
             .endpoint_of(target)
             .ok_or_else(|| {
@@ -447,12 +529,11 @@ impl FabricLink for SessionFabric {
         if self.require_wifi_settings().is_err() || !security.supports_portable_passphrase() {
             return None;
         }
-        let fabric = self.runtime.lock_recover().device_fabric().clone();
-        fabric
-            .merged_wifi()
-            .into_values()
+        self.devices()
+            .wifi()
+            .iter()
             .filter(|credential| credential.ssid == ssid && credential.security == security)
-            .find_map(|credential| open_wifi_credential(&credential, &self.device_signing_key).ok())
+            .find_map(|credential| open_wifi_credential(credential, &self.device_signing_key).ok())
     }
 
     fn share_wifi_password(
@@ -462,36 +543,50 @@ impl FabricLink for SessionFabric {
         password: &str,
     ) -> Result<(), String> {
         self.require_wifi_settings()?;
-        let shared = self
-            .runtime
-            .lock_recover()
-            .share_wifi_password(ssid, security, password)
-            .map_err(|error| error.to_string())?;
-        if !shared {
-            return Err("this session is no certified device of the person's".to_owned());
-        }
-        Ok(())
+        let Some(personal) = &self.personal else {
+            return Err("this session keeps no store of the person's own".to_owned());
+        };
+        let local = self.live.lock_recover().local().clone();
+        // Sealed to every device of the person's their store holds, this one included: a device
+        // certified later opens it once a device that knows the passphrase shares it again.
+        let recipients = self
+            .devices()
+            .devices()
+            .keys()
+            .cloned()
+            .collect::<Vec<DeviceId>>();
+        let credential = tilo_network_actor::fabric::secrets::seal_wifi_credential(
+            ssid,
+            security,
+            password,
+            &local,
+            recipients,
+            FabricStamp {
+                counter: tilo_clock::unix_now_ms(),
+                device: local.clone(),
+            },
+        )
+        .map_err(|error| error.to_string())?;
+        store::keep_wifi(personal, &credential).map(drop)
     }
 
     fn share_wake_routes(&self, routes: Vec<WakeRoute>) {
-        let taken = self.runtime.lock_recover().set_wake_routes(routes);
-        if let Err(error) = taken {
-            tracing::warn!(%error, "this device's wake routes are not shared");
-        }
+        self.say("wake routes", |presence| presence.wake_routes = routes);
     }
 
     fn share_clipboard(&self, entries: Vec<ClipboardEntry>) {
-        let taken = self.runtime.lock_recover().share_clipboard(entries);
-        if let Err(error) = taken {
-            tracing::warn!(%error, "the clipboard is not shared");
+        let offered = self.live.lock_recover().offer(entries);
+        match offered {
+            Ok(true) => self.offered_moved.store(true, Ordering::Relaxed),
+            Ok(false) => {}
+            Err(error) => tracing::warn!(%error, "the clipboard is not shared"),
         }
     }
 
     fn publish_owner_session(&self, session: OwnerSession) {
-        let taken = self.runtime.lock_recover().set_owner_session(session);
-        if let Err(error) = taken {
-            tracing::warn!(%error, "this device's session is not said to the others");
-        }
+        self.say("the person's session", |presence| {
+            presence.session = session;
+        });
     }
 
     fn share_display(
@@ -501,27 +596,27 @@ impl FabricLink for SessionFabric {
         connectors: Vec<tilo_network_actor::fabric::DisplayConnectorPlacement>,
         outputs: Vec<tilo_network_actor::fabric::DisplayOutputObservation>,
     ) -> bool {
-        let taken = self
-            .runtime
-            .lock_recover()
-            .set_display(rect, scale_milli, connectors, outputs);
-        match taken {
-            Ok(changed) => changed,
-            Err(error) => {
-                tracing::warn!(%error, "this device's displays are not shared");
-                false
-            }
-        }
+        self.say("displays", |presence| {
+            presence.display = Some(super::DeviceDisplay {
+                rect,
+                scale_milli,
+                connectors,
+                outputs,
+            });
+        })
     }
 
     fn person_displays(&self) -> Vec<settings_store::person_displays::PersonDevice> {
-        self.runtime.lock_recover().person_devices()
+        let local = self.live.lock_recover().local().clone();
+        self.devices().person_devices(&local)
     }
 
     fn share_unlock(&self, unlock: UnlockFabricState) {
-        let taken = self.runtime.lock_recover().set_unlock(unlock);
-        if let Err(error) = taken {
-            tracing::warn!(%error, "this device's disk unlock is not shared");
+        let Some(personal) = &self.personal else {
+            return;
+        };
+        if let Err(error) = store::keep_own(personal, store::UNLOCK, &unlock) {
+            tracing::warn!(%error, "this device's disk unlock is not kept");
         }
     }
 }
@@ -680,14 +775,10 @@ impl crate::Session {
         envelope: &PersonalFabricActionEnvelope,
         notification: &ContinuityNotificationProjection,
     ) {
-        let label = fabric
-            .device_fabric()
-            .snapshots()
-            .get(&envelope.source)
-            .map_or_else(
-                || envelope.source.as_str().to_owned(),
-                |snapshot| snapshot.presence.label.clone(),
-            );
+        let label = fabric.devices().get(&envelope.source).map_or_else(
+            || envelope.source.as_str().to_owned(),
+            |device| device.about.label.clone(),
+        );
         self.shared
             .notifications
             .borrow()
@@ -727,14 +818,10 @@ impl crate::Session {
             // this session has none of, so there is nothing here the card could resume.
             MediaSourceLocator::PersonalTransfer { .. } => return,
         };
-        let label = fabric
-            .device_fabric()
-            .snapshots()
-            .get(&envelope.source)
-            .map_or_else(
-                || envelope.source.as_str().to_owned(),
-                |snapshot| snapshot.presence.label.clone(),
-            );
+        let label = fabric.devices().get(&envelope.source).map_or_else(
+            || envelope.source.as_str().to_owned(),
+            |device| device.about.label.clone(),
+        );
         #[allow(
             clippy::cast_precision_loss,
             reason = "a playhead in a recording is far inside f64's exact integers"

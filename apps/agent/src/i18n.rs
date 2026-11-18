@@ -50,30 +50,6 @@ pub fn step_done(step: &TaskStep) -> String {
     t_args(key, &[("what", ui::i18n::ArgValue::from(bounded(subject)))])
 }
 
-/// A program's change of one field, said as done ("Edited body"): what the API names
-/// `body =`, which no person reads as a step.
-#[must_use]
-pub fn edited(field: &str) -> String {
-    t_args(
-        "agent-step-edited",
-        &[("what", ui::i18n::ArgValue::from(bounded(field)))],
-    )
-}
-
-/// A program that read and changed nothing, said as done: it looked up the app
-/// its answer names, by the app's title exactly as the app publishes it
-/// ("Looked up Tasks"), or looked things up when it named none.
-#[must_use]
-pub fn looked_up(app_title: Option<&str>) -> String {
-    match app_title.map(str::trim).filter(|title| !title.is_empty()) {
-        Some(title) => t_args(
-            "agent-step-looked-up",
-            &[("what", ui::i18n::ArgValue::from(bounded(title)))],
-        ),
-        None => t("agent-step-program"),
-    }
-}
-
 /// What an action did, in its app's own words: what the app declares it did
 /// (`did`, "showed"), else its label as the app words it, with
 /// `subject`, the title of what it acted on, beside it ("Showed:
@@ -137,40 +113,19 @@ mod tests {
     fn every_sentence_is_written_in_every_language() {
         let keys = [
             "agent-plan-model",
-            "agent-plan-words-no-model",
-            "agent-plan-no-action",
             "agent-plan-no-model",
-            "agent-plan-model-failed",
-            "agent-done-words-no-model",
-            "agent-match-nothing",
-            "agent-match-several",
-            "agent-match-one-of",
-            "agent-match-needs-text",
-            "agent-session-reading-actions",
-            "agent-session-step",
-            "agent-model-turn-completed",
+            "agent-plan-models-off",
             "agent-step-searching",
             "agent-step-reading",
             "agent-step-editing",
             "agent-step-exploring",
-            "agent-step-program",
-            "agent-step-looked-up",
             "agent-step-on",
             "agent-step-edited",
             "agent-step-searched",
             "agent-step-read",
-            "agent-session-needs-decision",
-            "agent-session-cancelled-before-planning",
-            "agent-session-cancelled-before-action",
-            "agent-session-cancelled-in-action",
-            "agent-cancel-task-center",
             "agent-cancel-thinking",
-            "agent-fail-no-terminal-state",
-            "agent-fail-local-only",
-            "agent-fail-arguments",
-            "agent-fail-turn-not-finished",
-            "agent-fail-native-outcome",
             "agent-fail-spend-limit",
+            "agent-failure-no-answer",
         ];
         for (locale, source) in [
             ("en-US", include_str!("../locales/en-US.ftl")),
@@ -193,10 +148,7 @@ mod tests {
         let _german = chosen("de-DE");
         follow();
         assert_eq!(ui::i18n::I18nManager::current_locale(), "de-DE");
-        assert_eq!(
-            t("agent-match-nothing"),
-            "Das kann ich hier nicht erledigen."
-        );
+        assert!(t("agent-plan-no-model").contains("Agentenmodelle"));
     }
 
     /// A step is said in the language the run is speaking, with the thing it is
@@ -246,10 +198,6 @@ mod tests {
         ] {
             assert_eq!(did(label, declared, subject), said, "{label} on {subject}");
         }
-        // The app's title exactly as it publishes it: "Tasks" stays "Tasks".
-        assert_eq!(looked_up(Some("Tasks")), "Looked up Tasks");
-        assert_eq!(looked_up(Some("Mail")), "Looked up Mail");
-        assert_eq!(looked_up(None), "Looked things up");
         assert_eq!(
             step_done(&TaskStep::Searching("borrow checker".into())),
             "Searched the web for “borrow checker”"
@@ -263,7 +211,6 @@ mod tests {
             did("Anzeigen", None, "Alle Posteingänge"),
             "Anzeigen: Alle Posteingänge"
         );
-        assert_eq!(looked_up(Some("Aufgaben")), "Aufgaben nachgeschlagen");
     }
 
     /// A long query stays one line: the note is a line, not a paragraph.
@@ -307,16 +254,5 @@ mod tests {
             assert!(!said.contains("Retry inference"), "{id}: {said}");
             assert!(!said.contains("replay completed actions"), "{id}: {said}");
         }
-    }
-
-    /// A field a program assigned is said as its edit with what it changed, never the API's
-    /// `body =`: "Edited body: Re: Dinner on Friday?".
-    #[test]
-    fn a_field_a_program_set_is_said_as_its_edit() {
-        ui::i18n::I18nManager::init("en-US");
-        assert_eq!(
-            super::did(&super::edited("body"), None, "Re: Dinner on Friday?"),
-            "Edited body: Re: Dinner on Friday?"
-        );
     }
 }

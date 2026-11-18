@@ -10,7 +10,9 @@ pub const MAX_PROOF_BYTES: usize = 256 * 1024;
 pub fn personal_cluster(person: &[u8; 32]) -> String {
     collab_types::personal_cluster(person).to_string()
 }
-const DOMAIN: &[u8] = b"tilo-native-retained-person-proof-v1\0";
+/// The domain the retained person's device signs a proof under: the BLAKE3
+/// digest of this tag and the claims' canonical encoding.
+const DOMAIN: &[u8] = b"tilo-native-retained-person-proof-v2\0";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -81,7 +83,9 @@ pub struct RetainedPersonClaims {
     pub execution_id: String,
 }
 impl RetainedPersonClaims {
-    pub fn signing_bytes(&self) -> io::Result<Vec<u8>> {
+    /// The digest the device signs: the BLAKE3 digest of the proof's domain
+    /// label and these claims, once every bound holds.
+    pub fn digest(&self) -> io::Result<[u8; 32]> {
         self.binding.validate()?;
         if !uuid(&self.execution_id)
             || self.challenge == [0; 32]
@@ -91,12 +95,8 @@ impl RetainedPersonClaims {
         {
             return Err(refused());
         }
-        let mut bytes = DOMAIN.to_vec();
-        bytes.extend(serde_json::to_vec(self).map_err(io::Error::other)?);
-        if bytes.len() > MAX_PROOF_BYTES {
-            return Err(refused());
-        }
-        Ok(bytes)
+        tilo_user_identity::canonical::signing_digest(DOMAIN, self)
+            .map_err(|error| io::Error::other(error.to_string()))
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -185,7 +185,7 @@ impl VerifiedRetainedPersonEpoch {
 }
 impl SignedRetainedPersonProof {
     pub fn encode(&self) -> io::Result<Vec<u8>> {
-        self.claims.signing_bytes()?;
+        self.claims.digest()?;
         if self.signature.len() != 64 {
             return Err(refused());
         }
@@ -360,10 +360,7 @@ impl SignedRetainedPersonProof {
             .map_err(|_| refused())?;
         VerifyingKey::from_bytes(&cert.device_public_key)
             .map_err(io::Error::other)?
-            .verify(
-                &self.claims.signing_bytes()?,
-                &Signature::from_bytes(&signature),
-            )
+            .verify(&self.claims.digest()?, &Signature::from_bytes(&signature))
             .map_err(io::Error::other)?;
         for entry in self.claims.revocations.iter().chain(revocations.iter()) {
             if entry.user_public_key != installed.user_public_key {

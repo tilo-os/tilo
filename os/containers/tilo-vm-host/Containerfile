@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# A host of hosted workspace VMs (crates/runtime/legacy-vm/src/hosted): the
+# A host of hosted workspace VMs (crates/runtime/linux-vm/src/hosted): the
 # service that owns every VM on its machine, the privileged helper that jails
 # each one, Firecracker and its jailer, pasta for their network, and skopeo to
 # fetch the signed guest. One runs per VM-host node, privileged (KVM, a
@@ -34,7 +34,7 @@ ARG RPMS_REF
 # passt is pasta (each VM's network), skopeo fetches the guest, xfsprogs makes
 # the state disk's filesystem, libcap gives the helper its capabilities,
 # util-linux's setpriv drops to the service's uid and mounts the state disk,
-# curl lets the placer (`tilo-legacy hosted place`) scale the hosts through the
+# curl lets the placer (`tilo-linux-vm hosted place`) scale the hosts through the
 # Kubernetes API, tar unpacks the member identity, and gzip unpacks the
 # Firecracker release below, which is a tarball. The package manager goes once
 # they are installed: this host installs nothing at run time.
@@ -67,7 +67,7 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/assets,ro \
 # user-namespaced build they name that namespace's root, and no host's.
 RUN groupadd --system --gid 10001 tilo-hosted \
     && useradd --system --uid 10001 --gid 10001 --home-dir /var/lib/tilo-hosted --shell /usr/sbin/nologin tilo-hosted
-COPY bin/tilo-legacy /usr/local/bin/tilo-legacy
+COPY bin/tilo-linux-vm /usr/local/bin/tilo-linux-vm
 # The member that takes the server's runs for the workspaces on this host.
 COPY bin/tilo-runtime /usr/local/bin/tilo-runtime
 COPY bin/tilo-hosted-jail /usr/libexec/tilo/tilo-hosted-jail

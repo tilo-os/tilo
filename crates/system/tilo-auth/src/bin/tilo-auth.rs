@@ -1,8 +1,9 @@
-//! `tilo-auth`: sign in at boot, and talk to `tilo-authd`.
+//! `tilo-auth`: open the system volume at boot, and talk to `tilo-authd`.
 //!
-//! `boot-unlock`, `boot-people` and `boot-comforts` run in the initrd and need
-//! no daemon. The rest ask the daemon. Secrets are read from a file or stdin,
-//! never argv.
+//! `boot-unlock`, `boot-people`, `boot-comforts` and `sibling unlock` work in
+//! the initrd and need no daemon; `sibling` also enrols and removes the
+//! sibling factor. The rest ask the daemon. Secrets are read from a file or
+//! stdin, never argv.
 
 use anyhow::{Context as _, Result, bail};
 use clap::{Parser, Subcommand};
@@ -15,7 +16,8 @@ use tilo_auth::handoff;
 use tilo_auth::luks;
 use tilo_auth::protocol::{Reply, Request};
 use tilo_auth::record::{self, Store};
-use tilo_auth::tpm::Tries;
+use tilo_auth::sibling::{enrol, exchange};
+use tilo_auth::tpm::{self, Tries};
 use tilo_rollback::exec::Real;
 use tilo_rollback::policy::Workspace;
 use zeroize::Zeroizing;
@@ -98,6 +100,106 @@ enum Cmd {
         #[arg(long, default_value = record::DIR)]
         dir: PathBuf,
     },
+    /// Unlock the system volume with another of your devices.
+    #[command(subcommand)]
+    Sibling(SiblingCmd),
+}
+
+#[derive(Subcommand)]
+enum SiblingCmd {
+    /// Exit 0 when DEVICE carries a sibling-unlock token, 1 otherwise.
+    Probe { device: PathBuf },
+    /// Ask the owner's other devices to unlock DEVICE for this boot, and
+    /// answer its passphrase prompt with the result.
+    Unlock { device: PathBuf },
+    /// Add a key slot opened with a sibling's consent, and register it with
+    /// the owner's devices. `--unattended` also asks the owner to accept this
+    /// machine's boot chain, so their devices release its half without a
+    /// prompt.
+    Enrol(enrol::Args),
+    /// Remove the sibling key slot and its token.
+    Remove {
+        device: PathBuf,
+        /// A key file holding an existing passphrase of the volume.
+        #[arg(long)]
+        key_file: Option<PathBuf>,
+    },
+    /// Print what is enrolled on DEVICE, without secrets.
+    Status { device: PathBuf },
+    /// Print every volume enrolled on this machine, without secrets
+    /// (Settings reads it through polkit; the description is root's alone).
+    Volumes,
+    /// Send the frames of a kept exchange to its siblings again and print
+    /// what they answer (verification: a replay must be refused).
+    Replay {
+        #[arg(default_value = exchange::TRANSCRIPT)]
+        transcript: PathBuf,
+    },
+}
+
+fn runtime() -> Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("no async runtime")
+}
+
+fn sibling(cli: &Cli, cmd: &SiblingCmd) -> Result<ExitCode> {
+    let runner = Real::new().with_tcti(cli.tcti.as_deref());
+    match cmd {
+        SiblingCmd::Probe { device } => Ok(if boot::sibling::enrolled(&runner, device) {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        }),
+        SiblingCmd::Unlock { device } => {
+            if let Err(error) = runtime()?.block_on(boot::sibling::unlock(&runner, device)) {
+                boot::sibling::say(&format!("{error:#}; enter the passphrase to unlock"));
+                return Err(error);
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        SiblingCmd::Enrol(args) => {
+            let machine = enrol::Machine {
+                runner: &runner,
+                has_tpm: tpm::present(cli.tcti.as_deref()),
+            };
+            enrol::run(args, machine)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        SiblingCmd::Remove { device, key_file } => {
+            let existing = key_file
+                .as_deref()
+                .map(|file| enrol::existing_passphrase(device, Some(file)))
+                .transpose()?;
+            enrol::remove(&runner, device, existing.as_deref().map(Vec::as_slice))?;
+            Ok(ExitCode::SUCCESS)
+        }
+        SiblingCmd::Status { device } => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&enrol::status(&runner, device)?)?
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+        SiblingCmd::Volumes => {
+            println!("{}", serde_json::to_string_pretty(&enrol::enrolled()?)?);
+            Ok(ExitCode::SUCCESS)
+        }
+        SiblingCmd::Replay { transcript } => {
+            let transcripts: Vec<exchange::Transcript> = serde_json::from_slice(
+                &std::fs::read(transcript)
+                    .with_context(|| format!("could not read {}", transcript.display()))?,
+            )
+            .context("the transcript is malformed")?;
+            let runtime = runtime()?;
+            for kept in transcripts.iter().filter(|kept| !kept.sent.is_empty()) {
+                let answer = runtime.block_on(exchange::replay(kept))?;
+                println!("{}:\n{answer}", kept.sibling);
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+    }
 }
 
 fn stdin_lines(count: usize) -> Result<Vec<Zeroizing<String>>> {
@@ -287,6 +389,7 @@ fn run(cli: &Cli) -> Result<()> {
             )
         }
         Cmd::Records { dir } => records(dir),
+        Cmd::Sibling(_) => bail!("internal error: sibling is dispatched in main"),
     }
 }
 
@@ -312,6 +415,12 @@ fn main() -> ExitCode {
                 handoff,
             },
         );
+    }
+    if let Cmd::Sibling(cmd) = &cli.cmd {
+        return sibling(&cli, cmd).unwrap_or_else(|e| {
+            eprintln!("tilo-auth: {e:#}");
+            ExitCode::FAILURE
+        });
     }
     match run(&cli) {
         Ok(()) => ExitCode::SUCCESS,

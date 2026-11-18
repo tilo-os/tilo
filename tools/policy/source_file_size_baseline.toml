@@ -40,12 +40,9 @@
 "apps/video-editor/src/model.rs" = 4500
 "apps/word-processor/src/widget/tests.rs" = 8000
 "crates/agent/local-model-service/src/lib.rs" = 3500
-"crates/agent/model-gateway/src/service.rs" = 4000
 "crates/browser/tilo-browser-runtime/src/browser.rs" = 3500
 "crates/collab/collaboration/src/broker.rs" = 7500
 "crates/collab/collaboration/src/broker_tests.rs" = 6000
-"crates/server/tilo-workspace-service/src/apps/collab_app_broker.rs" = 15000
-"crates/server/tilo-workspace-service/src/apps/collab_app_broker/action_provider.rs" = 4000
 "crates/dev/tilo-app-cli/src/lib.rs" = 10000
 "crates/dev/tilo-app-cli/src/main.rs" = 4500
 "crates/dev/tilo-app-cli/src/tests.rs" = 6500
@@ -54,7 +51,7 @@
 "crates/doc/tilo-doc-codecs/src/docx/export.rs" = 4000
 "crates/doc/tilo-doc-codecs/src/odt/export.rs" = 3500
 "crates/doc/tilo-doc/src/model.rs" = 5000
-"crates/packaging/launcher/src/run.rs" = 6000
+"crates/packaging/launcher/src/run.rs" = 5500
 "crates/runtime/runtime-identity/src/unix.rs" = 3500
 "crates/sdk/tilo-resource/src/table.rs" = 4000
 "crates/sdk/ui-core/src/action_palette.rs" = 4000
@@ -69,7 +66,7 @@
 "crates/sdk/ui-core/src/offscreen.rs" = 5000
 "crates/sdk/ui-core/src/presence/mod.rs" = 3500
 "crates/sdk/ui-core/src/presence/render.rs" = 3500
-"crates/sdk/ui-core/src/resource.rs" = 4500
+"crates/sdk/ui-core/src/resource.rs" = 3500
 "crates/sdk/ui-core/src/text_render.rs" = 5500
 "crates/sdk/ui-core/src/ui_graph.rs" = 3500
 "crates/sdk/ui-core/src/widget/activity_timeline.rs" = 4500
@@ -85,11 +82,13 @@
 "crates/sdk/ui-core/src/widget/tile_host.rs" = 3500
 "crates/sdk/ui-core/src/widget/toolbar.rs" = 4000
 "crates/sdk/ui-core/src/widget/window_group.rs" = 5500
+"crates/server/tilo-workspace-service/src/apps/collab_app_broker.rs" = 15000
+"crates/server/tilo-workspace-service/src/apps/collab_app_broker/action_provider.rs" = 4000
 "crates/session/desktop-surface/src/activity/pane.rs" = 3500
 "crates/session/desktop-surface/src/activity/pane_tests.rs" = 3500
 "crates/session/desktop-surface/src/notifications/center.rs" = 3500
 "crates/session/network-actor/src/lib.rs" = 4000
 "crates/session/onboarding-session/src/view.rs" = 7000
 "crates/session/speaker-service/src/remote_audio.rs" = 3500
-"crates/system/fs/src/fs.rs" = 6500
+"crates/system/fs/src/fs.rs" = 5500
 "crates/system/settings-store/src/hardware.rs" = 4000

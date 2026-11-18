@@ -1006,7 +1006,7 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
     );
     let _ = visitor.call_on(
         &message_item(&question),
-        crate::parts::ChatPart::RECORD_WORK.id,
+        crate::parts::ChatMessages::RECORD_WORK.id,
         serde_json::json!({"work": {"state": "refused"}}),
     );
     agent.wait_until(ui::time::Duration::ZERO, |_| true);
@@ -1230,12 +1230,14 @@ fn message_range_navigation_preserves_unicode_and_refuses_stale_offsets() {
     crate::testing::apply_part_as(
         &mut doc,
         message.author.id(),
-        crate::parts::ChatPart::EDIT_MESSAGE.with(crate::messages::chat_part::EditMessage {
-            message: ui::tilo_resource::Id::from_raw(message.id.clone()),
-            text: "café notes".into(),
-            body: None,
-            mentions: None,
-        }),
+        crate::parts::ChatMessages::EDIT_MESSAGE.with(
+            crate::messages::chat_messages::EditMessage {
+                message: ui::tilo_resource::Id::from_raw(message.id.clone()),
+                text: "café notes".into(),
+                body: None,
+                mentions: None,
+            },
+        ),
     )
     .unwrap();
     let mut app = projection_of(&doc, identity);
@@ -1293,7 +1295,7 @@ fn browser_catalogue_and_media_polls_preserve_each_others_requests() {
         );
         let share = BoundActionAddress {
             instance_id: 1,
-            address: crate::parts::ChatPart::SHARE_RESOURCE.on(crate::testing::chain()),
+            address: crate::parts::ChatMessages::SHARE_RESOURCE.on(crate::testing::chain()),
         };
         frame
             .invoke_bound_action(

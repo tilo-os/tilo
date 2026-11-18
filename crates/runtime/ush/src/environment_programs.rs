@@ -123,7 +123,7 @@ impl Held {
     ) -> Result<Self, String> {
         let payer = Payer {
             account: asked.account,
-            size: legacy_vm::hosted::size::VmSize::parse(&asked.size).unwrap_or_default(),
+            size: linux_vm::hosted::size::VmSize::parse(&asked.size).unwrap_or_default(),
         };
         let start = Start {
             argv: asked.argv,

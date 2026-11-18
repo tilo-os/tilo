@@ -98,7 +98,7 @@ fn canonical_component_starts_empty_projects_existing_resources_read_only() {
         let mut live = driver(&f, 11, &checkout);
         let address = ui::bound_dispatch::BoundActionAddress {
             instance_id: 11,
-            address: notes::PagePart::DELETE.on(notes::actions::page_resource_id(f.root)),
+            address: notes::NoteList::DELETE.on(notes::actions::page_resource_id(f.root)),
         };
         // Undo takes a deleted page back, so deleting asks nothing.
         live.invoke_bound_action(&address, &serde_json::Map::new())

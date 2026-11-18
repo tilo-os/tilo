@@ -53,14 +53,13 @@
 //! opening a record fails, naming the missing line.
 
 mod confine;
-mod picture;
 mod process;
 pub(crate) mod proto;
 mod read;
 mod replica;
 mod serve;
 
-pub(crate) use picture::shrink_picture;
+pub(crate) use process::Process;
 pub use process::{pool_size, prestart, set_affinity};
 pub use proto::ProbeReport;
 pub(crate) use read::{ConfinedRead, ConfinedTitles, ConfinedViews};
@@ -94,8 +93,8 @@ pub fn dispatch_early() -> Option<u8> {
     if !std::env::args_os().any(|arg| arg == ARG) {
         return None;
     }
-    let mode = proto::Mode::parse(&std::env::var(ENV).ok()?)?;
-    Some(u8::try_from(serve::serve(mode)).unwrap_or(1))
+    proto::Mode::parse(&std::env::var(ENV).ok()?)?;
+    Some(u8::try_from(serve::serve()).unwrap_or(1))
 }
 
 /// Serve app workers from a test binary, whose `main` belongs to libtest:

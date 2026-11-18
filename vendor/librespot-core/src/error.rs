@@ -19,7 +19,6 @@ use tokio::sync::{
 };
 use url::ParseError;
 
-use librespot_oauth::OAuthError;
 
 #[derive(Debug)]
 pub struct Error {
@@ -283,25 +282,6 @@ impl fmt::Display for Error {
         write!(fmt, "{} {{ ", self.kind)?;
         self.error.fmt(fmt)?;
         write!(fmt, " }}")
-    }
-}
-
-impl From<OAuthError> for Error {
-    fn from(err: OAuthError) -> Self {
-        use OAuthError::*;
-        match err {
-            AuthCodeBadUri { .. }
-            | AuthCodeNotFound { .. }
-            | AuthCodeListenerRead
-            | AuthCodeListenerParse => Error::unavailable(err),
-            AuthCodeStdinRead
-            | AuthCodeListenerBind { .. }
-            | AuthCodeListenerTerminated
-            | AuthCodeListenerWrite
-            | Recv
-            | ExchangeCode { .. } => Error::internal(err),
-            _ => Error::failed_precondition(err),
-        }
     }
 }
 

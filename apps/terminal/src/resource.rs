@@ -580,7 +580,7 @@ pub enum TerminalEffect {
     OpenIn {
         #[param(
             "Where the session runs: `environment` (the default environment), \
-             `environment:<record>`, or `legacy:<vm>`; append `@<relay endpoint id>` to an \
+             `environment:<record>`, or `linux-vm:<vm>`; append `@<relay endpoint id>` to an \
              environment to run it on that relay. The device's own shell (`host`) can only \
              be chosen by the person."
         )]

@@ -311,12 +311,12 @@ pub struct Scene(pub Option<String>);
 
 /// Write the notes of `scene` into the notes' `chain`, through their own
 /// actions, unless it holds notes already.
-pub fn fill(scene: &Scene, chain: &ui::framework::Chain<crate::part::PagePart>) {
+pub fn fill(scene: &Scene, chain: &ui::framework::Chain<crate::note_list::NoteList>) {
     if !chain.parts().is_empty() {
         return;
     }
     let scenario = scene.0.as_deref();
-    let invokes: Vec<ui::tilo_resource::Invoke<crate::part::PagePart>> =
+    let invokes: Vec<ui::tilo_resource::Invoke<crate::note_list::NoteList>> =
         if scenario == Some("migrated") {
             crate::import_inbox::migrated_scenario()
         } else {
@@ -452,11 +452,13 @@ fn page_tree_actions() -> Vec<Action> {
 /// The reactions `scenario` adds to the launch checklist: the person's own,
 /// under the note's tags.
 #[must_use]
-pub fn reactions(scenario: Option<&str>) -> Vec<ui::tilo_resource::Invoke<crate::part::PagePart>> {
+pub fn reactions(
+    scenario: Option<&str>,
+) -> Vec<ui::tilo_resource::Invoke<crate::note_list::NoteList>> {
     if scenario != Some("reactions") {
         return Vec::new();
     }
-    let field = crate::part::PagePart::paths()
+    let field = crate::note_list::NoteList::paths()
         .pages
         .item(&crate::notebook::page_id(page(3)))
         .reactions;

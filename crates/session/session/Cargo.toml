@@ -189,6 +189,7 @@ tilo-rt = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
 tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
+tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # The toolkit's native half: the winit runner, the host services and the

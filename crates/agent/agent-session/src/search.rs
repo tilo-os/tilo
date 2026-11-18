@@ -1,29 +1,20 @@
 //! Finding the workspace's records by what they hold.
 //!
-//! A planner is shown the records it has open and the workspace's others by
-//! title. A task that says "the Q3 partner review" without its title, or
-//! names a record among stale copies and decoys, needs the records' text:
-//! [`SEARCH_WORKSPACE`] ranks every record the agent may open by the request's
-//! words (BM25 over each record's plain text, its title weighted more, a
-//! phrase found whole counted more again; the most recently changed first
-//! among equals) and answers with the best, a snippet or two of each, and
-//! the id that opens it in a plan.
+//! A request that says "the Q3 partner review" without its title, or names a
+//! record among stale copies and decoys, needs the records' text: [`search`]
+//! ranks records by the request's words (BM25 over each record's plain text,
+//! its title weighted more, a phrase found whole counted more again; the
+//! most recently changed first among equals), each with a snippet or two.
 //!
 //! The text is read app-agnostically from the record's Automerge document
 //! ([`plain_text`]): its text objects and the strings that read as words,
-//! never the app's code, at most [`MOST_TEXT_BYTES`] of it. The member
-//! reads it once per change of the record ([`crate::PlanContext::searchable`]).
+//! never the app's code, at most [`MOST_TEXT_BYTES`] of it.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::Write as _;
 use std::sync::Arc;
 
 use automerge::{ObjId, ObjType, ReadDoc, ScalarValueRef, ValueRef};
-use tilo_agent::surface;
 use tilo_peer_state::document_frame::DocumentRoute;
-
-/// The planning tool that searches the workspace's records.
-pub const SEARCH_WORKSPACE: &str = "search_workspace";
 
 /// The most bytes of one record's text kept for search: its start and its
 /// end (where a thread's latest messages are) when it holds more.
@@ -41,12 +32,9 @@ const MOST_VISITED: usize = 200_000;
 /// How deep into nested objects the text is read.
 const MOST_DEPTH: usize = 48;
 
-/// The most records a plan searches: those open, then those people have
+/// The most records one search reads: those open, then those people have
 /// open, then the latest changed.
 pub const MOST_SEARCHED: usize = 256;
-
-/// The most records one search answers with.
-pub const MOST_HITS: usize = 8;
 
 /// The most snippets shown per record, and the most characters of each.
 const MOST_SNIPPETS: usize = 2;
@@ -562,139 +550,13 @@ fn passage(text: &str, from: usize, to: usize) -> Option<String> {
     ))
 }
 
-/// The id a plan names to open the record at `route`.
-#[must_use]
-pub fn open_id(route: &DocumentRoute) -> String {
-    surface::encode_address(&surface::open_document_address(
-        &route.app_id,
-        &route.document,
-    ))
-}
-
-/// What a record is shown as: its title, or how its text starts.
-fn label(doc: &SearchDoc) -> String {
-    let named = doc
-        .title
-        .as_deref()
-        .map(str::trim)
-        .filter(|title| !title.is_empty())
-        .or_else(|| {
-            doc.text
-                .lines()
-                .map(str::trim)
-                .find(|line| !line.is_empty())
-        })
-        .unwrap_or("untitled");
-    let mut label: String = named.chars().take(80).collect();
-    if named.chars().count() > 80 {
-        label.push('…');
-    }
-    label
-}
-
-/// The answer to one [`SEARCH_WORKSPACE`] call over `docs`: the best records
-/// for its `query` (of its `app`, when given), each with its app, title,
-/// how recently it changed, its snippets and the id that opens it, which
-/// is revealed so a plan may name it.
-pub fn answer(
-    input: &serde_json::Value,
-    docs: &[SearchDoc],
-    revealed: &mut tilo_agent::tools::Revealed,
-) -> String {
-    let Some(query) = input
-        .get("query")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|query| !query.is_empty())
-    else {
-        return format!("{SEARCH_WORKSPACE} needs a `query`.");
-    };
-    let app = input
-        .get("app")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|app| !app.is_empty());
-    if let Some(app) = app
-        && !docs.iter().any(|doc| names_app(app, &doc.route.app_id))
-    {
-        let apps: BTreeSet<&str> = docs.iter().map(|doc| doc.route.app_id.as_str()).collect();
-        return format!(
-            "No record of {app} in this workspace. Apps with records: {}.",
-            apps.into_iter().collect::<Vec<_>>().join(", ")
-        );
-    }
-    let hits = search(docs, query, app, MOST_HITS);
-    if hits.is_empty() {
-        return format!(
-            "No record of the {} searched holds the words of {query:?}.",
-            docs.len()
-        );
-    }
-    // Recency: 1 for the record that changed last.
-    let mut stamps: Vec<u64> = docs.iter().filter_map(|doc| doc.changed).collect();
-    stamps.sort_unstable_by(|a, b| b.cmp(a));
-    let mut text = format!(
-        "{} of {} records match {query:?}, best first (recency 1 = changed last). To work in \
-         one, plan its open id as a step and the rest in `then`.\n",
-        hits.len(),
-        docs.len()
-    );
-    for (rank, hit) in hits.iter().enumerate() {
-        let Some(doc) = docs.get(hit.index) else {
-            continue;
-        };
-        let _ = write!(
-            text,
-            "{}. {} \"{}\" (record {}",
-            rank.saturating_add(1),
-            doc.route.app_id,
-            label(doc),
-            doc.route.document
-        );
-        if let Some(changed) = doc.changed
-            && let Some(at) = stamps.iter().position(|stamp| *stamp == changed)
-        {
-            let _ = write!(text, ", recency {}", at.saturating_add(1));
-        }
-        if doc.open {
-            text.push_str("): open now, its operations are listed\n");
-        } else {
-            let id = open_id(&doc.route);
-            let _ = writeln!(text, "): open with {id}");
-            revealed.reveal(id);
-        }
-        for snippet in &hit.snippets {
-            let _ = writeln!(text, "   {snippet}");
-        }
-    }
-    text
-}
-
-/// The [`SEARCH_WORKSPACE`] tool definition. Short: every planning request
-/// carries it.
-#[must_use]
-pub fn definition() -> tilo_model_gateway::host_backend::protocol::ToolDefinition {
-    tilo_model_gateway::host_backend::protocol::ToolDefinition {
-        name: SEARCH_WORKSPACE.into(),
-        description: "Search the workspace's documents (all apps, open or not) by their text and \
-            titles. Answers the best matches with snippets and the id that opens each."
-            .into(),
-        input_schema: serde_json::json!({
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "Words to find."},
-                "app": {"type": "string", "description": "Only this app's documents."}
-            },
-            "required": ["query"],
-            "additionalProperties": false
-        }),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use automerge::transaction::Transactable as _;
+
+    /// The most records one search here answers with.
+    const MOST_HITS: usize = 8;
 
     fn route(app: &str, record: &str) -> DocumentRoute {
         DocumentRoute {
@@ -826,45 +688,6 @@ mod tests {
         )];
         let hits = search(&docs, "roadmap", None, 1);
         assert_eq!(hits[0].snippets, vec!["First line here.".to_owned()]);
-    }
-
-    #[test]
-    fn an_answer_names_and_reveals_the_open_ids_of_its_records() {
-        let mut docs = workspace();
-        docs[3].open = true;
-        let mut revealed = tilo_agent::tools::Revealed::new();
-        let text = answer(
-            &serde_json::json!({"query": "Q3 partner review"}),
-            &docs,
-            &mut revealed,
-        );
-        let brief = open_id(&docs[0].route);
-        assert_eq!(
-            brief, "record.so.tilo.word-processor.uuid:brief#open",
-            "the id the catalogue offers"
-        );
-        assert!(text.contains(&brief), "{text}");
-        assert!(text.contains("\"Partner brief\""), "{text}");
-        assert!(text.contains("recency 3"), "{text}");
-        assert!(revealed.contains(&brief));
-        assert!(
-            text.contains("open now, its operations are listed"),
-            "{text}"
-        );
-        assert!(!revealed.contains(&open_id(&docs[3].route)));
-        let first = text.find("uuid:brief").unwrap();
-        let stale = text.find("uuid:stale").unwrap();
-        assert!(first < stale, "{text}");
-
-        assert!(answer(&serde_json::json!({}), &docs, &mut revealed).contains("needs a `query`"));
-        let none = answer(&serde_json::json!({"query": "zebra"}), &docs, &mut revealed);
-        assert!(none.starts_with("No record"), "{none}");
-        let other = answer(
-            &serde_json::json!({"query": "review", "app": "so.tilo.mail"}),
-            &docs,
-            &mut revealed,
-        );
-        assert!(other.contains("No record of so.tilo.mail"), "{other}");
     }
 
     #[test]

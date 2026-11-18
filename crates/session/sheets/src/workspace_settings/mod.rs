@@ -378,6 +378,21 @@ impl WorkspaceSettingsState {
         if *self.settings.borrow() == settings {
             return;
         }
+        // Another tab, or another agent reviewed, is another page: it starts at its top. A
+        // choice made on the same page keeps the sheet where the person was.
+        let page = |settings: &Settings| {
+            (
+                settings.tab,
+                settings
+                    .agents
+                    .review
+                    .as_ref()
+                    .map(|review| review.agent.clone()),
+            )
+        };
+        if page(&self.settings.borrow()) != page(&settings) {
+            self.presentation.scroll_to_top();
+        }
         let was = self.settings.borrow().name.clone();
         if let Some(name) = self.name.borrow().as_ref()
             && settings.name != was

@@ -27,8 +27,8 @@ case $image in
   vm-host)
     # tilo-runtime already depends on the runtime packages the host serves from; one feature
     # resolution for the three programs.
-    packages=(-p legacy-vm --bin tilo-legacy --bin tilo-hosted-jail -p tilo-runtime --bin tilo-runtime)
-    bins=(tilo-legacy tilo-hosted-jail tilo-runtime) ;;
+    packages=(-p linux-vm --bin tilo-linux-vm --bin tilo-hosted-jail -p tilo-runtime --bin tilo-runtime)
+    bins=(tilo-linux-vm tilo-hosted-jail tilo-runtime) ;;
   server)
     # The server and the filesystem replica in one feature resolution, as the image compiled them:
     # separate Cargo invocations recompile the shared dependencies whose selected features differ
@@ -44,21 +44,21 @@ case $image in
     # resolution, so the shared workspace crates compile once.
     packages=(-p tilo-server -p tilo-fs --bin tilo-server --bin tilo-server-admin \
                 --bin tilo-enroll --bin fs
-              -p legacy-vm --bin tilo-legacy --bin tilo-hosted-jail
+              -p linux-vm --bin tilo-linux-vm --bin tilo-hosted-jail
               -p tilo-api --bin tilo-api
               -p tilolang-process --bin tilolang-process
               -p tilo-esp-write --bin tilo-esp-write
               -p tilo-image-policy-check --bin tilo-image-policy-check
-              -p tilo-user-identity --bin tilo-image-trust
+              -p tilo-device-identity --bin tilo-image-trust
               -p tilo-board-successor --bin tilo-board-successor
               -p tilo-rollback --bin tilo-rollback
               -p tilo-auth --bin tilo-auth
               -p tilo-boot-signin --bin tilo-boot-signin
-              -p tilo-sibling-unlock --bin tilo-sibling-unlock)
-    bins=(tilo-server tilo-server-admin tilo-enroll fs tilo-legacy tilo-hosted-jail tilo-api
+             )
+    bins=(tilo-server tilo-server-admin tilo-enroll fs tilo-linux-vm tilo-hosted-jail tilo-api
           tilolang-process
           tilo-esp-write tilo-image-policy-check tilo-image-trust tilo-board-successor
-          tilo-rollback tilo-auth tilo-boot-signin tilo-sibling-unlock) ;;
+          tilo-rollback tilo-auth tilo-boot-signin) ;;
   *)
     die "unknown server image $image: api, vm-host, server or host" ;;
 esac

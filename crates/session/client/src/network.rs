@@ -148,8 +148,7 @@ pub trait Outbox: std::fmt::Debug + collab_types::signer::MaybeSendSync {
 
     /// [`Self::barrier`] for `workspaces` alone: a receipt that completes once every write said
     /// before it to one of them is durable at its holder, or with the refusal that prevents it.
-    /// What this device still holds or owes in a workspace not named does not keep it waiting:
-    /// a session many workspaces share answers each for its own writes.
+    /// What this device still holds or owes in a workspace not named does not keep it waiting.
     ///
     /// # Errors
     /// The transport is gone.
@@ -159,20 +158,18 @@ pub trait Outbox: std::fmt::Debug + collab_types::signer::MaybeSendSync {
         Ok(receipt)
     }
 
-    /// [`Self::barrier_of`] for `documents` alone: a receipt that completes once every write said
-    /// before it to one of them is durable at its holder, or with the refusal that prevents it.
-    /// What this device still holds or owes of a document not named, of the same workspace too,
-    /// does not keep it waiting: a change that waits for its document says nothing about the
-    /// writes to another.
+    /// [`Self::barrier`] for the writes a caller made to `routes`: a receipt that completes once
+    /// every write said before it to one of those documents is durable at its holder, or with the
+    /// refusal of a write to one of them. What this device still holds or owes of a document not
+    /// named, of the same workspace too, does not keep it waiting, and the refusal of a write to
+    /// another route is its own caller's: a change that waits for its document says nothing about
+    /// the writes to another, and a session many callers share answers each for its own writes.
     ///
     /// # Errors
     /// The transport is gone.
-    fn barrier_of_documents(
-        &self,
-        documents: &[DocumentRoute],
-    ) -> Result<Receipt<Result<(), String>>, Closed> {
+    fn barrier_for(&self, routes: &[DocumentRoute]) -> Result<Receipt<Result<(), String>>, Closed> {
         let (answer, receipt) = answer();
-        self.send(Cmd::BarrierOfDocuments(documents.to_vec(), answer))?;
+        self.send(Cmd::BarrierFor(routes.to_vec(), answer))?;
         Ok(receipt)
     }
 
@@ -497,8 +494,8 @@ pub enum Cmd {
     /// holder ([`Outbox::barrier_of`]).
     BarrierOf(Vec<Topic>, Answer<Result<(), String>>),
     /// Answer once every write said before this to one of these documents is durable at its
-    /// holder ([`Outbox::barrier_of_documents`]).
-    BarrierOfDocuments(Vec<DocumentRoute>, Answer<Result<(), String>>),
+    /// holder, or with the refusal of a write to one of them ([`Outbox::barrier_for`]).
+    BarrierFor(Vec<DocumentRoute>, Answer<Result<(), String>>),
     /// Answer what this session still keeps of what it wrote to these workspaces, and what each
     /// document's writes wait for ([`Outbox::kept_of`]).
     KeptOf(Vec<Topic>, Answer<Vec<Kept>>),

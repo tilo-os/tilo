@@ -235,16 +235,7 @@ fn mounted_google_sign_in_never_offers_api_key_ownership() {
             provider: id.clone(),
             key: Some("private-key-draft".into()),
         },
-        ProviderEffect::RemoveProviderKey {
-            provider: id.clone(),
-        },
-        ProviderEffect::RemoveLegacyProviderKey {
-            provider: id.clone(),
-        },
-        ProviderEffect::MigrateProviderKey {
-            provider: id,
-            original_endpoint: String::new(),
-        },
+        ProviderEffect::RemoveProviderKey { provider: id },
     ] {
         assert!(invoke(&mut app, effect).is_err());
     }
@@ -463,61 +454,6 @@ fn mounted_conflict_reloads_authority_and_keeps_details_draft_for_explicit_retry
     run(&mut app, edit);
     assert_eq!(config(&mut app).profiles[0].label, "My unsaved draft");
     assert_private(&mut app);
-}
-
-#[test]
-fn mounted_legacy_migration_and_both_removal_controls_use_host_authority() {
-    let backend = Arc::new(FakeAdminBackend::default());
-    let mut app = mount(backend.clone());
-    run(
-        &mut app,
-        ProviderEffect::AddProvider {
-            preset: "anthropic".into(),
-        },
-    );
-    let id = config(&mut app).profiles[0].id.clone();
-    backend
-        .state
-        .lock_recover()
-        .keys
-        .insert(id.clone(), CredentialStatus::MigrationRequired);
-    run(&mut app, ProviderEffect::RefreshProviders);
-    assert!(
-        invoke(
-            &mut app,
-            ProviderEffect::MigrateProviderKey {
-                provider: id.clone(),
-                original_endpoint: "https://not-the-original.invalid".into(),
-            }
-        )
-        .is_err()
-    );
-    run(
-        &mut app,
-        ProviderEffect::MigrateProviderKey {
-            provider: id.clone(),
-            original_endpoint: "https://api.anthropic.com".into(),
-        },
-    );
-    run(
-        &mut app,
-        ProviderEffect::RemoveProviderKey {
-            provider: id.clone(),
-        },
-    );
-    assert!(!backend.state.lock_recover().keys.contains_key(&id));
-    backend
-        .state
-        .lock_recover()
-        .keys
-        .insert(id.clone(), CredentialStatus::MigrationRequired);
-    run(
-        &mut app,
-        ProviderEffect::RemoveLegacyProviderKey {
-            provider: id.clone(),
-        },
-    );
-    assert!(!backend.state.lock_recover().keys.contains_key(&id));
 }
 
 #[test]

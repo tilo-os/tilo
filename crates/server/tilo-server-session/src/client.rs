@@ -120,16 +120,33 @@ impl Entrance {
         awaiting.verify(&mut recv).await?;
         let answer = SessionReader::new(recv).read_next().await;
         send.finish();
-        match answer {
-            Ok(Some(EnvelopeV2::State(Envelope::Entered(entered)))) => Ok(entered),
-            Ok(None) => Err(ClientError::NoHandshakeAnswer(
-                "the stream ended before the host answered the entry".into(),
-            )),
-            Ok(Some(_)) => Err(ClientError::Codec(
-                "the host answered the entry with something else".into(),
-            )),
-            Err(error) => Err(ClientError::Codec(error.to_string())),
-        }
+        entry_answer(answer)
+    }
+}
+
+/// What the host's `answer` to an entry says: its answer, or why there is none. A connection that
+/// went away under the answer is a transport failure, never a codec one: the entry may have been
+/// taken, and asking again under the same request hears what became of it.
+fn entry_answer(
+    answer: Result<Option<EnvelopeV2>, tilo_server_client::frame::FrameError>,
+) -> Result<tilo_server_protocol::entering::Entered, ClientError> {
+    match answer {
+        Ok(Some(EnvelopeV2::State(Envelope::Entered(entered)))) => Ok(entered),
+        Ok(None) => Err(ClientError::NoHandshakeAnswer(
+            "the stream ended before the host answered the entry".into(),
+        )),
+        Ok(Some(_)) => Err(ClientError::Codec(
+            "the host answered the entry with something else".into(),
+        )),
+        // The connection went away under the answer: the entry may have been taken, and asking
+        // again under the same request hears what became of it. Nothing about either side's
+        // version is said by it.
+        Err(
+            error @ (tilo_server_client::frame::FrameError::Io(_)
+            | tilo_server_client::frame::FrameError::Truncated
+            | tilo_server_client::frame::FrameError::Closed),
+        ) => Err(ClientError::Transport(error.to_string())),
+        Err(error) => Err(ClientError::Codec(error.to_string())),
     }
 }
 
@@ -181,7 +198,7 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         Envelope::Subscribe { workspace_id }
         | Envelope::Unsubscribe { workspace_id }
         | Envelope::Delta { workspace_id, .. }
-        | Envelope::RetiredPresence { workspace_id, .. }
+        | Envelope::Presence { workspace_id, .. }
         | Envelope::Ready { workspace_id, .. }
         | Envelope::NotAuthorised { workspace_id, .. }
         | Envelope::SyncRequest { workspace_id, .. }
@@ -192,10 +209,10 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         | Envelope::Commit { workspace_id, .. }
         | Envelope::Committed { workspace_id, .. }
         | Envelope::CommitRefused { workspace_id, .. }
-        | Envelope::RetiredLiveJoin { workspace_id }
+        | Envelope::ChangeRefused { workspace_id, .. }
+        | Envelope::LiveJoin { workspace_id }
         | Envelope::LiveLeave { workspace_id }
-        | Envelope::RetiredLive { workspace_id, .. }
-        | Envelope::RetiredLiveMember { workspace_id, .. }
+        | Envelope::LiveMember { workspace_id, .. }
         | Envelope::SubscribeFrom { workspace_id, .. }
         | Envelope::Position { workspace_id, .. }
         | Envelope::CompactVolunteer { workspace_id }
@@ -223,8 +240,6 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         | Envelope::HostAction { .. }
         | Envelope::WorkspacesRequest { .. }
         | Envelope::WorkspacesReply { .. }
-        | Envelope::RetiredHereRequest { .. }
-        | Envelope::RetiredHereReply { .. }
         | Envelope::AgentSession { .. }
         | Envelope::AgentSessionAnswer { .. }
         | Envelope::AgentSessionStopped
@@ -1914,5 +1929,31 @@ mod scheduling_tests {
         run_v2_reader(&mut reader, &incoming, None).await;
         drop(incoming);
         assert_eq!(consumer.await.unwrap(), 1024);
+    }
+}
+
+#[cfg(test)]
+mod entry_answer_tests {
+    use super::{ClientError, entry_answer};
+    use tilo_server_client::frame::FrameError;
+
+    /// A connection lost under the host's answer says so, so the entry is asked for again; only
+    /// bytes that do not decode say the two sides speak differently.
+    #[test]
+    fn a_lost_answer_is_a_transport_failure_and_a_garbled_one_a_codec_one() {
+        for lost in [
+            FrameError::Io(std::io::Error::from(std::io::ErrorKind::ConnectionReset)),
+            FrameError::Truncated,
+            FrameError::Closed,
+        ] {
+            assert!(
+                matches!(entry_answer(Err(lost)), Err(ClientError::Transport(_))),
+                "a lost answer is the connection's"
+            );
+        }
+        assert!(matches!(
+            entry_answer(Err(FrameError::EmptyFrame)),
+            Err(ClientError::Codec(_))
+        ));
     }
 }

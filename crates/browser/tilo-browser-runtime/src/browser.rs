@@ -276,12 +276,13 @@ struct Config {
 }
 
 impl Config {
-    /// The host's administration grant, else the page's own model service's,
-    /// which only Model Providers is ever lent.
+    /// The embedder's administration grant, which only Model Providers
+    /// is ever lent. Without one, Model Providers shows the providers the
+    /// person keeps on their server, as Settings does.
     fn provider_admin(&self) -> Result<ui::models::ProviderAdministration, JsValue> {
         match &self.provider_management {
             Some(granted) => granted.connect().map_err(error),
-            None => Ok(crate::host_services::provider_admin(self.peer.is_some())),
+            None => Ok(ui::models::ProviderAdministration::default()),
         }
     }
 
@@ -292,11 +293,16 @@ impl Config {
         Ok(())
     }
 
-    /// The host's model service, else the page's own.
+    /// The embedder's model service, else the person's own model on
+    /// their server; none for a page with no server.
     fn models(&self) -> Result<ui::models::Models, JsValue> {
         match &self.models {
             Some(lent) => lent.connect().map_err(error),
-            None => Ok(crate::host_services::page_models()),
+            None => Ok(crate::host_services::server_models(
+                self.peer,
+                &self.workspace,
+                &self.author(),
+            )),
         }
     }
     fn author(&self) -> String {
@@ -1459,6 +1465,8 @@ fn mount_search(
         crate::page_search::SearchParts {
             handle: handle.clone(),
             person: config.author(),
+            peer: config.peer,
+            workspace: config.workspace.clone(),
             store: records_store,
             content: content_store,
             files: files.cloned(),
@@ -2633,16 +2641,11 @@ impl Mount {
             }
             return Ok(());
         }
-        // The GPU's own answer, bounded: a completion the browser never
-        // reports stops holding the page back after
-        // [`crate::frame_pacing::LOST_AFTER`]. A slow GPU is not a lost one:
-        // the device's own `lost` and errors say that, below.
-        if matches!(
-            pacing::check(&mut gpu.pacing, &mut self.held, &self.window),
-            pacing::FrameDecision::Hold
-        ) {
-            return Ok(());
-        }
+        // The GPU's own answer, asked and not waited for: stopping here is
+        // what keeps a completion from arriving (`crate::frame_pacing`). A
+        // slow GPU is not a lost one: the device's own `lost` and errors say
+        // that, below.
+        pacing::check(&mut gpu.pacing);
         let Ok(mut shared_guard) = gpu.shared.try_borrow_mut() else {
             // Another mount's GPU setup holds the shared device for a moment.
             self.held = "the shared device busy";

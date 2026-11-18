@@ -192,7 +192,7 @@ async fn post_with(
         .unwrap();
     let mut held = Vec::new();
     for (app, record) in workspaces.document_routes(workspace).await.unwrap() {
-        let Some(part) = ui::resource::DocumentId::parse(&record)
+        let Some(part) = collab_types::document::DocumentId::parse(&record)
             .filter(|part| app == CHAT && chat::parts::part_index(part).is_some())
         else {
             continue;
@@ -213,7 +213,7 @@ async fn post_with(
             &MemberId::person(author),
             ReplicaActor::Owner,
             Seed::Existing {
-                record: ui::resource::DocumentId::package_primary(),
+                record: collab_types::document::DocumentId::package_primary(),
                 changes: vec![chat],
             },
         )
@@ -229,7 +229,7 @@ async fn post_with(
         }
         page.invoke(
             &tilo_actions::api::ActionAddress::new(
-                ui::resource::chain_resource_id(&chat::parts::chain()),
+                collab_types::document::chain_resource_id(&chat::parts::chain()),
                 "post",
             ),
             arguments.as_object().unwrap(),
@@ -2248,7 +2248,7 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
             &MemberId::person(hex::encode(guest_cert.user_public_key)),
             ReplicaActor::Owner,
             Seed::Existing {
-                record: ui::resource::DocumentId::package_primary(),
+                record: collab_types::document::DocumentId::package_primary(),
                 changes: vec![chat],
             },
         )
@@ -2256,7 +2256,7 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
         let arguments = serde_json::json!({ "channel": general, "text": "hello" });
         page.invoke(
             &tilo_actions::api::ActionAddress::new(
-                ui::resource::chain_resource_id(&chat::parts::chain()),
+                collab_types::document::chain_resource_id(&chat::parts::chain()),
                 "post",
             ),
             arguments.as_object().unwrap(),

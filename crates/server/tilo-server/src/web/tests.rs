@@ -101,7 +101,7 @@ fn web_of_at(server: &Server, host: &Host, site: Option<&str>) -> Web {
         workspaces: server.workspaces().cloned(),
         envelopes: envelopes::Envelopes::new(server.state_root().join("envelopes")),
         profiles: Arc::new(envelopes::Envelopes::of(
-            envelopes::Record::Profile,
+            envelopes::Kind::Profile,
             server.state_root().join("profiles"),
         )),
         fetch: None,
@@ -1347,7 +1347,6 @@ async fn a_login_code_is_resolved_once_followed_and_not_guessed() {
     reason = "the server serves the routes until it shuts down at the end"
 )]
 async fn a_persons_stand_in_certifies_the_tab_a_device_of_theirs_claimed() {
-    use ed25519_dalek::Signer as _;
     use tilo_server_protocol::login_code as wire;
     use tilo_server_protocol::login_code::StandInRequest;
     use tilo_user_identity::{CertificationRequest, verify_device_cert_at};
@@ -1387,22 +1386,24 @@ async fn a_persons_stand_in_certifies_the_tab_a_device_of_theirs_claimed() {
     };
     let claim = |report: &str, key: &SigningKey, cert: &str| {
         let signed_at_ns = tilo_clock::unix_now_ns();
-        let signature = key.sign(&wire::claim_message(report, signed_at_ns));
+        let digest = wire::claim_digest(report, signed_at_ns).unwrap();
+        let signature = tilo_user_identity::StatementSigner::sign_digest(key, &digest).unwrap();
         serde_json::json!({
             "report": report,
             "cert": cert,
             "signed_at_ns": signed_at_ns,
-            "signature": hex::encode(signature.to_bytes()),
+            "signature": hex::encode(signature),
         })
     };
     let root_signed = |op: &str| {
         let signed_at_ns = tilo_clock::unix_now_ns();
-        let signature = person.sign(&StandInRequest::signed_message(op, &user, signed_at_ns));
+        let digest = StandInRequest::signed_digest(op, &user, signed_at_ns).unwrap();
+        let signature = tilo_user_identity::StatementSigner::sign_digest(&person, &digest).unwrap();
         serde_json::json!({
             "op": op,
             "user": hex::encode(user),
             "signed_at_ns": signed_at_ns,
-            "signature": hex::encode(signature.to_bytes()),
+            "signature": hex::encode(signature),
         })
     };
 

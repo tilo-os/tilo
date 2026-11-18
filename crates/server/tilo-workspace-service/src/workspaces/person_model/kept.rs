@@ -7,15 +7,15 @@
 //! what tells that file from the next one written, and the vault is opened
 //! again only when that changed: a key its person removed or replaced is
 //! gone, or new, at the very next ask. Nothing is kept of a vault that could
-//! not be opened or that has no file, and nothing for another provider than
-//! the one asked for.
+//! not be opened or that has no file, and nothing for another provider, or
+//! another endpoint of it, than the one asked for.
 
 use std::path::Path;
 use std::sync::Mutex;
 
 use tilo_lock::MutexRecover as _;
 
-use super::super::person_settings::{credentials, key_id};
+use super::super::person_settings::ProviderKeys;
 use super::ModelRefusal;
 
 /// What tells one written vault from the next: every save replaces the file
@@ -44,15 +44,16 @@ impl Stamp {
 /// What a vault kept for a provider when it was opened.
 #[derive(Clone)]
 enum Held {
-    Key(accounts::Secret),
+    Key(zeroize::Zeroizing<String>),
     Nothing,
 }
 
-/// One opening of a vault: the file it was, the provider asked for, and what
-/// the vault kept for it.
+/// One opening of a vault: the file it was, the provider asked for and the
+/// endpoint its key is bound to, and what the vault kept for it.
 struct Opened {
     stamp: Stamp,
     provider: String,
+    endpoint: String,
     held: Held,
 }
 
@@ -66,13 +67,13 @@ pub(super) struct Key {
 }
 
 impl Key {
-    /// The key the vault under `root` keeps for `provider`: none where it
-    /// keeps none, or an empty one.
+    /// The key the vault under `root` keeps for `provider` at its endpoint's
+    /// origin: none where it keeps none, or an empty one.
     pub(super) fn of(
         &self,
         root: &Path,
-        provider: &str,
-    ) -> Result<Option<accounts::Secret>, ModelRefusal> {
+        provider: &agent_provider_config::ProviderProfile,
+    ) -> Result<Option<zeroize::Zeroizing<String>>, ModelRefusal> {
         // Taken before the vault is opened: a save between the two leaves a
         // stamp older than what was taken, and the next ask opens it again.
         let stamp = Stamp::of(root);
@@ -82,19 +83,17 @@ impl Key {
                 Held::Nothing => None,
             });
         }
-        let vault = credentials(root).map_err(|error| {
-            tracing::warn!(%error, "a person's vault was not opened for their model");
+        let key = ProviderKeys::of(root).get(provider).map_err(|error| {
+            tracing::warn!(%error, "a person's vault was not read for their model");
             ModelRefusal::SettingsUnreadable
         })?;
         #[cfg(test)]
         self.opened
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let key = vault
-            .get(&key_id(provider))
-            .filter(|secret| !secret.password.is_empty());
         *self.last.lock_recover() = stamp.map(|stamp| Opened {
             stamp,
-            provider: provider.to_owned(),
+            provider: provider.id.clone(),
+            endpoint: provider.endpoint.clone(),
             held: key.clone().map_or(Held::Nothing, Held::Key),
         });
         Ok(key)
@@ -102,16 +101,24 @@ impl Key {
 
     /// What was taken for `provider` from the vault that is still the file
     /// `stamp` tells.
-    fn held(&self, stamp: Stamp, provider: &str) -> Option<Held> {
+    fn held(
+        &self,
+        stamp: Stamp,
+        provider: &agent_provider_config::ProviderProfile,
+    ) -> Option<Held> {
         self.last
             .lock_recover()
             .as_ref()
-            .filter(|opened| opened.stamp == stamp && opened.provider == provider)
+            .filter(|opened| {
+                opened.stamp == stamp
+                    && opened.provider == provider.id
+                    && opened.endpoint == provider.endpoint
+            })
             .map(|opened| opened.held.clone())
     }
 
     /// How often the vault was opened for this work.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "agents"))]
     pub(super) fn opened(&self) -> u64 {
         self.opened.load(std::sync::atomic::Ordering::Relaxed)
     }

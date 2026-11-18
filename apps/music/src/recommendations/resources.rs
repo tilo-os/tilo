@@ -15,9 +15,8 @@ pub fn row_by_id(lib: &Library, id: &str) -> Option<LiveRow> {
         .bound()
     };
     if id == PREFERENCES {
-        let mut row = LiveRow::new(
+        let mut row = LiveRow::typed::<crate::row_types::RecommendationPreferences>(
             id,
-            "music.recommendation-preferences",
             crate::i18n::t("music-recommendations-title"),
         )
         .operation(open());
@@ -34,9 +33,8 @@ pub fn row_by_id(lib: &Library, id: &str) -> Option<LiveRow> {
         let input = Input::ALL.into_iter().find(|i| i.key() == key)?;
         let enabled = lib.recommendations.enabled(input);
         return Some(
-            LiveRow::new(
+            LiveRow::typed::<crate::row_types::RecommendationInput>(
                 id,
-                "music.recommendation-input",
                 format!(
                     "{}: {}",
                     input.label(),
@@ -59,9 +57,8 @@ pub fn row_by_id(lib: &Library, id: &str) -> Option<LiveRow> {
             return None;
         }
         return Some(
-            LiveRow::new(
+            LiveRow::typed::<crate::row_types::RecommendationArtist>(
                 id,
-                "music.recommendation-artist",
                 lib.artist(artist).map_or(artist, |a| a.name.as_str()),
             )
             .operation(open()),
@@ -94,7 +91,7 @@ fn song_row(lib: &Library, id: &str, track: &str) -> Option<LiveRow> {
             crate::i18n::t("music-recommendations-missing-track"),
         )
     };
-    let row = LiveRow::new(id, "music.recommendation", label)
+    let row = LiveRow::typed::<crate::row_types::Recommendation>(id, label)
         .operation(
             MusicEffect::Open {
                 place: Place::View("recommendations".into()),

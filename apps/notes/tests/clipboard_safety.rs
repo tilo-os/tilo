@@ -36,8 +36,8 @@ impl ClipboardBackend for Clipboard {
 fn app() -> (TestApp<notes::NotesShell>, notes::PageId) {
     let mut app = TestApp::<notes::NotesShell>::new().unwrap();
     let page = notes::PageId::new_v4();
-    app.invoke_child::<notes::PagePart>(
-        &notes::part::chain_resource(),
+    app.invoke_child::<notes::NoteList>(
+        &notes::note_list::chain_resource(),
         Invoke::apply(&actions::create_page_action(page, None, "Clipboard")).unwrap(),
     )
     .unwrap();
@@ -87,8 +87,8 @@ fn refused_cut(route: &str) {
     let _host = ui::process::enter(&services);
     let (mut app, page) = app();
     let blocks = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
-    app.invoke_child::<notes::PagePart>(
-        &notes::part::chain_resource(),
+    app.invoke_child::<notes::NoteList>(
+        &notes::note_list::chain_resource(),
         Invoke::apply(&actions::edit_body_action(
             page,
             tilo_document::RichTextAction::SetMark {
@@ -192,8 +192,8 @@ fn refused_table_context_menu_cut_preserves_cell_selection_and_history() {
             value: AttrVal::Bool(true),
         },
     ] {
-        app.invoke_child::<notes::PagePart>(
-            &notes::part::chain_resource(),
+        app.invoke_child::<notes::NoteList>(
+            &notes::note_list::chain_resource(),
             Invoke::apply(&actions::edit_body_action(page, action)).unwrap(),
         )
         .unwrap();
@@ -288,8 +288,8 @@ fn image_app() -> (TestApp<notes::NotesShell>, notes::PageId, &'static str) {
     let id =
         crate::framework_support::notes_doc(&app, |doc| read::page_blocks(doc, page)[0].id.clone());
     let source = "![Synthetic preview](asset:missing-test-image)";
-    app.invoke_child::<notes::PagePart>(
-        &notes::part::chain_resource(),
+    app.invoke_child::<notes::NoteList>(
+        &notes::note_list::chain_resource(),
         Invoke::apply(&actions::edit_body_action(
             page,
             tilo_document::RichTextAction::SpliceText {
@@ -439,8 +439,8 @@ fn image_paste_replaces_a_marked_unicode_range_and_restores_it_in_one_undo() {
     let _host = ui::process::enter(&services);
     let (mut app, page) = app();
     let blocks = crate::framework_support::part_doc(&app, page, |doc| read::page_blocks(doc, page));
-    app.invoke_child::<notes::PagePart>(
-        &notes::part::chain_resource(),
+    app.invoke_child::<notes::NoteList>(
+        &notes::note_list::chain_resource(),
         Invoke::apply(&actions::edit_body_action(
             page,
             tilo_document::RichTextAction::SetMark {
@@ -509,8 +509,8 @@ fn image_paste_into_a_fresh_empty_note_is_undoable() {
     let _host = ui::process::enter(&services);
     let mut app = TestApp::<notes::NotesShell>::new().unwrap();
     let page = notes::PageId::new_v4();
-    app.invoke_child::<notes::PagePart>(
-        &notes::part::chain_resource(),
+    app.invoke_child::<notes::NoteList>(
+        &notes::note_list::chain_resource(),
         Invoke::apply(&actions::create_page_action(page, None, "Image")).unwrap(),
     )
     .unwrap();
@@ -636,8 +636,8 @@ fn image_paste_replaces_empty_rows_and_selected_separators_without_touching_the_
             let id = crate::framework_support::notes_doc(&app, |doc| {
                 read::page_blocks(doc, page)[0].id.clone()
             });
-            app.invoke_child::<notes::PagePart>(
-                &notes::part::chain_resource(),
+            app.invoke_child::<notes::NoteList>(
+                &notes::note_list::chain_resource(),
                 Invoke::apply(&actions::edit_body_action(
                     page,
                     tilo_document::RichTextAction::SpliceText {

@@ -112,7 +112,7 @@ tilo_test_env::scenario! {
         assert_eq!(result.unwrap_err(), "fixture partial error");
         let (body, authorization, actual) = publication(&fixture, &before).unwrap();
         assert_eq!(authorization.0.contributions.len(), 2);
-        assert!(authorization.check(&a.lease.route, &body).is_ok());
+        assert!(authorization.check(a.lease.route(), &body).is_ok());
         assert!(
             authorization
                 .validate_owner_base(&actual, |_| false)
@@ -125,7 +125,7 @@ tilo_test_env::scenario! {
                     .downcast_ref::<OriginalCaller>()
                     .ok_or("foreign token")?;
                 if original.actor != request.actor
-                    || route != &a.lease.route
+                    || route != a.lease.route()
                     || time.load(Ordering::Acquire) >= original.expiry
                 {
                     return Err("current original caller denied".into());
@@ -143,12 +143,12 @@ tilo_test_env::scenario! {
         let wrong_body = collab_types::DocumentMutation::Incremental(vec![1, 2, 3]);
         assert!(
             authorization
-                .check_binding(&a.lease.route, &wrong_body)
+                .check_binding(a.lease.route(), &wrong_body)
                 .is_err()
         );
         time.store(100, Ordering::Release);
         assert!(
-            authorization.check(&a.lease.route, &body).is_err(),
+            authorization.check(a.lease.route(), &body).is_err(),
             "both true contributors remain required after capture"
         );
     }
@@ -195,7 +195,7 @@ tilo_test_env::scenario! {
         let (_, authorization, _) = publication(&fixture, &before).unwrap();
         assert_eq!(authorization.0.contributions.len(), 1);
         assert_eq!(
-            authorization.0.contributions[0].lease.request.actor,
+            authorization.0.contributions[0].lease.request().actor,
             tilo_actions::Actor::Member(tilo_actions::MemberId::person("caller-b"))
         );
         time.store(99, Ordering::Release);

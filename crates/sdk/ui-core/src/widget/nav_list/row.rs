@@ -579,6 +579,22 @@ impl Widget for NavRow {
             NavRowKind::Item { label, spec, .. } => {
                 cx.element("li");
                 cx.selected(self.selection.selected);
+                // The chosen row's lift, under its words as the canvas paints it: the row's own
+                // rounded ground. A part of its own would stand over the label.
+                if self.selection.selected {
+                    let tokens = &theme.tokens;
+                    let fill = crate::chrome::selection_tier_on(
+                        &theme,
+                        crate::chrome::SelectionState::active(true),
+                        tokens.colors.surfaces.content,
+                    )
+                    .fill;
+                    cx.ground(crate::composition::Ground {
+                        fill: Some(crate::composition::rgba8(fill)),
+                        edge: None,
+                        radius: f64::from(tokens.radii.control),
+                    });
+                }
                 let detail = spec
                     .secondary
                     .clone()
@@ -604,12 +620,23 @@ impl Widget for NavRow {
                 });
             }
             NavRowKind::Section { title, .. } => {
+                // As the canvas draws it: a heading in the row's band, inset from the list's
+                // edge, clear of the gap the section keeps above it.
                 cx.element("div");
-                cx.text(TextLook::new(
-                    title.clone(),
-                    &theme.text(crate::tokens::TextRole::Caption),
-                    Some(quiet),
-                ));
+                let face = NavSectionFace::new(self.rect, title);
+                let layout = nav_section_layout(&theme, &face);
+                let style = theme.text(TextRole::Subheading);
+                cx.words(
+                    "title",
+                    "h3",
+                    Rect::new(
+                        layout.title_x0,
+                        layout.band.y0,
+                        layout.title_x1,
+                        layout.band.y1,
+                    ),
+                    TextLook::new(title.clone(), &style, Some(quiet)),
+                );
             }
             NavRowKind::Caption { caption, .. } => {
                 cx.element("p");

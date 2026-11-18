@@ -42,16 +42,6 @@ impl ProviderAdmin for NativeAdministration {
     fn remove_api_key(&self, profile_id: String) -> AdminFuture<'_, ()> {
         self.drive(self.client.remove_api_key(profile_id))
     }
-    fn migrate_api_key(
-        &self,
-        profile_id: String,
-        original_endpoint: String,
-    ) -> AdminFuture<'_, ()> {
-        self.drive(self.client.migrate_api_key(profile_id, original_endpoint))
-    }
-    fn remove_legacy_api_key(&self, profile_id: String) -> AdminFuture<'_, ()> {
-        self.drive(self.client.remove_legacy_api_key(profile_id))
-    }
 }
 pub(crate) fn from_transport(transport: FdTransport) -> Result<Arc<dyn ProviderAdmin>, ModelError> {
     let runtime = tilo_rt::try_app().map_err(|_| ModelError::new(ErrorKind::Unavailable))?;
