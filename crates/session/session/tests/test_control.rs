@@ -231,7 +231,6 @@ impl StartedSession {
             .env("XDG_CACHE_HOME", home.path().join(".cache"))
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("DISPLAY")
-            .env_remove("TILO_MCP_SERVER")
             .envs(env.iter().copied())
             // A stop of the whole group, as a session is stopped in a terminal or
             // by a script, reaches it through this group; and one of the test itself ends it
@@ -342,10 +341,9 @@ fn a_hosted_session_serves_its_apps_where_its_launcher_hands_them() {
     );
 }
 
-/// A session started as `dist/dev/nested-session.sh` starts it, beside another desktop
-/// (`TILO_MACHINE=hosted`) and with no agent key, serves the person's agents: a program of this
-/// login reaches its MCP server at the login's own path, as on the person's own computer. It once
-/// served none there, so no agent could reach a nested session.
+/// A session started as `dist/dev/nested-session.sh` starts it (`TILO_MACHINE=hosted`, no agent
+/// key) serves the person's agents at the login's own path. It once served none, so no agent could
+/// reach a nested session.
 #[test]
 fn a_hosted_session_serves_its_persons_agents() {
     let session = StartedSession::start(&[(tilo_paths::machine::VAR, "hosted")]);

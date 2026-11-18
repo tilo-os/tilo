@@ -410,7 +410,6 @@ if ((${#apps[@]})); then
     install_apps
 fi
 
-socket=$runtime/agent.sock
 control=$runtime/test-control.sock
 # The session's own private session bus (dist/dev/session-bus.sh), as a dev
 # image has one and `dist/dev/nested-session.sh` gives its sessions: a Rust app
@@ -497,7 +496,6 @@ start_session() {
         TILO_SYSTEM_INTERFACES="$repo_root/os/usr/share/tilo/system-interfaces.toml" \
         TILO_FS_BLOB_SOCKET="$media_socket" \
         TILO_COMMUNITY_CONFIG="$community_file" \
-        TILO_MCP_SERVER="$socket" \
         setsid "$session_bus" "$dbus_daemon" \
         "${host_client[@]}" "$bin/tilo-session" "${backend[@]}" --no-x11 \
         --system-bus none --test-control "$control" "$@" \
@@ -548,8 +546,6 @@ agent_key_args=()
 start_session --shell screen "${agent_key_args[@]}" "${apps[@]}"
 # The MCP server is announced once the session's own sockets are up, which can be after its control
 # socket: wait for it as for the socket, while the session lives.
-# A debug build serves it where `TILO_MCP_SERVER` names; an optimised one at the session's own
-# path in this session's runtime directory, which it announces the same way.
 tries=600
 until grep -q "^TILO_MCP_SERVER=$runtime/" "$log"; do
     kill -0 "$session_pid" 2>/dev/null || { tail -40 "$log" >&2; die "the session ended before serving its MCP server"; }

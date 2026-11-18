@@ -41,31 +41,6 @@ fn an_answer_remembered_for_a_program_covers_each_instance_of_it() {
 }
 
 #[test]
-fn the_api_is_the_devices_own_unless_a_developer_named_one() {
-    let device = path_in(None, Some("/run/user/1000".into()));
-    assert_eq!(
-        device,
-        Some(PathBuf::from("/run/user/1000/tilo-session/agent.sock")),
-        "this device's API"
-    );
-    let named = path_in(
-        Some("/run/an-mcp-server".into()),
-        Some("/run/user/1000".into()),
-    );
-    assert_eq!(
-        named,
-        Some(PathBuf::from("/run/an-mcp-server")),
-        "a developer's own API"
-    );
-    assert_eq!(
-        path_in(Some("relative".into()), Some("/run/user/1000".into())),
-        device,
-        "only an absolute path is a developer's"
-    );
-    assert_eq!(path_in(None, None), None, "nowhere to listen");
-}
-
-#[test]
 fn a_client_is_proposed_as_a_canonical_agent_id() {
     assert_eq!(proposed_agent_id("Claude Code"), "claude-code");
     assert_eq!(proposed_agent_id("  Claude   Code 2.1 "), "claude-code-2-1");

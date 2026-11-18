@@ -29,7 +29,6 @@ pub(crate) use task_hosts::SessionCatalogue;
 
 use std::collections::HashMap;
 
-use std::ffi::OsString;
 use std::io;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -68,32 +67,17 @@ pub(crate) use records::ServiceRecords;
 /// The kind of question the server asks the person.
 pub(crate) const KIND: &str = "session.mcp-server";
 
-/// Names the server when it is not this device's; honoured by developer builds only.
-pub(crate) const ENV: &str = "TILO_MCP_SERVER";
-
 /// How often a waiting connection looks for the person's answer and for its client.
 const ASK_EVERY: Duration = Duration::from_millis(50);
 
 /// Where "Always allow" answers are kept, under the session's state directory.
 const BINDINGS_FILE: &str = "mcp-server-bindings.json";
 
-/// Where this session's server goes: this device's well-known path, or the absolute path a developer
-/// named in `TILO_MCP_SERVER` . `None` when there is no runtime directory to put it in.
+/// Where this session's server goes: the login's well-known path in its runtime directory, where
+/// its programs look. `None` when there is no runtime directory to put it in.
 #[must_use]
 pub fn path() -> Option<PathBuf> {
-    path_in(std::env::var_os(ENV), std::env::var_os("XDG_RUNTIME_DIR"))
-}
-
-/// [`path`] for the arguments it reads, so what it decides can be checked.
-fn path_in(named: Option<OsString>, runtime_dir: Option<OsString>) -> Option<PathBuf> {
-    if cfg!(debug_assertions)
-        && let Some(named) = named.map(PathBuf::from)
-        && named.is_absolute()
-    {
-        return Some(named);
-    }
-    tilo_paths::login::session_dir(runtime_dir)
-        .map(|directory| directory.join(tilo_paths::login::AGENT_SOCKET_FILE))
+    tilo_mcp::session_api::agent_socket_path(std::env::var_os("XDG_RUNTIME_DIR"))
 }
 
 /// What a client asks for, as the sheet shows it: where it would work and what it would be called.
