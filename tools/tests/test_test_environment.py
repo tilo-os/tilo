@@ -196,6 +196,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(siblings["command"][2:], [
             "tilo-lock-screen:tilo-lock-screen", "osk:osk",
             "tilo-quick-settings:tilo-quick-settings",
+            "tilolang-process:tilolang-process", "launcher:tilo-launcher",
         ])
         for profile in ("default", "ci"):
             rules = [rule for rule in config["profile"][profile]["scripts"]
@@ -290,6 +291,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                 [(rule["filter"], rule["platform"]) for rule in rules],
                 [(filter_, {"host": 'cfg(target_os = "linux")'})
                  for filter_ in ("package(tilo-server) and test(coding_agents::)",
+                                 "package(ush) and (test(served_runs::) or test(environment_programs::))",
                                  "package(tilo-agent-session) and test(hosted_coding_agents::)")],
                 f"the {profile} profile builds the guest's agent for the tests that start a coding agent",
             )
@@ -307,6 +309,21 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                   {"host": 'cfg(target_os = "linux")'})],
                 f"the {profile} profile builds the page bundle its page tests run against",
             )
+        # pam-tilo's tests load the module as libpam does, and no test binary links a cdylib:
+        # the harness builds it first, in every profile, and hands the tests its path.
+        module = scripts.pop("pam-module")
+        self.assertEqual(module["command"], ["bash", "tools/build-sibling-binaries.sh",
+                                             "pam-tilo:pam_tilo"])
+        def rules(profile: str, setup: str) -> list[dict]:
+            return [rule for rule in config["profile"][profile]["scripts"]
+                    if rule["setup"] == setup]
+        (pam,) = rules("default", "pam-module")
+        self.assertEqual(pam["filter"], "package(pam-tilo)")
+        (siblings_rule,) = rules("default", "session-siblings")
+        self.assertEqual(pam["platform"], siblings_rule["platform"],
+                         "the PAM module is built on the platform its sibling setups are")
+        self.assertEqual(rules("ci", "pam-module"), [],
+                         "ci inherits the default profile's PAM module")
         steps = {name: script["command"][2:] for name, script in scripts.items()}
         self.assertEqual(steps, {"test-runtime": ["runtime"], "font-catalog": ["fonts"],
                                  "headless-audio": ["audio"],
@@ -337,6 +354,8 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                  "test(lounge_fresh_page::)":
                                      "lounge-siblings",
                                  "package(tilo-server) and test(coding_agents::)": "machine-siblings",
+                                 "package(ush) and (test(served_runs::) or "
+                                 "test(environment_programs::))": "machine-siblings",
                                  "package(tilo-agent-session) and test(hosted_coding_agents::)":
                                      "machine-siblings",
                                  "package(tilo-session-client) and binary(it) and "
@@ -552,6 +571,45 @@ class SiblingBinaryTests(unittest.TestCase):
             self.assertEqual(ran, "build --locked --message-format=json-render-diagnostics "
                                   "--package osk --bin osk\n")
             self.assertEqual(told[-1], f"TILO_SIBLING_BIN_osk={work}/osk")
+
+    def test_a_handed_library_is_told_and_never_built(self) -> None:
+        # A cdylib no test binary links, which t's archive does not carry and its family
+        # build hands as a file: pam-tilo's module, named to the tests as
+        # TILO_PAM_TILO_MODULE.
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            module = work / "libpam_tilo.so"
+            module.write_text("")
+            result, ran, told = self.run_script(
+                work, "exit 9", "pam-tilo:pam_tilo",
+                **{"T_STARTED_CDYLIB_pam_tilo": str(module)})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(ran, "")
+            self.assertEqual(told, [f"TILO_PAM_TILO_MODULE={module}"])
+
+    def test_a_library_not_handed_is_built_and_told(self) -> None:
+        # A developer's nextest invocation has no T_STARTED_CDYLIB_pam_tilo: it builds
+        # the package's library, and hands the file Cargo uplifted beside the binaries.
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            built = f'echo \'{{"filenames":["{work}/deps/libpam_tilo.so", "{work}/libpam_tilo.so"]}}\''
+            result, ran, told = self.run_script(work, built, "pam-tilo:pam_tilo")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(ran, "build --locked --message-format=json-render-diagnostics "
+                                  "--package pam-tilo --lib\n")
+            self.assertEqual(told, [f"TILO_PAM_TILO_MODULE={work}/libpam_tilo.so"])
+
+    def test_a_handed_library_that_is_no_file_fails_instead_of_building(self) -> None:
+        # Building here would hide a broken handoff and compile the library in every shard.
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            result, ran, told = self.run_script(
+                work, "exit 9", "pam-tilo:pam_tilo",
+                **{"T_STARTED_CDYLIB_pam_tilo": str(work / "not-a-file.so")})
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("T_STARTED_CDYLIB_pam_tilo", result.stderr)
+            self.assertEqual(ran, "")
+            self.assertEqual(told, [])
 
 
 class CargoRunnerTests(unittest.TestCase):

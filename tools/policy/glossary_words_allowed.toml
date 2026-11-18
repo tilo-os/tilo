@@ -442,6 +442,12 @@ words = ["run"]
 paths = ["tools/tests/test_nextest_policy.py"]
 
 [[allow]]
+reason = "The nextest setup tests' helper that starts a setup script, and the `served_runs` module of a package whose filter a rule names."
+words = ["run"]
+identifiers = ["run_script", "served_runs"]
+paths = ["tools/tests/test_test_environment.py"]
+
+[[allow]]
 reason = "The launch error the framework returns when a new item cannot be made."
 words = ["record"]
 identifiers = ["Record"]

@@ -84,6 +84,19 @@ platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(tilo-session) or package(tilo-quick-settings)"
 setup = "session-siblings"
 
+# pam-tilo's tests load the module as libpam does: the cdylib, which no test
+# binary links, so Cargo builds none for them and an archive of test binaries
+# carries none. The harness builds the library before the tests start and hands
+# its path to the run as TILO_PAM_TILO_MODULE, which the tests read. In every
+# profile: a run outside CI loads the module the same way.
+[scripts.setup.pam-module]
+command = ["bash", "tools/build-sibling-binaries.sh", "pam-tilo:pam_tilo"]
+
+[[profile.default.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(pam-tilo)"
+setup = "pam-module"
+
 # The session's workspace-service test starts the server as the Lounge image does
 # (`tilo-server workspace --persistent` with its deployment routes), a program of
 # another package: the feature `agents` is what gives it that subcommand.
