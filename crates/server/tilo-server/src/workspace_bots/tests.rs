@@ -337,6 +337,11 @@ async fn a_report_filed_in_the_workspace_restricts_and_undoes_the_flood_as_the_b
         .unwrap();
     flood_posts(&workspaces, &workspace, &cert, &general).await;
 
+    // The person enables the workspace's moderation bot before it looks.
+    crate::workspace_bots::enable(&workspaces, &workspace)
+        .await
+        .unwrap();
+
     let mut bot = ModerationBot::new(
         workspaces.clone(),
         workspace.clone(),
