@@ -49,13 +49,102 @@ pub fn said(text: &str, surface: Surface) -> String {
     let mut rest = text;
     while let Some((at, mention)) = next_mention(rest) {
         written.push_str(rest.get(..at).unwrap_or_default());
-        written.push_str(&render(mention.call, mention.arg.as_deref(), surface));
-        rest = rest
+        let after = rest
             .get(at.saturating_add(mention.len)..)
             .unwrap_or_default();
+        // A call written whole, as a refusal ends with the one that works: its arguments
+        // follow the tool's name as JSON, and they are part of the call.
+        let whole = if mention.arg.is_none() {
+            whole_arguments(after)
+        } else {
+            None
+        };
+        if let Some((arguments, used)) = whole {
+            written.push_str(&render_whole(mention.call, &arguments, surface));
+            rest = after.get(used..).unwrap_or_default();
+        } else {
+            written.push_str(&render(mention.call, mention.arg.as_deref(), surface));
+            rest = after;
+        }
     }
     written.push_str(rest);
     written
+}
+
+/// The arguments of a call written whole (`{"path":"notes"}` after the tool's name and a
+/// blank), and how many bytes of `after` the blank and they cover. None where no JSON object
+/// stands there: the name is then a word in a sentence.
+fn whole_arguments(after: &str) -> Option<(serde_json::Map<String, serde_json::Value>, usize)> {
+    let written = after.strip_prefix(' ')?;
+    if !written.starts_with('{') {
+        return None;
+    }
+    let mut read = serde_json::Deserializer::from_str(written).into_iter::<serde_json::Value>();
+    let Some(Ok(serde_json::Value::Object(arguments))) = read.next() else {
+        return None;
+    };
+    Some((arguments, read.byte_offset().saturating_add(1)))
+}
+
+/// A call written whole, as `surface` writes it: with the path, the search or the invocation
+/// its arguments name, and for an action what it is given, each blank kept.
+fn render_whole(
+    call: Call,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+    surface: Surface,
+) -> String {
+    let named = |name: &str| {
+        arguments
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .filter(|text| !text.is_empty())
+    };
+    let arg = match call {
+        Call::Status => named("invocation_id"),
+        Call::Find => named("query"),
+        _ => named("path"),
+    };
+    let given = arguments
+        .get("args")
+        .and_then(serde_json::Value::as_object)
+        .filter(|given| !given.is_empty());
+    match (call, surface, arg, given) {
+        // The route of one invocation, where the call names it.
+        (Call::Status, Surface::Rest, Some(id), _) => {
+            format!("GET /v1/workspaces/{WORKSPACE}/invocations/{id}")
+        }
+        (Call::Do, Surface::Cli, Some(_), Some(given)) => {
+            let mut line = render(call, arg, surface);
+            for (name, value) in given {
+                line.push(' ');
+                line.push_str(&as_the_command_reads(name, value));
+            }
+            line
+        }
+        (Call::Do, Surface::Rest, Some(_), Some(given)) => format!(
+            "{} {}",
+            render(call, arg, surface),
+            serde_json::Value::Object(given.clone())
+        ),
+        _ => render(call, arg, surface),
+    }
+}
+
+/// One argument as the command reads it, `name=value`: a text as it is, anything else as
+/// JSON, in quotes where a shell would part it.
+fn as_the_command_reads(name: &str, value: &serde_json::Value) -> String {
+    let written = match value {
+        serde_json::Value::String(text) => text.clone(),
+        other => other.to_string(),
+    };
+    let parted = written
+        .chars()
+        .any(|c| c.is_whitespace() || matches!(c, '\'' | '"' | '{' | '['));
+    if parted {
+        format!("{name}='{}'", written.replace('\'', "'\\''"))
+    } else {
+        format!("{name}={written}")
+    }
 }
 
 /// The first call `text` names, and where.
@@ -365,6 +454,51 @@ mod tests {
             ),
             "tilo do notes/Todo#archive is the call"
         );
+    }
+
+    /// A refusal ends with the call that works, written whole as an agent's tool takes it.
+    /// A person at the command reads it as the line they type, a caller of the API as the
+    /// request it sends: the same path, the same arguments, the same blanks.
+    #[test]
+    fn a_call_written_whole_is_the_commands_line_and_the_apis_request() {
+        let refused = "required argument `title` was not supplied\nThe call that works, with \
+            your own value where one stands in angle brackets: tilo_do \
+            {\"path\":\"notes/Todo#rename\",\"args\":{\"title\":\"<title>\"}}";
+        assert_eq!(
+            said(refused, Surface::Cli),
+            "required argument `title` was not supplied\nThe call that works, with your own \
+             value where one stands in angle brackets: tilo do notes/Todo#rename title=<title>"
+        );
+        assert_eq!(
+            said(refused, Surface::Rest),
+            "required argument `title` was not supplied\nThe call that works, with your own \
+             value where one stands in angle brackets: POST \
+             /v1/workspaces/…/resources/notes/Todo/actions/rename {\"title\":\"<title>\"}"
+        );
+        // What the caller gave is kept, each value as the command reads one.
+        let given = "tilo_do {\"path\":\"tasks#create\",\"args\":{\"count\":3,\
+            \"detail\":{\"kind\":\"login\"},\"title\":\"Buy plums\"}}";
+        assert_eq!(
+            said(given, Surface::Cli),
+            "tilo do tasks#create count=3 detail='{\"kind\":\"login\"}' title='Buy plums'"
+        );
+        // A listing and an invocation, each with what it names.
+        let listings = "Calls that work:\n  tilo_ls {\"path\":\"notes/Todo\"}\n  tilo_ls {}";
+        assert_eq!(
+            said(listings, Surface::Cli),
+            "Calls that work:\n  tilo ls notes/Todo\n  tilo ls"
+        );
+        assert_eq!(
+            said(listings, Surface::Rest),
+            "Calls that work:\n  GET /v1/workspaces/…/resources?path=notes/Todo\n  GET \
+             /v1/workspaces/…/resources"
+        );
+        assert_eq!(
+            said("tilo_status {\"invocation_id\":\"6a10\"}", Surface::Rest),
+            "GET /v1/workspaces/…/invocations/6a10"
+        );
+        // An agent's own surface reads it as it was written.
+        assert_eq!(said(refused, Surface::Mcp), refused);
     }
 
     #[test]
