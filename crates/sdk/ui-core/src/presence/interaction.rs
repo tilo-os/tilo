@@ -1884,27 +1884,29 @@ pub(crate) mod tests {
     #[test]
     fn a_place_a_widget_painted_leaves_the_rail() {
         let at = crate::time::now();
-        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let cards = |presence: &PresenceCtx, now| {
+            presence
+                .interaction_card_layout(Rect::new(0.0, 0.0, 800.0, 600.0), now)
+                .len()
+        };
         let mut presence = PresenceCtx::empty();
         let event = interaction(70, 1, InteractionPhase::Applying);
         presence.apply_interaction_at(event.clone(), at).unwrap();
         assert_eq!(
-            presence.interaction_card_layout(viewport, at).len(),
+            cards(&presence, at),
             1,
             "an unwritten place is named by a card"
         );
         presence.note_placed(event.invocation);
-        assert!(
-            presence.interaction_card_layout(viewport, at).is_empty(),
-            "the characters are the mark; no card names them"
-        );
+        assert_eq!(cards(&presence, at), 0, "the characters are the mark");
+        // A later frame keeps the widget's drawing without drawing it again.
         let later = at + Duration::from_millis(400);
-        presence
-            .apply_interaction_at(interaction(70, 2, InteractionPhase::Committed), later)
-            .unwrap();
-        assert!(
-            presence.interaction_card_layout(viewport, later).is_empty(),
-            "a later frame keeping the widget's drawing shows its next phase there"
+        let committed = interaction(70, 2, InteractionPhase::Committed);
+        presence.apply_interaction_at(committed, later).unwrap();
+        assert_eq!(
+            cards(&presence, later),
+            0,
+            "its next phase stands there too"
         );
     }
 
