@@ -322,6 +322,15 @@ them there.
   screen together, it takes the room beside that window if that is at least
   480 px, else the two share the display equally; only a display too narrow
   for two usable windows pans instead (`width::share_beside`).
+- **A lone window takes its strip.** A window at the default width (`Normal`,
+  or the `Share` the shell gives it to fit beside a neighbour) has its run of
+  the strip to itself, so it fills it, up to a 1920 px window; a width the
+  person chose — a tier, their own resize, the room a floating card holds —
+  stays as chosen. The rule is the model's one place
+  (`WindowWidth::resolve_in_strip`), so it holds whichever path leaves a
+  window alone: a neighbour closing beside it, or the window itself carried to
+  a strip of its own, which rebuilds it and would otherwise forget how it was
+  shared (`WindowWidth::Share`).
 - **Closing** the focused window goes back to the window you came from (per
   strip, most recently focused first), as closing a tab goes back to the tab
   you came from; only without such history does the neighbour take focus.
