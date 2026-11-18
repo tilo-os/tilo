@@ -7,7 +7,7 @@
 //! says, [`check_address`] what a name resolved to.
 
 use std::fmt;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::IpAddr;
 
 use url::{Host, Url};
 
@@ -85,81 +85,12 @@ pub fn check_url(url: &Url) -> Result<(), Refusal> {
 /// answers its own machines on, and every IPv6 address that carries or stands
 /// for an IPv4 one that is not judged as itself.
 pub fn check_address(ip: IpAddr) -> Result<(), Refusal> {
-    let public = match ip {
-        IpAddr::V4(v4) => public_v4(v4),
-        IpAddr::V6(v6) => public_v6(v6),
-    };
-    if public {
+    // tilo-net's one judge, which the fetch proxy asks too: no list is kept here.
+    if tilo_net::address::is_public(ip) {
         Ok(())
     } else {
         Err(Refusal::Local(ip.to_string()))
     }
-}
-
-fn public_v4(ip: Ipv4Addr) -> bool {
-    let [a, b, c, _] = ip.octets();
-    !(ip.is_unspecified()
-        || ip.is_loopback()
-        || ip.is_private()
-        || ip.is_link_local()
-        || ip.is_broadcast()
-        || ip.is_documentation()
-        || ip.is_multicast()
-        || a == 0
-        // Shared address space (carrier-grade NAT), 100.64.0.0/10.
-        || (a == 100 && (64..128).contains(&b))
-        // IETF protocol assignments, 192.0.0.0/24.
-        || (a == 192 && b == 0 && c == 0)
-        // Benchmarking, 198.18.0.0/15.
-        || (a == 198 && (b == 18 || b == 19))
-        // Reserved, 240.0.0.0/4.
-        || a >= 240
-        // The one address Azure answers its own machines on (their metadata and
-        // their agent's own service): public by its range, reached only from
-        // inside a machine there.
-        || ip == Ipv4Addr::new(168, 63, 129, 16))
-}
-
-fn public_v6(ip: Ipv6Addr) -> bool {
-    if let Some(v4) = ip.to_ipv4_mapped() {
-        return public_v4(v4);
-    }
-    let segments = ip.segments();
-    let [first, second, third, fourth, ..] = segments;
-    // NAT64 (64:ff9b::/96) carries an IPv4 address in its last 32 bits.
-    if first == 0x0064
-        && second == 0xff9b
-        && segments
-            .get(2..6)
-            .is_some_and(|s| s.iter().all(|&x| x == 0))
-    {
-        let [.., a, b, c, d] = ip.octets();
-        return public_v4(Ipv4Addr::new(a, b, c, d));
-    }
-    // Blocks that carry or stand for an IPv4 address this does not judge as
-    // itself, none of them a place a page of the public web is: the local-use
-    // translation prefix (64:ff9b:1::/48), 6to4 (2002::/16) and the protocol
-    // assignments with Teredo among them (2001::/23). So is the block that
-    // discards what it is sent (100::/64).
-    if (first == 0x0064 && second == 0xff9b && third == 0x0001)
-        || first == 0x2002
-        || (first == 0x2001 && (second & 0xfe00) == 0)
-        || (first == 0x0100 && second == 0 && third == 0 && fourth == 0)
-    {
-        return false;
-    }
-    !(ip.is_unspecified()
-        || ip.is_loopback()
-        || ip.is_multicast()
-        // Unique local, fc00::/7.
-        || (first & 0xfe00) == 0xfc00
-        // Link-local, fe80::/10, and the old site-local, fec0::/10.
-        || (first & 0xffc0) == 0xfe80
-        || (first & 0xffc0) == 0xfec0
-        // Documentation, 2001:db8::/32.
-        || (first == 0x2001 && second == 0x0db8)
-        // The deprecated IPv4-compatible ::/96.
-        || segments.get(..6).is_some_and(|s| s.iter().all(|&x| x == 0)))
 }
 
 /// The system's resolver, as the lookup a client dials by.
