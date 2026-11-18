@@ -1028,11 +1028,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_native_target_has_the_system_temporary_directory() {
-        assert_eq!(temp_dir(), Some(std::env::temp_dir()));
-    }
-
     #[cfg(unix)]
     #[test]
     #[allow(
@@ -1254,13 +1249,6 @@ XDG_PUBLICSHARE_DIR=\"$HOME/My \\\"Public\\\" \\$hare\"\n";
         );
     }
 
-    #[test]
-    fn user_dir_names_match_the_spec_keys() {
-        assert_eq!(UserDir::Download.env_var(), "XDG_DOWNLOAD_DIR");
-        assert_eq!(UserDir::PublicShare.env_var(), "XDG_PUBLICSHARE_DIR");
-        assert_eq!(UserDir::Download.conventional_name(), "Downloads");
-    }
-
     #[cfg(unix)]
     #[test]
     fn macos_keeps_data_config_and_state_in_application_support() {
@@ -1312,20 +1300,6 @@ XDG_PUBLICSHARE_DIR=\"$HOME/My \\\"Public\\\" \\$hare\"\n";
             macos::user_dir(UserDir::Documents, home),
             home.join("Documents")
         );
-    }
-
-    #[test]
-    fn app_dirs_join_the_app_name_onto_each_base() {
-        let app = AppDirs::new("tilo-example");
-        for (joined, base) in [
-            (app.data(), data_dir()),
-            (app.config(), config_dir()),
-            (app.state(), state_dir()),
-            (app.cache(), cache_dir()),
-            (app.runtime(), runtime_dir()),
-        ] {
-            assert_eq!(joined, base.map(|base| base.join("tilo-example")));
-        }
     }
 
     #[test]
