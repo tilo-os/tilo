@@ -16,6 +16,11 @@
 //! question it cannot settle ([`Asked`]); one of the person's devices answers
 //! it here ([`super::Servers::answer_machine_choice`]) and the machine reads
 //! its entry back.
+//!
+//! The entry is the plan's only home: [`super::Server::install_plan`] reads it
+//! back as the same document ([`install_profile_model::plan::Plan`]) the
+//! machine installed from, so the person's devices, their agents and the
+//! machine itself read one copy.
 
 use tilo_resource::{Collection, Model};
 
@@ -46,6 +51,9 @@ pub struct Pending {
     pub expires_at_ns: u64,
     /// The OS it installs (`tilo-os` or `tilo-server`).
     pub destination: String,
+    /// How its network is set up, as the plan said; open when its addressing
+    /// is empty.
+    pub network: AddressBy,
     /// How it unlocks after a boot (`owner-device`, `tpm` or `passphrase`);
     /// empty when open.
     pub unlock: String,
@@ -65,6 +73,19 @@ pub struct Pending {
     /// The questions the machine asked and no device answered yet, by the
     /// choice each settles, with the reason the machine could not settle it.
     pub ask: Collection<Asked>,
+}
+
+/// How the plan said the machine's network is set up, as its entry keeps it.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct AddressBy {
+    /// `dhcp` or `static`; empty when the plan left the network open.
+    pub addressing: String,
+    /// `address/prefix` entries, comma separated, for static addressing.
+    pub addresses: String,
+    /// The gateway; empty for none.
+    pub gateway: String,
+    /// DNS servers, comma separated; empty for none.
+    pub dns: String,
 }
 
 /// A drive a machine that enrolled really has, as it reported it.
@@ -118,5 +139,83 @@ impl Pending {
     #[must_use]
     pub fn question(&self, choice: &str) -> Option<&Asked> {
         self.ask.get(&tilo_resource::Id::from_raw(choice))
+    }
+
+    /// The choices this entry still leaves open, by
+    /// [`install_profile_model::plan::OPEN_CHOICES`] name: what the machine
+    /// asked and no device answered, or what it settled itself.
+    #[must_use]
+    pub fn still_open(&self) -> Vec<&str> {
+        install_profile_model::plan::OPEN_CHOICES
+            .iter()
+            .copied()
+            .filter(|choice| self.open_choices().contains(choice))
+            .collect()
+    }
+
+    /// The plan document this entry keeps, as `label` names the machine and
+    /// `hosting` are the workspaces it holds: the same document the machine
+    /// installs from and the person's devices planned.
+    ///
+    /// # Errors
+    /// The entry does not read back as a plan, because a value it keeps is
+    /// not one a plan takes.
+    pub fn document(
+        &self,
+        label: &str,
+        hosting: Vec<install_profile_model::plan::Holding>,
+    ) -> Result<install_profile_model::plan::Plan, String> {
+        use install_profile_model::plan;
+        let open: Vec<String> = self
+            .still_open()
+            .iter()
+            .map(|choice| (*choice).to_owned())
+            .collect();
+        // A plan that left the name open has none; the label is what the
+        // person's list shows it by until one of their devices answers.
+        let name = if open.iter().any(|choice| choice == "name") {
+            String::new()
+        } else {
+            label.to_owned()
+        };
+        let document = plan::Plan {
+            schema: plan::SCHEMA,
+            plan: self.plan.clone(),
+            revision: self.revision,
+            destination: self.destination.clone(),
+            name,
+            network: plan::Network {
+                addressing: self.network.addressing.clone(),
+                addresses: self.network.addresses.clone(),
+                gateway: self.network.gateway.clone(),
+                dns: self.network.dns.clone(),
+            },
+            disk: plan::DiskRule::decode(&self.disk).map_err(str::to_owned)?,
+            unlock: self.unlock.clone(),
+            updates: self.updates.clone(),
+            hosting,
+            open,
+            token: plan::Token {
+                nonce: self.nonce.clone(),
+                expires_at_ns: self.expires_at_ns,
+            },
+        };
+        // Read back through the one rule the machine reads it with, so an
+        // entry that would not install is refused here and not there.
+        serde_json::from_value(serde_json::to_value(&document).map_err(|error| error.to_string())?)
+            .map_err(|_| "the entry does not read back as a plan".to_owned())
+    }
+}
+
+impl AddressBy {
+    /// The plan's network choice, as its entry keeps it.
+    #[must_use]
+    pub fn of(network: &install_profile_model::plan::Network) -> Self {
+        Self {
+            addressing: network.addressing.clone(),
+            addresses: network.addresses.clone(),
+            gateway: network.gateway.clone(),
+            dns: network.dns.clone(),
+        }
     }
 }

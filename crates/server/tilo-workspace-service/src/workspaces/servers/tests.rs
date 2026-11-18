@@ -665,3 +665,163 @@ fn a_machine_with_an_unknown_token_is_refused() {
             .is_err()
     );
 }
+
+/// The machine's own drives, as it reads them off its hardware: two empty
+/// ones, so the plan's `empty` rule settles neither.
+fn empty_drives() -> Vec<install_profile_model::plan::Drive> {
+    vec![
+        install_profile_model::plan::Drive {
+            model: "QEMU HARDDISK".into(),
+            identity: "serial-a".into(),
+            bytes: 40_000_000_000,
+            holds_data: false,
+            boots: false,
+        },
+        install_profile_model::plan::Drive {
+            model: "QEMU HARDDISK".into(),
+            identity: "serial-b".into(),
+            bytes: 40_000_000_000,
+            holds_data: false,
+            boots: false,
+        },
+    ]
+}
+
+/// A machine that enrolled with a plan's token is one of the person's
+/// devices, and reads its plan from its waiting entry: it reports the drives
+/// it really has, asks what it cannot settle, waits while another of the
+/// person's devices answers in the entry, and then finishes.
+#[test]
+fn a_machine_reads_its_plan_from_its_entry_reports_its_drives_and_finishes() {
+    let mut servers = planned("empty", "");
+    let drives = empty_drives();
+    let machine = device_id(&[9; 32]);
+
+    // It reads its plan from the waiting entry, as the person's devices keep
+    // it, before it has a device key of its own.
+    let planned_entry = servers
+        .state()
+        .unwrap()
+        .planned_by_nonce(NONCE)
+        .map(|(_, server)| server.clone())
+        .expect("the token names the planned machine");
+    let read = planned_entry.install_plan().unwrap();
+    assert_eq!(read.plan, PLAN);
+    assert_eq!(read.name, "cupboard");
+    assert_eq!(read.destination, "tilo-server");
+    assert_eq!(read.disk.encode(), "empty");
+
+    // It reports its two empty drives, and asks which one, because the plan's
+    // rule matches neither.
+    let machine::Step::Enlist { nonce, report } = machine::step(&planned_entry, &drives).unwrap()
+    else {
+        panic!("a planned machine enlists");
+    };
+    assert_eq!(nonce, NONCE);
+    let asked: std::collections::BTreeMap<String, String> =
+        serde_json::from_str(&report.ask).unwrap();
+    assert!(
+        asked
+            .get("disk")
+            .is_some_and(|reason| reason.contains("2 drives")),
+        "the machine asks about its disk: {asked:?}"
+    );
+    servers
+        .apply(Servers::BEGIN_INSTALL.with((
+            machine.as_str().to_owned(),
+            nonce,
+            report.drives,
+            report.ask,
+        )))
+        .unwrap();
+
+    let entry = servers
+        .state()
+        .unwrap()
+        .servers
+        .get(&machine)
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        machine::step(&entry, &drives).unwrap(),
+        machine::Step::Wait(vec!["disk".to_owned()]),
+        "it waits while the question is open"
+    );
+
+    // Another of the person's devices answers in the entry.
+    servers
+        .apply(Servers::ANSWER_MACHINE_CHOICE.with((
+            machine.clone(),
+            "disk".into(),
+            "serial:serial-a".into(),
+        )))
+        .unwrap();
+
+    let entry = servers
+        .state()
+        .unwrap()
+        .servers
+        .get(&machine)
+        .cloned()
+        .unwrap();
+    let machine::Step::Install(plan) = machine::step(&entry, &drives).unwrap() else {
+        panic!("an answered machine installs: {entry:?}");
+    };
+    assert_eq!(
+        plan.disk.encode(),
+        "serial:serial-a",
+        "with the answered drive"
+    );
+    assert_eq!(plan.name, "cupboard", "and the name it was planned under");
+    assert_eq!(plan.unlock, "tpm");
+    assert_eq!(plan.network.addressing, "dhcp");
+
+    servers
+        .apply(Servers::FINISH_INSTALL.with(machine.clone()))
+        .unwrap();
+    let entry = servers
+        .state()
+        .unwrap()
+        .servers
+        .get(&machine)
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        machine::step(&entry, &drives).unwrap(),
+        machine::Step::Finished
+    );
+    assert_eq!(
+        entry.install_plan().unwrap().disk.encode(),
+        "serial:serial-a",
+        "the installed entry still says what it was installed from"
+    );
+}
+
+/// A rule that matches exactly one of the machine's drives is settled by the
+/// machine itself; the plan's other open choices are asked instead.
+#[test]
+fn a_machine_settles_its_disk_when_the_rule_names_one_drive() {
+    let servers = planned("largest", "name");
+    let mut drives = empty_drives();
+    drives[1].bytes = 2_000_000_000_000;
+    let report = machine::report(
+        servers
+            .state()
+            .unwrap()
+            .planned_by_nonce(NONCE)
+            .map(|(_, server)| server)
+            .unwrap(),
+        &drives,
+    )
+    .unwrap();
+    let asked: std::collections::BTreeMap<String, String> =
+        serde_json::from_str(&report.ask).unwrap();
+    assert!(
+        !asked.contains_key("disk"),
+        "the rule settled the disk: {asked:?}"
+    );
+    assert!(
+        asked.contains_key("name"),
+        "the plan's open name is asked: {asked:?}"
+    );
+}
