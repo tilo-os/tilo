@@ -2439,6 +2439,7 @@ dependencies = [
 name = "clocks"
 version = "0.1.0"
 dependencies = [
+ "clocks-model",
  "jiff",
  "runtime-dylib",
  "serde",
@@ -2452,6 +2453,18 @@ dependencies = [
  "tilo-timezone-engine",
  "tracing",
  "uuid",
+ "workspace-hack",
+]
+
+[[package]]
+name = "clocks-model"
+version = "0.1.0"
+dependencies = [
+ "jiff",
+ "serde",
+ "serde_json",
+ "tilo-recurrence",
+ "tilo-resource",
  "workspace-hack",
 ]
 
