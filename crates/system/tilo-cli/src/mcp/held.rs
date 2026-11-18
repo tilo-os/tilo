@@ -270,7 +270,67 @@ pub(crate) fn hold<E: Enter>(
             state: device_dir,
         },
         TAKING_OVER,
+        Program::running(),
     )
+}
+
+/// The program a holder is, as the file it was started from: Tilo replaced by a newer build is
+/// another file, and a holder still running the one it replaced lets a holder of the new one take
+/// over. Two holders of one program never do: two agents starting one at the same moment keep the
+/// first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Program {
+    /// The file's inode: a new build put in place is a new file, whatever its name.
+    file: u64,
+    /// When it was written, in nanoseconds since the epoch.
+    modified_ns: u128,
+}
+
+impl Program {
+    /// The program this process was started from. A program file replaced since it started is still read as
+    /// the one it started from (`/proc/self/exe` names it, deleted or not).
+    pub(crate) fn running() -> Self {
+        use std::os::unix::fs::MetadataExt as _;
+        let metadata = std::fs::metadata("/proc/self/exe")
+            .or_else(|_| std::env::current_exe().and_then(std::fs::metadata));
+        metadata.map_or(
+            Self {
+                file: 0,
+                modified_ns: 0,
+            },
+            |metadata| Self {
+                file: metadata.ino(),
+                modified_ns: metadata
+                    .modified()
+                    .ok()
+                    .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map_or(0, |since| since.as_nanos()),
+            },
+        )
+    }
+
+    /// Whether a holder running this program takes over from one running `holding`: it is
+    /// another file, written no earlier.
+    pub(crate) fn replaces(self, holding: &Self) -> bool {
+        self.file != holding.file && self.modified_ns >= holding.modified_ns
+    }
+}
+
+/// Ask the holder listening at `place` to let a holder of `program` hold the device: whether it
+/// steps down, as it does for a newer program; `None` when none answered.
+fn ask_to_step_down(place: &Place, program: Program) -> Option<bool> {
+    use std::io::{BufRead as _, Write as _};
+    let mut stream = connect(place)?;
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let asked = serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": super::STEP_DOWN, "params": {"program": program},
+    });
+    writeln!(stream, "{asked}").ok()?;
+    let mut line = String::new();
+    std::io::BufReader::new(stream).read_line(&mut line).ok()?;
+    serde_json::from_str::<serde_json::Value>(&line)
+        .ok()
+        .and_then(|answer| answer.get("result")?.get("stepping_down")?.as_bool())
 }
 
 /// How long a holder holds, and what else it does.
@@ -286,17 +346,19 @@ enum Holding {
     Peer { home: PathBuf, state: PathBuf },
 }
 
-/// [`hold`], holding as `holding` says, and waiting up to `taking_over` for a
-/// holder that is leaving.
+/// [`hold`], holding as `holding` says, as a holder of `program`, and waiting up to `taking_over`
+/// for a holder that is leaving, or that a newer `program` asked to.
 fn hold_for<E: Enter>(
     place: &Place,
     shared: Arc<Shared<E>>,
     holding: Holding,
     taking_over: Duration,
+    program: Program,
 ) -> Result<ExitCode> {
-    let Some(_held) = take_lock(&place.lock, taking_over)? else {
+    let Some(_held) = take_lock(place, taking_over, program)? else {
         return Ok(ExitCode::SUCCESS);
     };
+    let _ = shared.held_as.set(program);
     let runtime = bridge_runtime()?;
     let served = runtime.block_on(serve_held(place, shared, holding));
     // A step that walks a whole folder tree — a merge of a tree record, a save of one — runs on
@@ -320,13 +382,23 @@ fn hold_for<E: Enter>(
     Ok(ExitCode::SUCCESS)
 }
 
-/// The lock that makes this process the device's one holder, once one that
-/// is leaving let go of it; `None` when another holds it still.
-fn take_lock(path: &Path, taking_over: Duration) -> Result<Option<advisory_lock::FileLock>> {
+/// The lock that makes this process the device's one holder, once one that is leaving let go of
+/// it; `None` when another holds it still. A holder of an older program is asked to step down for
+/// this one's `program`, and waited for: a CLI command that found no holder running starts one
+/// from the program it is, and Tilo updated since must not leave that one serving the old
+/// program's answers while the new one's holder gives up.
+fn take_lock(
+    place: &Place,
+    taking_over: Duration,
+    program: Program,
+) -> Result<Option<advisory_lock::FileLock>> {
     use advisory_lock::{FileLock, LockMode, TryLockError};
-    let deadline = Instant::now()
+    let path = &place.lock;
+    let mut deadline = Instant::now()
         .checked_add(taking_over)
         .unwrap_or_else(Instant::now);
+    // Whether the holder there answered: it is asked until it does, once.
+    let mut answered = false;
     loop {
         match FileLock::try_open(path, LockMode::Exclusive) {
             Ok(lock) => return Ok(Some(lock)),
@@ -335,7 +407,29 @@ fn take_lock(path: &Path, taking_over: Duration) -> Result<Option<advisory_lock:
                 return Err(error).with_context(|| format!("open {}", path.display()));
             }
         }
+        let stepping_down = if answered {
+            None
+        } else {
+            ask_to_step_down(place, program)
+        };
+        answered |= stepping_down.is_some();
+        if stepping_down == Some(true) {
+            tracing::info!(
+                "a holder of an older Tilo held this device; it steps down for this one"
+            );
+            // Stepping down unmounts the folders and closes the stores: it is waited for.
+            deadline = deadline.max(
+                Instant::now()
+                    .checked_add(TAKING_OVER)
+                    .unwrap_or_else(Instant::now),
+            );
+        }
         if Instant::now() >= deadline {
+            tracing::warn!(
+                lock = %path.display(),
+                "another holder of this device's session, of the same Tilo or a newer one, keeps \
+                 it; this one ends"
+            );
             return Ok(None);
         }
         std::thread::sleep(POLL);
@@ -401,6 +495,10 @@ async fn serve_held<E: Enter>(
                 break;
             },
             _ = ended.recv() => break,
+            () = shared.stepping_down.notified() => {
+                tracing::info!("a holder of a newer Tilo takes over this device; this one steps down");
+                break;
+            },
         }
     }
     if let Some(peer) = PEER.get()
@@ -894,11 +992,14 @@ mod tests {
     #[test]
     fn a_holder_that_ended_holds_no_lock() {
         let dir = tempfile::tempdir().unwrap();
-        let lock = dir.path().join("holder.lock");
-        let held = take_lock(&lock, Duration::ZERO).unwrap();
+        let place = Place::at(dir.path(), dir.path(), &[3; 32]);
+        let lock = place.lock.clone();
+        let held = take_lock(&place, Duration::ZERO, Program::running()).unwrap();
         assert!(held.is_some());
         assert!(
-            take_lock(&lock, Duration::ZERO).unwrap().is_none(),
+            take_lock(&place, Duration::ZERO, Program::running())
+                .unwrap()
+                .is_none(),
             "a lock its owner holds keeps the next holder out"
         );
         drop(held);
@@ -920,7 +1021,9 @@ mod tests {
             "the child never took the lock"
         );
         assert!(
-            take_lock(&lock, Duration::ZERO).unwrap().is_some(),
+            take_lock(&place, Duration::ZERO, Program::running())
+                .unwrap()
+                .is_some(),
             "the lock of a process that ended wedges the next holder"
         );
     }
@@ -1017,7 +1120,14 @@ mod tests {
         let holding = {
             let (place, shared) = (place.clone(), Arc::clone(&shared));
             std::thread::spawn(move || {
-                hold_for(&place, shared, Holding::Linger(linger), Duration::ZERO).unwrap()
+                hold_for(
+                    &place,
+                    shared,
+                    Holding::Linger(linger),
+                    Duration::ZERO,
+                    Program::running(),
+                )
+                .unwrap()
             })
         };
         let never = || -> std::io::Result<std::process::Child> {
@@ -1055,6 +1165,7 @@ mod tests {
             Arc::clone(&shared),
             Holding::Linger(linger),
             Duration::ZERO,
+            Program::running(),
         );
         assert!(second_holder.is_ok());
         let mut third = UnixStream::connect(&place.socket).unwrap();
@@ -1066,6 +1177,104 @@ mod tests {
             !place.socket.exists(),
             "a holder whose connections all ended stops listening"
         );
+    }
+
+    /// An entry that answers which holder asked it: what tells two holders' answers apart.
+    struct Named(&'static str);
+
+    impl Enter for Named {
+        async fn enter(&self) -> Result<Arc<super::super::Session>, String> {
+            Err(format!("held by the {} Tilo", self.0))
+        }
+    }
+
+    /// Tilo updated while a holder of the old program still holds the device (one a CLI command
+    /// started while the service was stopped): the holder the new program starts asks it to step
+    /// down, and holds the device from then on, so the next command is the new program's to
+    /// answer. A holder of the same program never takes over: two agents starting one at once keep
+    /// the first.
+    #[test]
+    fn a_holder_of_a_newer_tilo_takes_over_from_one_of_an_older() {
+        let dir = tempfile::tempdir().unwrap();
+        let place = Place::at(dir.path(), dir.path(), &[7; 32]);
+        let older = Program {
+            file: 1,
+            modified_ns: 1_000,
+        };
+        let newer = Program {
+            file: 2,
+            modified_ns: 2_000,
+        };
+        assert!(newer.replaces(&older));
+        assert!(!older.replaces(&newer), "an older program never takes over");
+        assert!(!older.replaces(&older), "nor does the same one");
+
+        let hold = |name: &'static str, program: Program| {
+            let place = place.clone();
+            std::thread::spawn(move || {
+                let shared = Arc::new(Shared::new(Named(name), Err("unused".to_owned())));
+                hold_for(
+                    &place,
+                    shared,
+                    Holding::Linger(Duration::from_secs(60)),
+                    TAKING_OVER,
+                    program,
+                )
+                .unwrap()
+            })
+        };
+        let first = hold("older", older);
+        let mut asking = loop {
+            if let Ok(stream) = UnixStream::connect(&place.socket) {
+                break stream;
+            }
+            std::thread::sleep(POLL);
+        };
+        assert!(initialize(&mut asking).contains("held by the older Tilo"));
+        drop(asking);
+
+        // A holder of the same program finds the device held, and ends at once.
+        let same = std::thread::spawn({
+            let place = place.clone();
+            move || {
+                let shared = Arc::new(Shared::new(Named("same"), Err("unused".to_owned())));
+                hold_for(
+                    &place,
+                    shared,
+                    Holding::Linger(Duration::from_secs(60)),
+                    Duration::ZERO,
+                    older,
+                )
+                .unwrap()
+            }
+        });
+        same.join().unwrap();
+
+        let started = Instant::now();
+        let second = hold("newer", newer);
+        first.join().unwrap();
+        let mut asking = loop {
+            if let Ok(mut stream) = UnixStream::connect(&place.socket) {
+                let said = initialize(&mut stream);
+                if said.contains("held by the newer Tilo") {
+                    break stream;
+                }
+            }
+            assert!(
+                started.elapsed() < TAKING_OVER,
+                "the newer Tilo's holder did not take over"
+            );
+            std::thread::sleep(POLL);
+        };
+        assert!(initialize(&mut asking).contains("held by the newer Tilo"));
+        drop(asking);
+        // Its connections gone, it lingers no longer once asked by an even newer one.
+        let newest = Program {
+            file: 3,
+            modified_ns: 3_000,
+        };
+        assert_eq!(ask_to_step_down(&place, newest), Some(true));
+        second.join().unwrap();
     }
 
     /// A certificate `root` gives `key`, as a login's is.
@@ -1120,6 +1329,7 @@ mod tests {
                     shared,
                     Holding::Linger(Duration::from_millis(300)),
                     Duration::ZERO,
+                    Program::running(),
                 )
                 .unwrap()
             })

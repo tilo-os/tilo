@@ -148,6 +148,10 @@ pub(crate) struct Shared<E> {
     entry: tokio::sync::Mutex<Entry>,
     /// Counts finished attempts, so a call that waits for one hears that it ended.
     attempts: tokio::sync::watch::Sender<u64>,
+    /// The program this holder was started from, once it holds the device ([`held::Program`]).
+    held_as: std::sync::OnceLock<held::Program>,
+    /// Told when a holder of a newer program asked this one to let it hold the device.
+    stepping_down: tokio::sync::Notify,
 }
 
 #[derive(Default)]
@@ -177,6 +181,8 @@ impl<E: Enter> Shared<E> {
             session: tokio::sync::Mutex::new(None),
             entry: tokio::sync::Mutex::new(Entry::default()),
             attempts: tokio::sync::watch::channel(0).0,
+            held_as: std::sync::OnceLock::new(),
+            stepping_down: tokio::sync::Notify::new(),
         }
     }
 
@@ -519,6 +525,26 @@ async fn answer<E: Enter>(connection: &Connection<E>, line: &str) -> Option<Stri
             );
         }
     };
+    if request.get("method").and_then(Value::as_str) == Some(STEP_DOWN) {
+        let id = request.get("id").cloned().unwrap_or(Value::Null);
+        let newer = request
+            .get("params")
+            .and_then(|params| params.get("program"))
+            .and_then(|program| serde_json::from_value::<held::Program>(program.clone()).ok());
+        let steps_down = connection
+            .shared
+            .held_as
+            .get()
+            .zip(newer)
+            .is_some_and(|(own, newer)| newer.replaces(own));
+        if steps_down {
+            connection.shared.stepping_down.notify_one();
+        }
+        return Some(
+            json!({"jsonrpc": "2.0", "id": id, "result": {"stepping_down": steps_down, "pid": std::process::id()}})
+                .to_string(),
+        );
+    }
     if request.get("method").and_then(Value::as_str) == Some(PEER_STATUS) {
         // Asked by `tilo status`: no agent run, and nothing entered for it.
         let id = request.get("id").cloned().unwrap_or(Value::Null);
@@ -592,6 +618,10 @@ fn account_or_people<E: Enter>(
 /// What `tilo status` asks this computer's peer: who it is, which workspaces it shows where, and
 /// whether they are in sync.
 pub(crate) const PEER_STATUS: &str = "tilo/peer";
+
+/// What a holder starting from a newer program asks the one holding the device: to let it hold the
+/// device instead, with the program it was started from ([`held::Program`]).
+pub(crate) const STEP_DOWN: &str = "tilo/stepDown";
 
 /// The peer's answer to [`PEER_STATUS`].
 async fn peer_status<E: Enter>(connection: &Connection<E>) -> Value {
