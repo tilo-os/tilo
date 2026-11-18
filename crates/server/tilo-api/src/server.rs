@@ -88,12 +88,16 @@ pub enum ServerError {
     /// The server does not know the person yet, and says what makes them known there: its
     /// operator declares them an owner, or an invitation brings them in.
     NotOnThisServer(String),
+    /// The workspace keeps the key's grant as revoked: nothing it asks is
+    /// answered again, and its person approves another.
+    KeyRevoked,
 }
 
 impl std::fmt::Display for ServerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotFound => f.write_str("no such workspace of yours"),
+            Self::KeyRevoked => f.write_str("this key was revoked"),
             Self::AwaitingApproval(said) | Self::NotOnThisServer(said) => f.write_str(said),
             Self::NoAccountHere => f.write_str(
                 "This Tilo desktop answers its own workspaces only: do this in Tilo itself.",
@@ -134,6 +138,8 @@ impl std::fmt::Display for ServerError {
 impl From<CertifyError> for ServerError {
     fn from(error: CertifyError) -> Self {
         match error {
+            // A revoked key is told so wherever its workspace refuses it.
+            CertifyError::Denied(reason) if reason.contains("key_revoked") => Self::KeyRevoked,
             CertifyError::Denied(reason) => Self::Refused(reason),
             other => Self::Unavailable(other.to_string()),
         }
@@ -739,10 +745,11 @@ impl Connection {
     /// Enter `workspace`, as every device enters one, in at most [`ENTERING`]:
     /// one the person does not have is not found, as one never made.
     async fn enter(&self, workspace: &str) -> Result<WorkspaceId, ServerError> {
-        let label = self.key.cert().device_label.clone();
+        // Listed in the workspace by the name its person approved it as.
+        let name = self.key.name();
         let began = std::time::Instant::now();
         let Ok(entered) =
-            tokio::time::timeout(ENTERING, self.device.enter_workspace(workspace, &label)).await
+            tokio::time::timeout(ENTERING, self.device.enter_workspace(workspace, name)).await
         else {
             tracing::warn!(
                 workspace,

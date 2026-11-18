@@ -206,6 +206,9 @@ impl PeerGovernance<'_> {
                 member_user_roots.push(cert.user_public_key);
             }
         }
+        // A key its person revoked is let in nowhere: its device leaves the workspace's access,
+        // and a session of it that is open is told so and let go.
+        member_devices.retain(|device| !self.revoked_key(device));
         member_devices.sort_unstable();
         member_devices.dedup();
         member_user_roots.sort_unstable();

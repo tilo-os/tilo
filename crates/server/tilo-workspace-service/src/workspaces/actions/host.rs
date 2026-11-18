@@ -902,6 +902,14 @@ impl Workspaces {
         };
         let mine = own.of(&person);
         let theirs = moving.filter(|moving| mine.iter().any(|own| own == moving));
+        // A key the workspace keeps as revoked is told so, and invited no more.
+        if device.capabilities.agent.is_some()
+            && let Some(moving) = moving
+        {
+            self.refuse_revoked_key(moving, device)
+                .await
+                .map_err(|error| refused(&error))?;
+        }
         let summary = if let Some(moving) = theirs {
             // One of theirs: a device of theirs entering it, or a grant's
             // parent asking for the invitation into it.

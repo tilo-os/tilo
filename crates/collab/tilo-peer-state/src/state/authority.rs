@@ -449,6 +449,11 @@ impl StatePeer {
         source: &[u8; 32],
         now: SystemTime,
     ) -> Result<(String, bool, Option<crate::state::ActingAs>), MembershipError> {
+        // A key its person revoked here is nobody's member: every read, write and action it
+        // would make is refused, as the workspace's governance calls refuse it.
+        if self.governance().revoked_key(source) {
+            return Err(MembershipError::Revoked);
+        }
         match backend::member::legacy(&self.core, source, now) {
             Ok((_, delegate)) => {
                 let cert = self.certificate(source, now)?;

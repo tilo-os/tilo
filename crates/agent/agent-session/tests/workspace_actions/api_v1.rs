@@ -456,6 +456,35 @@ async fn a_persons_keys_are_listed_and_revoked_from_any_api_server() {
     let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
     // A script's key, approved through the site's API server as `tilo keys export` asks for one.
     let script = approved_key(&on_server, &ada, &page, "Linear import").await;
+    // The script works in a workspace of Ada's, its session with the server open.
+    let working = V1 {
+        api: &on_server.api,
+        token: script.clone(),
+    };
+    let (status, made) = working
+        .post("/v1/workspaces", &json!({"name": "Imported issues"}), &[])
+        .await;
+    assert_eq!(status, 201, "{made}");
+    let base = format!("/v1/workspaces/{}", made["id"].as_str().unwrap());
+    let (listing, reading, writing) = (
+        format!("{base}/resources"),
+        format!("{base}/resources/notes/Notes"),
+        format!("{base}/resources/notes/Notes/actions/new-note"),
+    );
+    let (status, wrote) = working
+        .post(&writing, &json!({"title": "First issue"}), &[])
+        .await;
+    assert_eq!(status, 200, "{wrote}");
+    let (status, listed) = working.get(&listing).await;
+    assert_eq!(status, 200, "{listed}");
+    let (status, read) = working.get(&reading).await;
+    assert_eq!(status, 200, "{read}");
+    let open = |api: &Server| {
+        api.open_sessions()
+            .iter()
+            .any(|session| session.starts_with("Linear import"))
+    };
+    assert!(open(&on_server.api), "{:?}", on_server.api.open_sessions());
     // The computer's own login, answered by the API in its own process from its key file, as
     // `tilo keys ls` is: an API server that never saw the script's key approved.
     let laptop = enrol(&ada, "Claude Code on laptop", DeviceCapabilities::member());
@@ -474,7 +503,7 @@ async fn a_persons_keys_are_listed_and_revoked_from_any_api_server() {
         if let Some(row) = listed["keys"].as_array().into_iter().flatten().find(|row| {
             row["name"]
                 .as_str()
-                .is_some_and(|name| name.starts_with("Linear import"))
+                .is_some_and(|name| name == "Linear import")
         }) {
             break row.clone();
         }
@@ -511,6 +540,35 @@ async fn a_persons_keys_are_listed_and_revoked_from_any_api_server() {
             .all(|row| row["grant"] != grant.as_str()),
         "a revoked key is listed no more: {listed}"
     );
+    // Its open session ends, and it is refused on its next list, read and write alike.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while open(&on_server.api) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a revoked key's session stays open: {:?}",
+            on_server.api.open_sessions()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let (list, read, write) = (
+        working.get(&listing).await,
+        working.get(&reading).await,
+        working
+            .post(&writing, &json!({"title": "After revocation"}), &[])
+            .await,
+    );
+    for (call, (status, refused)) in [("list", list), ("read", read), ("write", write)] {
+        assert_eq!(
+            (status, &refused["error"]["code"]),
+            (401, &json!("key_revoked")),
+            "a revoked key's {call}: {refused}"
+        );
+    }
+    assert!(
+        !open(&on_server.api),
+        "a refused call opens no session: {:?}",
+        on_server.api.open_sessions()
+    );
     // The workspace keeps the revocation: the script's key enters it no more, from wherever it
     // comes (here an API server it reaches the workspace through anew, as a script started again
     // does).
@@ -526,7 +584,7 @@ async fn a_persons_keys_are_listed_and_revoked_from_any_api_server() {
     .unwrap();
     let script = V1 {
         api: &anew,
-        token: script,
+        token: working.token.clone(),
     };
     let (status, refused) = script.get("/v1/keys").await;
     assert_eq!(

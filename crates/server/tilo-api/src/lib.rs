@@ -1429,6 +1429,17 @@ impl Server {
         }
     }
 
+    /// The sessions keys hold open here that still reach their workspaces,
+    /// by name ("Visa backend #3"): a revoked key's are gone from it.
+    #[must_use]
+    pub fn open_sessions(&self) -> Vec<String> {
+        lock(&self.sessions)
+            .values()
+            .filter(|session| session.is_live())
+            .map(|session| session.label.clone())
+            .collect()
+    }
+
     /// `grant`'s run for the calls of the API: one per key, named for it
     /// ("Visa backend #3"), opened the first time and kept with the key's
     /// other sessions, so revoking the key ends it.
@@ -1467,7 +1478,10 @@ impl Server {
                 .unwrap_or("the workspace refused");
             // The workspace records its keys' revocations: a key it refused
             // as revoked is told so, and asks the person for another.
-            if why.contains("key_revoked") {
+            if why.contains("key_revoked")
+                || refused.pointer("/error/data/code").and_then(Value::as_str)
+                    == Some("key_revoked")
+            {
                 return Err(
                     v1::errors::ApiError::new("key_revoked", "this key was revoked")
                         .next(crate::APPROVE_AGAIN),

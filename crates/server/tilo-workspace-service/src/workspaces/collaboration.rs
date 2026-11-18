@@ -409,18 +409,7 @@ impl Workspaces {
         let mut workspace = workspace.lock().await;
         // A key whose grant this workspace records as revoked never enters it
         // again, whichever API server it comes through.
-        let revoked_ms = workspace
-            .peer()
-            .governance()
-            .workspace_grants()
-            .into_iter()
-            .find(|grant| grant.device == hex::encode(device.device_public_key))
-            .and_then(|grant| grant.revoked_ms);
-        if let Some(revoked_ms) = revoked_ms {
-            return Err(CollaborationError::new(format!(
-                "key_revoked: this key was revoked at {revoked_ms}"
-            )));
-        }
+        refuse_revoked(&workspace, device)?;
         let mut candidate = workspace.peer().clone();
         let admitted =
             candidate.admit_certificate(device.clone(), &self.inner.host.key, system_time(now))?;
@@ -448,19 +437,44 @@ impl Workspaces {
         // holder and every API server reads the same grant from the workspace
         // itself, whichever way the key came in.
         if let Some(scope) = device.capabilities.agent {
-            self.list_grant(&mut workspace, device, scope, now).await?;
+            self.list_grant(&mut workspace, device, scope, None, now)
+                .await?;
         }
         Ok(admitted)
     }
 
+    /// Refuse `device` when `workspace` keeps it as a revoked key, saying so:
+    /// it is invited into it no more, and its holder tells its person to
+    /// approve another.
+    ///
+    /// A workspace not held here refuses nothing.
+    ///
+    /// # Errors
+    /// The key is revoked there.
+    pub(super) async fn refuse_revoked_key(
+        &self,
+        workspace: &str,
+        device: &DeviceCert,
+    ) -> Result<(), CollaborationError> {
+        let held = self.inner.workspaces.lock().await.get(workspace).cloned();
+        match held {
+            Some(held) => refuse_revoked(&*held.lock().await, device),
+            None => Ok(()),
+        }
+    }
+
     /// Keep the grant `cert` was admitted under in `workspace`'s governance,
     /// reaching `scope`, authored by this host: the workspace's holders and
-    /// the API servers that read them see it from then on.
+    /// the API servers that read them see it from then on. It is named `name`,
+    /// what the key joined as (the name its person approved it under), where
+    /// its join says one; else as it is listed already, else as its
+    /// certificate is labelled.
     pub(super) async fn list_grant(
         &self,
         workspace: &mut GovernedWorkspace,
         cert: &DeviceCert,
         scope: AgentScope,
+        name: Option<&str>,
         now: u64,
     ) -> Result<(), CollaborationError> {
         let at = system_time(now);
@@ -484,20 +498,23 @@ impl Workspaces {
             revoked_ms: None,
         };
         // Recording the grant of a key this workspace revoked does not bring
-        // it back: its person's revocation stands.
-        let held_revocation = workspace
+        // it back: its person's revocation stands. A name it is listed under
+        // stays, unless its join names it now.
+        let held = workspace
             .peer()
             .governance()
             .workspace_grants()
             .into_iter()
-            .find(|held| held.id == grant.id)
-            .and_then(|held| held.revoked_ms);
-        let grant = match held_revocation {
-            Some(revoked_ms) => WorkspaceGrant {
-                revoked_ms: Some(revoked_ms),
-                ..grant
+            .find(|held| held.id == grant.id);
+        let named = name.map(str::trim).filter(|name| !name.is_empty());
+        let grant = WorkspaceGrant {
+            revoked_ms: held.as_ref().and_then(|held| held.revoked_ms),
+            name: match (named, held) {
+                (Some(named), _) => named.to_owned(),
+                (None, Some(held)) => held.name,
+                (None, None) => grant.name.clone(),
             },
-            None => grant,
+            ..grant
         };
         let mut candidate = workspace.peer().clone();
         if candidate
@@ -1576,7 +1593,8 @@ impl Workspaces {
                     if answer.is_ok()
                         && let Some(scope) = certificate.capabilities.agent
                     {
-                        self.list_grant(workspace, certificate, scope, now).await?;
+                        self.list_grant(workspace, certificate, scope, join.name, now)
+                            .await?;
                     }
                 }
             }
@@ -1844,3 +1862,22 @@ impl GovernedWorkspace {
 }
 
 pub(super) use tilo_peer_state::join_log::request_digest;
+
+/// A refusal of `device` when `workspace` keeps it as a revoked key.
+fn refuse_revoked(
+    workspace: &GovernedWorkspace,
+    device: &DeviceCert,
+) -> Result<(), CollaborationError> {
+    let revoked_ms = workspace
+        .peer()
+        .governance()
+        .workspace_grants()
+        .into_iter()
+        .find(|grant| grant.device == hex::encode(device.device_public_key))
+        .and_then(|grant| grant.revoked_ms);
+    revoked_ms.map_or(Ok(()), |revoked_ms| {
+        Err(CollaborationError::new(format!(
+            "key_revoked: this key was revoked at {revoked_ms}"
+        )))
+    })
+}

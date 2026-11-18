@@ -1326,11 +1326,13 @@ impl Workspaces {
         if let JoinReply::Admitted { workspace, .. } = &reply {
             self.accepted(workspace, &invitation, person).await;
             // A key that came in with an invitation is listed as every key
-            // the workspace admits is, so its person can revoke it there.
+            // the workspace admits is, by the name it joined as, so its
+            // person finds it and can revoke it there.
             if let Some(scope) = cert.capabilities.agent {
                 let governed = self.workspace(workspace).await?;
                 let mut governed = governed.lock().await;
-                self.list_grant(&mut governed, &cert, scope, now).await?;
+                self.list_grant(&mut governed, &cert, scope, Some(name), now)
+                    .await?;
             }
         }
         crate::timing::event("join.prove.admitted", proving, 0);

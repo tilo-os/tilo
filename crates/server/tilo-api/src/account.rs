@@ -138,9 +138,8 @@ pub(crate) fn refused(error: &ServerError) -> Outcome {
             "tilo_do account/workspaces#list names your workspaces",
         ),
         // The host's own reason stays in the log: the person reads what they
-        // would do about it. A key its workspace records as revoked is told
-        // that, so the caller asks the person for another.
-        ServerError::Refused(reason) if reason.contains("key_revoked") => {
+        // would do about it.
+        ServerError::KeyRevoked => {
             failed("key_revoked", "this key was revoked", crate::APPROVE_AGAIN)
         }
         ServerError::Refused(_) | ServerError::RefusedWorkspace(_) => failed(

@@ -164,6 +164,7 @@ impl Grant {
             &hex::decode(&kept.cert).ok()?,
         )
         .ok()
+        .map(|key| key.named(&self.client_name))
     }
 
     /// Whether the grant is live and its certificate holds at `now_ms`: a

@@ -204,8 +204,8 @@ pub struct Call {
 /// any tool ran.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CallError {
-    /// The typed code: `not_found`, `beyond_scope`, `invalid_request` or
-    /// `unavailable`.
+    /// The typed code: `not_found`, `beyond_scope`, `invalid_request`,
+    /// `key_revoked` or `unavailable`.
     pub code: &'static str,
     pub message: String,
 }
@@ -233,6 +233,9 @@ impl CallError {
             .unwrap_or("the call was refused")
             .to_owned();
         let code = match error.get("code").and_then(Value::as_i64) {
+            _ if error.pointer("/data/code").and_then(Value::as_str) == Some("key_revoked") => {
+                "key_revoked"
+            }
             Some(-32602) if message.contains("no such workspace") => "not_found",
             Some(-32602 | -32600 | -32700 | -32601) => "invalid_request",
             _ => "unavailable",
@@ -496,6 +499,13 @@ impl Session {
             Ok(held) => held,
             Err(ServerError::NotFound) => {
                 return Reply::one(error(&id, -32602, "no such workspace"));
+            }
+            // Said as such, so its caller asks the person for another key.
+            Err(revoked @ ServerError::KeyRevoked) => {
+                return Reply::one(json!({"jsonrpc": "2.0", "id": id, "error": {
+                    "code": -32000, "message": revoked.to_string(),
+                    "data": {"code": "key_revoked", "next_steps": [crate::APPROVE_AGAIN]},
+                }}));
             }
             Err(other) => return Reply::one(error(&id, -32000, &other.to_string())),
         };

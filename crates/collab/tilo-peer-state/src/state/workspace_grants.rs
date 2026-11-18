@@ -28,7 +28,37 @@ pub fn workspace_grants_of(doc: &automerge::AutoCommit) -> Vec<WorkspaceGrant> {
         .collect()
 }
 
+/// Whether `doc` lists the key `device` speaks for as revoked by its person: read from that one
+/// key's entry, without reading the others.
+#[must_use]
+pub fn revoked_key_in(doc: &automerge::AutoCommit, device: &[u8; 32]) -> bool {
+    let Ok(Some((Value::Object(ObjType::Map), grants))) = doc.get(ROOT, WORKSPACE_GRANTS_KEY)
+    else {
+        return false;
+    };
+    let id = WorkspaceGrant::id_of(device);
+    let Ok(Some((Value::Scalar(value), _))) = doc.get(&grants, id.as_str()) else {
+        return false;
+    };
+    let automerge::ScalarValue::Str(json) = value.as_ref() else {
+        return false;
+    };
+    serde_json::from_str::<WorkspaceGrant>(json).is_ok_and(|grant| grant.revoked_ms.is_some())
+}
+
 impl PeerGovernance<'_> {
+    /// Whether the workspace lists the key `device` speaks for as revoked: such a key is no
+    /// member here, whatever its certificate says, and every read, write and action it would make
+    /// is refused, as its person's revocation of it says.
+    #[must_use]
+    pub fn revoked_key(self, device: &[u8; 32]) -> bool {
+        self.peer
+            .core
+            .workspace_doc
+            .as_deref()
+            .is_some_and(|doc| revoked_key_in(doc, device))
+    }
+
     /// The grants the workspace admitted, as its governance records them.
     #[must_use]
     pub fn workspace_grants(self) -> Vec<WorkspaceGrant> {

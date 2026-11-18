@@ -92,7 +92,13 @@ impl ApiError {
 
 impl From<crate::session::CallError> for ApiError {
     fn from(error: crate::session::CallError) -> Self {
-        Self::new(error.code, error.message)
+        let revoked = error.code == "key_revoked";
+        let refused = Self::new(error.code, error.message);
+        if revoked {
+            refused.next(crate::APPROVE_AGAIN)
+        } else {
+            refused
+        }
     }
 }
 
@@ -111,6 +117,9 @@ impl From<crate::server::ServerError> for ApiError {
                 Self::new("unavailable", error.to_string()).next("try again in a minute")
             }
             ServerError::NoAccountHere => Self::new("not_permitted", error.to_string()),
+            ServerError::KeyRevoked => {
+                Self::new("key_revoked", error.to_string()).next(crate::APPROVE_AGAIN)
+            }
             // The message names the person's key and what makes them known to the server.
             ServerError::NotOnThisServer(_) => {
                 Self::new(tilo_actions::remote::NOT_ON_THIS_SERVER, error.to_string()).next(
