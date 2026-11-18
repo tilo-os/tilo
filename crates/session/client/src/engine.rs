@@ -281,8 +281,14 @@ pub struct Delegation {
 }
 
 /// What a workspace's holder answers an ask of its governance, once it has.
+#[cfg(not(target_arch = "wasm32"))]
 pub type ServiceAnswer =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>>;
+
+/// What a workspace's holder answers an ask of its governance, once it has.
+#[cfg(target_arch = "wasm32")]
+pub type ServiceAnswer =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>>>>;
 
 /// What this device asks of the workspace services, once its own is open: founding a workspace
 /// this device made there, and asking a workspace one of its governance actions as this device,
