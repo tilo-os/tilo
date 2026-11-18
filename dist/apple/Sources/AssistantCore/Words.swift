@@ -29,6 +29,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     case linkProvider = "link-provider", needsModel = "needs-model", chooseModel = "choose-model", answersOn = "answers-on"
     // A sub-agent's window.
     case startedByMain = "started-by-main", startedByYou = "started-by-you", cannotReadMain = "cannot-read-main"
+    case worksOnServer = "works-on-server", worksOnMachine = "works-on-machine", worksOnMachineWith = "works-on-machine-with"
     case jobFromMain = "job-from-main", mainWhileWorking = "main-while-working", stop
     case subAgentJob = "sub-agent-job", subAgentJobBody = "sub-agent-job-body", start, cancel
     // The message field.
@@ -146,6 +147,9 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .startedByMain: "started {time} by the main agent"
         case .startedByYou: "started {time} by you"
         case .cannotReadMain: "it cannot read the main chat"
+        case .worksOnServer: "your Tilo server"
+        case .worksOnMachine: "the workspace's machine"
+        case .worksOnMachineWith: "{program} on the workspace's machine"
         case .jobFromMain: "The job, from the main agent"
         case .mainWhileWorking: "Main agent, {time}, while it worked"
         case .stop: "Stop"
