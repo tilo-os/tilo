@@ -81,11 +81,6 @@ fn require_binary(name: &str) {
 
 #[test]
 fn rust_analyzer_indexes_visibly_and_reports_a_real_error_in_a_real_project() {
-    rust_analyzer_reports_a_real_error_in_a_real_project();
-    indexing_is_visible_while_it_happens();
-}
-
-fn rust_analyzer_reports_a_real_error_in_a_real_project() {
     let mut wake_scope = ui::wake::WakeScope::new();
     let (wake_tx, wake_rx) = std::sync::mpsc::channel();
     wake_scope
@@ -125,6 +120,20 @@ fn rust_analyzer_reports_a_real_error_in_a_real_project() {
         ok,
         "no diagnostics arrived within {BUDGET:?}. Events seen: {}",
         summarise(&events)
+    );
+    // The editor showed indexing while it happened: the server said what it
+    // was busy with before it had anything to report.
+    assert!(
+        events.iter().any(|e| matches!(e, LspEvent::Progress(_))),
+        "the server never reported progress, so the editor could not show an \
+         indexing state. Events seen: {}",
+        summarise(&events)
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, LspEvent::Progress(p) if !p.title.is_empty())),
+        "at least one progress notification names its task"
     );
     let wake = wake_rx
         .try_recv()
@@ -168,30 +177,6 @@ fn rust_analyzer_reports_a_real_error_in_a_real_project() {
     let panel = found.to_panel();
     assert_eq!(panel.line, 6);
     assert!(panel.message.contains("parse_limitt") || panel.message.contains("cannot find"));
-}
-
-fn indexing_is_visible_while_it_happens() {
-    require_binary("rust-analyzer");
-    require_binary("cargo");
-
-    let project = project_with_a_deliberate_error().expect("build the fixture project");
-    let mut client = LspClient::start(Language::Rust, project.path())
-        .expect("rust-analyzer starts against a real directory");
-
-    let (events, ok) = pump_until(&mut client, |seen| {
-        seen.iter().any(|e| matches!(e, LspEvent::Progress(_)))
-    });
-    assert!(
-        ok,
-        "the server never reported progress, so the editor could not show an \
-         indexing state. Events seen: {}",
-        summarise(&events)
-    );
-
-    let titled = events
-        .iter()
-        .any(|e| matches!(e, LspEvent::Progress(p) if !p.title.is_empty()));
-    assert!(titled, "at least one progress notification names its task");
 }
 
 fn summarise(events: &[LspEvent]) -> String {

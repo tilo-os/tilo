@@ -472,20 +472,47 @@ fn an_edit_never_grows_a_file_past_its_limit() {
     let _store = ui::tilo_resource::content::register_for_resources();
     let mut project = Replica::<Project>::new();
     let id = file(&mut project, "big.txt", None, "");
-    let big = "x".repeat(MAX_TEXT_BYTES);
-    act(
-        &mut project,
-        &crate::actions::replace_text_action(id.as_str(), big.clone()),
-    )
-    .unwrap();
+    let over = "x".repeat(MAX_TEXT_BYTES + 1);
+    let splice = Project::paths()
+        .buffers
+        .key(id.to_string())
+        .perform(&SourceEdit::Splice {
+            at: 0,
+            delete: 0,
+            insert: over,
+        })
+        .map_err(|error| error.to_string())
+        .unwrap();
+    let invoke = Invoke::edit(&splice)
+        .map_err(|error| error.to_string())
+        .unwrap();
+    let refused = apply(&mut project, invoke).unwrap_err();
     assert!(
-        act(
-            &mut project,
-            &crate::actions::text_edit_action(id.as_str(), &big, &format!("{big}y"))
-        )
-        .is_err()
+        refused.contains("larger than"),
+        "an edit past the limit is refused: {refused}"
     );
-    assert_eq!(text(&project, &id).len(), MAX_TEXT_BYTES);
+    assert!(
+        text(&project, &id).is_empty(),
+        "and the file keeps what it held"
+    );
+}
+
+#[test]
+fn a_whole_text_past_the_limit_is_refused() {
+    let _store = ui::tilo_resource::content::register_for_resources();
+    let mut project = Replica::<Project>::new();
+    let id = file(&mut project, "big.txt", None, "");
+    let over = "x".repeat(MAX_TEXT_BYTES + 1);
+    let refused = act(
+        &mut project,
+        &crate::actions::replace_text_action(id.as_str(), over),
+    )
+    .unwrap_err();
+    assert!(
+        refused.contains("larger than"),
+        "a whole text past the limit is refused: {refused}"
+    );
+    assert!(text(&project, &id).is_empty());
 }
 
 #[test]
