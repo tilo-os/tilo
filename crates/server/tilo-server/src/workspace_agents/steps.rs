@@ -141,6 +141,12 @@ impl Asking {
     }
 }
 
+/// [`looked`], as the turn's server is told of each look: what a step counts
+/// for the tool call it waits within.
+pub(super) fn observed() -> tilo_mcp::Observation {
+    std::sync::Arc::new(looked)
+}
+
 /// A look at how invocation `id` stands, made within a tool call: counted, and where it shows
 /// the invocation ended, how long its end was waited for is known.
 pub(super) fn looked(id: &InvocationId, state: Option<&InvocationState>) {
