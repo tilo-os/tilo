@@ -9,6 +9,8 @@
 //! removing accounts, marking mail, saying who may read) is no row.
 
 use tilo_actions::remote::{CatalogueRow, person_accounts};
+#[cfg(feature = "agents")]
+use tilo_actions::{ActionContract, contract::Audience};
 use tilo_actions::{ActionKind, ActionParam, ParamType};
 
 use super::{Publisher, Verb};
@@ -231,7 +233,79 @@ fn begun_params() -> Vec<ActionParam> {
     )]
 }
 
+/// What signing a mail account in says of itself to whoever lists it.
+#[cfg(feature = "agents")]
+const CONNECT_ABOUT: &str = "Sign your person in to a mail account of theirs from its address \
+     alone: the way to add a mail account. Pass the address, and nothing they did not tell \
+     you. This server works out the account's servers itself and asks your person for the \
+     password in a protected field of your conversation with them, which you cannot read: \
+     never ask for a password and never take one. The call ends at once, told that they \
+     are asked and which servers were found: tell them in one line to type the password \
+     there, and do not make the call again. Once they typed it the account is signed in, \
+     you are named for it and you are told. A password that is not accepted is asked for \
+     again by this server itself.";
+
+#[cfg(feature = "agents")]
+fn connect_params() -> Vec<ActionParam> {
+    let said = |name: &'static str, about: &'static str| {
+        ActionParam::optional(name, ParamType::Text, about)
+    };
+    vec![
+        ActionParam::required(
+            "address",
+            ParamType::Text,
+            "The account's mail address, as your person said it.",
+        ),
+        said(
+            "username",
+            "The name it signs in with, only where your person said one that is not the address.",
+        ),
+        said(
+            "name",
+            "The name mail from it carries, where they said one.",
+        ),
+        said(
+            "incomingServer",
+            "The name of the server its mail is read from (IMAP): only after this call answered \
+             that none was found and your person told you.",
+        ),
+        said(
+            "outgoingServer",
+            "The name of the server its mail is handed to (SMTP): only together with \
+             incomingServer.",
+        ),
+    ]
+}
+
 impl super::super::Workspaces {
+    /// The row a turn this holder carries out for its agent's keeper is offered for signing
+    /// a mail account in from its address alone
+    /// ([`crate::workspaces::person_settings::mail_connect`]). It is for agents alone: a
+    /// person signs in by saying so, and types nothing but the password, where no agent
+    /// reads it. What it says of itself is all a model needs to use it.
+    #[cfg(feature = "agents")]
+    pub(in crate::workspaces) fn mail_connect_row() -> CatalogueRow {
+        let mut row = Verb {
+            id: crate::workspaces::person_settings::mail_connect::CONNECT,
+            label: "Sign in to mail account",
+            check: "",
+            kind: ActionKind::Outside,
+            params: connect_params,
+        }
+        .row(MAIL, person_accounts::RESOURCE, "Mail");
+        if let Some(action) = &mut row.action {
+            // It signs in somewhere outside the workspace, once its person typed the password.
+            let mut contract = ActionContract {
+                kind: ActionKind::Outside,
+                ..ActionContract::default()
+            };
+            contract.set_audience(Audience::Agents);
+            action.contract = contract;
+            action.description = Some(CONNECT_ABOUT.to_owned());
+        }
+        row
+    }
+
     /// The rows an agent its person named for an account is offered, for the
     /// entry a turn this holder carries out reaches that person's mail
     /// through: such a turn has no device behind it for the catalogue to

@@ -420,3 +420,22 @@ fn every_name_before_a_dot_is_a_name_the_view_can_reach_an_app_by() {
     );
     assert!(named("view v() { text(\"Hello\") }").is_empty());
 }
+
+/// One document of the word processor, named in a view as the language names any resource.
+const POEM: &str = "view poem() {\n    text(@word_processor.Document:uuid:0f2b1c00-0000-4000-8000-000000000001.body.text)\n}";
+
+#[test]
+fn the_guide_says_how_a_view_names_one_document_and_chat_takes_such_a_view() {
+    // What a model is told: the reference, and where the document's id is found.
+    assert!(
+        crate::message_view::GUIDE.contains("@word_processor.Document:uuid:"),
+        "the guide shows one document named in a view"
+    );
+    assert!(
+        crate::message_view::GUIDE.contains("the last part of the link"),
+        "and says where the document's id is found"
+    );
+    // Chat takes such a view under the app's name alone.
+    let view = View::written(POEM.to_owned(), names(&["word_processor"]), 5).expect("a view");
+    assert_eq!(view.reads, ["word_processor"]);
+}

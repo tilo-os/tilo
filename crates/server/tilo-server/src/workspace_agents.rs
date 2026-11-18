@@ -82,6 +82,7 @@ mod going;
 mod issue_work;
 mod learned;
 mod mail;
+mod mail_connect;
 mod skills;
 mod steps;
 mod sub_agents;
@@ -1263,6 +1264,11 @@ impl HostAgents {
             calendar_connect::TurnConnects::for_turn(&self.workspaces, turn, &scope.reply(turn))
                 .await;
         scope.provider = scope.provider.answering(connects);
+        // What signs a mail account in from its address alone: the same asking, for mail.
+        let signs_in =
+            mail_connect::TurnMailConnects::for_turn(&self.workspaces, turn, &scope.reply(turn))
+                .await;
+        scope.provider = scope.provider.answering(signs_in);
         // Its open of Browser, whose window this server places where it has a machine for one.
         let browser =
             turn_browser::TurnBrowser::for_turn(self.browsers.clone(), &scope.reply(turn));
