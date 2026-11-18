@@ -32,6 +32,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use tilo_lock::MutexRecover as _;
 
+mod refused;
+
 /// Marks the legacy single-string invocation slot as carrying a canonical
 /// JSON argument object. The record-separator prefix cannot be produced by a
 /// normal palette text field, preserving unambiguous backward compatibility.
@@ -816,6 +818,8 @@ impl std::fmt::Display for ArgViolation {
 pub enum ArgError {
     Missing {
         name: String,
+        /// The kind of thing it takes and the shape that works.
+        takes: String,
     },
     /// A number outside the range the parameter's schema declares.
     OutOfRange {
@@ -824,17 +828,22 @@ pub enum ArgError {
     },
     Unknown {
         name: String,
+        /// The arguments the action does take: the shape of the call that works.
+        takes: String,
     },
     WrongType {
         name: String,
         expected: ParamType,
         got: ParamType,
+        /// The shape that works.
+        shape: String,
     },
     /// The value was the right type but outside the parameter's declared
     /// [`choices`](ActionParam::choices).
     NotAllowed {
         name: String,
-        value: String,
+        /// The kind of thing it was given: never the value itself.
+        given: &'static str,
         allowed: Vec<String>,
     },
     /// The JSON value was not one of the shapes an [`ArgValue`] can carry (an
@@ -851,29 +860,32 @@ pub enum ArgError {
 impl std::fmt::Display for ArgError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ArgError::Missing { name } => {
-                write!(f, "required argument `{name}` was not supplied")
-            }
-            ArgError::Unknown { name } => {
-                write!(f, "`{name}` is not a parameter of this action")
-            }
+            ArgError::Missing { name, takes } => write!(
+                f,
+                "required argument `{name}` was not supplied: it must be {takes}"
+            ),
+            ArgError::Unknown { name, takes } => write!(
+                f,
+                "`{name}` is not a parameter of this action; its arguments are {takes}"
+            ),
             ArgError::WrongType {
                 name,
                 expected,
                 got,
+                shape,
             } => write!(
                 f,
-                "argument `{name}` must be {}, got {}",
-                expected.label(),
-                got.label()
+                "argument `{name}` was given {} and must be {}: {shape}",
+                refused::kind(*got),
+                refused::kind(*expected)
             ),
             ArgError::NotAllowed {
                 name,
-                value,
+                given,
                 allowed,
             } => write!(
                 f,
-                "argument `{name}` must be one of {}, got `{value}`",
+                "argument `{name}` must be one of {}; it was given {given} that is none of them",
                 allowed.join(", ")
             ),
             ArgError::Unrepresentable { name } => {
@@ -1010,7 +1022,7 @@ impl ActionArgs {
                 // ignored argument is the failure mode this whole surface exists
                 // to remove: the caller believes it asked for something it did
                 // not get.
-                return Err(ArgError::Unknown { name });
+                return Err(refused::unknown(name, params));
             };
             // Callers (models especially) write null for "not set": for an
             // optional parameter that is leaving it out. A nullable one
@@ -1019,20 +1031,13 @@ impl ActionArgs {
                 continue;
             }
             if matches!(value, ArgValue::Null) && !param.nullable {
-                return Err(ArgError::Constraint {
-                    name,
-                    reason: "may not be null".into(),
-                });
+                return Err(refused::null(param));
             }
             if !matches!(value, ArgValue::Null)
                 && !value.satisfies(param.ty)
                 && !schema_alternative_of(param, &value)
             {
-                return Err(ArgError::WrongType {
-                    name,
-                    expected: param.ty,
-                    got: value.ty(),
-                });
+                return Err(refused::wrong_type(param, &value));
             }
             match &value {
                 ArgValue::Number(number) if !number.is_finite() => {
@@ -1086,24 +1091,14 @@ impl ActionArgs {
                     other => other.to_json().to_string(),
                 };
                 if !param.choices.iter().any(|c| c.as_ref() == got.as_str()) {
-                    return Err(ArgError::NotAllowed {
-                        name,
-                        value: got,
-                        allowed: param
-                            .choices
-                            .iter()
-                            .map(std::string::ToString::to_string)
-                            .collect(),
-                    });
+                    return Err(refused::not_a_choice(param, &value));
                 }
             }
             values.insert(name, value);
         }
         for param in params.iter().filter(|p| p.required) {
             if !values.contains_key(param.name.as_ref()) {
-                return Err(ArgError::Missing {
-                    name: param.name.to_string(),
-                });
+                return Err(refused::missing(param));
             }
         }
         Ok(Self { values, from: None })
@@ -1122,7 +1117,7 @@ impl ActionArgs {
                 continue;
             }
             let Some(param) = params.iter().find(|param| param.name.as_ref() == name) else {
-                return Err(ArgError::Unknown { name: name.clone() });
+                return Err(refused::unknown(name.clone(), params));
             };
             let value = match (param.ty, value) {
                 (ParamType::Resource, serde_json::Value::String(value)) => {
@@ -1324,7 +1319,7 @@ fn validate_object_schema(
     if let Some(required) = schema.get("required").and_then(serde_json::Value::as_array) {
         for key in required.iter().filter_map(serde_json::Value::as_str) {
             if !object.contains_key(key) {
-                return Err(format!("must contain property `{key}`"));
+                return Err(refused::lacks(key, schema));
             }
         }
     }
@@ -1345,7 +1340,7 @@ fn validate_object_schema(
             .and_then(serde_json::Value::as_object);
         for key in object.keys() {
             if !properties.is_some_and(|properties| properties.contains_key(key)) {
-                return Err(format!("contains unknown property `{key}`"));
+                return Err(refused::takes_no(key, schema));
             }
         }
     }
@@ -1499,7 +1494,7 @@ fn validate_one_of(
     let names: Option<Vec<String>> = alternatives.iter().map(alternative_name).collect();
     Err(match names {
         Some(names) if !names.is_empty() => format!("must be one of: {}", names.join(", ")),
-        _ => "must match exactly one `oneOf` alternative".into(),
+        _ => refused::no_alternative(alternatives),
     })
 }
 
@@ -1599,7 +1594,7 @@ fn validate_schema_type(
                         .any(matches_type)
             });
         if !valid {
-            return Err(format!("must have JSON Schema type {expected}"));
+            return Err(refused::wrong_kind(value, schema));
         }
     }
     Ok(())
@@ -1612,12 +1607,12 @@ fn validate_schema_equality(
     if let Some(values) = schema.get("enum").and_then(serde_json::Value::as_array)
         && !values.contains(value)
     {
-        return Err("is not one of the allowed values".into());
+        return Err(refused::none_of(values));
     }
     if let Some(expected) = schema.get("const")
         && value != expected
     {
-        return Err("does not equal the required value".into());
+        return Err(format!("must be {expected}"));
     }
     Ok(())
 }
@@ -2077,7 +2072,7 @@ mod rich_schema_tests {
                 ActionArgs::bind_json(&params, missing.as_object().unwrap())
                     .unwrap_err()
                     .to_string(),
-                "argument `media` may not be null"
+                "argument `media` was given null and must be text: \"<text>\""
             );
         }
 
