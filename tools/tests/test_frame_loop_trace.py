@@ -22,7 +22,7 @@ HEADER = (
     "testctl_us,clients_us,sleep_us,painted,present_async,input_latency_us,"
     "input_retirement_latency_us,backpressured,deadline_late_us,wake,cpu_us,"
     "input_step,input_step_us,paint_reasons,paint_clients,testctl_cpu_us,paint_animations,"
-    "hosts_us,after_us"
+    "surfaces_us,after_us"
 ).split(",")
 
 

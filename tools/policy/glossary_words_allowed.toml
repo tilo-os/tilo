@@ -1039,3 +1039,9 @@ paths = [
     "crates/session/install-plan/src/host.rs",
     "crates/session/install-plan/src/lib.rs",
 ]
+
+[[allow]]
+reason = "A nextest filter names the ush test module `served_runs::`; the word is the module's own name, not the banned noun."
+words = ["run"]
+identifiers = ["served_runs"]
+paths = ["tools/tests/test_test_environment.py"]

@@ -197,6 +197,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(siblings["command"][2:], [
             "tilo-lock-screen:tilo-lock-screen", "osk:osk",
             "tilo-quick-settings:tilo-quick-settings",
+            "tilolang-process:tilolang-process", "launcher:tilo-launcher",
         ])
         for profile in ("default", "ci"):
             rules = [rule for rule in config["profile"][profile]["scripts"]
@@ -291,6 +292,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                 [(rule["filter"], rule["platform"]) for rule in rules],
                 [(filter_, {"host": 'cfg(target_os = "linux")'})
                  for filter_ in ("package(tilo-server) and test(coding_agents::)",
+                                 "package(ush) and (test(served_runs::) or test(environment_programs::))",
                                  "package(tilo-agent-session) and test(hosted_coding_agents::)")],
                 f"the {profile} profile builds the guest's agent for the tests that start a coding agent",
             )
@@ -342,6 +344,8 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                  "test(lounge_fresh_page::)":
                                      "lounge-siblings",
                                  "package(tilo-server) and test(coding_agents::)": "machine-siblings",
+                                 "package(ush) and (test(served_runs::) or "
+                                 "test(environment_programs::))": "machine-siblings",
                                  "package(tilo-agent-session) and test(hosted_coding_agents::)":
                                      "machine-siblings",
                                  "package(tilo-session-client) and binary(it) and "

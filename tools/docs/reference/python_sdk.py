@@ -39,7 +39,7 @@ GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Client", ("Tilo", "AsyncTilo", "SignIn")),
     ("Transports", ("Transport", "HttpTransport", "NativeTransport")),
     ("Workspaces", ("Workspaces", "Workspace", "WorkspaceInfo", "WorkspaceList", "WorkspaceExport")),
-    ("Resources", ("Resource", "Entry", "FieldMap", "Listing", "Row", "Hit")),
+    ("Resources", ("Resource", "Entry", "FieldMap", "Listing", "Row", "Hit", "made")),
     ("Invocations", (
         "Invocation", "InvocationGroup", "InvocationOpening", "InvocationList", "InvocationInfo",
         "ProgramAnswer", "Event",
@@ -49,7 +49,7 @@ GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Members", ("Members", "Member", "Invitation", "Person")),
     ("Usage", ("Usage", "WorkspaceUsage")),
     ("Errors", (
-        "Refused", "RateLimited", "AskPending", "ProtocolError",
+        "Refused", "AskPending", "ProtocolError",
         "KeyRefused", "KeyRevoked", "KeyExpired", "SurfaceChanged", "UnsupportedVersion",
     )),
 )

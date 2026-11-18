@@ -64,10 +64,10 @@ class PythonSdkReferenceTests(unittest.TestCase):
         self.assertIn("#### Workspace.ls\n", page)
         self.assertIn(
             "Workspace.ls(path: str | None = None, *, kind: str | None = None, "
-            "limit: int | None = None) -> Any",
+            "limit: int | None = None, cursor: str | None = None) -> Any",
             page,
         )
-        self.assertIn("The apps, an app's resources, or one resource's children and actions.", page)
+        self.assertIn("The apps, an app's resources, or one resource's children and actions;", page)
         self.assertIn("#### Event.path\n", page)
         self.assertIn("### Refused\n", page)
         self.assertIn("## App types", page)

@@ -159,15 +159,21 @@ class SignalProviderRelease(unittest.TestCase):
                 proof['packages'][name] = release.inventory(package)
             (root / 'release.json').write_text(json.dumps(proof))
 
+            signal_manifest = (ROOT / 'crates/packaging/launcher/signal-provider.toml').read_text()
+            net_start = signal_manifest.index("[sandbox.net]")
+            net_end = signal_manifest.find("\n[", net_start + 1)
+            service_net = signal_manifest[net_start:net_end].rstrip("\n") + "\n"
+
             def inspected(args, **kwargs):
                 runtime = Path(args[-1]).parent.name == 'runtime-package'
                 declaration = ('id = "so.tilo.runtime.signal"\nkind = "runtime"\nprovides' if runtime
                                else 'id = "so.tilo.signal-provider"\nkind = "' + declared_kind + '"\nruntime')
+                net = '[sandbox.net]\nmode = "off"\n' if runtime else service_net
                 return ('--- manifest.toml ---\n[package]\n' + declaration
                         + ' = "' + declared_runtime + '"\nversion = "' + version + '"\n'
                         + '[package.isa]\n' + declared_isa + '\n'
                         + '[sandbox]\nseccomp = "' + declared_seccomp + '"\nlandlock = "' + declared_landlock + '"\n'
-                        + '[sandbox.net]\nmode = "off"\n'
+                        + net
                         + '[entrypoint]\n' + (runtime_entrypoint if runtime else entrypoint)
                         + '--- payload (0 files) ---\n')
 

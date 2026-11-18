@@ -42,7 +42,7 @@ const GROUPS: [string, string[]][] = [
   ["Workspaces", ["Workspace", "WorkspaceInfo", "WorkspaceList", "WorkspaceExport"]],
   ["Account", ["Usage", "WorkspaceUsage", "ApiInfo"]],
   ["Resources", [
-    "Resource", "Step", "Surface", "Entry", "resourceProxy", "kebab", "segments",
+    "Resource", "Step", "Surface", "Entry", "resourceProxy", "kebab", "segments", "made",
     "Listing", "Row", "Action", "Param", "Hit",
   ]],
   ["Invocations", [
@@ -59,7 +59,7 @@ const GROUPS: [string, string[]][] = [
   ]],
   ["Routes", ["routes", "encodePath", "splitAction"]],
   ["Errors", [
-    "Refused", "RateLimited", "AskPending", "ProtocolError",
+    "Refused", "AskPending", "ProtocolError",
     "KeyRefused", "KeyRevoked", "KeyExpired", "SurfaceChanged",
   ]],
 ];
