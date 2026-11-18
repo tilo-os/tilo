@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use iroh::EndpointAddr;
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 use tokio::sync::mpsc;
 
 use crate::own_service::workspace_service::{ServiceConfig, WorkspaceService};
@@ -86,27 +86,18 @@ pub(crate) async fn spawn_ticking(
         }),
         Vec::new(),
     );
-    let mut config = ServiceConfig::new(
-        state.join("workspace-service"),
-        tilo_server_protocol::WorkSetting::none(),
-    );
+    let store = state.join("workspace-service");
+    let service_identity = workspace_service::ServiceIdentity::beside_device(&store, &cert, &key)
+        .await
+        .expect("the device certifies its workspace service");
+    let mut config = ServiceConfig::new(store, tilo_server_protocol::WorkSetting::none());
     // A loopback endpoint is never reached from another network: waiting to
     // learn such an address would hold each device back for the whole wait
     // before its workspace service serves.
     config.reaching = tilo_endpoint_reachability::Reaching::OnItsOwn;
-    let host = WorkspaceService::open(
-        config,
-        workspace_service::ServiceIdentity {
-            user_public_key: cert.user_public_key,
-            device_signing_key: key,
-            device_cert: cert.clone(),
-            revocations: RevocationList::new(),
-        },
-        endpoint.clone(),
-        None,
-    )
-    .await
-    .expect("the device's host opens");
+    let host = WorkspaceService::open(config, service_identity, endpoint.clone(), None)
+        .await
+        .expect("the device's host opens");
     local.install(Arc::new(host));
     cmd.send(NetCmd::OwnServiceReady)
         .await

@@ -29,7 +29,7 @@ const OPEN_WAIT: Duration = Duration::from_secs(30);
 /// and serve it through `own` from now on.
 ///
 /// # Errors
-/// The identity's key cannot leave its store (a page's), the engine keeps no state, or the
+/// The engine keeps no state, this device cannot certify the service's own key, or the
 /// service's store cannot be opened.
 pub(super) async fn open(
     own: &OwnService,
@@ -40,11 +40,15 @@ pub(super) async fn open(
     let root = engine
         .service_root()
         .ok_or("this session keeps no state, so it opens no workspace service")?;
-    let secret = identity
-        .signer
-        .endpoint_secret()
-        .ok_or("this device's key never leaves its store, so it opens no workspace service")?;
-    let cert = identity.device_cert.clone();
+    // The service writes under a key of its own, which this device certifies as its workspace
+    // service: the device's engine and the service never number changes from one count.
+    let service_identity = workspace_service::ServiceIdentity::beside_device(
+        &root,
+        &identity.device_cert,
+        &*identity.signer,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
     let service = workspace_service::WorkspaceService::open(
         workspace_service::ServiceConfig {
             // The desktop's first frame waits on this service, and its endpoint holds its relays
@@ -53,13 +57,7 @@ pub(super) async fn open(
             reaching: tilo_endpoint_reachability::Reaching::WhenNeeded,
             ..workspace_service::ServiceConfig::new(root, tilo_server_protocol::WorkSetting::none())
         },
-        workspace_service::ServiceIdentity {
-            user_public_key: cert.user_public_key,
-            device_signing_key: ed25519_dalek::SigningKey::from_bytes(&secret),
-            device_cert: cert,
-            // Each workspace's own revocations reach the service through its governance.
-            revocations: tilo_user_identity::RevocationList::new(),
-        },
+        service_identity,
         endpoint,
         Some(DeviceKeyGroups {
             keys: Arc::new(DeviceGroupKeys {

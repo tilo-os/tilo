@@ -37,7 +37,7 @@ use tilo_server::Reaching;
 use tilo_server::service::{ServiceConfig, ServiceIdentity, WorkspaceService};
 use tilo_server::workspaces::IssueInvitationRequest;
 use tilo_server_protocol::WorkSetting;
-use tilo_user_identity::{DeviceCert, RevocationList};
+use tilo_user_identity::DeviceCert;
 use web_time::SystemTime;
 
 const WORKSPACE: &str = "a0a0a0a0-a0a0-4a0a-8a0a-a0a0a0a0a0a0";
@@ -82,19 +82,14 @@ impl Desktop {
         // The group's endpoints reach each other on this machine alone: no
         // other machine names where they are reached.
         config.reaching = Reaching::OnItsOwn;
-        let service = WorkspaceService::open(
-            config,
-            ServiceIdentity {
-                user_public_key: cert.user_public_key,
-                device_signing_key: key.clone(),
-                device_cert: cert.clone(),
-                revocations: RevocationList::new(),
-            },
-            endpoint.clone(),
-            None,
-        )
-        .await
-        .expect("this desktop's workspace service opens");
+        // The service writes under a key of its own, which this desktop
+        // certifies as its workspace service, as every desktop's does.
+        let identity = ServiceIdentity::beside_device(&config.state_root, &cert, &key)
+            .await
+            .expect("this desktop certifies its workspace service");
+        let service = WorkspaceService::open(config, identity, endpoint.clone(), None)
+            .await
+            .expect("this desktop's workspace service opens");
         let mut router = Router::builder(endpoint.clone());
         for (alpn, handler) in service.protocols() {
             router = router.accept(alpn, handler);
@@ -529,12 +524,6 @@ async fn five_desktops_hold_one_workspace_with_no_server_in_it() {
 /// The desktop the workspace was made on writes to it once the others linked,
 /// and its write reaches them, as every other desktop's does.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "the workspace service of the desktop the workspace was made on refuses that \
-            desktop's own write with ConflictingSequence: when another desktop links, the \
-            service answers it with a checkpoint of every document (DirectSync::catch_up \
-            bootstraps as the owner's device) signed under the device key it shares with the \
-            desktop's engine, which takes the sequence numbers the engine numbers its next write \
-            of the document with"]
 async fn the_desktop_a_workspace_was_made_on_writes_to_it_after_the_others_linked() {
     let directory = tempfile::tempdir().unwrap();
     let desktops = Box::pin(held_by_five(directory.path())).await;
@@ -594,7 +583,7 @@ async fn the_rest_keep_the_workspace_when_the_desktop_it_was_made_on_leaves() {
         .holders()
         .await
         .into_iter()
-        .find(|hint| hint.host.device_public_key == b1.id())
+        .find(|hint| hint.host.is_of_device(&b1.id()))
         .expect("B's first desktop holds the workspace");
     for desktop in [&mut a2, &mut a3, &mut b1] {
         desktop.drops_link().await;
@@ -602,7 +591,7 @@ async fn the_rest_keep_the_workspace_when_the_desktop_it_was_made_on_leaves() {
             .holders()
             .await
             .into_iter()
-            .find(|hint| hint.host.device_public_key == desktop.id())
+            .find(|hint| hint.host.is_of_device(&desktop.id()))
             .expect("this desktop holds the workspace");
         desktop.links_to(&own).await;
     }

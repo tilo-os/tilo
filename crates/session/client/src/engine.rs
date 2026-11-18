@@ -1114,8 +1114,8 @@ impl Engine {
         self.link.lock_recover().as_ref().map(|link| link.replays())
     }
 
-    /// Whether this device is `workspace`'s own host: everything the workspace retains is here,
-    /// and no other device replays any of it.
+    /// Whether `workspace` is held on this device, by its own workspace service: everything the
+    /// workspace retains is here, and no other device replays any of it.
     #[must_use]
     pub fn hosts_itself(&self, workspace: &str) -> bool {
         WorkspaceId::parse(workspace).is_some_and(|workspace| {
@@ -1644,12 +1644,18 @@ impl Engine {
         self.owner.host_addr(workspace)
     }
 
-    /// The device hosting `workspace`: the one whose host orders its commits,
+    /// The device hosting `workspace`: the one whose workspace service orders its commits,
     /// which is where the person's other devices enter it.
     pub fn host_of(&self, workspace: WorkspaceId) -> Option<[u8; 32]> {
         self.owner
             .with_current(workspace, |view| {
-                Ok(view.workspace_host().device_public_key)
+                let host = view.workspace_host();
+                // A device's workspace service writes under a key of its own, which the device
+                // certified: the device is the one it serves.
+                Ok(match &host.issuer {
+                    Some(device) if host.capabilities.workspace_service => device.device_public_key,
+                    _ => host.device_public_key,
+                })
             })
             .ok()
     }

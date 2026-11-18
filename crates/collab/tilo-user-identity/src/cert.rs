@@ -1041,6 +1041,20 @@ impl DeviceCert {
         matches!(self.expires_at_ns, Some(e) if now_ns >= e)
     }
 
+    /// Whether this certificate is the device `device`'s own, or the
+    /// workspace service that device certified
+    /// ([`DeviceCapabilities::workspace_service`]): what writes for that
+    /// device either way. Signatures are the caller's to check.
+    #[must_use]
+    pub fn is_of_device(&self, device: &[u8; 32]) -> bool {
+        self.device_public_key == *device
+            || (self.capabilities.workspace_service
+                && self
+                    .issuer
+                    .as_ref()
+                    .is_some_and(|issuer| issuer.device_public_key == *device))
+    }
+
     /// The key whose signature this certificate carries: its stand-in's
     /// or grant's when one issued it, else the person's root.
     #[must_use]

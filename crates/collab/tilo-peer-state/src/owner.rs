@@ -78,13 +78,14 @@ fn policy_changed() {
     tilo_identity::policy_change::announce();
 }
 
-/// Whether `hint` names this device, `device`, as the workspace's host: a workspace
-/// placed on this device, whose host runs in this process. Such a workspace is
-/// joined over the host's in-process carrier, never dialled: an endpoint
-/// cannot dial itself.
+/// Whether `hint` names this device, `device`, or the workspace service it
+/// certified, as the workspace's holder: a workspace placed on this device,
+/// whose service is in this process. Such a workspace is joined over the
+/// service's in-process carrier, never dialled: an endpoint cannot dial
+/// itself.
 #[must_use]
 pub fn hosted_by(hint: &crate::join::TransportHint, device: &[u8; 32]) -> bool {
-    &hint.host.device_public_key == device
+    hint.host.is_of_device(device)
 }
 
 /// Check `hint` as the address of `device`'s own host of `workspace_id`: the
@@ -106,7 +107,7 @@ pub(crate) fn validate_host_hint(
     if payload.workspace_id != workspace_id {
         return Err("the workspace's host hint names another workspace".into());
     }
-    if payload.device_certificate != *device {
+    if payload.device_certificate != hint.host {
         return Err("the workspace's host hint is not the host's own signed address".into());
     }
     Ok(())
