@@ -457,8 +457,7 @@ struct ConnectConfig {
     display_name: String,
     /// The revocations this person's root signed, as the page kept them: the
     /// session announces them to its host with its certificate, so a host
-    /// refuses a device of theirs, or a stand-in it holds for them, from the
-    /// moment each entry names.
+    /// refuses a device of theirs from the moment each entry names.
     #[serde(default)]
     revocations: Vec<RevocationEntry>,
     /// The workspace this device enters through its entry as its session
@@ -1017,36 +1016,9 @@ pub async fn follow_login_code(
     serde_json::to_string(&polled).map_err(|error| js_error(error).into())
 }
 
-/// Give the person whose root the page holds (`root`) a stand-in on the host `post` reaches
-/// ([`tilo_server_client::login_code::keep_stand_in`]). Resolves to the stand-in's key, hex.
-///
-/// # Errors
-///
-/// Rejects with a `LoginCodeError` ([`code_error`]).
-#[wasm_bindgen(js_name = keepStandIn)]
-pub async fn keep_stand_in(post: Function, root: JsValue) -> Result<String, JsValue> {
-    let root = PageSigner::from_js(&root)?;
-    tilo_server_client::login_code::keep_stand_in(&PageHttp(post), &root)
-        .await
-        .map_err(|refusal| code_error(&refusal))
-}
-
-/// Have the host `post` reaches forget the person's stand-in, signed by their root (`root`).
-///
-/// # Errors
-///
-/// Rejects with a `LoginCodeError` ([`code_error`]).
-#[wasm_bindgen(js_name = retireStandIn)]
-pub async fn retire_stand_in(post: Function, root: JsValue) -> Result<(), JsValue> {
-    let root = PageSigner::from_js(&root)?;
-    tilo_server_client::login_code::retire_stand_in(&PageHttp(post), &root)
-        .await
-        .map_err(|refusal| code_error(&refusal))
-}
-
-/// Revoke `keyHex` — a device key of this person's, or the stand-in approver
-/// their host holds — with the root the page holds (`root`): resolves to the
-/// root-signed revocation as JSON, which the page keeps beside the person. It
+/// Revoke `keyHex`, a device key of this person's, with the root the page
+/// holds (`root`): resolves to the root-signed revocation as JSON, which the
+/// page keeps beside the person. It
 /// is announced to every session of theirs at once, so their hosts refuse
 /// what the key signs from now on and keep valid what it signed before.
 /// `reason` is why: `retired`, `lost`, `stolen` or `compromised`.

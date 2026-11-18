@@ -115,9 +115,6 @@ fn web_of_at(server: &Server, host: &Host, site: Option<&str>) -> Web {
         ),
         site: site.and_then(Site::new),
         login_codes: Arc::new(login_codes::LoginCodes::new(None)),
-        stand_ins: Arc::new(stand_in::StandIns::new(
-            server.state_root().join("stand-ins"),
-        )),
         wait_list: None,
     }
 }
@@ -1336,37 +1333,48 @@ async fn a_login_code_is_resolved_once_followed_and_not_guessed() {
     stop(server, serving).await;
 }
 
-/// Signing a person in again through their agent: the person's root makes
-/// its stand-in on the host, a computer that is a device of the person
-/// claims the tab's sign-in code, and the tab's new device is certified by
-/// the stand-in over the ordinary certification path, once. Retired, the
-/// stand-in approves nothing more, and what it certified stays valid.
+/// Signing a person in again through their agent, the one way: a device of
+/// the person that may admit devices claims the tab's code, reads the tab's
+/// waiting request back through it, and answers it with a certificate the
+/// root signs. The tab is issued it over the ordinary certification path, and
+/// with it enters the person's workspace. A device that may not admit
+/// devices cannot claim, and says why.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[expect(
     clippy::significant_drop_tightening,
     reason = "the server serves the routes until it shuts down at the end"
 )]
-async fn a_persons_stand_in_certifies_the_tab_a_device_of_theirs_claimed() {
+#[expect(
+    clippy::too_many_lines,
+    reason = "one sign-in, in order, from the claim to the tab entering"
+)]
+async fn a_device_that_may_admit_devices_certifies_the_tab_it_signs_in() {
+    use tilo_server_client::certify::CertificationOutcome;
     use tilo_server_protocol::login_code as wire;
-    use tilo_server_protocol::login_code::StandInRequest;
-    use tilo_user_identity::{CertificationRequest, verify_device_cert_at};
+    use tilo_user_identity::{CertificationPolicy, CertificationRequest, verify_device_cert_at};
 
-    let owner = SigningKey::from_bytes(&[151; 32]);
-    let host = host(&owner, 152, DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
-    let server = server_at(&state, host.identity(), ServerConfig::default()).await;
-    let web = Arc::new(web_of(&server, &host));
-    web.serve_stand_ins();
-    let (addr, serving) = serve_web(Arc::clone(&web)).await;
-
-    // The person signs in on this host without being a member of anything
-    // it serves: their stand-in here is what approves.
-    let person = SigningKey::from_bytes(&[153; 32]);
+    // The person's root is on their computer, which serves them too.
+    let person = SigningKey::from_bytes(&[181; 32]);
     let user = person.verifying_key().to_bytes();
-    let (cli_key, mut cli_cert) = device(&person, 154, DeviceCapabilities::member());
-    cli_cert.device_label = "Claude Code on build-box".into();
+    let node = host(&person, 182, DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let server = server_at(&state, node.identity(), ServerConfig::default()).await;
+    let workspaces = server.workspaces().unwrap().clone();
+    let workspace = workspaces.create("Studio").await.unwrap();
+    let web = Arc::new(web_of(&server, &node));
+    web.serve_code_requests();
+    let (addr, serving) = serve_web(Arc::clone(&web)).await;
+    let admitting = DeviceCapabilities {
+        can_admit_devices: true,
+        ..DeviceCapabilities::member()
+    };
+    let as_hex = |cert: &DeviceCert| hex::encode(postcard::to_allocvec(cert).unwrap());
+    let (cli_key, mut cli_cert) = device(&person, 183, admitting);
+    cli_cert.device_label = "Claude Code on laptop".into();
     tilo_user_identity::sign_device_cert(&mut cli_cert, &person).unwrap();
-    let cli_cert_hex = hex::encode(postcard::to_allocvec(&cli_cert).unwrap());
+    let cli_cert_hex = as_hex(&cli_cert);
+    let (member_key, member_cert) = device(&person, 186, DeviceCapabilities::member());
+    let member_cert_hex = as_hex(&member_cert);
 
     let sign_in_code = || async {
         let (_, _, created) =
@@ -1381,7 +1389,6 @@ async fn a_persons_stand_in_certifies_the_tab_a_device_of_theirs_claimed() {
         )
         .await;
         let resolved: wire::Resolved = serde_json::from_value(resolved).unwrap();
-        assert!(resolved.sign_in);
         (created, resolved)
     };
     let claim = |report: &str, key: &SigningKey, cert: &str| {
@@ -1395,124 +1402,49 @@ async fn a_persons_stand_in_certifies_the_tab_a_device_of_theirs_claimed() {
             "signature": hex::encode(signature),
         })
     };
-    let root_signed = |op: &str| {
-        let signed_at_ns = tilo_clock::unix_now_ns();
-        let digest = StandInRequest::signed_digest(op, &user, signed_at_ns).unwrap();
-        let signature = tilo_user_identity::StatementSigner::sign_digest(&person, &digest).unwrap();
-        serde_json::json!({
-            "op": op,
-            "user": hex::encode(user),
-            "signed_at_ns": signed_at_ns,
-            "signature": hex::encode(signature),
-        })
-    };
 
+    // A device that may not admit devices cannot certify the tab, so it
+    // cannot claim: refused, saying so by name. Nor can a claim signed by
+    // another key than the certificate's.
     let (_, resolved) = sign_in_code().await;
-    let (code, _, refused) = call_json(
-        addr,
-        wire::CLAIM_ROUTE,
-        &claim(&resolved.report, &cli_key, &cli_cert_hex),
-        None,
-    )
-    .await;
-    assert_eq!(code, 403, "no stand-in here yet: {refused}");
+    for (key, cert, reason) in [
+        (&member_key, &member_cert_hex, "cannot-admit"),
+        (&member_key, &cli_cert_hex, "signature"),
+    ] {
+        let (code, _, refused) = call_json(
+            addr,
+            wire::CLAIM_ROUTE,
+            &claim(&resolved.report, key, cert),
+            None,
+        )
+        .await;
+        assert_eq!(code, 403, "{refused}");
+        assert_eq!(refused["reason"], reason, "{refused}");
+    }
 
-    // The root has the host make its stand-in, and certifies it.
-    let (code, _, key) = call_json(addr, wire::STAND_IN_ROUTE, &root_signed("key"), None).await;
-    assert_eq!(code, 200, "{key}");
-    let wire::StandInReply::Key { key } = serde_json::from_value(key).unwrap() else {
-        panic!("a key")
-    };
-    let (code, _, again) = call_json(addr, wire::STAND_IN_ROUTE, &root_signed("key"), None).await;
-    assert_eq!(code, 200);
-    assert_eq!(
-        serde_json::from_value::<wire::StandInReply>(again).unwrap(),
-        wire::StandInReply::Key { key: key.clone() },
-        "one stand-in per person"
-    );
-    let mut forged = root_signed("key");
-    forged["user"] = serde_json::json!(hex::encode([9u8; 32]));
-    let (code, _, _) = call_json(addr, wire::STAND_IN_ROUTE, &forged, None).await;
-    assert_eq!(code, 403, "only a person's root makes their stand-in");
-    let mut stand_in_key = [0; 32];
-    hex::decode_to_slice(&key, &mut stand_in_key).unwrap();
-    let now = tilo_clock::unix_now_ns();
-    let mut stand_in_cert = tilo_user_identity::prepare_stand_in_cert(
-        user,
-        stand_in_key,
-        "Stand-in on this host",
-        now,
-        now + 24 * 60 * 60 * 1_000_000_000,
-    );
-    tilo_user_identity::sign_device_cert(&mut stand_in_cert, &person).unwrap();
-    let (code, _, kept) = call_json(
-        addr,
-        wire::STAND_IN_ROUTE,
-        &serde_json::json!({
-            "op": "certify",
-            "cert": hex::encode(postcard::to_allocvec(&stand_in_cert).unwrap()),
-        }),
-        None,
-    )
-    .await;
-    assert_eq!(code, 200, "{kept}");
-
-    // A claim needs a live certificate of a device of the person, signed
-    // by that device.
-    let (stranger_key, stranger_cert) = device(
-        &SigningKey::from_bytes(&[155; 32]),
-        156,
-        DeviceCapabilities::member(),
-    );
-    let stranger_hex = hex::encode(postcard::to_allocvec(&stranger_cert).unwrap());
-    let (code, _, _) = call_json(
-        addr,
-        wire::CLAIM_ROUTE,
-        &claim(&resolved.report, &stranger_key, &stranger_hex),
-        None,
-    )
-    .await;
-    assert_eq!(code, 403, "a person with no stand-in here");
-    let mut forged_cert = cli_cert.clone();
-    forged_cert.device_label = "Someone else".into();
-    let (code, _, _) = call_json(
-        addr,
-        wire::CLAIM_ROUTE,
-        &claim(
-            &resolved.report,
-            &cli_key,
-            &hex::encode(postcard::to_allocvec(&forged_cert).unwrap()),
-        ),
-        None,
-    )
-    .await;
-    assert_eq!(code, 403, "a certificate the root did not sign");
-    let (code, _, _) = call_json(
-        addr,
-        wire::CLAIM_ROUTE,
-        &claim(&resolved.report, &stranger_key, &cli_cert_hex),
-        None,
-    )
-    .await;
-    assert_eq!(code, 403, "signed by another key than the device's");
-
+    // A device that may admit devices claims, to certify the tab itself.
     let (created, resolved) = sign_in_code().await;
+    let report = resolved.report.clone();
     let (code, _, claimed) = call_json(
         addr,
         wire::CLAIM_ROUTE,
-        &claim(&resolved.report, &cli_key, &cli_cert_hex),
+        &claim(&report, &cli_key, &cli_cert_hex),
         None,
     )
     .await;
     assert_eq!(code, 200, "{claimed}");
-    let (code, _, _) = call_json(
-        addr,
-        wire::CLAIM_ROUTE,
-        &claim(&resolved.report, &cli_key, &cli_cert_hex),
-        None,
-    )
-    .await;
-    assert_eq!(code, 409, "claimed once");
+    let waiting = || async {
+        let (code, _, waiting) = call_json(
+            addr,
+            wire::WAITING_ROUTE,
+            &serde_json::json!({ "report": report }),
+            None,
+        )
+        .await;
+        assert_eq!(code, 200, "{waiting}");
+        serde_json::from_value::<wire::WaitingRequest>(waiting).unwrap()
+    };
+    assert_eq!(waiting().await.request, None, "the tab has not asked yet");
     let (_, _, polled) = call_json(
         addr,
         wire::FOLLOW_ROUTE,
@@ -1520,63 +1452,100 @@ async fn a_persons_stand_in_certifies_the_tab_a_device_of_theirs_claimed() {
         None,
     )
     .await;
-    let polled: wire::Polled = serde_json::from_value(polled).unwrap();
-    let claimed = polled.claimed.unwrap();
-    assert_eq!(claimed.user, hex::encode(user));
-    assert_eq!(claimed.by, "Claude Code on build-box");
+    let claimed: wire::Polled = serde_json::from_value(polled).unwrap();
+    let claimed = claimed.claimed.expect("the tab learns whom it signs in as");
     let mut invite = [0; 16];
     hex::decode_to_slice(&claimed.invite, &mut invite).unwrap();
 
     // The tab asks to be certified with that invite, as any new device asks.
-    let request_for = |device: &SigningKey, invite: [u8; 16]| {
-        let now = tilo_clock::unix_now_ns();
-        CertificationRequest {
-            version: tilo_user_identity::CERTIFICATION_SCHEMA_VERSION,
-            user_public_key: user,
-            device_public_key: device.verifying_key().to_bytes(),
-            device_label: "Firefox on laptop".into(),
-            requested: DeviceCapabilities::member(),
-            nonce: rand::random(),
-            invite,
-            issued_at_ns: now,
-            expires_at_ns: now + 2_000_000_000,
-            signature: [0; 64],
-        }
-        .sign(device)
-        .unwrap()
-    };
-    let ask = |device: SigningKey, invite: [u8; 16]| {
-        let host_addr = server.node_addr();
-        async move {
-            let endpoint = endpoint(&device).await;
+    let tab = SigningKey::from_bytes(&[184; 32]);
+    let now = tilo_clock::unix_now_ns();
+    let request = CertificationRequest {
+        version: tilo_user_identity::CERTIFICATION_SCHEMA_VERSION,
+        user_public_key: user,
+        device_public_key: tab.verifying_key().to_bytes(),
+        device_label: "Firefox on laptop".into(),
+        requested: DeviceCapabilities::member(),
+        nonce: rand::random(),
+        invite,
+        issued_at_ns: now,
+        expires_at_ns: now + 60_000_000_000,
+        signature: [0; 64],
+    }
+    .sign(&tab)
+    .unwrap();
+    let asking = {
+        let server_addr = server.node_addr();
+        let tab = tab.clone();
+        let request = request.clone();
+        tokio::spawn(async move {
+            let endpoint = endpoint(&tab).await;
             let outcome = tilo_server_client::certify::request_certification(
                 &endpoint,
-                host_addr,
-                request_for(&device, invite),
+                server_addr,
+                request,
                 |_| {},
             )
             .await
             .unwrap();
             endpoint.close().await;
             outcome
+        })
+    };
+
+    // The computer reads the tab's request back through the code.
+    let waited = tilo_test_env::within("the tab's request", async {
+        loop {
+            if let Some(waited) = waiting().await.request {
+                break waited;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
+    })
+    .await;
+    let waited: CertificationRequest = postcard::from_bytes(&hex::decode(waited).unwrap()).unwrap();
+    assert_eq!(waited, request);
+
+    // Only the root's certificate of exactly that request answers it.
+    let certify = |cert: &tilo_user_identity::DeviceCert| {
+        serde_json::json!({
+            "report": report,
+            "cert": hex::encode(postcard::to_allocvec(cert).unwrap()),
+        })
     };
-    let tab = SigningKey::from_bytes(&[157; 32]);
-    let outcome = tilo_test_env::within("the stand-in's answer", ask(tab.clone(), invite)).await;
-    let tilo_server_client::certify::CertificationOutcome::Issued { cert, .. } = outcome else {
-        panic!("the stand-in certifies the tab: {outcome:?}")
+    let mut forged = tilo_user_identity::issue_device_cert(
+        &waited,
+        &person,
+        &CertificationPolicy::browser(),
+        &RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )
+    .unwrap();
+    forged.signature[0] ^= 1;
+    let (code, _, _) = call_json(addr, wire::CERTIFY_ROUTE, &certify(&forged), None).await;
+    assert_eq!(code, 403, "a certificate the root did not sign");
+    let cert = tilo_user_identity::issue_device_cert(
+        &waited,
+        &person,
+        &CertificationPolicy::browser(),
+        &RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )
+    .unwrap();
+    let (code, _, said) = call_json(addr, wire::CERTIFY_ROUTE, &certify(&cert), None).await;
+    assert_eq!(code, 204, "{said}");
+    let (code, _, _) = call_json(addr, wire::CERTIFY_ROUTE, &certify(&cert), None).await;
+    assert_eq!(code, 409, "the claim certifies once");
+
+    let outcome = tilo_test_env::within("the tab's certificate", asking)
+        .await
+        .unwrap();
+    let CertificationOutcome::Issued { cert: issued, .. } = outcome else {
+        panic!("the claiming device certifies the tab: {outcome:?}")
     };
-    assert_eq!(cert.device_public_key, tab.verifying_key().to_bytes());
-    assert_eq!(cert.user_public_key, user);
-    assert!(
-        !cert.capabilities.can_admit_devices,
-        "a member, no approver"
-    );
-    assert_eq!(
-        cert.issuer.as_ref().map(|issuer| issuer.device_public_key),
-        Some(stand_in_key)
-    );
-    verify_device_cert_at(&cert, tilo_clock::unix_now_ns()).unwrap();
+    assert_eq!(issued, cert);
+    assert_eq!(issued.issuer, None, "the root signed it");
+    verify_device_cert_at(&issued, tilo_clock::unix_now_ns()).unwrap();
     let (_, _, polled) = call_json(
         addr,
         wire::FOLLOW_ROUTE,
@@ -1587,44 +1556,11 @@ async fn a_persons_stand_in_certifies_the_tab_a_device_of_theirs_claimed() {
     let polled: wire::Polled = serde_json::from_value(polled).unwrap();
     assert!(polled.steps.contains(&wire::Step::Approved), "{polled:?}");
 
-    // The invite approves no second device, and a request nobody claimed
-    // is not the stand-in's to answer.
-    for (seed, invite) in [(158, invite), (159, [0x42; 16])] {
-        let outcome = tilo_test_env::within(
-            "a refusal",
-            ask(SigningKey::from_bytes(&[seed; 32]), invite),
-        )
-        .await;
-        assert!(
-            !matches!(
-                outcome,
-                tilo_server_client::certify::CertificationOutcome::Issued { .. }
-            ),
-            "{outcome:?}"
-        );
-    }
-
-    // Retired, the stand-in approves nothing, and its certificate holds.
-    let (code, _, retired) =
-        call_json(addr, wire::STAND_IN_ROUTE, &root_signed("retire"), None).await;
-    assert_eq!(code, 200, "{retired}");
-    let (_, resolved) = sign_in_code().await;
-    let (code, _, _) = call_json(
-        addr,
-        wire::CLAIM_ROUTE,
-        &claim(&resolved.report, &cli_key, &cli_cert_hex),
-        None,
-    )
-    .await;
-    assert_eq!(code, 403, "no stand-in approves after it is retired");
-    verify_device_cert_at(&cert, tilo_clock::unix_now_ns()).unwrap();
-    assert!(
-        std::fs::read_dir(server.state_root().join("stand-ins"))
-            .unwrap()
-            .next()
-            .is_none(),
-        "the key is forgotten"
-    );
+    // The tab is the person now: it enters their workspace.
+    workspaces
+        .enter(&workspace.workspace, &issued)
+        .await
+        .expect("the person's own device enters their workspace");
 
     stop(server, serving).await;
 }
@@ -1666,7 +1602,7 @@ async fn a_computer_setting_up_for_a_tab_not_yet_let_in_waits_for_the_tab() {
     let state = tempfile::tempdir().unwrap();
     let server = server_at(&state, host.identity(), ServerConfig::default()).await;
     let web = Arc::new(web_of(&server, &host));
-    web.serve_stand_ins();
+    web.serve_code_requests();
     let (addr, serving) = serve_web(Arc::clone(&web)).await;
 
     // The person's first tab: its root, and the link it writes into the code

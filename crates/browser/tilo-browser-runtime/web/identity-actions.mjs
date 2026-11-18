@@ -174,16 +174,6 @@ export async function saveRecoveryKey(recoveryKey, {userPublicKey, name = 'Tilo'
  * ago and it works once, for `INVITE_TTL_MS`, in this tab only. The root
  * signs its certificate here and never leaves. `onAgent({label})` hears
  * that it signed in.
- * `keepStandIn()` gives a person set up through an agent a stand-in on
- * their host, so that clearing this tab, the one place their root is, does
- * not lose them (`standIn.keep()`, the shared client's `keepStandIn`: the
- * host makes a key, the root certifies it here as an approver of the
- * person's new devices, and the host keeps the certificate; it resolves to
- * the key). Once the person keeps their root with a passkey, the root revokes
- * the stand-in as it revokes any of their devices (`standIn.revoke(key)`,
- * signed by the root and kept with the person, which every session of theirs
- * announces to its host) and the host forgets it (`standIn.retire()`).
- * `standInStore` remembers which key it was.
  */
 export function createIdentityActions({
   identity, hosts = () => [], lookups = hosts, rpId = globalThis.location?.hostname, name = () => undefined,
@@ -195,17 +185,8 @@ export function createIdentityActions({
   pause = () => true, later = (run, ms) => setTimeout(run, ms), session = globalThis.sessionStorage,
   searchChord = 'Ctrl+K', showPairLink = () => ({close() {}}), askPairing = () => ({close() {}}),
   invites = openInvites({now}), passkeys = passkeysUsable, onAgent = () => {},
-  standIn = null, standInStore = null, profiled = () => {}, showAgentSetup = null, setupDue = () => false,
+  profiled = () => {}, showAgentSetup = null, setupDue = () => false,
 }) {
-  const standInKey = `tilo-stand-in:${identity.userPublicKey}`;
-  const remembered = () => { try { return standInStore?.getItem(standInKey) ?? null; } catch { return null; } };
-  const retireStandIn = async () => {
-    const key = remembered();
-    if (!key || !standIn) return;
-    await standIn.revoke(key);
-    await standIn.retire();
-    try { standInStore?.removeItem(standInKey); } catch { /* Forgotten on the host already. */ }
-  };
   let mount;
   const offered = new Set();
   // Learnt on attach: without passkeys a recovery key is the way to keep.
@@ -358,17 +339,6 @@ export function createIdentityActions({
   };
   const controller = {
     actions,
-    /** A stand-in for this person on their host, while their root is in
-     * this tab alone: resolves to its key, or null where there is none to
-     * make (kept already, or no host to keep one). */
-    async keepStandIn() {
-      if (identity.kept || !standIn) return null;
-      const existing = remembered();
-      if (existing) return existing;
-      const key = await standIn.keep();
-      try { standInStore?.setItem(standInKey, key); } catch { /* Made again next time: the host names the same key. */ }
-      return key;
-    },
     /** A pairing link for an agent set up from this tab: `{link, invite,
      * expiresAt}`, opening `workspace` (on the same host) when named, else
      * this one. `adopt` (`{id, expiresAt}`) is an invite this tab made before
@@ -450,8 +420,6 @@ export function createIdentityActions({
           await identity.keepWithPasskey({rpId, userName: name()});
           refresh();
           await publishEverywhere();
-          // Kept with a passkey: the stand-in approves nothing from now on.
-          await retireStandIn().catch(onError);
           // The next step, asked as the passkey sheet closes.
           offer({...RECOVERY, title: 'Save it'}, 'Also save a recovery key?',
             'In case this passkey is ever lost: to your password manager, or as a file.');

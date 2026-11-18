@@ -47,7 +47,7 @@ function fixture({copy, site, stored = new Map(), online = () => true, clock = 0
     clipboard: {copy: copy ?? (text => { copied.push(text); return Promise.resolve(); })},
     storage: signInOnly ? null : {setItem: (key, value) => stored.set(key, value), getItem: key => stored.get(key) ?? null},
     now: () => state.clock, every: (tick, ms) => { state.ticks = tick; state.every = ms; return () => { state.ticks = null; }; },
-    later: (run, ms) => { const id = ++state.id; state.timers.set(id, {run, ms}); return id; },
+    later: (callback, ms) => { const id = ++state.id; state.timers.set(id, {run: callback, ms}); return id; },
     clear: id => state.timers.delete(id),
     reload: () => { state.reloads += 1; }, online: () => online()});
   // One follow round: the tick, and the host's answer.
@@ -63,7 +63,7 @@ function fixture({copy, site, stored = new Map(), online = () => true, clock = 0
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 
 test('the setup prompt is one line: install, log in with the code by the installed path, follow what tilo says', () => {
-  // The installer runs `login` with the `tilo` it just put in place, by its full path: an agent's
+  // The installer starts `login` with the `tilo` it just put in place, by its full path: an agent's
   // shell on a fresh machine has no ~/.local/bin on its PATH (dist/install/tilo.sh).
   assert.equal(setupPrompt(CODE),
     'Set up Tilo for me: run curl -fsSL tilo.sh | sh -s login K7Q-MX2P, then do what it tells you.');
@@ -515,6 +515,26 @@ test('returning: a sign-in the page could not finish says why', async () => {
   await tick();
   await settle();
   assert.deepEqual(last('failed'), ['failed', 'This tab isn’t let in yet. Try again in a moment.', 'sign-in']);
+});
+
+test('returning: a sign-in the agent gave up on says its reason alone, and stops following', async () => {
+  const {run, last, names, tick} = fixture();
+  const code = fakeCode();
+  run.offerAgentSignIn(maker(code).make);
+  await settle();
+  await run.signInWithAgent();
+  await settle();
+  const reason = 'This computer can’t sign the tab in: it doesn’t hold your Tilo identity.';
+  Object.assign(code.polled, {resolved: true, steps: ['resolved', 'failed'], agent: 'Claude Code', detail: reason});
+  await tick();
+  await settle();
+  assert.deepEqual(last('failed'), ['failed', reason, 'sign-in']);
+  assert.deepEqual(stepLines(code.polled, 'sign-in'), [{text: 'Claude Code could not sign this tab in', failed: true}],
+    'nothing says it is still finding you');
+  const said = names().length;
+  await tick();
+  await settle();
+  assert.equal(names().length, said, 'the screen follows the code no longer');
 });
 
 test('signing in from the wait list: the prompt shows at once, a claim signs the tab in, nothing is kept', async () => {

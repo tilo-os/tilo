@@ -497,7 +497,7 @@ function pairingWait(code, whose, where, onStop) {
 
 /** Said on a tab its person signed in with their agent while its pairing
  * goes through (`ownPairing`): nothing asks the person anything, since
- * their stand-in approves the request their own computer's claim named, so
+ * their own computer certifies the request its claim named, so
  * the tab shows no code and points at no other device. */
 function pairingSigningIn() {
   const card = pairCard('pair-own', PAIRING_SIGNING_IN, 'status');
@@ -2216,7 +2216,6 @@ function keepIdentity({peer, mount, home, name, runtime, link, naming, photos}) 
     hosts: () => membershipOrigins(identity.userPublicKey),
     lookups: () => [...membershipOrigins(), ...listedWorkspaces({home}).map(workspace => workspace.host.origin)],
     pause: inputPause(), searchChord: mac ? '⌘K' : 'Ctrl+K', showPairLink: pairLinkSheet, askPairing: pairingAsk,
-    standIn: standInOf({peer, identity, runtime}), standInStore: globalThis.localStorage,
     profiled: at => peer?.setProfileChanged?.(at),
     // The card's "Connect an agent" is the first screen's own setup, shown
     // again with a fresh code: the same prompt and the same MCP address the
@@ -2343,8 +2342,7 @@ const LET_IN_MS = 30_000;
  * workspace on that host, as the host answers it once this tab is let in
  * (`askOwnWorkspace`): made then on a first visit, under an id the host
  * chooses, so the link names a workspace the host knows. The tab approves the
- * agent's device through the host's published address, and gives the person
- * a stand-in there.
+ * agent's device through the host's published address.
  */
 function agentSetupCodes({origin, identity, runtime, link, workspace = null}) {
   const host = new URL(origin).origin;
@@ -2354,12 +2352,7 @@ function agentSetupCodes({origin, identity, runtime, link, workspace = null}) {
     if (actions) return actions;
     const links = await link;
     actions = createIdentityActions({identity, pairing: pairingAt({origin: host, identity, runtime, link: links}),
-      standIn: standInOf({peer: {origin: host}, identity, runtime}), standInStore: globalThis.localStorage,
-      passkeys: () => false,
-      // The person's agent is in, so their root is worth not losing with
-      // this tab: a stand-in on the host keeps them, made now and not for
-      // every visitor shown a prompt.
-      onAgent: () => { void actions?.keepStandIn().catch(error => console.warn('first run: stand-in', error)); }});
+      passkeys: () => false});
     agentWatchers.add(actions);
     return actions;
   };
@@ -2428,7 +2421,7 @@ function offerFirstRunCodes({origin, identity, runtime, link}) {
   const {codes, ours} = setup;
   // Claimed by a device of the person: this tab asks to be certified as a
   // device of theirs with the invite the claim named, as a pairing link
-  // does, and their stand-in on the host approves exactly that request.
+  // does, and the device that claimed it certifies exactly that request.
   // The link opens the workspace this tab is let into, so it waits for that.
   const signIn = async claimed => {
     const peer = await Promise.race([pageLetIn, new Promise(resolve => setTimeout(resolve, LET_IN_MS, null))]);
@@ -2445,7 +2438,7 @@ function offerFirstRunCodes({origin, identity, runtime, link}) {
  * Sign this tab in as the person whose device claimed its sign-in code
  * (`{user, invite}`): it opens `workspace` on the host at `origin` as a new
  * device of theirs, asking to be certified with the invite the claim named,
- * which their stand-in there approves, and then their own workspace.
+ * which the device that claimed it certifies, and then their own workspace.
  */
 async function signInAs({user, invite}, {origin, workspace}, link) {
   const url = (await link).format({mode: 'desktop', target: {scope: {kind: 'workspace', host: origin, workspace}}});
@@ -2536,23 +2529,6 @@ async function ensureOwnWorkspace(peer, store = globalThis.localStorage) {
 }
 
 const ownChoice = own => ({id: `${OPEN_WORKSPACE}${own.id}`, name: own.name ?? 'My workspace', origin: own.origin, workspace: own.id});
-
-/**
- * The person's stand-in on the host `peer` is in, where the runtime can
- * certify one with the root this tab holds and revoke it again. The root
- * revokes it by signing, as it revokes any of the person's devices: the
- * entry is kept with the person and every session of theirs announces it to
- * its host, so the stand-in approves nothing from then on.
- */
-function standInOf({peer, identity, runtime}) {
-  if (!peer?.origin || typeof runtime?.keepStandIn !== 'function' || typeof identity?.revokeDevice !== 'function') return null;
-  const post = httpsPost(peer.origin);
-  return {
-    keep: () => runtime.keepStandIn(post, identity),
-    retire: () => runtime.retireStandIn(post, identity),
-    revoke: key => identity.revokeDevice(key),
-  };
-}
 
 /**
  * The login codes of the host at `origin`, through the one client of them

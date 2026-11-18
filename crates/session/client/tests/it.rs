@@ -122,8 +122,6 @@ mod routed_actions;
 mod server_restart;
 #[path = "session_store.rs"]
 mod session_store;
-#[path = "stand_in_revocation.rs"]
-mod stand_in_revocation;
 #[path = "surface_by_hash.rs"]
 mod surface_by_hash;
 #[path = "voice_browsers.rs"]

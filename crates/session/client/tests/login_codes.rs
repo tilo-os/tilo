@@ -1,7 +1,7 @@
-//! A host's login codes and the person's stand-in, through the one client of them
+//! A host's login codes, through the one client of them
 //! (`tilo_server_client::login_code`) that both the tab (through the runtime) and `tilo login` ask
 //! with: the tab makes a code and follows it, the computer resolves it, reports its steps and
-//! claims a sign-in code, and the root keeps and retires its stand-in.
+//! claims a sign-in code as a device that may admit devices.
 
 #![allow(
     clippy::unwrap_used,
@@ -16,8 +16,8 @@ use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_server_client::invite::guest_certificate;
 use tilo_server_client::login_code;
-use tilo_server_protocol::login_code::{Report, Step};
-use tilo_user_identity::{DeviceCapabilities, UserIdentity};
+use tilo_server_protocol::login_code::{ClaimRefused, Report, Step};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, UserIdentity};
 
 use crate::support::{enrol, enter as enter_as, entry_grant, start_workspace_host};
 
@@ -115,17 +115,8 @@ async fn a_tab_and_a_computer_go_through_a_code_with_the_one_client() {
     let spent = login_code::resolve(&*https, &made.code).await.unwrap_err();
     assert_eq!(spent.code(), "unknown", "{spent:?}");
 
-    // A sign-in needs the person's stand-in here, which the root keeps: the host makes a key and
-    // the root certifies it.
-    let key = login_code::keep_stand_in(&*https, &bob).await.unwrap();
-    assert_eq!(key.len(), 64);
-    assert_eq!(
-        login_code::keep_stand_in(&*https, &bob).await.unwrap(),
-        key,
-        "asked again, the host names the same key"
-    );
-
-    // Signing in: a device of Bob's claims the code the fresh tab made.
+    // Signing in: a device of Bob's that may admit devices claims the code the fresh tab made;
+    // one that may not is refused, saying why.
     let asking = login_code::create(&*https, None).await.unwrap();
     login_code::follow(&*https, &asking.follow, Some(offer(&asking, None)))
         .await
@@ -133,7 +124,7 @@ async fn a_tab_and_a_computer_go_through_a_code_with_the_one_client() {
     let resolved = login_code::resolve(&*https, &asking.code).await.unwrap();
     assert!(resolved.link.is_none());
     let laptop = new_key();
-    let laptop_cert = guest_certificate(
+    let member_cert = guest_certificate(
         &bob,
         laptop.verifying_key().to_bytes(),
         "Claude Code on build-box",
@@ -141,6 +132,29 @@ async fn a_tab_and_a_computer_go_through_a_code_with_the_one_client() {
     )
     .await
     .unwrap();
+    let member = login_code::claim(
+        &*https,
+        &resolved.report,
+        hex::encode(postcard::to_allocvec(&member_cert).unwrap()),
+        &laptop,
+        tilo_clock::unix_now_ns(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        member.claim_refused(),
+        Some(ClaimRefused::CannotAdmit),
+        "{member:?}"
+    );
+    let mut laptop_cert = DeviceCert {
+        capabilities: DeviceCapabilities {
+            can_admit_devices: true,
+            ..DeviceCapabilities::member()
+        },
+        signature: [0; 64],
+        ..member_cert
+    };
+    tilo_user_identity::sign_device_cert(&mut laptop_cert, &bob).unwrap();
     let postcard = hex::encode(postcard::to_allocvec(&laptop_cert).unwrap());
     login_code::claim(
         &*https,
@@ -174,10 +188,11 @@ async fn a_tab_and_a_computer_go_through_a_code_with_the_one_client() {
     )
     .await
     .unwrap_err();
-    assert_ne!(forged.code(), "unreachable", "{forged:?}");
-
-    // Kept another way now: the host forgets the stand-in.
-    login_code::retire_stand_in(&*https, &bob).await.unwrap();
+    assert_eq!(
+        forged.claim_refused(),
+        Some(ClaimRefused::Signature),
+        "{forged:?}"
+    );
 
     tab.close();
     drop(host.web);

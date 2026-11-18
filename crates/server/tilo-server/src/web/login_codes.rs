@@ -25,9 +25,8 @@
 //! the minute. A budget spent refuses every resolve until the minute ends,
 //! so the guesses it would have let through are never looked up.
 //!
-//! A sign-in code is claimed by a device of a person; the claim mints the
-//! one invite that person's stand-in ([`super::stand_in`]) approves a
-//! certification request for, once.
+//! A sign-in code is claimed by a device of a person that may admit devices;
+//! the claim mints the one invite that device certifies a request for, once.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -86,9 +85,16 @@ struct Claim {
     invite: [u8; 16],
     by: String,
     expires_at_ms: u64,
-    /// The stand-in approved the request naming the invite: it approves no
+    /// The request naming the invite was approved: nothing approves a
     /// second one.
     approved: bool,
+}
+
+/// An open claim, as the computer that made it names it by its report.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct OpenClaim {
+    pub(super) user: [u8; 32],
+    pub(super) invite: [u8; 16],
 }
 
 /// What a computer did with a code it resolved.
@@ -591,7 +597,7 @@ impl LoginCodes {
     }
 
     /// Claim the sign-in code resolved with `report` for `user`, by device
-    /// `by`: mint the invite that person's stand-in approves.
+    /// `by`: mint the invite that device certifies a request for.
     pub(super) fn claim(
         &self,
         report: &str,
@@ -627,6 +633,27 @@ impl LoginCodes {
                 .values()
                 .filter_map(|entry| entry.resolution.as_ref()?.claim.as_ref())
                 .any(|claim| open_claim(claim, user, invite, now_ms))
+        })
+    }
+
+    /// The open claim the computer that resolved a code as `report` made.
+    pub(super) fn claim_of(&self, report: &str, now_ms: u64) -> Result<OpenClaim, Refusal> {
+        self.pruned(now_ms, |state| {
+            let claim = state
+                .by_report(report)?
+                .resolution
+                .as_ref()
+                .and_then(|resolved| resolved.claim.as_ref())
+                .ok_or(Refusal::Conflict("this code is not claimed"))?;
+            if !open_claim(claim, &claim.user, &claim.invite, now_ms) {
+                return Err(Refusal::Conflict(
+                    "this code's claim was approved already, or ran out",
+                ));
+            }
+            Ok(OpenClaim {
+                user: claim.user,
+                invite: claim.invite,
+            })
         })
     }
 
@@ -1094,7 +1121,12 @@ mod tests {
             assert!(resolved.sign_in && resolved.link.is_none());
             let user = [5; 32];
             codes
-                .claim(&resolved.report, user, "Claude Code on box".into(), NOW)
+                .claim(
+                    &resolved.report,
+                    user,
+                    "Claude Code on box".into(),
+                    NOW,
+                )
                 .unwrap();
             assert_eq!(
                 codes.claimable(&resolved.report, NOW),
@@ -1112,7 +1144,10 @@ mod tests {
             assert!(!codes.claimed(&[6; 32], &invite, NOW), "another person");
             assert!(codes.claimed(&user, &invite, NOW));
             assert!(codes.take_claim(&user, &invite, NOW));
-            assert!(!codes.take_claim(&user, &invite, NOW), "once");
+            assert!(
+                !codes.take_claim(&user, &invite, NOW),
+                "once"
+            );
             codes.approved(&user, &invite);
             assert_eq!(
                 codes
