@@ -1098,3 +1098,22 @@ paths = ["crates/agent/agent-session/tests/workspace_actions/packaged_model.rs"]
 reason = "A lane of a commit graph, as the stored history names it: a column a commit sits in, outside Tilo's vocabulary."
 words = ["lane"]
 paths = ["apps/git-client-model/src/model.rs"]
+
+[[allow]]
+reason = "The machine a VM runs on and the machine's own files and network as the guest sees them, which the glossary keeps as host: tilo-vm builds images for it and boots guests on it."
+words = ["host"]
+paths = ["crates/dev/tilo-vm/*", "crates/dev/tilo-vmd/*"]
+
+[[allow]]
+reason = "The two sides of a Linux VM: the host machine runs the domain and speaks `HostMessage` to its guest, and the hosted-VM service places guests on the host it runs them on."
+words = ["host"]
+paths = [
+    "crates/runtime/linux-vm/*",
+    "crates/runtime/linux-vm-agent/*",
+    "crates/runtime/linux-vm-protocol/*",
+]
+
+[[allow]]
+reason = "The machine a container runs on, and the web host names the tilo.sh stack serves and checks: origins, `Host` headers and ssh `Host` entries, all network names."
+words = ["host"]
+paths = ["os/containers/*"]
