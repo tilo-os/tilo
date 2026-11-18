@@ -1198,8 +1198,9 @@ impl Workspaces {
             return Ok(None);
         }
         let mut refusal = None;
-        // Its own person's workspace is the work setting's to take: for them,
-        // this host is one of their devices, not a host that let them in.
+        // A workspace its own person governs was taken above, whatever the work
+        // setting; this host keeps another's only for an owner it keeps
+        // workspaces for.
         let others = super::super::owners(request)?
             .into_iter()
             .filter(|owner| *owner != host.cert.user_public_key);
