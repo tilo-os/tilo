@@ -2333,7 +2333,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// a window shows: without it History lists nothing, since what it lists is the workspace's
     /// history and not the frame's own reading of the changes.
     #[cfg(feature = "test-support")]
-    pub fn serve_history(&mut self) {
+    pub fn serve_history(&self) {
         let doc = self.read_document(Clone::clone);
         ui_core::testing::serve_history(&doc);
     }
