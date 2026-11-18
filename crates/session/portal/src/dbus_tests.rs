@@ -127,13 +127,16 @@ async fn close(from: &zbus::Connection, request: &str) -> zbus::Result<()> {
 
 /// Wait until question `handle` is asked.
 pub(crate) async fn asked(questions: &Questions, handle: &str) {
-    for _ in 0..500 {
-        if questions.question(handle).is_some() {
-            return;
-        }
+    // A loaded runner answers the bus late, not wrongly: wait on the shared
+    // hang bound rather than a count of polls.
+    let deadline = tilo_test_env::hang_deadline();
+    while questions.question(handle).is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{handle} was never asked"
+        );
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    panic!("{handle} was never asked");
 }
 
 const REQUEST: &str = "/org/freedesktop/portal/desktop/request/1_9/t1";
@@ -326,13 +329,14 @@ async fn a_departed_frontend_takes_its_requests_along() {
     asked(&bed.questions, &handle).await;
     call.abort();
     drop(bed.frontend);
-    for _ in 0..500 {
-        if bed.questions.question(&handle).is_none() {
-            return;
-        }
+    let deadline = tilo_test_env::hang_deadline();
+    while bed.questions.question(&handle).is_some() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the question outlived its frontend"
+        );
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    panic!("the question outlived its frontend");
 }
 
 /// The request path the frontend makes for a call by `requester`.
@@ -457,13 +461,14 @@ async fn a_screensaver_hold_is_published_and_ends_with_its_client() {
     assert_eq!(published[0].children.len(), 1, "the person sees the hold");
     drop(bed.stranger);
     drop(player);
-    for _ in 0..500 {
-        if bed.portal.inhibitions().held().is_empty() {
-            return;
-        }
+    let deadline = tilo_test_env::hang_deadline();
+    while !bed.portal.inhibitions().held().is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the hold outlived its client"
+        );
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    panic!("the hold outlived its client");
 }
 
 #[tokio::test(flavor = "multi_thread")]

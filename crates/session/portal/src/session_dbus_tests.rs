@@ -249,13 +249,16 @@ fn nodes(results: &HashMap<String, OwnedValue>) -> Vec<u32> {
 }
 
 async fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
-    for _ in 0..500 {
-        if done() {
-            return;
-        }
+    // A loaded runner answers late, not wrongly: wait on the shared hang
+    // bound rather than a count of polls.
+    let deadline = tilo_test_env::hang_deadline();
+    while !done() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{what} never happened"
+        );
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    panic!("{what} never happened");
 }
 
 #[tokio::test(flavor = "multi_thread")]
