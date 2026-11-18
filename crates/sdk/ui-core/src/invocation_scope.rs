@@ -324,7 +324,7 @@ impl ResourceInvocationScope {
     /// Who the invocation was admitted for: the actor it was authenticated as and the presence
     /// set for it.
     pub fn invoker(&self) -> tilo_actions::ActionInvoker {
-        self.lease.request.invoker()
+        self.lease.request().invoker()
     }
 
     pub(crate) fn for_owner(
