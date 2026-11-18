@@ -118,6 +118,7 @@ class WrapperTests(unittest.TestCase):
             (tree / ".config").mkdir()
             programs.mkdir()
             shutil.copy(TOOLS / "ci/nextest.sh", tree / "tools/ci/nextest.sh")
+            shutil.copy(TOOLS / "ci/handed.sh", tree / "tools/ci/handed.sh")
             shutil.copy(capability.MANIFEST, tree / ".config/nextest-capabilities.toml")
             given, asked = Path(work) / "cargo", Path(work) / "python"
             asked.touch()

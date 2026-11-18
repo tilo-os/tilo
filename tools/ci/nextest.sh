@@ -6,7 +6,12 @@
 # It prepares what the packages under test need beyond the builder image,
 # then runs the command: a nextest run sets up its test environment itself
 # (the ci profile's setup scripts, .config/nextest.toml), wherever cargo runs
-# it; any other command runs under tools/test-env.sh. Without an -E of its
+# it; any other command runs under tools/test-env.sh. What only a package's
+# tests need (its native images, the PDF sandbox, the emulated TPM, a render
+# helper, the PAM module) is a setup step of that profile too: in this
+# wrapper's environment every one of them would key each build script's and
+# proc macro's cache entry, so jobs testing different packages would share no
+# build. Without an -E of its
 # own, the run leaves out the visual goldens (they run alone, on their image),
 # as .config/nextest-filters.toml says. With one the filter is left as given,
 # but for the tests whose capability this machine lacks
@@ -101,46 +106,11 @@ if (( nextest )) && [[ " $* " == *" -p "* || " $* " == *" --package "* ]]; then
     arguments+=("${unify[@]}")
 fi
 
-# Only the NTFS helper's own tests read the native images, which take minutes to build.
-if tests tilo-ntfs-helper; then export TILO_TEST_NTFS_FIXTURES=1; else export TILO_TEST_NTFS_FIXTURES=0; fi
-
-# Where the node's kernel can enforce Landlock, the PDF tests require the helper's sandbox instead
-# of letting an unconfined helper stand down (tools/ci/require-pdf-sandbox.sh).
-if tests tilo-pdf pdf-viewer tilo-thumbnail; then
-    pdf_sandbox=$(bash "$root/tools/ci/require-pdf-sandbox.sh")
-    export TILO_REQUIRE_PDF_SANDBOX=$pdf_sandbox
-fi
-
-# The artifact a run was handed, if any: t builds it once in the family's build (t.toml's `starts`)
-# and names it to every shard, so a shard builds nothing. Built here instead, every shard of the
-# package compiled the artifact's ~1,000 units again. A bin is named as NEXTEST_BIN_EXE_<bin>,
-# nextest's own name for a package's binaries; a cdylib as T_STARTED_CDYLIB_<lib>, which t sets and
-# nextest never does. A run handed none (a developer's) builds it below.
-# A hand that cannot be used is the handoff's fault, said as such: building here would hide it and
-# compile the artifact in every shard again (as tools/ci/capability_filter.py answers for the probe).
-handed() { # VARIABLE, the test its file must pass, and what a file of its kind is
-    local path
-    path=$(printenv "$1" || true)
-    if [[ -n $path ]] && ! test "$2" "$path"; then
-        echo "nextest.sh: $1 names $path, which is not $3" >&2
-        exit 1
-    fi
-    [[ -z $path ]] || printf '%s' "$path"
-}
-handed_bin() { handed "NEXTEST_BIN_EXE_$1" -x an executable; }
-
-# An agent's host answers video renders in the `tilo-video-render` helper, which no
-# package depends on; named explicitly, it is found also where an archive of
-# test binaries runs away from the build directory.
-if tests tilo-agent-session; then
-    path=$(handed_bin tilo-video-render)
-    if [[ -n $path ]]; then
-        export TILO_VIDEO_RENDER=$path
-    else
-        cargo build --locked -p tilo-video-render --bin tilo-video-render
-        export TILO_VIDEO_RENDER="${CARGO_TARGET_DIR:-$root/target}/debug/tilo-video-render"
-    fi
-fi
+# The programs the tests of these packages start, handed by t (tools/ci/handed.sh) or, for a
+# developer's job, built here. Neither is a variable of the environment: only the programs the
+# tests find where the build left them.
+# shellcheck source=tools/ci/handed.sh
+source "$root/tools/ci/handed.sh"
 
 # The app-cli and package-service trust tests execute the installer, which no package
 # depends on. A run handed it has it where the build left it, beside the tests' own build.
@@ -155,27 +125,6 @@ fi
 if tests tilo-agent-session tilo-session; then
     path=$(handed_bin tilolang-process)
     [[ -n $path ]] || cargo build --locked -p tilolang-process --bin tilolang-process
-fi
-
-# The sign-in and rollback tests observe an emulated TPM, which the builder has
-# (dist/ci/install-build-deps.sh): one that cannot start it fails instead of
-# passing by skipping.
-if tests tilo-auth tilo-rollback tilo-test-env; then
-    export TILO_REQUIRE_SWTPM=1
-fi
-
-# pam_tilo's tests load the module as libpam does: the cdylib, which no test binary links and an
-# archive of test binaries does not carry. The family's build makes it (t.toml's `starts`,
-# `pam-tilo:cdylib:pam_tilo`) and names it to every shard as T_STARTED_CDYLIB_pam_tilo; a run
-# handed none (a developer's) builds it.
-if tests pam-tilo; then
-    path=$(handed T_STARTED_CDYLIB_pam_tilo -f a file)
-    if [[ -n $path ]]; then
-        export TILO_PAM_TILO_MODULE=$path
-    else
-        cargo build --locked -p pam-tilo --lib
-        export TILO_PAM_TILO_MODULE="${CARGO_TARGET_DIR:-$root/target}/debug/libpam_tilo.so"
-    fi
 fi
 
 if (( nextest && ! explicit )); then

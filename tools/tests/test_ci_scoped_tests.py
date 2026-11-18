@@ -63,7 +63,8 @@ class ScopedTestsTests(unittest.TestCase):
         ui = {"package": "tilo-ui", "test": "it", "filter": "binary(it) and test(/^audit::/)"}
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for name in ("run_scoped_tests.py", "nextest.sh", "package_features.py"):
+            for name in ("run_scoped_tests.py", "nextest.sh", "handed.sh",
+                         "package_features.py"):
                 source = MODULE_PATH.parent / name
                 (root / "tools/ci").mkdir(parents=True, exist_ok=True)
                 (root / "tools/ci" / name).write_bytes(source.read_bytes())

@@ -128,7 +128,8 @@ env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "
 # The Lounge tests start the workspace service, which `tilo-server` has only with `agents`, for both
 # packages whose tests start it: a featured artifact is built in an invocation of its own, so it
 # moves no unit of this family's build. The pam-tilo tests load the PAM module as libpam does:
-# this family's build makes the cdylib and every shard is told its file as T_STARTED_CDYLIB_pam_tilo.
+# this family's build makes the cdylib and every shard is told its file as T_STARTED_CDYLIB_pam_tilo,
+# which the pam-module setup step hands to the tests (.config/nextest.toml).
 # The server's coding-agent tests start the guest's own agent program in its serving mode, as the
 # machine-siblings setup names it.
 starts = { tilo-session = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "chat:chat", "launcher:tilo-launcher", "tilo-runtime:tilo-runtime", "tasks:tasks", "passwords:passwords", "model-providers:model-providers", "tilo-server:bin:tilo-server=agents", "tilolang-process:tilolang-process"], tilo-session-client = ["tilo-server:bin:tilo-server=agents"], tilo-quick-settings = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "tilolang-process:tilolang-process", "launcher:tilo-launcher"], package-service = ["install:tilo-install"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], settings = ["tilo-test-env:tilo-capability-probe"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe"], tilo-server = ["linux-vm-agent:tilo-linux-vm-agent"] }
@@ -156,10 +157,10 @@ isolation = { nested = ["launcher", "runtime-bundle", "tilo-sandbox-core", "tilo
 env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "1" }
 # The programs of other packages these tests find beside their own build: the installer the app
 # CLI's install tests run, the render helper an agent's host renders video in, and the tilolang
-# host a task's programs run in. Each shard is
-# handed them as the test family's are; tools/ci/nextest.sh built them only where it was named
-# the package, and a shard names none. So is the capability probe a run of a package
-# .config/nextest-capabilities.toml names runs first.
+# host a task's programs run in. Each shard is handed them as the test family's are; a job handed
+# none builds it (tools/ci/nextest.sh, or the render helper's setup step, .config/nextest.toml),
+# and a shard names none. So is the capability probe a job of a package
+# .config/nextest-capabilities.toml names first.
 starts = { app-cli = ["install:tilo-install"], tilo-agent-session = ["tilo-video-render:tilo-video-render", "linux-vm-agent:tilo-linux-vm-agent", "tilolang-process:tilolang-process"], env-tools = ["tilo-test-env:tilo-capability-probe"], runtime-bundle = ["tilo-test-env:tilo-capability-probe"], ush = ["tilo-test-env:tilo-capability-probe", "linux-vm-agent:tilo-linux-vm-agent"] }
 matrix = { arch = ["x86_64", "aarch64"] }
 

@@ -57,6 +57,22 @@ command = ["bash", "tools/test-env-setup.sh", "ntfs"]
 [scripts.setup.as-root]
 command = ["bash", "tools/test-env-setup.sh", "root"]
 
+# The values only some packages' tests need. They are handed to the test processes, never to the
+# job's environment: a variable there keys every build script's and proc macro's cache entry by
+# it, and these differ per package (the PDF sandbox, the TPM, an agent's render helper, the PAM
+# module), so jobs testing different packages would share no build.
+[scripts.setup.swtpm]
+command = ["bash", "tools/test-env-setup.sh", "swtpm"]
+
+[scripts.setup.pdf-sandbox]
+command = ["bash", "tools/test-env-setup.sh", "pdf-sandbox"]
+
+[scripts.setup.video-render]
+command = ["bash", "tools/test-env-setup.sh", "video-render"]
+
+[scripts.setup.pam-module]
+command = ["bash", "tools/test-env-setup.sh", "pam-module"]
+
 # The programs the session's tests start beside their own: the lock screen,
 # the on-screen keyboard and the quick-settings panel are apps of other
 # packages, tilolang-process runs a task's programs, and the launcher is what
@@ -274,6 +290,29 @@ setup = "ntfs-fixtures"
 platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(tilo-sandbox) and (test(/^host_ids::/) or test(/^limits::/))"
 setup = "as-root"
+
+# The values only some packages' tests need, for those packages: the ones
+# tools/ci/nextest.sh gave the job's environment before, which every build
+# script's and proc macro's cache entry then carried.
+[[profile.ci.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-auth) or package(tilo-rollback) or package(tilo-test-env)"
+setup = "swtpm"
+
+[[profile.ci.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-pdf) or package(pdf-viewer) or package(tilo-thumbnail)"
+setup = "pdf-sandbox"
+
+[[profile.ci.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-agent-session)"
+setup = "video-render"
+
+[[profile.ci.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(pam-tilo)"
+setup = "pam-module"
 
 # Process-isolated compositor, GPU, and collaboration tests need shared limits.
 #

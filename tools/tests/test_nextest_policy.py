@@ -33,6 +33,7 @@ def load(name: str, path: Path):
 families = load("nested_sandboxes_test", Path(__file__).with_name("test_nested_sandboxes.py"))
 
 COST_TABLE = REPO / "apps" / "tilolang" / "tests" / "hosted" / "cost.rs"
+DUMP = "import json, os; print(json.dumps(dict(os.environ)))"
 # The test binary and module path the file is compiled into: the crate's tests are modules of one
 # `tests/it.rs`, so a test's name carries every module from there down.
 COST_TABLE_MODULE = "hosted::cost::"
@@ -397,51 +398,44 @@ class SetupHandedProgramTests(unittest.TestCase):
 class WrapperHandedProgramTests(unittest.TestCase):
     """tools/ci/nextest.sh builds only what the run was not handed.
 
-    t builds a program or library a package's tests need once in the family's build (t.toml's
-    `starts`) and names each to every shard: a bin as NEXTEST_BIN_EXE_<bin>, a cdylib as
-    T_STARTED_CDYLIB_<lib>. A shard that built them again placed the artifact's ~1,000 compiled
-    units for itself; a run handed none (a developer's) builds it.
+    t builds a program a package's tests need once in the family's build (t.toml's `starts`) and
+    names each to every shard as NEXTEST_BIN_EXE_<bin>. A shard that built them again placed the
+    artifact's ~1,000 compiled units for itself; a run handed none (a developer's) builds it.
+    The values a package's tests need as variables (a render helper's path, the PAM module, the
+    PDF sandbox, the TPM) are the ci profile's setup steps instead, so the job's environment
+    carries none of them into a build (tools/tests/test_test_environment.py).
     """
 
     # The run's cargo argv, as the fake cargo records it: everything after `cargo`.
     RUN = "nextest run --locked --profile ci -E all() --test it --no-fail-fast"
     # Each program a package's tests need, and the build a shard that was handed none makes.
     BUILDS = {
-        "tilo-video-render": "build --locked -p tilo-video-render --bin tilo-video-render",
         "tilo-install": "build --locked -p install --bin tilo-install",
         "tilolang-process": "build --locked -p tilolang-process --bin tilolang-process",
     }
     # Package whose shards go through the wrapper -> the programs they need, built in this order.
     PROGRAMS = {
-        "tilo-agent-session": ("tilo-video-render", "tilolang-process"),
+        "tilo-agent-session": ("tilolang-process",),
         "package-service": ("tilo-install",),
         "app-cli": ("tilo-install",),
     }
-    # The pam-tilo shards' cdylib: the wrapper exports it as TILO_PAM_TILO_MODULE, which the tests
-    # load, and builds the package's library when handed none.
-    LIBRARY = ("pam_tilo", "build --locked -p pam-tilo --lib")
 
-    def run_wrapper(self, packages: str, handed: tuple[str, ...] = (), broken: str = "",
-                    library: tuple[str, ...] = (), broken_library: str = ""):
+    def run_wrapper(self, packages: str, handed: tuple[str, ...] = (), broken: str = ""):
         """A shard of PACKAGES as t starts one, through the production wrapper: the result, the
-        cargo invocations it made, the TILO_VIDEO_RENDER and TILO_PAM_TILO_MODULE each run was
-        given, and the paths of the artifacts handed to it."""
+        cargo invocations it made, and the paths of the artifacts handed to it."""
         with tempfile.TemporaryDirectory() as work:
             tree, programs = Path(work) / "tree", Path(work) / "bin"
             (tree / "tools" / "ci").mkdir(parents=True)
             programs.mkdir()
             shutil.copy(T_NEXTEST, tree / "tools" / "ci" / "nextest.sh")
-            argv, video = Path(work) / "argv", Path(work) / "video"
-            module = Path(work) / "module"
+            shutil.copy(T_NEXTEST.parent / "handed.sh", tree / "tools" / "ci" / "handed.sh")
+            argv = Path(work) / "argv"
             (programs / "cargo").write_text(
                 '#!/bin/sh\nprintf "%s\\n" "$*" >>"$GIVEN"\n'
-                'printf "%s\\n" "${TILO_VIDEO_RENDER:-}" >>"$VIDEO"\n'
-                'printf "%s\\n" "${TILO_PAM_TILO_MODULE:-}" >>"$MODULE"\n'
             )
             (programs / "cargo").chmod(0o755)
             env = {"PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
-                   "T_NEXTEST_PACKAGES": packages, "GIVEN": str(argv), "VIDEO": str(video),
-                   "MODULE": str(module)}
+                   "T_NEXTEST_PACKAGES": packages, "GIVEN": str(argv)}
             paths = {}
             for name in handed:
                 path = Path(work) / name
@@ -453,72 +447,65 @@ class WrapperHandedProgramTests(unittest.TestCase):
                 path = Path(work) / "not-executable"
                 path.write_text("")
                 env[f"NEXTEST_BIN_EXE_{broken}"] = str(path)
-            for name in library:
-                path = Path(work) / f"lib{name}.so"
-                path.write_text("")
-                paths[name] = str(path)
-                env[f"T_STARTED_CDYLIB_{name}"] = str(path)
-            if broken_library:
-                env[f"T_STARTED_CDYLIB_{broken_library}"] = str(Path(work) / "not-a-file.so")
             command = ["cargo", "nextest", "run", "--locked", "--profile", "ci",
                        "-E", "all()", "--test", "it"]
             result = subprocess.run(["bash", str(tree / "tools" / "ci" / "nextest.sh"), *command],
                                     env=env, capture_output=True, text=True, check=False)
             ran = argv.read_text().splitlines() if argv.exists() else []
-            named = video.read_text().splitlines() if video.exists() else []
-            modules = module.read_text().splitlines() if module.exists() else []
-            return result, ran, named, modules, paths
+            return result, ran, paths
 
     def test_a_handed_program_is_not_built(self):
         for package, programs in self.PROGRAMS.items():
             with self.subTest(package=package):
-                result, ran, _, _, _ = self.run_wrapper(package, handed=programs)
+                result, ran, _ = self.run_wrapper(package, handed=programs)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(ran, [self.RUN], "the run, and no build")
-
-    def test_a_handed_render_helper_is_named_to_the_run(self):
-        result, _, named, _, paths = self.run_wrapper(
-            "tilo-agent-session", handed=self.PROGRAMS["tilo-agent-session"])
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(named, [paths["tilo-video-render"]])
 
     def test_a_run_not_handed_builds_the_program(self):
         # A developer's run has no NEXTEST_BIN_EXE_<bin>: it builds the program, as it always did.
         for package, programs in self.PROGRAMS.items():
             with self.subTest(package=package):
-                result, ran, _, _, _ = self.run_wrapper(package)
+                result, ran, _ = self.run_wrapper(package)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(ran, [*(self.BUILDS[program] for program in programs), self.RUN])
 
     def test_a_handed_program_that_cannot_run_fails_instead_of_building(self):
         # Building here would hide a broken handoff and compile the program in every shard again.
-        result, ran, _, _, _ = self.run_wrapper("package-service", broken="tilo-install")
+        result, ran, _ = self.run_wrapper("package-service", broken="tilo-install")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("NEXTEST_BIN_EXE_tilo-install", result.stderr)
         self.assertEqual(ran, [])
 
-    def test_a_handed_library_is_not_built_and_is_named_to_the_run(self):
-        name, _ = self.LIBRARY
-        result, ran, _, modules, paths = self.run_wrapper("pam-tilo", library=(name,))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(ran, [self.RUN], "the run, and no build")
-        self.assertEqual(modules, [paths[name]])
-
-    def test_a_run_not_handed_builds_the_library(self):
-        # A developer's run has no T_STARTED_CDYLIB_<lib>: it builds the library, as it always did.
-        _, build = self.LIBRARY
-        result, ran, _, modules, _ = self.run_wrapper("pam-tilo")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(ran, [build, self.RUN])
-        self.assertTrue(modules[-1].endswith("/target/debug/libpam_tilo.so"), modules)
-
-    def test_a_handed_library_that_is_no_file_fails_instead_of_building(self):
-        # Building here would hide a broken handoff and compile the library in every shard again.
-        name, _ = self.LIBRARY
-        result, ran, _, _, _ = self.run_wrapper("pam-tilo", broken_library=name)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn(f"T_STARTED_CDYLIB_{name}", result.stderr)
-        self.assertEqual(ran, [])
+    def test_the_jobs_environment_carries_no_per_package_value(self):
+        """What only a package's tests need is the ci profile's setup steps, not the job's
+        environment: there, each value keys every build script's and proc macro's cache entry by
+        it, so jobs testing different packages would share no build.
+        """
+        with tempfile.TemporaryDirectory() as work:
+            tree, programs = Path(work) / "tree", Path(work) / "bin"
+            (tree / "tools" / "ci").mkdir(parents=True)
+            programs.mkdir()
+            shutil.copy(T_NEXTEST, tree / "tools" / "ci" / "nextest.sh")
+            shutil.copy(T_NEXTEST.parent / "handed.sh", tree / "tools" / "ci" / "handed.sh")
+            dumped = Path(work) / "env"
+            (programs / "cargo").write_text(f'#!/bin/sh\npython3 -c \'{DUMP}\' >"{dumped}"\n')
+            (programs / "cargo").chmod(0o755)
+            excluded = ("TILO_TEST_NTFS_FIXTURES", "TILO_REQUIRE_SWTPM",
+                        "TILO_REQUIRE_PDF_SANDBOX", "TILO_PAM_TILO_MODULE", "TILO_VIDEO_RENDER")
+            # Every package whose tests needed one of them.
+            for package in ("tilo-ntfs-helper", "tilo-pdf", "pdf-viewer", "tilo-thumbnail",
+                            "tilo-agent-session", "pam-tilo", "tilo-auth", "tilo-rollback"):
+                with self.subTest(package=package):
+                    env = {"PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
+                           "T_NEXTEST_PACKAGES": package}
+                    result = subprocess.run(
+                        ["bash", str(tree / "tools" / "ci" / "nextest.sh"), "cargo", "nextest",
+                         "run", "--locked", "--profile", "ci", "-E", "all()", "--test", "it"],
+                        env=env, capture_output=True, text=True, check=False)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    cargo_env = json.loads(dumped.read_text())
+                    for name in excluded:
+                        self.assertNotIn(name, cargo_env)
 
 
 class SiblingBinarySetupTests(unittest.TestCase):

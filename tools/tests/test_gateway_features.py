@@ -61,7 +61,7 @@ class GatewayFeaturesTests(unittest.TestCase):
             root = Path(directory)
             ci = root / "tools/ci"
             ci.mkdir(parents=True)
-            for name in ("nextest.sh", "package_features.py"):
+            for name in ("nextest.sh", "handed.sh", "package_features.py"):
                 shutil.copy(ROOT / "tools/ci" / name, ci / name)
             # A nextest run executes as given (its profile sets up the test
             # environment); other commands run under tools/test-env.sh.
