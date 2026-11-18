@@ -56,6 +56,29 @@ pub fn client() -> Result<tilo_net::Client, tilo_net::NetError> {
     builder.build()
 }
 
+/// [`client`] for a server that reads a page for somebody: it dials every
+/// address itself and takes no proxy from its environment. A proxy resolves
+/// the names sent through it by a lookup of its own, behind the one this
+/// client judges ([`public_only`]), so that refusal does not hold for what a
+/// proxy reaches. [`client`] takes the proxy its environment names, as before.
+#[cfg(not(target_family = "wasm"))]
+pub fn direct_client() -> Result<tilo_net::Client, tilo_net::NetError> {
+    builder()
+        .direct()
+        .lookup(public_only(system_lookup()))
+        .build()
+}
+
+/// [`direct_client`], resolving names by `lookup` in place of the system's
+/// resolver and under the same refusal: for a test whose names no resolver
+/// knows.
+#[cfg(all(feature = "fixture-servers", not(target_family = "wasm")))]
+pub fn direct_client_looking_up(
+    lookup: tilo_net::Lookup,
+) -> Result<tilo_net::Client, tilo_net::NetError> {
+    builder().direct().lookup(public_only(lookup)).build()
+}
+
 /// [`client`], resolving names by `lookup` in place of the system's resolver
 /// and under the same refusal: for a test whose names no resolver knows.
 #[cfg(all(feature = "fixture-servers", not(target_family = "wasm")))]
