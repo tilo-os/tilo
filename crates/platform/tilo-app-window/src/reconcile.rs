@@ -693,10 +693,10 @@ impl Reconciler {
         };
         let built = {
             let mut source = NodeSource::new(node, description, self);
-            // The control says what it does, where it is built (`ui::component::build`): the window
+            // The control says what it does, where it is built (`Registry::build`): the window
             // may move it between its bar, an empty state and a header row, and the person may read
             // the window in another language, and what it does stays what it does.
-            ui::component::build(&description.name, &mut source)
+            crate::adapter::components().build(&description.name, &mut source)
         };
         built.unwrap_or_else(|error| {
             self.note_broken(node, &error);
@@ -731,7 +731,7 @@ impl Reconciler {
         if !crate::adapter::same_data(old_node, new_node, description) {
             let taken = {
                 let mut source = NodeSource::in_place(new_node, description, self);
-                ui::component::update(&description.name, widget, &mut source)
+                crate::adapter::components().update(&description.name, widget, &mut source)
             };
             match taken {
                 Ok(true) => {}
@@ -754,7 +754,8 @@ impl Reconciler {
             if old == new {
                 continue;
             }
-            let Some(views) = ui::component::part_views(&description.name, widget, &part.name)
+            let Some(views) =
+                crate::adapter::components().part_views(&description.name, widget, &part.name)
             else {
                 return Some(self.build(new_node));
             };
@@ -790,7 +791,7 @@ impl Reconciler {
                     if old == new {
                         continue;
                     }
-                    let Some(views) = ui::component::item_views(
+                    let Some(views) = crate::adapter::components().item_views(
                         &description.name,
                         widget,
                         &part.name,

@@ -17,19 +17,11 @@ fn emit_hex_fixture(text: &str, filename: &str) -> Result<(), Box<dyn std::error
     Ok(())
 }
 
-#[path = "component_scan.rs"]
-#[allow(
-    dead_code,
-    reason = "the coverage check reads the parts of the scan the registry does not"
-)]
-mod component_scan;
-
 /// The registry of described widgets, generated from where each is declared
-/// (`component_scan.rs`): a widget is in it because its source says `impl Described`, never
+/// (`tilo-component-scan`): a widget is in it because its source says `impl Described`, never
 /// because a list names it.
 fn emit_component_registry() -> Result<(), Box<dyn std::error::Error>> {
-    println!("cargo::rerun-if-changed=component_scan.rs");
-    let scan = component_scan::scan(std::path::Path::new("src"))?;
+    let scan = tilo_component_scan::scan(std::path::Path::new("src"))?;
     // Each source the scan read, not the directory: an edit to a test does not rebuild the
     // toolkit. A new file is declared by `mod` in one the scan read, which reruns it.
     for file in &scan.files {
@@ -39,7 +31,7 @@ fn emit_component_registry() -> Result<(), Box<dyn std::error::Error>> {
         std::path::PathBuf::from(std::env::var_os("OUT_DIR").ok_or("missing build output")?);
     std::fs::write(
         output.join("component_registry.rs"),
-        component_scan::registry_source(&scan),
+        tilo_component_scan::registry_source(&scan, "crate"),
     )?;
     Ok(())
 }

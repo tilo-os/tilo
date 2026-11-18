@@ -433,7 +433,11 @@ windows = { version = "0.62.2", optional = true, features = [
 ] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 
+[build-dependencies]
+tilo-component-scan = { version = "0.1.0", path = "../tilo-component-scan" }
+
 [dev-dependencies]
+tilo-component-scan = { version = "0.1.0", path = "../tilo-component-scan" }
 # Hand-written painter modules for the wasm host's refusal and budget tests.
 wat = "1"
 # The Bauhaus theme's painter, run natively through the host to check its
@@ -476,10 +480,6 @@ name = "it"
 path = "tests/it.rs"
 # The shared harness stands up in-process collaboration hosts.
 required-features = ["broker-transport"]
-
-[[example]]
-name = "component-catalogue"
-path = "examples/component_catalogue.rs"
 
 [[example]]
 name = "theme-looks"

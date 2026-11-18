@@ -17656,6 +17656,7 @@ dependencies = [
  "tilo-render-protocol",
  "tilo-resource",
  "tilo-ui",
+ "tilo-ui-graph",
  "tracing",
  "workspace-hack",
 ]
@@ -18313,6 +18314,13 @@ dependencies = [
  "tilo-resource",
  "tilo-ui",
  "tilo-vello",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-component-scan"
+version = "0.1.0"
+dependencies = [
  "workspace-hack",
 ]
 
@@ -22464,6 +22472,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-clock",
+ "tilo-component-scan",
  "tilo-content",
  "tilo-content-blocker",
  "tilo-content-device",
@@ -27304,7 +27313,6 @@ dependencies = [
  "aes-gcm 0.10.3",
  "ahash",
  "aho-corasick",
- "anstream",
  "anyhow",
  "arrayvec",
  "ash",

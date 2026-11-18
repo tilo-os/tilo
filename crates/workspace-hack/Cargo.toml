@@ -20,7 +20,6 @@ aead-3b31131e45eafb45 = { package = "aead", version = "0.6", default-features = 
 aead-d8f496e17d97b5cb = { package = "aead", version = "0.5", default-features = false, features = ["alloc", "getrandom"] }
 aes-gcm = { version = "0.10" }
 aho-corasick = { version = "1" }
-anstream = { version = "1" }
 anyhow = { version = "1" }
 arrayvec = { version = "0.7" }
 async-channel = { version = "2" }
@@ -111,7 +110,7 @@ hpke-rs = { version = "0.7", default-features = false, features = ["experimental
 hpke-rs-rust-crypto = { version = "0.7", default-features = false, features = ["experimental", "std"] }
 hybrid-array = { version = "0.4", default-features = false, features = ["alloc", "ctutils", "extra-sizes", "subtle", "zeroize"] }
 hyper = { version = "1", features = ["client", "http1", "http2", "server"] }
-hyper-util = { version = "0.1", features = ["client-legacy", "server-auto", "server-graceful", "service"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "server-auto"] }
 hypher = { version = "0.1" }
 icu_collections = { version = "2", default-features = false, features = ["serde"] }
 icu_locale_core = { version = "2", default-features = false, features = ["alloc", "serde", "zerovec"] }
@@ -268,7 +267,6 @@ aead-3b31131e45eafb45 = { package = "aead", version = "0.6", default-features = 
 aead-d8f496e17d97b5cb = { package = "aead", version = "0.5", default-features = false, features = ["alloc", "getrandom"] }
 aes-gcm = { version = "0.10" }
 aho-corasick = { version = "1" }
-anstream = { version = "1" }
 anyhow = { version = "1" }
 arrayvec = { version = "0.7" }
 async-channel = { version = "2" }
@@ -362,7 +360,7 @@ hpke-rs = { version = "0.7", default-features = false, features = ["experimental
 hpke-rs-rust-crypto = { version = "0.7", default-features = false, features = ["experimental", "std"] }
 hybrid-array = { version = "0.4", default-features = false, features = ["alloc", "ctutils", "extra-sizes", "subtle", "zeroize"] }
 hyper = { version = "1", features = ["client", "http1", "http2", "server"] }
-hyper-util = { version = "0.1", features = ["client-legacy", "server-auto", "server-graceful", "service"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "server-auto"] }
 hypher = { version = "0.1" }
 icu_collections = { version = "2", default-features = false, features = ["serde"] }
 icu_locale_core = { version = "2", default-features = false, features = ["alloc", "serde", "zerovec"] }
@@ -527,8 +525,8 @@ futures-executor = { version = "0.3" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
 harfrust = { version = "0.12" }
-hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
-hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12"] }
+hyper-util = { version = "0.1", default-features = false, features = ["client-proxy"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
 libc = { version = "0.2", default-features = false, features = ["extra_traits"] }
 linux-raw-sys-5ef9efb8ec2df382 = { package = "linux-raw-sys", version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
@@ -564,8 +562,8 @@ futures-executor = { version = "0.3" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
 harfrust = { version = "0.12" }
-hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
-hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12"] }
+hyper-util = { version = "0.1", default-features = false, features = ["client-proxy"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
 libc = { version = "0.2", default-features = false, features = ["extra_traits"] }
 linux-raw-sys-5ef9efb8ec2df382 = { package = "linux-raw-sys", version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
@@ -600,8 +598,8 @@ futures-executor = { version = "0.3" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
 harfrust = { version = "0.12" }
-hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
-hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12"] }
+hyper-util = { version = "0.1", default-features = false, features = ["client-proxy"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
 libc = { version = "0.2", default-features = false, features = ["extra_traits"] }
 linux-raw-sys-5ef9efb8ec2df382 = { package = "linux-raw-sys", version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
@@ -637,8 +635,8 @@ futures-executor = { version = "0.3" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
 harfrust = { version = "0.12" }
-hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
-hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12"] }
+hyper-util = { version = "0.1", default-features = false, features = ["client-proxy"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
 libc = { version = "0.2", default-features = false, features = ["extra_traits"] }
 linux-raw-sys-5ef9efb8ec2df382 = { package = "linux-raw-sys", version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }

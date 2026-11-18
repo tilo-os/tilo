@@ -3,18 +3,9 @@ use std::collections::BTreeMap;
 use super::*;
 use crate::widget::ListRowProps;
 
-#[test]
-fn the_shipped_catalogue_is_the_one_the_toolkit_generates() {
-    let shipped = tilo_ui_graph::component::SHIPPED;
-    let generated = catalogue().to_json();
-    eprintln!("CATALOGUE-BEGIN\n{generated}CATALOGUE-END");
-    assert!(
-        shipped == generated,
-        "crates/dev/ui-graph/components.json is stale: a widget's description changed after it \
-         was last written, and tilolang and the tools read that file as the package `ui`. Write \
-         it again and commit it:\n\
-         \x20   cargo run -p tilo-ui --example component-catalogue > crates/dev/ui-graph/components.json"
-    );
+/// The toolkit's own described widgets, as a window that builds only them composes them.
+fn toolkit() -> Registry {
+    Registry::of(&[&TOOLKIT])
 }
 
 tilo_test_env::scenario! {
@@ -22,7 +13,7 @@ tilo_test_env::scenario! {
 
     phase every_description_is_documented_and_consistent;
     {
-        let catalogue = catalogue();
+        let catalogue = toolkit().catalogue();
         let mut seen: Vec<&str> = catalogue
             .components
             .iter()
@@ -73,7 +64,7 @@ tilo_test_env::scenario! {
 
     phase every_described_widget_builds_from_its_required_props;
     {
-        for entry in registry() {
+        for entry in toolkit().entries() {
             let description = (entry.describe)();
             let props: Vec<(&str, Value)> = description
                 .props
@@ -143,7 +134,7 @@ tilo_test_env::scenario! {
 
         let mut disagreeing = Vec::new();
         let mut holding: Vec<String> = Vec::new();
-        for entry in registry() {
+        for entry in toolkit().entries() {
             let description = (entry.describe)();
             // Twice: with its required props only, and with every prop it takes: a widget shows
             // parts for props a person switched on, and its lists must agree whatever it shows.
@@ -184,7 +175,7 @@ tilo_test_env::scenario! {
     {
         let mut no_type = Vec::new();
         let mut built_again = Vec::new();
-        for entry in registry() {
+        for entry in toolkit().entries() {
             let description = (entry.describe)();
             let props: Vec<(&str, Value)> = description
                 .props
@@ -322,7 +313,8 @@ fn sample(ty: &Type) -> Value {
         Type::Map { .. } => Value::Map(Vec::new()),
         Type::Action => Value::Action(tilo_ui_graph::component::Offered::default()),
         Type::Cases { name } => {
-            let described = crate::component::catalogue()
+            let described = toolkit()
+                .catalogue()
                 .enums
                 .into_iter()
                 .find(|described| &described.name == name)
@@ -484,12 +476,12 @@ tilo_test_env::scenario! {
     phase a_missing_required_prop_or_a_value_of_another_type_is_refused;
     {
         let mut nothing = given("k", &[]);
-        let error = build("EmptyState", &mut nothing).err();
+        let error = toolkit().build("EmptyState", &mut nothing).err();
         assert_eq!(error, Some(Error::missing("EmptyState", "title")));
         let mut wrong = given("k", &[("title", Value::Int(3))]);
-        assert!(build("EmptyState", &mut wrong).is_err());
+        assert!(toolkit().build("EmptyState", &mut wrong).is_err());
         let mut unknown = given("k", &[]);
-        assert!(build("Gauge", &mut unknown).is_err());
+        assert!(toolkit().build("Gauge", &mut unknown).is_err());
     }
 
     phase props_read_the_values_an_instance_gives;
@@ -526,9 +518,9 @@ tilo_test_env::scenario! {
     {
         let mut first = given("t", &[("value", Value::Text("1".into()))]);
         let mut text =
-            build("Text", &mut first).unwrap_or_else(|_| Box::new(crate::widget::Spacer::fixed(0.0)));
+            toolkit().build("Text", &mut first).unwrap_or_else(|_| Box::new(crate::widget::Spacer::fixed(0.0)));
         let mut next = given("t", &[("value", Value::Text("2".into()))]);
-        assert_eq!(update("Text", &mut text, &mut next), Ok(true));
+        assert_eq!(toolkit().update("Text", &mut text, &mut next), Ok(true));
         let mut titled = given(
             "t",
             &[
@@ -536,7 +528,7 @@ tilo_test_env::scenario! {
                 ("role", Value::Choice("title".into())),
             ],
         );
-        assert_eq!(update("Text", &mut text, &mut titled), Ok(false));
+        assert_eq!(toolkit().update("Text", &mut text, &mut titled), Ok(false));
         assert_eq!(text.test_id(), Some("t"));
     }
 

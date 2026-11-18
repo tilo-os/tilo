@@ -34,10 +34,20 @@ pub const KIND_PREFIX: &str = "ui.";
 
 pub const PART: &str = "part";
 
+/// The described widgets a window builds by name: the toolkit's, and those of each crate of widgets
+/// above it.
+#[must_use]
+pub fn components() -> &'static ui::component::Registry {
+    static COMPONENTS: OnceLock<ui::component::Registry> = OnceLock::new();
+    COMPONENTS.get_or_init(|| ui::component::Registry::of(&[&ui::component::TOOLKIT]))
+}
+
+/// What every component a window builds is: the catalogue tilolang and the tools read as the
+/// package `ui` (`crates/dev/ui-graph/components.json`).
 #[must_use]
 pub fn catalogue() -> &'static Catalogue {
     static CATALOGUE: OnceLock<Catalogue> = OnceLock::new();
-    CATALOGUE.get_or_init(ui::component::catalogue)
+    CATALOGUE.get_or_init(|| components().catalogue())
 }
 
 #[must_use]
@@ -1015,6 +1025,20 @@ mod tests {
 
     use super::*;
     use ui::component::Component as _;
+
+    #[test]
+    fn the_shipped_catalogue_is_the_one_a_window_builds_from() {
+        let shipped = tilo_ui_graph::component::SHIPPED;
+        let generated = catalogue().to_json();
+        eprintln!("CATALOGUE-BEGIN\n{generated}CATALOGUE-END");
+        assert!(
+            shipped == generated,
+            "crates/dev/ui-graph/components.json is stale: a widget's description changed after \
+             it was last written, and tilolang and the tools read that file as the package `ui`. \
+             Write it again and commit it:\n\
+             \x20   cargo run -p tilo-app-window --example component-catalogue > crates/dev/ui-graph/components.json"
+        );
+    }
 
     fn node(name: &str, key: &str, props: &[(&str, Value)]) -> UiNode {
         let mut node = UiNode::empty(&kind(name), key);

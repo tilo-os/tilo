@@ -9,7 +9,7 @@
 //!
 //! The catalogue stays the one source: these builders are a projection of it, so a widget that
 //! lands in ui-core is callable from a Rust view as soon as the catalogue is written again
-//! (`cargo run -p tilo-ui --example component-catalogue > crates/dev/ui-graph/components.json`).
+//! (`cargo run -p tilo-app-window --example component-catalogue > crates/dev/ui-graph/components.json`).
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
