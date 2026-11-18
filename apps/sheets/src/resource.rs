@@ -1849,7 +1849,10 @@ mod concurrent_tests;
 #[cfg(test)]
 mod cost_tests;
 
-ui::reach_tests!(SheetsShell);
+ui::reach_tests!(
+    SheetsShell,
+    shares: [share_0, share_1, share_2, share_3],
+);
 
 #[cfg(test)]
 mod agent_disclosure_tests {

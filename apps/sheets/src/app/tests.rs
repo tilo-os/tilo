@@ -337,14 +337,20 @@ fn idle_frames_do_no_redundant_work() {
         let (mut app, mut doc) = seeded_app();
         app.sync(&doc, &automerge::ROOT);
         let first_revision = app.revision;
-        let first_ids = app.sheet_ids.as_ptr();
+        let first_ids = app.sheet_ids.clone();
         app.sync(&doc, &automerge::ROOT);
-        assert_eq!(app.revision, first_revision);
-        assert_eq!(app.sheet_ids.as_ptr(), first_ids);
+        assert_eq!(
+            app.revision, first_revision,
+            "an unchanged sync rebuilds nothing"
+        );
+        assert_eq!(app.sheet_ids, first_ids, "nor does it reorder the sheets");
 
         app.switch_sheet(&mut Edits::lend(&mut doc), 1);
         app.sync(&doc, &automerge::ROOT);
-        assert_eq!(app.sheet_ids.as_ptr(), first_ids);
+        assert_eq!(
+            app.sheet_ids, first_ids,
+            "switching keeps every sheet in place"
+        );
     }
 }
 
