@@ -13261,6 +13261,7 @@ dependencies = [
  "hex",
  "image",
  "os-actions",
+ "print-centre-model",
  "runtime-dylib",
  "taffy",
  "tempfile",
@@ -13275,6 +13276,15 @@ dependencies = [
  "tilo-test-env",
  "tilo-thumbnail",
  "tilo-vello",
+ "workspace-hack",
+]
+
+[[package]]
+name = "print-centre-model"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tilo-resource",
  "workspace-hack",
 ]
 

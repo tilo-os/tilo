@@ -23,6 +23,8 @@ thin = ["dep:runtime-dylib"]
 runtime-engine = ["thin", "tilo-pdf-engine/thin"]
 
 [dependencies]
+# The resource the app draws: the defaults, their check and the choices offered.
+print-centre-model = { path = "../print-centre-model" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
 hex.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
