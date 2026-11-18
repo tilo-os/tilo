@@ -1419,6 +1419,10 @@ mod teams;
 #[path = "hosted_skills.rs"]
 mod skills;
 
+/// A reply shows its model thinking.
+#[path = "hosted_reply_thinks.rs"]
+mod reply_thinks;
+
 /// What a look read before a turn ended, once that turn has ended.
 #[path = "hosted_turn_ends.rs"]
 mod turn_ends;

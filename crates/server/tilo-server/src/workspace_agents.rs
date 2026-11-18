@@ -2447,6 +2447,7 @@ async fn ask_model(
             later(TURN_TIME),
             false,
             &mut |event| match event {
+                StreamEvent::ReasoningDelta { text } => wrote.thought(&text),
                 StreamEvent::TextDelta { text } => wrote.push(&text),
                 // The call broke off and may be asked again: what comes then stands below.
                 StreamEvent::Failed { .. } => wrote.broke_off(),
