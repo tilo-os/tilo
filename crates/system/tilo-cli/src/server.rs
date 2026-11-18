@@ -12,7 +12,8 @@
 use anyhow::{Context as _, Result, bail};
 use clap::Subcommand;
 use tilo_server_protocol::transport::{
-    HomePeerManagementRequest, ServerAnswer, ServerOperation, ServerOperationResult,
+    HomePeerManagementRequest, Opening, ServerAnswer, ServerOperation, ServerOperationResult,
+    ServerStatus, UnlockMethod,
 };
 use tilo_server_protocol::{HomePeerRegistration, read_home_peers};
 use tilo_user_identity::{IdentityPaths, RevocationList, home_peer_registry_path, persist};
@@ -136,96 +137,134 @@ fn print(result: &ServerOperationResult, json: bool) -> Result<()> {
         return Ok(());
     }
     match &result.answer {
-        ServerAnswer::Status(status) => {
-            println!("{}", status.hostname);
-            println!("  up:            {}s", status.uptime_seconds);
-            println!(
-                "  system:        {}{}",
-                if status.booted_image.is_empty() {
-                    "unknown"
-                } else {
-                    &status.booted_image
-                },
-                if status.staged_image.is_empty() {
-                    String::new()
-                } else {
-                    format!(" (staged {})", status.staged_image)
-                }
-            );
-            println!(
-                "  updates:       {}{}{}",
-                if status.updates.is_empty() {
-                    "the image's"
-                } else {
-                    &status.updates
-                },
-                if status.updates_paused {
-                    " (paused)"
-                } else {
-                    ""
-                },
-                if status.pending_update.is_empty() {
-                    String::new()
-                } else {
-                    format!(", pending {}", status.pending_update)
-                }
-            );
-            println!(
-                "  unlocks:       {}",
-                if status.unlock.is_empty() {
-                    "the image's default"
-                } else {
-                    &status.unlock
-                }
-            );
-            println!(
-                "  hardware:      {} {} ({} processors, {} MB memory, {} of {} GB free)",
-                status.hardware.product,
-                status.hardware.cpu_model,
-                status.hardware.cpus,
-                status.hardware.memory_mb,
-                status.hardware.storage_free_gb,
-                status.hardware.storage_total_gb
-            );
-            println!("  holds:");
-            for held in &status.holding {
-                println!(
-                    "    {} ({})",
-                    if held.name.is_empty() {
-                        &held.workspace
-                    } else {
-                        &held.name
-                    },
-                    held.workspace
-                );
-                for holder in &held.holders {
-                    let short: String = holder.device.chars().take(12).collect();
-                    println!(
-                        "      {} {}{}",
-                        holder.role,
-                        short,
-                        if holder.current { "" } else { " (catching up)" }
-                    );
-                }
-                for short in &held.shortfall {
-                    println!("      ! {short}");
-                }
-            }
-            if !status.history.is_empty() {
-                println!("  recently asked:");
-                for entry in status.history.iter().take(10) {
-                    println!(
-                        "    {}{}",
-                        entry.operation,
-                        if entry.done { "" } else { " (asked)" }
-                    );
-                }
-            }
-        }
+        ServerAnswer::Status(status) => print_status(status),
         ServerAnswer::Text(text) => print!("{text}"),
         ServerAnswer::Nothing => println!("{}", result.summary),
     }
     Ok(())
+}
+
+/// What a server is, as its owner reads it.
+fn print_status(status: &ServerStatus) {
+    println!("{}", status.hostname);
+    println!("  up:            {}s", status.uptime_seconds);
+    println!(
+        "  system:        {}{}",
+        if status.booted_image.is_empty() {
+            "unknown"
+        } else {
+            &status.booted_image
+        },
+        if status.staged_image.is_empty() {
+            String::new()
+        } else {
+            format!(" (staged {})", status.staged_image)
+        }
+    );
+    println!(
+        "  updates:       {}{}{}",
+        if status.updates.is_empty() {
+            "the image's"
+        } else {
+            &status.updates
+        },
+        if status.updates_paused {
+            " (paused)"
+        } else {
+            ""
+        },
+        if status.pending_update.is_empty() {
+            String::new()
+        } else {
+            format!(", pending {}", status.pending_update)
+        }
+    );
+    println!(
+        "  unlocks:       {}",
+        if status.unlock.is_empty() {
+            "the image's default"
+        } else {
+            &status.unlock
+        }
+    );
+    println!("  opened:        {}", opened_line(status.unlocked.as_ref()));
+    println!(
+        "  hardware:      {} {} ({} processors, {} MB memory, {} of {} GB free)",
+        status.hardware.product,
+        status.hardware.cpu_model,
+        status.hardware.cpus,
+        status.hardware.memory_mb,
+        status.hardware.storage_free_gb,
+        status.hardware.storage_total_gb
+    );
+    print_holds(status);
+}
+
+/// How this boot opened its volume, as a person reads it.
+fn opened_line(opened: Option<&Opening>) -> String {
+    let Some(opened) = opened else {
+        return "early boot left no note of how it opened".to_owned();
+    };
+    format!(
+        "{} at {}",
+        match opened.method {
+            UnlockMethod::Tpm => "by the TPM",
+            UnlockMethod::SiblingServer => {
+                "by another server of yours, on this machine's attested boot chain"
+            }
+            UnlockMethod::PersonDevice => "by you, on one of your devices",
+            UnlockMethod::Passphrase => "with a passphrase",
+            UnlockMethod::RecoveryKey => "with the recovery key",
+        },
+        opened_at(opened.at_ns)
+    )
+}
+
+/// What the server holds, and what was asked of it.
+fn print_holds(status: &ServerStatus) {
+    println!("  holds:");
+    for held in &status.holding {
+        println!(
+            "    {} ({})",
+            if held.name.is_empty() {
+                &held.workspace
+            } else {
+                &held.name
+            },
+            held.workspace
+        );
+        for holder in &held.holders {
+            let short: String = holder.device.chars().take(12).collect();
+            println!(
+                "      {} {}{}",
+                holder.role,
+                short,
+                if holder.current { "" } else { " (catching up)" }
+            );
+        }
+        for short in &held.shortfall {
+            println!("      ! {short}");
+        }
+    }
+    if !status.history.is_empty() {
+        println!("  recently asked:");
+        for entry in status.history.iter().take(10) {
+            println!(
+                "    {}{}",
+                entry.operation,
+                if entry.done { "" } else { " (asked)" }
+            );
+        }
+    }
+}
+
+/// `at` in nanoseconds since the Unix epoch, as a person reads it.
+fn opened_at(at_ns: u64) -> String {
+    let seconds = i64::try_from(at_ns / 1_000_000_000).unwrap_or(i64::MAX);
+    let nanos = i32::try_from(at_ns % 1_000_000_000).unwrap_or(0);
+    jiff::Timestamp::new(seconds, nanos)
+        .map(|at| at.to_string())
+        .unwrap_or_default()
 }
 
 /// Ask `server` to do `operation`, as this computer's device.

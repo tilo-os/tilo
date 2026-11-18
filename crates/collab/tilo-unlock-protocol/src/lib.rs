@@ -44,6 +44,7 @@
 pub mod attest;
 mod cert;
 mod half;
+pub mod opened;
 pub mod startup_secret;
 mod wire;
 
@@ -53,6 +54,7 @@ pub use cert::{
 pub use half::{
     HALF_LEN, Half, SealedSiblingHalf, derive_slot_key, open_sibling_half, seal_sibling_half,
 };
+pub use opened::{OPENED_PATH, Opening, UnlockMethod};
 pub use wire::{
     Challenge, ClientFrame, FrameError, RefusalReason, Release, SiblingFrame, UnlockHello,
     UnlockRequest, approval_code, decode_frame, encode_frame, frame_len, open_release,

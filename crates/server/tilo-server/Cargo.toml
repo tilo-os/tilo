@@ -136,6 +136,8 @@ blake3.workspace = true
 hex.workspace = true
 # A server's rollback floor moves by approvals the person's floor key signs.
 tilo-rollback = { path = "../../system/tilo-rollback" }
+# How this boot's system volume opened, as early boot noted it.
+tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol" }
 tilo-crypto = { path = "../../system/tilo-crypto", default-features = false }
 uuid.workspace = true
 # A bot's calendar schedules fire on this host's wall clock.

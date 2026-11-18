@@ -16,6 +16,8 @@ path = "src/lib.rs"
 # early-boot client and the sibling service both depend on this crate.
 [dependencies]
 serde.workspace = true
+# How and when early boot opened the system volume.
+serde_json.workspace = true
 serde_bytes.workspace = true
 postcard = { workspace = true, features = ["alloc"] }
 # The 4-byte length prefix of every frame, from the one framing crate.

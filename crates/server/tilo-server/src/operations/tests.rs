@@ -231,6 +231,31 @@ fn journal_lines_are_capped() {
 }
 
 #[test]
+fn the_status_says_which_way_this_boots_volume_opened() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("tilo-unlock.json");
+    assert_eq!(super::opening_at(&path), None, "no note, no claim");
+    std::fs::write(
+        &path,
+        r#"{"method":"sibling-server","at_ns":1700000000000000000}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        super::opening_at(&path),
+        Some(tilo_unlock_protocol::opened::Opening {
+            method: tilo_unlock_protocol::opened::UnlockMethod::SiblingServer,
+            at_ns: 1_700_000_000_000_000_000,
+        })
+    );
+    std::fs::write(&path, "not a note").unwrap();
+    assert_eq!(
+        super::opening_at(&path),
+        None,
+        "a file that is not one says nothing"
+    );
+}
+
+#[test]
 fn history_keeps_the_newest() {
     let temp = tempfile::tempdir().unwrap();
     let state_root: PathBuf = temp.path().to_path_buf();

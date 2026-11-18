@@ -18,6 +18,7 @@
 use collab_types::WorkspaceId;
 use iroh_base::EndpointAddr;
 use serde::{Deserialize, Serialize};
+pub use tilo_unlock_protocol::opened::{Opening, UnlockMethod};
 
 /// ALPN of the server stream. It never changes: the peer protocol version
 /// is the handshake's first field, so a device at another version is told so
@@ -188,6 +189,9 @@ pub struct ServerStatus {
     pub pending_update: String,
     /// How it unlocks after a boot: `owner-device`, `tpm` or `passphrase`.
     pub unlock: String,
+    /// How its system volume actually opened this boot, and when, as early
+    /// boot noted it; `None` when this boot left no note.
+    pub unlocked: Option<Opening>,
     /// The workspaces it holds, and how each one's copies stand.
     pub holding: Vec<HeldWorkspace>,
     /// The machine it is.
