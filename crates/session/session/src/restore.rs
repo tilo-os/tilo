@@ -19,15 +19,21 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use crate::platform::surfaces::ShellDesktop;
+use tilo_actions::ApiError;
 use tilo_app_launch::Launch;
 use tilo_desktop_model::{Layout, TabId, TileContent, WorkspaceId};
 
 use crate::apps::{self, Apps};
 use crate::i18n::t_args;
+use crate::windows_compat::Reopen;
 
 /// How long a saved window may take to show itself before its tab says it did not open: an app that
 /// started and never mapped is not coming.
 const OPEN_DEADLINE: Duration = Duration::from_secs(15);
+
+/// How long a saved tab whose Windows program the service has not read yet waits before it asks
+/// again: the service reads its capsules on a thread of its own, and the next pass is due at once.
+const SERVICE_RETRY: Duration = Duration::from_millis(15);
 
 /// How long the windows of the apps kept across an in-place restart wait, unshown, for the saved
 /// layout that holds their tabs. The layout reaches a desktop that just started from what the
@@ -39,6 +45,10 @@ const KEPT_WAIT: Duration = Duration::from_secs(15);
 
 /// The saved windows of a layout, asked for again one at a time.
 #[derive(Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is a distinct one-way step of the restore, not a mode"
+)]
 pub(crate) struct Restore {
     /// The saved windows not asked for yet, in the order they are asked.
     waiting: VecDeque<Saved>,
@@ -72,6 +82,18 @@ pub(crate) struct Restore {
     /// run: a saved tab of theirs, whenever it comes, says so rather than starting a second copy.
     #[cfg(target_os = "linux")]
     outdated: Vec<tilo_app_launch::Adopted>,
+    /// A saved tab waited since the last pass for the Windows compatibility service to read what
+    /// it can open: another pass is due at once rather than on the next frame.
+    service_pending: bool,
+}
+
+/// How a saved window's app starts again: a Tilo package or a machine application, or the
+/// Windows program of the class the window showed under.
+#[derive(Clone)]
+enum Start {
+    App(Launch),
+    /// The entry the compatibility service opens, as the session saw its window here.
+    Windows(String),
 }
 
 /// A window the person left open, and the app that opens it again.
@@ -83,7 +105,7 @@ struct Saved {
     /// The name the person knew it by, for what the tab says when the app cannot open.
     name: String,
     /// How to start it again, when this machine still has it.
-    launch: Option<Launch>,
+    start: Option<Start>,
     /// The item its window opened on, as its tab's view keeps it on every device.
     shows: String,
 }
@@ -198,7 +220,13 @@ impl Restore {
             .opening
             .as_ref()
             .and_then(|opening| opening.asked.checked_add(OPEN_DEADLINE));
-        opening.into_iter().chain(kept).min()
+        // The compatibility service reads what it can open on a thread of its own: a tab waiting
+        // for that is asked again on the next pass, not after a frame.
+        let service = self
+            .service_pending
+            .then(|| Instant::now().checked_add(SERVICE_RETRY))
+            .flatten();
+        opening.into_iter().chain(kept).chain(service).min()
     }
 
     /// Ask for the next saved window when the one before has come, or say in its tab why it did
@@ -232,6 +260,20 @@ impl Restore {
             }
             self.claim_outdated(apps, shown);
         }
+        // A saved tab's Windows program the service would not open: the tab says so.
+        for refused in apps.take_windows_refused() {
+            let note = not_installed(&refused.name);
+            desktop.with_policy(|policy| policy.note_in_tab(refused.tab, &note));
+            desktop.with_policy(|policy| policy.give_up_held(&refused.app));
+            if self
+                .opening
+                .as_ref()
+                .is_some_and(|opening| opening.tab == refused.tab)
+            {
+                self.opening = None;
+            }
+        }
+        self.service_pending = false;
         self.release_admitted(desktop, awaited);
         // A saved tab may be one a kept window is about to claim: no app is started for one
         // while a kept app still waits for the layout.
@@ -461,7 +503,7 @@ impl Restore {
     /// Ask for `saved` 's window into its own tab. True when an app was asked and its window may
     /// still come.
     fn open(&mut self, desktop: &ShellDesktop, apps: &Apps, saved: Saved) -> bool {
-        let Some(launch) = saved.launch else {
+        let Some(start) = saved.start.clone() else {
             let note = not_installed(&saved.name);
             desktop.with_policy(|policy| policy.note_in_tab(saved.tab, &note));
             return false;
@@ -471,6 +513,23 @@ impl Restore {
             // The tab went with the workspace it was in.
             return false;
         };
+        // A Windows program is only asked for once the compatibility service said what it can
+        // open: until then the tab waits, and the next pass asks again.
+        if let Start::Windows(entry) = &start {
+            match apps.windows_reopened(entry) {
+                Reopen::Waiting => {
+                    self.service_pending = true;
+                    self.waiting.push_front(saved);
+                    return false;
+                }
+                Reopen::Gone => {
+                    let note = not_installed(&saved.name);
+                    desktop.with_policy(|policy| policy.note_in_tab(saved.tab, &note));
+                    return false;
+                }
+                Reopen::Ready => {}
+            }
+        }
         // Whatever the tab said about an earlier start is the past: it waits for its window now.
         // The place is noted before the app starts, as any launch into a tab of its own is: the
         // window takes that exact tab when it maps, in the background, so the window the person had
@@ -479,12 +538,47 @@ impl Restore {
         if !desktop.with_policy(|policy| policy.adopt(&saved.app, saved.tab, None)) {
             return false;
         }
-        match apps.start_beside(
-            &launch,
-            &apps.workspace_named(&workspace),
-            Some(saved.tab),
-            Some(saved.shows.as_str()).filter(|shows| !shows.is_empty()),
-        ) {
+        let started = match &start {
+            Start::App(launch) => apps
+                .start_beside(
+                    launch,
+                    &apps.workspace_named(&workspace),
+                    Some(saved.tab),
+                    Some(saved.shows.as_str()).filter(|shows| !shows.is_empty()),
+                )
+                .inspect_err(|error| {
+                    let said = error.to_string();
+                    let said = said
+                        .strip_prefix(&format!("{}: ", launch.id()))
+                        .unwrap_or(&said);
+                    tracing::warn!(
+                        app = %saved.app,
+                        error = %said,
+                        "a window this device left open did not start"
+                    );
+                }),
+            // The service opens it on the same route a manager's launch takes: planned against
+            // the workspace's sandbox and kept behind its own display. A refusal reaches the tab
+            // on a later pass ([`Self::follow`]).
+            Start::Windows(entry) => {
+                let started = apps.start_saved_windows_program(
+                    entry,
+                    &workspace,
+                    saved.tab,
+                    &saved.app,
+                    &saved.name,
+                );
+                if let Err(error) = &started {
+                    tracing::warn!(
+                        app = %saved.app,
+                        %error,
+                        "a window this device left open did not start"
+                    );
+                }
+                started.map_err(ApiError::Failed)
+            }
+        };
+        match started {
             Ok(()) => {
                 self.opening = Some(Opening {
                     tab: saved.tab,
@@ -493,17 +587,8 @@ impl Restore {
                 });
                 true
             }
-            Err(error) => {
+            Err(_error) => {
                 desktop.with_policy(|policy| policy.give_up_held(&saved.app));
-                let said = error.to_string();
-                let said = said
-                    .strip_prefix(&format!("{}: ", launch.id()))
-                    .unwrap_or(&said);
-                tracing::warn!(
-                    app = %saved.app,
-                    error = %said,
-                    "a window this device left open did not start"
-                );
                 let note = would_not_start(&saved.name);
                 desktop.with_policy(|policy| policy.note_in_tab(saved.tab, &note));
                 false
@@ -596,7 +681,10 @@ fn waiting_in(tree: &Layout, wanted: impl Fn(WorkspaceId) -> bool) -> Vec<(Works
                     tab: tab.id,
                     app: app_id.clone(),
                     name,
-                    launch: apps::launch_of(app_id),
+                    start: apps::launch_of(app_id).map(Start::App).or_else(|| {
+                        crate::windows_compat::saved_entry(&workspace.id().to_string(), app_id)
+                            .map(Start::Windows)
+                    }),
                     shows: tab.view.clone(),
                 },
             ));

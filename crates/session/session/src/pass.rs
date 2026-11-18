@@ -194,6 +194,7 @@ impl Session {
         if let Some(launch) = &launch {
             launch.follow_render_node(|| self.compositor.render_node(), self.first_frame);
             launch.start_asked_now();
+            self.follow_windows_identities(launch);
         }
         // What a tool handed the session's input is taken where a device's own input reaches the session:
         // here, and each time the wait for the frame below is woken, so the frame carries it as it
@@ -344,6 +345,21 @@ impl Session {
             &self.shared.pages,
             Instant::now(),
         );
+    }
+
+    /// A Windows program's window names the class its saved tab reopens with: what makes the next
+    /// start find the program again after a reboot.
+    fn follow_windows_identities(&self, launch: &crate::apps::Apps) {
+        if !launch.windows_wanted() {
+            return;
+        }
+        let windows: Vec<(u32, String)> = self
+            .compositor
+            .windows()
+            .into_iter()
+            .filter_map(|(window, _)| Some((window.pid?, window.app_id?)))
+            .collect();
+        launch.note_windows_identities(&windows);
     }
 
     /// What the session's walk reached this pass, handed to the panel that shows it: whether the

@@ -24,9 +24,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 
 use compat_service::{
-    Assembly, CapabilityAuthority, CompatSessionHandle, ExecutionError, ExecutionOutcome,
-    KeptDisplay, KeptProgram, LaunchDisplay, LaunchDisplays, SandboxCommand, SessionSide,
-    StartedProgram, TakenBack, TrustedLauncherRegistry,
+    Assembly, CapabilityAuthority, CompatSessionHandle, EntryDirectory, ExecutionError,
+    ExecutionOutcome, KeptDisplay, KeptProgram, LaunchDisplay, LaunchDisplays, ReopenAnswer,
+    ReopenAsk, Reopenings, SandboxCommand, SessionSide, StartedProgram, TakenBack,
+    TrustedLauncherRegistry,
 };
 use tilo_broker_core::services::WorkspaceAuthority as _;
 use tilo_lock::MutexRecover as _;
@@ -40,6 +41,96 @@ use crate::app_wire::LayoutAuthority;
 pub struct Display {
     shown: Mutex<Shown>,
     kept: Arc<Kept>,
+    /// Which entries the service can open now, and what the session asks it as itself when a
+    /// saved tab names one (`Reopen` and `ReopenAsk`): both known once the service is up.
+    entries: EntryDirectory,
+    reopenings: Mutex<Option<Reopenings>>,
+    /// The window class of each Windows program's window, by workspace: what a saved tab of it
+    /// reopens with. Read once, written through as programs show their windows.
+    identities: Mutex<Option<BTreeMap<(String, String), String>>>,
+    /// A saved tab's program the service would not open, for the restore to say why in the tab.
+    refused: Mutex<Vec<Refused>>,
+}
+
+/// How a saved tab's Windows program is found: ready to start, still waiting for the service to
+/// read what it can open, or gone from it.
+pub(crate) enum Reopen {
+    Ready,
+    Waiting,
+    Gone,
+}
+
+/// A saved tab's program the service did not open: the tab to say so in, and what to call it.
+pub(crate) struct Refused {
+    pub tab: u64,
+    pub app: String,
+    pub name: String,
+}
+
+/// What a Windows program's window shows under, by workspace and window class: the entry whose
+/// tab it stood in, as the session saw it. A class in one workspace says nothing of another.
+const IDENTITIES_FILE: &str = "tilo/windows-compat/window-identities.json";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SeenWindow {
+    workspace: String,
+    window: String,
+    entry: String,
+}
+
+/// Where the windows seen by class are kept: the login's data directory, beside the capsules.
+fn identities_path() -> Option<PathBuf> {
+    Some(tilo_paths::xdg::data_home()?.join(IDENTITIES_FILE))
+}
+
+/// The entry a tab of the window class `app` in `workspace` reopens: the program whose window
+/// the person saw there, as this computer last knew it.
+pub(crate) fn saved_entry(workspace: &str, app: &str) -> Option<String> {
+    read_identities()?
+        .get(&(workspace.to_owned(), app.to_owned()))
+        .cloned()
+}
+
+fn read_identities() -> Option<BTreeMap<(String, String), String>> {
+    let path = identities_path()?;
+    let text = std::fs::read_to_string(path).ok()?;
+    let seen: Vec<SeenWindow> = serde_json::from_str(&text)
+        .inspect_err(|error| tracing::warn!(%error, "the Windows programs' windows are unreadable"))
+        .ok()?;
+    Some(
+        seen.into_iter()
+            .map(|seen| ((seen.workspace, seen.window), seen.entry))
+            .collect(),
+    )
+}
+
+fn write_identities(identities: &BTreeMap<(String, String), String>) {
+    let Some(path) = identities_path() else {
+        return;
+    };
+    let seen: Vec<SeenWindow> = identities
+        .iter()
+        .map(|((workspace, window), entry)| SeenWindow {
+            workspace: workspace.clone(),
+            window: window.clone(),
+            entry: entry.clone(),
+        })
+        .collect();
+    let Ok(text) = serde_json::to_string(&seen) else {
+        return;
+    };
+    if let Some(dir) = path.parent()
+        && let Err(error) = std::fs::create_dir_all(dir)
+    {
+        tracing::warn!(%error, "the Windows programs' windows are not saved");
+        return;
+    }
+    // Written beside and moved over, so a start that reads it never sees half of one.
+    let beside = path.with_extension("json.new");
+    if let Err(error) = std::fs::write(&beside, text).and_then(|()| std::fs::rename(&beside, &path))
+    {
+        tracing::warn!(%error, "the Windows programs' windows are not saved");
+    }
 }
 
 #[derive(Default)]
@@ -69,6 +160,74 @@ impl Display {
         let mut asked = self.kept.asked.lock_recover();
         asked.dirs = Some(dirs);
         asked.wake = wake;
+    }
+
+    /// The window class `app` a Windows program's window showed in `workspace` is its entry
+    /// `entry`: what a tab of that class there reopens. Written through, so a start after a
+    /// reboot finds it.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the map is read and written under one hold, and the file written after it goes"
+    )]
+    pub(crate) fn seen_window(&self, workspace: &str, app: &str, entry: &str) {
+        let written = {
+            let mut seen = self.identities.lock_recover();
+            let seen = seen.get_or_insert_with(|| read_identities().unwrap_or_default());
+            let key = (workspace.to_owned(), app.to_owned());
+            if seen.get(&key).is_some_and(|held| held.as_str() == entry) {
+                return;
+            }
+            seen.insert(key, entry.to_owned());
+            seen.clone()
+        };
+        // Written outside the lock: the file is not a pass's to wait for.
+        write_identities(&written);
+    }
+
+    /// Whether the saved tab's entry `entry` can be opened again: ready, waiting for the service
+    /// to read what it can open, or gone from it.
+    pub(crate) fn reopened(&self, entry: &str) -> Reopen {
+        if self.reopenings.lock_recover().is_none() {
+            // No service of this session's starts Windows programs: none can open it.
+            return Reopen::Gone;
+        }
+        match self.entries.entries() {
+            None => Reopen::Waiting,
+            Some(entries) if entries.contains(entry) => Reopen::Ready,
+            Some(_) => Reopen::Gone,
+        }
+    }
+
+    /// Ask the service to open the saved tab's entry `entry` in `workspace`, waking the session's
+    /// loop with `wake` when it answers. `None` when no service of this session's starts Windows
+    /// programs.
+    pub(crate) fn ask_reopen(
+        &self,
+        entry: &str,
+        workspace: &str,
+        wake: Option<tilo_service::Wake>,
+    ) -> Option<ReopenAnswer> {
+        let reopenings = self.reopenings.lock_recover().as_ref().cloned()?;
+        let answer = ReopenAnswer::default();
+        if let Some(wake) = wake {
+            answer.waking(move || wake());
+        }
+        reopenings.ask(ReopenAsk {
+            entry_id: entry.to_owned(),
+            workspace_id: workspace.to_owned(),
+            answer: answer.clone(),
+        });
+        Some(answer)
+    }
+
+    /// The saved tab's program the service would not open, for the restore to say so.
+    pub(crate) fn refused(&self, tab: u64, app: String, name: String) {
+        self.refused.lock_recover().push(Refused { tab, app, name });
+    }
+
+    /// The refusals since the last pass.
+    pub(crate) fn take_refused(&self) -> Vec<Refused> {
+        std::mem::take(&mut *self.refused.lock_recover())
     }
 
     /// What the service asked the session's loop since the last pass.
@@ -472,6 +631,9 @@ pub(crate) fn serve(serving: Serving, layout: Arc<LayoutAuthority>) -> Result<Se
     let capsules = tilo_paths::xdg::data_home()
         .ok_or_else(|| "this login has no data directory".to_owned())?
         .join("tilo/windows-compat");
+    let reopenings = Reopenings::default();
+    *display.reopenings.lock_recover() = Some(reopenings.clone());
+    let entries = display.entries.clone();
     let side = SessionSide {
         socket: launcher::services::socket_for(launcher::services::COMPAT_SERVICE),
         launcher: tilo_launcher,
@@ -480,6 +642,8 @@ pub(crate) fn serve(serving: Serving, layout: Arc<LayoutAuthority>) -> Result<Se
         sandboxes: Arc::new(WorkspaceSandboxes(layout)),
         displays: display,
         capsules,
+        entries: entries.clone(),
+        reopenings,
     };
     let service = Arc::new(Mutex::new(None));
     let started = Arc::clone(&service);
@@ -495,6 +659,9 @@ pub(crate) fn serve(serving: Serving, layout: Arc<LayoutAuthority>) -> Result<Se
                     *started.lock_recover() = Some(served);
                 }
                 Err(error) => {
+                    // No Windows program can open here: a saved tab of one says so rather than
+                    // waiting for a service that never comes.
+                    entries.replace(std::collections::BTreeSet::new());
                     tracing::warn!(%error, "the Windows compatibility service is unavailable");
                 }
             }

@@ -172,6 +172,9 @@ struct State {
     /// The apps from before an update that this desktop cannot show, by launch id.
     #[cfg(target_os = "linux")]
     outdated: BTreeMap<u64, outdated::FromBefore>,
+    /// The saved tabs whose Windows programs the service was asked for since the last pass, and
+    /// has not answered yet.
+    windows_waits: Vec<windows::Waiting>,
 }
 
 /// A window whose tab the session asked the shell for: the launch that starts it once the shell asks
@@ -312,6 +315,7 @@ impl Apps {
                 kept: Vec::new(),
                 #[cfg(target_os = "linux")]
                 outdated: BTreeMap::new(),
+                windows_waits: Vec::new(),
             }),
         }
     }
