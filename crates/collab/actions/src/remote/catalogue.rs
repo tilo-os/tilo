@@ -102,6 +102,12 @@ pub struct CatalogueQuery {
     /// check to make immediately before invoking a row from an older page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<ActionAddress>,
+    /// Only the action with this id, wherever the provider publishes it: the
+    /// lookup of an action named by its app alone. An agent hears here of one
+    /// only the person at the publishing device takes
+    /// ([`crate::Availability::shown_here`]), which no listing offers it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
     /// The revision `cursor` (or `target`) was obtained at. A provider refuses a
     /// cursor from another revision as stale rather than skipping rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -129,6 +135,7 @@ impl Default for CatalogueQuery {
             needle: String::new(),
             resource_name: None,
             target: None,
+            action: None,
             revision: None,
             cursor: Vec::new(),
             max_results: default_page(),
@@ -456,6 +463,7 @@ impl CatalogueQuery {
     #[must_use]
     pub fn admits(&self, row: &CatalogueRow) -> bool {
         (self.target.is_some()
+            || self.action.is_some()
             || row.parent_resource == self.parent_resource.as_deref().unwrap_or(""))
             && self.app_id.as_deref().is_none_or(|app| row.app_id == app)
             && self.view_resource.as_ref().is_none_or(|wanted| {
@@ -471,6 +479,10 @@ impl CatalogueQuery {
                 .resource_name
                 .as_deref()
                 .is_none_or(|name| row.resource.is_named(name))
+            && self
+                .action
+                .as_ref()
+                .is_none_or(|id| row.action.as_ref().is_some_and(|a| a.address.action == *id))
             && self.target.as_ref().is_none_or(|target| {
                 row.action
                     .as_ref()

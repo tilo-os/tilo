@@ -2636,7 +2636,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .iter()
             .filter_map(|(path, action)| Some((action_rank(name, action)?, path.clone(), action)))
             .collect();
-        let (path, action) = pick_action_anywhere(name, resolved, &ranked)?;
+        let (path, action) = match pick_action_anywhere(name, resolved, &ranked) {
+            Ok(found) => found,
+            Err(error) => {
+                return Err(self.kept_here(name, resolved).await.unwrap_or(error));
+            }
+        };
         // The path to the resource it is published on; the action follows
         // its `#`, as every path's does.
         let named_at = match path {
@@ -2644,6 +2649,29 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             None => resolved.path.clone(),
         };
         Ok((named_at, action.clone()))
+    }
+
+    /// Why `name` is refused when it names, by its id, an action the app keeps for the person at
+    /// its device, wherever in the app it stands: such an action is never listed to an agent,
+    /// and a call of it is told whose it is rather than that the app has no such action. `None`
+    /// when the path names a resource (its own actions were asked by id already) or the app
+    /// keeps none by that id.
+    async fn kept_here(&self, name: &str, resolved: &Resolved) -> Option<String> {
+        if resolved.node.is_some() {
+            return None;
+        }
+        let page = self
+            .ask(CatalogueQuery {
+                provider: Some(resolved.provider.clone()),
+                action: Some(name.to_owned()),
+                ..CatalogueQuery::default()
+            })
+            .await
+            .ok()?;
+        page.rows
+            .into_iter()
+            .filter_map(|row| row.action)
+            .find_map(|found| super::refusal::not_allowed(found).err())
     }
 
     /// The action `action` on the resolved target, by its id, asked of the

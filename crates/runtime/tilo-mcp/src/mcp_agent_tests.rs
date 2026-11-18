@@ -819,7 +819,16 @@ impl Notes {
         for row in &mut rows {
             row.provider.clone_from(&provider);
         }
-        if let Some(target) = &query.target {
+        // One only the person at the device takes is told of when named, never listed.
+        let shown = |row: &CatalogueRow| {
+            row.action.as_ref().is_some_and(|a| {
+                matches!(a.contract.availability.refusal(), Some(("private_view", _)))
+            })
+        };
+        rows.retain(|row| query.target.is_some() || query.action.is_some() || !shown(row));
+        if let Some(id) = &query.action {
+            rows.retain(|row| row.action.as_ref().is_some_and(|a| a.address.action == *id));
+        } else if let Some(target) = &query.target {
             rows.retain(|row| row.action.as_ref().is_some_and(|a| a.address == *target));
         } else if let Some(name) = &query.resource_name {
             // A name is answered whole, among the parent's children (the
