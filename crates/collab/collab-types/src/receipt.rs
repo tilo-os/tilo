@@ -175,7 +175,7 @@ pub fn claim_node(
     let resource = TreePath::workspace(document.workspace)
         .app(document.app)
         .kind(kind)
-        .resource(document.document);
+        .resource(published_resource(document.document));
     match action {
         ClaimedAction::Verb { action, item } => {
             let node = match item {
@@ -495,13 +495,36 @@ impl std::fmt::Debug for Surfaces {
     }
 }
 
-/// The node of a record, `workspace › app › record`, as a change is decided
-/// without its app's surface.
+/// The published resource of the document `document` (a route's id), as
+/// grants name it: a chain's part is its chain (`chain:<chain>`), a chunk is
+/// the document it splits, and every other document is itself.
+///
+/// The answer comes from the id alone, which the receiver parses and
+/// validates itself: a writer names no resource, so it cannot attach its
+/// change to another chain's or document's grants.
+#[must_use]
+pub fn published_resource(document: &str) -> String {
+    let mut id = crate::document::DocumentId::parse(document);
+    while let Some((base, _)) = id.as_ref().and_then(crate::document::DocumentId::chunk_of) {
+        id = Some(base);
+    }
+    match id {
+        Some(id) => id.chain_part().map_or_else(
+            || id.as_str().to_owned(),
+            |(chain, _)| crate::document::chain_resource_id(&chain),
+        ),
+        None => document.to_owned(),
+    }
+}
+
+/// The node of a document, `workspace › app › resource`, as a change is
+/// decided without its app's surface: a part or chunk is decided as the
+/// resource its tree is published under ([`published_resource`]).
 #[must_use]
 pub fn written_node(document: &WrittenDocument<'_>) -> TreePath {
     TreePath::workspace(document.workspace)
         .app(document.app)
-        .resource(document.document)
+        .resource(published_resource(document.document))
 }
 
 /// Decide a received op on `record`: a compaction as a write of the record
