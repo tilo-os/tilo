@@ -16,7 +16,7 @@ pub use page::PageAgents;
 pub(crate) use shell::*;
 
 /// This machine's applications, as the workspace settings name them.
-struct Directory;
+pub(crate) struct Directory;
 
 impl domain::AppDirectory for Directory {
     fn app_display_name(&self, app_id: &str) -> Option<String> {

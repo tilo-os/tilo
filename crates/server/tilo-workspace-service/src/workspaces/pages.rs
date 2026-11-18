@@ -20,7 +20,7 @@ use tilo_action_policy::roles::governance;
 use tilo_peer_state::join::VerifiedRedemption;
 use tilo_server_protocol::workspaces::{
     Inviter, JoinReply, PendingInvite, PreAdmission, Role, ServerEntry, WaitListEntry, Workspace,
-    WorkspaceHolder, WorkspaceNotice, WorkspacesReply, WorkspacesRequest,
+    WorkspaceDelegation, WorkspaceHolder, WorkspaceNotice, WorkspacesReply, WorkspacesRequest,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -112,13 +112,15 @@ impl Presented {
 
 /// `workspace` as a page sees it, with `summary` its people as its
 /// governance keeps them, `certificates` the devices it records, `owners` the
-/// people it is kept for, `holders` the holders of it and `reader` the person
-/// the page's device acts for.
+/// people it is kept for, `holders` the holders of it, `delegations` the work
+/// its members gave servers and `reader` the person the page's device acts
+/// for.
 fn page_workspace(
     summary: WorkspaceSummary,
     certificates: &[DeviceCert],
     owners: &BTreeSet<String>,
     holders: Vec<WorkspaceHolder>,
+    delegations: Vec<WorkspaceDelegation>,
     reader: [u8; 32],
 ) -> Workspace {
     let members: Vec<_> = summary
@@ -164,7 +166,29 @@ fn page_workspace(
         generation: summary.generation,
         members,
         holders,
+        delegations,
     }
+}
+
+/// The work `held` gives servers that is live at `now_ns`, as a page reads
+/// it: each delegation the member's device signed, for this `workspace`, and
+/// inside its window until it is revoked.
+fn delegations_of(
+    held: &[tilo_peer_state::WorkDelegation],
+    workspace: &str,
+    now_ns: u64,
+) -> Vec<WorkspaceDelegation> {
+    held.iter()
+        .filter(|delegation| delegation.verify(workspace, now_ns).is_ok())
+        .filter(|delegation| delegation.revoked_at_ns.is_none())
+        .map(|delegation| WorkspaceDelegation {
+            person: hex::encode(delegation.person),
+            server: hex::encode(delegation.server),
+            agent: delegation.agent.clone(),
+            grants: delegation.grants.clone(),
+            expires_at_ns: delegation.expires_at_ns,
+        })
+        .collect()
 }
 
 /// The people `workspace` is kept for, by person id: who a page reads as its
@@ -815,12 +839,18 @@ impl Workspaces {
             let certificates = workspace.peer().certificates();
             let owners = owners_of(&workspace);
             let holders = holders_of(&workspace.peer().governance().keeping_devices());
+            let delegations = delegations_of(
+                &workspace.peer().workspace().work_delegations(),
+                workspace.workspace(),
+                tilo_clock::unix_now_ns(),
+            );
             drop(workspace);
             listed.push(page_workspace(
                 summary,
                 &certificates,
                 &owners,
                 holders,
+                delegations,
                 device.user_public_key,
             ));
         }
@@ -898,12 +928,18 @@ impl Workspaces {
         let certificates = workspace.peer().certificates();
         let owners = owners_of(&workspace);
         let holders = holders_of(&workspace.peer().governance().keeping_devices());
+        let delegations = delegations_of(
+            &workspace.peer().workspace().work_delegations(),
+            workspace.workspace(),
+            tilo_clock::unix_now_ns(),
+        );
         drop(workspace);
         Ok(WorkspacesReply::Workspace(page_workspace(
             summary,
             &certificates,
             &owners,
             holders,
+            delegations,
             device.user_public_key,
         )))
     }
@@ -1669,7 +1705,15 @@ mod tests {
             devices: std::collections::BTreeMap::new(),
         };
         let name = |summary: WorkspaceSummary, certs: &[DeviceCert]| {
-            page_workspace(summary, certs, &BTreeSet::new(), Vec::new(), [0; 32]).members[0]
+            page_workspace(
+                summary,
+                certs,
+                &BTreeSet::new(),
+                Vec::new(),
+                Vec::new(),
+                [0; 32],
+            )
+            .members[0]
                 .name
                 .clone()
         };
@@ -1694,5 +1738,52 @@ mod tests {
             "Quin's laptop",
             "a key of theirs is not their name where a device of theirs is"
         );
+    }
+
+    /// A page lists the delegations that are live now, each as the member's
+    /// device signed it: one that ended, one revoked and one signed for
+    /// another workspace are not the work anyone may take.
+    #[test]
+    fn a_page_lists_the_delegations_that_are_live_now() {
+        use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
+        use tilo_peer_state::WorkDelegation;
+
+        let root = SigningKey::from_bytes(&[9; 32]);
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let person = root.verifying_key().to_bytes();
+        let member = Grantee::person(hex::encode(person));
+        let grant = Grant::new(
+            "delegated-work",
+            member.clone(),
+            TreePath::workspace("team").app("so.tilo.mail"),
+            KindSet::READ_UNDOABLE,
+            Answer::Allow,
+            member,
+        );
+        let signed = |workspace: &str, issued: u64, expires: u64| {
+            WorkDelegation::sign(
+                &key,
+                person,
+                [8; 32],
+                workspace,
+                None,
+                vec![grant.clone()],
+                issued,
+                expires,
+            )
+            .unwrap()
+        };
+        let live = signed("team", 1, 1_000);
+        let ended = signed("team", 1, 500);
+        let revoked = live.revoked(&key, 400).unwrap();
+        let elsewhere = signed("other", 1, 1_000);
+
+        let listed = delegations_of(&[live.clone(), ended, revoked, elsewhere], "team", 600);
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        assert_eq!(listed[0].person, hex::encode(person));
+        assert_eq!(listed[0].server, hex::encode([8; 32]));
+        assert_eq!(listed[0].expires_at_ns, 1_000);
+        assert_eq!(listed[0].grants, live.grants);
+        assert_eq!(listed[0].agent, None);
     }
 }

@@ -213,9 +213,9 @@ pub(crate) struct Shared {
     pub(crate) power: Option<tilo_sheets::power::PowerState>,
     #[cfg(target_os = "linux")]
     pub(crate) workspace_settings: Option<tilo_sheets::workspace_settings::WorkspaceSettingsState>,
-    /// The session revision workspace settings was last fed at: its panes are
-    /// rebuilt when the session changed under it.
-    pub(crate) ws_settings_fed: Cell<Option<u64>>,
+    /// The shell's revision and the workspace state's, as workspace settings
+    /// was last fed at: its panes are rebuilt when either changed under it.
+    pub(crate) ws_settings_fed: Cell<Option<(u64, u64)>>,
     /// The session revision the file access list and what apps may capture were
     /// last worked out at: both follow every change of the session, so a
     /// revocation reaches the running app at once.

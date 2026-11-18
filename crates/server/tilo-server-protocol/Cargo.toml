@@ -36,6 +36,8 @@ thiserror.workspace = true
 postcard = { workspace = true, features = ["alloc"] }
 # Live frames are sealed with their record's channel content keys.
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
+# The work a member's delegation lets a server take, as the grants it names.
+tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
 # The peer protocol version the handshake carries and checks.
 neighbour-wire = { version = "0.1.0", path = "../../collab/neighbour-wire" }
 # Agent and bot delegations and workspace shard ids, re-exported unchanged.

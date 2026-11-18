@@ -720,6 +720,7 @@ so-tilo-workspace-settings-change-reset-agent-app = Reset the app's answers
 so-tilo-workspace-settings-change-review-activity = Review the activity
 so-tilo-workspace-settings-change-review-agent = Review an agent
 so-tilo-workspace-settings-change-revoke = Revoke a permission
+so-tilo-workspace-settings-change-revoke-delegation = Take back your work from a server
 so-tilo-workspace-settings-change-set-agent-answer = Answer for one kind
 so-tilo-workspace-settings-change-set-agent-model = Choose the model
 so-tilo-workspace-settings-change-set-agent-spend-limit = Set the daily limit

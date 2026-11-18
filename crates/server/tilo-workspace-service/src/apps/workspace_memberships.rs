@@ -107,6 +107,9 @@ impl AppBrokerState {
             WorkspaceMembershipCommand::Lease { .. } => {
                 return Err("a lease is claimed by the device that does the work".into());
             }
+            WorkspaceMembershipCommand::RevokeWorkDelegation { .. } => {
+                return Err("a member's delegation is revoked at the device that signed it".into());
+            }
             WorkspaceMembershipCommand::InstallApp(_)
             | WorkspaceMembershipCommand::UninstallApp { .. } => {
                 return Err(
