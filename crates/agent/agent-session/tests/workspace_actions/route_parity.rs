@@ -944,10 +944,9 @@ async fn an_agent_through_tilo_mcp_is_seen_once_as_the_hosts_run() {
 /// Seen on another person's host: a workspace a node someone else runs
 /// governs (a Lounge's), a member's agent through `tilo mcp`'s path is seen
 /// once, named and narrated, as the run that host speaks for, by the member's
-/// own page, and the host's device is listed as its operator's, the
-/// workspace's owner, never as the member's. A member device that says a run
-/// on the host's track is not heard, and one it says on the live session is
-/// its own, never the host's.
+/// own page, and the host's device is no member's, as it serves the
+/// workspace. A member device that says a run on the host's track is not
+/// heard, and one it says on the live session is its own, never the host's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
     use tilo_peer_state::join::Role;
@@ -987,8 +986,8 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
         .with_agent_session("session-guest");
     let listed = super::hosted_documents::tool(&server, "tilo_ls", serde_json::json!({})).await;
 
-    // The host founded the workspace, so its operator owns it and the host
-    // is the owner's device: the page lists it as the operator's.
+    // The host serves the workspace, so the member list names no device of it: the page reads
+    // whose each member device is, and the host is none of them.
     let host_key = hex::encode(host.cert.device_public_key);
     let members = loop {
         browser.pump();
@@ -1004,10 +1003,9 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
-    assert_eq!(
-        members.get(&host_key),
-        Some(&hex::encode(operator.verifying_key().to_bytes())),
-        "the host is listed as another person's device: {members:?}"
+    assert!(
+        !members.contains_key(&host_key),
+        "the host is listed as a member's device though it serves the workspace: {members:?}"
     );
 
     // A member device that says it speaks for a run, as the host would: on
