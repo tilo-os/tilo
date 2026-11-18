@@ -131,10 +131,10 @@ def verify(directory, *, development=False):
                 revision = labels.get("org.opencontainers.image.revision")
                 # A dev image's build names its commit; the server image's build
                 # reads no history (its cache is commit-free), so its digest
-                # binds the build and it carries no revision label.
+                # binds the build and its revision label is empty.
                 require((flavour == "dev" and revision == metadata["source_revision"])
                         or (flavour == "server"
-                            and revision in (None, metadata["source_revision"])),
+                            and revision in (None, "", metadata["source_revision"])),
                         "development target source or flavour label differs")
         refs.extend([descriptor, manifest["config"], *manifest["layers"]])
     require(len(refs) <= MAX_BLOBS, "too many OCI blobs")

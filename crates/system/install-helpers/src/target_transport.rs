@@ -372,15 +372,16 @@ fn manifest_refs(
             // A development image is unsigned and content-bound to its source
             // and flavour. A dev image's build reads the commit, so its
             // revision label names it; the server image's build reads no Git
-            // (its cache is commit-free), so its digest binds the build and a
-            // revision label is absent.
+            // (its cache is commit-free), so its digest binds the build and its
+            // revision label is empty.
             let flavour = get(labels, "sh.tilo.image.flavour").as_str();
-            let revision = get(labels, "org.opencontainers.image.revision");
+            let revision = get(labels, "org.opencontainers.image.revision").as_str();
+            let source = get(metadata, "source_revision").as_str();
             require(
                 match flavour {
-                    Some("dev") => revision == get(metadata, "source_revision"),
+                    Some("dev") => revision == source,
                     Some("server") => {
-                        revision.is_null() || revision == get(metadata, "source_revision")
+                        revision.is_none_or(|value| value.is_empty() || Some(value) == source)
                     }
                     _ => false,
                 },
