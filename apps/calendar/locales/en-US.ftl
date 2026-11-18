@@ -328,26 +328,6 @@ calendar-effects-show-tasks = Show tasks
 calendar-effects-start-event = New event
 calendar-effects-start-task = New task
 calendar-effects-open = Open
-calendar-calendar = Calendar
-calendar-calendar-new-event = New event
-calendar-calendar-new-task = New task
-calendar-calendar-new-project = New task project
-calendar-calendar-delete-event = Delete event
-calendar-calendar-reschedule = Reschedule
-calendar-calendar-set-start = Set start
-calendar-calendar-move-to-calendar = Move to calendar
-calendar-calendar-invite = Invite
-calendar-calendar-set-categories = Set categories
-calendar-calendar-add-invitation = Add invitation
-calendar-calendar-delete-task = Delete task
-calendar-calendar-delete-project = Delete project
-calendar-calendar-import-items = Import calendar items
-calendar-calendar-adopt-remote-event = Adopt the server's event
-calendar-calendar-adopt-remote-task = Adopt the server's task
-calendar-calendar-drop-remote-item = Remove what the server removed
-calendar-calendar-server-applied = Record uploaded changes
-calendar-calendar-server-removed = Record a deletion on the server
-calendar-calendar-pulled = Record fetched changes
 
 ## The event and task forms' row labels
 calendar-field-starts = Starts

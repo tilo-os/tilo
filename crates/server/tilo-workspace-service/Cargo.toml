@@ -16,7 +16,7 @@ path = "src/lib.rs"
 test-support = ["tilo-server-store/test-support", "dep:tilo-test-env"]
 # Agents on the host: workspaces keep apps' confined replicas and hand their
 # records' channel keys to pages.
-agents = ["web", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:ui", "dep:chat", "dep:calendar", "dep:tilo-model-gateway"]
+agents = ["web", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:ui", "dep:chat", "dep:calendar-model", "dep:tilo-model-gateway"]
 # Pages reach the host: it follows the records its members write sealed and
 # opens them with the channels' keys it holds as a key holder.
 web = []
@@ -79,8 +79,9 @@ tilo-model-gateway = { path = "../../agent/model-gateway", default-features = fa
 tilo-secrets = { path = "../../platform/tilo-secrets", optional = true }
 chat = { path = "../../../apps/chat", optional = true, default-features = false }
 # A person's calendars on their host are read, expanded and filed by the
-# Calendar app's own code, so a device and its host agree about time.
-calendar = { path = "../../../apps/calendar", optional = true, default-features = false }
+# Calendar model's own code, so a device and its host agree about time. The
+# app's window is not linked: only the record, its iCalendar and its spans.
+calendar-model = { path = "../../../apps/calendar-model", features = ["store"], optional = true }
 tilo-automation = { path = "../../collab/automation" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", optional = true }
 tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }

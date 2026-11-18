@@ -5,12 +5,8 @@ use std::collections::BTreeMap;
 use jiff::civil::{Date, DateTime, Time};
 use tilo_document::RichText;
 use tilo_recurrence::Rule;
-use ui::tilo_resource::{self, Identified, Keyed, Model, Outbox, Refusal, Set};
+use tilo_resource::{self, Identified, Keyed, Model, Outbox, Refusal, Set};
 use uuid::Uuid;
-use vello::peniko::Color;
-
-use ui::theme::Theme;
-use ui::tokens::colors::PresenceHue;
 
 pub use tilo_recurrence::Repeat as Recurrence;
 
@@ -35,14 +31,14 @@ impl View {
             View::Tasks => "Tasks",
         }
     }
-    pub(crate) fn display_label(self) -> String {
-        crate::resource::t(match self {
-            Self::Month => "calendar-view-month",
-            Self::Week => "calendar-view-week",
-            Self::Day => "calendar-view-day",
-            Self::Agenda => "calendar-view-agenda",
-            Self::Tasks => "calendar-tasks-title",
-        })
+    pub fn display_label(self) -> String {
+        match self {
+            Self::Month => tilo_resource::word!("calendar-view-month").read(),
+            Self::Week => tilo_resource::word!("calendar-view-week").read(),
+            Self::Day => tilo_resource::word!("calendar-view-day").read(),
+            Self::Agenda => tilo_resource::word!("calendar-view-agenda").read(),
+            Self::Tasks => tilo_resource::word!("calendar-tasks-title").read(),
+        }
     }
     pub const ALL: [View; 5] = [
         View::Month,
@@ -73,12 +69,12 @@ pub enum Priority {
 
 impl Priority {
     pub fn display_label(self) -> String {
-        crate::resource::t(match self {
-            Priority::None => "calendar-tasks-priority-none",
-            Priority::Low => "calendar-tasks-priority-low",
-            Priority::Medium => "calendar-tasks-priority-medium",
-            Priority::High => "calendar-tasks-priority-high",
-        })
+        match self {
+            Priority::None => tilo_resource::word!("calendar-tasks-priority-none").read(),
+            Priority::Low => tilo_resource::word!("calendar-tasks-priority-low").read(),
+            Priority::Medium => tilo_resource::word!("calendar-tasks-priority-medium").read(),
+            Priority::High => tilo_resource::word!("calendar-tasks-priority-high").read(),
+        }
     }
     pub fn flag(self) -> &'static str {
         match self {
@@ -86,15 +82,6 @@ impl Priority {
             Priority::Low => "P3",
             Priority::Medium => "P2",
             Priority::High => "P1",
-        }
-    }
-    pub fn color(self, theme: &Theme) -> Color {
-        let c = &theme.tokens.colors;
-        match self {
-            Priority::None => c.text_dim,
-            Priority::Low => c.semantic.info,
-            Priority::Medium => c.semantic.warning,
-            Priority::High => c.semantic.danger,
         }
     }
     pub fn rank(self) -> u8 {
@@ -115,9 +102,9 @@ impl Priority {
     }
 }
 
-/// A small, theme-derived colour palette for calendars/projects/events.
-/// Every value resolves through [`Theme`] so the OS controls the look —
-/// the enum only encodes *which* semantic slot an item picked.
+/// A small colour palette for calendars/projects/events.
+/// The enum encodes *which* semantic place an item picked; the window resolves
+/// it through its theme, so the OS controls the look.
 #[derive(
     Clone,
     Copy,
@@ -152,20 +139,6 @@ impl Palette {
         Palette::Violet,
         Palette::Slate,
     ];
-
-    pub fn color(self, theme: &Theme) -> Color {
-        let c = &theme.tokens.colors;
-        let hue = match self {
-            Palette::Indigo => PresenceHue::Blue,
-            Palette::Emerald => PresenceHue::Green,
-            Palette::Amber => PresenceHue::Amber,
-            Palette::Red => PresenceHue::Red,
-            Palette::Blue => PresenceHue::Sky,
-            Palette::Violet => PresenceHue::Violet,
-            Palette::Slate => return c.text_tertiary,
-        };
-        c.presence.hue(hue)
-    }
 
     pub fn name(self) -> &'static str {
         match self {
@@ -526,7 +499,7 @@ impl Event {
 }
 
 pub fn untitled_event() -> String {
-    crate::resource::t("calendar-a11y-new-event")
+    tilo_resource::word!("calendar-untitled-event").read()
 }
 
 impl Event {
@@ -627,7 +600,7 @@ impl Event {
         out
     }
 
-    pub(crate) fn occurrences_before(&self, day: Date) -> u64 {
+    pub fn occurrences_before(&self, day: Date) -> u64 {
         self.rule().map_or_else(
             || u64::from(self.start.date() < day),
             |rule| rule.count_before(self.start.date(), day),
@@ -830,12 +803,12 @@ impl Calendar {
 
     pub fn list_title(&self, sel: &ListSel) -> String {
         match sel {
-            ListSel::Inbox => crate::resource::t("calendar-tasks-inbox"),
-            ListSel::Today => crate::resource::t("calendar-tasks-today"),
-            ListSel::Upcoming => crate::resource::t("calendar-tasks-upcoming"),
-            ListSel::Completed => crate::resource::t("calendar-tasks-completed"),
+            ListSel::Inbox => tilo_resource::word!("calendar-tasks-inbox").read(),
+            ListSel::Today => tilo_resource::word!("calendar-tasks-today").read(),
+            ListSel::Upcoming => tilo_resource::word!("calendar-tasks-upcoming").read(),
+            ListSel::Completed => tilo_resource::word!("calendar-tasks-completed").read(),
             ListSel::Project(id) => self.project(*id).map_or_else(
-                || crate::resource::t("calendar-project"),
+                || tilo_resource::word!("calendar-project").read(),
                 |project| project.name.clone(),
             ),
         }

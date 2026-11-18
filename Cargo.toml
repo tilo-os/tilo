@@ -112,6 +112,7 @@ members = [
     "apps/calculator",
     "apps/calculator-model",
     "apps/calendar",
+    "apps/calendar-model",
     "apps/camera",
     "apps/chat",
     "apps/discord",

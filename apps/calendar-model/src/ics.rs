@@ -13,7 +13,7 @@ use crate::model::{
     Attendee, Calendar, Event, Id, InviteStatus, Palette, Priority, Recurrence, Task,
 };
 use crate::timezone::{Observance, OnsetDay, YearlyRule};
-use ui::tilo_resource::Keyed;
+use tilo_resource::Keyed;
 
 const DT_LOCAL: &str = "%Y%m%dT%H%M%S";
 const D_ONLY: &str = "%Y%m%d";
@@ -1270,14 +1270,14 @@ fn parse_vevent(
     let mut categories: Vec<String> = Vec::new();
 
     while i < lines.len() {
-        let Some(slot) = lines.get(i) else { break };
-        if slot.as_ref().is_some_and(|line| line.ends("VEVENT")) {
+        let Some(held) = lines.get(i) else { break };
+        if held.as_ref().is_some_and(|line| line.ends("VEVENT")) {
             i += 1;
             break;
         }
-        if slot.as_ref().is_some_and(|line| line.begins("VALARM")) {
-            while let Some(slot) = lines.get(i) {
-                let Some(line) = slot else {
+        if held.as_ref().is_some_and(|line| line.begins("VALARM")) {
+            while let Some(held) = lines.get(i) {
+                let Some(line) = held else {
                     i += 1;
                     continue;
                 };
@@ -1292,7 +1292,7 @@ fn parse_vevent(
             i += 1;
             continue;
         }
-        if let Some(line) = slot {
+        if let Some(line) = held {
             let val = line.value.clone();
             match line.name.as_str() {
                 "UID" => id = parse_uid(&val),
@@ -1461,12 +1461,12 @@ fn parse_vtodo(lines: &[Option<ContentLine>], mut i: usize) -> (Option<Task>, us
     let mut priority = Priority::None;
 
     while i < lines.len() {
-        let Some(slot) = lines.get(i) else { break };
-        if slot.as_ref().is_some_and(|line| line.ends("VTODO")) {
+        let Some(held) = lines.get(i) else { break };
+        if held.as_ref().is_some_and(|line| line.ends("VTODO")) {
             i += 1;
             break;
         }
-        if let Some(line) = slot {
+        if let Some(line) = held {
             let val = &line.value;
             match line.name.as_str() {
                 "UID" => id = parse_uid(val),
