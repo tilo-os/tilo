@@ -8,23 +8,28 @@
 use anyhow::bail;
 use serde::Serialize;
 
-use crate::pairing_code;
+use tilo_identity::certification_ceremony::pairing_code;
 
 /// One machine asking to join, as the person's device shows it: what it calls
 /// itself, what it is, and the code both sides compute.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub(crate) struct WaitingMachine {
+pub struct WaitingMachine {
     /// Names this ask in the person's answer.
-    pub(crate) ask: String,
-    pub(crate) device: String,
-    pub(crate) service: String,
-    pub(crate) label: String,
-    pub(crate) hardware: String,
-    pub(crate) code: String,
+    pub ask: String,
+    pub device: String,
+    pub service: String,
+    pub label: String,
+    pub hardware: String,
+    pub code: String,
+    /// The token's nonce, when the machine was handed one: what a planned
+    /// machine's entry is known by.
+    #[serde(default)]
+    pub nonce: String,
 }
 
 impl WaitingMachine {
-    pub(crate) fn of(device: [u8; 32], service: [u8; 32], label: &str, hardware: &str) -> Self {
+    #[must_use]
+    pub fn of(device: [u8; 32], service: [u8; 32], label: &str, hardware: &str) -> Self {
         let mut digest = blake3::Hasher::new();
         digest.update(b"tilo-enrollment-ask-v1");
         digest.update(&device);
@@ -37,20 +42,29 @@ impl WaitingMachine {
             label: label.to_owned(),
             hardware: hardware.to_owned(),
             code: pairing_code(device, service),
+            nonce: String::new(),
         }
+    }
+
+    /// The ask of a machine that came with a token, named by the token's
+    /// nonce as well.
+    #[must_use]
+    pub fn with_nonce(mut self, nonce: [u8; 16]) -> Self {
+        self.nonce = hex::encode(nonce);
+        self
     }
 }
 
 /// The person's answer to one machine asking to join.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Decision {
+pub enum Decision {
     Approve,
     Decline,
 }
 
 /// Who answers the machines asking to join: the person at the console, or a
 /// session that shows them on the person's own devices.
-pub(crate) trait Person {
+pub trait Person {
     /// Put `machine` to the person and answer what they said.
     ///
     /// # Errors
@@ -61,7 +75,7 @@ pub(crate) trait Person {
 
 /// The person at the console: one JSON line per machine, then their answer on
 /// standard input (`approve <ask>`, `decline <ask>`).
-pub(crate) struct Console;
+pub struct Console;
 
 impl Person for Console {
     fn decide(&mut self, machine: &WaitingMachine) -> anyhow::Result<Decision> {
@@ -99,7 +113,8 @@ impl Person for Console {
 /// What this machine is, as the person's devices show it beside its name: its
 /// processors, memory, first disk and system, each only when this machine can
 /// say it. Bounded, so a machine cannot flood the sheet.
-pub(crate) fn hardware_summary() -> String {
+#[must_use]
+pub fn hardware_summary() -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(cores) = processors() {
         parts.push(format!("{cores} cores"));

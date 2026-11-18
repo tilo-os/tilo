@@ -19397,6 +19397,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-enrollment"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "collab-types",
+ "ed25519-dalek 3.0.0",
+ "hex",
+ "iroh",
+ "iroh-base",
+ "iroh-relay",
+ "libc",
+ "postcard",
+ "runtime-identity",
+ "rustix 1.1.6",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-clock",
+ "tilo-fs",
+ "tilo-identity",
+ "tilo-seal",
+ "tilo-server-protocol",
+ "tilo-test-env",
+ "tilo-user-identity",
+ "tokio",
+ "toml 1.0.6+spec-1.1.0",
+ "tracing",
+ "zeroize",
+]
+
+[[package]]
 name = "tilo-environment"
 version = "0.1.0"
 dependencies = [
@@ -21798,6 +21830,7 @@ dependencies = [
  "tilo-crypto",
  "tilo-delivery-protocol",
  "tilo-desktop-model",
+ "tilo-enrollment",
  "tilo-files",
  "tilo-fs",
  "tilo-identity",
@@ -22017,6 +22050,7 @@ dependencies = [
  "host-fs",
  "image",
  "iroh",
+ "iroh-relay",
  "jiff",
  "key-group",
  "launcher",
@@ -22085,6 +22119,7 @@ dependencies = [
  "tilo-documents",
  "tilo-durable-writer",
  "tilo-endpoint-reachability",
+ "tilo-enrollment",
  "tilo-failure",
  "tilo-feedback",
  "tilo-files",

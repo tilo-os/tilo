@@ -230,6 +230,7 @@ members = [
     "crates/collab/moderation",
     "crates/collab/threshold-identity",
     "crates/collab/tilo-callstream",
+    "crates/collab/tilo-enrollment",
     "crates/collab/tilo-live",
     "crates/collab/tilo-unlock-protocol",
     "crates/collab/tilo-user-identity",
