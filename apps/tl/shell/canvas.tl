@@ -376,7 +376,11 @@ view canvas_place(a: Layout, p: LayoutPlace, lists: Bool) {
 /// not joined to it as a window's title is (`place_title`); a place with no title of its own goes
 /// by that one.
 fn content_title(p: LayoutPlace) -> Text {
-    if p.title != "" { p.title } else { place_title(p) }
+    // A turn is named by its question, the title its resource carries, never by the title the
+    // conversation's window had when the turn's place was made ("chat").
+    if p.shown_as == "turn" and p.name != "" {
+        p.name
+    } else if p.title != "" { p.title } else { place_title(p) }
 }
 
 /// Whether the place `p` draws its view itself — its resource's view, or the query it stands for

@@ -422,7 +422,7 @@ fn what_is_found_at_a_click_stands_at_the_point() {
 
 /// A click left of a place that stands already places what is found at the click (`canvas.md`
 /// §1): "my notes" said left of the inbox stands with its top-left where the person clicked,
-/// narrowed to the free room before the inbox, never below or beside the inbox instead.
+/// narrowed to the free area before the inbox, never below or beside the inbox instead.
 #[test]
 fn what_is_found_left_of_a_place_stands_at_the_click_narrowed() {
     let _settled = ui::motion::testing::settled();
@@ -1847,14 +1847,19 @@ fn a_step_before_its_turn_stands_fills_the_turns_rectangle() {
 
 /// A turn asked by a click is a place that hugs its words: the layout takes the height its card
 /// is drawn at, so the canvas under a short answer stays free for the next ask, rather than the
-/// next turn being put below the turn's tallest and the camera panning to it.
+/// next turn being put below the turn's tallest and the camera panning to it. Its caption is its
+/// question.
 #[test]
 fn a_turns_place_hugs_its_words() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let (x, y, w, _) = on_screen(&session, CANVAS).expect("the canvas");
-    point_and_say(&mut session, (x + w * 0.2, y + 40.0), "hi");
+    point_and_say(
+        &mut session,
+        (x + w * 0.2, y + 40.0),
+        "remind me about the dentist",
+    );
     until(&mut session, "the ask sent", |session| {
         session.settle_services();
         session
@@ -1873,6 +1878,49 @@ fn a_turns_place_hugs_its_words() {
     assert!(
         strip.canvas_hugs,
         "a turn's place hugs its words: {strip:?}"
+    );
+}
+
+/// A click left of a turn, closer to it than a turn is wide: the new turn stands at the click,
+/// narrowed to the free area before the turn on its right, never moved past the screen's edge with
+/// the camera panning after it.
+#[test]
+fn a_turn_asked_left_of_another_stands_at_its_click_narrowed() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
+    let sent = |session: &mut Session, count: usize| {
+        until(session, "the ask sent", |session| {
+            session.settle_services();
+            session
+                .read("session:send-to")
+                .and_then(|read| read["sent"].as_array().map(|sent| sent.len() >= count))
+                .unwrap_or(false)
+        });
+    };
+    point_and_say(&mut session, (x + w * 0.45, y + h * 0.3), "hi");
+    sent(&mut session, 1);
+    chat_holds(&session, CONVERSATION, "q32");
+    let (first_x, _, _, _) = wait_for(&mut session, "the first turn placed", |session| {
+        turn_box(session, "q32")
+    });
+    let at = (x + w * 0.05, y + h * 0.35);
+    point_and_say(&mut session, at, "what time is it");
+    sent(&mut session, 2);
+    chat_holds(&session, CONVERSATION, "q33");
+    let (sx, _, sw, _) = wait_for(&mut session, "the second turn placed", |session| {
+        turn_box(session, "q33")
+    });
+    #[allow(clippy::cast_possible_truncation, reason = "canvas pixels")]
+    let asked_x = (at.0 - x) as i64;
+    assert!(
+        (sx - asked_x).abs() <= 24,
+        "the second turn stands at its click ({asked_x}): {sx}"
+    );
+    assert!(
+        sx + sw <= first_x,
+        "narrowed to the area before the first turn ({first_x}): {sx}+{sw}"
     );
 }
 
