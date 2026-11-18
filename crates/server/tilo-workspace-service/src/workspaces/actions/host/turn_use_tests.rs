@@ -69,7 +69,7 @@ fn request(target: RemoteActionTarget, argument: Value) -> InvokeRequest {
 
 /// Adding the account `address` at the servers the login belongs to, or at
 /// `incoming` instead, with the vault item `password` names.
-fn add_mail(address: &str, incoming: &str, password: &Value) -> InvokeRequest {
+pub(super) fn add_mail(address: &str, incoming: &str, password: &Value) -> InvokeRequest {
     request(
         person_accounts::target(person_accounts::ADD_MAIL_WITH_ITEM),
         json!({
@@ -83,7 +83,7 @@ fn add_mail(address: &str, incoming: &str, password: &Value) -> InvokeRequest {
 }
 
 /// A login for both mail servers, kept by `who` from their own device.
-async fn a_mail_login(
+pub(super) async fn a_mail_login(
     service: &super::super::ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
     who: (&DeviceCert, &Caller),
@@ -102,7 +102,7 @@ async fn a_mail_login(
 
 /// Sign-ins are proved by a stand-in that accepts each and keeps what it
 /// was asked with.
-fn proving(workspaces: &Workspaces) -> Arc<Mutex<Vec<String>>> {
+pub(super) fn proving(workspaces: &Workspaces) -> Arc<Mutex<Vec<String>>> {
     let asked = Arc::new(Mutex::new(Vec::new()));
     let kept = Arc::clone(&asked);
     workspaces.sign_in_accounts_through(move |account, password| {
@@ -133,7 +133,7 @@ async fn remembered(
 }
 
 /// The ask a use answered with, when it asked.
-fn asked(taken: Result<TurnUse, ActionCallError>) -> OpenAsk {
+pub(super) fn asked(taken: Result<TurnUse, ActionCallError>) -> OpenAsk {
     match taken {
         Ok(TurnUse::Asks(open)) => *open,
         other => panic!("the person is asked first: {other:?}"),

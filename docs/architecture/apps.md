@@ -232,7 +232,10 @@ roles and work). Per part:
 - **Secrets stay on a member's own devices** unless that member lets a server
   use one particular secret. Holding a workspace's keys reveals its documents;
   holding a secret lets a server act as the person elsewhere, so each is a
-  separate choice.
+  separate choice. The member's delegation names the vault items a server may
+  use, and it stops naming them when they revoke it: an item it does not name is
+  refused before the vault is opened and stays on their own devices, and the
+  item's own leave and their answer still decide each use.
 - **A server holding several people's workspaces keeps each one apart:** its
   documents, views, workers, agents and machines in that workspace's sandbox,
   with that workspace's network grants and limits.

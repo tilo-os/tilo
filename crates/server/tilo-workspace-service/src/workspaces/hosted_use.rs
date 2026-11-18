@@ -63,6 +63,7 @@
 //! may be gone by then: it lets that agent's next fill of that item at that
 //! site through, once.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
@@ -378,6 +379,21 @@ pub struct KeepersTurn {
     pub agent: String,
     /// The agent's name, as its person reads it.
     pub name: String,
+    /// The vault items the turn may use: `None` on a device of the person's own,
+    /// where every item of theirs is theirs to use, and otherwise the items
+    /// their delegation lets this server use. An item it does not name stays on
+    /// their own devices.
+    pub secrets: Option<BTreeSet<String>>,
+}
+
+impl KeepersTurn {
+    /// Whether the turn may use the vault item `item`.
+    #[must_use]
+    pub fn may_use(&self, item: &str) -> bool {
+        self.secrets
+            .as_ref()
+            .is_none_or(|allowed| allowed.contains(item))
+    }
 }
 
 /// One use by reference this server carries out.
@@ -607,6 +623,13 @@ fn refused(reason: impl Into<String>) -> ActionCallError {
     }
 }
 
+/// Why a use of a vault item is refused on a server the member delegated their
+/// work to: the delegation names the items it lets the server use, and this is
+/// not one of them, so it stays on their own devices.
+fn not_delegated() -> &'static str {
+    "That vault item stays on your own devices: the work here was delegated without it"
+}
+
 /// The arguments `request` carries.
 fn arguments_of(request: &InvokeRequest) -> Map<String, Value> {
     match &request.argument {
@@ -764,11 +787,15 @@ impl Workspaces {
         if keeper.root() != Some(person) {
             return Err(UnknownAction);
         }
+        // What the turn may use of the person's own: every item on a device of
+        // theirs, and only what their delegation names on this server.
+        let secrets = self.turn_secrets(turn.workspace, person, device).await;
         Ok(KeepersTurn {
             person,
             workspace: workspace.to_owned(),
             agent: agent.to_owned(),
             name: caller.agent_name().unwrap_or(agent).to_owned(),
+            secrets,
         })
     }
 
@@ -853,6 +880,9 @@ impl Workspaces {
         let wanted = Use::read(&request.target, &arguments)?;
         let root = self.person_settings_root(&using.person);
         let (item, kind, places) = wanted.wanted(&root).map_err(refused)?;
+        if !using.may_use(item.as_str()) {
+            return Err(refused(not_delegated()));
+        }
         let word = person_vault::use_word(&request.target);
         // What the use would be refused for is said before anyone is asked,
         // in the vault's own words; the vault is closed again before
@@ -1125,9 +1155,14 @@ impl Workspaces {
         }
         let wanted = Use::read(&target, &kept.arguments)?;
         let word = person_vault::use_word(&target);
+        let (item, kind, places) = wanted.wanted(&root).map_err(refused)?;
+        // A delegation that no longer names the item, or was revoked, stops the
+        // use its person answered about.
+        if !using.may_use(item.as_str()) {
+            return Err(refused(not_delegated()));
+        }
         let always = answer == UseAnswer::Always && wanted.takes_leave();
         if always {
-            let (item, kind, places) = wanted.wanted(&root).map_err(refused)?;
             let mut items =
                 VaultItems::open_in(&root).map_err(|error| refused(error.to_string()))?;
             // A leave is given only for a use the item allows.
@@ -1210,6 +1245,26 @@ impl super::GovernedWorkspace {
             .work_delegation(server, person, tilo_clock::wall())
             .is_some_and(|delegation| delegation.actor() == *actor)
     }
+
+    /// The vault items a turn taking `person`'s work on `device` may use
+    /// ([`Self::admits_work`]): every item on one of their own devices, and
+    /// only what the delegation names where it takes their work on this
+    /// server. `None` where every item of theirs is theirs to use.
+    pub(super) fn turn_secrets(
+        &self,
+        person: &[u8; 32],
+        device: &[u8; 32],
+        server: &[u8; 32],
+        placed: impl Fn(&[u8; 32]) -> bool,
+    ) -> Option<BTreeSet<String>> {
+        if self.person_device(person, placed) == Some(*device) || device != server {
+            return None;
+        }
+        self.peer()
+            .workspace()
+            .work_delegation(server, person, tilo_clock::wall())
+            .map(|delegation| delegation.secrets.into_iter().collect())
+    }
 }
 
 impl Workspaces {
@@ -1287,6 +1342,28 @@ impl Workspaces {
         )
     }
 
+    /// The vault items a turn taking `person`'s work on `device` in `workspace`
+    /// may use: `None` on a device of their own, where every item of theirs is
+    /// theirs to use, and otherwise the items their delegation lets this
+    /// server use. `None` for a workspace not governed here.
+    async fn turn_secrets(
+        &self,
+        workspace: WorkspaceId,
+        person: [u8; 32],
+        device: [u8; 32],
+    ) -> Option<BTreeSet<String>> {
+        let governed = self.held(workspace).await?;
+        let runtime = governed.lock().await;
+        let placed = &self.inner.host.environments;
+        let now_ns = tilo_clock::unix_now_ns();
+        runtime.turn_secrets(
+            &person,
+            &device,
+            &self.governor().device_public_key,
+            |device| placed.of(device, now_ns).is_some(),
+        )
+    }
+
     /// The device the workspace `workspace` admits `person`'s work on for a turn
     /// acting as `actor`: this server's own device where they delegated that work
     /// to it as `actor`, else the newest of their own devices it admits now.
@@ -1355,6 +1432,9 @@ impl Workspaces {
         let using = self.turn_uses_for(turn, &target).await?;
         let root = self.person_settings_root(&using.person);
         let (item, site) = page_wanted(fill).map_err(refused)?;
+        if !using.may_use(item.as_str()) {
+            return Err(refused(not_delegated()));
+        }
         let word = person_vault::use_word(&target);
         // What the fill would be refused for is said before anyone is asked,
         // and the vault is closed again before anything is waited for.
@@ -1419,6 +1499,9 @@ impl Workspaces {
         let fill: FillPage = serde_json::from_value(Value::Object(kept.arguments.clone()))
             .map_err(|_| "What was asked does not read as a page to fill".to_owned())?;
         let (item, site) = page_wanted(&fill)?;
+        if !using.may_use(item.as_str()) {
+            return Err(not_delegated().to_owned());
+        }
         let mut items = VaultItems::open_in(root).map_err(|error| error.to_string())?;
         let facts = items
             .belongs_at(&item, &site)
