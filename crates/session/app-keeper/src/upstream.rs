@@ -97,6 +97,8 @@ pub(crate) struct Upstream {
         wayland_protocols::xdg::toplevel_tag::v1::client::xdg_toplevel_tag_manager_v1::XdgToplevelTagManagerV1,
     >,
     pub feedback: FeedbackParts,
+    /// The formats a version-3 desktop listed when its dma-buf global was bound.
+    pub dmabuf_listed: Vec<smithay::backend::allocator::Format>,
     /// The dma-buf formats this desktop's default feedback names, once it arrived: a held buffer
     /// it cannot take is not made there (that would be a protocol error ending every window).
     pub dmabuf_formats: Option<std::collections::HashSet<smithay::backend::allocator::Format>>,
@@ -184,6 +186,7 @@ impl Upstream {
                 presentation_version: 0,
                 toplevel_tag: None,
                 feedback: FeedbackParts::default(),
+                dmabuf_listed: Vec::new(),
                 dmabuf_formats: None,
                 xdg_outputs: None,
                 seat: None,
@@ -283,7 +286,8 @@ fn bind_global(
         "wl_subcompositor" => up.subcompositor = Some(registry.bind(name, 1, qh, ())),
         "wl_shm" => up.shm = Some(registry.bind(name, 1, qh, ())),
         "xdg_wm_base" => up.wm_base = Some(registry.bind(name, version.min(6), qh, ())),
-        "zwp_linux_dmabuf_v1" if version >= 4 => {
+        // Version 3 is what a desktop without a GPU node offers: its formats, no feedback.
+        "zwp_linux_dmabuf_v1" if version >= 3 => {
             up.dmabuf = Some(registry.bind(name, version.min(5), qh, ()));
         }
         "zxdg_output_manager_v1" => {
@@ -432,7 +436,7 @@ impl Dispatch<c::wl_callback::WlCallback, SyncStage> for State {
                     return;
                 };
                 up.globals_bound = true;
-                if let Some(dmabuf) = &up.dmabuf {
+                if let Some(dmabuf) = up.dmabuf.as_ref().filter(|dmabuf| dmabuf.version() >= 4) {
                     dmabuf.get_default_feedback(qh, ());
                 }
                 // The windows are made once the default feedback above arrived, so a held
@@ -440,6 +444,8 @@ impl Dispatch<c::wl_callback::WlCallback, SyncStage> for State {
                 conn.display().sync(qh, SyncStage::Ready);
             }
             SyncStage::Ready => {
+                // A version-3 desktop listed its formats when it was bound, before this answer.
+                state.offer_listed_dmabuf();
                 state.push_all();
                 state.desktop_ready();
             }
@@ -699,14 +705,15 @@ impl Dispatch<zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1, ()> for State 
 
 impl Dispatch<zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1, ()> for State {
     fn event(
-        _: &mut Self,
+        state: &mut Self,
         _: &zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1,
-        _: zwp_linux_dmabuf_v1::Event,
+        event: zwp_linux_dmabuf_v1::Event,
         (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        // Formats come with the feedback (version 4 and later), which is all the keeper binds.
+        // Only a version-3 desktop lists formats here; a later one names them in its feedback.
+        state.desktop_listed_dmabuf(&event);
     }
 }
 

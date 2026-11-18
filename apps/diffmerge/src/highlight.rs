@@ -16,19 +16,7 @@ use ui::tokens::TextRole;
 use ui::widget::code_editor::{Span, SyntaxHighlighter};
 use vello::kurbo::Point;
 
-pub fn split_label(label: &str) -> (&str, Option<&str>) {
-    let label = label.trim();
-    match label.rsplit_once(" (") {
-        Some((name, rest)) if rest.ends_with(')') => {
-            (name.trim_end(), rest.strip_suffix(')').map(str::trim))
-        }
-        _ => (label, None),
-    }
-}
-
-pub fn file_name(label: &str) -> &str {
-    split_label(label).0
-}
+pub use diffmerge_model::doc::{file_name, split_label};
 
 pub fn grammar_for_label(label: &str) -> SyntaxHighlighter {
     let path = Path::new(file_name(label));

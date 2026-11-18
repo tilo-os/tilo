@@ -26,10 +26,11 @@ public struct PieceWords: Identifiable, Equatable, Sendable {
 
 /// What a person can do with a piece's words, in the order the piece's menu offers it.
 public enum PieceAction: CaseIterable, Sendable {
-    case copy, selectText
+    case reply, copy, selectText
 
     var words: AssistantWords {
         switch self {
+        case .reply: .reply
         case .copy: .copy
         case .selectText: .selectText
         }
@@ -40,6 +41,8 @@ extension AssistantModel {
     /// Do what a row of a piece's menu says.
     public func take(_ action: PieceAction, of words: PieceWords) {
         switch action {
+        case .reply:
+            reply(to: words.id, saying: words.text)
         case .copy:
             #if os(macOS)
             pasteboard.clearContents()
@@ -71,6 +74,8 @@ struct PieceMenu: ViewModifier {
                 #else
                 // Lifted by its menu on an iPhone, the piece keeps its round corners.
                 .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: Measure.bubbleRadius))
+                // A swipe to the right answers the piece, as Reply in its menu does.
+                .modifier(SwipeToReply { model.take(.reply, of: words) })
                 #endif
                 .contextMenu {
                     ForEach(PieceAction.allCases, id: \.self) { action in

@@ -7,7 +7,11 @@ use std::os::fd::OwnedFd;
 
 use wayland_client::protocol::wl_buffer::WlBuffer;
 
-use crate::support::{ARGB8888, App, Rig, SurfaceFeedbackSeen, XRGB8888, dmabuf_plane};
+use wayland_client::Proxy as _;
+
+use crate::support::{
+    ARGB8888, App, Rig, SurfaceFeedbackSeen, XRGB8888, desktop_without_gpu, dmabuf_plane,
+};
 
 const RED: [u8; 4] = [255, 0, 0, 255];
 const GREEN: [u8; 4] = [0, 255, 0, 255];
@@ -143,6 +147,97 @@ fn the_desktops_dma_buf_feedback_reaches_the_app_and_is_kept_across_a_restart() 
     });
     assert_eq!(app.heard.dmabuf_formats, [XRGB8888]);
     assert_eq!(app.heard.surface_formats, [XRGB8888]);
+    assert!(!app.broken);
+    assert_eq!(rig.keeper.describe().fault, None);
+}
+
+/// A desktop without a GPU node offers version 3: its formats, no feedback. Behind a keeper the
+/// app is offered the same, as it would be on that desktop directly; with no dma-buf global at
+/// all, a graphics library finds nothing to draw with and an app may crash instead of falling
+/// back to software.
+#[test]
+fn an_app_on_a_desktop_without_a_gpu_is_offered_its_formats_and_keeps_them_across_a_restart() {
+    let (red, blue) = (made(RED), made(BLUE));
+    let mut rig = Rig::on(desktop_without_gpu(&[ARGB8888, XRGB8888]));
+    let mut app = App::connect(&mut rig);
+    app.open_window(&mut rig, "Software", Some("software"));
+    rig.pump(&mut [&mut app], |_, apps| {
+        apps[0].heard.dmabuf_listed.len() == 2
+    });
+    let listed = app.heard.dmabuf.clone().expect("a dma-buf global");
+    assert_eq!(listed.version(), 3, "the version the desktop offers");
+    assert_eq!(app.heard.dmabuf_listed, [ARGB8888, XRGB8888]);
+    assert_eq!(app.heard.dmabuf_done, 0, "version 3 has no feedback");
+
+    // What a software renderer draws in shared memory shows, and so does a dma-buf in a listed
+    // format.
+    app.show(&mut rig, (100, 80), GREEN);
+    let first = buffer(&app, &red, ARGB8888, 1);
+    app.commit_buffer(&first, SIZE);
+    rig.pump(&mut [&mut app], |rig, _| shown(rig).is_some());
+    assert_eq!(shown(&mut rig), Some((RED, identity(&red))));
+
+    // A desktop with feedback next: a new bind gets feedback, and the version-3 object the app
+    // already holds keeps making buffers that show.
+    rig.drop_desktop();
+    rig.settle(&mut [&mut app]);
+    rig.attach_new(640, 480);
+    rig.pump(&mut [&mut app], |_, apps| apps[0].heard.dmabuf_done > 0);
+    assert_eq!(
+        app.heard
+            .dmabuf
+            .as_ref()
+            .map(wayland_client::Proxy::version),
+        Some(5)
+    );
+    assert_eq!(app.heard.dmabuf_formats, [ARGB8888, XRGB8888]);
+    let fresh = app.heard.dmabuf.replace(listed);
+    let second = buffer(&app, &blue, ARGB8888, 2);
+    app.heard.dmabuf = fresh;
+    app.commit_buffer(&second, SIZE);
+    rig.pump(&mut [&mut app], |rig, _| {
+        shown(rig).map(|(pixel, _)| pixel) == Some(BLUE)
+    });
+    assert_eq!(shown(&mut rig), Some((BLUE, identity(&blue))));
+    assert!(!app.broken);
+    assert_eq!(rig.keeper.describe().fault, None);
+}
+
+/// An app told where to allocate by a desktop with a GPU keeps its global when the next desktop
+/// has none: its feedback names that desktop's formats.
+#[test]
+fn an_app_told_of_a_gpu_hears_the_formats_of_a_desktop_without_one() {
+    let blue = made(BLUE);
+    let mut rig = Rig::new(None);
+    let mut app = App::connect(&mut rig);
+    app.open_window(&mut rig, "Video", Some("video"));
+    app.show(&mut rig, (100, 80), GREEN);
+    rig.pump(&mut [&mut app], |_, apps| apps[0].heard.dmabuf_done > 0);
+    let dmabuf = app.heard.dmabuf.clone().expect("a dma-buf global");
+    let surface = app.surface.clone().unwrap();
+    let qh = app.queue.handle();
+    let _feedback = dmabuf.get_surface_feedback(&surface, &qh, SurfaceFeedbackSeen);
+    rig.pump(&mut [&mut app], |_, apps| {
+        apps[0].heard.surface_feedback_done > 0
+    });
+
+    rig.drop_desktop();
+    rig.settle(&mut [&mut app]);
+    let (defaults, surfaces) = (app.heard.dmabuf_done, app.heard.surface_feedback_done);
+    rig.attach_desktop(desktop_without_gpu(&[XRGB8888]));
+    rig.pump(&mut [&mut app], |_, apps| {
+        apps[0].heard.dmabuf_done > defaults && apps[0].heard.surface_feedback_done > surfaces
+    });
+    assert_eq!(app.heard.dmabuf_formats, [XRGB8888]);
+    assert_eq!(app.heard.surface_formats, [XRGB8888]);
+    assert!(
+        app.heard.dmabuf.as_ref() == Some(&dmabuf),
+        "the app keeps the global it bound"
+    );
+    let opaque = buffer(&app, &blue, XRGB8888, 1);
+    app.commit_buffer(&opaque, SIZE);
+    rig.pump(&mut [&mut app], |rig, _| shown(rig).is_some());
+    assert_eq!(shown(&mut rig), Some((BLUE, identity(&blue))));
     assert!(!app.broken);
     assert_eq!(rig.keeper.describe().fault, None);
 }

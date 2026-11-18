@@ -549,3 +549,85 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+/// The notes' forgetting, which Undo cannot take back, carried inside `apply` or inside a
+/// group.
+fn forgetting(inside: &str) -> Invoke<Notes> {
+    if inside == "apply" {
+        Invoke::apply(&Notes::FORGET.with(()).build(0).unwrap()).unwrap()
+    } else {
+        Invoke::group([Notes::FORGET.with(())])
+    }
+}
+
+/// The notes' clearing, which Undo takes back, carried inside `apply` or inside a group.
+fn clearing(inside: &str) -> Invoke<Notes> {
+    if inside == "apply" {
+        Invoke::apply(&Notes::CLEAR.with(()).build(0).unwrap()).unwrap()
+    } else {
+        Invoke::group([Notes::CLEAR.with(())])
+    }
+}
+
+/// Carried `inside` apply or a group, the forgetting asks its person first, forgets nothing
+/// until they answer, and is carried out once they confirmed it.
+fn carried_forgetting_asks_first(inside: &str) {
+    let mut app = TestApp::<NotesApp>::new().unwrap();
+    app.invoke(Notes::ADD.with("Milk")).unwrap();
+    let asked = app.invoke(forgetting(inside));
+    assert!(
+        matches!(asked, Err(tilo_actions::ApiError::ConfirmationRequired)),
+        "inside {inside} the person is asked first: {asked:?}"
+    );
+    assert_eq!(
+        app.state().notes.len(),
+        1,
+        "inside {inside}: nothing is forgotten before they answer"
+    );
+    app.invoke_confirmed(forgetting(inside))
+        .expect("once they confirmed it, it is carried out");
+    assert!(
+        app.state().notes.is_empty(),
+        "inside {inside}: confirmed, the notes are forgotten"
+    );
+}
+
+tilo_test_env::scenario! {
+    fn what_undo_cannot_take_back_asks_first_inside_apply_and_inside_a_group_as_by_its_name;
+
+    phase an_irreversible_destructive_verb_asks_first_by_its_name;
+    {
+        let mut app = TestApp::<NotesApp>::new().unwrap();
+        app.invoke(Notes::ADD.with("Milk")).unwrap();
+        let asked = app.invoke(Notes::FORGET.with(()));
+        assert!(
+            matches!(asked, Err(tilo_actions::ApiError::ConfirmationRequired)),
+            "by its name the person is asked first: {asked:?}"
+        );
+        assert_eq!(app.state().notes.len(), 1, "nothing is forgotten before they answer");
+    }
+
+    phase an_irreversible_destructive_verb_asks_first_inside_apply;
+    {
+        carried_forgetting_asks_first("apply");
+    }
+
+    phase an_irreversible_destructive_verb_asks_first_inside_a_group;
+    {
+        carried_forgetting_asks_first("a group");
+    }
+
+    phase an_undoable_destructive_verb_applies_at_once_inside_apply_and_inside_a_group;
+    // What Undo takes back is still asked of nobody, whatever carries it.
+    {
+        for inside in ["apply", "a group"] {
+            let mut app = TestApp::<NotesApp>::new().unwrap();
+            app.invoke(Notes::ADD.with("Milk")).unwrap();
+            app.invoke(clearing(inside))
+                .expect("what Undo takes back applies at once");
+            assert!(app.state().notes.is_empty(), "inside {inside}: cleared at once");
+            assert!(app.undo(), "inside {inside}: Undo takes it back");
+            assert_eq!(app.state().notes.len(), 1);
+        }
+    }
+}

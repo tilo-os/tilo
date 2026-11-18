@@ -66,9 +66,11 @@ final class FileSendingTests: XCTestCase {
       window.most = 32 * 1024 * 1024;
       window.failAt = -1;
       window.offersPut = true;
+      window.keepsAnswers = false;
       const said = value => ({state: 'completed', output: {value}});
-      window.post = (id, author, text, carried = []) => {
-        window.messages.push({id, author, text, ts: 1794900000 + window.messages.length, question: null, share: null, attachments: carried});
+      window.post = (id, author, text, carried = [], answers = null, quoted = null) => {
+        window.messages.push({id, author, text, ts: 1794900000 + window.messages.length, question: null, share: null, attachments: carried,
+          answers, quoted});
         document.getElementById('semantics').textContent = String(Math.random());
       };
       const uploads = new Map();
@@ -126,15 +128,27 @@ final class FileSendingTests: XCTestCase {
           semantics: document.getElementById('semantics'),
           state: () => ({workspaceName: 'Ada\'s workspace'}),
           actions: () => [{address: {resource: 'chain:messages', action: 'read'}, resource_kind: 'chat.messages',
-            params: [{name: 'cursor'}, {name: 'pageSize'}, {name: 'fields'}, {name: 'where'}]}],
+            params: [{name: 'cursor'}, {name: 'pageSize'}, {name: 'fields'}, {name: 'where'}]},
+            // A Chat that keeps which message a message answers offers a post that takes it.
+            ...(window.keepsAnswers ? [{address: {resource: 'chain:messages', action: 'post'}, resource_kind: 'chat.messages',
+              params: [{name: 'text'}, {name: 'answers'}, {name: 'quoted'}, {name: 'attachments'}]}] : [])],
           invokeAction: async (resource, action, args) => {
             window.heard.push({resource, action, args});
             if (resource === 'chain:messages' && action === 'read') {
               // The read names the one conversation it wants, under Chat's own name for that field.
               const [named, wanted] = Object.entries(args.where ?? {})[0] ?? [];
+              // The name the app's own read gives the field that says a message's conversation.
+              if (named) window.named = named;
+              // A Chat that keeps a field on no message refuses a read that names it.
+              if (!window.keepsAnswers && (args.fields ?? []).includes('answers')) throw new Error('unknown_field: a message has no field answers');
               return said({kind: 'chat.messages', messages: [...window.messages].reverse().slice(0, args.pageSize ?? 50)
                 .map(m => ({item: 'chat.messages/messages/' + m.id, name: m.text,
                   ...Object.fromEntries((args.fields ?? []).map(field => [field, field === named ? wanted : m[field] ?? null]))}))});
+            }
+            if (resource === 'chain:messages' && action === 'post' && window.keepsAnswers) {
+              const id = 's' + window.messages.length;
+              window.post(id, {person: ADA}, args.text, args.attachments ?? [], args.answers ?? null, args.quoted ?? null);
+              return said({accepted: true, message: id});
             }
             if (resource === 'chat.workspace' && action === 'send') {
               const id = 's' + window.messages.length;
@@ -332,6 +346,59 @@ final class FileSendingTests: XCTestCase {
         XCTAssertEqual(JSON(text: begun), ["ok": ["upload": 1]])
         let appended = try await page("return globalThis.__tiloLive.put(given, 'append', {upload: 1, offset: 0, piece: 'YWJj'})", ["given": source.engine.pass])
         XCTAssertEqual(JSON(text: appended), ["ok": ["written": 3]])
+    }
+}
+
+/// Answering one message, on Tilo itself: against the same page, which with `keepsAnswers` is a
+/// Chat that keeps which message a message answers (its post takes `answers`, a read gives it).
+extension FileSendingTests {
+    /// What Chat was asked by `action`: the resource, the conversation, the words, the answered message.
+    private func asked(_ action: String) async throws -> JSON? {
+        JSON(text: try await page("return JSON.stringify(window.heard.filter(call => call.action === '\(action)').map(call => [call.resource, call.args[window.named] ?? '', call.args.text, call.args.answers ?? '']))"))
+    }
+
+    private func message(saying words: String) -> Message? {
+        for item in held {
+            if case .message(let message) = item.content, message.text == words { return message }
+        }
+        return nil
+    }
+
+    func testAReplyIsPostedWithTheMessageItAnswersWhereChatKeepsThat() async throws {
+        try await start()
+        try await enter("window.keepsAnswers = true; window.post('m1', {person: 'b0'.repeat(32)}, 'Nine mails sorted since seven.')")
+        try await until("the answered message is held") { self.message(saying: "Nine mails sorted since seven.") != nil }
+        let answered = Answered(Item.ID("chat.messages/messages/m1"), words: "Nine mails sorted since seven.")
+        try await source.send(Draft(text: "Which nine?", answers: answered), to: .main)
+        // One post, into the conversation the answered message stands in, by the name Chat's actions take for it.
+        let posted = try await asked("post")
+        XCTAssertEqual(posted, [["chain:messages", "c_chat", "Which nine?", "m1"]])
+        let sent = try await asked("send")
+        XCTAssertEqual(sent, [])
+        // What Chat keeps comes back as what the message answers, with the answered message's words.
+        try await until("the reply is told") { self.message(saying: "Which nine?") != nil }
+        XCTAssertEqual(message(saying: "Which nine?")?.answers, answered)
+        XCTAssertNil(message(saying: "Nine mails sorted since seven.")?.answers)
+    }
+
+    func testAReplyToAChatThatKeepsNoAnswersCarriesTheAnsweredLineAsAQuoteAboveTheWords() async throws {
+        try await start()
+        try await enter("window.post('m1', {person: 'b0'.repeat(32)}, 'Nine mails sorted since seven.')")
+        try await until("the answered message is held") { self.message(saying: "Nine mails sorted since seven.") != nil }
+        // A message answered whole: one line of it. A marked part: the part whole.
+        let whole = Answered(Item.ID("chat.messages/messages/m1"), words: "Nine mails sorted since seven.\n\nNone of them needs you.")
+        try await source.send(Draft(text: "Which nine?", answers: whole), to: .main)
+        let part = Answered(Item.ID("chat.messages/messages/m1"), words: "sorted since seven", isPart: true)
+        try await source.send(Draft(text: "Since when exactly?", answers: part), to: .main)
+        let posted = try await asked("post")
+        XCTAssertEqual(posted, [])
+        let sent = try await asked("send")
+        XCTAssertEqual(sent, [["chat.workspace", "", "> Nine mails sorted since seven.\n\nWhich nine?", ""],
+                              ["chat.workspace", "", "> sorted since seven\n\nSince when exactly?", ""]])
+        // Words that answer no message go as they always did.
+        try await source.send(Draft(text: "Thank you"), to: .main)
+        let all = try await asked("send")
+        XCTAssertEqual(all?.array?.last, ["chat.workspace", "", "Thank you", ""])
     }
 }
 #endif

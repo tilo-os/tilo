@@ -322,6 +322,17 @@ private struct MessageView: View {
     @State private var shown: URL?
 
     var body: some View {
+        if let answered = message.answers {
+            // The message this one answers stands above its words; a press goes there.
+            Button {
+                model.shownItem = answered.piece
+            } label: {
+                AnsweredLine(answered: answered)
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: Measure.bubbleWidth, alignment: message.author == .person ? .trailing : .leading)
+            .frame(maxWidth: .infinity, alignment: message.author == .person ? .trailing : .leading)
+        }
         if !message.text.isEmpty {
             Bubble(tone: tone, words: PieceWords(of: piece, message.text), marks: true) {
                 if isAddress {

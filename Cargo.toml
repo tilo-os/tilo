@@ -121,6 +121,7 @@ members = [
     "apps/db-client",
     "apps/db-client-model",
     "apps/diffmerge",
+    "apps/diffmerge-model",
     "apps/disks",
     "apps/disk-usage",
     "apps/ebook",

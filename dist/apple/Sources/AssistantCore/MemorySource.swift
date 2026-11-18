@@ -264,7 +264,7 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
             return Attachment(id: id, name: file.name, type: "public.data")
         }
         feed.add([Item(id: Item.ID(nextName("item")), at: now(),
-                       .message(Message(.person, draft.text, attachments: attachments)))])
+                       .message(Message(.person, draft.text, attachments: attachments, answers: draft.answers)))])
     }
 
     public func stopAnswering(in chat: Chat) async throws {

@@ -1135,6 +1135,34 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase every_part_of_the_window_asks_over_the_client_the_app_carries;
+    {
+        // The app carries one client on its collaboration connection. A part of the window that
+        // makes its client later — History following what it lists — asks over that one, so the app
+        // carries the request, and the answer reaches the part that asked.
+        let mut carried = RemoteActions::session();
+        let _sharing = RemoteActions::carrying(carried.clone());
+        let answer = RemoteActions::current().catalogue(CatalogueQuery::default());
+        assert!(answer.get().is_pending(), "nothing in the app answers it");
+        let correlation = catalogue_correlation(&mut carried, "the request a later part made");
+        carried.handle_collab_event(&CollabEvent::RemoteAction {
+            message: RemoteActionMessage::CatalogueResponse {
+                correlation,
+                result: Ok(CataloguePage {
+                    revision: "r1".into(),
+                    rows: vec![row("a")],
+                    exhausted: true,
+                    ..CataloguePage::default()
+                }),
+            },
+        });
+        assert!(
+            matches!(answer.get(), Arrival::Ready(page) if page.rows.len() == 1),
+            "the answer reaches the part that asked: {:?}",
+            answer.get()
+        );
+    }
+
     phase a_client_that_names_the_session_keeps_to_it;
     {
         let provider = Arc::new(FakeHost::default());

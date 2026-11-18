@@ -24,6 +24,23 @@ type Served = (Arc<dyn ActionProvider + Send + Sync>, Caller);
 
 thread_local! {
     static SERVED: std::cell::RefCell<Option<Served>> = const { std::cell::RefCell::new(None) };
+    /// The client the application carries on its collaboration connection, while it is carried:
+    /// every [`RemoteActions::session`] on this thread asks over it, so what any part of the window
+    /// asks leaves on the one connection the app drains, and the answers come back to it.
+    static CARRIED: std::cell::RefCell<Vec<RemoteActions>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Keeps the client it was made with the one [`RemoteActions::session`] answers on this thread,
+/// until it drops.
+pub struct CarriedGuard(std::marker::PhantomData<*const ()>);
+
+impl Drop for CarriedGuard {
+    fn drop(&mut self) {
+        CARRIED.with(|carried| {
+            carried.borrow_mut().pop();
+        });
+    }
 }
 
 /// Keeps a [`RemoteActions::enter`] provider current on this thread.
@@ -272,10 +289,24 @@ impl std::fmt::Debug for RemoteActions {
 }
 
 impl RemoteActions {
-    /// A client that talks through the application's collaboration connection.
+    /// A client that talks through the application's collaboration connection: the one the
+    /// application carries ([`Self::carrying`]) where it carries one, a client of its own otherwise.
     #[must_use]
     pub fn session() -> Self {
-        Self::new(Transport::Session)
+        CARRIED
+            .with(|carried| carried.borrow().last().cloned())
+            .unwrap_or_else(|| Self::new(Transport::Session))
+    }
+
+    /// Carry `client` on this thread's collaboration connection: every [`Self::session`] made here
+    /// from now on asks over it, so a part of the window that makes its client later — History
+    /// following what it lists — is heard and answered with the rest.
+    ///
+    /// The application's framework carries the client its root drains, once, for the app's life.
+    #[must_use]
+    pub fn carrying(client: Self) -> CarriedGuard {
+        CARRIED.with(|carried| carried.borrow_mut().push(client));
+        CarriedGuard(std::marker::PhantomData)
     }
 
     /// A client served by `provider` in this process, as `caller`.

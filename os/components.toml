@@ -448,6 +448,10 @@ scope = "session"
 packages = ["tilo-secret-service"]
 bins = ["tilo-secret-service"]
 user_units = ["tilo-secret-service.service"]
+# A development account's session runs on its own test identity
+# (`TILO_IDENTITY_ROOT`); the dev image's store follows it, or it would refuse
+# the session's proof of that identity.
+dev_features = ["tilo-secret-service/dev-overrides"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-secret-service", to = "/usr/libexec/tilo/tilo-secret-service", mode = "0755" },

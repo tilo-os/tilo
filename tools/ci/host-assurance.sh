@@ -67,6 +67,15 @@ modprobe loop 2>/dev/null || true
 test -c /dev/fuse || die 'no /dev/fuse, which the install needs'
 test -c /dev/loop-control || die 'no loop devices, which the install needs'
 losetup --find >/dev/null
+# The installed root is LUKS2: the install opens it through device-mapper.
+# The micro-VM runs no udev, so loading the module leaves /dev/mapper/control
+# absent — the same reason the install materializes the loop partitions' nodes
+# itself.
+modprobe dm_mod 2>/dev/null || true
+install -d -m 0755 /dev/mapper
+[ -c /dev/mapper/control ] || mknod /dev/mapper/control c 10 236 2>/dev/null || true
+test -c /dev/mapper/control \
+  || die 'no device-mapper, which the encrypted install opens the volume with'
 
 say 'install the server image'
 # What this step is given and what it has to put it in, so a failure here says

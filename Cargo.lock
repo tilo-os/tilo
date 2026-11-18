@@ -3912,6 +3912,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "diffmerge",
+ "diffmerge-model",
  "fnv",
  "runtime-dylib",
  "serde",
@@ -3924,6 +3925,20 @@ dependencies = [
  "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
+ "workspace-hack",
+]
+
+[[package]]
+name = "diffmerge-model"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "fnv",
+ "serde",
+ "serde_json",
+ "similar",
+ "tilo-resource",
+ "tilo-test-env",
  "workspace-hack",
 ]
 

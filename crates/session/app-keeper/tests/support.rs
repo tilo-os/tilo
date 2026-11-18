@@ -154,8 +154,25 @@ pub fn desktop_at_scale(width: i32, height: i32, scale: f64) -> Compositor {
 /// A desktop whose output has `scale` and that takes linear dma-bufs of the fourcc `formats`,
 /// telling its clients so in its default feedback as a desktop on a GPU does.
 pub fn desktop_with(width: i32, height: i32, scale: f64, formats: &[u32]) -> Compositor {
-    let mut compositor = Compositor::headless_with_linear_dmabufs(Box::new(StackPolicy), formats)
-        .expect("compositor");
+    linear_desktop(width, height, scale, formats, true)
+}
+
+/// A desktop as one on a machine without a GPU node offers dma-bufs: version 3, the fourcc
+/// `formats` listed, no feedback.
+pub fn desktop_without_gpu(formats: &[u32]) -> Compositor {
+    linear_desktop(640, 480, 1.0, formats, false)
+}
+
+fn linear_desktop(
+    width: i32,
+    height: i32,
+    scale: f64,
+    formats: &[u32],
+    feedback: bool,
+) -> Compositor {
+    let mut compositor =
+        Compositor::headless_with_linear_dmabufs(Box::new(StackPolicy), formats, feedback)
+            .expect("compositor");
     compositor
         .add_output(&OutputConfig::new(OUTPUT, width, height).with_scale(scale))
         .expect("output");
@@ -231,6 +248,20 @@ impl Rig {
         command: Vec<std::ffi::OsString>,
         configure: impl FnOnce(&mut Options),
     ) -> Self {
+        Self::configured_on(prefix, command, configure, desktop(640, 480))
+    }
+
+    /// A rig whose keeper first shows on `first`.
+    pub fn on(first: Compositor) -> Self {
+        Self::configured_on(None, Vec::new(), |_| {}, first)
+    }
+
+    fn configured_on(
+        prefix: Option<&str>,
+        command: Vec<std::ffi::OsString>,
+        configure: impl FnOnce(&mut Options),
+        first: Compositor,
+    ) -> Self {
         let dir = tempfile::tempdir().expect("temporary directory");
         let keeper = keeper_at(&dir.path().join("keeper"), prefix, command, configure);
         let mut rig = Self {
@@ -239,7 +270,7 @@ impl Rig {
             desktop: None,
             dir,
         };
-        rig.attach_new(640, 480);
+        rig.attach_desktop(first);
         rig
     }
 
@@ -488,6 +519,8 @@ pub struct Heard {
     pub xdg_description: Option<String>,
     pub globals_removed: Vec<u32>,
     pub dmabuf: Option<ZwpLinuxDmabufV1>,
+    /// The fourcc codes a version-3 dma-buf global listed when it was bound.
+    pub dmabuf_listed: Vec<u32>,
     pub viewporter: Option<WpViewporter>,
     pub fractional_scale: Option<WpFractionalScaleManagerV1>,
     pub preferred_scales: Vec<u32>,
@@ -1282,9 +1315,14 @@ impl Dispatch<WlRegistry, ()> for Heard {
                 "xdg_toplevel_icon_manager_v1" => {
                     heard.toplevel_icon = Some(registry.bind(name, 1, qh, ()));
                 }
-                "zwp_linux_dmabuf_v1" if version >= 4 => {
+                // As a graphics library binds it: version 3 lists its formats, a later one
+                // has feedback.
+                "zwp_linux_dmabuf_v1" => {
                     let dmabuf: ZwpLinuxDmabufV1 = registry.bind(name, version.min(5), qh, ());
-                    dmabuf.get_default_feedback(qh, ());
+                    if version >= 4 {
+                        dmabuf.get_default_feedback(qh, ());
+                    }
+                    heard.dmabuf_listed.clear();
                     heard.dmabuf = Some(dmabuf);
                 }
                 _ => {}
@@ -1676,13 +1714,19 @@ pub fn dmabuf_plane(
 
 impl Dispatch<ZwpLinuxDmabufV1, ()> for Heard {
     fn event(
-        _: &mut Self,
+        heard: &mut Self,
         _: &ZwpLinuxDmabufV1,
-        _: zwp_linux_dmabuf_v1::Event,
+        event: zwp_linux_dmabuf_v1::Event,
         (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        if let zwp_linux_dmabuf_v1::Event::Modifier { format, .. } = event
+            && !heard.dmabuf_listed.contains(&format)
+        {
+            heard.dmabuf_listed.push(format);
+            heard.dmabuf_listed.sort_unstable();
+        }
     }
 }
 

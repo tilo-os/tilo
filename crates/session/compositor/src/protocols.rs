@@ -164,7 +164,7 @@ impl State {
     /// buffers from `/dev/udmabuf` and reads them back on the CPU; the backend's own offer that
     /// follows finds the global made and adds nothing.
     #[cfg(feature = "test-support")]
-    pub(crate) fn enable_linear_dmabuf_for_tests(&mut self, codes: &[u32]) {
+    pub(crate) fn enable_linear_dmabuf_for_tests(&mut self, codes: &[u32], feedback: bool) {
         use smithay::backend::allocator::{Fourcc, Modifier};
         if self.protocols.dmabuf_global.is_some() {
             return;
@@ -178,6 +178,15 @@ impl State {
             })
             .collect();
         let display = self.display.clone();
+        if !feedback {
+            // As `enable_dmabuf` offers it without a GPU node.
+            let global = self
+                .protocols
+                .dmabuf
+                .create_global::<Self>(&display, formats);
+            self.protocols.dmabuf_global = Some(global);
+            return;
+        }
         let feedback = match DmabufFeedbackBuilder::new(0, formats).build() {
             Ok(feedback) => feedback,
             Err(error) => {

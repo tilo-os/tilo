@@ -252,8 +252,9 @@ credentials. It proves the release steps; it publishes nothing.
 The server image is split so that a change to one program does not rebuild what the frozen
 package set decides. `host-base` installs the packages and Firecracker and changes only when the
 snapshot, the base or the package list does; t serves it across commits that keep them.
-`image-host` copies the built programs and the files that name them onto it, so it is a copying
-build of seconds. Both are dated by the newest commit that changed their own files
+`image-host` copies the built programs and the files that name them onto it, so a change to one
+program costs that compile and one copying layer, not the package set again. Both are dated by
+the newest commit that changed their own files
 (`tools/ci/publish/source-date.sh`), so a commit that changes neither is answered from t's cache
 rather than rebuilt.
 

@@ -772,3 +772,13 @@ paths = ["apps/db-client-model/*"]
 reason = "The network host a connection profile reaches, which the glossary keeps as a network host name."
 words = ["host"]
 paths = ["apps/db-client-model/*"]
+
+[[allow]]
+reason = "A run of lines in a diff, and the model's own name for it: a contiguous sequence, as diff tools use the word."
+words = ["run"]
+paths = ["apps/diffmerge-model/src/model.rs"]
+
+[[allow]]
+reason = "The model's local name for the vector position it fills while aligning one side against the other."
+words = ["slot"]
+paths = ["apps/diffmerge-model/src/model.rs"]

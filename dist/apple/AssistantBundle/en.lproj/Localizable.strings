@@ -54,6 +54,10 @@
 "live-thing" = "Live view";
 "attachment" = "Attachment";
 "select-text" = "Select text";
+"reply" = "Reply";
+"replying-to" = "Replying to";
+"drop-reply" = "Do not reply to this message";
+"earlier-message" = "An earlier message";
 "view-not-offered" = "This Tilo cannot show views in messages yet";
 "live-not-shown" = "Tilo could not show this";
 "stop-sharing" = "Stop sharing";
