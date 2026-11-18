@@ -23,11 +23,11 @@
     )
 )]
 
-pub mod account;
-pub mod actions;
+mod actions;
 mod agenda;
 pub mod app;
 pub mod caldav;
+mod colours;
 pub mod content_export;
 pub mod date;
 pub mod display;
@@ -43,25 +43,30 @@ mod event_popovers;
     reason = "this app's tests ask the server less than the holder's tests do"
 )]
 mod fake_caldav;
-pub mod ics;
 mod import_inbox;
 mod input_context;
-pub mod model;
 mod outbox;
 mod quick_add;
 mod reminders;
 pub mod resource;
 pub mod setup;
-pub mod shown;
-pub mod spans;
+mod shown;
 mod tasks;
 mod timeline_interaction;
 mod timeline_viewport;
-pub mod timezone;
 mod window_bar;
+
+/// The calendar's resources and verbs, as the model defines them: one set of
+/// types for the window that draws them, the agent that works them and the
+/// calendar servers the app syncs with.
+pub use calendar_model::{account, ics, model, spans, timezone};
 
 pub use account::{AccountStore, CalDavConfig, CalendarAccount, RemoteCalendar};
 pub use app::CalendarApp;
+pub use calendar_model::resource::calendar::{
+    AdoptRemoteEvent, AdoptRemoteTask, DropRemoteItem, ImportItems, Invite, NewEvent, NewProject,
+    NewTask, Pulled, ServerApplied, ServerRemoved,
+};
 pub use model::{
     Attendee, Calendar, Event, InviteStatus, OccurrenceOverride, Priority, Project, Recurrence,
     Task, View,

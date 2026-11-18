@@ -1173,8 +1173,10 @@ mod tests {
         {
             let index = Arc::new(AppContentIndex::in_memory());
             let text = "We shipped the new palette yesterday and the animations still stutter \
-                    when the window resizes; Ada, can you look at the wheel again before \
-                    the demo tomorrow morning?";
+                    when the window resizes, and the wheel was reported by three more \
+                    people this morning; Ada, can you look at the wheel again before the \
+                    demo tomorrow morning? The venue needs the final slide deck today, \
+                    and Priya has the numbers in a sheet nobody can open yet.";
             let mut message = shaped(
                 note("chat.workspace/messages/m_wheel", text, false),
                 IndexKind::Message,

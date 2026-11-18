@@ -135,7 +135,7 @@ pub enum Slot<'a> {
 }
 
 impl Slot<'_> {
-    /// What currently occupies this slot. A new list element holds nothing.
+    /// What currently occupies this place. A new list element holds nothing.
     pub fn current(self, doc: &Doc) -> Result<Option<(Value<'static>, ObjId)>, ModelError> {
         let found = match self {
             Slot::Key(obj, key) => doc.get(obj, key)?,

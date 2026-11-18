@@ -1928,11 +1928,11 @@ version = "0.1.0"
 dependencies = [
  "account-credentials",
  "accounts",
+ "calendar-model",
  "fnv",
  "hex",
  "jiff",
  "mail",
- "pim-lines",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -1949,7 +1949,6 @@ dependencies = [
  "tilo-dav",
  "tilo-document",
  "tilo-files",
- "tilo-recurrence",
  "tilo-rich-text",
  "tilo-test-env",
  "tilo-timezone-engine",
@@ -1959,6 +1958,36 @@ dependencies = [
  "url",
  "uuid",
  "workspace-hack",
+]
+
+[[package]]
+name = "calendar-model"
+version = "0.1.0"
+dependencies = [
+ "accounts",
+ "fnv",
+ "jiff",
+ "pim-lines",
+ "serde",
+ "serde_json",
+ "tilo-automerge-fork",
+ "tilo-dav",
+ "tilo-document",
+ "tilo-formats",
+ "tilo-recurrence",
+ "tilo-resource",
+ "tilo-test-env",
+ "tracing",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
+name = "calendar-model-wasm"
+version = "0.1.0"
+dependencies = [
+ "calendar-model",
+ "tilo-model-guest",
 ]
 
 [[package]]
@@ -23960,7 +23989,7 @@ dependencies = [
  "agent-provider-config",
  "app-cli",
  "blake3",
- "calendar",
+ "calendar-model",
  "chat",
  "collab-types",
  "collaboration",

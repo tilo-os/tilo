@@ -7,7 +7,7 @@
 //! zone the reader asked for. [`free`] answers the gaps between them inside
 //! the hours the reader names.
 //!
-//! A Calendar window's record, the calendars a person's host keeps of their
+//! A Calendar window's resource, the calendars a person's host keeps of their
 //! servers and a trigger at an entry's time all read through here, so they
 //! agree about time zones, all-day entries, repeats and the hour a clock
 //! change takes or gives.
@@ -86,7 +86,7 @@ pub struct Occurrence {
 }
 
 /// A span a reader asks for, in their own words: what `entries` of a
-/// person's calendars takes, and what a record's read takes as the item
+/// person's calendars takes, and what a resource's read takes as the item
 /// `span:FROM/TO`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -110,7 +110,7 @@ pub struct SpanAsked {
 }
 
 /// Free time a reader asks for: what `free` of a person's calendars takes,
-/// and what a record's read takes as the item `free:FROM/TO`.
+/// and what a resource's read takes as the item `free:FROM/TO`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FreeAsked {
@@ -251,7 +251,7 @@ impl FreeAsked {
     }
 }
 
-/// A read of a span or of free time, as a record's read is asked it in the
+/// A read of a span or of free time, as a resource's read is asked it in the
 /// item it names: `span:FROM/TO` or `free:FROM/TO`, with what narrows it
 /// after a question mark
 /// (`span:2026-11-16/2026-11-23?zone=Europe/Berlin&category=Board`,

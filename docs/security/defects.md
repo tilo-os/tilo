@@ -914,6 +914,62 @@ in yet says "Can't reach …" meanwhile.
 certificate where its person is admitted, before any proof of its key. The refusal alone already
 told them as much, since nothing else refuses that certificate there.
 
+## P2-3c — A withdrawn delegation's work is kept by its cut; what a copy took before it heard of the withdrawal stays
+
+A member lets a server take their work in a workspace by a delegation their own device signs, and
+takes it back by a withdrawal (`crates/collab/collab-types/src/work_delegation.rs`,
+`crates/collab/tilo-peer-state/src/state/work_delegations.rs`).
+
+**As built.** Before this entry a write taken as kept history was decided as of the time its author
+stamped, and a withdrawn delegation read live before the time its withdrawal names: a server went
+on writing for a member who had taken their work back, by naming an earlier time. Now the
+withdrawal carries its cut under the member's signature: what their device held of the server's
+work, document by document (`HeldWork`, signed by `revoke_work_delegation`). A copy that holds a
+withdrawal takes of that server's work for that member what the cut keeps, as history, and refuses
+the rest, whoever hands it over and whatever time it names
+(`crates/collab/tilo-peer-state/src/state/authority.rs::written_as`, `withdrawal_keeping`); a
+document the cut does not name keeps nothing, and a withdrawal is read live at no time. Held by
+`crates/collab/tilo-peer-state/src/receipt_tests.rs`:
+`a_withdrawal_stops_the_servers_work_whatever_time_a_write_names`,
+`copies_that_hold_a_withdrawal_end_alike_whatever_order_they_met_it_in`,
+`a_document_the_withdrawal_names_no_cut_for_takes_nothing_of_the_server`,
+`a_withdrawal_is_read_live_at_no_time` and
+`only_a_device_of_the_member_signs_the_cut_of_their_withdrawal`, and by
+`crates/collab/collab-types/src/work_delegation.rs`:
+`work_delegation::tests::a_withdrawal_keeps_what_its_cut_names_and_nothing_else`.
+
+**Not built.** The taking out. What a copy took of the server's work before the withdrawal reached
+it, it keeps: that copy ends with another document than a copy that held the withdrawal when the
+same work came. No test on main holds either way of closing it.
+
+**Residual.** The cut names how far a document's work is kept, by its number, not what that work
+says (read, not shown by a test). Where two members delegated to one server, a withdrawn form
+decides only where no live form stands for that server (as before this entry). No program signs a
+first delegation today: every call of `WorkDelegation::sign` is test code, and where a member
+delegated nothing their command to take work back writes nothing, so no copy comes to hold a
+withdrawal by a program of ours; a member who signs one with a tool of their own can.
+
+**A copy behind its governor's base.** A copy whose device may not write the workspace's document,
+a viewer's, refuses a governor's base that lacks a withdrawal it holds and stays on the workspace
+document it held, and nothing tells its person. Such a copy knows of governance it does not hold.
+From that refusal on it takes in no write on the roles and grants of the document it kept: what
+they would admit is held, the way a write under governance not yet held is, and the base the copy
+takes later decides it
+(`crates/collab/tilo-peer-state/src/state/authority.rs::behind_its_governor`,
+`authorize_document`); what they refuse stays refused, the withdrawn server's work with it. Held by
+`crates/collab/tilo-peer-state/src/withdrawal_base_tests.rs`:
+`a_copy_that_refused_its_governors_base_refuses_the_write_of_a_member_the_governor_demoted`,
+`a_copy_that_refused_its_governors_base_refuses_the_write_of_a_member_the_governor_removed`,
+`a_copy_that_refused_its_governors_base_refuses_the_use_of_a_grant_the_governor_revoked`,
+`a_base_the_copy_takes_later_decides_the_writes_it_held` and
+`a_copy_that_refused_no_base_holds_nothing_it_takes_in`. Two limits. The copy's memory of the
+refusal is not in its durable state, which does keep the held writes: after a restart, a held write
+that comes again before the copy's governor hands it the base again is decided on the roles the
+copy holds; once the base is handed to it and refused again, the copy holds again. And a member's
+batch to the workspace's own document on the old base is still decided by the old roles on that
+copy. The held writes wait where every held write waits, under that queue's bounds
+(`crates/collab/tilo-peer-state/src/state/held.rs`).
+
 ## P2-4 — Egress documentation describes a weaker mechanism than the code implements
 
 `docs/app-model/sandbox.md:162-172` describes DNS-layer filtering that direct-IP connections bypass.

@@ -992,9 +992,10 @@ impl Book {
     }
 
     /// Remove a card.
-    #[action]
-    pub fn remove(&mut self, people: &Id) {
-        self.people.remove(people);
+    #[action(item = people)]
+    pub fn remove(person: &mut Person, cx: &mut ActionCx) {
+        let _ = person;
+        cx.remove_item();
     }
 
     /// Change a card's first name.
@@ -1171,6 +1172,14 @@ tilo_test_env::scenario! {
         let _ = value;
         assert_eq!(person.first, "Augusta");
         assert_eq!(person.last, "Lovelace");
+        // An item method removes its item alone, the card held aside unread.
+        let remove = Book::REMOVE.with(ids[0].clone()).build(0).unwrap();
+        tilo_actions::Action::apply(&remove, book.doc_mut()).unwrap();
+        assert!(
+            book.doc().get(&people, ids[0].as_str()).unwrap().is_none(),
+            "the card is removed"
+        );
+        assert!(book.doc().get(&people, ids[1].as_str()).unwrap().is_some());
     }
 
     phase an_edit_inside_a_missing_map_entry_starts_the_entry;

@@ -321,6 +321,7 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
                 &created.workspace,
                 &server_device.cert,
                 TASKS,
+                TRACKER,
                 "",
                 &package,
             )
@@ -459,6 +460,7 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
         .unwrap()
         .ask(&tilo_model_engine::Request {
             op: tilo_model_engine::Op::Apply,
+            kind: TRACKER,
             id: "",
             home: &created.workspace,
             bytes: &before,
