@@ -18,7 +18,7 @@ use vello::peniko::{BlendMode, Color, Fill};
 use super::OverviewPanel;
 use super::layout::{Picture, SHARES_MAX_ROWS};
 use crate::i18n::{t, t_args};
-use crate::overview::{WorkspaceCard, WorkspacePerson, WorkspaceShare};
+use crate::overview::{ShownPerson, WorkspaceCard, WorkspacePerson, WorkspaceShare};
 use crate::overview_picture::{Tile, draw_empty_strip, draw_strip_name, draw_tile_title};
 use crate::window_flight::WindowPicture;
 use crate::window_switcher::{PreviewWell, WindowApp, draw_preview_well};
@@ -355,33 +355,86 @@ impl OverviewPanel {
         .style(ChipStyle::Neutral)
         .paint(scene, transform, text, theme);
 
-        let access = self
-            .shell
-            .sites
-            .get(&card.id)
-            .cloned()
-            .unwrap_or_else(|| crate::overview::workspace_access_label(card));
-        // Where it runs and what it used, once hosting means something to the person.
-        let access = match &card.hosting {
-            Some(hosting) => t_args(
-                "overview-two-facts",
-                &[("first", access.into()), ("second", hosting.clone().into())],
-            ),
-            None => access,
-        };
-        let access = text.elide_to_width_style(
-            &access,
-            f32_of_f64(content.width()),
-            &tokens.typography.style(TextRole::Body),
-        );
-        text.draw_style(
-            scene,
-            &access,
-            colors.text_dim,
-            transform.pre_translate((content.x0, here_rect.y0 + f64::from(name_h) + m.s1).into()),
-            None,
-            &tokens.typography.style(TextRole::Body),
-        );
+        let access_y = here_rect.y0 + f64::from(name_h) + m.s1;
+        let who = card.others().cloned().collect::<Vec<WorkspacePerson>>();
+        // A site workspace is named by its site, and stays words. Any other says who it is shared
+        // with as people: each their own chip, a face and the name they go by, never a key and
+        // never one sentence of names. Where it is hosted, once that means something, follows as
+        // words in what the chips leave.
+        if let Some(site) = self.shell.sites.get(&card.id).cloned() {
+            let site = text.elide_to_width_style(
+                &site,
+                f32_of_f64(content.width()),
+                &tokens.typography.style(TextRole::Body),
+            );
+            text.draw_style(
+                scene,
+                &site,
+                colors.text_dim,
+                transform.pre_translate((content.x0, access_y).into()),
+                None,
+                &tokens.typography.style(TextRole::Body),
+            );
+        } else if who.is_empty() {
+            let alone = t("overview-access-only-you");
+            text.draw_style(
+                scene,
+                &alone,
+                colors.text_dim,
+                transform.pre_translate((content.x0, access_y).into()),
+                None,
+                &tokens.typography.style(TextRole::Body),
+            );
+        } else {
+            let style = tokens.typography.style(TextRole::Body);
+            let lead = t("overview-access-lead");
+            let (lead_w, lead_h) = text.measure_style(&lead, None, &style);
+            text.draw_style(
+                scene,
+                &lead,
+                colors.text_dim,
+                transform.pre_translate((content.x0, access_y).into()),
+                None,
+                &style,
+            );
+            let people: Vec<ShownPerson> = who
+                .iter()
+                .map(|person| ShownPerson {
+                    id: person.id.clone(),
+                    name: person.name.clone(),
+                })
+                .collect();
+            let x = content.x0 + f64::from(lead_w) + m.s2;
+            // The chips take at most three fifths of the line, so what is next to them reads.
+            let chips_width = ((content.width() * 0.6) - (x - content.x0)).max(0.0);
+            let chips_right = paint_person_chips(
+                &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+                x,
+                access_y + f64::from(lead_h) / 2.0,
+                chips_width,
+                &people,
+                &ChipLook {
+                    role: TextRole::Body,
+                    colours: self.colors(),
+                },
+            );
+            if let Some(hosting) = &card.hosting {
+                let after = chips_right + m.s3;
+                let left_width = (content.x1 - after).max(0.0);
+                if left_width > 40.0 {
+                    let hosting =
+                        text.elide_to_width_style(hosting, f32_of_f64(left_width), &style);
+                    text.draw_style(
+                        scene,
+                        &hosting,
+                        colors.text_dim,
+                        transform.pre_translate((after, access_y).into()),
+                        None,
+                        &style,
+                    );
+                }
+            }
+        }
     }
 
     /// The keyboard lands on the workspace you are in when the overview opens,
@@ -454,6 +507,7 @@ impl OverviewPanel {
                 Rect::new(content.x0, y, content.x1, y + m.share_row_h),
                 share,
                 glyph,
+                self.colors(),
             );
             y += m.share_row_h;
         }
@@ -1094,76 +1148,296 @@ fn paint_share_row(
     row: Rect,
     share: &WorkspaceShare,
     glyph: f64,
+    colours: &HashMap<String, (u8, u8, u8)>,
 ) {
-    let (scene, transform, text, theme) =
-        (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+    let theme = ctx.theme;
     let tokens = &theme.tokens;
     let colors = &tokens.colors;
     let body = tokens.typography.style(TextRole::Body);
-    let (_, body_h) = text.measure_style("Ag", None, &body);
+    let caption = tokens.typography.style(TextRole::Caption);
+    let (_, body_h) = ctx.text.measure_style("Ag", None, &body);
     let body_top = row.y0 + (row.height() - f64::from(body_h)) / 2.0;
     let cy = row.center().y;
     ui::icons::draw_icon(
-        scene,
-        transform,
+        ctx.scene,
+        ctx.transform,
         Rect::new(row.x0, cy - glyph / 2.0, row.x0 + glyph, cy + glyph / 2.0),
         ui::icons::Icon::ExternalLink,
         colors.text_tertiary,
         ui::icons::LUCIDE_DEFAULT_STROKE_PX,
     );
-    // Who holds it sits right; what is shared elides against it.
-    let with = match (share.with.first(), share.with.len()) {
-        (Some(first), 1) => first.clone(),
-        (Some(first), 2) => t_args(
-            "overview-share-with-two",
-            &[
-                ("first", first.as_str().into()),
-                (
-                    "second",
-                    share.with.get(1).map_or("", String::as_str).into(),
-                ),
-            ],
-        ),
-        (Some(first), n) => t_args(
-            "overview-share-with-many",
-            &[
-                ("first", first.as_str().into()),
-                ("count", n.saturating_sub(1).into()),
-            ],
-        ),
-        (None, _) => String::new(),
-    };
-    let with = if share.writable {
-        t_args("overview-share-can-edit", &[("with", with.into())])
-    } else {
-        with
-    };
-    let with_style = tokens.typography.style(TextRole::Caption);
-    let (with_w, with_h) = text.measure_style(&with, None, &with_style);
-    text.draw_style(
-        scene,
-        &with,
-        colors.text_dim,
-        transform.pre_translate(
-            (
-                row.x1 - f64::from(with_w),
-                row.y0 + (row.height() - f64::from(with_h)) / 2.0,
-            )
-                .into(),
-        ),
-        None,
-        &with_style,
+    // Who holds it stands right, as their own chips: a face and the name they go by, the most
+    // that fit in half the row and the rest counted. What is shared elides against them, so
+    // neither ever reaches past the card.
+    let holders_left = paint_person_chips_right(
+        ctx,
+        row.x1,
+        cy,
+        row.width() * SHARE_HOLDERS_MAX,
+        &share.with,
+        &ChipLook {
+            role: TextRole::Caption,
+            colours,
+        },
     );
     let s2 = f64::from(tokens.spacing.s2);
+    let s3 = f64::from(tokens.spacing.s3);
     let what_x = row.x0 + glyph + s2;
-    let what_avail = (row.x1 - f64::from(with_w) - f64::from(tokens.spacing.s3) - what_x).max(40.0);
-    let what = text.elide_to_width_style(&share.what, f32_of_f64(what_avail), &body);
-    text.draw_style(
-        scene,
+    let what_avail = (holders_left - s3 - what_x).max(0.0);
+    let what = ctx
+        .text
+        .elide_to_width_style(&share.what, f32_of_f64(what_avail), &body);
+    let (what_w, _) = ctx.text.measure_style(&what, None, &body);
+    ctx.text.draw_style(
+        ctx.scene,
         &what,
         colors.text_primary,
-        transform.pre_translate((what_x, body_top).into()),
+        ctx.transform.pre_translate((what_x, body_top).into()),
         None,
         &body,
     );
+    if share.writable {
+        let can_edit = t("overview-share-writable");
+        let after = what_x + f64::from(what_w) + s2;
+        if after + s3 < holders_left {
+            let left_width = holders_left - s3 - after;
+            let can_edit =
+                ctx.text
+                    .elide_to_width_style(&can_edit, f32_of_f64(left_width), &caption);
+            let (_, can_h) = ctx.text.measure_style(&can_edit, None, &caption);
+            ctx.text.draw_style(
+                ctx.scene,
+                &can_edit,
+                colors.text_tertiary,
+                ctx.transform.pre_translate(
+                    (after, row.y0 + (row.height() - f64::from(can_h)) / 2.0).into(),
+                ),
+                None,
+                &caption,
+            );
+        }
+    }
+}
+
+/// Part of a share row the people holding it may take, so what is shared keeps readable beside
+/// them.
+const SHARE_HOLDERS_MAX: f64 = 0.45;
+
+/// A face's side, the gap from a face to its name, and the gap between two chips.
+fn chip_metrics(theme: &Theme) -> (f64, f64, f64) {
+    (
+        f64::from(theme.tokens.metrics.avatar_inline),
+        f64::from(theme.tokens.spacing.s1),
+        f64::from(theme.tokens.spacing.s3),
+    )
+}
+
+/// How wide the names a chip shows may get: eight faces, so one long name never crowds a line.
+fn chip_name_width(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.metrics.avatar_inline) * 8.0
+}
+
+/// `people` as chips, the most that fit in `width`, and how wide they are: each a face and the
+/// name they go by, names elided to [`chip_name_width`], and the rest counted ("+2").
+fn fit_chips(
+    ctx: &mut ui::paint::PaintCtx<'_>,
+    people: &[ShownPerson],
+    look: &ChipLook<'_>,
+    width: f64,
+) -> (usize, f64) {
+    if people.is_empty() || width <= 0.0 {
+        return (0, 0.0);
+    }
+    let theme = ctx.theme;
+    let style = theme.tokens.typography.style(look.role);
+    let (face, gap, between) = chip_metrics(theme);
+    let name_width = chip_name_width(theme);
+    let widths: Vec<f64> = people
+        .iter()
+        .map(|person| {
+            let name = ctx
+                .text
+                .elide_to_width_style(&person.name, f32_of_f64(name_width), &style);
+            let (w, _) = ctx.text.measure_style(&name, None, &style);
+            face + gap + f64::from(w)
+        })
+        .collect();
+    let more = |left: usize| {
+        let label = t_args("overview-more-people", &[("count", left.into())]);
+        let (w, _) = ctx.text.measure_style(&label, None, &style);
+        f64::from(w)
+    };
+    chips_that_fit(&widths, between, more, width)
+}
+
+/// How many of `widths` (each a chip's own width) fit in `width` with `between` between them,
+/// the rest counted by `more`: what to show, and how wide all of it reads. What it answers never
+/// measures past `width`, so a chip and its count stay inside the card they stand in.
+fn chips_that_fit(
+    widths: &[f64],
+    between: f64,
+    mut more: impl FnMut(usize) -> f64,
+    width: f64,
+) -> (usize, f64) {
+    if widths.is_empty() {
+        return (0, 0.0);
+    }
+    let total_of = |shown: usize| {
+        widths[..shown].iter().sum::<f64>() + between * f64_of_usize(shown.saturating_sub(1))
+    };
+    let mut shown = 0usize;
+    for (at, w) in widths.iter().enumerate() {
+        let candidate = total_of(at) + w;
+        let left = widths.len() - at - 1;
+        let reserve = if left > 0 { between + more(left) } else { 0.0 };
+        if candidate + reserve > width {
+            break;
+        }
+        shown = at + 1;
+    }
+    let left = widths.len() - shown;
+    if left == 0 {
+        return (shown, total_of(shown));
+    }
+    // The count of those left out takes its own width: drop a chip until it fits.
+    let mut shown = shown;
+    loop {
+        let count_width = if shown > 0 { between } else { 0.0 } + more(widths.len() - shown);
+        if total_of(shown) + count_width <= width || shown == 0 {
+            return (shown, total_of(shown) + count_width);
+        }
+        shown -= 1;
+    }
+}
+
+/// What a row's chips are drawn as: the role their names take, and the colours they wear.
+struct ChipLook<'a> {
+    role: TextRole,
+    colours: &'a HashMap<String, (u8, u8, u8)>,
+}
+
+/// Paint `people` as chips starting at `x` on the line centred at `mid`, within `width`: the most
+/// that fit, the rest counted. Returns where they end.
+fn paint_person_chips(
+    ctx: &mut ui::paint::PaintCtx<'_>,
+    x: f64,
+    mid: f64,
+    width: f64,
+    people: &[ShownPerson],
+    look: &ChipLook<'_>,
+) -> f64 {
+    let (shown, _) = fit_chips(ctx, people, look, width);
+    paint_chips(ctx, x, mid, people, shown, look)
+}
+
+/// Paint `people` as chips ending at `right` on the line centred at `mid`, within `width`: the
+/// most that fit, the rest counted. Returns the left edge of what was drawn.
+fn paint_person_chips_right(
+    ctx: &mut ui::paint::PaintCtx<'_>,
+    right: f64,
+    mid: f64,
+    width: f64,
+    people: &[ShownPerson],
+    look: &ChipLook<'_>,
+) -> f64 {
+    let (shown, total) = fit_chips(ctx, people, look, width);
+    paint_chips(ctx, right - total, mid, people, shown, look);
+    right - total
+}
+
+/// Paint the chips of `people`, the first `shown` of them and the rest counted after, from `x`.
+/// Returns where the last of them ends.
+fn paint_chips(
+    ctx: &mut ui::paint::PaintCtx<'_>,
+    x: f64,
+    mid: f64,
+    people: &[ShownPerson],
+    shown: usize,
+    look: &ChipLook<'_>,
+) -> f64 {
+    let theme = ctx.theme;
+    let style = theme.tokens.typography.style(look.role);
+    let (face, gap, between) = chip_metrics(theme);
+    let name_width = chip_name_width(theme);
+    let mut left = x;
+    for person in people.iter().take(shown) {
+        let fill = face_colour(look.colours, &person.id);
+        ui::widget::AvatarFace::new(&person.name, &person.id)
+            .presence(fill)
+            .paint(
+                ctx,
+                Rect::new(left, mid - face / 2.0, left + face, mid + face / 2.0),
+            );
+        let name = ctx
+            .text
+            .elide_to_width_style(&person.name, f32_of_f64(name_width), &style);
+        let (name_w, name_h) = ctx.text.measure_style(&name, None, &style);
+        let at = left + face + gap;
+        ctx.text.draw_style(
+            ctx.scene,
+            &name,
+            theme.tokens.colors.text_dim,
+            ctx.transform
+                .pre_translate((at, mid - f64::from(name_h) / 2.0).into()),
+            None,
+            &style,
+        );
+        left = at + f64::from(name_w) + between;
+    }
+    let left_out = people.len().saturating_sub(shown);
+    if left_out > 0 {
+        let more = t_args("overview-more-people", &[("count", left_out.into())]);
+        let (more_w, more_h) = ctx.text.measure_style(&more, None, &style);
+        ctx.text.draw_style(
+            ctx.scene,
+            &more,
+            theme.tokens.colors.text_tertiary,
+            ctx.transform
+                .pre_translate((left, mid - f64::from(more_h) / 2.0).into()),
+            None,
+            &style,
+        );
+        left += f64::from(more_w);
+    }
+    left
+}
+#[cfg(test)]
+mod tests {
+    use super::chips_that_fit;
+
+    fn f64_from(value: usize) -> f64 {
+        f64::from(u32::try_from(value).unwrap_or(u32::MAX))
+    }
+
+    /// A row holds its people: the chips drawn and the count of those left out always measure
+    /// inside the width the card gives them, however many hold a share.
+    #[test]
+    fn the_chips_of_a_row_stay_inside_the_card() {
+        let between = 8.0;
+        let mut more = |count: usize| 12.0 + f64_from(count);
+        let widths = [120.0, 90.0, 140.0, 110.0, 100.0, 95.0, 130.0];
+        for limit in [0.0, 20.0, 60.0, 150.0, 300.0, 480.0, 1_000.0] {
+            let (shown, total) = chips_that_fit(&widths, between, &mut more, limit);
+            assert!(
+                total <= limit || shown == 0,
+                "{shown} chips measured {total} in a row of {limit}"
+            );
+            let left = widths.len() - shown;
+            if left > 0 {
+                let counted = widths[..shown].iter().sum::<f64>()
+                    + between * f64_from(shown.saturating_sub(1))
+                    + if shown > 0 { between } else { 0.0 }
+                    + more(left);
+                assert!(
+                    counted <= limit || shown == 0,
+                    "the count of {left} left out measured {counted} in a row of {limit}"
+                );
+            }
+        }
+        assert_eq!(
+            chips_that_fit(&widths, between, &mut more, 0.0),
+            (0, more(widths.len())),
+            "a row with no width for a chip says how many are left, and no more"
+        );
+    }
 }

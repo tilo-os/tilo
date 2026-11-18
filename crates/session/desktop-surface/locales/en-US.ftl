@@ -773,6 +773,7 @@ window-switcher-hint-stay = Stay
 overview-empty-window = Empty window
 overview-untitled = Untitled
 overview-access-only-you = Only you
+overview-access-lead = Shared with
 overview-access-one = Shared with { $name }
 overview-access-two = Shared with { $name } and { $other }
 overview-access-many = Shared with { $name } and { $count } others
@@ -800,12 +801,8 @@ overview-no-workspace = No workspace selected
 overview-you-are-here = You are here
 overview-shared-out = Shared out of here
 overview-more-shares = and { $count } more
-overview-share-with-two = { $first } and { $second }
-overview-share-with-many = { $count ->
-        [one] { $first } and { $count } other
-       *[other] { $first } and { $count } others
-    }
-overview-share-can-edit = { $with } can edit
+overview-share-writable = can edit
+overview-more-people = +{ $count }
 overview-new-workspace = New workspace
 overview-join-workspace = Join a workspace…
 overview-leave-workspace = Leave

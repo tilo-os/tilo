@@ -1631,7 +1631,10 @@ mod tests {
             shell.cards[0].shares = (0..9)
                 .map(|i| WorkspaceShare {
                     what: format!("Folder {i}"),
-                    with: vec!["Ada".into()],
+                    with: vec![crate::overview::ShownPerson {
+                        id: "ada".into(),
+                        name: "Ada".into(),
+                    }],
                     writable: false,
                 })
                 .collect();

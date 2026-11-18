@@ -812,6 +812,7 @@ window-switcher-hint-stay = Bleiben
 overview-empty-window = Leeres Fenster
 overview-untitled = Ohne Titel
 overview-access-only-you = Nur du
+overview-access-lead = Geteilt mit
 overview-access-one = Geteilt mit { $name }
 overview-access-two = Geteilt mit { $name } und { $other }
 overview-access-many = Geteilt mit { $name } und { $count } weiteren
@@ -839,12 +840,8 @@ overview-no-workspace = Kein Arbeitsbereich ausgewählt
 overview-you-are-here = Du bist hier
 overview-shared-out = Von hier aus geteilt
 overview-more-shares = und { $count } weitere
-overview-share-with-two = { $first } und { $second }
-overview-share-with-many = { $count ->
-        [one] { $first } und { $count } weitere Person
-       *[other] { $first } und { $count } weitere Personen
-    }
-overview-share-can-edit = { $with } darf bearbeiten
+overview-share-writable = darf bearbeiten
+overview-more-people = +{ $count }
 overview-new-workspace = Neuer Arbeitsbereich
 overview-join-workspace = Einem Arbeitsbereich beitreten…
 overview-leave-workspace = Verlassen
