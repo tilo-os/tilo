@@ -2121,6 +2121,80 @@ mod tests {
                 crate::rollout::Answer::Released
             );
             assert_eq!(lease(governed.state(&admin).await.unwrap()), None);
+            // After the healthy boot its rollback floor may move: it asks the
+            // person's other devices in the admin workspace, says which key its
+            // floor takes, and never answers its request itself.
+            let secret_sync = tilo_seal::SecretKey::from_bytes([3; 32]);
+            let made =
+                crate::servers::floor::make_key(&root, &secret_sync.public_key().unwrap()).unwrap();
+            crate::servers::floor::apply(governed, made.action)
+                .await
+                .unwrap();
+            let floor_request = tilo_rollback::approval::build_request(
+                0x01D9_1100,
+                &[0, 11, 1],
+                tilo_rollback::counter::FloorState {
+                    counter: 9,
+                    base: 4,
+                },
+                &[5, 6],
+                3,
+            )
+            .unwrap();
+            let asked = ask(crate::rollout::Request::Floor(
+                crate::servers::floor::Asked {
+                    generation: 6,
+                    image: "sha256:next".into(),
+                    updates: "stable".into(),
+                    authority: made.public.clone(),
+                    request: serde_json::to_string(&floor_request).unwrap(),
+                },
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+            assert!(
+                matches!(&asked, crate::rollout::Answer::Floor { approvals, why }
+                    if approvals.is_empty() && why.contains("waiting")),
+                "{asked:?}"
+            );
+            assert_eq!(
+                crate::servers::read(governed)
+                    .await
+                    .unwrap()
+                    .active(&host.public_key)
+                    .unwrap()
+                    .floor_key,
+                made.public
+            );
+            assert_eq!(
+                crate::servers::floor::answer(governed, &secret_sync)
+                    .await
+                    .unwrap(),
+                0,
+                "a server never answers its own floor request"
+            );
+            let own = crate::servers::device_id(&host.public_key);
+            let id = crate::servers::floor::request_id(own.as_str(), 6);
+            assert!(
+                crate::servers::floor::apply(
+                    governed,
+                    crate::servers::floor::Floor::APPROVE_FLOOR_ADVANCE.with((
+                        id.clone(),
+                        own.as_str().to_owned(),
+                        "[]".into()
+                    )),
+                )
+                .await
+                .is_err(),
+                "nor may it approve it by hand"
+            );
+            let pending = crate::servers::floor::read(governed).await.unwrap();
+            assert_eq!(
+                pending.requests.get(&id).unwrap().answer,
+                "",
+                "it stays pending"
+            );
             let mut revocation = tilo_user_identity::RevocationEntry {
                 user_public_key: user.public_key,
                 revoked_device_public_key: host.public_key,

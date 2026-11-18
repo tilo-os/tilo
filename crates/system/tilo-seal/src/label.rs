@@ -58,10 +58,13 @@ pub enum Label {
     /// A text a person's vault released for one site's page, sealed to the
     /// device that holds that page's window and to no other.
     ReleasedPageText,
+    /// The private half of a person's rollback floor key, sealed to their
+    /// secret-sync key.
+    RollbackFloorKey,
 }
 
 impl Label {
-    pub const ALL: [Self; 30] = [
+    pub const ALL: [Self; 31] = [
         Self::ServerEnrollOffer,
         Self::ServerEnrollRequest,
         Self::ServerEnrollResponse,
@@ -92,6 +95,7 @@ impl Label {
         Self::DocumentContent,
         Self::SenderMediaKeys,
         Self::ReleasedPageText,
+        Self::RollbackFloorKey,
     ];
 
     /// The stable byte string bound into the cryptography. Changing one of
@@ -128,6 +132,7 @@ impl Label {
             Self::DocumentContent => "tilo-seal/v1/record-content",
             Self::SenderMediaKeys => "tilo-seal/v1/sender-media-keys",
             Self::ReleasedPageText => "tilo-seal/v1/released-page-text",
+            Self::RollbackFloorKey => "tilo-seal/v1/rollback-floor-key",
         }
     }
 

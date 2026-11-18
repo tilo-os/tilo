@@ -36,6 +36,16 @@ pub trait WorkspaceMachines: Send + Sync {
     /// The machine's host could not be reached, or refused: the machine may
     /// still be there.
     fn delete(&self, workspace: &str) -> Result<(), String>;
+
+    /// Suspend every machine awake on this device and take no more wakes,
+    /// before it restarts: done once each one is suspended. Machines this
+    /// device only places on others are theirs to suspend.
+    ///
+    /// # Errors
+    ///
+    /// The machines' service could not be reached, or a machine is still
+    /// awake, named so.
+    fn drain(&self) -> Result<(), String>;
 }
 
 impl Workspaces {
@@ -88,6 +98,23 @@ impl Workspaces {
                     "its Linux machine was not deleted, so the workspace stays; ask again: {why}"
                 )
             })
+    }
+}
+
+impl Workspaces {
+    /// Suspend the machines awake on this device, where it keeps any, and
+    /// answer once every one is suspended.
+    ///
+    /// # Errors
+    ///
+    /// A machine is still awake, or their service did not answer.
+    pub async fn drain_machines(&self) -> Result<(), String> {
+        let Some(machines) = self.inner.machines.read_recover().clone() else {
+            return Ok(());
+        };
+        tokio::task::spawn_blocking(move || machines.drain())
+            .await
+            .map_err(|error| error.to_string())?
     }
 }
 

@@ -165,6 +165,12 @@ impl WorkspaceMachines for PlacedMachines {
             other => Err(format!("the placer answered {other:?}")),
         }
     }
+
+    /// The machines are on the VM machines the placer names, which suspend
+    /// their own when they restart: none is on this one.
+    fn drain(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 impl std::fmt::Debug for PlacedMachines {
@@ -291,10 +297,134 @@ impl WorkspaceMachines for LocalMachines {
             other => Err(format!("the hosted-VM service answered {other:?}")),
         }
     }
+
+    /// Have the service take no more wakes and suspend every awake machine,
+    /// which it answers once it has, then read back that none is awake.
+    fn drain(&self) -> Result<(), String> {
+        match control::ask(&self.target.socket, &Request::Drain, MACHINE_PATIENCE) {
+            // No service answers, so no machine is awake either.
+            Ok(None) => return Ok(()),
+            Ok(Some(Reply::Done)) => {}
+            Ok(Some(Reply::Busy(words) | Reply::Error(words))) => return Err(words),
+            Ok(Some(other)) => {
+                return Err(format!("the hosted-VM service answered {other:?}"));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "the hosted-VM service at {}: {error}",
+                    self.target.socket.display()
+                ));
+            }
+        }
+        let Reply::Status { vms, .. } = self.ask(&Request::Status)? else {
+            return Err("the hosted-VM service answered no status".to_owned());
+        };
+        let awake: Vec<String> = vms
+            .into_iter()
+            .filter(|vm| !matches!(vm.phase.as_str(), "Suspended" | "Off" | "NotCreated"))
+            .map(|vm| format!("{} ({})", vm.vm, vm.phase))
+            .collect();
+        if awake.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "these machines did not suspend: {}",
+                awake.join(", ")
+            ))
+        }
+    }
 }
 
 impl std::fmt::Debug for LocalMachines {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LocalMachines").finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::net::UnixListener;
+    use std::sync::Mutex;
+
+    use legacy_vm::hosted::control::{HostLoad, VmStatus};
+    use legacy_vm::hosted::size::VmSize;
+
+    use super::*;
+
+    type Asked = Arc<Mutex<Vec<Request>>>;
+
+    fn target(socket: std::path::PathBuf) -> LocalMachines {
+        LocalMachines::new(ush::hosted_vm::HostedTarget {
+            socket,
+            account: "person".into(),
+            size: VmSize::default(),
+            plans: None,
+        })
+    }
+
+    /// A hosted-VM service on a socket that answers a drain, then reports
+    /// its machines in `phases`, noting what it was asked.
+    fn service(phases: &'static [&'static str]) -> (tempfile::TempDir, LocalMachines, Asked) {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("hosted.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let asked = Asked::default();
+        let noted = Arc::clone(&asked);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let Some(request) = control::FRAMING
+                    .read_value::<_, Request>(&mut stream)
+                    .unwrap()
+                else {
+                    continue;
+                };
+                let reply = match request {
+                    Request::Drain => Reply::Done,
+                    Request::Status => Reply::Status {
+                        vms: phases
+                            .iter()
+                            .enumerate()
+                            .map(|(at, phase)| VmStatus {
+                                vm: format!("ws{at}/default"),
+                                account: "person".into(),
+                                size: VmSize::default(),
+                                phase: (*phase).to_owned(),
+                                last_wake_ms: None,
+                                last_wake_restored: None,
+                                snapshot_bytes: None,
+                                resident_mib: None,
+                                balloon_mib: 0,
+                            })
+                            .collect(),
+                        load: HostLoad::default(),
+                    },
+                    _ => Reply::Error("not asked here".into()),
+                };
+                noted.lock().unwrap().push(request);
+                control::FRAMING.write_value(&mut stream, &reply).unwrap();
+            }
+        });
+        (dir, target(socket), asked)
+    }
+
+    /// The service is told to drain, and the drain is done only once it
+    /// reports every machine asleep.
+    #[test]
+    fn a_drain_suspends_every_machine_and_reads_back_that_each_is() {
+        let (_dir, machines, asked) = service(&["Suspended", "Off"]);
+        machines.drain().unwrap();
+        assert_eq!(*asked.lock().unwrap(), [Request::Drain, Request::Status]);
+
+        let (_dir, machines, _) = service(&["Suspended", "Running"]);
+        let error = machines.drain().unwrap_err();
+        assert!(error.contains("ws1/default (Running)"), "{error}");
+    }
+
+    /// A server with no hosted-VM service has no machine to suspend.
+    #[test]
+    fn a_drain_without_a_service_has_nothing_to_suspend() {
+        let dir = tempfile::tempdir().unwrap();
+        target(dir.path().join("none.sock")).drain().unwrap();
     }
 }

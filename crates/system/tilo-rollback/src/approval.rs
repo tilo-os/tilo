@@ -248,6 +248,36 @@ pub fn issue(
     up_to_floor: u64,
     allow_past_safe_bound: bool,
 ) -> Result<Vec<Approval>> {
+    issue_signed(request, up_to_floor, allow_past_safe_bound, || {
+        std::fs::read_to_string(private_key_pem)
+            .map(Zeroizing::new)
+            .with_context(|| format!("reading {}", private_key_pem.display()))
+    })
+}
+
+/// [`issue`] with the authority's private key in hand (PEM) rather than in a file: a device
+/// that keeps the key sealed opens it and signs here, and it never touches a disk.
+///
+/// # Errors
+///
+/// As [`issue`].
+pub fn issue_with_key(
+    request: &Request,
+    private_key_pem: &str,
+    up_to_floor: u64,
+    allow_past_safe_bound: bool,
+) -> Result<Vec<Approval>> {
+    issue_signed(request, up_to_floor, allow_past_safe_bound, || {
+        Ok(Zeroizing::new(private_key_pem.to_owned()))
+    })
+}
+
+fn issue_signed(
+    request: &Request,
+    up_to_floor: u64,
+    allow_past_safe_bound: bool,
+    key: impl FnOnce() -> Result<Zeroizing<String>>,
+) -> Result<Vec<Approval>> {
     if request.version != SCHEMA_VERSION {
         bail!(
             "request schema version {} is not the {SCHEMA_VERSION} this build understands",
@@ -289,10 +319,7 @@ pub fn issue(
         );
     }
 
-    let key = Zeroizing::new(
-        std::fs::read_to_string(private_key_pem)
-            .with_context(|| format!("reading {}", private_key_pem.display()))?,
-    );
+    let key = key()?;
     let mut out = Vec::new();
     for target_counter in first..=last {
         let policy = approved_policy(&nv_name, target_counter)?;

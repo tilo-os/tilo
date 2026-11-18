@@ -26,6 +26,11 @@ WINDOW="${TILO_SERVER_UPDATE_WINDOW:-/usr/libexec/tilo-server-update-window}"
 HEALTH="${TILO_SERVER_UPDATE_HEALTH:-tilo-boot-health.service}"
 ADMIN="${TILO_SERVER_UPDATE_ADMIN:-/usr/libexec/tilo/tilo-server-admin}"
 CERT="${TILO_SERVER_UPDATE_CERT:-/var/lib/tilo/device/cert.bin}"
+ROLLBACK="${TILO_SERVER_UPDATE_ROLLBACK:-/usr/libexec/tilo/tilo-rollback}"
+ROLLBACK_COMMON="${TILO_SERVER_UPDATE_ROLLBACK_COMMON:-/usr/libexec/tilo-rollback-common}"
+UPDATES="${TILO_SERVER_UPDATE_UPDATES:-/usr/libexec/tilo-update-channel}"
+FLOOR_AUTHORITY="${TILO_SERVER_UPDATE_FLOOR_AUTHORITY:-/usr/share/tilo/tpm2-pcr-signing.public.pem}"
+APPROVALS="${TILO_SERVER_UPDATE_APPROVALS:-/var/lib/tilo/rollback/approvals}"
 
 status="$("$BOOTC" status --format json 2>/dev/null)" || true
 field() { "$FIELD" bootc-status-field "$1" <<<"$status" 2>/dev/null || true; }
@@ -54,6 +59,31 @@ fi
 if [ "$paired" = yes ]; then
   booted="$(field booted-digest)"
   [ -z "$booted" ] || log "$("$ADMIN" rollout booted "$booted")"
+fi
+
+# Its rollback floor may move past older generations now, which takes an
+# approval signed by the person's floor key: the daemon asks the person's other
+# devices in their admin workspace, and keeps what they signed where
+# `tilo-rollback confirm` looks. A machine nobody answers keeps its floor and
+# unlocks as before (docs/security/rollback.md).
+if [ "$paired" = yes ] && [ -n "${booted:-}" ] && [ -x "$ROLLBACK" ] && [ -r "$ROLLBACK_COMMON" ]; then
+  # Read in a subshell: the helpers bring a log() of their own.
+  # shellcheck source=/dev/null
+  dev="$(. "$ROLLBACK_COMMON"; rollback_luks_device)"
+  # shellcheck source=/dev/null
+  generation="$(. "$ROLLBACK_COMMON"; rollback_running_generation)"
+  if [ -n "$dev" ] && [ -n "$generation" ]; then
+    request="$(mktemp)"
+    if "$ROLLBACK" floor-request --device "$dev" --out "$request" >/dev/null 2>&1; then
+      said="$("$ADMIN" rollout floor "$generation" "$booted" "$("$UPDATES" current)" \
+        --authority "$FLOOR_AUTHORITY" --request "$request" --approvals "$APPROVALS")"
+      code=$?
+      log "$said"
+      # Spend them now rather than at the next boot's confirmation.
+      [ "$code" -ne 0 ] || systemctl start --no-block tilo-rollback-confirm.service
+    fi
+    rm -f "$request"
+  fi
 fi
 
 # No staged deployment: nothing to boot into.

@@ -134,6 +134,9 @@ tilo-content = { path = "../../system/content", default-features = false }
 zeroize.workspace = true
 blake3.workspace = true
 hex.workspace = true
+# A server's rollback floor moves by approvals the person's floor key signs.
+tilo-rollback = { path = "../../system/tilo-rollback" }
+tilo-crypto = { path = "../../system/tilo-crypto", default-features = false }
 uuid.workspace = true
 # A bot's calendar schedules fire on this host's wall clock.
 jiff.workspace = true

@@ -86,6 +86,9 @@ pub struct Server {
     pub unlock: String,
     /// Retired: the person took it out of service, and it serves nothing.
     pub retired: bool,
+    /// The public half (PEM) of the key its TPM's rollback floor takes
+    /// approvals from, as the server says; empty until it said.
+    pub floor_key: String,
 }
 
 /// How a server holds one workspace.
@@ -266,6 +269,14 @@ impl Servers {
         Ok(())
     }
 
+    /// Say which key (public half, PEM) a server's rollback floor takes
+    /// approvals from.
+    #[action(external)]
+    pub fn set_floor_key(&mut self, device: Id, key: String) -> Result<(), Refusal> {
+        self.server(&device)?.floor_key = key;
+        Ok(())
+    }
+
     /// Retire a server: it serves nothing from then on. Its entry stays, so
     /// its device is never taken in again as a new server.
     #[action(external)]
@@ -415,6 +426,8 @@ pub async fn enroll(
     apply(workspaces, action).await?;
     Ok(admin)
 }
+
+pub mod floor;
 
 #[cfg(test)]
 mod tests;

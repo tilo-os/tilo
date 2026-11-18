@@ -49,6 +49,10 @@ impl WorkspaceMachines for Machines {
         self.note(format!("delete {workspace}"), workspace);
         self.delete.clone()
     }
+
+    fn drain(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 fn machines(

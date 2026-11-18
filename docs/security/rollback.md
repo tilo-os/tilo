@@ -87,6 +87,30 @@ its state can be issued approvals that strand it. A device that lies is already
 compromised; the bound exists so that a *later* compromise cannot turn a stash of
 approvals into a bricked machine.
 
+### Approvals from the person's own devices
+
+A paired server has no person at its keyboard, and its person's root is an
+Ed25519 key, which cannot sign a TPM approval. So the person has one RSA
+**floor key**, kept in their admin workspace's floor resource
+(`tilo-server/src/servers/floor.rs`): its public half signed by their root, its
+private half sealed to their root-derived secret-sync key, so it opens only on
+a device that holds the root, as a sibling unlock half does. Each server's
+entry in the admin workspace says which key its floor counter takes approvals
+from.
+
+After a server's update boots healthy, `tilo-server-update-apply` calls
+`floor-request` and hands the statement to the daemon (`tilo-server-admin
+rollout floor`), which posts it in the admin workspace as a typed request
+naming the generation and the image it booted. Another of the person's devices
+that opens the floor key answers it by itself: it checks the server is one of
+the person's, its counter takes the person's floor key, the image came from the
+updates the server follows, and signs approvals no further than the generation
+that booted. A server never answers its own request; the resource refuses it.
+The approvals come back to the server through the same resource, land in the
+approvals directory, and `tilo-rollback-confirm` spends them. Every request and
+its answer stays in the resource's history. When nobody answers, the rule below
+holds.
+
 ### If the authority is unavailable
 
 **The floor stops advancing. The disk keeps unlocking.** Unsealing only reads the

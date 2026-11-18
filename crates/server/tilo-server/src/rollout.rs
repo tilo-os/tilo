@@ -4,11 +4,15 @@
 //! while it holds its person's admin workspace's [`UPDATE_LEASE`]: the same
 //! lease every holder of a workspace takes exactly-once work under, so at
 //! most one of the person's servers is down for an update at a time. Holding
-//! it, the server first checks that the workspaces it holds keep their copies
-//! on the person's other servers, then drains: it takes and renews no lease
-//! of any workspace from then on and lets go of the claims it has, so their
-//! other holders take that work over, and it suspends its workspaces' Linux
-//! machines. Only then does it answer that the machine may restart.
+//! it, the server first checks that each workspace it holds keeps the copies
+//! its policy wants without this server, and that none of its copies is still
+//! catching up (it waits otherwise, and asks again later), then drains: it suspends the workspaces'
+//! Linux machines running on it and waits until each one is, and only then
+//! takes and renews no lease of any workspace and lets go of the claims it
+//! has, so their other holders take that work over. A machine's lease is let
+//! go of after the machine is asleep, so whoever takes it never finds it
+//! still running here. Only then does it answer that the machine may
+//! restart.
 //!
 //! The lease is let go of after the restart, once the new generation has
 //! passed the server's health verdict ([`booted`]). A generation that fails
@@ -58,6 +62,8 @@ pub enum Request {
     Prepare { target: String },
     /// This machine booted `image` and has passed its health verdict.
     Booted { image: String },
+    /// After a healthy boot: may its rollback floor move, as its TPM states?
+    Floor(crate::servers::floor::Asked),
 }
 
 /// What the daemon answers.
@@ -75,6 +81,12 @@ pub enum Answer {
     Halted { target: String, booted: String },
     /// No update was under way.
     Nothing,
+    /// The approvals another of the person's devices signed for the floor to
+    /// move; none, and why, while nobody has.
+    Floor {
+        approvals: Vec<tilo_rollback::approval::Approval>,
+        why: String,
+    },
 }
 
 /// What a server does around a restart. The daemon's is [`ServerMachine`];
@@ -90,7 +102,8 @@ pub trait Machine {
     fn short_of_copies(&self) -> impl Future<Output = Result<Vec<String>, String>> + Send;
     /// Take and renew no lease from now on, and let go of the claims held.
     fn hand_off_leases(&self) -> impl Future<Output = Result<(), String>> + Send;
-    /// Suspend the workspaces' Linux machines on this server.
+    /// Suspend the workspaces' Linux machines running on this server and
+    /// take no more wakes; done once every one is suspended.
     fn suspend_machines(&self) -> impl Future<Output = Result<(), String>> + Send;
     /// The image this server restarted into under the lease, if it did.
     fn pending(&self) -> Option<String>;
@@ -125,9 +138,12 @@ pub async fn prepare(machine: &(impl Machine + Sync), target: &str) -> Result<An
             why: "another of this person's servers is updating".into(),
         });
     }
+    // A server still holding the lease for an update that failed keeps it,
+    // so the rollout stays halted until this one boots healthy.
+    let halted = machine.pending();
     let short = machine.short_of_copies().await?;
     if !short.is_empty() {
-        if machine.pending().is_none() {
+        if halted.is_none() {
             machine.release_update_lease().await?;
         }
         return Ok(Answer::Wait {
@@ -138,8 +154,16 @@ pub async fn prepare(machine: &(impl Machine + Sync), target: &str) -> Result<An
         });
     }
     machine.set_pending(Some(target))?;
+    if let Err(why) = machine.suspend_machines().await {
+        machine.set_pending(halted.as_deref())?;
+        if halted.is_none() {
+            machine.release_update_lease().await?;
+        }
+        return Ok(Answer::Wait {
+            why: format!("the Linux machines on this server did not all suspend: {why}"),
+        });
+    }
     machine.hand_off_leases().await?;
-    machine.suspend_machines().await?;
     Ok(Answer::Restart)
 }
 
@@ -178,12 +202,45 @@ pub async fn renew(machine: &(impl Machine + Sync)) -> Result<(), String> {
     Ok(())
 }
 
-/// How many copies of `workspace` the person's other servers have to keep
-/// while one of its holders restarts. None until a workspace states how many
-/// copies it wants: a person with one server still updates it, and their
-/// workspace is back with it after the restart.
-const fn copies_kept_while_restarting(_workspace: &str) -> usize {
-    0
+/// Why `workspace` (whose copies stand at `status`) may not lose `own` for
+/// a restart: a holder still lacks something another has, or its owners
+/// chose how many copies it keeps and `own` is one of too few current copies
+/// of a kind for that to hold without it. `None` when the restart leaves the
+/// policy kept. A workspace whose owners chose nothing keeps the default,
+/// which asks no copy beyond the server: a person with one server still
+/// updates it, and the workspace is back with it after the restart.
+fn short_without(status: &tilo_peer_state::CopyStatus, own: &[u8; 32]) -> Option<String> {
+    use tilo_peer_state::{CopyRole, HolderCopy, Shortfall};
+    if status
+        .shortfall
+        .iter()
+        .any(|short| matches!(short, Shortfall::Holder { .. }))
+    {
+        return Some("a copy is still catching up".to_owned());
+    }
+    if !status.chosen {
+        return None;
+    }
+    [CopyRole::KeyHolder, CopyRole::Store]
+        .into_iter()
+        .find_map(|role| {
+            let current = |holder: &&HolderCopy| holder.role == role && holder.current;
+            let with = status.holders.iter().filter(current).count();
+            let without = status
+                .holders
+                .iter()
+                .filter(current)
+                .filter(|holder| holder.device != *own)
+                .count();
+            let wanted = usize::try_from(status.policy.wanted(role)).unwrap_or(usize::MAX);
+            (without < with && without < wanted).then(|| {
+                let kind = match role {
+                    CopyRole::KeyHolder => "key holders",
+                    CopyRole::Store => "stores",
+                };
+                format!("it wants {wanted} current {kind} and keeps {without} without this server")
+            })
+        })
 }
 
 fn now() -> SystemTime {
@@ -255,28 +312,17 @@ impl Machine for ServerMachine {
     }
 
     async fn short_of_copies(&self) -> Result<Vec<String>, String> {
-        let entries = servers::read(&self.workspaces).await?;
         let own = self.device().device_public_key;
-        let Some(this) = entries.active(&own) else {
-            return Ok(Vec::new());
-        };
-        let own_id = servers::device_id(&own);
-        Ok(this
-            .holds
-            .iter()
-            .map(|(workspace, _)| workspace.as_str())
-            .filter(|workspace| {
-                let elsewhere = entries
-                    .servers
-                    .iter()
-                    .filter(|(device, server)| {
-                        **device != own_id && !server.retired && server.holding(workspace).is_some()
-                    })
-                    .count();
-                elsewhere < copies_kept_while_restarting(workspace)
-            })
-            .map(str::to_owned)
-            .collect())
+        let mut short = Vec::new();
+        for summary in self.workspaces.list().await {
+            let Some(state) = self.workspaces.state(&summary.workspace).await else {
+                continue;
+            };
+            if let Some(why) = short_without(&state.workspace().copies(), &own) {
+                short.push(format!("{} ({why})", summary.workspace));
+            }
+        }
+        Ok(short)
     }
 
     async fn hand_off_leases(&self) -> Result<(), String> {
@@ -304,10 +350,7 @@ impl Machine for ServerMachine {
     }
 
     async fn suspend_machines(&self) -> Result<(), String> {
-        // The workspaces' Linux machines are suspended by the hosted-VM
-        // service's drain, which this calls once it exists; until then a
-        // machine stops with the restart and starts again after it.
-        Ok(())
+        self.workspaces.drain_machines().await
     }
 
     fn pending(&self) -> Option<String> {
@@ -386,6 +429,18 @@ async fn answer(machine: &ServerMachine, stream: tokio::net::UnixStream) -> Resu
     let answered = match request {
         Request::Prepare { target } => prepare(machine, &target).await,
         Request::Booted { image } => booted(machine, &image).await,
+        Request::Floor(asked) => crate::servers::floor::ask(&machine.workspaces, asked)
+            .await
+            .map(|answered| match answered {
+                Ok(approvals) => Answer::Floor {
+                    approvals,
+                    why: String::new(),
+                },
+                Err(why) => Answer::Floor {
+                    approvals: Vec::new(),
+                    why,
+                },
+            }),
     }
     .unwrap_or_else(|why| Answer::Wait { why });
     tracing::info!(?answered, "answered the update service");

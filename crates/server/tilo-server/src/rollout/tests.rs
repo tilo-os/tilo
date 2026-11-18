@@ -18,6 +18,8 @@ struct Fake {
     fleet: Arc<Mutex<Fleet>>,
     pending: Mutex<Option<String>>,
     short: Vec<String>,
+    /// What suspending its machines answers.
+    suspend: Result<(), String>,
 }
 
 impl Fake {
@@ -27,6 +29,7 @@ impl Fake {
             fleet: Arc::clone(fleet),
             pending: Mutex::new(None),
             short: Vec::new(),
+            suspend: Ok(()),
         }
     }
 
@@ -72,7 +75,7 @@ impl Machine for Fake {
 
     async fn suspend_machines(&self) -> Result<(), String> {
         self.did("suspends machines");
-        Ok(())
+        self.suspend.clone()
     }
 
     fn pending(&self) -> Option<String> {
@@ -103,10 +106,11 @@ async fn servers_restart_one_at_a_time_and_drain_first() {
         fleet.lock().unwrap().log,
         [
             "attic checks copies",
-            "attic hands off leases",
-            "attic suspends machines"
+            "attic suspends machines",
+            "attic hands off leases"
         ],
-        "the copies are checked under the lease, and the work handed off before the restart"
+        "the copies are checked under the lease, the machines suspended before their leases \
+         go, and the work handed off before the restart"
     );
     let cellar_first = prepare(&cellar, "v2").await.unwrap();
     assert!(waits(&cellar_first), "{cellar_first:?}");
@@ -183,6 +187,33 @@ async fn a_server_short_of_copies_waits_and_lets_the_lease_go() {
     assert_eq!(prepare(&cellar, "v2").await.unwrap(), Answer::Restart);
 }
 
+/// A server whose machines do not all suspend does not restart: it hands
+/// off nothing, keeps no pending update, and lets the lease go.
+#[tokio::test]
+async fn a_server_whose_machines_stay_awake_waits_and_hands_off_nothing() {
+    let fleet = Arc::new(Mutex::new(Fleet::default()));
+    let mut attic = Fake::new("attic", &fleet);
+    attic.suspend = Err("ws/default (Running)".into());
+    let cellar = Fake::new("cellar", &fleet);
+
+    let answer = prepare(&attic, "v2").await.unwrap();
+    assert!(
+        matches!(&answer, Answer::Wait { why } if why.contains("ws/default")),
+        "{answer:?}"
+    );
+    assert_eq!(attic.pending(), None);
+    assert_eq!(
+        fleet.lock().unwrap().log,
+        [
+            "attic checks copies",
+            "attic suspends machines",
+            "attic releases"
+        ],
+        "no lease is handed off while a machine is still awake here"
+    );
+    assert_eq!(prepare(&cellar, "v2").await.unwrap(), Answer::Restart);
+}
+
 /// A boot with no update pending changes nothing.
 #[tokio::test]
 async fn a_boot_without_an_update_changes_nothing() {
@@ -204,5 +235,60 @@ fn requests_and_answers_are_one_json_line() {
     assert_eq!(
         serde_json::to_string(&Answer::Restart).unwrap(),
         r#"{"answer":"restart"}"#
+    );
+}
+
+/// A workspace keeps a server from restarting while one of its copies is
+/// still catching up, or while the server is one of too few current copies
+/// of a kind for the workspace's policy to hold without it.
+#[test]
+fn a_workspace_short_without_this_server_holds_its_restart() {
+    use tilo_peer_state::{CopyPolicy, CopyRole, CopyStatus, HolderCopy, Missing, Shortfall};
+    let holder = |device: u8, role| HolderCopy {
+        device: [device; 32],
+        role,
+        current: true,
+    };
+    let status = |key_holders, holders: Vec<HolderCopy>, shortfall| CopyStatus {
+        policy: CopyPolicy {
+            key_holders,
+            stores: 1,
+        },
+        chosen: key_holders > 0,
+        holders,
+        shortfall,
+    };
+    let attic = [1; 32];
+    let both = vec![
+        holder(1, CopyRole::KeyHolder),
+        holder(2, CopyRole::KeyHolder),
+        holder(3, CopyRole::Store),
+    ];
+    assert_eq!(
+        short_without(&status(1, both.clone(), Vec::new()), &attic),
+        None
+    );
+    let why = short_without(&status(2, both.clone(), Vec::new()), &attic).unwrap();
+    assert!(
+        why.contains("wants 2 current key holders and keeps 1"),
+        "{why}"
+    );
+    let catching_up = vec![Shortfall::Holder {
+        device: [2; 32],
+        missing: Missing::History { from: attic },
+    }];
+    let why = short_without(&status(1, both, catching_up), &attic).unwrap();
+    assert!(why.contains("catching up"), "{why}");
+    // The default asks nothing of a restart: the server alone comes back.
+    let alone = vec![holder(1, CopyRole::KeyHolder)];
+    assert_eq!(short_without(&status(0, alone, Vec::new()), &attic), None);
+    // A kind already short, which this server is none of, waits for no one.
+    let no_store = vec![
+        holder(1, CopyRole::KeyHolder),
+        holder(2, CopyRole::KeyHolder),
+    ];
+    assert_eq!(
+        short_without(&status(1, no_store, Vec::new()), &attic),
+        None
     );
 }

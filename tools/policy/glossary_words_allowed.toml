@@ -11,6 +11,11 @@ identifiers = ["HostIdentity", "own_host_hint_here"]
 paths = ["crates/collab/tilo-peer-state/tests/adhoc_group.rs"]
 
 [[allow]]
+reason = "The hosted-VM service's load of the machine running its VMs, which the glossary keeps as host."
+words = ["host"]
+identifiers = ["HostLoad"]
+
+[[allow]]
 reason = "Generated from sources the check already reads."
 words = ["*"]
 paths = [
