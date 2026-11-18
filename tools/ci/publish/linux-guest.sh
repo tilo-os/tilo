@@ -35,7 +35,7 @@ case ${1:-} in
   build)
     agent=${2:?usage: linux-guest.sh build AGENT OUT}
     out=${3:?}
-    [[ $(uname -m) == x86_64 ]] || die 'the legacy guest is built on x86_64'
+    [[ $(uname -m) == x86_64 ]] || die 'the Linux VM guest is built on x86_64'
     dnf install -y --setopt=install_weak_deps=False btrfs-progs dosfstools e2fsprogs edk2-ovmf \
       fuse-overlayfs jq podman python3 qemu-img qemu-system-x86-core skopeo systemd-repart util-linux >/dev/null
     # The VM's /dev is static; the kernel's own loop and FUSE nodes appear with devtmpfs.

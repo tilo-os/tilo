@@ -503,7 +503,7 @@ new one (each window the launcher opens has a record of its own, and a new
 terminal opened in a window is a new record), and reopening a window returns
 to its session. The screen, the scrollback and
 the window title stay on the device that runs the process: they are live
-output, like the pixels of a legacy window.
+output, like the pixels of a VM window.
 
 ### The shell marks each run
 
@@ -817,7 +817,7 @@ written to the audit log. The guards:
 - Updates run one at a time; a second one says it is waiting.
 - Ctrl-C (any client that hangs up) stops the command and its helpers.
 
-Legacy app launches go the same way but have no time limit: they last as long
+Linux app launches go the same way but have no time limit: they last as long
 as the app is open.
 
 ## Storage

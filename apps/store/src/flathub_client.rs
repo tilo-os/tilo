@@ -1,4 +1,4 @@
-//! Flathub JSON API v2 client — the "legacy apps" feed.
+//! Flathub JSON API v2 client — the "Linux apps" feed.
 //!
 //! We only touch the endpoints the store actually renders:
 //!
