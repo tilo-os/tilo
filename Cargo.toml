@@ -72,6 +72,7 @@ members = [
     "crates/lang/tilolang-lex",
     "crates/lang/tilolang-cli",
     "apps/poker",
+    "apps/poker-model",
     "crates/browser/browser-continuity",
     "crates/browser/browser-continuity-core",
     "crates/platform/tilo-messaging",
