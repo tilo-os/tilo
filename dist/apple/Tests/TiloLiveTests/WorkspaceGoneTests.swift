@@ -37,6 +37,22 @@ final class WorkspaceGoneTests: XCTestCase {
         document.getElementById('status').textContent = 'You were removed from Lounge. To come back, ask someone in it for a new invitation.';
         document.documentElement.dataset.failure = 'removed'; \(stopped)
         """
+    /// Tilo's page where its join stopped otherwise than by its server's refusal, as on a device
+    /// that kept nothing to hold the answering server against: it names its entry `failed`, asks
+    /// its site what became of the workspace it remembers, and names its failure screen's case
+    /// after that.
+    private static let goneAfterAStop = """
+        document.documentElement.dataset.arrival = 'stopped'; document.documentElement.dataset.entry = 'failed';
+        await new Promise(resolve => setTimeout(resolve, 30));
+        document.getElementById('status').textContent = 'Lounge no longer exists. It was reset since this browser last opened it.';
+        document.documentElement.dataset.failure = 'gone'
+        """
+    /// Its join stopped and its site said nothing of the workspace: a moment's failure.
+    private static let stoppedJoining = """
+        document.getElementById('status').textContent = 'Couldn’t open Lounge. It stopped while joining. Try again, or reload the page.';
+        document.documentElement.dataset.failure = 'loading';
+        document.documentElement.dataset.arrival = 'stopped'; document.documentElement.dataset.entry = 'failed'
+        """
     private var source: TiloSource!
     private var engine: TiloEngine!
     private var defaults: UserDefaults!
@@ -155,6 +171,25 @@ final class WorkspaceGoneTests: XCTestCase {
 
     func testADeviceWhoseWorkspaceWasDeletedStandsAtItsWayIn() async throws {
         try await standsAtItsWayIn(after: Self.deleted, "the page said its workspace was deleted")
+    }
+
+    /// The page's join stopped otherwise than by its server's refusal, and its site then said
+    /// that the workspace it remembers is gone. The page says so once: it has forgotten the
+    /// workspace at its next load. A build of before took it for a page that stopped and loaded
+    /// it again for ever, its person signed in and nothing to press.
+    func testADeviceWhosePageStoppedAndThenNamedItsWorkspaceGoneStandsAtItsWayIn() async throws {
+        try await standsAtItsWayIn(after: Self.goneAfterAStop, "the page stopped and then said its workspace no longer exists")
+    }
+
+    /// A page whose join stopped and that names no workspace that is gone is asked for again, and
+    /// the device stays its person's: its server may only be away.
+    func testAPageWhoseJoinStoppedAndNamesNoWorkspaceThatIsGoneIsAskedForAgain() async throws {
+        try await startAgain()
+        let asked = loaded.count
+        try await inPage(Self.stoppedJoining)
+        try await until("the page to be asked for again") { self.loaded.count > asked }
+        XCTAssertTrue(isSignedIn, "a device whose page stopped for a moment is nobody's any more")
+        XCTAssertNotNil(defaults.string(forKey: "TiloLiveRoute"), "the workspace of a page that stopped for a moment was put away")
     }
 
     /// The site is set up again while the app is open: its server turns the open page's session
@@ -408,6 +443,8 @@ final class WorkspaceGoneTests: XCTestCase {
         // An open page its server turned away names the refusal on its root, whatever the refusal is.
         let entry = try String(contentsOf: web.appendingPathComponent("entry-page.mjs"), encoding: .utf8)
         XCTAssertTrue(entry.contains("document.documentElement.dataset.refusal = code;"), "an open page no longer names its server's refusal on its root")
+        // A join that stopped otherwise than by a refusal is named `failed`, and what became of the workspace is asked after that.
+        XCTAssertTrue(entry.contains("? 'refused' : 'failed';"), "the page no longer names a join that stopped without a refusal `failed`")
         // An open page says how its connection to its server stands on its root, and calls one that is cut by this name.
         XCTAssertTrue(entry.contains("document.documentElement.dataset.connection = reading.state;"),
                       "an open page no longer says on its root how its connection stands")
