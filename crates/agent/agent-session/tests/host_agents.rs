@@ -155,17 +155,13 @@ fn arguments(fields: &[(&str, serde_json::Value)]) -> serde_json::Map<String, se
         .collect()
 }
 
-/// The name the chat's message action gives the conversation a post goes in,
-/// kept whole at runtime.
-fn conversation_argument() -> String {
-    ["chan", "nel"].concat()
-}
+/// The argument Chat's `post` names the conversation a message goes in by:
+/// Chat's own channel.
+const CONVERSATION_ARGUMENT: &str = "channel";
 
-/// The name the shelf action gives the topic a book is filed under, kept
-/// whole at runtime.
-fn topic_argument() -> String {
-    ["subj", "ect"].concat()
-}
+/// The argument the library's `shelve` names the topic a book is filed under
+/// by: a book's subject, as catalogues say.
+const TOPIC_ARGUMENT: &str = "subject";
 
 /// The task asking for `calls`, in order.
 fn task(calls: &[serde_json::Value]) -> String {
@@ -1104,7 +1100,7 @@ fn shelve_then_remove() -> String {
         ("author", serde_json::json!("Ada")),
         ("shared", serde_json::json!(false)),
     ]);
-    shelf.insert(topic_argument(), serde_json::json!(""));
+    shelf.insert(TOPIC_ARGUMENT.to_owned(), serde_json::json!(""));
     task(&[
         doing("ebook#open", serde_json::json!({})),
         doing_args("ebook#shelve", shelf),
@@ -1137,7 +1133,10 @@ async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first
     // The person's device is asked about this one invocation, in the words
     // of the document that offers it, while the agent shows it is waiting.
     let question = asked(&mut device).await;
-    assert_eq!(question.agent_label, grant, "the agent the person approved");
+    assert_eq!(
+        question.agent_label, "Careful",
+        "the agent by the name the person approved"
+    );
     assert_eq!(
         question.workspace, "Workspace",
         "the workspace by the name people know it"
@@ -1150,9 +1149,7 @@ async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first
     assert_eq!(question.resource_label, "1 book");
     assert_eq!(question.risk, "destructive");
     assert!(
-        question
-            .question()
-            .starts_with(&format!("{grant} wants to "))
+        question.question().starts_with("Careful wants to ")
             && question.question().ends_with(", for you"),
         "{}",
         question.question()
@@ -1293,7 +1290,10 @@ async fn agents_post_in_the_workspaces_chat_and_read_each_other_by_name() {
 
     // The poster, which never started the chat, posts in it.
     let mut post = arguments(&[("text", serde_json::json!("Hello from the poster"))]);
-    post.insert(conversation_argument(), serde_json::json!(conversation));
+    post.insert(
+        CONVERSATION_ARGUMENT.to_owned(),
+        serde_json::json!(conversation),
+    );
     spawn(
         &mut browser,
         &poster,
@@ -1307,7 +1307,10 @@ async fn agents_post_in_the_workspaces_chat_and_read_each_other_by_name() {
     // The reader exports from the chat it holds: the post is there, under the
     // poster's name. Asked again until it has arrived.
     let mut export_arguments = arguments(&[("format", serde_json::json!("json"))]);
-    export_arguments.insert(conversation_argument(), serde_json::json!(conversation));
+    export_arguments.insert(
+        CONVERSATION_ARGUMENT.to_owned(),
+        serde_json::json!(conversation),
+    );
     let export = task(&[doing_args("chat#export-content", export_arguments)]);
     let deadline = tilo_test_env::hang_deadline();
     let mut tasks = 1;
@@ -1336,11 +1339,11 @@ async fn agents_post_in_the_workspaces_chat_and_read_each_other_by_name() {
             .find(|message| message["text"] == "Hello from the poster")
             .cloned();
         if let Some(posted) = posted {
-            // The agent wrote it as the agent its person's grant named: not its key, and
-            // never another agent of the same person.
-            assert_eq!(posted["authorName"], poster.as_str(), "{posted}");
+            // The agent wrote it as the agent its person's grant named, by the name they
+            // approved: not its key, and never another agent of the same person.
+            assert_eq!(posted["authorName"], "Poster", "{posted}");
             assert_eq!(posted["author"]["agent"], poster.as_str(), "{posted}");
-            assert_ne!(posted["authorName"], reader.as_str(), "{posted}");
+            assert_ne!(posted["author"]["agent"], reader.as_str(), "{posted}");
             break;
         }
         assert!(
