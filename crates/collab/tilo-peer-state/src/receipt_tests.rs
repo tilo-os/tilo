@@ -2064,3 +2064,246 @@ fn a_withdrawal_stops_the_servers_work_whatever_time_a_write_names() {
     }
     assert!(wrong.is_empty(), "\n{}", wrong.join("\n"));
 }
+
+/// A member's work on a server, taken back: the member delegated, the server
+/// wrote once while the delegation stood, and the member's device took the
+/// work back a second later.
+struct TakenBack {
+    /// The member's device, which signed the withdrawal.
+    peer: StatePeer,
+    /// A copy as it stood when the work was given: it holds the delegation
+    /// and nothing that came after.
+    joining: StatePeer,
+    guest: DeviceCert,
+    server_key: SigningKey,
+    server: DeviceCert,
+    /// The server's write while the delegation stood, its first.
+    stood: NeighbourMsg,
+    /// The changes of the workspace's document that carry the withdrawal.
+    withdrawal: Vec<Vec<u8>>,
+    withdrawn_at: std::time::SystemTime,
+}
+
+impl TakenBack {
+    /// The story; `held` says whether the member's device had taken the
+    /// server's write in when it took the work back.
+    fn made(held: bool) -> Self {
+        let (mut peer, guest_key, guest) = workspace_with(Role::Editor);
+        let owner_key = SigningKey::from_bytes(&[2; 32]);
+        let (server_key, server) = named_server(&mut peer, &owner_key);
+        let device = server.device_public_key;
+        let first = delegating(&guest_key, guest.user_public_key, device, APP);
+        let given = peer
+            .workspace_mut()
+            .author_work_delegation(&first, &guest_key, now());
+        assert_eq!(given, Ok(true), "the member delegates");
+        let joining = peer.clone();
+        let invoker = the_servers_invoker(&hex::encode(guest.user_public_key), device);
+        let stood = server_write(&peer, &server_key, 1, "before the withdrawal", invoker);
+        if held {
+            receive(&mut peer, &server, stood.clone()).unwrap();
+            assert_eq!(value(&peer), "\"before the withdrawal\"");
+        }
+        let withdrawn_at = now() + std::time::Duration::from_secs(1);
+        let withdrawal = workspace_changes(&mut peer, |copy| {
+            let written = copy.workspace_mut().revoke_work_delegation(
+                &device,
+                &guest.user_public_key,
+                &guest_key,
+                withdrawn_at,
+            );
+            assert_eq!(written, Ok(true), "the member withdraws");
+        });
+        Self {
+            peer,
+            joining,
+            guest,
+            server_key,
+            server,
+            stood,
+            withdrawal,
+            withdrawn_at,
+        }
+    }
+
+    fn device(&self) -> [u8; 32] {
+        self.server.device_public_key
+    }
+
+    /// A second after the withdrawal.
+    fn after(&self) -> std::time::SystemTime {
+        self.withdrawn_at + std::time::Duration::from_secs(1)
+    }
+
+    /// The server's work as a copy is handed what the workspace kept of it.
+    fn kept(&self) -> TransportOrigin {
+        TransportOrigin::RetainedServerDelta(self.device())
+    }
+
+    /// The server's work as it arrives fresh.
+    fn live(&self) -> TransportOrigin {
+        TransportOrigin::ServerDelta(self.device())
+    }
+
+    /// What the server writes after the withdrawal, its second write, naming
+    /// a time before the withdrawal.
+    fn stamped(&self) -> NeighbourMsg {
+        let invoker = the_servers_invoker(&hex::encode(self.guest.user_public_key), self.device());
+        server_write_stamped(&self.peer, &self.server_key, 2, "stamped", invoker, now())
+    }
+
+    /// `copy` once the withdrawal reached it.
+    fn withdrawn(&self, mut copy: StatePeer) -> StatePeer {
+        take_workspace_changes(
+            &mut copy,
+            self.guest.device_public_key,
+            self.withdrawal.clone(),
+        )
+        .unwrap();
+        copy
+    }
+}
+
+/// The heads of the test's document on `copy`: two copies that hold the same
+/// document read the same ones.
+fn document_heads(copy: &StatePeer) -> Vec<automerge::ChangeHash> {
+    copy.document(APP, "tab:1").map_or_else(Vec::new, |bytes| {
+        AutoCommit::load(&bytes).unwrap().get_heads()
+    })
+}
+
+/// Every copy that holds a withdrawal decides the server's work alike, from
+/// what the member signed and from nothing else. Whether the withdrawal
+/// reached a copy before the history the workspace keeps or between two kept
+/// writes, the copy ends with the document the member's device held when it
+/// took the work back.
+#[test]
+fn copies_that_hold_a_withdrawal_end_alike_whatever_order_they_met_it_in() {
+    let story = TakenBack::made(true);
+    let stamped = story.stamped();
+    let hand = |copy: &mut StatePeer, work: &NeighbourMsg| {
+        copy.receive_from(story.kept(), work.clone(), story.after())
+            .map_or_else(|error| error.to_string(), |_| "taken in".to_owned())
+    };
+
+    // The withdrawal first, then the history the workspace keeps.
+    let mut first = story.withdrawn(story.joining.clone());
+    let stood_first = hand(&mut first, &story.stood);
+    let stamped_first = hand(&mut first, &stamped);
+    // The write that stood, then the withdrawal, then what the server wrote
+    // after it.
+    let mut between = story.joining.clone();
+    let stood_between = hand(&mut between, &story.stood);
+    let mut between = story.withdrawn(between);
+    let stamped_between = hand(&mut between, &stamped);
+
+    let mut wrong = Vec::new();
+    for (which, copy, stood, stamped) in [
+        ("the withdrawal first", &first, stood_first, stamped_first),
+        (
+            "the withdrawal between the two writes",
+            &between,
+            stood_between,
+            stamped_between,
+        ),
+    ] {
+        if value(copy) != "\"before the withdrawal\""
+            || document_heads(copy) != document_heads(&story.peer)
+        {
+            wrong.push(format!(
+                "{which}: the copy does not end with the document the member's device held \
+                 ({}): what stood: {stood}; what the server stamped: {stamped}",
+                value(copy)
+            ));
+        }
+    }
+    assert!(wrong.is_empty(), "\n{}", wrong.join("\n"));
+}
+
+/// A document the withdrawal names no cut for keeps nothing of the server's
+/// work. The member's device took the work back before the server's write
+/// reached it, so the form it signed names nothing there, and no copy that
+/// holds the withdrawal takes that write, kept or fresh, although the server
+/// made it while the delegation stood. That is the safe side: a copy cannot
+/// tell work the member's device never held from work the server made after
+/// the withdrawal and stamped before it, and taking either would let a server
+/// write on for a member who took their work back.
+#[test]
+fn a_document_the_withdrawal_names_no_cut_for_takes_nothing_of_the_server() {
+    let story = TakenBack::made(false);
+    let late = story.withdrawn(story.joining.clone());
+    let mut wrong = Vec::new();
+    for (which, copy, origin, at) in [
+        (
+            "the member's device, as kept history",
+            &story.peer,
+            story.kept(),
+            story.after(),
+        ),
+        (
+            "the member's device, as a fresh write",
+            &story.peer,
+            story.live(),
+            story.after(),
+        ),
+        (
+            "a late joiner, as kept history",
+            &late,
+            story.kept(),
+            story.after(),
+        ),
+        (
+            "a copy whose clock reads before the withdrawal",
+            &late,
+            story.live(),
+            now(),
+        ),
+    ] {
+        let (taken, answer) = handed(copy, origin, &story.stood, at, "before the withdrawal");
+        if taken {
+            wrong.push(format!(
+                "{which} takes the server's work in a document the withdrawal names no cut for: {answer}"
+            ));
+        }
+    }
+    assert!(wrong.is_empty(), "\n{}", wrong.join("\n"));
+}
+
+/// Nothing reads a withdrawal live. Asked about a time before the stamp its
+/// member's device gave it, a copy that holds the withdrawal answers what it
+/// answers for every other time: the work is withdrawn, and the server takes
+/// none of it.
+#[test]
+fn a_withdrawal_is_read_live_at_no_time() {
+    use crate::DelegatedWork;
+    let story = TakenBack::made(true);
+    let (server, person) = (story.device(), story.guest.user_public_key);
+    let mut wrong = Vec::new();
+    for (which, copy) in [
+        ("the member's device", &story.peer),
+        ("a late joiner", &story.withdrawn(story.joining.clone())),
+    ] {
+        for (when, at) in [
+            ("before the withdrawal's stamp", now()),
+            ("at its stamp", story.withdrawn_at),
+            ("after it", story.after()),
+        ] {
+            let workspace = copy.workspace();
+            if workspace.work_delegation(&server, &person, at).is_some() {
+                wrong.push(format!("{which} reads the delegation live {when}"));
+            }
+            if copy
+                .workspace()
+                .delegation_for_server(&server, at)
+                .is_some()
+            {
+                wrong.push(format!("{which} lets the server take work {when}"));
+            }
+            let work = copy.workspace().delegated_work(&server, &person, at);
+            if !matches!(work, DelegatedWork::Withdrawn { .. }) {
+                wrong.push(format!("{which} does not say withdrawn {when}: {work:?}"));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "\n{}", wrong.join("\n"));
+}

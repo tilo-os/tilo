@@ -520,12 +520,13 @@ mod tests {
         );
 
         let revoked = delegation.revoked(&key, 600)?;
-        assert!(revoked.verify("w", 599).is_ok());
-        assert_eq!(
-            revoked.verify("w", 600),
-            Err(WorkDelegationError::NotCurrent),
-            "a revocation stops it at once"
-        );
+        for at in [1, 599, 600, 999] {
+            assert_eq!(
+                revoked.verify("w", at),
+                Err(WorkDelegationError::NotCurrent),
+                "a withdrawal is read live at no time, the time before its stamp included: {at}"
+            );
+        }
         assert_eq!(
             delegation.revoked(&SigningKey::from_bytes(&[6; 32]), 600),
             Err(WorkDelegationError::Invalid(
