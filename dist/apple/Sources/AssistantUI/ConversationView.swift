@@ -20,6 +20,8 @@ public struct ConversationView: View {
     /// Whether the height of the line that said an answer was being written is kept after
     /// the answer ended, so that nothing above it moves. The next piece takes its place.
     @State private var keepsFoot = false
+    /// Whether the steps of the turn at work are shown under its line. A person opens them.
+    @State private var stepsOpen = false
 
     public init(chat: Chat, picturedSecret: String = "", head: String? = nil) {
         self.chat = chat
@@ -65,7 +67,9 @@ public struct ConversationView: View {
                         // What stands between the person and a first answer is said where that answer would stand.
                         if chat == .main { SetupStep() }
                         if conversation.isAnswering || keepsFoot {
-                            Fine(words: "\(AssistantWords.answering.said)…").padding(.leading, 14)
+                            // One line says what the turn does now; a press opens its steps so far.
+                            TurnLine(turn: conversation.isAnswering ? turn(of: conversation) : nil, open: $stepsOpen)
+                                .padding(.leading, 14)
                                 .opacity(conversation.isAnswering ? 1 : 0)
                                 .accessibilityHidden(!conversation.isAnswering)
                         }
@@ -128,9 +132,12 @@ public struct ConversationView: View {
                 }
                 .onChange(of: conversation.isAnswering) { was, now in
                     keepsFoot = was && !now
+                    // The next turn's steps are closed until its person opens them.
+                    if !now { stepsOpen = false }
                 }
                 .onChange(of: chat) {
                     keepsFoot = false
+                    stepsOpen = false
                     moreBelow = false
                     // Another conversation opens on its newest piece, wherever the last one was left.
                     atEnd = true
@@ -152,6 +159,14 @@ public struct ConversationView: View {
             }
         }
         .environment(\.writtenPiece, written)
+    }
+
+    /// What the turn at work does, as the newest reply that says so carries it.
+    private func turn(of conversation: Conversation) -> Message.Turn? {
+        for item in conversation.items.reversed() {
+            if case .message(let message) = item.content, let turn = message.turn { return turn }
+        }
+        return nil
     }
 
     /// Whether the newest piece is what the person wrote themselves.

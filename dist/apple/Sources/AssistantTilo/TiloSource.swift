@@ -158,6 +158,8 @@ public final class TiloSource: AssistantSource {
 
     private var feeds: [Chat: Feed] = [.main: Feed()]
     private var looking = false
+    /// What this device saw of the turns that write replies.
+    private var turns = TurnWatch()
     private var again = false
     private var surveying = false
     private var surveyAgain: Survey?
@@ -1453,7 +1455,14 @@ public final class TiloSource: AssistantSource {
         }
         return Item(id: id, at: message.at,
                     .message(Message(author, message.text, attachments: TiloFiles.attachments(of: message), live: live,
-                                     keyFault: author == .assistant ? TiloSource.keyFault(of: fields["work"]) : nil)))
+                                     keyFault: author == .assistant ? TiloSource.keyFault(of: fields["work"]) : nil,
+                                     turn: author == .assistant ? turn(of: message) : nil)))
+    }
+
+    /// What the turn at work on a reply does, as this device saw it.
+    private func turn(of message: ChatMessage) -> Message.Turn? {
+        turns.read(work: message.fields["work"], words: message.text, of: message.id, began: message.at,
+                   going: message.isWorkedOn, now: Date())
     }
 
     /// Why a reply's model gave no answer, where another key or another provider mends it: read

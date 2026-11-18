@@ -316,6 +316,16 @@ final class AssistantDrive {
             case .noProvider?: line["fault"] = ["is": "no-provider"]
             case nil: break
             }
+            // What the reply's turn does, as the line at the conversation's foot says it.
+            if let turn = message.turn {
+                let now: JSON = switch turn.now {
+                case .thinking(let words): ["is": "thinking", "words": JSON.string(words)]
+                case .step(let words): ["is": "step", "words": words.map { JSON.string($0) } ?? JSON.null]
+                case .writing: ["is": "writing"]
+                }
+                line["turn"] = ["now": now, "steps": .number(Double(turn.steps.count)),
+                                "failed": .number(Double(turn.steps.filter { $0.outcome == .failed }.count))]
+            }
         case .question(let question):
             line["kind"] = "question"
             line["text"] = .string(question.text)

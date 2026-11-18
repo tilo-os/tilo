@@ -21,6 +21,8 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     case noReplies = "no-replies", conversation, you, waitsForAnswer = "waits-for-answer"
     case readyOne = "ready-one", readyMany = "ready-many", seeAllTasks = "see-all-tasks"
     case youChose = "you-chose", answering, moreBelow = "more-below", notTakenUp = "not-taken-up", earlier
+    case thinking, atWork = "at-work", stepOne = "step-one", stepMany = "step-many", stepFailed = "step-failed"
+    case showSteps = "show-steps", hideSteps = "hide-steps"
     case nothingYet = "nothing-yet", nothingYetBody = "nothing-yet-body"
     case liveThing = "live-thing", attachment
     case viewNotOffered = "view-not-offered", liveNotShown = "live-not-shown", stopSharing = "stop-sharing"
@@ -144,6 +146,13 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .moreBelow: "More below"
         case .notTakenUp: "Tilo has not taken this up yet."
         case .earlier: "Show earlier"
+        case .thinking: "Thinking"
+        case .atWork: "Working"
+        case .stepOne: "1 step"
+        case .stepMany: "{count} steps"
+        case .stepFailed: "failed"
+        case .showSteps: "Shows the steps so far"
+        case .hideSteps: "Hides the steps"
         case .nothingYet: "Nothing here yet"
         case .nothingYetBody: "Write to your assistant below."
         case .liveThing: "Live view"
