@@ -24,7 +24,7 @@ impl NotesApp {
         })
     }
 
-    /// The slots for the note shown (`title`, and the anchor `open` shows it
+    /// The slots for the note shown (its name, and the anchor `open` shows it
     /// at; `None`: no note is open).
     fn window_toolbar(note: Option<&(String, String)>, sidebar_open: bool) -> WindowToolbar {
         // The note's actions are declared for a note only: a menu that acts
@@ -35,8 +35,8 @@ impl NotesApp {
             sidebar: Some(sidebar_open),
             navigation: None,
             // One name everywhere: an unnamed note's window reads as its heading.
-            location: note.map(|(title, anchor)| ToolbarLocation {
-                label: crate::metadata::note_title(title),
+            location: note.map(|(name, anchor)| ToolbarLocation {
+                label: name.clone(),
                 anchor: Some(anchor.clone()),
                 // Unsaved work is marked by the window's framework, from the
                 // resource's save.
@@ -90,7 +90,7 @@ impl NotesApp {
         if !hosted {
             return changed;
         }
-        let title = self.main.title().map(str::to_owned);
+        let title = self.main.name();
         let anchor = self.main.page_id().map(crate::actions::page_resource_id);
         let open = self.shell.is_sidebar_open();
         let key = (
@@ -246,18 +246,6 @@ mod tests {
             "an open note's commands are the rows of the window's More menu, and nothing \
              stands in the row beside the strip's own \"+\""
         );
-    }
-
-    /// A note nobody named names its window and tab by the word that heads it.
-    #[test]
-    fn a_note_nobody_named_names_its_window_as_its_heading_does() {
-        ui::i18n::I18nManager::init("en-US");
-        let bar = NotesApp::window_toolbar(Some(&(" ".to_owned(), "note".to_owned())), false);
-        let location = bar.location.expect("an open note is where the window is");
-        assert_eq!(location.label, CATALOG.t("notes-title-placeholder"));
-        let named =
-            NotesApp::window_toolbar(Some(&("Friday".to_owned(), "note".to_owned())), false);
-        assert_eq!(named.location.expect("an open note").label, "Friday");
     }
 
     /// New note stands in the page tree's header whether or not the desktop's bar hosts the

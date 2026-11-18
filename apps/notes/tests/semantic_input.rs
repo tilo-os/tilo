@@ -123,7 +123,7 @@ fn published_new_note_and_page_tokens_use_the_canonical_component_once() {
     let before = revision(&f, &checkout);
     // A page row names its page: the list addresses rows by the key their
     // host gave them.
-    let page = named(&a, "Untitled")
+    let page = named(&a, "New note")
         .into_iter()
         .find(|r| r.1.as_deref().is_some_and(|t| t.starts_with("key:")))
         .unwrap();

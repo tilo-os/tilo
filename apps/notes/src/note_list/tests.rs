@@ -295,15 +295,23 @@ fn import(title: &str, markdown: &str, note: Option<&Id>) -> Invoke<NoteList> {
 tilo_test_env::scenario! {
     fn a_part_reads_publishes_and_merges;
 
-    phase an_unnamed_note_is_offered_under_the_word_for_one;
-    // A note nobody named is offered under the word for one, never under its own body's first line: a
-    // list and the tools that read it aloud then say the same name, and the record holds no title.
+    phase an_untitled_note_is_offered_under_its_first_line;
+    // A note nobody titled is offered under the first line it says, as its row and window name
+    // it, and under the word for a new note while it says nothing; the record holds no title.
     {
         let mut book = Book::new();
         let made = note(&mut book, "", None);
-        write(&mut book, &made, &[BlockContent::paragraph("", "Plan")]);
         let offered = book.merged().item_label("pages", &made);
-        assert_eq!(offered.as_deref(), Some("Untitled"));
+        assert_eq!(offered.as_deref(), Some("New note"));
+        let lines = [
+            BlockContent::paragraph("", "  "),
+            BlockContent::paragraph("", " Garden plan "),
+        ];
+        write(&mut book, &made, &lines);
+        let offered = book.merged().item_label("pages", &made);
+        assert_eq!(offered.as_deref(), Some("Garden plan"));
+        let title = book.merged().pages.get(&made).map(|page| page.title.clone());
+        assert_eq!(title.as_deref(), Some(""));
     }
 
     phase two_replicas_converge;

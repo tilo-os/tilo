@@ -13,7 +13,7 @@ notes-surface-tag = Notizen mit dem Schlagwort { $tag } anzeigen
 notes-surface-backlink = Verlinkende Notiz öffnen: { $title }
 notes-parent-path = In { $path }
 notes-linked-from = Verlinkt von
-notes-title-placeholder = Ohne Titel
+notes-unnamed = Neue Notiz
 notes-affordance-new-note = Neue Notiz
 notes-affordance-new-child = Neue Unternotiz
 notes-affordance-note-actions = Weitere Notizaktionen
@@ -33,7 +33,7 @@ notes-a11y-more-actions-for = Weitere Aktionen für
 
 ## Verlauf: was jede Änderung getan hat, nach Feld und nach Aktion
 
-notes-page-body = { $item } bearbeitet
+notes-page-body = „{ $item }“ bearbeitet
 notes-page-tags = { $op ->
     [insert] { $item } verschlagwortet
    *[other] Schlagwort von { $item } entfernt
@@ -48,7 +48,7 @@ notes-notebook-tags = { $op ->
     [insert] Schlagwort hinzugefügt
    *[other] Schlagwort entfernt
 }
-notes-new-note = { $title } erstellt
+notes-new-note = „{ $note }“ erstellt
 notes-deleted = { $inside ->
     [0] { $title } gelöscht
     [one] { $title } und 1 Notiz darin gelöscht
@@ -71,7 +71,7 @@ notes-keep-image = Ein Bild im Notizbuch abgelegt
 notes-place-image = Bild zu { $item } hinzugefügt
 notes-import-markdown = { $title } importiert
 notes-append-to-note = Zu { $title } hinzugefügt
-notes-write-note = { $item } bearbeitet
+notes-write-note = „{ $item }“ bearbeitet
 
 ## Keyboard shortcuts sheet
 notes-help-title = Tastenkürzel
@@ -131,7 +131,6 @@ notes-menu-cut = Ausschneiden
 notes-menu-copy = Kopieren
 notes-menu-paste = Einfügen
 notes-menu-select-all = Alles auswählen
-notes-imported-untitled = Importierte Notiz
 notes-no-previous = Keine frühere Notiz
 notes-no-next = Keine spätere Notiz
 notes-link-copied = Link zu { $title } kopiert

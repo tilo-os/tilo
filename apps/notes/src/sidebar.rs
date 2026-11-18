@@ -419,11 +419,8 @@ impl PageList {
         let mut titles: HashMap<PageId, (String, Option<PageId>)> = HashMap::new();
         for page in workspace.pages() {
             children.entry(page.parent).or_default().push(page.id);
-            // A note nobody named reads as the word for one, so its row is never blank.
-            titles.insert(
-                page.id,
-                (crate::metadata::note_title(&page.title), page.parent),
-            );
+            // A note nobody titled reads as its first line, so its row is never blank.
+            titles.insert(page.id, (workspace.name_of(page), page.parent));
         }
         let mut list = Self {
             rows: Vec::with_capacity(titles.len()),
@@ -1428,6 +1425,24 @@ mod tests {
             tree.sync_from_workspace(&ws);
             assert!(tree.scroll_offset().abs() < f64::EPSILON);
         }
+    }
+
+    /// A note nobody titled is listed by its first line, an empty one as a new note.
+    #[test]
+    fn a_row_names_an_untitled_note_by_its_first_line() {
+        ui::i18n::I18nManager::init("en-US");
+        let mut ws = Workspace::new();
+        let written = ws.create_page(None);
+        ws.create_page(None);
+        let line =
+            crate::actions::stored_block(ui::rich_edit::BlockContent::paragraph("", "Garden plan"));
+        std::sync::Arc::make_mut(&mut ws.bodies)
+            .insert(written, vec![std::sync::Arc::new(line)].into());
+        let mut tree = PageSidebar::new();
+        tree.sync_from_workspace(&ws);
+        place(&mut tree, Rect::new(0.0, 0.0, 240.0, 400.0), 1.0);
+        let names: Vec<&str> = (0..2).filter_map(|row| Some(tree.row(row)?.1)).collect();
+        assert_eq!(names, ["Garden plan", "New note"]);
     }
 
     #[test]

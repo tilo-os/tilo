@@ -312,14 +312,14 @@ pub fn step_summary(entry: &ActionContext) -> Option<String> {
 #[must_use]
 pub fn step_target(entry: &ActionContext, summary: &str) -> Option<crate::widget::EntryTarget> {
     let item = entry.item.as_ref()?;
-    let label = tilo_history::item_label(item)?;
-    let action = summary.trim_end().strip_suffix(label)?;
+    let label = with_reader(|reader| reader.item_name(item))?;
+    let action = summary.trim_end().strip_suffix(label.as_str())?;
     // The framework's own words for an action it has no sentence for put a colon between the
     // two ("Write note: Supplier terms"): the row lays them out apart instead.
     let action = action.trim_end().trim_end_matches(':').trim();
     (!action.is_empty()).then(|| crate::widget::EntryTarget {
         action: action.to_owned(),
-        label: label.to_owned(),
+        label,
         id: item.id.clone(),
     })
 }
@@ -355,6 +355,15 @@ thread_local! {
     /// The labels of the actions this thread's app publishes.
     static ACTION_LABELS: std::cell::RefCell<tilo_history::ActionLabels> =
         std::cell::RefCell::new(tilo_history::ActionLabels::default());
+    /// The names this thread's app gives its items now, by id.
+    static ITEM_NAMES: std::cell::RefCell<std::collections::HashMap<String, String>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Remember what this thread's app calls each item it holds now, by id, in place of what it
+/// called them before: a step on one of them reads with its name as it is.
+pub fn learn_item_names(names: impl IntoIterator<Item = (String, String)>) {
+    ITEM_NAMES.with(|known| *known.borrow_mut() = names.into_iter().collect());
 }
 
 /// Remember the labels of the actions `resources` publish, as the app words
@@ -396,7 +405,7 @@ pub fn learn_field_titles(shape: &tilo_resource::Shape) {
 }
 
 /// The published labels learned on this thread.
-struct ThreadLabels;
+pub struct ThreadLabels;
 
 /// The label this thread's app publishes for `action` of a resource of
 /// `kind` (or of any kind, when that one has none), in the reader's language.
@@ -421,6 +430,10 @@ impl tilo_history::Labels for ThreadLabels {
 
     fn action(&self, key: &tilo_actions::ActionKey) -> Option<String> {
         ACTION_LABELS.with(|labels| tilo_history::Labels::action(&*labels.borrow(), key))
+    }
+
+    fn item(&self, id: &str) -> Option<String> {
+        ITEM_NAMES.with(|names| names.borrow().get(id).cloned())
     }
 }
 
