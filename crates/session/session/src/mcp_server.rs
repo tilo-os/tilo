@@ -1842,7 +1842,7 @@ fn connect(
 
 /// What an agent session is admitted for: the workspace it works in, the person who admitted it
 /// (whom the agent acts for), the agent member it is a session of, the session, and the name the
-/// person reads it by (`Claude Code #2`).
+/// person reads it by (`Claude Code`).
 struct Admitted<'a> {
     workspace: &'a str,
     person: &'a str,

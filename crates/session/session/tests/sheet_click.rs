@@ -2,7 +2,7 @@
 //! session: the sheet the session raises over the whole display, landed on where the card's footer
 //! draws its actions.
 //!
-//! The bug this file was written for: on the system trust sheet ("Claude Code #1 asks to: Edit a
+//! The bug this file was written for: on the system trust sheet ("Claude Code asks to: Edit a
 //! text field"), a click on "Allow once" at its drawn and reported place was taken as a decline.
 //! The sheet's layout was right; what the press hit was not the button. This test drives the
 //! production path a person does — the session's own portal sheet, its published controls saying
@@ -59,9 +59,9 @@ fn ask_a_step(questions: &Questions) -> Asked {
         handle: "sheet-click:/step-question".into(),
         kind: STEP_QUESTION.to_owned(),
         app_id: None,
-        label: "Claude Code #1".into(),
+        label: "Claude Code".into(),
         details: json!({
-            "agent": "Claude Code #1",
+            "agent": "Claude Code",
             "action": "Edit a text field",
             "resource": "Groceries",
             "fields": [["Title", "Groceries"]],

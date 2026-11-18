@@ -1129,7 +1129,7 @@ fn a_program_asking_to_work_as_an_agent_is_admitted_from_the_sheet() {
     pump(&mut session, |_| questions.pending().len() == 1);
     let shown = dialog(&session);
     assert_eq!(
-        shown.title, "Work in “Workspace” as the agent claude-code@host#1",
+        shown.title, "Work in “Workspace” as the agent Claude Code",
         "where it would work, and as what"
     );
     assert!(
@@ -1167,11 +1167,11 @@ fn a_program_asking_to_work_as_an_agent_is_admitted_from_the_sheet() {
     pump(&mut session, |session| {
         agents_present(session)
             .iter()
-            .any(|agent| agent == "Claude Code #1")
+            .any(|agent| agent == "Claude Code")
     });
     assert_eq!(
         agents_present(&session),
-        ["Claude Code #1".to_owned()],
+        ["Claude Code".to_owned()],
         "the bar shows the agent the person let in while it works here"
     );
     assert!(

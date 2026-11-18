@@ -413,8 +413,8 @@ fn member_name(member: &LiveMember) -> Option<&str> {
 }
 
 /// The row already listed for the agent at `device`: the same publisher, or the same person's
-/// agent going by the same name (one agent heard through two publishers). Two sessions of one
-/// client are told apart by their names ("Claude Code #2"), so they stay two rows.
+/// agent going by the same name (one agent heard through two publishers). One member is one row,
+/// however many sessions of it work here.
 fn same_agent<'a>(
     people: &'a mut [Person],
     device: &str,

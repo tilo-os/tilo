@@ -33,7 +33,7 @@ use serde_json::{Value, json};
 use tilo_actions::remote::PendingPoll;
 use tilo_actions::remote::workspace_activity as wire;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
-use tilo_mcp::devices::{ALPN, NotOpened, agent_id, open};
+use tilo_mcp::devices::{ALPN, NotOpened, open};
 use tilo_peer_state::owner::{self, testing};
 use tilo_peer_state::{PersonalStore, PersonalSync, TransportOrigin};
 use tilo_runtime::personal_devices::PersonalDevices;
@@ -53,8 +53,8 @@ const RUN: &str = "visa-run-1";
 const RUN_TITLE: &str = "Visa agent";
 /// A later run of the same agent, which the person takes back.
 const LATER_RUN: &str = "visa-run-2";
-/// What the shell calls the first connection of the agent its device runs.
-const SHOWN: &str = "Claude Code #1";
+/// What the shell calls the agent its device runs: the workspace's name for its member.
+const SHOWN: &str = "Claude Code";
 
 /// A device key `n` certified by `root` , called `label` .
 fn device(root: &SigningKey, n: u8, label: &str) -> (SigningKey, DeviceCert) {
@@ -412,10 +412,10 @@ fn an_agent_from_another_device_waits_for_the_person_and_leaving_withdraws_it() 
     b.pump(|b| b.questions.pending().len() == 1);
     let (who, what) = b.asked();
     assert_eq!(who, "Claude Code, from your device Studio laptop");
-    // Each connection the person admits is an agent of its own: the device's agent, first of it.
-    let named = format!("{}#1", agent_id("claude-code", &person.laptop.1));
+    // Every connection of the client is the workspace's one agent member for it, named as the
+    // workspace names that member.
     // The shell keeps no name for a workspace nobody named: the question says the word for one.
-    assert_eq!(what, format!("Work in “Workspace” as the agent {named}"));
+    assert_eq!(what, "Work in “Workspace” as the agent Claude Code");
 
     // Nobody is at this box: nothing is answered, and nothing is admitted.
     b.idle(200);
@@ -727,7 +727,7 @@ fn run_of_retitle(session: &mut Session, book: &str, title: &str) -> (String, St
             .unwrap_or_else(|| panic!("the retitle to {title} is a run's step: {step}"))
             .to_owned()
     };
-    (named("group"), named("title"))
+    (named("title"), named("group"))
 }
 
 /// A grant for an agent the person's root certified: reaching all their workspaces, ending in an
