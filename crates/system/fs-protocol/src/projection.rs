@@ -4,10 +4,7 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
 
-use crate::files::{
-    ConflictStatus, FileConflictV1, FileDocumentError, FileDocumentId, FilePropertiesV1,
-    FileVersionId, FileVersionV1, MAX_CONFLICT_VERSIONS,
-};
+use crate::files::{FileDocumentError, FileDocumentId, FilePropertiesV1, FileVersionId};
 
 pub const SYNC_XATTR: &str = "user.tilo.sync";
 /// A file's thumbnail preview. Absent when not previewable, not locally
@@ -42,9 +39,6 @@ pub const PIN_XATTR: &str = "user.tilo.pin";
 /// schedules a bounded background hydration of the current content. No
 /// bearer, peer address, or path is carried in this control.
 pub const AVAILABILITY_CONTROL_XATTR: &str = "user.tilo.availability-control";
-/// Bounded recent history and open conflicts of one record.
-pub const HISTORY_XATTR: &str = "user.tilo.history";
-pub const HISTORY_CONTROL_XATTR: &str = "user.tilo.history-control";
 
 pub const METADATA_PROJECTION_VERSION: u16 = 1;
 pub const MAX_METADATA_XATTR_BYTES: usize = 2_048;
@@ -63,10 +57,6 @@ pub const MAX_AVAILABILITY_XATTR_BYTES: usize = 2_048;
 /// registry may retain a longer error; the projection indicates when it
 /// truncated.
 pub const MAX_PROJECTED_ERROR_BYTES: usize = 512;
-pub const HISTORY_PROJECTION_VERSION: u16 = 1;
-pub const MAX_HISTORY_PROJECTION_BYTES: usize = 16 * 1024;
-pub const MAX_PROJECTED_VERSIONS: usize = 12;
-pub const MAX_PROJECTED_CONFLICTS: usize = 8;
 
 #[derive(Debug, Error)]
 pub enum ProjectionError {
@@ -532,65 +522,6 @@ impl AvailabilityProjectionV1 {
     }
 }
 
-/// Bounded value of [`HISTORY_XATTR`]: the newest versions and conflicts of
-/// one record.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HistoryProjectionV1 {
-    pub schema_version: u16,
-    pub document_id: FileDocumentId,
-    pub total_versions: u64,
-    pub versions_truncated: bool,
-    pub heads: Vec<FileVersionId>,
-    pub versions: Vec<FileVersionV1>,
-    pub conflicts_truncated: bool,
-    pub conflicts: Vec<FileConflictV1>,
-    /// Who wrote the projected versions that the person did not write
-    /// themselves: an agent session, an app or another program, as the
-    /// signing device recorded it.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub attributions: Vec<crate::FileVersionAttributionV1>,
-}
-
-impl HistoryProjectionV1 {
-    pub fn to_xattr_bytes(&self) -> Result<Vec<u8>, ProjectionError> {
-        encode(self, MAX_HISTORY_PROJECTION_BYTES)
-    }
-
-    pub fn parse_xattr(bytes: &[u8]) -> Result<Self, ProjectionError> {
-        let value: Self = decode(bytes, MAX_HISTORY_PROJECTION_BYTES)?;
-        if value.schema_version != HISTORY_PROJECTION_VERSION {
-            return Err(ProjectionError::UnsupportedVersion(value.schema_version));
-        }
-        if value.versions.len() > MAX_PROJECTED_VERSIONS
-            || value.conflicts.len() > MAX_PROJECTED_CONFLICTS
-            || value.heads.len() > MAX_CONFLICT_VERSIONS
-            || value.total_versions < value.versions.len() as u64
-        {
-            return Err(ProjectionError::TooManyEntries);
-        }
-        for version in &value.versions {
-            version.validate()?;
-            if version.document_id != value.document_id {
-                return Err(ProjectionError::WrongDocument);
-            }
-        }
-        for conflict in &value.conflicts {
-            conflict.validate()?;
-            if conflict.document_id != value.document_id {
-                return Err(ProjectionError::WrongDocument);
-            }
-        }
-        Ok(value)
-    }
-
-    pub fn open_conflicts(&self) -> impl Iterator<Item = &FileConflictV1> {
-        self.conflicts
-            .iter()
-            .filter(|conflict| conflict.status == ConflictStatus::Open)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -757,37 +688,6 @@ mod tests {
                     MAX_AVAILABILITY_XATTR_BYTES + 1
                 ])
                 .is_err()
-            );
-        }
-        {
-            let history = serde_json::to_vec(&serde_json::json!({
-                "schema_version": 1,
-                "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-                "total_versions": 1,
-                "versions_truncated": false,
-                "heads": ["a0d4e23f-c7cb-4ded-a427-b32cf9da9342"],
-                "versions": [{
-                    "id": "a0d4e23f-c7cb-4ded-a427-b32cf9da9342",
-                    "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-                    "parents": [],
-                    "actor": {"person": vec![1; 32], "device": vec![2; 32]},
-                    "timestamp_ms": 9,
-                    "content_hash": null,
-                    "metadata_hash": vec![3; 32],
-                    "provenance": "Create"
-                }],
-                "conflicts_truncated": false,
-                "conflicts": []
-            }))
-            .unwrap();
-            let history = HistoryProjectionV1::parse_xattr(&history).unwrap();
-            assert_eq!(
-                history.versions[0].provenance,
-                crate::files::FileProvenance::Create
-            );
-            assert!(
-                HistoryProjectionV1::parse_xattr(&vec![b' '; MAX_HISTORY_PROJECTION_BYTES + 1])
-                    .is_err()
             );
         }
     }

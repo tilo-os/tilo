@@ -26,10 +26,6 @@ pub mod change_signal;
 pub mod clock;
 #[cfg(all(feature = "filesystem", target_os = "linux"))]
 pub mod cloud;
-#[cfg(feature = "filesystem")]
-pub mod conflict;
-#[cfg(feature = "filesystem")]
-pub mod conflict_merge;
 pub mod content;
 #[cfg(feature = "filesystem")]
 pub mod content_kind;
@@ -96,8 +92,6 @@ pub mod tree_put;
 pub mod unsaved;
 #[cfg(feature = "filesystem")]
 pub mod workspace_authority;
-#[cfg(any(feature = "filesystem", feature = "document-media"))]
-pub mod write_attribution;
 #[cfg(feature = "filesystem")]
 pub mod writer;
 
@@ -136,9 +130,9 @@ pub use identity::{
     load_workspace_share_issuer, revocation_list_path,
 };
 #[cfg(feature = "filesystem")]
-pub use namespace::history::{DocumentHistorySnapshot, HistoryError};
+pub use namespace::history::HistoryError;
 #[cfg(feature = "filesystem")]
-pub use namespace::{Namespace, ROOT_INO, TransactionProjectionError};
+pub use namespace::{Namespace, ROOT_INO};
 #[cfg(feature = "filesystem")]
 pub use peer_auth::{
     AuthenticatedFsPeer, PeerAuthChallenge, PeerAuthError, PeerAuthProof, PendingPeerChallenges,

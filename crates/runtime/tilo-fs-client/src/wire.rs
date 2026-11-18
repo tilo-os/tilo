@@ -183,13 +183,7 @@ pub enum FsRequest {
         app: String,
     },
     SessionRefreshPublic,
-    SessionAttributeWrites {
-        paths: Vec<String>,
-        agent: String,
-        label: String,
-        color: [u8; 3],
-        ttl_ms: u32,
-    },
+    RetiredSessionAttributeWrites,
     // DocumentBlobs
     Put {
         bytes: Vec<u8>,

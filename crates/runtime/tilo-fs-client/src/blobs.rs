@@ -253,25 +253,6 @@ pub struct PublicRead {
     pub hash: Option<String>,
 }
 
-/// The agent the session says causes this device's next writes to `paths`.
-/// Presentation only: it grants nothing.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WriteAttribution {
-    /// Absolute paths under the workspace mount; a folder covers its subtree.
-    pub paths: Vec<String>,
-    /// The agent's id.
-    pub agent: String,
-    /// How the agent is shown.
-    pub label: String,
-    /// Its presence colour, sRGB.
-    pub color: [u8; 3],
-    /// How long the lease lasts.
-    pub ttl: Duration,
-}
-
-/// Most paths one write attribution names.
-pub const MAX_ATTRIBUTION_PATHS: usize = 256;
-
 type Answer<T> = std::sync::mpsc::SyncSender<Result<T, BlobError>>;
 
 /// One request to the connection's driver thread. Every job is one round
@@ -299,10 +280,6 @@ enum Job {
     Scope {
         scope: BlobScope,
         reply: Answer<u64>,
-    },
-    Attribute {
-        attribution: WriteAttribution,
-        reply: Answer<()>,
     },
     Public(PublicJob),
 }
@@ -452,25 +429,6 @@ impl BlobClient {
             worker: Arc::clone(&self.worker),
             target,
         })
-    }
-
-    /// For a session client: name the agent behind this device's next writes
-    /// to `attribution.paths`, as the session authenticated it from the
-    /// action those writes run for.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BlobError::InvalidScope`] for a client that is not a session
-    /// root, [`BlobError::Refused`] for too many paths or the daemon's
-    /// refusal, or a connection error.
-    pub fn attribute_writes(&self, attribution: WriteAttribution) -> Result<(), BlobError> {
-        if !self.worker.session || self.target != ROOT {
-            return Err(BlobError::InvalidScope);
-        }
-        if attribution.paths.len() > MAX_ATTRIBUTION_PATHS {
-            return Err(BlobError::Refused("too many attributed paths".into()));
-        }
-        self.call(|reply| Job::Attribute { attribution, reply })
     }
 
     fn data_target(&self) -> Result<u64, BlobError> {
@@ -1258,33 +1216,7 @@ async fn run_job(job: Job, session: &Session) {
             .await;
             let _ = reply.send(result);
         }
-        Job::Attribute { attribution, reply } => {
-            let _ = reply.send(attribute(attribution, session).await);
-        }
         Job::Public(job) => public(job, session).await,
-    }
-}
-
-/// Name the agent behind this device's next writes, as the session.
-#[allow(
-    clippy::future_not_send,
-    reason = "the client session is Rc-based and runs on a LocalSet by construction"
-)]
-async fn attribute(attribution: WriteAttribution, session: &Session) -> Result<(), BlobError> {
-    let color = attribution.color;
-    match session
-        .root
-        .call(FsRequest::SessionAttributeWrites {
-            paths: attribution.paths,
-            agent: attribution.agent,
-            label: attribution.label,
-            color,
-            ttl_ms: u32::try_from(attribution.ttl.as_millis()).unwrap_or(u32::MAX),
-        })
-        .await?
-    {
-        FsReply::Empty => Ok(()),
-        _ => Err(BlobError::Refused("unexpected media reply".into())),
     }
 }
 

@@ -827,59 +827,6 @@ fn compensate(change: &Change) -> Result<Change, String> {
     }
 }
 
-impl FileOp {
-    pub fn written_paths(&self, reverting: Option<&[Change]>) -> Vec<String> {
-        let within = |folder: &str, name: &str| text(&Path::new(folder).join(name));
-        let mut paths: Vec<String> = match self {
-            Self::NewFolder { parent, name } => vec![within(parent, name)],
-            Self::Rename { path, name } => {
-                vec![path.clone(), text(&Path::new(path).with_file_name(name))]
-            }
-            Self::Trash { paths } => paths.clone(),
-            Self::Move { paths, folder, .. } => {
-                paths.iter().cloned().chain([folder.clone()]).collect()
-            }
-            Self::Copy { folder, .. }
-            | Self::ImportMounted { folder, .. }
-            | Self::CloudImport { folder, .. }
-            | Self::Compress { folder, .. }
-            | Self::Extract { folder, .. } => vec![folder.clone()],
-            Self::Write { folder, name, .. } => vec![within(folder, name)],
-            Self::ClipboardReceipt { .. } => vec![],
-            Self::Revert { .. } => reverting
-                .unwrap_or_default()
-                .iter()
-                .flat_map(|change| match change {
-                    Change::Created { path }
-                    | Change::Removed { path }
-                    | Change::Wrote { path } => {
-                        vec![path.clone()]
-                    }
-                    Change::Moved { from, to } => vec![from.clone(), to.clone()],
-                    Change::Copied { to, .. }
-                    | Change::CloudImported { to, .. }
-                    | Change::CloudTrashed { to, .. }
-                    | Change::Restored { to, .. } => vec![to.clone()],
-                    Change::Trashed { from, .. } => vec![from.clone()],
-                    Change::ClipboardTransfer { .. } | Change::ClipboardUndo { .. } => vec![],
-                })
-                .collect(),
-        };
-        paths.sort();
-        paths.dedup();
-        if paths.len() > ui::collaboration::write_attribution::MAX_PATHS {
-            paths = paths
-                .iter()
-                .filter_map(|path| Path::new(path).parent().map(text))
-                .collect();
-            paths.sort();
-            paths.dedup();
-            paths.truncate(ui::collaboration::write_attribution::MAX_PATHS);
-        }
-        paths
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -891,49 +838,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         fn file_operations_record_what_they_did_and_take_it_back;
-
-        phase operations_name_the_paths_they_write;
-        {
-            let rename = FileOp::Rename {
-                path: "/w/draft.txt".into(),
-                name: "final.txt".into(),
-            };
-            assert_eq!(rename.written_paths(None), ["/w/draft.txt", "/w/final.txt"]);
-            let moved = FileOp::Move {
-                paths: vec!["/w/a.txt".into(), "/w/b.txt".into()],
-                folder: "/w/Archive".into(),
-                create: true,
-            };
-            assert_eq!(
-                moved.written_paths(None),
-                ["/w/Archive", "/w/a.txt", "/w/b.txt"]
-            );
-            assert_eq!(
-                FileOp::NewFolder {
-                    parent: "/w".into(),
-                    name: "Projects".into()
-                }
-                .written_paths(None),
-                ["/w/Projects"]
-            );
-            let reverting = [
-                Change::Moved {
-                    from: "/w/draft.txt".into(),
-                    to: "/w/final.txt".into(),
-                },
-                Change::Created {
-                    path: "/w/Projects".into(),
-                },
-            ];
-            assert_eq!(
-                FileOp::Revert { op: "op".into() }.written_paths(Some(&reverting)),
-                ["/w/Projects", "/w/draft.txt", "/w/final.txt"]
-            );
-            let many = FileOp::Trash {
-                paths: (0..200).map(|i| format!("/w/{}/f{i}.txt", i % 3)).collect(),
-            };
-            assert_eq!(many.written_paths(None), ["/w/0", "/w/1", "/w/2"]);
-        }
 
         phase operations_record_their_changes_and_reverts_take_them_back;
         {

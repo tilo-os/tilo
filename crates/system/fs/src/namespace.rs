@@ -12,9 +12,8 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use fs_protocol::{
-    ContentRevisionV1, FILE_BINDING_VERSION, FileActor, FileBindingV1, FileDocumentId,
-    FileMutationTransactionManifest, FileNameV1, FileNodeKind, MAX_FILE_NAME_BYTES,
-    TransactionFileRole,
+    ContentRevisionV1, FILE_BINDING_VERSION, FileActor, FileBindingV1, FileDocumentId, FileNameV1,
+    FileNodeKind, MAX_FILE_NAME_BYTES,
 };
 use fuser::{FileAttr, FileType, INodeNo};
 use iroh_blobs::Hash;
@@ -97,24 +96,6 @@ pub enum BindingProjectionError {
     RootIdentityConflict,
     #[error("signed structural names did not settle deterministically")]
     StructuralConflictLoop,
-}
-
-#[derive(Clone, Copy, Debug, thiserror::Error, PartialEq, Eq)]
-pub enum TransactionProjectionError {
-    #[error("signed transaction is invalid")]
-    InvalidTransaction,
-    #[error("transaction records do not resolve uniquely")]
-    UnknownOrDuplicateDocument,
-    #[error("transaction structural precondition no longer holds")]
-    PreconditionFailed,
-    #[error("replacement has incompatible node kinds")]
-    IncompatibleKinds,
-    #[error("replaced directory is not empty")]
-    NonEmptyDirectory,
-    #[error("replacement move would create a cycle")]
-    DescendantMove,
-    #[error("transaction content revision could not be installed")]
-    ContentProjectionFailed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -388,25 +369,13 @@ pub struct Namespace {
     /// file is quadratic in a changeset.
     #[cfg(test)]
     document_index_rebuilds: u64,
-    /// Changes whenever changes another replica made are merged into the document, where
-    /// concurrent edits and content conflicts can only arrive. Drawn from a process-wide
-    /// counter so no two instances share a value.
-    merge_generation: u64,
     /// When this namespace was opened, in milliseconds: the time an empty folder reads as changed.
     opened_ms: u64,
-    #[cfg(test)]
-    conflict_scans: std::sync::Arc<std::sync::atomic::AtomicU64>,
     #[cfg(test)]
     document_index_page_reads: std::sync::Arc<std::sync::atomic::AtomicU64>,
     #[cfg(test)]
     node_entry_reads: std::sync::Arc<std::sync::atomic::AtomicU64>,
     node_lookups: std::sync::Arc<std::sync::atomic::AtomicU64>,
-}
-
-static NEXT_MERGE_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-
-fn next_merge_generation() -> u64 {
-    NEXT_MERGE_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Cheap fingerprint of a [`Namespace`]: its document heads. Equal tokens mean no node,
@@ -557,10 +526,7 @@ impl Namespace {
             cycle_scan_pending: true,
             #[cfg(test)]
             document_index_rebuilds: 0,
-            merge_generation: next_merge_generation(),
             opened_ms: tilo_clock::unix_now_ns() / 1_000_000,
-            #[cfg(test)]
-            conflict_scans: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[cfg(test)]
             document_index_page_reads: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[cfg(test)]
@@ -601,20 +567,6 @@ impl Namespace {
         written.is_ok()
     }
 
-    /// Changes whenever changes another replica made were merged in, and only then: equal
-    /// values mean no new content conflict can have arrived, so a reconciler can skip
-    /// [`crate::conflict::detect`].
-    #[must_use]
-    pub fn merge_generation(&self) -> u64 {
-        self.merge_generation
-    }
-
-    #[cfg(test)]
-    pub(crate) fn note_conflict_scan(&self) {
-        self.conflict_scans
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    }
-
     fn node(&self, id: &str) -> Option<Obj> {
         self.node_lookups
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -631,18 +583,6 @@ impl Namespace {
     }
     fn name_of(&self, id: &str) -> Option<FileNameV1> {
         read_name(&self.doc, &self.node(id)?, "name")
-    }
-    fn unique_node_id_for_document(&self, document_id: FileDocumentId) -> Option<String> {
-        if self.document_id_for_id(ROOT_ID) == Some(document_id) {
-            return Some(ROOT_ID.to_string());
-        }
-        let mut matches = self
-            .doc
-            .sorted_node_ids()
-            .into_iter()
-            .filter(|id| self.document_id_for_id(id) == Some(document_id));
-        let only = matches.next()?;
-        matches.next().is_none().then_some(only)
     }
     pub fn live_kind(&self, ino: u64) -> Option<FileType> {
         let id = self.ino_to_id.get(&ino)?;
@@ -1148,412 +1088,6 @@ impl Namespace {
             Some(document_id) => (1, document_id, id.to_string()),
             None => (0, FileDocumentId(Uuid::nil()), id.to_string()),
         }
-    }
-
-    /// Apply one fully committed replacement-rename transaction while the namespace lock is
-    /// held. All preconditions are checked before mutation; the returned delta holds both the
-    /// victim tombstone and the source move.
-    pub fn apply_replacement_transaction(
-        &mut self,
-        manifest: &FileMutationTransactionManifest,
-    ) -> Result<Option<Vec<u8>>, TransactionProjectionError> {
-        // Automerge transactions make the document edits atomic, but the verified-record
-        // projection is maintained alongside the document. Apply to a complete clone so a late
-        // projection failure cannot leave either authority half-mutated.
-        let mut candidate = self.clone();
-        let delta = candidate.apply_replacement_transaction_in_place(manifest)?;
-        if delta.is_some() {
-            *self = candidate;
-        }
-        Ok(delta)
-    }
-
-    /// Apply one multi-record mutation to a complete namespace clone, publishing the clone only
-    /// after every precondition and both record projections succeed.
-    pub fn apply_manifest(
-        &mut self,
-        manifest: &FileMutationTransactionManifest,
-    ) -> Result<Option<Vec<u8>>, TransactionProjectionError> {
-        match manifest.operation {
-            fs_protocol::FileMutationOperation::RestoreContent { prior_revision, .. } => {
-                let transaction_file = manifest
-                    .files
-                    .first()
-                    .ok_or(TransactionProjectionError::InvalidTransaction)?;
-                let revision = transaction_file
-                    .proposed_content_revision
-                    .ok_or(TransactionProjectionError::InvalidTransaction)?;
-                let ino = self
-                    .ensure_ino_for_document_id(transaction_file.document_id)
-                    .ok_or(TransactionProjectionError::UnknownOrDuplicateDocument)?;
-                let current = self.content_revision_for(ino);
-                if current == Some(revision) {
-                    return Ok(None);
-                }
-                if current != Some(prior_revision) {
-                    return Err(TransactionProjectionError::PreconditionFailed);
-                }
-                if !self.set_content_revision(ino, &revision, manifest.timestamp_ms) {
-                    return Err(TransactionProjectionError::ContentProjectionFailed);
-                }
-                Ok(Some(self.save_incremental()))
-            }
-            fs_protocol::FileMutationOperation::AtomicSave { .. } => {
-                Err(TransactionProjectionError::InvalidTransaction)
-            }
-            fs_protocol::FileMutationOperation::ReplacementRename { .. } => {
-                self.apply_replacement_transaction(manifest)
-            }
-            fs_protocol::FileMutationOperation::KeepBothContentConflict { .. } => {
-                let mut candidate = self.clone();
-                let delta = candidate.apply_keep_both_transaction_in_place(manifest)?;
-                if delta.is_some() {
-                    *self = candidate;
-                }
-                Ok(delta)
-            }
-            fs_protocol::FileMutationOperation::MergeContentConflict { .. } => {
-                let mut candidate = self.clone();
-                let delta = candidate.apply_merge_transaction_in_place(manifest)?;
-                if delta.is_some() {
-                    *self = candidate;
-                }
-                Ok(delta)
-            }
-        }
-    }
-
-    fn apply_merge_transaction_in_place(
-        &mut self,
-        manifest: &FileMutationTransactionManifest,
-    ) -> Result<Option<Vec<u8>>, TransactionProjectionError> {
-        let fs_protocol::FileMutationOperation::MergeContentConflict {
-            source_document,
-            parent_document,
-            source_name,
-            ..
-        } = &manifest.operation
-        else {
-            return Err(TransactionProjectionError::InvalidTransaction);
-        };
-        let source = manifest
-            .files
-            .first()
-            .filter(|transaction_file| transaction_file.role == TransactionFileRole::MergeSource)
-            .ok_or(TransactionProjectionError::InvalidTransaction)?;
-        let source_id = self
-            .unique_node_id_for_document(*source_document)
-            .ok_or(TransactionProjectionError::UnknownOrDuplicateDocument)?;
-        let ino = self.ino_for_id(&source_id);
-        let parent_id = self
-            .unique_node_id_for_document(*parent_document)
-            .ok_or(TransactionProjectionError::PreconditionFailed)?;
-        let current = self.content_revision_for(ino);
-        if current == source.proposed_content_revision {
-            return Ok(None);
-        }
-        if self.parent_of(&source_id) != Some(parent_id)
-            || self.name_of(&source_id).as_deref() != Some(source_name.as_bytes())
-            || current.is_none_or(|revision| revision.version_id != source.expected_version)
-        {
-            return Err(TransactionProjectionError::PreconditionFailed);
-        }
-        let revision = source
-            .proposed_content_revision
-            .ok_or(TransactionProjectionError::InvalidTransaction)?;
-        if !self.set_content_revision_preserving_preview(ino, &revision, manifest.timestamp_ms) {
-            return Err(TransactionProjectionError::ContentProjectionFailed);
-        }
-        Ok(Some(self.save_incremental()))
-    }
-
-    /// Install the exact namespace delta durably staged for a Keep Both transaction, then project
-    /// both signed content revisions. Automerge node ids are actor-local, so replaying the
-    /// semantic mutation could produce different bytes; recovery applies the journaled bytes
-    /// peers will receive.
-    pub fn apply_staged_keep_both_delta(
-        &mut self,
-        manifest: &FileMutationTransactionManifest,
-        delta: &[u8],
-    ) -> Result<(), TransactionProjectionError> {
-        let fs_protocol::FileMutationOperation::KeepBothContentConflict {
-            source_document,
-            sibling_document,
-            parent_document,
-            source_name,
-            sibling_name,
-            ..
-        } = &manifest.operation
-        else {
-            return Err(TransactionProjectionError::InvalidTransaction);
-        };
-        let source = manifest
-            .files
-            .iter()
-            .find(|transaction_file| transaction_file.role == TransactionFileRole::KeepBothSource)
-            .ok_or(TransactionProjectionError::InvalidTransaction)?;
-        let sibling = manifest
-            .files
-            .iter()
-            .find(|transaction_file| transaction_file.role == TransactionFileRole::KeepBothSibling)
-            .ok_or(TransactionProjectionError::InvalidTransaction)?;
-        let mut candidate = self.clone();
-        let source_id = candidate
-            .unique_node_id_for_document(*source_document)
-            .ok_or(TransactionProjectionError::UnknownOrDuplicateDocument)?;
-        let source_ino = candidate.ino_for_id(&source_id);
-        let parent_id = candidate
-            .unique_node_id_for_document(*parent_document)
-            .ok_or(TransactionProjectionError::PreconditionFailed)?;
-        let current_source = candidate.content_revision_for(source_ino);
-        if candidate.parent_of(&source_id) != Some(parent_id.clone())
-            || candidate.name_of(&source_id).as_deref() != Some(source_name.as_bytes())
-            || !matches!(current_source, Some(revision)
-                if revision.version_id == source.expected_version
-                    || Some(revision) == source.proposed_content_revision)
-        {
-            return Err(TransactionProjectionError::PreconditionFailed);
-        }
-        candidate
-            .apply_incremental(delta)
-            .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
-        let sibling_id = candidate
-            .unique_node_id_for_document(*sibling_document)
-            .ok_or(TransactionProjectionError::PreconditionFailed)?;
-        let sibling_ino = candidate.ino_for_id(&sibling_id);
-        if candidate.parent_of(&sibling_id) != Some(parent_id)
-            || candidate.name_of(&sibling_id).as_deref() != Some(sibling_name.as_bytes())
-        {
-            return Err(TransactionProjectionError::PreconditionFailed);
-        }
-        let source_revision = source
-            .proposed_content_revision
-            .ok_or(TransactionProjectionError::InvalidTransaction)?;
-        let sibling_revision = sibling
-            .proposed_content_revision
-            .ok_or(TransactionProjectionError::InvalidTransaction)?;
-        if !candidate.set_content_revision_preserving_preview(
-            source_ino,
-            &source_revision,
-            manifest.timestamp_ms,
-        ) || !candidate.set_content_revision_preserving_preview(
-            sibling_ino,
-            &sibling_revision,
-            manifest.timestamp_ms,
-        ) {
-            return Err(TransactionProjectionError::ContentProjectionFailed);
-        }
-        *self = candidate;
-        Ok(())
-    }
-
-    fn apply_keep_both_transaction_in_place(
-        &mut self,
-        manifest: &FileMutationTransactionManifest,
-    ) -> Result<Option<Vec<u8>>, TransactionProjectionError> {
-        let fs_protocol::FileMutationOperation::KeepBothContentConflict {
-            source_document,
-            sibling_document,
-            parent_document,
-            source_name,
-            sibling_name,
-            ..
-        } = &manifest.operation
-        else {
-            return Err(TransactionProjectionError::InvalidTransaction);
-        };
-        let source = manifest
-            .files
-            .iter()
-            .find(|transaction_file| transaction_file.role == TransactionFileRole::KeepBothSource)
-            .ok_or(TransactionProjectionError::InvalidTransaction)?;
-        let sibling = manifest
-            .files
-            .iter()
-            .find(|transaction_file| transaction_file.role == TransactionFileRole::KeepBothSibling)
-            .ok_or(TransactionProjectionError::InvalidTransaction)?;
-        let source_id = self
-            .unique_node_id_for_document(*source_document)
-            .ok_or(TransactionProjectionError::UnknownOrDuplicateDocument)?;
-        let source_ino = self.ino_for_id(&source_id);
-        let parent_id = self
-            .unique_node_id_for_document(*parent_document)
-            .ok_or(TransactionProjectionError::PreconditionFailed)?;
-        let parent_ino = self.ino_for_id(&parent_id);
-
-        // Exact replay after the full namespace snapshot was persisted.
-        if let Some(sibling_id) = self.unique_node_id_for_document(*sibling_document) {
-            let sibling_ino = self.ino_for_id(&sibling_id);
-            if self.parent_of(&source_id) == Some(parent_id.clone())
-                && self.name_of(&source_id).as_deref() == Some(source_name.as_bytes())
-                && self.parent_of(&sibling_id) == Some(parent_id)
-                && self.name_of(&sibling_id).as_deref() == Some(sibling_name.as_bytes())
-                && self.content_revision_for(source_ino) == source.proposed_content_revision
-                && self.content_revision_for(sibling_ino) == sibling.proposed_content_revision
-            {
-                return Ok(None);
-            }
-            return Err(TransactionProjectionError::PreconditionFailed);
-        }
-        if self.parent_of(&source_id) != Some(parent_id.clone())
-            || self.name_of(&source_id).as_deref() != Some(source_name.as_bytes())
-            || !matches!(
-                self.content_revision_for(source_ino),
-                Some(revision)
-                    if revision.version_id == source.expected_version
-                        || Some(revision) == source.proposed_content_revision
-            )
-            || self.lookup(parent_ino, sibling_name).is_some()
-        {
-            return Err(TransactionProjectionError::PreconditionFailed);
-        }
-        let sibling_revision = sibling
-            .proposed_content_revision
-            .ok_or(TransactionProjectionError::InvalidTransaction)?;
-        let sibling_hash = sibling_revision.content_hash.map(|hash| Hash::from(hash.0));
-        let sibling_ino = self
-            .create_projected_file(
-                parent_ino,
-                sibling_name,
-                *sibling_document,
-                sibling_hash.as_ref(),
-                sibling_revision.byte_len,
-                manifest.timestamp_ms,
-            )
-            .ok_or(TransactionProjectionError::PreconditionFailed)?;
-        let source_revision = source
-            .proposed_content_revision
-            .ok_or(TransactionProjectionError::InvalidTransaction)?;
-        if !self.set_content_revision_preserving_preview(
-            source_ino,
-            &source_revision,
-            manifest.timestamp_ms,
-        ) || !self.set_content_revision_preserving_preview(
-            sibling_ino,
-            &sibling_revision,
-            manifest.timestamp_ms,
-        ) {
-            return Err(TransactionProjectionError::ContentProjectionFailed);
-        }
-        Ok(Some(self.save_incremental()))
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "Replacement projection keeps signature and file checks, replay detection, namespace preconditions, rename, and revision installation in order."
-    )]
-    fn apply_replacement_transaction_in_place(
-        &mut self,
-        manifest: &FileMutationTransactionManifest,
-    ) -> Result<Option<Vec<u8>>, TransactionProjectionError> {
-        let fs_protocol::FileMutationOperation::ReplacementRename {
-            source_parent,
-            source_name,
-            destination_parent,
-            destination_name,
-            source_document,
-            replaced_document,
-        } = &manifest.operation
-        else {
-            return Err(TransactionProjectionError::InvalidTransaction);
-        };
-        let source_file = manifest
-            .files
-            .iter()
-            .find(|value| value.role == TransactionFileRole::Source)
-            .ok_or(TransactionProjectionError::InvalidTransaction)?;
-        let replaced_file = manifest
-            .files
-            .iter()
-            .find(|value| value.role == TransactionFileRole::Replaced)
-            .ok_or(TransactionProjectionError::InvalidTransaction)?;
-        let source_id = self
-            .unique_node_id_for_document(*source_document)
-            .ok_or(TransactionProjectionError::UnknownOrDuplicateDocument)?;
-        let replaced_id = self
-            .unique_node_id_for_document(*replaced_document)
-            .ok_or(TransactionProjectionError::UnknownOrDuplicateDocument)?;
-
-        let source_live = self.reaches_root(&source_id);
-        let replaced_live = self.reaches_root(&replaced_id);
-        let source_parent_now = self
-            .parent_of(&source_id)
-            .and_then(|id| self.document_id_for_id(&id));
-        let source_name_now = self.name_of(&source_id);
-        let replaced_parent_now = self
-            .parent_of(&replaced_id)
-            .and_then(|id| self.document_id_for_id(&id));
-        let replaced_name_now = self.name_of(&replaced_id);
-
-        // Exact replay after namespace persistence is success and emits no
-        // second Automerge change.
-        if source_live
-            && !replaced_live
-            && source_parent_now == Some(*destination_parent)
-            && source_name_now.as_deref() == Some(destination_name.as_bytes())
-            && self.parent_of(&replaced_id).as_deref() == Some(TRASH_ID)
-        {
-            return Ok(None);
-        }
-        if !source_live
-            || !replaced_live
-            || source_parent_now != Some(*source_parent)
-            || source_name_now.as_deref() != Some(source_name.as_bytes())
-            || replaced_parent_now != Some(*destination_parent)
-            || replaced_name_now.as_deref() != Some(destination_name.as_bytes())
-        {
-            return Err(TransactionProjectionError::PreconditionFailed);
-        }
-        // Inodes are local cache identities and are intentionally not
-        // persisted. A remote transaction can be the first operation after a
-        // restart, before FUSE lookup has populated either mapping.
-        let source_ino = self.ino_for_id(&source_id);
-        let replaced_ino = self.ino_for_id(&replaced_id);
-        let source_kind = self.kind_of(&source_id);
-        let replaced_kind = self.kind_of(&replaced_id);
-        if source_kind != replaced_kind {
-            return Err(TransactionProjectionError::IncompatibleKinds);
-        }
-        if replaced_kind == NodeKind::Dir
-            && self
-                .readdir(replaced_ino)
-                .is_some_and(|entries| entries.len() > 2)
-        {
-            return Err(TransactionProjectionError::NonEmptyDirectory);
-        }
-        let destination_parent_id = self
-            .unique_node_id_for_document(*destination_parent)
-            .ok_or(TransactionProjectionError::PreconditionFailed)?;
-        let source_parent_id = self
-            .unique_node_id_for_document(*source_parent)
-            .ok_or(TransactionProjectionError::PreconditionFailed)?;
-        if source_id == destination_parent_id
-            || self.is_ancestor(&source_id, &destination_parent_id)
-        {
-            return Err(TransactionProjectionError::DescendantMove);
-        }
-        let destination_parent_ino = self.ino_for_id(&destination_parent_id);
-        let source_parent_ino = self.ino_for_id(&source_parent_id);
-        if !self.rename(
-            source_parent_ino,
-            source_name,
-            destination_parent_ino,
-            destination_name,
-            manifest.timestamp_ms,
-        ) {
-            return Err(TransactionProjectionError::PreconditionFailed);
-        }
-        if let Some(revision) = &source_file.proposed_content_revision
-            && !self.set_content_revision_preserving_preview(
-                source_ino,
-                revision,
-                manifest.timestamp_ms,
-            )
-        {
-            return Err(TransactionProjectionError::ContentProjectionFailed);
-        }
-        debug_assert_eq!(replaced_file.document_id, *replaced_document);
-        Ok(Some(self.save_incremental()))
     }
 
     /// Winning atomic content pointer for this inode. Malformed or cross-record values fail

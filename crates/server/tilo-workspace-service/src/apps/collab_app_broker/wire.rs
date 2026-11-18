@@ -195,17 +195,13 @@ pub(super) type FileAnswer = std::pin::Pin<Box<dyn Future<Output = Result<Vec<u8
 
 impl JoinedChannel {
     /// Answer a command about the person's local files, JSON both ways:
-    /// write attribution, external moderation, or the file clipboard, told
+    /// external moderation or the file clipboard, told
     /// apart by their envelopes.
     pub(super) fn local_file_dispatch(
         self: Rc<Self>,
         bytes: &[u8],
         on_behalf_of: &[u8],
     ) -> Result<FileAnswer, BrokerError> {
-        if runtime_collab::write_attribution::is_envelope(bytes) {
-            let reply = self.write_attribution_dispatch(bytes, on_behalf_of)?;
-            return Ok(Box::pin(std::future::ready(Ok(reply))));
-        }
         if external_moderation::is_envelope(bytes) {
             let receive = external_moderation::start(&self, bytes, on_behalf_of)
                 .map_err(BrokerError::failed)?;

@@ -87,7 +87,6 @@ fn dispatch(args: &[String]) -> anyhow::Result<i32> {
         Some("guard") => guest::guard(rest),
         Some("quarantine") => guest::quarantine(rest),
         Some("history") => guest::file_history(rest),
-        Some("version") => Ok(guest::version(rest)),
         Some(name) if ush::file_actions::cli::Tool::of(name).is_some() => {
             guest::file_action(name, rest)
         }
@@ -122,10 +121,6 @@ Inside a guest:
                                    undone from its History; --json
   history [--json]                 what was removed or replaced, and its id
   history restore ID               put one back
-  version status | log | show | diff | restore
-                                   a file's own history: revisions, their
-                                   contents, what changed, and a checked
-                                   restore (see `version --help`)
 ";
 
 fn host(args: &[String]) -> anyhow::Result<i32> {
@@ -940,13 +935,6 @@ explain when the host does not offer them.\n";
         }
         println!("\n`history restore ID` puts one back.");
         Ok(0)
-    }
-
-    /// `version`: a file's own history. Nothing here keeps a store of its own — the mount's
-    /// history is the one the file manager's History view shows. A refusal is an exit code, never
-    /// an error, because a caller reads the answer either way.
-    pub fn version(args: &[String]) -> i32 {
-        ush::version::run(args)
     }
 
     fn store_dir(outside_home: &Path) -> PathBuf {

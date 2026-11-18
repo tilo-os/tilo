@@ -50,7 +50,6 @@ pub mod store;
 pub mod supervisor;
 pub mod terminal_sessions;
 pub mod tilo_side;
-pub mod version;
 pub mod workspace;
 pub mod workspace_shell;
 
@@ -96,9 +95,6 @@ pub const GUEST_COMMANDS: &[&str] = &[
     "history",
     "tilo-runtime",
     "tilo-runtime-mcp",
-    // A file's history, read and restored through the mount's own protocols, so a script
-    // reads the same revisions the file manager's History view lists.
-    "version",
     "ush-sh",
 ];
 

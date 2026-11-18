@@ -832,29 +832,6 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         )
     }
 
-    /// Name the paths this invocation is about to write (absolute paths; a
-    /// folder covers what is under it), before writing them: when an agent
-    /// acting for the session's person invoked it, the versions those
-    /// writes make record that agent, for its person. The host takes who
-    /// acted from its own ownership of the invocation, never from here. Wait
-    /// on the receipt where the writes run (a [`Self::thread`]), then write
-    /// whatever it answered. `None` when there is nobody to name: no
-    /// invocation's ownership, or one that is not an agent's.
-    pub fn attribute_writes(
-        &self,
-        paths: Vec<String>,
-    ) -> Option<ui_core::invocation_scope::WriteAttributionReceipt> {
-        match self.inv.ownership.as_ref()?.attribute_writes(paths) {
-            Ok(receipt) => receipt,
-            Err(error) => {
-                // The write stays its person's in file history, which reads
-                // as if they typed it: say so where the app's log will keep it.
-                tracing::warn!(%error, "these writes stay their person's in file history");
-                None
-            }
-        }
-    }
-
     /// Run an approved project check through this effect's admitted host channel.
     /// Commands, source paths and resource bounds are chosen by the project host.
     /// Pass the returned future to the existing effect job with [`Self::spawn`].

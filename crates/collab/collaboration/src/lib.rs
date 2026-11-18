@@ -172,8 +172,6 @@ pub mod handoff;
 mod history;
 #[cfg(feature = "broker-transport")]
 mod route_endpoints;
-#[cfg(feature = "broker-transport")]
-pub mod write_attribution_endpoint;
 
 pub use runtime_collab::{SurfaceDelta, SurfacePublication, SurfaceTable};
 pub mod document_content;
@@ -274,7 +272,7 @@ pub use runtime_collab::{
     NearbyTransferSnapshot, NearbyTransferStatus, NearbyTransferTarget, NetworkWakeStatus,
     PortableWifiSecurity, WifiContinuityCommand, WifiContinuityReply,
 };
-pub use runtime_collab::{file_clipboard, recall, write_attribution};
+pub use runtime_collab::{file_clipboard, recall};
 
 pub use collab_types::MemberId;
 use collab_types::presence::PresenceKey;

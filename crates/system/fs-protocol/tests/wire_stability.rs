@@ -1,33 +1,15 @@
-//! Golden wire bytes for the signed file invite and the signed
-//! file-mutation transaction. The hex constants were
-//! captured from `collab-types` before these types moved to `fs-protocol`;
-//! the move must not change a single byte of any of them.
+//! Golden wire bytes for the signed file invite: a change of them is a change of
+//! the wire, made on purpose or not at all.
 
 use collab_types::canonical::from_canonical_bytes;
 use collab_types::{Ed25519PublicKey, canonical_bytes};
-use ed25519_dalek::SigningKey;
-use fs_protocol::{
-    CONTENT_REVISION_VERSION, ContentHash, ContentRevisionV1, FILE_BINDING_VERSION,
-    FILE_MUTATION_TRANSACTION_VERSION, FileActor, FileBindingV1, FileDocumentId, FileInviteSubject,
-    FileInviteV1, FileMutationOperation, FileMutationTransaction, FileMutationTransactionManifest,
-    FileNodeKind, FilePermission, FileProvenance, FileVersionId, FileVersionV1, TransactionFile,
-    TransactionFileRole,
-};
+use fs_protocol::{FileDocumentId, FileInviteSubject, FileInviteV1, FilePermission};
 use uuid::Uuid;
 
 const SIGNED_FILE_INVITE: &str = "10239e704421dc400e996582460f84f7821000000000000000000000000000000055100000000000000000000000000000006600080808080808080808080808080808080808080808080808080808080808080800000102ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c400ebcb47465cda5f984f6fe5f53e1682991c7af8a3e4259192aff6b2bdfaadabf7435cf2991ec1fd40f50882a1d55eb09f8aeda2c2aca5948927e7c5663cea006";
-const SIGNED_FILE_MUTATION_TRANSACTION: &str = "01100000000000000000000000000000007710000000000000000000000000000000880909090909090909090909090909090909090909090909090909090909090909197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d612c0110000000000000000000000000000001010a736f757263652e74787410000000000000000000000000000001020f64657374696e6174696f6e2e747874100000000000000000000000000000020110000000000000000000000000000002020210000000000000000000000000000002010010000000000000000000000000000004010110000000000000000000000000000002010110000000000000000000000000000001020f64657374696e6174696f6e2e74787400000909090909090909090909090909090909090909090909090909090909090909197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d612c100000000000000000000000000000030110000000000000000000000000000002010110000000000000000000000000000004010909090909090909090909090909090909090909090909090909090909090909197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d612c00020202020202020202020202020202020202020202020202020202020202020202010110000000000000000000000000000002011000000000000000000000000000000301000002020202020202020202020202020202020202020202020202020202020202026372e7c0a384d60423a44e8d984aee843f9eabb8ce17a08999f45a4021a8611510000000000000000000000000000002020110000000000000000000000000000004020110000000000000000000000000000002020110000000000000000000000000000001020f64657374696e6174696f6e2e74787400010909090909090909090909090909090909090909090909090909090909090909197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d612c100000000000000000000000000000030210000000000000000000000000000002020110000000000000000000000000000004020909090909090909090909090909090909090909090909090909090909090909197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d612c00020202020202020202020202020202020202020202020202020202020202020204010110000000000000000000000000000002021000000000000000000000000000000302000002020202020202020202020202020202020202020202020202020202020202025c9e7e00e83e89e8ef5f7d7a6d4d0c98dc5c3e2055eac5d56fcb8348a1376a44401b08cbada9efeef494077db1bafbf511fb483616bb433cc24af7fea00ff7dd195fff0db6fee026f36e77a9fa7fd0ec03e7ab758eb56b525c4ccb0cf6a17cfd0a";
 
 fn record(n: u128) -> FileDocumentId {
     FileDocumentId(Uuid::from_u128(n))
-}
-
-fn version(n: u128) -> FileVersionId {
-    FileVersionId(Uuid::from_u128(n))
-}
-
-fn assert_golden(name: &str, bytes: &[u8], golden: &str) {
-    assert_eq!(hex::encode(bytes), golden, "{name} wire bytes changed");
 }
 
 /// A minted invite carries a random id, so the golden is one minted token: it
@@ -45,130 +27,4 @@ fn signed_file_invite_keeps_its_wire_bytes_and_signature() {
         FileInviteSubject::Person(Ed25519PublicKey([8; 32]))
     );
     assert_eq!(canonical_bytes(&invite).unwrap(), bytes);
-}
-
-#[test]
-fn signed_file_mutation_transaction_keeps_its_wire_bytes() {
-    let key = SigningKey::from_bytes(&[42; 32]);
-    let actor = FileActor {
-        person: Ed25519PublicKey([9; 32]),
-        device: Ed25519PublicKey(key.verifying_key().to_bytes()),
-    };
-    let source_parent = record(0x101);
-    let destination_parent = record(0x102);
-    let files = [
-        (record(0x201), TransactionFileRole::Source),
-        (record(0x202), TransactionFileRole::Replaced),
-    ]
-    .into_iter()
-    .enumerate()
-    .map(|(index, (document_id, role))| {
-        let offset = u128::try_from(index).unwrap();
-        let proposed_version = FileVersionV1 {
-            id: version(0x301 + offset),
-            document_id,
-            parents: vec![version(0x401 + offset)],
-            actor,
-            timestamp_ms: 44,
-            content_hash: None,
-            metadata_hash: ContentHash([2; 32]),
-            provenance: if role == TransactionFileRole::Source {
-                FileProvenance::Rename
-            } else {
-                FileProvenance::Delete
-            },
-        };
-        let mut file = TransactionFile {
-            document_id,
-            role,
-            expected_version: version(0x401 + offset),
-            proposed_binding: FileBindingV1 {
-                schema_version: FILE_BINDING_VERSION,
-                document_id,
-                parent: Some(destination_parent),
-                name: "destination.txt".into(),
-                kind: FileNodeKind::File,
-                tombstoned: role == TransactionFileRole::Replaced,
-                actor,
-                observed_at_ms: 44,
-            },
-            proposed_content_revision: Some(ContentRevisionV1 {
-                schema_version: CONTENT_REVISION_VERSION,
-                document_id,
-                version_id: proposed_version.id,
-                content_hash: proposed_version.content_hash,
-                byte_len: 0,
-                metadata_hash: proposed_version.metadata_hash,
-            }),
-            proposed_version,
-            projection_hash: ContentHash([0; 32]),
-        };
-        file.projection_hash = file.computed_projection_hash().unwrap();
-        file
-    })
-    .collect();
-    let manifest = FileMutationTransactionManifest {
-        schema_version: FILE_MUTATION_TRANSACTION_VERSION,
-        transaction_id: Uuid::from_u128(0x77),
-        workspace_id: Uuid::from_u128(0x88),
-        actor,
-        timestamp_ms: 44,
-        operation: FileMutationOperation::ReplacementRename {
-            source_parent,
-            source_name: "source.txt".into(),
-            destination_parent,
-            destination_name: "destination.txt".into(),
-            source_document: record(0x201),
-            replaced_document: record(0x202),
-        },
-        files,
-    };
-    let signed = FileMutationTransaction::signed(manifest, &key).unwrap();
-    signed.verify().unwrap();
-    assert_golden(
-        "SIGNED_FILE_MUTATION_TRANSACTION",
-        &signed.canonical_bytes().unwrap(),
-        SIGNED_FILE_MUTATION_TRANSACTION,
-    );
-}
-
-#[test]
-fn atomic_save_appends_wire_variants_without_renumbering_legacy_roles() {
-    use fs_protocol::files::FileNameV1;
-    let roles = [
-        TransactionFileRole::Source,
-        TransactionFileRole::Replaced,
-        TransactionFileRole::KeepBothSource,
-        TransactionFileRole::KeepBothSibling,
-        TransactionFileRole::MergeSource,
-        TransactionFileRole::RestoreContent,
-        TransactionFileRole::AtomicSaveDocument,
-        TransactionFileRole::AtomicSaveTemporary,
-    ];
-    for (role, index) in roles.into_iter().zip(0u8..8) {
-        let bytes = postcard::to_allocvec(&role).unwrap();
-        assert_eq!(bytes, [index], "legacy role ordinals remain wire ABI");
-        assert_eq!(
-            postcard::from_bytes::<TransactionFileRole>(&bytes).unwrap(),
-            role
-        );
-    }
-    let operation = FileMutationOperation::AtomicSave {
-        parent_document: record(1),
-        document_name: FileNameV1(b"document.txt".to_vec()),
-        temporary_name: FileNameV1(b"temporary".to_vec()),
-        file_document: record(2),
-        temporary_document: record(3),
-        prior_document_version: version(4),
-    };
-    let bytes = postcard::to_allocvec(&operation).unwrap();
-    assert_eq!(
-        bytes.first(),
-        Some(&4),
-        "atomic save is appended after four existing operations"
-    );
-    assert_eq!(
-        postcard::from_bytes::<FileMutationOperation>(&bytes).unwrap(),
-        operation
-    );
 }

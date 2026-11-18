@@ -2124,10 +2124,10 @@ async fn the_workspace_is_presented_as_the_persons_or_the_callers() {
 }
 
 /// A write through the mount is named for the process the kernel says asked for it: here a
-/// desktop app's, as on Tilo OS a third-party Linux app writes to `/var/workspace`, and an
-/// atomic save (a temporary file renamed over the original) is that app's too.
+/// command an agent session runs, and an atomic save (a temporary file renamed over the
+/// original) is that agent's too. The file's History lists its changes under the agent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_write_through_the_mount_is_named_for_the_program_that_made_it() {
+async fn a_write_through_the_mount_is_named_for_the_agent_that_made_it() {
     require_fuse!();
     let endpoint = Endpoint::bind(presets::Minimal)
         .await
@@ -2136,7 +2136,7 @@ async fn a_write_through_the_mount_is_named_for_the_program_that_made_it() {
     let namespace = Arc::new(Mutex::new(Namespace::new("writer-peer").unwrap()));
     let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
     let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-    // This test process, as a Flatpak app's scope would show it.
+    // This test process, as a command an agent session runs would show it.
     let fake = tempdir().unwrap();
     let pid = std::process::id();
     let proc_dir = fake.path().join("proc").join(pid.to_string());
@@ -2146,7 +2146,11 @@ async fn a_write_through_the_mount_is_named_for_the_program_that_made_it() {
         format!("{pid} (test) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 5 0 0"),
     )
     .unwrap();
-    std::fs::write(proc_dir.join("environ"), b"HOME=/nowhere\0").unwrap();
+    std::fs::write(
+        proc_dir.join("environ"),
+        b"HOME=/nowhere\0CLAUDE_CODE_SESSION_ID=s1\0",
+    )
+    .unwrap();
     std::fs::write(
         proc_dir.join("cgroup"),
         "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-flatpak-org.gnome.TextEditor-77.scope\n",
@@ -2195,35 +2199,35 @@ async fn a_write_through_the_mount_is_named_for_the_program_that_made_it() {
         b"# Notes\nsaved atomically\n"
     );
 
-    let attributions = {
-        let mut ns = namespace.lock().unwrap();
-        let ino = ns.resolve_path_ino("/notes.md").expect("the saved file");
-        let record = ns.document_id_for(ino).expect("its record");
-        ns.version_attributions(record)
+    let named = {
+        let record = {
+            let mut ns = namespace.lock().unwrap();
+            let ino = ns.resolve_path_ino("/notes.md").expect("the saved file");
+            let chunk = ns.document_id_for(ino).expect("its record").chunk();
+            ns.save_record(chunk).expect("its chunk's record")
+        };
+        let mut doc = automerge::AutoCommit::load(&record).unwrap();
+        doc.get_changes(&[])
+            .into_iter()
+            .filter_map(|change| {
+                tilo_actions::ActionContext::from_change_message(change.message()?)
+            })
+            .filter(|context| {
+                context
+                    .resource
+                    .as_ref()
+                    .is_some_and(|resource| resource.kind == fs_protocol::tree::TREE_KIND)
+            })
+            .map(|context| context.invoker.and_then(|invoker| invoker.name))
+            .collect::<Vec<_>>()
     };
+    assert!(!named.is_empty(), "the writes are changes of the tree");
     assert!(
-        !attributions.is_empty(),
-        "the versions carry who wrote them"
+        named
+            .iter()
+            .all(|name| name.as_deref() == Some("Claude Code")),
+        "each change names the agent: {named:?}"
     );
-    for attributed in &attributions {
-        assert_eq!(
-            attributed.attribution.writer,
-            fs_protocol::AttributedWriter::Program("org.gnome.TextEditor".into())
-        );
-        assert_eq!(attributed.attribution.label, "TextEditor");
-    }
-    // A program reading the folder's own history sees who wrote it too.
-    let read = notes.clone();
-    let history = tokio::task::spawn_blocking(move || {
-        let mut buffer = vec![0_u8; fs_protocol::projection::MAX_HISTORY_PROJECTION_BYTES];
-        let len = rustix::fs::getxattr(&read, fs_protocol::projection::HISTORY_XATTR, &mut buffer)
-            .expect("the history attribute");
-        buffer.truncate(len);
-        fs_protocol::projection::HistoryProjectionV1::parse_xattr(&buffer).expect("a history")
-    })
-    .await
-    .unwrap();
-    assert_eq!(history.attributions.len(), attributions.len());
     fs::fuse_session::unmount_and_join(session, mount_dir.path()).expect("unmount");
     endpoint.close().await;
 }

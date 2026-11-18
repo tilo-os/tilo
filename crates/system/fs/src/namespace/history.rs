@@ -1,34 +1,20 @@
-//! Immutable file versions and conflicts, held in the tree document. A version
-//! records one state a record was in: the content hash, the metadata hash, who made
-//! it, when, and which versions it descends from. History is keyed by
-//! [`FileDocumentId`], never by path, and lives inside the namespace document, so it
-//! syncs with the tree and every device derives the same heads and conflicts.
-//!
-//! Versions are never rewritten: a restore appends a version, so an eviction root or
-//! a restore target stays resolvable.
+//! The content versions of each file, held in the tree document: the content a device
+//! keeps, frees and asks for is bound to one. A version records one content a file had:
+//! its content hash, its metadata hash, and which versions it descends from. Versions are
+//! keyed by [`FileDocumentId`], never by path, and live in the document of the chunk the
+//! file's node is in, so they sync with the tree. What a change of a file was and who made
+//! it is the tree's own History, read from its changes.
 
 use std::collections::BTreeMap;
 
-use automerge::{ObjType, ScalarValue, Value};
-use fs_protocol::files::{CheckedHistoryRequestV1, FileRestoreReceiptV1};
-use fs_protocol::{
-    ConflictResolution, ConflictStatus, FileConflictV1, FileDocumentError, FileDocumentId,
-    FileProvenance, FileVersionAttributionV1, FileVersionId, FileVersionV1, HistoryProjectionV1,
-    prefer_conflict_resolution,
-};
+use automerge::{ObjType, Value};
+use fs_protocol::{FileDocumentError, FileDocumentId, FileVersionId, FileVersionV1};
 use thiserror::Error;
-use uuid::Uuid;
 
 use super::{Namespace, Obj, hash_from_hex, read_u64, str_at};
 use fs_protocol::TreeChunk;
 
-pub use fs_protocol::history::DocumentHistorySnapshot;
-pub(crate) use fs_protocol::history::{CONFLICTS_KEY, HISTORY_KEY, VERSIONS_KEY};
-const ATTRIBUTIONS_KEY: &str = fs_protocol::history::ATTRIBUTIONS_KEY;
-const RESTORES_KEY: &str = "restores";
-
-#[cfg(test)]
-mod read_query_tests;
+pub(crate) use fs_protocol::history::{HISTORY_KEY, VERSIONS_KEY};
 
 /// What a version's metadata digest covers: the facts a restore must find
 /// unchanged besides the bytes themselves.
@@ -50,28 +36,14 @@ pub enum HistoryError {
     Canonical(#[from] collab_types::CanonicalError),
     #[error("version id {0:?} is already bound to different content")]
     VersionIdCollision(FileVersionId),
-    #[error("conflict id {0} is already bound to different content")]
-    ConflictIdCollision(Uuid),
     #[error("record {0:?} has no history")]
     UnknownDocument(FileDocumentId),
     #[error("the record has no version {0:?}")]
     UnknownVersion(FileVersionId),
-    #[error("conflict {0} is unknown")]
-    UnknownConflict(Uuid),
-    #[error("conflict names unknown version {0:?}")]
-    UnknownConflictVersion(FileVersionId),
-    #[error("resolving version {0:?} is unknown")]
-    UnknownResolutionVersion(FileVersionId),
     #[error("the record repository is at capacity: {0}")]
     CapacityExhausted(String),
     #[error("the version could not be published: {0}")]
     Publication(String),
-    #[error("resolving version was not made by a conflict resolution")]
-    ResolutionProvenance,
-    #[error("resolution actor does not match the resolving version")]
-    ResolutionActorMismatch,
-    #[error("resolution time does not match the resolving version")]
-    ResolutionTimestampMismatch,
 }
 
 fn object(value: Option<(Value<'_>, Obj)>) -> Option<Obj> {
@@ -79,44 +51,6 @@ fn object(value: Option<(Value<'_>, Obj)>) -> Option<Obj> {
         Some((Value::Object(ObjType::Map), id)) => Some(id),
         _ => None,
     }
-}
-
-fn scalar_bytes(value: Option<(Value<'_>, Obj)>) -> Option<Vec<u8>> {
-    match value {
-        Some((Value::Scalar(scalar), _)) => match scalar.as_ref() {
-            ScalarValue::Bytes(bytes) => Some(bytes.clone()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// A conflict may only name versions the record has, and a resolution only a version
-/// that made that resolution.
-fn check_conflict(
-    versions: &BTreeMap<FileVersionId, FileVersionV1>,
-    conflict: &FileConflictV1,
-) -> Result<(), HistoryError> {
-    for version in &conflict.versions {
-        if !versions.contains_key(version) {
-            return Err(HistoryError::UnknownConflictVersion(*version));
-        }
-    }
-    if let Some(resolution) = &conflict.resolution {
-        let result = versions
-            .get(&resolution.result)
-            .ok_or(HistoryError::UnknownResolutionVersion(resolution.result))?;
-        if result.provenance != FileProvenance::ConflictResolution {
-            return Err(HistoryError::ResolutionProvenance);
-        }
-        if result.actor != resolution.actor {
-            return Err(HistoryError::ResolutionActorMismatch);
-        }
-        if result.timestamp_ms != resolution.timestamp_ms {
-            return Err(HistoryError::ResolutionTimestampMismatch);
-        }
-    }
-    Ok(())
 }
 
 impl Namespace {
@@ -139,48 +73,13 @@ impl Namespace {
         Ok(Obj { chunk, id })
     }
 
-    /// Every map holding record histories in chunk `chunk`: one until two devices that each
-    /// made their own document meet, and one per device after, since a merge keeps both maps
-    /// under the key. A reader takes the maps together, or it would see the versions of one
-    /// device and none of the other's.
-    fn history_roots(&self, chunk: TreeChunk) -> Vec<Obj> {
-        self.doc.doc(chunk).map_or_else(Vec::new, |doc| {
-            fs_protocol::history::roots(&**doc)
-                .into_iter()
-                .map(|id| Obj { chunk, id })
-                .collect()
-        })
-    }
-
-    pub(crate) fn document_versions(
+    pub fn document_versions(
         &self,
         document_id: FileDocumentId,
     ) -> BTreeMap<FileVersionId, FileVersionV1> {
         self.history_doc(document_id)
             .map(|doc| fs_protocol::history::document_versions(doc, document_id))
             .unwrap_or_default()
-    }
-
-    pub(crate) fn record_conflicts(
-        &self,
-        document_id: FileDocumentId,
-    ) -> BTreeMap<Uuid, FileConflictV1> {
-        self.history_doc(document_id)
-            .map(|doc| fs_protocol::history::record_conflicts(doc, document_id))
-            .unwrap_or_default()
-    }
-
-    /// The maps under `key` of `parent`: two devices that both wrote it each made one.
-    fn sub_maps(&self, parent: &Obj, key: &str) -> Vec<Obj> {
-        self.doc
-            .get_all(parent, key)
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|(value, id)| match value {
-                Value::Object(ObjType::Map) => Some(id),
-                _ => None,
-            })
-            .collect()
     }
 
     fn history_slot(&mut self, document_id: FileDocumentId) -> Result<Obj, HistoryError> {
@@ -209,41 +108,6 @@ impl Namespace {
         let bytes = collab_types::canonical_bytes(version)?;
         self.doc.put(&versions, version.id.0.to_string(), bytes)?;
         Ok(())
-    }
-
-    fn write_conflict(
-        &mut self,
-        document_id: FileDocumentId,
-        conflict: &FileConflictV1,
-    ) -> Result<(), HistoryError> {
-        let record = self.history_slot(document_id)?;
-        let conflicts = self.sub_map(&record, CONFLICTS_KEY)?;
-        let bytes = collab_types::canonical_bytes(conflict)?;
-        self.doc.put(&conflicts, conflict.id.to_string(), bytes)?;
-        Ok(())
-    }
-
-    /// The newest version of `document_id`'s file, and the agent or program it is attributed
-    /// to: read from the chunk that keeps the file's versions. `None` for a file with none.
-    pub fn latest_version(
-        &self,
-        document_id: FileDocumentId,
-    ) -> Option<(FileVersionV1, Option<FileVersionAttributionV1>)> {
-        fs_protocol::history::latest(self.history_doc(document_id)?, document_id)
-    }
-
-    pub fn document_history(&self, document_id: FileDocumentId) -> Option<DocumentHistorySnapshot> {
-        fs_protocol::history::document_history(self.history_doc(document_id)?, document_id)
-    }
-
-    pub fn document_history_projection(
-        &self,
-        document_id: FileDocumentId,
-    ) -> Option<HistoryProjectionV1> {
-        fs_protocol::history::document_history_projection(
-            self.history_doc(document_id)?,
-            document_id,
-        )
     }
 
     pub fn document_history_heads(&self, document_id: FileDocumentId) -> Vec<FileVersionId> {
@@ -320,172 +184,6 @@ impl Namespace {
             .unwrap_or(false))
     }
 
-    /// Record a conflict between existing versions of its record.
-    pub fn document_history_conflict(
-        &mut self,
-        conflict: &FileConflictV1,
-    ) -> Result<bool, HistoryError> {
-        conflict.validate()?;
-        let versions = self.document_versions(conflict.document_id);
-        if versions.is_empty() {
-            return Err(HistoryError::UnknownDocument(conflict.document_id));
-        }
-        check_conflict(&versions, conflict)?;
-        match self
-            .record_conflicts(conflict.document_id)
-            .get(&conflict.id)
-        {
-            Some(existing) if existing == conflict => Ok(false),
-            Some(_) => Err(HistoryError::ConflictIdCollision(conflict.id)),
-            None => {
-                self.write_conflict(conflict.document_id, conflict)?;
-                Ok(true)
-            }
-        }
-    }
-
-    /// Resolve a conflict with a version that made the resolution.
-    pub fn resolve_history_conflict(
-        &mut self,
-        document_id: FileDocumentId,
-        conflict_id: Uuid,
-        resolution: &ConflictResolution,
-    ) -> Result<bool, HistoryError> {
-        let Some(conflict) = self
-            .record_conflicts(document_id)
-            .get(&conflict_id)
-            .cloned()
-        else {
-            return Err(HistoryError::UnknownConflict(conflict_id));
-        };
-        if let Some(existing) = &conflict.resolution
-            && (existing == resolution || !prefer_conflict_resolution(resolution, existing))
-        {
-            return Ok(false);
-        }
-        let versions = self.document_versions(document_id);
-        let result = versions
-            .get(&resolution.result)
-            .ok_or(HistoryError::UnknownResolutionVersion(resolution.result))?;
-        if result.provenance != FileProvenance::ConflictResolution {
-            return Err(HistoryError::ResolutionProvenance);
-        }
-        if result.actor != resolution.actor {
-            return Err(HistoryError::ResolutionActorMismatch);
-        }
-        if result.timestamp_ms != resolution.timestamp_ms {
-            return Err(HistoryError::ResolutionTimestampMismatch);
-        }
-        let mut resolved = conflict;
-        resolved.status = ConflictStatus::Resolved;
-        resolved.resolution = Some(resolution.clone());
-        resolved.validate()?;
-        self.write_conflict(document_id, &resolved)?;
-        Ok(true)
-    }
-
-    pub(crate) fn record_attributions(
-        &self,
-        document_id: FileDocumentId,
-    ) -> BTreeMap<FileVersionId, FileVersionAttributionV1> {
-        self.history_doc(document_id)
-            .map(|doc| fs_protocol::history::record_attributions(doc, document_id))
-            .unwrap_or_default()
-    }
-
-    pub fn version_attributions(
-        &self,
-        document_id: FileDocumentId,
-    ) -> Vec<FileVersionAttributionV1> {
-        let mut versions = self.document_versions(document_id);
-        self.record_attributions(document_id)
-            .into_iter()
-            .filter(|(version_id, _)| versions.remove(version_id).is_some())
-            .map(|(_, attributed)| attributed)
-            .collect()
-    }
-
-    /// Record which agent caused this device's `attributed` version of `document_id`.
-    /// The version must already be the record's, and the same attribution again is a
-    /// no-op.
-    pub fn attribute_version(
-        &mut self,
-        document_id: FileDocumentId,
-        attributed: &FileVersionAttributionV1,
-    ) -> Result<bool, HistoryError> {
-        attributed.attribution.validate()?;
-        if !self
-            .document_versions(document_id)
-            .contains_key(&attributed.version_id)
-        {
-            return Err(HistoryError::UnknownVersion(attributed.version_id));
-        }
-        match self
-            .record_attributions(document_id)
-            .get(&attributed.version_id)
-        {
-            Some(existing) if existing == attributed => Ok(false),
-            Some(_) => Err(HistoryError::VersionIdCollision(attributed.version_id)),
-            None => {
-                let record = self.history_slot(document_id)?;
-                let map = self.sub_map(&record, ATTRIBUTIONS_KEY)?;
-                let bytes = collab_types::canonical_bytes(&attributed)?;
-                self.doc
-                    .put(&map, attributed.version_id.0.to_string(), bytes)?;
-                Ok(true)
-            }
-        }
-    }
-
-    /// The admitted checked-history intent `intent`: the request and the
-    /// receipt it settled, if this workspace recorded it.
-    pub(crate) fn restore_document(
-        &self,
-        intent: Uuid,
-    ) -> Option<(CheckedHistoryRequestV1, FileRestoreReceiptV1)> {
-        for root in self.history_roots(0) {
-            for map in self.sub_maps(&root, RESTORES_KEY) {
-                let Some(bytes) =
-                    scalar_bytes(self.doc.get(&map, intent.to_string()).ok().flatten())
-                else {
-                    continue;
-                };
-                if let Ok(record) = serde_json::from_slice(&bytes) {
-                    return Some(record);
-                }
-            }
-        }
-        None
-    }
-
-    /// Record the receipt of a checked-history restore under its intent, once the
-    /// restore's own changes are in this document.
-    pub(crate) fn record_restore(
-        &mut self,
-        intent: Uuid,
-        request: &CheckedHistoryRequestV1,
-        receipt: &FileRestoreReceiptV1,
-    ) -> Result<bool, HistoryError> {
-        if let Some((existing, _)) = self.restore_document(intent) {
-            if existing == *request {
-                return Ok(false);
-            }
-            return Err(HistoryError::ConflictIdCollision(intent));
-        }
-        let root = self.ensure_history_root(0)?;
-        if let Some(map) = object(self.doc.get(&root, RESTORES_KEY)?) {
-            let bytes = serde_json::to_vec(&(request, receipt))
-                .map_err(|_| HistoryError::Document(automerge::AutomergeError::Fail))?;
-            self.doc.put(&map, intent.to_string(), bytes)?;
-            return Ok(true);
-        }
-        let map = self.doc.put_object(&root, RESTORES_KEY, ObjType::Map)?;
-        let bytes = serde_json::to_vec(&(request, receipt))
-            .map_err(|_| HistoryError::Document(automerge::AutomergeError::Fail))?;
-        self.doc.put(&map, intent.to_string(), bytes)?;
-        Ok(true)
-    }
-
     /// `ino`'s content as a revision: the one the document records, or, for a file
     /// whose content was written without one, the version that wrote the bytes the
     /// node holds now. The answer is derived from the document, never installed beside it.
@@ -544,10 +242,7 @@ fn check_version(
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
-    use fs_protocol::projection::MAX_PROJECTED_VERSIONS;
-    use fs_protocol::{
-        ConflictStrategy, ContentHash, Ed25519PublicKey, FileActor, FileProvenance, FileVersionId,
-    };
+    use fs_protocol::{ContentHash, Ed25519PublicKey, FileActor, FileProvenance, FileVersionId};
 
     use super::*;
 
@@ -580,8 +275,18 @@ mod tests {
         Namespace::new("history").unwrap()
     }
 
+    /// The versions `record` holds, by their id.
+    fn held(namespace: &Namespace, record: FileDocumentId) -> Vec<FileVersionV1> {
+        namespace.document_versions(record).into_values().collect()
+    }
+
+    fn by_id(mut versions: Vec<FileVersionV1>) -> Vec<FileVersionV1> {
+        versions.sort_by_key(|version| version.id);
+        versions
+    }
+
     tilo_test_env::scenario! {
-        fn the_version_history_keeps_every_version_and_conflict_once;
+        fn the_version_history_keeps_every_version_once;
 
         phase versions_append_once_and_heads_follow_the_graph;
         {
@@ -602,14 +307,13 @@ mod tests {
                 vec![true, true]
             );
 
-            let snapshot = namespace.document_history(record).unwrap();
+            let snapshot = held(&namespace, record);
             assert_eq!(
-                snapshot.versions,
-                vec![root.clone(), left.clone(), right.clone()]
+                snapshot,
+                by_id(vec![root.clone(), left.clone(), right.clone()])
             );
             let mut expected_heads = vec![left.id, right.id];
             expected_heads.sort();
-            assert_eq!(snapshot.heads, expected_heads);
             assert_eq!(
                 namespace.document_history_heads(record),
                 expected_heads,
@@ -625,7 +329,7 @@ mod tests {
                 matches!(error, HistoryError::VersionIdCollision(_)),
                 "{error:?}"
             );
-            assert_eq!(namespace.document_history(record).unwrap(), snapshot);
+            assert_eq!(held(&namespace, record), snapshot);
 
             let other = FileDocumentId::new();
             let good = version(other, vec![], FileProvenance::Create, 1);
@@ -635,7 +339,7 @@ mod tests {
                 namespace.append_versions(&[good, collision]),
                 Err(HistoryError::VersionIdCollision(_))
             ));
-            assert!(namespace.document_history(other).is_none());
+            assert!(held(&namespace, other).is_empty());
         }
 
         phase a_version_arriving_before_its_parent_is_kept;
@@ -649,8 +353,8 @@ mod tests {
             assert!(namespace.append_version(root.clone()).unwrap());
             assert_eq!(namespace.document_history_heads(record), vec![child.id]);
             assert_eq!(
-                namespace.document_history(record).unwrap().versions,
-                vec![root, child]
+                held(&namespace, record),
+                by_id(vec![root, child])
             );
         }
 
@@ -667,114 +371,14 @@ mod tests {
                 .apply_incremental(&here.changes_since(&[]))
                 .expect("the versions travel as the document's changes");
             assert_eq!(
-                there.document_history(record).unwrap().versions,
-                vec![root.clone(), edit.clone()]
+                held(&there, record),
+                by_id(vec![root.clone(), edit.clone()])
             );
             assert_eq!(there.document_history_heads(record), vec![edit.id]);
 
             let (found, heads) = there.document_version(record, root.id);
             assert_eq!(found, Some(root));
             assert_eq!(heads, vec![edit.id]);
-        }
-
-        phase conflicts_are_recorded_once_and_resolved_by_their_version;
-        {
-            let mut namespace = history();
-            let record = FileDocumentId::new();
-            let root = version(record, vec![], FileProvenance::Create, 1);
-            let left = version(record, vec![root.id], FileProvenance::Edit, 2);
-            let right = version(record, vec![root.id], FileProvenance::Edit, 3);
-            namespace
-                .append_versions(&[root, left.clone(), right.clone()])
-                .unwrap();
-            let conflict = FileConflictV1 {
-                id: Uuid::new_v4(),
-                document_id: record,
-                versions: vec![left.id, right.id],
-                status: ConflictStatus::Open,
-                resolution: None,
-            };
-            assert!(namespace.document_history_conflict(&conflict).unwrap());
-            assert!(
-                !namespace.document_history_conflict(&conflict).unwrap(),
-                "exact replay"
-            );
-            let error = namespace
-                .document_history_conflict(&FileConflictV1 {
-                    versions: vec![left.id, FileVersionId::new()],
-                    ..conflict.clone()
-                })
-                .unwrap_err();
-            assert!(
-                matches!(error, HistoryError::UnknownConflictVersion(_)),
-                "{error:?}"
-            );
-
-            let result = version(
-                record,
-                vec![left.id, right.id],
-                FileProvenance::ConflictResolution,
-                4,
-            );
-            namespace.append_version(result.clone()).unwrap();
-            let resolution = ConflictResolution {
-                strategy: ConflictStrategy::KeepCurrent,
-                result: result.id,
-                actor: result.actor,
-                timestamp_ms: result.timestamp_ms,
-            };
-            assert!(
-                namespace
-                    .resolve_history_conflict(record, conflict.id, &resolution)
-                    .unwrap()
-            );
-            assert!(
-                !namespace
-                    .resolve_history_conflict(record, conflict.id, &resolution)
-                    .unwrap(),
-                "exact replay"
-            );
-            let stored = namespace.document_history(record).unwrap().conflicts[0].clone();
-            assert_eq!(stored.status, ConflictStatus::Resolved);
-            assert_eq!(
-                stored
-                    .resolution
-                    .as_ref()
-                    .map(|resolution| resolution.result),
-                Some(result.id)
-            );
-        }
-
-        phase the_projection_is_bounded_and_round_trips;
-        {
-            let mut namespace = history();
-            let record = FileDocumentId::new();
-            let mut parent = None;
-            for timestamp in 0..20 {
-                let item = version(
-                    record,
-                    parent.into_iter().collect(),
-                    if timestamp == 0 {
-                        FileProvenance::Create
-                    } else {
-                        FileProvenance::Edit
-                    },
-                    timestamp,
-                );
-                parent = Some(item.id);
-                namespace.append_version(item).unwrap();
-            }
-            let projection = namespace.document_history_projection(record).unwrap();
-            assert_eq!(projection.total_versions, 20);
-            assert!(projection.versions_truncated);
-            assert_eq!(projection.versions.len(), MAX_PROJECTED_VERSIONS);
-            assert_eq!(projection.versions.first().unwrap().timestamp_ms, 8);
-            let bytes = projection.to_xattr_bytes().unwrap();
-            assert!(bytes.len() <= fs_protocol::projection::MAX_HISTORY_PROJECTION_BYTES);
-            assert_eq!(
-                HistoryProjectionV1::parse_xattr(&bytes).unwrap(),
-                projection
-            );
         }
     }
 }

@@ -4465,8 +4465,6 @@ struct SdkJoinContext<'a> {
 struct SdkRoute {
     _checks: Option<crate::route_endpoints::Registration<super::approved_checks::Endpoint>>,
     _moderation: Option<crate::route_endpoints::Registration<super::external_moderation::Endpoint>>,
-    _attribution:
-        Option<crate::route_endpoints::Registration<super::write_attribution_endpoint::Endpoint>>,
     document: DocumentRoute,
     presence: Option<runtime_collab::PresenceHandle>,
     workspace_controls: std::collections::HashMap<u64, runtime_collab::WorkspaceControlHandle>,

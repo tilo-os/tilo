@@ -8,7 +8,7 @@ use tilo_sort::CompactSort as _;
 #[cfg(feature = "broker-transport")]
 pub use ::collaboration::invocation_scope::ExternalModerationReply;
 pub use ::collaboration::invocation_scope::{
-    InvokerScope, WriteAttributionReceipt, current_invoker, current_presence, delivered_invocation,
+    InvokerScope, current_invoker, current_presence, delivered_invocation,
 };
 
 /// A host moderation receipt, suitable for an existing action worker.
@@ -657,35 +657,6 @@ impl ResourceInvocationScope {
         #[cfg(not(feature = "broker-transport"))]
         {
             Err("external moderation requires the admitted native broker transport".into())
-        }
-    }
-
-    /// Name the paths this invocation is about to write (absolute paths; a folder covers what is under
-    /// it), so the host can record the agent behind them.
-    pub fn attribute_writes(
-        &self,
-        paths: Vec<String>,
-    ) -> Result<Option<WriteAttributionReceipt>, String> {
-        self.check()?;
-        if !matches!(
-            self.lease.request.actor,
-            tilo_actions::Actor::Member(tilo_actions::MemberId::Agent(_))
-        ) {
-            return Ok(None);
-        }
-        #[cfg(feature = "broker-transport")]
-        {
-            crate::collaboration::write_attribution_endpoint::enqueue(
-                &self.route().channel_id(),
-                self.invocation(),
-                paths,
-            )
-            .map(Some)
-        }
-        #[cfg(not(feature = "broker-transport"))]
-        {
-            let _ = paths;
-            Ok(None)
         }
     }
 

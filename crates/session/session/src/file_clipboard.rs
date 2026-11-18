@@ -46,10 +46,6 @@ const TICKET_LIFETIME: Duration = Duration::from_secs(2 * 60);
 const MAX_OPERATIONS: usize = 256;
 /// The most clashing names a [`Reply::Conflicts`] lists (it also counts).
 const MAX_CONFLICT_NAMES: usize = 8;
-/// How long the filesystem names an agent as the cause of the writes to the paths it was told: long
-/// enough for a transfer's writes to land, short enough that a later write of the person's own
-/// stays theirs.
-const WRITE_ATTRIBUTION_TTL: Duration = Duration::from_secs(60);
 
 /// Files' clipboard, as the broker's service.
 pub(crate) struct NativeFileClipboard {
@@ -174,28 +170,6 @@ impl NativeFileClipboard {
     /// so the person can paste them into another app.
     pub(crate) fn take_published(&self) -> Vec<CopiedFiles> {
         std::mem::take(&mut *self.published.lock_recover())
-    }
-
-    /// Name the agent `agent`, by its id, which the broker took from its own
-    /// ownership of a live Files invocation, as the cause of this device's next
-    /// writes to `paths`: each version the filesystem then makes of them
-    /// records the agent, for the person who signs it, in the agent's presence
-    /// colour. It grants nothing.
-    ///
-    /// # Errors
-    /// What the filesystem says.
-    pub(crate) fn attribute(agent: &str, paths: Vec<String>) -> Result<(), String> {
-        let (red, green, blue) =
-            ui::presence::member_color(&ui::permissions::MemberId::agent(agent));
-        blobs::with_session_blobs(|client| {
-            client.attribute_writes(runtime_fs::blobs::WriteAttribution {
-                paths,
-                agent: agent.to_owned(),
-                label: agent.to_owned(),
-                color: [red, green, blue],
-                ttl: WRITE_ATTRIBUTION_TTL,
-            })
-        })
     }
 
     /// Keep `paths` under a ticket of `context` 's window until the command that consumes it: what
@@ -450,25 +424,6 @@ impl NativeFileClipboard {
             Asked::Replace => Conflict::Replace,
             Asked::Ask | Asked::KeepBoth => Conflict::KeepBoth,
         };
-        // An agent acting for this person asked for the transfer: what it writes is recorded as
-        // that agent's, for its person. A refusal leaves the writes the person's own and never
-        // stops the transfer.
-        if let Some(agent) = context.attributed_agent() {
-            let mut paths = vec![folder.to_string_lossy().into_owned()];
-            if cut {
-                paths.extend(
-                    entries
-                        .iter()
-                        .map(|held| held.path.to_string_lossy().into_owned()),
-                );
-            }
-            if let Err(error) = Self::attribute(agent, paths) {
-                tilo_failure::ignored!(
-                    "the transfer stays its person's when it cannot be attributed",
-                    tracing::debug!(%error, "a clipboard transfer stays its person's in file history")
-                );
-            }
-        }
         let files = CopiedFiles {
             paths: entries.iter().map(|held| held.path.clone()).collect(),
             cut,
@@ -586,10 +541,6 @@ impl FileClipboardServices for NativeFileClipboard {
         let mut state = self.state.lock_recover();
         state.tickets.retain(|_, ticket| ticket.peer != peer);
         state.operations.retain(|_, running| running.peer != peer);
-    }
-
-    fn attribute_writes(&self, agent: &str, paths: Vec<String>) -> Result<(), String> {
-        Self::attribute(agent, paths)
     }
 }
 
@@ -714,39 +665,5 @@ fn identity(metadata: &std::fs::Metadata) -> ObjectIdentity {
     ObjectIdentity {
         device: metadata.dev(),
         inode: metadata.ino(),
-    }
-}
-
-/// The filesystem daemon's content store, as this session reaches it: a connection of its own, made
-/// on first use and again after it went away.
-mod blobs {
-    use runtime_fs::blobs::{BlobClient, BlobError};
-    use tilo_lock::MutexRecover as _;
-
-    static SESSION_BLOBS: std::sync::Mutex<Option<BlobClient>> = std::sync::Mutex::new(None);
-
-    /// Run `call` against the filesystem daemon as this desktop session.
-    ///
-    /// # Errors
-    /// Returns why the daemon could not be reached, or `call`'s refusal.
-    pub(super) fn with_session_blobs<T>(
-        call: impl FnOnce(&BlobClient) -> Result<T, BlobError>,
-    ) -> Result<T, String> {
-        let socket = launcher::services::blob_socket();
-        let mut session = SESSION_BLOBS.lock_recover();
-        let client = if let Some(client) = session.as_ref() {
-            client.clone()
-        } else {
-            let client = BlobClient::connect_session(&socket).map_err(|error| error.to_string())?;
-            *session = Some(client.clone());
-            client
-        };
-        drop(session);
-        let result = call(&client);
-        if matches!(result, Err(BlobError::Disconnected(_))) {
-            // Reconnect on the next call rather than keep a dead session.
-            *SESSION_BLOBS.lock_recover() = None;
-        }
-        result.map_err(|error| error.to_string())
     }
 }

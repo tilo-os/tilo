@@ -18,15 +18,13 @@
 //!    id>-<n>.scope`, the convention desktop environments and Flatpak share);
 //! 5. otherwise the person at this device.
 //!
-//! The person and the device are the version's signer already; a writer is a
-//! label the device asserts beside it ([`FileAttributionV1`]), never a key.
-//! Whoever reads the history sees that this device vouches for it.
+//! An agent session's writes are changes of the tree that name the agent as their
+//! invoker ([`Writer::invoker`]), for the person at this device; everything else
+//! writes as that person. It grants nothing: the device vouches for the name.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-
-use fs_protocol::{AttributedWriter, FileAttributionV1};
 
 /// How many ancestors are looked through for an agent's process.
 const MAX_ANCESTORS: usize = 64;
@@ -100,59 +98,27 @@ impl Writer {
         let acting = tilo_actions::Acting::agent(harness.agent())
             .handed()
             .in_session(bounded(session));
-        Some(tilo_actions::ActionInvoker::admitted(&acting).named(Some(
-            title.clone().unwrap_or_else(|| harness.name().to_owned()),
-        )))
-    }
-
-    /// The label this device records beside its version; `None` for the
-    /// person, whom the version's signature names already.
-    #[must_use]
-    pub fn attribution(&self) -> Option<FileAttributionV1> {
-        let (writer, label) = match self {
-            Self::Agent {
-                harness,
-                session,
-                title,
-            } => (
-                AttributedWriter::agent_session(harness.agent(), bounded(session)),
-                title.clone().unwrap_or_else(|| harness.name().to_owned()),
-            ),
-            Self::App { id } => (AttributedWriter::App(bounded(id)), id.clone()),
-            Self::Program { id, name } => (AttributedWriter::Program(bounded(id)), name.clone()),
-            Self::Person => return None,
-        };
-        let attribution = FileAttributionV1 {
-            color: colour_of(&writer),
-            writer,
-            label: bounded(&label),
-        };
-        attribution.validate().is_ok().then_some(attribution)
+        Some(
+            tilo_actions::ActionInvoker::admitted(&acting).named(Some(bounded(
+                title.as_deref().unwrap_or_else(|| harness.name()),
+            ))),
+        )
     }
 }
 
-/// `text` cut to what an attribution holds, on a character boundary, with no
-/// control characters.
+/// Most bytes a name or session id of a writer carries.
+const MAX_TEXT_BYTES: usize = 128;
+
+/// `text` cut to [`MAX_TEXT_BYTES`], on a character boundary, with no control characters.
 fn bounded(text: &str) -> String {
     let mut out = String::new();
     for character in text.chars().filter(|c| !c.is_control()) {
-        if out.len().saturating_add(character.len_utf8())
-            > fs_protocol::files::MAX_ATTRIBUTION_TEXT_BYTES
-        {
+        if out.len().saturating_add(character.len_utf8()) > MAX_TEXT_BYTES {
             break;
         }
         out.push(character);
     }
     out
-}
-
-/// A steady colour per writer, so one session reads as one colour.
-fn colour_of(writer: &AttributedWriter) -> [u8; 3] {
-    let hash = blake3::hash(format!("{writer:?}").as_bytes());
-    let bytes = hash.as_bytes();
-    // Kept off the extremes, so it reads on light and dark.
-    let channel = |byte: u8| 64_u8.saturating_add(byte / 2);
-    [channel(bytes[0]), channel(bytes[1]), channel(bytes[2])]
 }
 
 /// Maps the processes FUSE names to writers, remembering each.

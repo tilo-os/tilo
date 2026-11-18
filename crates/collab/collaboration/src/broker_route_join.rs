@@ -184,7 +184,6 @@ pub(super) async fn join_route(
         return Ok(SdkRoute {
             _checks: None,
             _moderation: None,
-            _attribution: None,
             document: DocumentRoute {
                 spec: spec.clone(),
                 channel,
@@ -333,13 +332,6 @@ pub(super) async fn join_route(
                 error
             })
             .ok();
-    let attribution =
-        super::super::write_attribution_endpoint::register(channel_id.clone(), channel.clone())
-            .map_err(|error| {
-                tracing::warn!(%error, "collab: write attribution queue unavailable");
-                error
-            })
-            .ok();
     media_routes.insert(channel_id.clone(), channel.clone());
     #[cfg(feature = "audio")]
     if spec.document.is_none()
@@ -353,7 +345,6 @@ pub(super) async fn join_route(
     Ok(SdkRoute {
         _checks: checks,
         _moderation: moderation,
-        _attribution: attribution,
         document: DocumentRoute {
             spec: spec.clone(),
             channel,

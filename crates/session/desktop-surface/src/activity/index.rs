@@ -628,12 +628,8 @@ mod folder_rows_tests {
     #![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
 
     use super::*;
+    use fs_protocol::FileAction;
     use fs_protocol::tree::Placing;
-    use fs_protocol::{
-        ContentHash, Ed25519PublicKey, FileActor, FileAttributionV1, FileProvenance,
-        FileVersionAttributionV1, FileVersionId, FileVersionV1,
-    };
-    use uuid::Uuid;
 
     fn person() -> [u8; 32] {
         [7; 32]
@@ -643,63 +639,33 @@ mod folder_rows_tests {
         [9; 32]
     }
 
-    fn write_version(
-        doc: &mut AutoCommit,
-        document_id: fs_protocol::FileDocumentId,
-        id: u128,
-        agent: Option<fs_protocol::AttributedWriter>,
-    ) {
-        let version = FileVersionV1 {
-            id: FileVersionId(Uuid::from_u128(id)),
-            document_id,
-            parents: Vec::new(),
-            actor: FileActor {
-                person: Ed25519PublicKey(person()),
-                device: Ed25519PublicKey(device()),
-            },
-            timestamp_ms: u64::try_from(id).unwrap().saturating_mul(1_000),
-            content_hash: Some(ContentHash([1; 32])),
-            metadata_hash: ContentHash([2; 32]),
-            provenance: FileProvenance::Edit,
+    /// Write `node` as the executor writes a file action: one change, naming `invoker`, else
+    /// the person at this device.
+    fn write(doc: &mut AutoCommit, node: &str, invoker: Option<tilo_actions::ActionInvoker>) {
+        let action = FileAction::Write {
+            node: node.to_owned(),
+            hash: Some("c".repeat(64)),
+            size: 4,
+            mtime: 2,
+            author: hex::encode(device()),
+            revision: None,
+            keep_preview: false,
         };
-        let root = match doc.get(automerge::ROOT, "history") {
-            Ok(Some((automerge::Value::Object(automerge::ObjType::Map), id))) => id,
-            _ => doc
-                .put_object(automerge::ROOT, "history", automerge::ObjType::Map)
-                .unwrap(),
+        let context = fs_protocol::file_action::change_context("tree", action.described(), invoker);
+        let encoded = tilo_actions::EncodedAction {
+            type_id: fs_protocol::file_action::FILE_ACTION_TYPE.to_owned(),
+            payload: serde_json::to_vec(&action).unwrap(),
         };
-        let record = doc
-            .put_object(&root, document_id.0.to_string(), automerge::ObjType::Map)
-            .unwrap();
-        let versions = doc
-            .put_object(&record, "versions", automerge::ObjType::Map)
-            .unwrap();
-        doc.put(
-            &versions,
-            version.id.0.to_string(),
-            collab_types::canonical_bytes(&version).unwrap(),
+        tilo_actions::apply_local_with_context(doc, &action, encoded, None, context).unwrap();
+    }
+
+    /// An agent session working for the person.
+    fn agent() -> tilo_actions::ActionInvoker {
+        tilo_actions::ActionInvoker::admitted(
+            &tilo_actions::Acting::agent("claude").in_session("abc"),
         )
-        .unwrap();
-        if let Some(writer) = agent {
-            let attributed = FileVersionAttributionV1 {
-                version_id: version.id,
-                attribution: FileAttributionV1 {
-                    writer,
-                    label: "Claude Code".into(),
-                    color: [10, 20, 30],
-                },
-            };
-            let map = doc
-                .put_object(&record, "attributions", automerge::ObjType::Map)
-                .unwrap();
-            doc.put(
-                &map,
-                version.id.0.to_string(),
-                collab_types::canonical_bytes(&attributed).unwrap(),
-            )
-            .unwrap();
-        }
-        doc.commit();
+        .named(Some("Claude Code".into()))
+        .acting_for(hex::encode(person()))
     }
 
     fn authors() -> AuthorDirectory {
@@ -714,11 +680,10 @@ mod folder_rows_tests {
     }
 
     tilo_test_env::scenario! {
-        fn folder_rows_name_each_file_and_coalesce_its_versions;
+        fn folder_rows_name_each_file_and_who_changed_it;
 
-        phase folder_rows_coalesce_a_files_versions_by_session;
-        // A folder's changes are one row per file and session, coalesced, named
-        // as Files names them.
+        phase folder_rows_name_the_agent_that_wrote_a_file;
+        // A folder's changes name the file, and the agent session that made them for its person.
         {
             let mut doc = AutoCommit::new();
             let mut tree = fs_protocol::tree::Tree::default();
@@ -734,36 +699,23 @@ mod folder_rows_tests {
                 (1_000, &hex::encode(device())),
             )
             .unwrap();
-            let document_id = tree.node(&placed.id).unwrap().document_id.unwrap();
-            // One session's run: two versions, minutes apart, coalesced into one row.
-            write_version(
-                &mut doc,
-                document_id,
-                1,
-                Some(fs_protocol::AttributedWriter::agent_session(
-                    "claude", "abc",
-                )),
-            );
-            write_version(
-                &mut doc,
-                document_id,
-                2,
-                Some(fs_protocol::AttributedWriter::agent_session(
-                    "claude", "abc",
-                )),
-            );
+            doc.commit();
+            write(&mut doc, &placed.id, Some(agent()));
+            write(&mut doc, &placed.id, Some(agent()));
 
             let rows = folder_rows(&doc, &[], &authors(), 100);
-            assert_eq!(rows.len(), 1, "one row for the one session's run");
-            assert_eq!(rows[0].summary, "Edited terms.txt");
-            let parts = ui::author_parts(&rows[0].author);
-            assert_eq!(parts.person, "Ada");
-            assert_eq!(parts.writer.as_deref(), Some("Claude Code"));
-            assert_eq!(parts.device.as_deref(), Some("Ada's laptop"));
-            assert_eq!(
-                ui::attribution_hover(&rows[0].author).as_deref(),
-                Some("External agent\nClaude Code\nAda's laptop\n/")
-            );
+            let written: Vec<_> = rows
+                .iter()
+                .filter(|row| row.summary == "Edited terms.txt")
+                .collect();
+            assert!(!written.is_empty(), "{rows:#?}");
+            for row in written {
+                assert_eq!(ui::author_parts(&row.author).person, "Ada", "{row:#?}");
+                assert!(
+                    ui::author_line(&row.author).contains("Claude Code"),
+                    "{row:#?}"
+                );
+            }
         }
 
         phase folder_rows_name_each_file_and_the_person_at_their_device;
@@ -784,17 +736,15 @@ mod folder_rows_tests {
                     (1_000, &hex::encode(device())),
                 )
                 .unwrap();
-                let document_id = tree.node(&placed.id).unwrap().document_id.unwrap();
-                write_version(
+                doc.commit();
+                write(
                     &mut doc,
-                    document_id,
-                    u128::from(name.len() as u64) + 10,
-                    None,
+                    &placed.id,
+                    Some(tilo_actions::ActionInvoker::person(hex::encode(person()))),
                 );
             }
             let rows = folder_rows(&doc, &[], &authors(), 100);
-            assert_eq!(rows.len(), 2);
-            assert!(rows.iter().all(|row| ui::author_line(&row.author) == "Ada"));
+            assert!(rows.iter().all(|row| ui::author_line(&row.author) == "Ada"), "{rows:#?}");
             assert!(rows.iter().any(|row| row.summary == "Edited terms.txt"));
             assert!(rows.iter().any(|row| row.summary == "Edited logo.png"));
         }

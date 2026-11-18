@@ -9,9 +9,7 @@ use tilo_automerge::ApplyIncoming as _;
 
 use super::changes::ChangeTrackedDoc;
 use super::chunks::Chunks;
-use super::{
-    Namespace, ROOT_DOCUMENT_ID_KEY, ROOT_ID, ROOT_INO, next_merge_generation, str_at_doc,
-};
+use super::{Namespace, ROOT_DOCUMENT_ID_KEY, ROOT_ID, ROOT_INO, str_at_doc};
 
 impl Namespace {
     /// A namespace as [`Self::save`] kept it.
@@ -242,7 +240,6 @@ impl Namespace {
                 self.ino_to_id.retain(|ino, _| *ino == ROOT_INO);
                 self.id_to_ino.retain(|id, _| id == ROOT_ID);
                 self.document_ids_complete = false;
-                self.merge_generation = next_merge_generation();
                 self.cycle_scan_pending = true;
                 self.placed_since_resolve.clear();
                 let touched = self.load_records(records)?;
@@ -408,7 +405,6 @@ impl Namespace {
                 let before = doc.get_heads();
                 doc.load_incoming(&bytes)?;
                 if doc.get_heads() != before {
-                    self.merge_generation = next_merge_generation();
                     // The reserved root id answers to the tree's own record.
                     touched.insert(ROOT_ID.to_string());
                 }
@@ -417,7 +413,6 @@ impl Namespace {
             let held = self.doc.chunk_or_new(chunk, false)?;
             let nodes = held.nodes.clone();
             held.doc.commit_named();
-            let before = held.doc.get_heads();
             held.doc.arm_patches();
             if let Err(error) = held.doc.load_incoming(&bytes) {
                 held.doc.disarm_patches();
@@ -425,12 +420,8 @@ impl Namespace {
             }
             let patches = held.doc.take_patches();
             held.doc.disarm_patches();
-            let moved = held.doc.get_heads() != before;
             let ids = patched_nodes(&nodes, &patches);
             drop(patches);
-            if moved {
-                self.merge_generation = next_merge_generation();
-            }
             for id in ids {
                 self.doc.locate(chunk, &id);
                 touched.insert(id);

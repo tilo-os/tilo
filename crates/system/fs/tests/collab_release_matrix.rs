@@ -186,7 +186,7 @@ fn concurrent_structural_conflicts_preserve_sources_and_converge_after_restart()
 }
 
 #[test]
-fn forced_partition_offline_edits_restart_and_converge_as_a_conflict() {
+fn forced_partition_offline_edits_restart_and_converge() {
     let temp = tempfile::tempdir().unwrap();
     let mut seed = Namespace::new("seed").unwrap();
     seed.create_file(ROOT_INO, "offline.txt", Some(&hash(1)), 1, 1)
@@ -217,12 +217,10 @@ fn forced_partition_offline_edits_restart_and_converge_as_a_conflict() {
     let mut left_for_right = left.clone();
     left.merge_doc(&mut right_for_left).unwrap();
     right.merge_doc(&mut left_for_right).unwrap();
-    for namespace in [&mut left, &mut right] {
-        let conflicts = fs::conflict::detect(namespace);
-        assert_eq!(conflicts.len(), 1);
-        assert!(fs::conflict::materialize(namespace, &conflicts[0], 20, 21));
-        assert!(fs::conflict::detect(namespace).is_empty());
-    }
+    // Both replicas settle on the same content; the other edit stays in the file's History.
+    let settled = left.entry_at("offline.txt").unwrap().hash;
+    assert!(settled == Some(hash(10)) || settled == Some(hash(20)));
+    assert_eq!(right.entry_at("offline.txt").unwrap().hash, settled);
 
     let names = |namespace: &mut Namespace| {
         namespace
@@ -235,10 +233,5 @@ fn forced_partition_offline_edits_restart_and_converge_as_a_conflict() {
     let left_names = names(&mut left);
     let right_names = names(&mut right);
     assert_eq!(left_names, right_names);
-    assert!(left_names.contains("offline.txt"));
-    assert!(
-        left_names
-            .iter()
-            .any(|name| name.contains(".sync-conflict-"))
-    );
+    assert_eq!(left_names, BTreeSet::from(["offline.txt".to_string()]));
 }

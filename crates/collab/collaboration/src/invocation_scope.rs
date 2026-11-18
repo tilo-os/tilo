@@ -41,33 +41,6 @@ impl ExternalModerationReply {
     }
 }
 
-/// The host's answer to naming the paths an invocation is about to write
-/// ([`ResourceInvocationScope::attribute_writes`]). Wait for it before
-/// writing, so the versions those writes make record who caused them.
-#[derive(Debug)]
-pub struct WriteAttributionReceipt(std::sync::mpsc::Receiver<Result<(), String>>);
-
-impl WriteAttributionReceipt {
-    #[cfg_attr(
-        not(feature = "broker-transport"),
-        allow(
-            dead_code,
-            reason = "only the broker endpoint answers a write attribution"
-        )
-    )]
-    pub(crate) fn new(receive: std::sync::mpsc::Receiver<Result<(), String>>) -> Self {
-        Self(receive)
-    }
-
-    /// Wait at most `timeout` for the host's answer. Whatever it is, the
-    /// writes go ahead: a refusal or no answer leaves them the person's.
-    pub fn wait(self, timeout: std::time::Duration) -> Result<(), String> {
-        self.0
-            .recv_timeout(timeout)
-            .map_err(|_| "the host did not answer the write attribution".to_owned())?
-    }
-}
-
 thread_local! {
     /// Each scope's invoker, with the broker invocation it was delivered
     /// under when it was one.
