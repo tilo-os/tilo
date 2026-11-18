@@ -1318,10 +1318,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
 
     /// Start this task's host.
     async fn start_task(&self) -> Result<TaskLink, String> {
-        let hosts = self
-            .task_hosts
-            .clone()
-            .ok_or("this connection runs no programs: the API serving it starts no task's host")?;
+        let hosts = self.task_hosts.clone().ok_or(
+            "this connection runs no programs: the API serving it starts no task's host; \
+             do the work with tilo_do (several actions in order with calls) and \
+             tilo_read; `undo task` and `history task` are still taken here",
+        )?;
         let task = self
             .agent_session()
             .map(|run| run.id)

@@ -414,6 +414,64 @@ fn the_person_a_turn_is_for_stops_it_until_someone_asks_again() {
     assert_eq!(turn.attempt, 1);
 }
 
+/// Whoever shows an agent at work holds the agent's reply, where its work is kept. A stop that
+/// names that reply stops the turn of the message it answers: for the person the turn is for,
+/// and for nobody else.
+#[test]
+fn a_stop_that_names_the_agents_reply_stops_the_turn_it_answers() {
+    let mut part = Part::new();
+    let main = thread(&[AGENT]);
+    part.apply(By::BotOf(ME), ask(&main, REMINDER, "call-1"))
+        .expect("the reminder asks");
+    let id = message_id(&MemberId::person(ME), "call-1");
+    part.apply(By::AgentFor(AGENT, ME), work(&id, "taken"))
+        .expect("the agent takes the turn");
+    let reply = reply_id_at(&id, &MemberId::agent(AGENT), 0);
+    let stop = || {
+        ChatPart::STOP_AGENT.with(chat_part::StopAgent {
+            message: reply.clone(),
+        })
+    };
+
+    assert!(
+        part.apply(By::Person(ARIA), stop()).is_err(),
+        "another member does not stop it"
+    );
+    assert!(
+        part.apply(By::BotAlone, stop()).is_err(),
+        "what acts for nobody stops nothing"
+    );
+    assert_eq!(
+        summonses(&part.chat, &part.read()).len(),
+        1,
+        "it still goes on"
+    );
+
+    part.apply(By::Person(ME), stop())
+        .expect("the person it works for stops it by its reply");
+    let held = part.read();
+    assert_eq!(
+        summonses(&part.chat, &held),
+        Vec::new(),
+        "a stopped message asks nobody"
+    );
+    let ended = stopped(&part.chat, &held);
+    let [turn] = ended.as_slice() else {
+        panic!("its agent is told to end its work: {ended:?}");
+    };
+    assert_eq!(
+        (turn.agent.as_str(), turn.message.clone()),
+        (AGENT, id),
+        "the stop stands on the message that asked"
+    );
+    assert!(
+        held.messages
+            .get(&reply)
+            .is_some_and(|reply| reply.stopped.is_none()),
+        "and not on the reply"
+    );
+}
+
 #[test]
 fn a_cause_shows_as_what_it_is_and_never_as_words_its_person_wrote() {
     let mut part = Part::new();

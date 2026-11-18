@@ -127,7 +127,7 @@ impl StatePeer {
         source: [u8; 32],
         app: &str,
         workspace: &str,
-        record: &str,
+        document: &str,
         op: &SignedOp,
         now: SystemTime,
     ) -> Result<Option<DocumentAdmission>, AdmissionError> {
@@ -135,16 +135,31 @@ impl StatePeer {
             return Err("transport author or document workspace mismatch".into());
         }
         if matches!(
-            self.authorize_document(&source, app, record, op, now)?,
+            self.authorize_document(&source, app, document, op, now)
+                .map_err(|refusal| match refusal {
+                    super::authority::AuthorizeRefusal::Rules(refusal) => {
+                        AdmissionError::ChangeRefused(Box::new(crate::ChangeRefused::of(
+                            self.core.workspace.clone(),
+                            workspace.to_owned(),
+                            app,
+                            document,
+                            op,
+                            &refusal,
+                        )))
+                    }
+                    denied @ super::authority::AuthorizeRefusal::Denied(_) => {
+                        AdmissionError::Rejected(denied.to_string())
+                    }
+                })?,
             super::authority::Authorized::Hold(_)
         ) {
             // Held for what it waits for: decided by the real admission, never a recorded one.
             return Ok(None);
         }
-        collab_types::validate_whole_document_payload_route(app, workspace, record, op)
+        collab_types::validate_whole_document_payload_route(app, workspace, document, op)
             .map_err(err)?;
         collab_types::verify_op(op).map_err(err)?;
-        let admission = DocumentAdmission::from_op(workspace, app, record, op)?;
+        let admission = DocumentAdmission::from_op(workspace, app, document, op)?;
         let compaction = op.kind == collab_types::OpKind::Compaction;
         match self.core.exact_admissions.get(&admission.key) {
             Some(id) if id == &admission.operation_id => Ok(Some(admission)),
@@ -159,7 +174,7 @@ impl StatePeer {
                 // A later fold may take the same number, and a segment of one
                 // is never evidence itself: it is gathered into its set.
                 if collab_types::is_compaction_segment(op)
-                    || (compaction && self.folds_held(app, record, op))
+                    || (compaction && self.folds_held(app, document, op))
                 {
                     Ok(None)
                 } else {

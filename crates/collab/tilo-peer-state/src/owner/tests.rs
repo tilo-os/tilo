@@ -26,6 +26,8 @@ mod busy_workspace;
 mod changes_read;
 #[path = "create_tests.rs"]
 mod create;
+#[path = "refused_change_tests.rs"]
+mod refused_change;
 #[path = "sealed_history_tests.rs"]
 mod sealed_history;
 #[path = "vouched_tests.rs"]

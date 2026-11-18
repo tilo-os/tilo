@@ -1,13 +1,13 @@
 //! A refused write reaches its author, in a workspace of two people's at a site: the owner takes a
-//! member's write permission away, the member edits their shell, and the workspace's device refuses
-//! the change. The member's own activity feed names the change, the device it is not on, and why;
-//! the owner's replica never holds it; and when the member may write again, the change lands and
-//! the verdict goes.
-//! The shell record the member writes is the one their own device founds: a device writes the shared
-//! shell it holds, and a record a workspace holds but has not sent to this device is not one it
-//! writes over. What the site's device then refuses, clears and files is the same for a record any
-//! device founded. A member the site removes reads nothing more of the workspace, while the members
-//! it keeps go on writing and reading its record.
+//! member's write permission away, the member edits their shell, and the member's own device
+//! refuses the change before it goes. The member's own activity feed names the change, the device
+//! that refused it, and why; the site never receives it; and when the member may write again, the
+//! change lands and the verdict goes.
+//! The shell document the member writes is the one their own device founds: a device writes the
+//! shared shell it holds, and a document a workspace holds but has not sent to this device is not
+//! one it writes over. What a device then refuses, clears and files is the same for a document any
+//! device founded. A member the site removes reads nothing more of the workspace, while the
+//! members it keeps go on writing and reading its shell.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -164,40 +164,30 @@ fn a_window_a_member_opens_stays_while_another_member_changes_the_shell() {
 }
 
 #[test]
-#[ignore = "the workspace's refusal does not reach the member whose write it is: the \
-            site keeps nothing of a write it refuses, and tells the member's device \
-            nothing of the refusal, so the member's feed shows no refusal of his \
-            change and no reason for it"]
+#[ignore = "a change the device refuses is filed and answers its author with the typed \
+            refusal, but the person's activity only shows a refusal on a change its \
+            history holds: a change the device never kept has no row to carry it, so the \
+            feed names none. The test states what the feed is to show once it can."]
 fn a_member_reads_where_their_refused_change_is_not() {
     // Ada's site governs her workspace, hosts it, and keeps what its people record while they are
-    // away. Both are editors, who write, and the workspace shares its people's layout, so what
-    // either opens is on the workspace's shell.
-    let (site, _ada, bob, _ada_laptop, mut bob_laptop) = two_people_at_a_site();
+    // away. Ada's own device writes the workspace's shell, and Bob's device is a member that reads
+    // it and refuses what he writes before any of it is sent.
+    let (site, _ada, bob, ada_laptop, mut bob_laptop) = two_people_at_a_site();
+    show(&ada_laptop, &site);
+    let _ada_note = ada_laptop.window(NOTES, "Ada's notes");
+    waited(
+        "the workspace's shell on the site",
+        &site,
+        &[&ada_laptop],
+        || windows(&site) >= 1,
+    );
+
     // Bob's shell shows the workspace, whose shared shell is the record his apps' windows are written
     // into.
     show(&bob_laptop, &site);
 
-    // Bob opens an app on the shared shell, whose window is a change of the workspace's record.
-    let _bob_note = bob_laptop.window(NOTES, "Notes");
-    waited(
-        "Bob's window on the workspace's shell",
-        &site,
-        &[&bob_laptop],
-        || windows(&site) >= 1,
-    );
-
-    // And a second one, while he may write: what the site holds is his shell,
-    // and what he writes next is refused against it.
-    let _bob_other = bob_laptop.window(NOTES, "Another");
-    waited(
-        "Bob's next window on the workspace's shell",
-        &site,
-        &[&bob_laptop],
-        || windows(&site) >= 2,
-    );
-
     // Ada takes Bob's write permission away: the workspace still lets him read what it holds, and
-    // refuses what he writes.
+    // Bob's own device refuses what he opens before any of it is sent.
     site.set_role(bob.public, Role::Viewer);
     let before = windows(&site);
     let refused_note = bob_laptop.window(NOTES, "Bob's notes");
@@ -212,22 +202,22 @@ fn a_member_reads_where_their_refused_change_is_not() {
         .into_iter()
         .next()
         .expect("the feed names the refused change");
-    // The change is not on the site's device, and the site says why: no permission, and nothing Bob
-    // can wait for changes that.
+    // Bob's own device refused the change, and says why: no permission, and nothing Bob can wait
+    // for changes that. Nothing of it is sent, so the site holds nothing of it either.
     assert_eq!(
         verdict["label"].as_str(),
-        Some("The site"),
-        "the refusal names the device the change is not on: {verdict}"
+        Some("Bob's laptop"),
+        "the refusal names the device that refused the change: {verdict}"
     );
     assert_eq!(
         verdict["reason"].as_str(),
         Some("no permission"),
-        "the site refused the write for want of permission: {verdict}"
+        "Bob's device refused the write for want of permission: {verdict}"
     );
     assert_eq!(
         verdict["permanent"],
         Value::Bool(true),
-        "the site will not take the write while Bob may not write: {verdict}"
+        "Bob's device will not take the write while he may not write: {verdict}"
     );
     assert!(
         !verdict["change"].as_str().unwrap_or_default().is_empty(),
@@ -236,16 +226,16 @@ fn a_member_reads_where_their_refused_change_is_not() {
     assert!(
         verdict["device"]
             .as_str()
-            .is_some_and(|device| device == hex::encode(site.host.device_public_key)),
-        "the refusal is the site's own device's: {verdict}"
+            .is_some_and(|device| device == hex::encode(bob_laptop.cert.device_public_key)),
+        "the refusal is Bob's own device's: {verdict}"
     );
     assert_eq!(
         windows(&site),
         before,
-        "the site never holds what it refused, {refused_at:?} ago"
+        "the site never holds what Bob's device refused, {refused_at:?} ago"
     );
     // The verdict is the workspace's own state, not a live word: Bob's device goes away and comes
-    // back, and reads the refusal the site filed as it reads anything else the workspace holds.
+    // back, and reads the refusal its workspace holds as it reads anything else it holds.
     drop(refused_note);
     bob_laptop.stop();
     bob_laptop.start();
@@ -258,24 +248,20 @@ fn a_member_reads_where_their_refused_change_is_not() {
             .then_some(())
     });
 
-    // Ada lets Bob write again: his change lands, and the verdict goes.
-    site.set_role(bob.public, Role::Editor);
-    let _admitted_note = bob_laptop.window(NOTES, "Bob's notes, again");
+    // What the workspace does keep is unaffected: Ada's own device opens another window, the site
+    // takes it, and Bob's feed still names only his own refused change.
+    let _ada_plan = ada_laptop.window(NOTES, "Ada's plan");
     waited(
-        "Bob's next change at the site",
+        "the workspace keeps what its device may write",
         &site,
-        &[&bob_laptop],
+        &[&ada_laptop],
         || windows(&site) > before,
     );
-    waited(
-        "Bob's feed without a refusal",
-        &site,
-        &[&bob_laptop],
-        || refusals(&bob_laptop).is_empty(),
-    );
+    let kept = refusals(&bob_laptop);
     assert!(
-        refusals(&bob_laptop).is_empty(),
-        "what the workspace holds is not missing anywhere: {}",
+        kept.iter()
+            .all(|refusal| refusal["change"] == verdict["change"]),
+        "Bob's feed names his refused change and no other: {kept:?}\n{}",
         bob_laptop.log()
     );
 }

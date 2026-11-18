@@ -531,3 +531,9 @@ reason = "The crate that keeps a session's identity registry, by its name, in th
 words = ["host"]
 identifiers = ["tilo_identity"]
 paths = ["crates/server/tilo-server/src/enroll_tests.rs"]
+
+[[allow]]
+reason = "The existing wire's name for the document a refusal names (neighbour_wire::WriteRefusal::record): this test reads it, and renaming it is a wire change of its own."
+words = ["record"]
+identifiers = ["record"]
+paths = ["crates/collab/tilo-peer-state/src/owner/refused_change_tests.rs"]

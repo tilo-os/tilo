@@ -18,6 +18,68 @@ use neighbour_wire::{RefusalReason, WriteRefusal};
 use std::collections::BTreeSet;
 use tilo_desktop_model::projection::WORKSPACE_WRITE_REFUSALS_KEY;
 
+/// A change a device refuses before it goes, as its author's session is told it: the document the
+/// change writes, the changes it would have carried, and why — the same shape a server's refusal
+/// of a change has (`tilo_server_protocol::transport::Envelope::ChangeRefused`), so a reader tells
+/// one from the other by its words, never by which device spoke.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChangeRefused {
+    /// The workspace the change was written in.
+    pub workspace_id: String,
+    /// The app whose document the change writes.
+    pub app_id: String,
+    /// The workspace the document belongs to, as the change named it.
+    pub cluster_id: String,
+    /// The document.
+    pub document_id: String,
+    /// The changes the refused change carried, as their hashes: what a reader withdraws and the
+    /// author's history names as missing.
+    pub changes: Vec<[u8; 32]>,
+    /// Why, typed as a server's refusals are.
+    pub refusal: tilo_server_protocol::refusal::Refusal,
+    /// The refusing device's own words, kept as the filed verdict's detail.
+    pub reason: String,
+}
+
+impl ChangeRefused {
+    /// What `envelope`, a change of `document_id` of `app_id` in `workspace_id`, is refused as
+    /// when the workspace's rules refuse it by `refusal`: the changes it carries — its claims,
+    /// else those of its payload — and why, typed the way a server types its refusals.
+    pub(crate) fn of(
+        workspace_id: String,
+        cluster_id: String,
+        app_id: &str,
+        document_id: &str,
+        envelope: &collab_types::SignedOp,
+        refusal: &collab_types::ReceiptRefusal,
+    ) -> Self {
+        let mut changes: Vec<[u8; 32]> = envelope.claims.iter().map(|claim| claim.change).collect();
+        if changes.is_empty() {
+            changes = super::personal::change_hashes(&envelope.payload);
+        }
+        Self {
+            workspace_id,
+            app_id: app_id.to_owned(),
+            cluster_id,
+            document_id: document_id.to_owned(),
+            changes,
+            refusal: match refusal {
+                collab_types::ReceiptRefusal::NotGranted { .. } => {
+                    tilo_server_protocol::refusal::Refusal::NotGranted(refusal.to_string())
+                }
+                other => tilo_server_protocol::refusal::Refusal::NotAllowed(other.to_string()),
+            },
+            reason: format!("document change forbidden: {refusal}"),
+        }
+    }
+}
+
+impl std::fmt::Display for ChangeRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.reason)
+    }
+}
+
 /// The key one verdict is held under: the write's route and author, so a later
 /// verdict about the same author on the same record replaces it.
 fn entry_key(app: &str, record: &str, author: &[u8; 32]) -> String {
@@ -136,8 +198,15 @@ impl PeerWorkspaceMut<'_> {
             &super::device_rows::person_row_key(&caller.user_public_key, &caller.device_public_key),
         )?;
         let entry = entry_key(&refusal.app, &refusal.record, &refusal.author);
-        if held_refusal(&candidate, &entries, &entry)?.is_some_and(|held| held.seq >= refusal.seq) {
-            return Ok(false);
+        if let Some(held) = held_refusal(&candidate, &entries, &entry)? {
+            if held.seq >= refusal.seq {
+                return Ok(false);
+            }
+            // The same words about the same changes is the verdict already here: a write a device
+            // refuses on every pass that retries it is filed once, not once per pass.
+            if held.reason == refusal.reason && held.changes == refusal.changes {
+                return Ok(false);
+            }
         }
         candidate
             .put(&entries, &entry, ScalarValue::Bytes(bytes))

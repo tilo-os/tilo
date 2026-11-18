@@ -37,6 +37,8 @@ mod launch;
 use launch::{names_files, opens_a_file, starts_app};
 #[path = "mcp_agent_link.rs"]
 mod link;
+#[path = "mcp_agent_names.rs"]
+mod names;
 #[path = "mcp_agent_record.rs"]
 mod record;
 #[path = "mcp_render.rs"]
@@ -873,11 +875,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 Ok(AppRef::Installed { app_id, opens })
             }
             Err(error) if error.contains("names several") => Err(error),
-            // The name is no app's and no tail of one: a word an agent
-            // guessed (`host` for the Browser, `so.tilo.browser`) is the
-            // likeliest cause, so the running apps are named as they are to
-            // be addressed.
-            Err(_) => Err(no_app_named(name, &running, &installed)),
+            // No app is called exactly that: the name is read once more as a model writes one.
+            Err(_) => freely_named(name, &running, &installed),
         }
     }
 
@@ -1446,6 +1445,56 @@ fn listed_as<'a>(installed: &'a [InstalledApp], name: &str) -> Option<&'a Instal
         .iter()
         .filter(|app| app.label.eq_ignore_ascii_case(name));
     named.next().filter(|_| named.next().is_none())
+}
+
+/// The app `name` means where no app is called exactly that: the name read once more as a
+/// model writes one (`word_processor`, `WordProcessor`, `Word`), among the installed apps as
+/// this caller is listed them and the apps of the providers it may use, and no others. What it
+/// finds is opened and acted in as the listing says this caller may. A word that still names
+/// none (`host` for the Browser, `so.tilo.browser`) is a guess, so the running apps are named
+/// as they are to be addressed.
+fn freely_named(
+    name: &str,
+    running: &[(String, Value)],
+    installed: &[InstalledApp],
+) -> Result<AppRef, String> {
+    let listed: Vec<(&str, &str)> = installed
+        .iter()
+        .map(|app| (app.app_id.as_str(), app.label.as_str()))
+        .chain(
+            running
+                .iter()
+                .filter_map(|(_, app)| Some((app["app_id"].as_str()?, ""))),
+        )
+        .collect();
+    let Some(app_id) = names::app_meant(name, &listed)? else {
+        return Err(no_app_named(name, running, installed));
+    };
+    // Its newest window, or else whatever answers for it without one.
+    let newest = |window: bool| {
+        running
+            .iter()
+            .rev()
+            .filter(|(provider, _)| {
+                (provider.parse::<u64>().is_ok()
+                    || tilo_actions::remote::is_resource_provider(provider))
+                    == window
+            })
+            .find(|(_, app)| app["app_id"].as_str() == Some(app_id.as_str()))
+            .map(|(provider, _)| provider.clone())
+    };
+    if let Some(app) = installed.iter().find(|app| app.app_id == app_id) {
+        return Ok(app.named(newest(true)));
+    }
+    let provider = newest(true).or_else(|| newest(false));
+    match provider {
+        Some(provider) => Ok(AppRef::Running {
+            app_id,
+            provider,
+            pinned: false,
+        }),
+        None => Err(no_app_named(name, running, installed)),
+    }
 }
 
 fn app_names(ids: &[String]) -> Vec<String> {

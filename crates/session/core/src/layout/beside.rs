@@ -22,7 +22,7 @@ pub(super) enum Beside {
 }
 
 /// `rect` as a canvas place, its coordinates kept to what a place holds.
-fn canvas_place(rect: CanvasRect) -> CanvasPlace {
+pub(super) fn canvas_place(rect: CanvasRect) -> CanvasPlace {
     let at = |value: i64| {
         i32::try_from(value.clamp(i64::from(i32::MIN), i64::from(i32::MAX))).unwrap_or_default()
     };
