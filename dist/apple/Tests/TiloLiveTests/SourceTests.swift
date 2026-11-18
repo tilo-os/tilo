@@ -223,6 +223,20 @@ final class TiloSourceTests: XCTestCase {
             case 'tilo.events pause': case 'tilo.events resume':
               window.events.find(event => event.id === argument.event).on = target.address.action === 'resume';
               return done({events: window.events});
+            // The person's alone: one permission of an event is taken back, and the event is answered.
+            case 'tilo.events withdraw-permission': {
+              const one = window.events.find(event => event.id === argument.event);
+              if (!one) throw Object.assign(new Error('you keep no such event here'), {code: 'refused'});
+              (window.eventCalls ??= []).push('withdraw-permission ' + argument.event + ' ' + argument.rule.action);
+              one.permits = one.permits.filter(rule => rule.action !== argument.rule.action);
+              return done(one);
+            }
+            // An event is removed for good, and the events that remain are answered.
+            case 'tilo.events remove':
+              if (!window.events.some(event => event.id === argument.event)) throw Object.assign(new Error('you keep no such event here'), {code: 'refused'});
+              (window.eventCalls ??= []).push('remove ' + argument.event);
+              window.events = window.events.filter(event => event.id !== argument.event);
+              return done({events: window.events});
             default: throw Object.assign(new Error('No such action is offered'), {code: 'unknown_action'});
           }
         },

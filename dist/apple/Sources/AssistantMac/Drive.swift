@@ -286,6 +286,13 @@ final class AssistantDrive {
         case .event(let card):
             line["kind"] = "event"
             line["text"] = .string(card.text)
+            // What the card says and offers, as its view draws it.
+            line["title"] = .string(card.automation.title)
+            line["state"] = .string(card.settled == .undone ? AssistantWords.eventRemoved.said : Wording().state(card.automation))
+            line["tags"] = .array(Wording().cardTags(card.automation).map(JSON.string))
+            line["choices"] = .array(card.choices.map { .string($0.id.value) })
+            line["shown"] = card.shown.map(JSON.string) ?? .null
+            line["settled"] = card.settled.map { JSON.string($0 == .undone ? "undone" : "asksEachTime") } ?? .null
         }
         return .object(line)
     }

@@ -102,6 +102,16 @@
 "event-paused" = "Event · paused";
 "scheduled-on" = "Scheduled · on";
 "scheduled-paused" = "Scheduled · paused";
+"show-answer" = "Show the answer";
+"ask-each-time" = "Ask me each time";
+"asks-each-time" = "It asks you each time now.";
+"event-undone" = "Undone. It is removed and does nothing more.";
+"event-removed" = "Removed";
+"kept-told" = "What it is told to do";
+"kept-style" = "How it writes";
+"kept-guidance" = "What it keeps in mind";
+"kept-accepted" = "An answer you accepted";
+"kept-no-answer" = "It keeps no answer of its own yet. It writes one each time from what it is told.";
 "tasks" = "Tasks";
 "active" = "Active";
 "up-next" = "Up next";

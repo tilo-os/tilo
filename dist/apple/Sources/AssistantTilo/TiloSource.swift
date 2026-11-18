@@ -1403,6 +1403,8 @@ public final class TiloSource: AssistantSource {
     }
 
     public func answer(_ question: Question.ID, with choice: Choice.ID) async throws {
+        // An event's card is answered on the event itself, at the person's server.
+        if let event = EventCards.event(of: question) { return try await answer(event: event, with: choice) }
         try await answer(question.value, choice.value, detail: nil)
     }
 
@@ -1670,6 +1672,44 @@ public final class TiloSource: AssistantSource {
         feed.held = now
         feeds[.main] = feed
         for listener in feed.listeners.values { listener.yield(.all(now)) }
+    }
+
+    /// Carry out what the person pressed on an event's card, as the person, on the event at
+    /// their server. The card changes by what the server answered, never by the press alone.
+    private func answer(event: Automation.ID, with choice: Choice.ID) async throws {
+        // Whatever was carried out before something failed is said too.
+        defer {
+            automationList.set(cards.automations)
+            sayCards()
+        }
+        let named: [String: JSON] = ["event": .string(event.value)]
+        switch choice.value {
+        case EventCards.show:
+            // Read fresh: what is shown is what the event keeps now.
+            var listed: [JSON]?
+            try await taken { listed = try await self.engine.ask(.events, "list", of: "events")["events"]?.array }
+            if let listed { cards.take(listed) }
+            guard cards.show(event) else { throw SourceProblem.refused("This event is gone") }
+        case EventCards.ask:
+            // Every permission to act without asking is taken back: its work asks each time.
+            guard let permits = cards.permits(of: event) else { throw SourceProblem.refused("This event is gone") }
+            try await taken {
+                for rule in permits {
+                    let view = try await self.engine.ask(.events, "withdraw-permission", of: "events",
+                                                         named.merging(["rule": rule]) { _, new in new })
+                    self.cards.take(event: view)
+                }
+            }
+            cards.asked(event)
+        case EventCards.undo:
+            // Removed for good at the server, which answers the events that remain.
+            var remain: JSON = .null
+            try await taken { remain = try await self.engine.ask(.events, "remove", of: "events", named) }
+            cards.undid(event)
+            if let listed = remain["events"]?.array { cards.take(listed) }
+        default:
+            throw SourceProblem.refused("This is not one of the answers")
+        }
     }
 
     /// Set up something that comes at a time or when something else happens, as the person:

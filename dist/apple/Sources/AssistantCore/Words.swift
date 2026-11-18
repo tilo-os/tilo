@@ -46,6 +46,10 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     case commandsAfter = "commands-after", authenticate, notNow = "not-now", connected, notConnected = "not-connected"
     case commandsCount = "commands-count", signInAt = "sign-in-at"
     case eventOn = "event-on", eventPaused = "event-paused", scheduledOn = "scheduled-on", scheduledPaused = "scheduled-paused"
+    case showAnswer = "show-answer", askEachTime = "ask-each-time", asksEachTime = "asks-each-time"
+    case eventUndone = "event-undone", eventRemoved = "event-removed"
+    case keptTold = "kept-told", keptStyle = "kept-style", keptGuidance = "kept-guidance", keptAccepted = "kept-accepted"
+    case keptNoAnswer = "kept-no-answer"
     // The Tasks panel.
     case tasks, active, upNext = "up-next", scheduled, resolved
     case readyForReview = "ready-for-review", needsInput = "needs-input", inProgress = "in-progress", events
@@ -197,6 +201,16 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .eventPaused: "Event · paused"
         case .scheduledOn: "Scheduled · on"
         case .scheduledPaused: "Scheduled · paused"
+        case .showAnswer: "Show the answer"
+        case .askEachTime: "Ask me each time"
+        case .asksEachTime: "It asks you each time now."
+        case .eventUndone: "Undone. It is removed and does nothing more."
+        case .eventRemoved: "Removed"
+        case .keptTold: "What it is told to do"
+        case .keptStyle: "How it writes"
+        case .keptGuidance: "What it keeps in mind"
+        case .keptAccepted: "An answer you accepted"
+        case .keptNoAnswer: "It keeps no answer of its own yet. It writes one each time from what it is told."
         case .tasks: "Tasks"
         case .active: "Active"
         case .upNext: "Up next"

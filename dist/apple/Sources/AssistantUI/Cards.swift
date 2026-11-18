@@ -401,12 +401,18 @@ struct EventCardView: View {
     var body: some View {
         // A card that stands under the assistant's own answer says nothing above its box.
         if !card.text.isEmpty { Bubble { MarkdownText(text: card.text) } }
-        CardBox(name: card.automation.title, note: wording.state(card.automation)) {
+        CardBox(name: card.automation.title,
+                note: card.settled == .undone ? AssistantWords.eventRemoved.said : wording.state(card.automation)) {
             let tags = wording.cardTags(card.automation)
             if !tags.isEmpty {
                 Flow(spacing: 8, lineSpacing: 6) {
                     ForEach(tags, id: \.self) { Tag(words: $0) }
                 }
+            }
+            // What the event keeps, where its person asked to see it, and what became of a press.
+            if let shown = card.shown { MarkdownText(text: shown) }
+            if let settled = card.settled {
+                Fine(words: (settled == .undone ? AssistantWords.eventUndone : AssistantWords.asksEachTime).said)
             }
             if let chosen = card.answer, let choice = card.choices.first(where: { $0.id == chosen }) {
                 Fine(words: AssistantWords.youChose.said(["answer": choice.title]))
