@@ -684,6 +684,29 @@ identifiers = ["record_path"]
 paths = ["crates/server/tilo-server/src/enroll.rs"]
 
 [[allow]]
+reason = "iroh's packet relay, which is how a machine on another network reaches a device's enrollment endpoint: these files name iroh's relay map, relay URL and relay mode."
+words = ["relay"]
+paths = [
+    "crates/collab/tilo-enrollment/Cargo.toml",
+    "crates/collab/tilo-enrollment/src/*.rs",
+    "crates/session/session/Cargo.toml",
+    "crates/session/session/src/enrollment.rs",
+    "crates/session/session/src/enrollment_tests.rs",
+]
+
+[[allow]]
+reason = "std's message channel the test's fixture starts the serving thread by."
+words = ["channel"]
+identifiers = ["channel"]
+paths = ["crates/session/session/src/enrollment_tests.rs"]
+
+[[allow]]
+reason = "The runtime identity crate's name for the public half of a member's identity, which an enrollment hands the joining device: its name, not Tilo's word."
+words = ["record"]
+identifiers = ["public_member_record"]
+paths = ["crates/collab/tilo-enrollment/src/lib.rs"]
+
+[[allow]]
 reason = "The crate that keeps a session's identity registry, by its name, in the test that reads the registry a join writes with the code that reads it."
 words = ["host"]
 identifiers = ["tilo_identity"]

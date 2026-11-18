@@ -317,6 +317,12 @@ fn collaborating(
     });
     if let Some(personal) = &personal {
         beside.push(personal.protocol());
+        // Machines that ask to join are answered for as long as this session
+        // is up, not only while a sheet is up: each ask is noted in the
+        // person's store first, so all their devices see it.
+        if let Some(paths) = tilo_identity::device_admin::PersonPaths::from_env() {
+            crate::enrollment::serve(personal.sync().clone(), paths.root, paths.dir);
+        }
     }
     if let Some(devices) = &devices {
         beside.push(device_agents.protocol(std::sync::Arc::clone(devices)));

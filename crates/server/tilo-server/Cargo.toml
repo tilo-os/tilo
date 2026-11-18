@@ -293,6 +293,7 @@ tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 runtime-identity = { path = "../../runtime/runtime-identity" }
 # Nearby pairing redeems enrollment tokens through the identity host's one
 # redemption: its issuer checks, nonce store and device fleet.
+tilo-enrollment = { path = "../../collab/tilo-enrollment" }
 tilo-identity = { path = "../../runtime/tilo-identity" }
 socket2 = "0.6"
 tracing-subscriber = { workspace = true, features = ["env-filter"] }

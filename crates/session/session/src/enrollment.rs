@@ -1,205 +1,305 @@
-//! Machines that ask to join over the internet, as this session answers them.
+//! Machines that ask to join, as the person's devices answer them.
 //!
-//! The session starts the enrollment helper (`tilo-enroll approve --iroh --ask`)
-//! while the person is adding a device: the helper answers machines over iroh
-//! and prints one JSON line per machine that wants to join. This module keeps
-//! those asks, shows each as a notification ([`notice`]) that opens the sheet,
-//! and writes the person's answer back to the helper. Approving admits the
-//! machine; a `tilo://enroll?…` link a machine with no token printed is
-//! approved by pasting it in through [`scan`].
+//! The session serves its device's enrollment endpoint for as long as it
+//! is up: a machine anywhere that was handed a token dials it, and the session
+//! puts the ask to the person. Every ask is workspace state in the person's
+//! own store ([`ENROLLMENT_KIND`]) before it is put to anyone, so it shows on
+//! all their devices at once and any of them answers it; the device whose
+//! endpoint the machine dialled is the one that carries the answer out.
+//! Nothing is served only while a sheet is up, and no answer is mirrored
+//! between devices: the store is the one place an ask and its answer live.
 //!
-//! The helper does the admitting with the person's own key, so the session
-//! never holds a signing capability of its own: it only carries the person's
-//! answer to what the machine asked.
+//! An ask is `request:<ask>` in the store's document, and an answer is
+//! `answer:<ask>`, written by whichever of the person's devices answered.
 
 use std::collections::BTreeMap;
-use std::io::{BufRead as _, BufReader, Write as _};
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use automerge::transaction::Transactable as _;
+use automerge::{AutoCommit, ReadDoc as _};
+use collab_types::CommitNamed as _;
 use serde::{Deserialize, Serialize};
-use tilo_lock::MutexRecover as _;
+use tilo_enrollment::approval::ApprovalOptions;
+use tilo_enrollment::{Decision, Person, WaitingMachine};
+use tilo_peer_state::{DocumentMutation, ENROLLMENT_KIND, PersonalSync};
 
 use crate::i18n::{t, t_args};
 use crate::platform::notice::Notice;
 
-/// The enrollment helper the image installs.
-const ENROLL: &str = tilo_identity::device_admin::ENROLL;
+/// How long one machine's ask is put to the person: a token is valid a day,
+/// and the machine's own window is minutes.
+const ASK_FOR: Duration = Duration::from_secs(600);
 
-/// How long the helper serves one window: the person answers a machine that
-/// wants in, and the window closes on its own.
-const WINDOW_SECONDS: u64 = 600;
+/// How often the ask waits for an answer the person's other devices write.
+const LOOK_EVERY: Duration = Duration::from_millis(50);
 
-/// How long the helper may take to reach a machine whose link was pasted: the
-/// machine's own window, and the exchange after it answers.
-const DIAL_SECONDS: u64 = 270;
+/// The kind the entries of the store's document are committed as.
+const CHANGE_KIND: &str = "enrollment";
 
-/// One machine asking to join, as the helper reported it.
+/// One machine asking to join, as the person's store holds it and every
+/// device of theirs shows it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Waiting {
-    pub(crate) ask: String,
-    pub(crate) device: String,
-    pub(crate) service: String,
-    pub(crate) label: String,
+    pub ask: String,
+    pub device: String,
+    pub service: String,
+    pub label: String,
     #[serde(default)]
-    pub(crate) hardware: String,
-    pub(crate) code: String,
+    pub hardware: String,
+    pub code: String,
+    /// The token's nonce: what a planned machine's entry is known by.
+    #[serde(default)]
+    pub nonce: String,
 }
 
-/// The helper a session starts to answer machines, and the machines it has
-/// put to the person.
-pub(crate) struct Serving {
-    child: Child,
-    stdin: ChildStdin,
-    waiting: Arc<Mutex<BTreeMap<String, Waiting>>>,
-}
-
-impl Serving {
-    /// Start answering machines with the enrollment helper, as the person
-    /// whose identity `root` and `dir` are: the helper prints each machine
-    /// that wants to join and waits for the person's answer here.
-    ///
-    /// # Errors
-    ///
-    /// The helper cannot be started, or its answers cannot be read.
-    pub(crate) fn start(root: &std::path::Path, dir: &std::path::Path) -> Result<Self, String> {
-        let mut command = Command::new(ENROLL);
-        command
-            .args(["approve", "--iroh", "--ask"])
-            .arg("--identity-root")
-            .arg(root)
-            .arg("--identity-dir")
-            .arg(dir)
-            .args(["--timeout", &WINDOW_SECONDS.to_string()])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        // A machine behind a network address translation reaches this device
-        // only through the relay it names in the token.
-        if let Some(relay) = own_relay() {
-            command.arg("--relay").arg(relay);
+impl Waiting {
+    fn of(machine: &WaitingMachine) -> Self {
+        Self {
+            ask: machine.ask.clone(),
+            device: machine.device.clone(),
+            service: machine.service.clone(),
+            label: machine.label.clone(),
+            hardware: machine.hardware.clone(),
+            code: machine.code.clone(),
+            nonce: machine.nonce.clone(),
         }
-        Self::over(command)
     }
+}
 
-    /// [`Self::start`] with the program and arguments a test builds.
-    fn over(mut command: Command) -> Result<Self, String> {
-        let mut child = command
-            .spawn()
-            .map_err(|error| format!("this session cannot answer machines: {error}"))?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| "the enrollment helper takes no answer".to_string())?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| "the enrollment helper says nothing".to_string())?;
-        let waiting: Arc<Mutex<BTreeMap<String, Waiting>>> = Arc::default();
-        let reading = Arc::clone(&waiting);
-        std::thread::Builder::new()
-            .name("tilo-enrollment-answers".into())
-            .spawn(move || {
-                for line in BufReader::new(stdout).lines() {
-                    let Ok(line) = line else {
-                        return;
-                    };
-                    let Some(value): Option<serde_json::Value> = tilo_failure::ignored!(
-                        "a helper line that is not JSON reports no machine",
-                        serde_json::from_str(&line).ok()
-                    ) else {
-                        continue;
-                    };
-                    // The helper answers each ask it takes, and reports the next
-                    // machine; the machine's own line has no `approved`.
-                    if value.get("approved").is_some() || value.get("decline").is_some() {
-                        if let Some(ask) = value.get("ask").and_then(|ask| ask.as_str()) {
-                            reading.lock_recover().remove(ask);
-                        }
-                        continue;
-                    }
-                    let Some(machine): Option<Waiting> = tilo_failure::ignored!(
-                        "a helper line that is not a machine reports none",
-                        serde_json::from_value(value).ok()
-                    ) else {
-                        continue;
-                    };
-                    reading.lock_recover().insert(machine.ask.clone(), machine);
-                }
-            })
-            .map_err(|error| format!("this session cannot answer machines: {error}"))?;
-        Ok(Self {
-            child,
-            stdin,
-            waiting,
+/// What the person's store holds: the machines waiting for an answer, and the
+/// answers their devices gave.
+pub(crate) struct Held {
+    pub waiting: Vec<Waiting>,
+    pub answers: BTreeMap<String, bool>,
+}
+
+/// Read the person's store: every ask no device answered yet, and every
+/// answer.
+pub(crate) fn held(personal: &PersonalSync) -> Held {
+    let Some(bytes) = personal.read(|store| store.person_resource(ENROLLMENT_KIND)) else {
+        return Held {
+            waiting: Vec::new(),
+            answers: BTreeMap::new(),
+        };
+    };
+    let Ok(doc) = AutoCommit::load(&bytes) else {
+        tracing::warn!("the machines waiting for an answer in the person's store do not read");
+        return Held {
+            waiting: Vec::new(),
+            answers: BTreeMap::new(),
+        };
+    };
+    let mut waiting = Vec::new();
+    let mut answers = BTreeMap::new();
+    for key in doc.keys(automerge::ROOT) {
+        let Some(value) = text_of(&doc, &key) else {
+            continue;
+        };
+        if let Some(ask) = key.strip_prefix("request:") {
+            let Some(machine): Option<Waiting> = tilo_failure::ignored!(
+                "an ask this build cannot read is no machine waiting",
+                serde_json::from_str(&value).ok()
+            ) else {
+                continue;
+            };
+            if machine.ask == ask {
+                waiting.push(machine);
+            }
+        } else if let Some(ask) = key.strip_prefix("answer:") {
+            answers.insert(ask.to_owned(), value == "approve");
+        }
+    }
+    waiting.sort_by(|left, right| left.ask.cmp(&right.ask));
+    Held { waiting, answers }
+}
+
+fn text_of(doc: &AutoCommit, key: &str) -> Option<String> {
+    let (value, _) = doc.get(automerge::ROOT, key).ok()??;
+    value.into_string().ok()
+}
+
+/// Write one entry of the store's document, taking what it already holds.
+fn write(
+    personal: &PersonalSync,
+    write: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+) -> Result<(), String> {
+    let held = personal.read(|store| store.person_resource(ENROLLMENT_KIND));
+    let mut doc = match held.as_deref().map(AutoCommit::load) {
+        Some(Ok(doc)) => doc,
+        Some(Err(error)) => return Err(format!("the machines waiting do not read: {error}")),
+        None => AutoCommit::new(),
+    };
+    let base = doc.get_heads();
+    write(&mut doc)?;
+    let mutation = if held.is_some() {
+        DocumentMutation::Incremental(doc.save_after(&base))
+    } else {
+        DocumentMutation::Snapshot(doc.save())
+    };
+    personal
+        .publish(|store, key, now| {
+            store.publish_person_resource(ENROLLMENT_KIND, &mutation, key, now)
         })
-    }
+        .map(drop)
+}
 
-    /// The machines waiting for the person's answer now.
-    pub(crate) fn waiting(&self) -> Vec<Waiting> {
-        self.waiting.lock_recover().values().cloned().collect()
-    }
+fn put(doc: &mut AutoCommit, key: &str, value: &str) -> Result<(), String> {
+    doc.put(automerge::ROOT, key, value)
+        .map_err(|error| error.to_string())?;
+    doc.commit_edit(CHANGE_KIND, key);
+    Ok(())
+}
 
-    /// Answer one waiting machine: `approve` admits it, `false` turns it away.
-    ///
-    /// # Errors
-    ///
-    /// The helper stopped taking answers.
-    pub(crate) fn answer(&mut self, ask: &str, approve: bool) -> Result<(), String> {
-        let answer = if approve { "approve" } else { "decline" };
-        writeln!(self.stdin, "{answer} {ask}")
-            .and_then(|()| self.stdin.flush())
-            .map_err(|error| format!("the enrollment helper stopped taking answers: {error}"))?;
-        self.waiting.lock_recover().remove(ask);
-        Ok(())
+/// Enter `machine` as asking to join: what every one of the person's devices
+/// shows, and what the device that serves its connection waits on.
+pub(crate) fn enter(personal: &PersonalSync, machine: &WaitingMachine) -> Result<(), String> {
+    let value = serde_json::to_string(&Waiting::of(machine)).map_err(|error| error.to_string())?;
+    write(personal, |doc| {
+        put(doc, &format!("request:{}", machine.ask), &value)
+    })
+}
+
+/// Answer the machine whose ask is `ask`: `approve` admits it. The answer is
+/// the person's whichever of their devices wrote it; the one serving the
+/// machine carries it out.
+pub(crate) fn answer(personal: &PersonalSync, ask: &str, approve: bool) -> Result<(), String> {
+    let value = if approve { "approve" } else { "decline" };
+    write(personal, |doc| {
+        // The ask is answered: it leaves every device's screen at once.
+        let _ = doc.delete(automerge::ROOT, &format!("request:{ask}"));
+        put(doc, &format!("answer:{ask}"), value)
+    })
+}
+
+/// The answer the person gave the machine whose ask is `ask`, once any of
+/// their devices gave one.
+fn answered(personal: &PersonalSync, ask: &str) -> Option<Decision> {
+    held(personal).answers.get(ask).map(|approve| {
+        if *approve {
+            Decision::Approve
+        } else {
+            Decision::Decline
+        }
+    })
+}
+
+/// The person's own devices, as the store holds them, for the endpoint that
+/// answers machines: another device answers an ask from the store, and this
+/// one carries it out here.
+pub(crate) struct Asked {
+    personal: PersonalSync,
+}
+
+impl Person for Asked {
+    fn decide(&mut self, machine: &WaitingMachine) -> anyhow::Result<Decision> {
+        enter(&self.personal, machine).map_err(|error| anyhow::anyhow!(error))?;
+        // The person may answer here or on any other device of theirs: the
+        // store carries whichever comes first.
+        let Some(deadline) = std::time::Instant::now().checked_add(ASK_FOR) else {
+            return Ok(Decision::Decline);
+        };
+        while std::time::Instant::now() < deadline {
+            if let Some(decision) = answered(&self.personal, &machine.ask) {
+                return Ok(decision);
+            }
+            std::thread::sleep(LOOK_EVERY);
+        }
+        Ok(Decision::Decline)
     }
 }
 
-impl Drop for Serving {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
+/// Answer machines on this device's enrollment endpoint for as long as the
+/// session is up, noting each ask in the person's store. `root` and
+/// `directory` are the person's identity as this device holds it.
+pub(crate) fn serve(
+    personal: PersonalSync,
+    root: std::path::PathBuf,
+    directory: std::path::PathBuf,
+) {
+    let relays = own_relays();
+    std::thread::Builder::new()
+        .name("tilo-enrollment-serve".into())
+        .spawn(move || {
+            let mut asked = Asked { personal };
+            let mut options = Vec::new();
+            // The machine that installs a server of the person's, and one of
+            // their own devices: the same endpoint answers both.
+            for kind in [
+                tilo_enrollment::EnrollmentKind::HomePeer,
+                tilo_enrollment::EnrollmentKind::PersonalDevice,
+            ] {
+                options.push(ApprovalOptions {
+                    identity_root: &root,
+                    identity_dir: Some(&directory),
+                    timeout: 600,
+                    workspace_cache: std::path::Path::new("/var/cache/quick-fs"),
+                    acl: std::path::Path::new("/var/lib/tilo/fs-capabilities.json"),
+                    server_workspace_ids: &[],
+                    expected_device: None,
+                    expected_service: None,
+                    kind,
+                    port: 0,
+                    ready: None,
+                    approved: None,
+                    person_uid: None,
+                });
+            }
+            match tilo_enrollment::transport::serve_for_lifetime(
+                &options,
+                relays.as_ref(),
+                &mut asked,
+                None,
+            ) {
+                Ok(()) => {}
+                Err(error) => tracing::info!("{error:#}"),
+            }
+        })
+        .map(drop)
+        .unwrap_or_else(|error| tracing::warn!(%error, "this session answers no machines"));
 }
 
-/// Let a machine with no token in, by its own `tilo://enroll?…` line: the
-/// helper dials it and approves it there. Nothing is served on this device.
-///
-/// # Errors
-///
-/// The helper cannot be started, or the line names no machine.
-pub(crate) fn scan(
+/// Let a machine with no token in, by its own `tilo://enroll?…` line: this
+/// device dials it and approves it there. Answers as both kinds, as the
+/// endpoint does.
+pub(crate) fn approve_line(
     line: &str,
-    root: &std::path::Path,
-    dir: &std::path::Path,
-) -> Result<std::process::Child, String> {
+    root: std::path::PathBuf,
+    directory: std::path::PathBuf,
+) -> Result<(), String> {
     if !line.trim().starts_with("tilo://enroll?") {
         return Err("paste the machine's link, which starts with tilo://enroll?".into());
     }
-    let mut command = Command::new(ENROLL);
-    command
-        .args(["approve", "--iroh", "--dial", line.trim()])
-        .arg("--identity-root")
-        .arg(root)
-        .arg("--identity-dir")
-        .arg(dir)
-        .args(["--timeout", &DIAL_SECONDS.to_string()])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    command
-        .spawn()
+    let relays = own_relays();
+    std::thread::Builder::new()
+        .name("tilo-enrollment-dial".into())
+        .spawn(move || {
+            for kind in [
+                tilo_enrollment::EnrollmentKind::HomePeer,
+                tilo_enrollment::EnrollmentKind::PersonalDevice,
+            ] {
+                let options = ApprovalOptions {
+                    identity_root: &root,
+                    identity_dir: Some(&directory),
+                    timeout: 270,
+                    workspace_cache: std::path::Path::new("/var/cache/quick-fs"),
+                    acl: std::path::Path::new("/var/lib/tilo/fs-capabilities.json"),
+                    server_workspace_ids: &[],
+                    expected_device: None,
+                    expected_service: None,
+                    kind,
+                    port: 0,
+                    ready: None,
+                    approved: None,
+                    person_uid: None,
+                };
+                match tilo_enrollment::transport::approve_line(&options, relays.as_ref(), line) {
+                    Ok(()) => return,
+                    Err(error) => tracing::info!("{error:#}"),
+                }
+            }
+        })
+        .map(|_| ())
         .map_err(|error| format!("this session cannot approve that machine: {error}"))
-}
-
-/// The relay this device's endpoints are reached through, when it names one.
-fn own_relay() -> Option<String> {
-    tilo_endpoint_reachability::relays()
-        .relays
-        .urls::<Vec<_>>()
-        .first()
-        .map(ToString::to_string)
 }
 
 /// The tag the ask about `ask` is told and withdrawn under.
@@ -283,6 +383,16 @@ pub(crate) fn notice(machine: &Waiting) -> Notice {
     .tagged(tag(&machine.ask))
 }
 
+/// The relays this device's endpoints are reached through: a machine behind
+/// a network translation finds its enrollment endpoint only there.
+fn own_relays() -> Option<iroh::RelayMap> {
+    let relays = tilo_endpoint_reachability::relays().relays;
+    if relays.is_empty() {
+        return None;
+    }
+    Some(relays)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,17 +405,18 @@ mod tests {
             label: "Home server".into(),
             hardware: "8 cores · 16 GB memory · Fedora Linux 44".into(),
             code: "482913".into(),
+            nonce: "aa".repeat(16),
         }
     }
 
     tilo_test_env::scenario! {
         fn machines_that_ask_to_join_are_shown_and_answered;
 
-        phase a_machine_the_helper_reports_waits_with_what_it_is;
-        // The helper's line is the ask the person sees: what the machine calls
+        phase a_machine_the_store_holds_waits_with_what_it_is;
+        // The store's entry is the ask the person sees: what the machine calls
         // itself, what it is and the code both sides show.
         {
-            let line = serde_json::to_string(&machine()).expect("a line");
+            let line = serde_json::to_string(&machine()).expect("an entry");
             let read: Waiting = serde_json::from_str(&line).expect("parsed");
             assert_eq!(read, machine());
             let said = described(&read);
@@ -343,75 +454,9 @@ mod tests {
             assert_eq!(review_of(&review_key(&waiting.ask)), Some(waiting.ask));
             assert_eq!(answer_of("something-else"), None);
         }
-
-        phase a_helper_that_prints_a_machine_and_takes_the_answer;
-        // The session starts the helper: the machine it prints is
-        // put to the person, and the person's answer is the line it reads.
-        {
-            let mut command = Command::new("/bin/sh");
-            command
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .arg("-c")
-                .arg(
-                    "printf '%s\\n' '{\"ask\":\"aabb\",\"device\":\"cc\",\"service\":\"dd\",\
-                     \"label\":\"Home server\",\"hardware\":\"8 cores\",\"code\":\"482913\"}'; \
-                     read answer; printf '{\"ask\":\"aabb\",\"approved\":true}\\n'; \
-                     printf '%s' \"$answer\" > \"$1\"",
-                )
-                .arg("sh")
-                .arg(std::env::temp_dir().join(format!(
-                    "tilo-enrollment-answer-{}.txt",
-                    std::process::id()
-                )));
-            let path = std::env::temp_dir().join(format!(
-                "tilo-enrollment-answer-{}.txt",
-                std::process::id()
-            ));
-            let mut serving = Serving::over(command).expect("the helper starts");
-            let machine = wait_for(|| {
-                serving
-                    .waiting()
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| "the machine is reported".to_string())
-            });
-            assert_eq!(machine.label, "Home server");
-            serving.answer(&machine.ask, true).expect("answered");
-            assert!(
-                serving.waiting().is_empty(),
-                "an answered machine waits no more"
-            );
-            wait_for(|| {
-                std::fs::read_to_string(&path)
-                    .ok()
-                    .filter(|answer| !answer.trim().is_empty())
-                    .ok_or_else(|| "the helper took the answer".to_string())
-            });
-            assert_eq!(
-                std::fs::read_to_string(&path).expect("the answer").trim(),
-                "approve aabb"
-            );
-            let _ = std::fs::remove_file(&path);
-        }
-    }
-
-    /// What `read` answers, once it does, within the test's hang bound.
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the bound is a small duration"
-    )]
-    fn wait_for<T>(mut read: impl FnMut() -> Result<T, String>) -> T {
-        let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
-        loop {
-            match read() {
-                Ok(value) => return value,
-                Err(what) if std::time::Instant::now() < deadline => {
-                    let _ = what;
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-                Err(what) => panic!("{what} did not happen in time"),
-            }
-        }
     }
 }
+
+#[cfg(test)]
+#[path = "enrollment_tests.rs"]
+mod store_tests;

@@ -87,6 +87,11 @@ pub const WIFI_KIND: &str = "identity.wifi";
 /// says of itself that lasts: what it is, its speaker groups and its disk
 /// unlock, each under its own key.
 pub const DEVICE_FACTS: &str = "facts";
+/// The kind of the person's resource that holds the machines that asked to
+/// join and have not been answered yet: one entry per ask, under its id, and
+/// the answer any of their devices wrote. The storing device's session shows
+/// it from here and carries out whatever answer arrives.
+pub const ENROLLMENT_KIND: &str = "identity.enrollment";
 /// The most devices that resource names to this device: entries past it are
 /// not read, and this device adds none.
 const MAX_DEVICES: usize = 256;

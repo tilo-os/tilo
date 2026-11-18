@@ -3,61 +3,53 @@
 //! by showing a short code one of the person's devices approves; a device of
 //! theirs finds a machine on the local network and approves that. Which of
 //! those an image offers it declares once (`tilo_identity::enrollment`).
+//!
+//! The protocol itself — the messages, the answer, and serving a machine that
+//! dials over the internet — is [`tilo_enrollment`], so the person's session
+//! answers with the same code this binary does. What is here is the command
+//! line, the machine's own side of an enrollment, and the local network.
 
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::path::PathBuf;
 use std::time::Duration;
-use tilo_server::root_signer::{RootSigner, load_root as load_approval_root};
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::{Signer, Verifier, VerifyingKey};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use rand::Rng as _;
 use serde::{Deserialize, Serialize};
 use socket2::{Domain, Protocol, Socket, Type};
-use tilo_clock::try_unix_now_ns;
-use tilo_device_identity::IdentityPaths;
 use tilo_identity::certification_ceremony::pairing_code;
 use tilo_identity::device_fleet::{DeviceFleet, DeviceFleetStore};
-use tilo_identity::enrollment::{Certifier, NonceStore, Redemption};
-use tilo_server::HomePeerRegistration;
 use tilo_server_protocol::WorkspaceId;
-use tilo_user_identity::canonical::signing_digest;
 use tilo_user_identity::{
-    DeviceCapabilities, DeviceCert, StatementSigner, decode_enrollment_token, verify_device_cert,
-    verify_device_cert_at, verify_enrollment_token,
+    DeviceCert, IdentityPaths, decode_enrollment_token, verify_device_cert, verify_device_cert_at,
+    verify_enrollment_token,
 };
 
-#[path = "enroll_protocol.rs"]
-mod protocol;
+use tilo_enrollment::approval::{
+    ApprovalIdentity, ApprovalOptions, PendingApproval, SelectedNearby, accept_request,
+    await_approval_ack, commit_approval, expected_pair, load_approval_identity, prepare_approval,
+    received_packet, register_home_peer,
+};
+use tilo_enrollment::protocol::{
+    EnrollmentKind, MAX_PACKET, NEARBY_PORT, PAIR_DOMAIN, PAIR_MAGIC, PairCandidate,
+    PairSolicitation, Request, Response, ResponsePayload, decrypt_pair_offer, decrypt_response,
+    encrypt_pair_offer, encrypt_request, make_ack, verify_ack, verify_finalized,
+};
+use tilo_enrollment::root::RootSigner;
+use tilo_enrollment::transport::{self, ALPN};
+use tilo_enrollment::{
+    Console, Decision, Person, WaitingMachine, WindowClosed, bounded_home_peer_registry,
+    deadline_after, fleet_store, hardware_summary, now_ns, public_identity_record,
+    remember_personal_devices, response_preimage, restore_owner_from_parent,
+    share_directory_like_parent, sign_response, sign_root_cert, socket_timeout, valid_solicitation,
+    validity_start_ns, verify_response, verify_signature,
+};
+
 #[path = "enroll_transport.rs"]
-mod transport;
-#[path = "enroll_waiting.rs"]
-mod waiting;
-
-use waiting::{Console, Decision, Person, WaitingMachine, hardware_summary};
-
-use protocol::{
-    decrypt_pair_offer, decrypt_request, decrypt_response, encrypt_pair_offer, encrypt_request,
-    encrypt_response, make_ack, make_finalized, verify_ack, verify_finalized,
-};
-
-/// Well-known UDP port every nearby-pairing listener binds and every
-/// soliciting device broadcasts to. Broadcast discovery has no channel to
-/// advertise a port before the first datagram, so the rendezvous must be
-/// fixed. It stays below Linux's ephemeral range (32768-60999) so an outgoing
-/// socket can never be auto-assigned it and block a listener, and inside the
-/// 1025-65535 range the desktop firewall zone accepts. IANA leaves it
-/// unassigned and no common service uses it.
-const NEARBY_PORT: u16 = 23_831;
-const MAX_PACKET: usize = 60 * 1024;
-const RESPONSE_DOMAIN: &[u8] = b"tilo-enrollment-response-v2\0";
-const ACK_DOMAIN: &[u8] = b"tilo-enrollment-ack-v1\0";
-const FINALIZED_DOMAIN: &[u8] = b"tilo-enrollment-finalized-v1\0";
-const PAIR_DOMAIN: &[u8] = b"tilo-nearby-home-peer-offer-v1\0";
-/// Solicitation magic: the device reads HPKE pair offers.
-const PAIR_MAGIC: [u8; 8] = *b"TLOPAIR2";
+mod join_transport;
 
 #[derive(Parser)]
 #[command(name = "tilo-enroll")]
@@ -328,126 +320,6 @@ struct RevokeArgs {
     reason: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-enum EnrollmentKind {
-    HomePeer,
-    PersonalDevice,
-}
-
-#[derive(Serialize, Deserialize)]
-struct Request {
-    token: String,
-    device_public_key: [u8; 32],
-    server_node_id: [u8; 32],
-    label: String,
-    /// What the machine is, in its own words, for the person deciding whether
-    /// to admit it ([`hardware_summary`]).
-    #[serde(default)]
-    hardware: String,
-    kind: EnrollmentKind,
-}
-
-/// Plaintext of a v2 request: the request plus the key its response is
-/// sealed to (only the requester holds the matching secret).
-#[derive(Serialize)]
-struct RequestV2<'a> {
-    request: &'a Request,
-    response_public_key: [u8; 32],
-}
-
-#[derive(Deserialize)]
-struct RequestV2Owned {
-    request: Request,
-    response_public_key: [u8; 32],
-}
-
-/// Where an enrollment response is sealed to: the response key inside the
-/// requester's sealed request.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ResponseRoute {
-    response_public_key: [u8; 32],
-}
-
-#[derive(Serialize, Deserialize)]
-struct ResponsePayload {
-    nonce: [u8; 16],
-    recipient_device_public_key: [u8; 32],
-    server_node_id: [u8; 32],
-    cert: DeviceCert,
-    home_peer_toml: Option<String>,
-    /// A public-only runtime identity record. It deliberately contains no
-    /// root signing share; collaboration is authenticated by the separately
-    /// certified device key installed in `identity_root`.
-    public_identity_json: Option<Vec<u8>>,
-    /// Complete bounded fleet projection after this device was admitted.
-    fleet_json: Option<Vec<u8>>,
-    /// Current verified home-peer registry, so continuity does not depend on
-    /// the approving laptop remaining online after setup.
-    home_peers_json: Option<Vec<u8>>,
-}
-
-/// The approving device's answer when it holds the identity's key: signed by
-/// that key, the answer every build understands.
-#[derive(Serialize, Deserialize)]
-struct Response {
-    payload: ResponsePayload,
-    signature: Vec<u8>,
-}
-
-/// The approving device's answer when it holds none of the identity's key and
-/// introduces a device the person's key holders certified: signed by its own
-/// certified device key, the device the token named as its issuer.
-#[derive(Serialize, Deserialize)]
-struct IntroducedResponse {
-    payload: ResponsePayload,
-    issuer: DeviceCert,
-    signature: Vec<u8>,
-}
-
-/// What signs the approving side of a pairing.
-#[derive(Clone, Copy)]
-enum Approver<'a> {
-    /// The identity's key, held here.
-    Root(&'a dyn RootSigner),
-    /// This device's certified key, introducing a device the person's key
-    /// holders certified.
-    Introducer {
-        device: &'a ed25519_dalek::SigningKey,
-        issuer: &'a DeviceCert,
-    },
-}
-
-impl Approver<'_> {
-    /// `digest`, a statement's domain-separated digest, signed by whichever
-    /// key approves here.
-    fn sign(&self, digest: &[u8; 32]) -> anyhow::Result<Vec<u8>> {
-        Ok(match self {
-            Self::Root(root) => root.sign_digest(digest)?.to_vec(),
-            Self::Introducer { device, .. } => device.sign_digest(digest)?.to_vec(),
-        })
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-struct PairSolicitation {
-    magic: [u8; 8],
-    device_public_key: [u8; 32],
-    server_node_id: [u8; 32],
-    label: String,
-    /// What the machine is, in its own words ([`hardware_summary`]).
-    hardware: String,
-    kind: EnrollmentKind,
-}
-
-#[derive(Serialize, Deserialize)]
-struct PairCandidate {
-    device_node_id: String,
-    server_node_id: String,
-    label: String,
-    verification_code: String,
-    kind: EnrollmentKind,
-}
-
 /// The files of a personal enrollment live in a private, durable staging
 /// directory until the approving device has sent `Finalized`.  A marker is
 /// deliberately retained while the staged files are being published: a boot
@@ -562,148 +434,6 @@ fn staged(path: &std::path::Path, name: &str) -> PathBuf {
     path.join(name)
 }
 
-/// The person's device fleet: the canonical record of their devices and
-/// revocations, kept in their identity directory.
-fn fleet_store(
-    identity_root: &std::path::Path,
-    identity_dir: &std::path::Path,
-) -> DeviceFleetStore {
-    let store = DeviceFleetStore::at(identity_dir, IdentityPaths::under(identity_root));
-    match PERSON_UID.get() {
-        Some(&uid) => store.for_person(uid),
-        None => store,
-    }
-}
-
-/// This device and the person's other personal devices, leaving out a device
-/// the home-peer registry names: a home peer is reached through that registry,
-/// not as one of the person's personal devices.
-fn personal_devices_of(
-    marker: &PersonalEnrollmentMarker,
-    fleet: &DeviceFleet,
-    home_peers: &[HomePeerRegistration],
-    now_ns: u64,
-) -> Vec<[u8; 32]> {
-    let home_peers: Vec<[u8; 32]> = home_peers
-        .iter()
-        .filter_map(|peer| hex::decode(&peer.device_node_id).ok()?.try_into().ok())
-        .collect();
-    let mut devices = vec![marker.device_public_key];
-    devices.extend(
-        fleet
-            .personal_devices(&marker.user_public_key, now_ns)
-            .into_iter()
-            .filter(|device| !home_peers.contains(device)),
-    );
-    devices
-}
-
-/// Record `devices` in this device's personal device list, the authorization
-/// input that decides which devices remote actions may address. Repeatable:
-/// a device already listed is kept once.
-fn remember_personal_devices(
-    identity_root: &std::path::Path,
-    devices: &[[u8; 32]],
-) -> anyhow::Result<PathBuf> {
-    let path = tilo_server_protocol::personal_device_peer_path(identity_root);
-    for device in devices {
-        tilo_server_protocol::remember_personal_device(&path, *device)
-            .context("record the paired device as a personal device")?;
-    }
-    Ok(path)
-}
-
-/// Give one file or directory this enrollment created the owner and group of
-/// the directory it was created in.
-///
-/// Only a root-run enrollment (a headless host) creates output under another
-/// account than its directory's; desktop first use runs as the session user,
-/// whose output already belongs to them and inherits the device-trust group
-/// from the setgid identity directories. Ownership always comes from the
-/// immediate parent, never from the identity root: the root is `root:root`,
-/// while the directories below it belong to the device-trust group that the
-/// session and relay read the device identity through.
-fn restore_owner_from_parent(path: &std::path::Path) -> anyhow::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStrExt as _;
-        use std::os::unix::fs::MetadataExt as _;
-
-        if rustix::process::geteuid().as_raw() != 0 {
-            return Ok(());
-        }
-        let parent = path
-            .parent()
-            .context("enrollment output has no parent directory")?;
-        let owner = std::fs::metadata(parent)?;
-        let current = std::fs::symlink_metadata(path)?;
-        if current.uid() == owner.uid() && current.gid() == owner.gid() {
-            return Ok(());
-        }
-        let path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
-        // SAFETY: `path` is NUL-terminated and originates from a validated
-        // identity/status path. The uid/gid come from its trusted parent.
-        if unsafe { libc::lchown(path.as_ptr(), owner.uid(), owner.gid()) } != 0 {
-            return Err(anyhow::Error::from(std::io::Error::last_os_error())
-                .context("restore enrollment output ownership"));
-        }
-    }
-    #[cfg(not(unix))]
-    let _ = path;
-    Ok(())
-}
-
-/// Create `directory` if needed and give it its parent's permission bits
-/// (including set-group-ID), so a directory an enrollment adds to the shared
-/// device-trust layout is reachable the way its parent is, whatever the umask
-/// this ran under. A directory this process neither owns nor could change is
-/// left as it is.
-fn share_directory_like_parent(directory: &std::path::Path) -> anyhow::Result<()> {
-    std::fs::create_dir_all(directory)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-
-        let parent = directory
-            .parent()
-            .context("shared directory has no parent")?;
-        let wanted = std::fs::metadata(parent)?.mode() & 0o7777;
-        let current = std::fs::symlink_metadata(directory)?;
-        if !current.is_dir() {
-            bail!("{} is not a directory", directory.display());
-        }
-        let euid = rustix::process::geteuid().as_raw();
-        if current.mode() & 0o7777 != wanted && (euid == 0 || euid == current.uid()) {
-            std::fs::set_permissions(directory, std::fs::Permissions::from_mode(wanted))
-                .context("share the enrollment directory like its parent")?;
-        }
-    }
-    Ok(())
-}
-
-/// This identity's home peers, checked, as an approval hands them to a
-/// joining device: the registry holds every identity's routes.
-fn bounded_home_peer_registry(
-    identity_root: &std::path::Path,
-    user: [u8; 32],
-) -> anyhow::Result<Vec<u8>> {
-    let peers = tilo_server::read_home_peers(&tilo_server::home_peer_registry_path(identity_root))?;
-    Ok(serde_json::to_vec_pretty(
-        &peers
-            .into_iter()
-            .filter(|entry| entry.user_public_key == hex::encode(user))
-            .collect::<Vec<_>>(),
-    )?)
-}
-
-fn public_identity_record(user: [u8; 32], display_name: &str) -> anyhow::Result<Vec<u8>> {
-    Ok(runtime_identity::public_member_record(
-        display_name,
-        [88, 101, 242],
-        user,
-    )?)
-}
-
 struct CheckedPersonalProjection {
     identity: Vec<u8>,
     fleet: Vec<u8>,
@@ -731,28 +461,6 @@ fn validate_public_identity(bytes: &[u8], user: [u8; 32]) -> anyhow::Result<()> 
         bail!("approval returned an identity containing private or mismatched key material");
     }
     Ok(())
-}
-
-/// The bytes of `path`, when it exists and is within the size a registration
-/// file may have.
-fn read_bounded(path: &std::path::Path, description: &str) -> anyhow::Result<Option<Vec<u8>>> {
-    match std::fs::read(path) {
-        Ok(bytes) if bytes.len() <= 1024 * 1024 => Ok(Some(bytes)),
-        Ok(_) => bail!("{description} exceeds 1 MiB"),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.into()),
-    }
-}
-
-fn read_bounded_json<T>(path: &std::path::Path, description: &str) -> anyhow::Result<Option<T>>
-where
-    T: serde::de::DeserializeOwned,
-{
-    read_bounded(path, description)?
-        .map(|bytes| {
-            serde_json::from_slice(&bytes).with_context(|| format!("{description} is invalid"))
-        })
-        .transpose()
 }
 
 fn checked_personal_projection(
@@ -1008,7 +716,7 @@ fn commit_staged_personal_enrollment(
     // The public key and certificates are public, whatever the umask this
     // commit runs under: the session reads them to verify the device, and
     // reaches the per-identity ones through a directory shared like its parent.
-    let public = tilo_device_identity::persist::PUBLIC_FILE_MODE;
+    let public = tilo_user_identity::persist::PUBLIC_FILE_MODE;
     tilo_files::native::atomic::write_with_mode(
         &paths.user_pubkey,
         &marker.user_public_key,
@@ -1135,146 +843,6 @@ fn install_personal_projection(
     commit_staged_personal_enrollment(identity_root, &paths, &marker_path, &marker, |_| Ok(()))
 }
 
-#[derive(Serialize, Deserialize)]
-struct AckPayload {
-    nonce: [u8; 16],
-    device_public_key: [u8; 32],
-    response_digest: [u8; 32],
-}
-
-#[derive(Serialize, Deserialize)]
-struct Ack {
-    payload: AckPayload,
-    signature: Vec<u8>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct FinalizedPayload {
-    nonce: [u8; 16],
-    device_public_key: [u8; 32],
-    response_digest: [u8; 32],
-}
-
-#[derive(Serialize, Deserialize)]
-struct Finalized {
-    payload: FinalizedPayload,
-    signature: Vec<u8>,
-}
-
-fn register_home_peer(
-    identity_root: &std::path::Path,
-    cert: &DeviceCert,
-    server_node_id: [u8; 32],
-    server_workspace_ids: &[WorkspaceId],
-    server_endpoint: Option<iroh_base::EndpointAddr>,
-) -> anyhow::Result<()> {
-    if !tilo_server::valid_home_peer_label(&cert.device_label) || server_workspace_ids.len() > 4096
-    {
-        bail!("home-peer registration exceeds its bounded schema");
-    }
-    let mut registrations =
-        tilo_server::read_home_peers(&tilo_server::home_peer_registry_path(identity_root))
-            .context("the existing home-peer registry is not one this build accepts")?;
-    let device_node_id = hex::encode(cert.device_public_key);
-    registrations.retain(|entry| entry.device_node_id != device_node_id);
-    registrations.push(HomePeerRegistration {
-        schema_version: HomePeerRegistration::CURRENT_SCHEMA,
-        device_node_id,
-        server_node_id: hex::encode(server_node_id),
-        server_endpoint,
-        label: cert.device_label.clone(),
-        user_public_key: hex::encode(cert.user_public_key),
-        device_cert: Some(cert.clone()),
-        server_workspace_ids: server_workspace_ids.to_vec(),
-    });
-    tilo_server::write_home_peers(
-        &tilo_server::home_peer_registry_path(identity_root),
-        &registrations,
-    )?;
-    Ok(())
-}
-
-fn response_statement_digest(payload: &ResponsePayload) -> anyhow::Result<[u8; 32]> {
-    signing_digest(RESPONSE_DOMAIN, payload).map_err(|error| anyhow::anyhow!("{error}"))
-}
-
-/// Sign a device certificate using the authenticated person root.
-fn sign_root_cert(cert: &mut DeviceCert, root: &dyn RootSigner) -> anyhow::Result<()> {
-    tilo_user_identity::sign_device_cert(cert, root)
-        .context("sign the device certificate with the person's root")?;
-    verify_device_cert(cert).context("signed device certificate does not verify")?;
-    Ok(())
-}
-
-/// `payload` signed by `approver`, encoded: a [`Response`] from the
-/// identity's key, an [`IntroducedResponse`] from an introducer.
-fn sign_response(
-    payload: ResponsePayload,
-    approver: Approver<'_>,
-) -> anyhow::Result<zeroize::Zeroizing<Vec<u8>>> {
-    let signature = approver.sign(&response_statement_digest(&payload)?)?;
-    Ok(zeroize::Zeroizing::new(match approver {
-        Approver::Root(_) => postcard::to_stdvec(&Response { payload, signature })?,
-        Approver::Introducer { issuer, .. } => postcard::to_stdvec(&IntroducedResponse {
-            payload,
-            issuer: issuer.clone(),
-            signature,
-        })?,
-    }))
-}
-
-fn verify_signature(public_key: [u8; 32], message: &[u8], signature: &[u8]) -> anyhow::Result<()> {
-    let signature: [u8; 64] = signature
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("signature has the wrong length"))?;
-    VerifyingKey::from_bytes(&public_key)?.verify(message, &Signature::from_bytes(&signature))?;
-    Ok(())
-}
-
-/// The payload of the encoded response `bytes` and the key that signed it:
-/// the identity's key of `token`, or the device that minted `token` while it
-/// was certified by that identity.
-fn verify_response(
-    bytes: &[u8],
-    token: &tilo_user_identity::EnrollmentToken,
-) -> anyhow::Result<(ResponsePayload, [u8; 32])> {
-    if let Ok(response) = postcard::from_bytes::<Response>(bytes)
-        && verify_signature(
-            token.user_public_key,
-            &response_statement_digest(&response.payload)?,
-            &response.signature,
-        )
-        .is_ok()
-    {
-        return Ok((response.payload, token.user_public_key));
-    }
-    let response: IntroducedResponse = postcard::from_bytes(bytes)
-        .context("enrollment response is not signed by the identity or its device")?;
-    let issuer = &response.issuer;
-    let token_issuer = (token.issuer_device_public_key, token.user_public_key);
-    if (issuer.device_public_key, issuer.user_public_key) != token_issuer {
-        bail!("enrollment response comes from another device than the token's");
-    }
-    verify_device_cert_at(issuer, token.issued_at_ns)
-        .context("the approving device is not certified by the identity")?;
-    verify_signature(
-        issuer.device_public_key,
-        &response_statement_digest(&response.payload)?,
-        &response.signature,
-    )
-    .context("enrollment response was changed in transit")?;
-    Ok((response.payload, issuer.device_public_key))
-}
-
-fn valid_solicitation(solicitation: &PairSolicitation) -> bool {
-    solicitation.magic == PAIR_MAGIC
-        && VerifyingKey::from_bytes(&solicitation.device_public_key).is_ok()
-        && solicitation.server_node_id != [0; 32]
-        && tilo_server::valid_home_peer_label(&solicitation.label)
-        && solicitation.hardware.len() <= 200
-        && !solicitation.hardware.chars().any(char::is_control)
-}
-
 /// Send `bytes` to `destination`, which this machine's own broadcast address
 /// takes when the kernel refuses the LAN broadcast: a sandboxed network
 /// namespace has no LAN, and the person's own surfaces on this machine listen
@@ -1358,48 +926,6 @@ fn discover(timeout: u64, kind: EnrollmentKind) -> anyhow::Result<()> {
 // X25519-HKDF-SHA256 / ChaCha20-Poly1305), with one tilo-seal label per
 // step so an envelope for one step never opens as another. Bytes without
 // that prefix are refused.
-fn now_ns() -> anyhow::Result<u64> {
-    try_unix_now_ns().context("system clock precedes the Unix epoch")
-}
-
-/// How far before the issuer's clock an enrollment token or device
-/// certificate begins to be valid.
-///
-/// What this side issues is checked on another machine's clock the moment it
-/// arrives, and a not-before in that machine's future is refused. Two
-/// machines' clocks never agree exactly: a guest whose wall clock came from a
-/// one-second RTC at boot, or a fresh install whose time sync has not yet
-/// slewed, trails its issuer by up to a few seconds, and a certificate issued
-/// a millisecond earlier was "not yet valid" on the very device it named.
-/// The issuer decides when validity begins, so it begins slightly in the
-/// past; every verifier keeps its exact not-before check. The allowance is
-/// the one signed peer actions already tolerate
-/// (`ACTION_SIGNATURE_TOLERANCE_NS`). It grants nothing: expiry is unchanged
-/// (a token still lapses a fixed time after it is minted, a personal
-/// certificate has none), revocation is by key, and certificates this side
-/// issues keep their relative order.
-const ISSUANCE_CLOCK_ALLOWANCE_NS: u64 = 60 * 1_000_000_000;
-
-/// The not-before for something issued at `now_ns`.
-fn validity_start_ns(now_ns: u64) -> u64 {
-    now_ns.saturating_sub(ISSUANCE_CLOCK_ALLOWANCE_NS)
-}
-
-fn socket_timeout(seconds: u64) -> Duration {
-    Duration::from_secs(seconds.clamp(1, 300))
-}
-
-fn deadline_after(duration: Duration) -> anyhow::Result<std::time::Instant> {
-    std::time::Instant::now()
-        .checked_add(duration)
-        .context("enrollment timeout exceeds the platform clock range")
-}
-
-fn received_packet(buffer: &[u8], received: usize) -> anyhow::Result<&[u8]> {
-    buffer
-        .get(..received)
-        .context("socket reported a packet larger than its receive buffer")
-}
 
 fn validate_requester(lease: Option<tilo_server::ProcessLease>) -> anyhow::Result<()> {
     if let Some(lease) = lease {
@@ -1446,14 +972,14 @@ fn enroll(
             if decode_enrollment_token(token)?.dial.is_empty() {
                 join_with_token(token, options)?;
             } else {
-                transport::join(token, options)?;
+                join_transport::join(token, options)?;
             }
             // The token is spent by the certificate it bought.
             tilo_identity::enrollment::spend_token(token_file)
                 .with_context(|| format!("burn {}", token_file.display()))
         }
         tilo_identity::enrollment::Method::Code => {
-            transport::wait_for_approval(options, parse_relay_option(relay)?.as_ref(), None)
+            join_transport::wait_for_approval(options, parse_relay_option(relay)?.as_ref(), None)
         }
         tilo_identity::enrollment::Method::LocalNetwork => bail!(
             "a machine enrolls with a token or a code; local-network pairing is approved from \
@@ -1501,7 +1027,7 @@ fn prepare_join(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result<Pr
             |_| validate_requester(requester_lease),
         )?;
     }
-    let (device, _) = tilo_device_identity::persist::load_or_create_device_key(&paths)?;
+    let (device, _) = tilo_user_identity::persist::load_or_create_device_key(&paths)?;
     let request = Request {
         token: token_text.to_owned(),
         device_public_key: device.verifying_key().to_bytes(),
@@ -1638,7 +1164,7 @@ fn install_answer(
     } else {
         // The home-peer path has no multi-file member projection, but still waits
         // for Finalized before changing its active identity binding.
-        tilo_device_identity::persist::write_public_key(
+        tilo_user_identity::persist::write_public_key(
             &paths.user_pubkey,
             &payload.cert.user_public_key,
         )?;
@@ -1655,8 +1181,8 @@ fn install_answer(
                 .parent()
                 .context("per-user certificate has no directory")?,
         )?;
-        tilo_device_identity::persist::write_device_cert(&per_user_cert, &payload.cert)?;
-        tilo_device_identity::persist::write_device_cert(&paths.device_cert, &payload.cert)?;
+        tilo_user_identity::persist::write_device_cert(&per_user_cert, &payload.cert)?;
+        tilo_user_identity::persist::write_device_cert(&paths.device_cert, &payload.cert)?;
     }
     // The identity directories themselves are image layout and keep their owner
     // and group; only what this enrollment created below them takes its
@@ -1803,7 +1329,7 @@ fn pair(options: JoinOptions<'_>, status_file: Option<&std::path::Path>) -> anyh
     validate_requester(requester_lease)?;
     let paths = IdentityPaths::under(identity_root);
     paths.ensure_directories()?;
-    let (device, _) = tilo_device_identity::persist::load_or_create_device_key(&paths)?;
+    let (device, _) = tilo_user_identity::persist::load_or_create_device_key(&paths)?;
     let server_node_id = tilo_server::daemon::server_node_id(&device);
     let label: String = label.chars().take(80).collect();
     if !tilo_server::valid_home_peer_label(&label) {
@@ -1967,134 +1493,6 @@ struct JoinOptions<'a> {
     port: u16,
 }
 
-struct ApprovalOptions<'a> {
-    identity_root: &'a std::path::Path,
-    identity_dir: Option<&'a std::path::Path>,
-    timeout: u64,
-    workspace_cache: &'a std::path::Path,
-    acl: &'a std::path::Path,
-    server_workspace_ids: &'a [WorkspaceId],
-    expected_device: Option<&'a str>,
-    expected_service: Option<&'a str>,
-    kind: EnrollmentKind,
-    /// Port the listener binds; 0 lets the OS choose one.
-    port: u16,
-    /// Receives the bound listener port once the approver is listening.
-    ready: Option<&'a std::sync::mpsc::Sender<u16>>,
-    /// The expected device's certificate, signed by the person's devices
-    /// that hold the identity's key; `None` signs with the root held here.
-    approved: Option<&'a DeviceCert>,
-}
-
-impl ApprovalIdentity {
-    /// What signs this device's side: the identity's key when it holds it,
-    /// so a device on any build can pair with it; otherwise its own
-    /// certified key, as the introducer.
-    fn approver(&self) -> Approver<'_> {
-        self.root.as_deref().map_or(
-            Approver::Introducer {
-                device: &self.device,
-                issuer: &self.issuer_cert,
-            },
-            Approver::Root,
-        )
-    }
-}
-
-struct ApprovalIdentity {
-    /// The identity's root when this device holds it and signs itself.
-    root: Option<Box<dyn RootSigner>>,
-    device: ed25519_dalek::SigningKey,
-    /// This device's certificate, the issuer of the tokens it mints.
-    issuer_cert: DeviceCert,
-    user_public_key: [u8; 32],
-    server_workspace_ids: Vec<WorkspaceId>,
-}
-
-struct SelectedNearby {
-    solicitation: PairSolicitation,
-    token_text: String,
-}
-
-struct PendingApproval {
-    request: Request,
-    response_route: ResponseRoute,
-    token: tilo_user_identity::EnrollmentToken,
-    /// The datagram sender, when the local network carried it.
-    sender: Option<std::net::SocketAddr>,
-}
-
-struct ApprovalProjection {
-    home_peer_toml: Option<String>,
-    public_identity_json: Option<Vec<u8>>,
-    fleet_json: Option<Vec<u8>>,
-    home_peers_json: Option<Vec<u8>>,
-}
-
-struct PreparedApproval {
-    cert: DeviceCert,
-    server_node_id: [u8; 32],
-    encrypted: Vec<u8>,
-}
-
-fn expected_pair(options: &ApprovalOptions<'_>) -> anyhow::Result<Option<([u8; 32], [u8; 32])>> {
-    match (options.expected_device, options.expected_service) {
-        (Some(device), Some(service)) => Ok(Some((
-            hex::decode(device)?
-                .try_into()
-                .map_err(|_| anyhow::anyhow!("expected device ID has the wrong length"))?,
-            hex::decode(service)?
-                .try_into()
-                .map_err(|_| anyhow::anyhow!("expected service ID has the wrong length"))?,
-        ))),
-        (None, None) => Ok(None),
-        _ => bail!("expected device and service IDs must be supplied together"),
-    }
-}
-
-/// Load the signer and verify that this device remains authorised to admit
-/// peers: with the root it holds, or as the introducer of a device whose
-/// certificate the person's key holders approved.
-fn load_approval_identity(options: &ApprovalOptions<'_>) -> anyhow::Result<ApprovalIdentity> {
-    let paths = IdentityPaths::under(options.identity_root);
-    let (root, user_public_key) = if let Some(approved) = options.approved {
-        if options.kind != EnrollmentKind::PersonalDevice {
-            bail!("a home server is added from the device you set up first");
-        }
-        verify_device_cert(approved).context("the approved certificate does not verify")?;
-        if expected_pair(options)?.is_some_and(|(device, _)| device != approved.device_public_key) {
-            bail!("the approved certificate is for another device");
-        }
-        (None, approved.user_public_key)
-    } else {
-        let root = load_approval_root(options.identity_root, options.identity_dir)?;
-        let user_public_key = root.public_key();
-        (Some(root), user_public_key)
-    };
-    let (device, issuer_cert) =
-        tilo_identity::enrollment::device_for(&paths, user_public_key, now_ns()?)
-            .context("verify approving device certificate validity")?;
-    if root.is_some() && !issuer_cert.capabilities.can_admit_devices {
-        bail!("this device is not authorised to approve enrollment");
-    }
-    if let Some(directory) = options.identity_dir
-        && fleet_store(options.identity_root, directory)
-            .load(&hex::encode(user_public_key))
-            .context("verify approving device fleet")?
-            .is_revoked(&issuer_cert.device_public_key)
-    {
-        bail!("this device is revoked and cannot approve enrollment");
-    }
-
-    Ok(ApprovalIdentity {
-        root,
-        device,
-        issuer_cert,
-        user_public_key,
-        server_workspace_ids: options.server_workspace_ids.to_vec(),
-    })
-}
-
 fn handle_solicitation(
     socket: &UdpSocket,
     sender: std::net::SocketAddr,
@@ -2154,28 +1552,6 @@ fn handle_solicitation(
     Ok(())
 }
 
-fn valid_pending_request(
-    request: &Request,
-    token: &tilo_user_identity::EnrollmentToken,
-    kind: EnrollmentKind,
-    identity: &ApprovalIdentity,
-    selected: Option<&SelectedNearby>,
-) -> anyhow::Result<bool> {
-    let wrong_selection = selected.is_some_and(|selection| {
-        request.device_public_key != selection.solicitation.device_public_key
-            || request.server_node_id != selection.solicitation.server_node_id
-            || request.label != selection.solicitation.label
-            || request.kind != selection.solicitation.kind
-            || request.token != selection.token_text
-    });
-    Ok(verify_enrollment_token(token, now_ns()?).is_ok()
-        && token.user_public_key == identity.user_public_key
-        && token.issuer_device_public_key == identity.device.verifying_key().to_bytes()
-        && request.kind == kind
-        && token.capabilities.can_own_workspaces
-        && !wrong_selection)
-}
-
 fn receive_approval_request(
     socket: &UdpSocket,
     packet: &mut [u8],
@@ -2222,284 +1598,6 @@ fn receive_approval_request(
     }
 }
 
-/// The request a device sent, once its token and selection check out. The
-/// approver answers whatever carried it: a datagram on the local network, or
-/// a stream a machine anywhere dialled.
-fn accept_request(
-    bytes: &[u8],
-    options: &ApprovalOptions<'_>,
-    identity: &ApprovalIdentity,
-    selected: Option<&SelectedNearby>,
-    sender: Option<std::net::SocketAddr>,
-) -> anyhow::Result<Option<PendingApproval>> {
-    let Ok((request, response_route)) = decrypt_request(bytes, &identity.device) else {
-        return Ok(None);
-    };
-    let Ok(token) = decode_enrollment_token(request.token.trim()) else {
-        return Ok(None);
-    };
-    Ok(
-        valid_pending_request(&request, &token, options.kind, identity, selected)?.then_some(
-            PendingApproval {
-                request,
-                response_route,
-                token,
-                sender,
-            },
-        ),
-    )
-}
-
-/// What the approval hands the device besides its certificate. The personal
-/// device's fleet is filled in once the token is redeemed, because the fleet
-/// then lists the new certificate.
-fn approval_projection(
-    options: &ApprovalOptions<'_>,
-    identity: &ApprovalIdentity,
-) -> anyhow::Result<ApprovalProjection> {
-    match options.kind {
-        EnrollmentKind::HomePeer => {
-            let ticket_text =
-                std::fs::read_to_string(options.workspace_cache.join("workspace-ticket"))
-                    .context("the local Files workspace is not ready to share")?;
-            let ticket = fs::Ticket::decode(ticket_text.trim())
-                .context("local workspace ticket is invalid")?;
-            let capability_json = std::fs::read_to_string(options.acl)
-                .with_context(|| format!("read {}", options.acl.display()))?;
-            let capabilities: collab_types::FsAuthority = serde_json::from_str(&capability_json)
-                .context("filesystem capability export is invalid")?;
-            let authority = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign_with(
-                ticket.workspace_id(),
-                1,
-                capabilities,
-                false,
-                identity.user_public_key,
-                |digest| {
-                    Ok(identity
-                        .root
-                        .as_ref()
-                        .context("this device holds no identity root")?
-                        .sign_digest(digest)?)
-                },
-            )?;
-            let mut server_workspace_ids = identity.server_workspace_ids.clone();
-            server_workspace_ids.sort_unstable();
-            server_workspace_ids.dedup();
-            let home_peer = fs::full_replica::HomePeerSet {
-                status_file: PathBuf::from("/var/lib/tilo/full-replica/status.json"),
-                workspaces: vec![fs::full_replica::HomePeerBundle {
-                    ticket: ticket.encode()?,
-                    cache_dir: PathBuf::from("/var/lib/tilo/full-replica")
-                        .join(ticket.workspace_id().to_string()),
-                    capability_json,
-                    authority: Some(authority),
-                    members: Vec::new(),
-                    server_workspace_ids,
-                }],
-            };
-            Ok(ApprovalProjection {
-                home_peer_toml: Some(toml::to_string_pretty(&home_peer)?),
-                public_identity_json: None,
-                fleet_json: None,
-                // The person's servers so far: the first one makes their
-                // admin workspace, a later one asks an earlier one for it.
-                home_peers_json: Some(bounded_home_peer_registry(
-                    options.identity_root,
-                    identity.user_public_key,
-                )?),
-            })
-        }
-        EnrollmentKind::PersonalDevice => {
-            options
-                .identity_dir
-                .context("identity directory is required for personal-device approval")?;
-            Ok(ApprovalProjection {
-                home_peer_toml: None,
-                public_identity_json: Some(public_identity_record(
-                    identity.user_public_key,
-                    "My Tilo identity",
-                )?),
-                fleet_json: None,
-                home_peers_json: Some(bounded_home_peer_registry(
-                    options.identity_root,
-                    identity.user_public_key,
-                )?),
-            })
-        }
-    }
-}
-
-fn prepare_approval(
-    options: &ApprovalOptions<'_>,
-    identity: &ApprovalIdentity,
-    pending: &PendingApproval,
-) -> anyhow::Result<PreparedApproval> {
-    // Everything that can refuse runs before the token is redeemed: a refusal
-    // after it would spend the token on a device that never hears back.
-    let mut projection = approval_projection(options, identity)?;
-    let cert = redeem_pending(options, identity, pending)?;
-    if let Some(identity_dir) = options.identity_dir
-        && options.kind == EnrollmentKind::PersonalDevice
-    {
-        projection.fleet_json = Some(
-            fleet_store(options.identity_root, identity_dir)
-                .transferred(&hex::encode(cert.user_public_key), &cert)
-                .context("hand the joining device this identity's fleet")?,
-        );
-    }
-    let signed = sign_response(
-        ResponsePayload {
-            nonce: pending.token.nonce,
-            recipient_device_public_key: pending.request.device_public_key,
-            server_node_id: pending.request.server_node_id,
-            cert: cert.clone(),
-            home_peer_toml: projection.home_peer_toml,
-            public_identity_json: projection.public_identity_json,
-            fleet_json: projection.fleet_json,
-            home_peers_json: projection.home_peers_json,
-        },
-        identity.approver(),
-    )?;
-    let encrypted = encrypt_response(
-        &signed,
-        pending.token.nonce,
-        pending.request.device_public_key,
-        pending.response_route,
-    )?;
-    Ok(PreparedApproval {
-        cert,
-        server_node_id: pending.request.server_node_id,
-        encrypted,
-    })
-}
-
-/// Redeem the pending token for the device's root-signed certificate, the way
-/// every redeemer does: the issuer is checked at the token's issue time and
-/// now and against the fleet's revocations, the nonce is spent in the shared
-/// store, and the certificate is in the person's fleet before it is sent.
-fn redeem_pending(
-    options: &ApprovalOptions<'_>,
-    identity: &ApprovalIdentity,
-    pending: &PendingApproval,
-) -> anyhow::Result<DeviceCert> {
-    let now = now_ns()?;
-    let fleet = options
-        .identity_dir
-        .map(|identity_dir| fleet_store(options.identity_root, identity_dir));
-    let sign_here = |digest: &[u8]| {
-        let digest: &[u8; 32] = digest
-            .try_into()
-            .map_err(|_| std::io::Error::other("a certificate digest is 32 bytes"))?;
-        identity
-            .root
-            .as_ref()
-            .ok_or_else(|| std::io::Error::other("this device holds no identity root"))?
-            .sign_digest(digest)
-            .map_err(|error| std::io::Error::other(error.to_string()))
-    };
-    tilo_identity::enrollment::redeem(
-        fleet.as_ref(),
-        &NonceStore::under(options.identity_root),
-        &Redemption {
-            token: &pending.token,
-            device_public_key: pending.request.device_public_key,
-            label: &pending.request.label,
-            now_ns: now,
-            valid_from_ns: validity_start_ns(now),
-            local_issuer: Some(&identity.issuer_cert),
-        },
-        options
-            .approved
-            .map_or(Certifier::Root(&sign_here), Certifier::Approved),
-    )
-    .context("redeem the enrollment token")
-}
-
-/// Wait for the device to acknowledge its signed configuration. The device
-/// durably stages the whole enrollment before it acknowledges, so the wait
-/// is bounded by the enrollment window rather than a fixed allowance that a
-/// slow disk on the device side can exceed.
-fn await_approval_ack(
-    socket: &UdpSocket,
-    packet: &mut [u8],
-    pending: &PendingApproval,
-    prepared: &PreparedApproval,
-    window: Duration,
-) -> anyhow::Result<()> {
-    let sender = pending
-        .sender
-        .context("a local-network approval has a sender")?;
-    socket.set_read_timeout(Some(Duration::from_secs(1)))?;
-    let deadline = deadline_after(window)?;
-    while std::time::Instant::now() < deadline {
-        socket.send_to(&prepared.encrypted, sender)?;
-        match socket.recv_from(packet) {
-            Ok((len, ack_sender)) if Some(ack_sender) == pending.sender => {
-                if verify_ack(
-                    received_packet(packet, len)?,
-                    &prepared.encrypted,
-                    pending.token.nonce,
-                    pending.request.device_public_key,
-                )
-                .is_ok()
-                {
-                    return Ok(());
-                }
-            }
-            Ok(_) => {}
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-    bail!("nearby device did not acknowledge its signed configuration")
-}
-
-fn commit_approval(
-    options: &ApprovalOptions<'_>,
-    identity: &ApprovalIdentity,
-    pending: &PendingApproval,
-    prepared: &PreparedApproval,
-) -> anyhow::Result<Vec<u8>> {
-    match options.kind {
-        EnrollmentKind::HomePeer => register_home_peer(
-            options.identity_root,
-            &prepared.cert,
-            prepared.server_node_id,
-            &identity.server_workspace_ids,
-            None,
-        )?,
-        EnrollmentKind::PersonalDevice => {
-            // The fleet has listed the device since its token was redeemed.
-            // The device acknowledged the certificate this device just issued
-            // under the identity's root: both are now this person's devices.
-            let personal_peers = remember_personal_devices(
-                options.identity_root,
-                &[
-                    identity.device.verifying_key().to_bytes(),
-                    prepared.cert.device_public_key,
-                ],
-            )?;
-            restore_owner_from_parent(&personal_peers)?;
-        }
-    }
-    println!(
-        "approved device {}",
-        hex::encode(prepared.cert.device_public_key)
-    );
-    // The Finalized the machine waits for, for the caller to carry: eight
-    // datagrams on the local network, one stream over iroh.
-    make_finalized(
-        &prepared.encrypted,
-        pending.token.nonce,
-        pending.request.device_public_key,
-        identity.approver(),
-    )
-}
-
 fn approve(options: &ApprovalOptions<'_>) -> anyhow::Result<()> {
     let identity = load_approval_identity(options)?;
     let socket = bind_pair_listener(options.port)?;
@@ -2539,7 +1637,7 @@ fn approve(options: &ApprovalOptions<'_>) -> anyhow::Result<()> {
 
 fn device_key(identity_root: &std::path::Path) -> anyhow::Result<()> {
     let paths = IdentityPaths::under(identity_root);
-    let (device, _) = tilo_device_identity::persist::load_or_create_device_key(&paths)?;
+    let (device, _) = tilo_user_identity::persist::load_or_create_device_key(&paths)?;
     println!(
         "{}",
         serde_json::json!({
@@ -2596,7 +1694,7 @@ fn certify(options: &CertifyOptions<'_>) -> anyhow::Result<()> {
     } = *options;
     let root: Box<dyn RootSigner> = match root_key {
         Some(path) => Box::new(
-            tilo_device_identity::persist::read_owned_signing_key(path)
+            tilo_user_identity::persist::read_owned_signing_key(path)
                 .with_context(|| format!("read {}", path.display()))?,
         ),
         None => load_approval_root(identity_root, identity_dir)?,
@@ -2631,7 +1729,7 @@ fn certify(options: &CertifyOptions<'_>) -> anyhow::Result<()> {
         fleet_store(identity_root, identity_dir)
             .remember_certificate(&hex::encode(cert.user_public_key), cert.clone())?;
     }
-    tilo_device_identity::persist::write_device_cert(out, &cert)?;
+    tilo_user_identity::persist::write_device_cert(out, &cert)?;
     Ok(())
 }
 
@@ -2655,7 +1753,7 @@ fn revoke(options: &RevokeArgs) -> anyhow::Result<()> {
         .ok()
         .and_then(|bytes| bytes.try_into().ok())
         .context("--device must be a 32-byte hex public key")?;
-    let root = tilo_device_identity::persist::read_owned_signing_key(root_key)
+    let root = tilo_user_identity::persist::read_owned_signing_key(root_key)
         .with_context(|| format!("read {}", root_key.display()))?;
     let (entry, changed) = tilo_server::root_signer::revoke_device(state, &root, device, reason)?;
     let device = hex::encode(entry.revoked_device_public_key);
@@ -2676,16 +1774,16 @@ fn install_cert(
     identity_dir: &std::path::Path,
     cert_path: &std::path::Path,
 ) -> anyhow::Result<()> {
-    let cert = tilo_device_identity::persist::read_device_cert(cert_path)
+    let cert = tilo_user_identity::persist::read_device_cert(cert_path)
         .with_context(|| format!("read {}", cert_path.display()))?;
     verify_device_cert_at(&cert, now_ns()?).context("the certificate does not verify")?;
     let paths = IdentityPaths::under(identity_root);
-    let device = tilo_device_identity::persist::read_device_key(&paths.device_privkey)
+    let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
         .context("this device has no key; run device-key first")?;
     if device.verifying_key().to_bytes() != cert.device_public_key {
         bail!("the certificate names another device");
     }
-    if let Ok(user) = tilo_device_identity::persist::read_public_key(&paths.user_pubkey)
+    if let Ok(user) = tilo_user_identity::persist::read_public_key(&paths.user_pubkey)
         && user != cert.user_public_key
     {
         bail!("this device already belongs to another identity");
@@ -2923,7 +2021,7 @@ fn run() -> anyhow::Result<()> {
                 port: NEARBY_PORT,
                 ready: None,
                 approved: approved_cert
-                    .map(|path| tilo_device_identity::persist::read_device_cert(&path))
+                    .map(|path| tilo_user_identity::persist::read_device_cert(&path))
                     .transpose()
                     .context("read the approved certificate")?
                     .as_ref(),
@@ -2936,3 +2034,7 @@ fn run() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod enroll_tests;
+
+#[cfg(test)]
+#[path = "enroll_transport_tests.rs"]
+mod enroll_transport_tests;

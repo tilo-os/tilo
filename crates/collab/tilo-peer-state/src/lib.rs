@@ -71,7 +71,8 @@ pub use state::mail_send_lease;
 pub use state::{AdmittedFrame, PERSONAL_ALPN, PersonalSync, device_resource, resource_owner};
 pub use state::{
     BOT_SCHEDULES_KEY, CLOCK_SKEW_NS, COPY_POLICY_KEY, CopyPolicy, CopyRole, CopyStatus,
-    DEVICE_FACTS, DONE_KEY, DelegateInactive, DocumentRow, Done, GovernedAccess, GovernedAgent,
+    DEVICE_FACTS, DONE_KEY, DelegateInactive, DocumentRow, Done, ENROLLMENT_KIND, GovernedAccess,
+    GovernedAgent,
     GovernedDelegateRow, HELD_COPIES_KEY, HeldCopy, HolderCopy, InstalledApp, InstalledBot,
     KeptDocument, LEASES_KEY, Lease, LeaseClaim, MAX_HELD_BYTES, MAX_HELD_INPUTS, Member, MemberId,
     MemberList, MembershipError, Missing, NativePublicationCut, NotAdmitted, OpenedDocument,

@@ -1,56 +1,8 @@
 //! The person's root, held by this device, for enrollment and host retirement.
 
-use anyhow::{Context, bail};
-use tilo_device_identity::IdentityPaths;
-use tilo_user_identity::StatementSigner;
+use anyhow::Context;
 
-/// The person's root held here. Every statement this crate issues is signed
-/// through [`StatementSigner`], the one signing path a person's statements
-/// share.
-pub trait RootSigner: StatementSigner {}
-
-impl RootSigner for ed25519_dalek::SigningKey {}
-
-impl RootSigner for runtime_identity::SigningIdentity {}
-
-/// Open the root signer, falling back to an identity record only for an absent seed.
-pub fn load_root(
-    identity_root: &std::path::Path,
-    identity_dir: Option<&std::path::Path>,
-) -> anyhow::Result<Box<dyn RootSigner>> {
-    const MISSING_ROOT: &str =
-        "this device does not hold the identity root needed to approve enrollment";
-    let paths = IdentityPaths::under(identity_root);
-    let seed_absent = matches!(
-        std::fs::symlink_metadata(&paths.user_privkey),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound
-    );
-    let Some(identity_dir) = identity_dir.filter(|_| seed_absent) else {
-        let root = tilo_device_identity::persist::read_owned_signing_key(&paths.user_privkey)
-            .context(MISSING_ROOT)?;
-        return Ok(Box::new(root));
-    };
-    let record = runtime_identity::resolve_active_identity(identity_dir).with_context(|| {
-        format!(
-            "{MISSING_ROOT}: {} holds no active identity",
-            identity_dir.display()
-        )
-    })?;
-    let identity = runtime_identity::load_from_path(record.clone()).map_err(|error| {
-        anyhow::anyhow!(
-            "{MISSING_ROOT}: cannot open {}: {error} (run this as the account that owns the \
-             identity, in a session that can reach its secret store)",
-            record.display()
-        )
-    })?;
-    if !identity.is_single_device() {
-        bail!(
-            "{}",
-            tilo_identity::certification_ceremony::cannot_sign_alone()
-        );
-    }
-    Ok(Box::new(identity))
-}
+pub use tilo_enrollment::root::{RootSigner, load_root};
 
 /// Sign a revocation of `device` with `root` and append it to the server
 /// state's revocation log at `state_root`, where every start of the host reads

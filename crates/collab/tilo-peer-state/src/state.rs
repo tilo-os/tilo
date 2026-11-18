@@ -107,7 +107,8 @@ pub use personal::device_grants::{DEVICE_ANSWERS_KIND, DeviceAnswer, DeviceGrant
 pub use personal::link::{AdmittedFrame, PERSONAL_ALPN, PersonalSync};
 pub use personal::scopes::{device_resource, resource_owner};
 pub use personal::{
-    DEVICE_FACTS, PeerPersonal, PersonalStore, SETTINGS_KIND, WIFI_KIND, WORKSPACES_KIND,
+    DEVICE_FACTS, ENROLLMENT_KIND, PeerPersonal, PersonalStore, SETTINGS_KIND, WIFI_KIND,
+    WORKSPACES_KIND,
 };
 pub use seed::{seed_workspace, workspace_seed};
 mod compaction_set;
