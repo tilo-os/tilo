@@ -1,3 +1,12 @@
+[[allow]]
+reason = "The `tilo.host` provider's own operations, which a session serves to the person's windows and asks of its own workspace service in process (the machines their Servers workspace holds)."
+words = ["host"]
+paths = [
+    "crates/session/client/src/engine.rs",
+    "crates/session/session/src/pair_device.rs",
+    "crates/session/session/src/sync/client/own_service.rs",
+]
+
 # Uses of the words docs/glossary.md does not use that mean something outside
 # Tilo (tools/policy/check_glossary_words.py). Each rule names its `words`
 # ("*" for all) and where they are allowed: `paths`, as globs in which `*`

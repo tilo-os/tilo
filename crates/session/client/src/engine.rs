@@ -297,6 +297,18 @@ pub trait Founder: Send + Sync {
         action: &str,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Option<ServiceAnswer>;
+
+    /// Ask this device's own host its own action `action` with `arguments`, in process, as the
+    /// person at this device: what a window of theirs asks through the app broker, such as the
+    /// machines their Servers workspace holds. `None` when this device serves no such host of its own.
+    fn ask_host(
+        &self,
+        action: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Option<ServiceAnswer> {
+        let _ = (action, arguments);
+        None
+    }
 }
 
 /// The sealed records this device keeps opened, by workspace, app and record, with the keys that
@@ -1829,6 +1841,17 @@ impl Engine {
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Option<ServiceAnswer> {
         self.founder.get()?.ask(workspace, action, arguments)
+    }
+
+    /// Ask this device's own host its own action `action` with `arguments`, in process, as the
+    /// person at this device ([`Founder::ask_host`]): what a window of theirs asks through the
+    /// app broker, such as the machines their Servers workspace holds.
+    pub fn ask_host(
+        &self,
+        action: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Option<ServiceAnswer> {
+        self.founder.get()?.ask_host(action, arguments)
     }
 
     /// Whether this device holds a link into a workspace that still admits someone: a person who

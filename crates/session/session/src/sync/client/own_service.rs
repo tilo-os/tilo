@@ -227,4 +227,17 @@ impl tilo_session_client::engine::Founder for Founding {
                 .await
         }))
     }
+
+    fn ask_host(
+        &self,
+        action: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Option<tilo_session_client::engine::ServiceAnswer> {
+        let service = self.service.get()?;
+        let caller = self.identity.device_cert.clone();
+        let action = action.to_owned();
+        Some(Box::pin(async move {
+            service.ask_own(&caller, &action, arguments).await
+        }))
+    }
 }
