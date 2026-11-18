@@ -108,6 +108,42 @@ fn an_apps_new_tab_lands_right_after_its_own() {
 }
 
 #[test]
+fn a_tab_opened_beside_an_offscreen_window_brings_it_into_view() {
+    let (surface, handle) = shell_with(4, Box::new(Apps));
+    let mut frame = ui::headless::FrameHarness::for_root_with(
+        ui::state::State::new(),
+        surface,
+        (1280, 800),
+        ui::headless::FrameOptions::default(),
+    );
+    frame.relayout();
+    let before = handle.snapshot("g", vec![]).entries;
+    let anchor = before
+        .last()
+        .expect("the last window of the strip")
+        .route
+        .clone();
+    open_beside(&mut frame, &handle, anchor.clone(), false);
+    let active = handle
+        .snapshot("g", vec![])
+        .active
+        .expect("a window is focused");
+    assert_ne!(
+        active.tab, anchor.tab,
+        "the window opened beside is focused"
+    );
+    assert_eq!(active.group, anchor.group, "in the group it opened in");
+    let group: u64 = active.group.parse().expect("a group id");
+    let root = frame.root::<DesktopSurface>();
+    let row = root.shown_row_ref().expect("a strip is shown");
+    assert_eq!(
+        super::paging::panned_to(row, Some(group)),
+        Some(group),
+        "the strip comes to the window opened beside one past its edge"
+    );
+}
+
+#[test]
 fn a_tab_opened_behind_takes_no_focus() {
     let (mut frame, handle) = mount();
     let before = handle.snapshot("g", vec![]).entries;

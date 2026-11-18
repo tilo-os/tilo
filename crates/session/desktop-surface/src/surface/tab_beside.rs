@@ -9,7 +9,7 @@ use tilo_desktop_model::{GroupId, StripId, Tab, TabId};
 use super::tile_content::{build_tile, descriptor};
 use super::{DesktopSurface, Shared, row_op::RowOp};
 use crate::TileSource;
-use crate::navigation::RouteIds;
+use crate::navigation::{Admitted, RouteIds};
 
 /// Put a window for `app` into the group of the window at `ids` , as its tab right after it: what
 /// an app's request to open beside one of its own tabs does. A tab opened behind stays where it
@@ -52,7 +52,15 @@ pub(super) fn open_tab_beside(
         tab.id
     };
     if !background {
+        // The person asked for this window: bring its group into view on the strip and focus it,
+        // even when the tab it opens beside stands past the strip's edge.
         shared.tree.set_active_group(ids.strip, ids.group);
+        shared.queue.push(Admitted::Select(RouteIds {
+            workspace: ids.workspace,
+            strip: ids.strip,
+            group: ids.group,
+            tab: tab.id,
+        }));
     }
     shared.tree.external_revision = shared.tree.external_revision.wrapping_add(1);
     Some(RowOp::TabInGroup {

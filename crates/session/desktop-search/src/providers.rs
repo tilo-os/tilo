@@ -360,7 +360,7 @@ impl Source for Actions {
             .into_iter()
             .filter(|flat| offered(&flat.action.contract))
             .collect();
-        // An open record's actions answer to what they do. An item's (one
+        // An open document's actions answer to what they do. An item's (one
         // message of a chat, one card of a board) answer only to the item
         // named: "edit message" must not list the same edit once for every
         // message there is. Each kind is ranked as one list.
@@ -596,13 +596,15 @@ impl Source for Published {
                     .map(move |action| (published, action))
             })
             .collect();
-        let scores = rank::action_match_scores(
+        let scores = rank::published_action_match_scores(
             needle,
             offered.iter().map(|(_, action)| {
+                let shows_item = (action.address.action == crate::model::OPEN_ACTION)
+                    .then_some(action.resource_label.as_str());
                 (
                     action.action_label.as_str(),
                     action.keywords.as_slice(),
-                    action.resource_label.as_str(),
+                    shows_item,
                 )
             }),
         );
@@ -2691,6 +2693,105 @@ mod tests {
             resource = resource.with_action(action(id, label));
         }
         resource
+    }
+
+    /// The workspace's document, as the search a served workspace answers with names it.
+    struct Issue;
+
+    impl Source for Issue {
+        fn id(&self) -> &'static str {
+            "documents"
+        }
+
+        fn name(&self) -> String {
+            "Documents".into()
+        }
+
+        fn query(&self, needle: &str) -> Vec<Hit> {
+            let typed = ui::search::fold_search_text(needle.trim());
+            let title = "Write a launch checklist note in Notes with five short items";
+            if typed.is_empty() || !ui::search::fold_search_text(title).contains(&typed) {
+                return Vec::new();
+            }
+            vec![Hit {
+                row: None,
+                preview: None,
+                faces: Vec::new(),
+                outcome: None,
+                kind: ResourceKind::Record,
+                provider: "documents".into(),
+                id: "documents\u{1f}issue-1".into(),
+                title: title.into(),
+                subtitle: Some("Tasks".into()),
+                facts: Vec::new(),
+                score: ui::search::system::MAX_PROVIDER_SCORE,
+                icon: None,
+                target: Target::Invoke(Box::new(crate::model::InvokeTarget::open(
+                    "so.tilo.tasks",
+                    "",
+                    "issue-1",
+                    "issue-1",
+                ))),
+            }]
+        }
+    }
+
+    /// A document is named by the words of its title; an action of that document is not, by
+    /// one letter of the query or by the document's title as its own line: the document leads.
+    #[test]
+    fn a_query_names_a_document_before_the_actions_on_it() {
+        let resources = [typed(
+            "issue-1",
+            "Write a launch checklist note in Notes with five short items",
+            ("issue", "issues"),
+            ("so.tilo.tasks", "Tasks"),
+            true,
+            &[
+                ("move", "Move issue to a project"),
+                ("remove", "Remove an attachment"),
+                ("notes", "Notes: new note"),
+            ],
+        )];
+        let published = Published(vec![PublishedActions::of("so.tilo.tasks", "", &resources)]);
+        let rows = |query: &str| -> Vec<Hit> {
+            search(query, &[&Issue, &published], 0, &|_| 0.0)
+                .into_iter()
+                .flat_map(|group| group.results)
+                .collect()
+        };
+        let titles = |rows: &[Hit]| rows.iter().map(|row| row.title.clone()).collect::<Vec<_>>();
+
+        let found = rows("Write a launch");
+        assert!(
+            found
+                .iter()
+                .any(|row| row.title.starts_with("Write a launch")),
+            "the document is found by its title: {:?}",
+            titles(&found)
+        );
+        assert!(
+            !found.iter().any(|row| [
+                "Move issue to a project",
+                "Remove an attachment",
+                "Notes: new note",
+            ]
+            .contains(&row.title.as_str())),
+            "no action is found by a letter of the query or by the document's own title: {:?}",
+            titles(&found)
+        );
+
+        let found = rows("Notes");
+        let document = found
+            .iter()
+            .position(|row| row.title.starts_with("Write a launch"))
+            .expect("the document is found by its title");
+        if let Some(action) = found.iter().position(|row| row.title == "Notes: new note") {
+            assert!(
+                document < action,
+                "the document leads the actions on it: {:?}",
+                titles(&found)
+            );
+        }
     }
 
     /// The resources the hits for `needle` open, in the search's order, as text typed on the
