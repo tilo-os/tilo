@@ -2207,7 +2207,11 @@ function keepIdentity({peer, mount, home, name, runtime, link, naming, photos}) 
     // A peer that cannot set a name of its own (a guest the server admitted)
     // goes by none; the person's own desktop (no peer) and a workspace they
     // joined do.
-    identity, name, pairing: pairingOf({peer, identity, link}), naming: !peer || peer.setDisplayName ? naming : null,
+    identity, name, naming: !peer || peer.setDisplayName ? naming : null,
+    // Another device is paired through the workspace in front, over the
+    // page's session with its server; on the person's own desktop, where no
+    // workspace is in front, through their home server (`pairingAtHome`).
+    pairing: pairingOf({peer, identity, link}) ?? (peer ? null : pairingAtHome({home, identity, runtime, link})),
     photos: !peer || peer.setDisplayName ? photos : null,
     hosts: () => membershipOrigins(identity.userPublicKey),
     lookups: () => [...membershipOrigins(), ...listedWorkspaces({home}).map(workspace => workspace.host.origin)],
@@ -2620,7 +2624,7 @@ function pairingAt({origin, identity, runtime, link}) {
 }
 
 /**
- * Pairing another device of `identity` through the host `peer` is in: the
+ * Pairing another device of `identity` through the server `peer` is in: the
  * link that opens this workspace there as a new device of this person,
  * answering `invite`, and the host's requests waiting for this root to
  * approve them.
@@ -2640,4 +2644,51 @@ function pairingOf({peer, identity, link}) {
     answer: (digest, approved) => at().answer(identity, digest, approved),
     close: () => { const done = host; host = null; return done?.close(); },
   };
+}
+
+/**
+ * Pairing another device of `identity` from the person's own desktop, where
+ * no workspace's peer is in front. A device joins the person, not a
+ * workspace: the request it signs names them, its own key and the invite,
+ * and their server lists it for their root alone. So the root asks the home
+ * server of this site (`home`, as the site's own entry names it, never a
+ * link) at the address that server publishes (`pairingAt`, as the first screen
+ * pairs an agent), and the link opens a workspace of that server for the new
+ * device to land in: the one a bare entry opens for the person in this
+ * browser, else the one this browser was let into or entered there, else the
+ * site's home workspace. The ceremony is the same as from a workspace:
+ * a fresh invite that works once, for ten minutes, the person asked on this
+ * page with the code the device shows, and the root signing here. `null`
+ * where the site names no home server: nothing to pair through. Where no
+ * workspace of that server is known its `link` is `null`, which the action
+ * says (`no-workspace`).
+ */
+function pairingAtHome({home, identity, runtime, link}) {
+  let server;
+  try {
+    server = new URL(home?.host?.origin).origin;
+  } catch {
+    return null;
+  }
+  const through = pairingAt({origin: server, identity, runtime, link});
+  if (!through) return null;
+  const there = kept => {
+    try {
+      return Boolean(kept?.workspace) && new URL(kept.origin).origin === server;
+    } catch {
+      return false;
+    }
+  };
+  const landing = () => {
+    const chosen = remembering(() => chosenWorkspace());
+    if (there(chosen)) return chosen.workspace;
+    // What this browser joined that server as counts only where it joined as this person.
+    const member = remembering(() => keptMembership(home));
+    return (member?.userPublicKey === identity.userPublicKey ? member.workspace : null)
+      ?? (remembering(() => enteredWorkspaces()) ?? []).find(there)?.workspace ?? home.workspace ?? null;
+  };
+  return {...through, link: invite => {
+    const workspace = landing();
+    return workspace ? through.link(invite, workspace) : null;
+  }};
 }
