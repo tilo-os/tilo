@@ -32,9 +32,11 @@ impl Backend {
         if let Some(looking) = config.lookup.clone() {
             builder = builder.dns_resolver(std::sync::Arc::new(Looked(looking.0)));
         }
-        let client = builder
-            .build()
-            .map_err(|error| NetError::InvalidRequest(format!("HTTP client: {}", chain(&error))))?;
+        let client = builder.build().map_err(|error| {
+            // Built without authorities, it failed for this program's own file.
+            let why = super::tls::lacks_authorities().unwrap_or_else(|| chain(&error));
+            NetError::InvalidRequest(format!("HTTP client: {why}"))
+        })?;
         Ok(Self { client })
     }
 

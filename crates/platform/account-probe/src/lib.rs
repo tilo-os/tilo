@@ -67,6 +67,11 @@ impl LiveAccountTester {
     /// nothing about the saved credential or whether this is a mail
     /// endpoint.
     fn email(account: &accounts::Account, secret: &accounts::Secret) -> Result<String, String> {
+        // Without the system's authorities every server's certificate would be refused and
+        // the server blamed: say which file this program lacks instead.
+        if let Some(lacks) = tilo_net::lacks_authorities() {
+            return Err(lacks);
+        }
         Self::email_with_roots(account, secret, tilo_net::system_roots())
     }
 
@@ -194,7 +199,10 @@ impl LiveAccountTester {
             // origin.
             redirects: tilo_dav::Redirects::Refuse,
         })
-        .map_err(|_| "could not initialize the secure HTTP client".to_string())?
+        .map_err(|_| {
+            tilo_net::lacks_authorities()
+                .unwrap_or_else(|| "could not initialize the secure HTTP client".to_owned())
+        })?
         .with_credentials(Credentials::new(username, secret.password.clone()));
         let response = client
             .propfind(parsed, Depth::Zero, &[props::RESOURCETYPE])
@@ -246,7 +254,10 @@ impl AccountTester for LiveAccountTester {
             redirects: tilo_dav::Redirects::Refuse,
             ..tilo_dav::Options::default()
         })
-        .map_err(|_| "could not initialize the secure HTTP client")?
+        .map_err(|_| {
+            tilo_net::lacks_authorities()
+                .unwrap_or_else(|| "could not initialize the secure HTTP client".to_owned())
+        })?
         .with_credentials(Credentials::new(username, secret.password.clone()));
         tilo_dav::discovery::calendars(&client, &url)
     }
