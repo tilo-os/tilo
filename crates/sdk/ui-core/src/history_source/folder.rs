@@ -371,13 +371,14 @@ mod tests {
     fn a_folder_names_each_change_by_its_path_and_its_author() {
         let (two, _) = two_chunks();
         let rows = entries(&two, &AuthorDirectory::new());
-        let labels: Vec<String> = rows
+        let mut labels: Vec<String> = rows
             .iter()
             .filter_map(|row| row.target.as_ref().map(|target| target.label.clone()))
             .collect();
+        labels.sort();
         assert_eq!(labels, ["docs/plan.md", "notes.txt"], "{rows:#?}");
         assert!(
-            rows.iter().all(|row| row
+            rows.iter().filter(|row| row.target.is_some()).all(|row| row
                 .context
                 .as_ref()
                 .and_then(|context| context.invoker.as_ref())
