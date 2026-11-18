@@ -513,14 +513,15 @@ impl Worker {
             .workspaces
             .get_mut(&workspace_id)
             .ok_or("the workspace was not joined")?;
-        match by {
-            Some((_, link)) => {
-                // The agent's own session holds the document, or asks for it:
-                // its change is a delta on one it did not make.
-                link.send(Cmd::OpenRoute(route.clone()))?;
-                link.write(route.clone(), mutation)?;
-            }
-            None => workspace.peer.write(route.clone(), mutation)?,
+        if let Some((_, link)) = by {
+            // The agent's own session holds the document, or asks for it:
+            // its change is a delta on one it did not make.
+            link.send(Cmd::OpenRoute(route.clone()))?;
+            link.write(route.clone(), mutation)?;
+        } else {
+            workspace.peer.write(route.clone(), mutation)?;
+            let handed = workspace.unlanded.entry(route.clone()).or_default();
+            *handed = handed.saturating_add(1);
         }
         let written = Written::of(route, mutation, by.map(|(device, _)| *device));
         tracing::debug!(

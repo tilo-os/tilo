@@ -743,6 +743,14 @@ struct Mounted {
     used: u64,
 }
 
+/// The replica a write of this service was made in: the document mounted for its own person,
+/// or a caller's own replica within bounds.
+#[derive(PartialEq, Eq)]
+enum Writer {
+    Mounted(DocumentRoute),
+    Bounded(bounded::BoundedKey),
+}
+
 /// What running an action came to: its answer and where it left its actor.
 pub(super) type Performed = Result<(ActionOutput, Option<ActorPlace>), Outcome>;
 
@@ -764,13 +772,20 @@ struct WorkspaceState {
     revision: u64,
 }
 
-/// How many reads of what the replica holds a document of the worker made
-/// since the process started ([`WorkspaceState::update`]): the work a refresh
-/// does to keep what it holds mounted current. A test reads it to prove that
-/// work follows what a write changed, not what the workspace holds.
+/// How many reads of a document out of the replica the worker made since the
+/// process started: what a refresh merges into what it holds mounted
+/// ([`WorkspaceState::update`]), a document mounted or held whole
+/// ([`WorkspaceState::document`]), and a landing decided ([`Workspace::pump`]).
+/// A test reads it to prove that work follows what a write changed and what
+/// a request names, not what the workspace holds.
 static REPLICA_READS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// [`REPLICA_READS`]: how many reads a refresh did so far in this process.
+/// Count one read of a document out of the replica ([`REPLICA_READS`]).
+fn count_read() {
+    REPLICA_READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// [`REPLICA_READS`]: how many reads of a document the worker did so far in this process.
 #[must_use]
 pub fn replica_reads() -> u64 {
     REPLICA_READS.load(std::sync::atomic::Ordering::Relaxed)
@@ -791,7 +806,7 @@ impl WorkspaceState {
         route: &DocumentRoute,
         held: Option<&[[u8; 32]]>,
     ) -> Result<Option<Update>, String> {
-        REPLICA_READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        count_read();
         Ok(
             match self.engine.record_update(
                 &route.cluster_id,
@@ -812,6 +827,7 @@ impl WorkspaceState {
 
     /// The record at `route`, saved, with its heads.
     fn document(&self, route: &DocumentRoute) -> Result<Saved, String> {
+        count_read();
         match self
             .engine
             .record_update(&route.cluster_id, &route.app_id, &route.document, None)?
@@ -914,6 +930,15 @@ struct Workspace {
     /// Records whose writes landed in the session's replica that it cannot open yet: their
     /// keys, surface or deciding governance have not arrived.
     undecided: BTreeSet<DocumentRoute>,
+    /// How many writes this service handed the session to each document whose landing it has
+    /// not seen yet ([`Worker::commit`]): its own writes, which the replicas it holds took up as
+    /// they were made, and which it read to make, so their landing is neither merged again nor
+    /// leaves anything undecided. A document stays until the refresh after its last write
+    /// landed, as the segments of a write too large for one frame land one by one.
+    unlanded: HashMap<DocumentRoute, usize>,
+    /// The documents a write landed in since the last refresh took them that this service did
+    /// not make: what a refresh has replicas merge.
+    landed_from_others: HashSet<DocumentRoute>,
     /// The workspace's documents in the session's replica, once a write to one
     /// named the workspace.
     documents: Option<WorkspaceDocuments>,
@@ -971,6 +996,8 @@ impl Workspace {
             not_yours: HashSet::new(),
             gave_up: GaveUp::default(),
             undecided: BTreeSet::new(),
+            unlanded: HashMap::new(),
+            landed_from_others: HashSet::new(),
             documents: None,
             files: files_index::FilesIndex::default(),
             readers: HashMap::new(),
@@ -1012,13 +1039,14 @@ impl Workspace {
         }
     }
 
-    /// The documents a write landed in since the last refresh took them: the
-    /// only ones a refresh has to merge into what it holds mounted.
+    /// The documents a write landed in since the last refresh took them, by
+    /// another device or another service than this one: the only ones a
+    /// refresh has to merge into what it holds mounted. This service's own
+    /// writes reached every replica it holds as they were made
+    /// ([`Worker::behind_all_but`]).
     fn take_changed(&mut self) -> HashSet<DocumentRoute> {
-        self.documents
-            .as_mut()
-            .map(WorkspaceDocuments::take_changed)
-            .unwrap_or_default()
+        self.unlanded.retain(|_, handed| *handed > 0);
+        std::mem::take(&mut self.landed_from_others)
     }
 
     /// The records of the workspace that `needs` reads and that hold
@@ -1871,7 +1899,11 @@ impl Worker {
         // caller's own replica catches up as it is taken
         // ([`Self::bounded_replica`]).
         let changed = workspace.take_changed();
-        for mounted in self.mounted.values_mut() {
+        let held = self
+            .mounted
+            .values_mut()
+            .chain(self.bounded.values_mut().map(|replica| &mut replica.held));
+        for mounted in held {
             mounted
                 .behind
                 .get_or_insert_with(HashSet::new)
@@ -1886,118 +1918,6 @@ impl Worker {
         }
         timing_done("refresh.index", indexing);
         Ok(state)
-    }
-
-    /// The route of the mounted record `route`'s record is held in: its own,
-    /// or for a part, the record it is held beside.
-    fn holder_of(&self, route: &DocumentRoute) -> DocumentRoute {
-        self.beside.get(route).unwrap_or(route).clone()
-    }
-
-    /// Mount the part at `route` beside the record of its app that keeps it,
-    /// mounting that record first. The holder's route.
-    fn mount_part(
-        &mut self,
-        route: &DocumentRoute,
-        state: &WorkspaceState,
-    ) -> Result<DocumentRoute, String> {
-        if let Some(holder) = self.beside.get(route).cloned()
-            && self.mounted.contains_key(&holder)
-        {
-            self.mount_own(&holder, state)?;
-            return Ok(holder);
-        }
-        let (bytes, heads) = state.document(route)?;
-        let record = reads::document_id(&route.document)?;
-        let holders: Vec<DocumentRoute> = state
-            .documents
-            .iter()
-            .filter(|held| {
-                held.app_id == route.app_id
-                    && held.cluster_id == route.cluster_id
-                    && !is_part(&held.document)
-            })
-            .cloned()
-            .collect();
-        let mut refusals = Vec::new();
-        for holder in holders {
-            if let Err(error) = self.mount_own(&holder, state) {
-                refusals.push(error);
-                continue;
-            }
-            let Some(mounted) = self.mounted.get_mut(&holder) else {
-                continue;
-            };
-            match mounted
-                .app
-                .apply_document(&record, &DocumentMutation::Snapshot(bytes.clone()))
-            {
-                Ok(()) => {
-                    mounted.parts.insert(route.clone(), Some(heads));
-                    self.beside.insert(route.clone(), holder.clone());
-                    return Ok(holder);
-                }
-                Err(error) => refusals.push(error.to_string()),
-            }
-        }
-        Err(format!(
-            "no record of {} keeps {} beside it: {}",
-            route.app_id,
-            route.document,
-            refusals.join("; ")
-        ))
-    }
-
-    /// The record at `route` itself, mounted from what the workspace retains.
-    fn mount_own(&mut self, route: &DocumentRoute, state: &WorkspaceState) -> Result<(), String> {
-        self.clock = self.clock.wrapping_add(1);
-        let clock = self.clock;
-        if !self.mounted.contains_key(route) {
-            let (bytes, heads) = state.document(route)?;
-            while self.mounted.len() >= MAX_MOUNTED {
-                let Some(oldest) = self
-                    .mounted
-                    .iter()
-                    .min_by_key(|(_, mounted)| mounted.used)
-                    .map(|(route, _)| route.clone())
-                else {
-                    break;
-                };
-                self.mounted.remove(&oldest);
-                self.beside.retain(|_, holder| *holder != oldest);
-            }
-            let app = ConfinedReplica::open(
-                &self.catalogue,
-                &route.app_id,
-                &route.cluster_id,
-                &MemberId::Person(self.member.clone()),
-                &crate::ReplicaActor::Owner,
-                Seed::Existing {
-                    record: reads::document_id(&route.document)?,
-                    changes: vec![bytes],
-                },
-            )
-            .map_err(|error| error.to_string())?;
-            let app = self.lend(app, &route.cluster_id);
-            self.mounted.insert(
-                route.clone(),
-                Mounted {
-                    app,
-                    merged: Some(heads),
-                    parts: HashMap::new(),
-                    foreign: std::collections::HashSet::new(),
-                    wanted_at: None,
-                    behind: None,
-                    used: clock,
-                },
-            );
-        }
-        let mounted = self
-            .mounted
-            .get_mut(route)
-            .ok_or_else(|| "the record did not mount".to_string())?;
-        mounted.used = clock;
-        Ok(())
     }
 
     /// Records of the workspace an app of the catalogue opens: those on the
@@ -2725,6 +2645,7 @@ impl Worker {
         if let Some(mounted) = self.mounted.get_mut(&holder) {
             caught_up_with_own(&holder, mounted, &wrote);
         }
+        self.behind_all_but(&Writer::Mounted(holder), &wrote);
         Ok(())
     }
 

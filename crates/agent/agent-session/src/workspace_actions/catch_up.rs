@@ -1,39 +1,48 @@
 //! A mounted document kept current: what the workspace holds of it merged in,
 //! only the changes after the heads it merged last.
-use super::{DocumentRoute, Mounted, Worker, WorkspaceId, WorkspaceState, is_part, reads};
-use std::collections::HashSet;
+use super::{
+    DocumentRoute, MAX_MOUNTED, Mounted, Worker, WorkspaceId, WorkspaceState, Writer, is_part,
+    reads,
+};
+use crate::apps::Seed;
+use crate::worker::ConfinedReplica;
+use collab_types::DocumentMutation;
+use std::collections::{HashMap, HashSet};
+use tilo_actions::MemberId;
 
 /// Merge into `mounted` what `state` holds of its record and its parts that
 /// changed since it merged them last.
 ///
-/// The document itself is read every time: the request acts on it, and one
-/// read costs the same however much its app keeps. Its parts are read only
-/// when a write landed in them since the last refresh (`changed`), or when
-/// their last merge failed and they are taken whole again; a replica mounted
-/// anew, or taken back from a save, is passed `None` and takes all of them. A
-/// chain held whole is a part per item it keeps, so reading every part each
-/// time made every request cost what the document holds; a part nothing was
-/// written in is already what the replica holds.
+/// The document and its parts are read only when a write landed in them
+/// since the last refresh (`changed`), or when their last merge failed and
+/// they are taken whole again; a replica mounted anew, or taken back from a
+/// save, is passed `None` and takes all of them. A chain held whole is a part
+/// per item it keeps, so reading every part each time made every request cost
+/// what the document holds; a document nothing was written in is already what
+/// the replica holds.
 pub(super) fn catch_up(
     route: &DocumentRoute,
     mounted: &mut Mounted,
     state: &WorkspaceState,
     changed: Option<&HashSet<DocumentRoute>>,
 ) {
-    match state.update(route, mounted.merged.as_deref()) {
-        Ok(Some((mutation, heads))) => {
-            // A change that did not merge leaves the replica where it was:
-            // the next merge takes the record whole.
-            mounted.merged = match mounted.app.apply(&mutation) {
-                Ok(()) => Some(heads),
-                Err(error) => {
-                    tracing::warn!(%error, "workspace actions: a change did not merge");
-                    None
-                }
-            };
+    let moved = mounted.merged.is_none() || changed.is_none_or(|changed| changed.contains(route));
+    if moved {
+        match state.update(route, mounted.merged.as_deref()) {
+            Ok(Some((mutation, heads))) => {
+                // A change that did not merge leaves the replica where it was:
+                // the next merge takes the record whole.
+                mounted.merged = match mounted.app.apply(&mutation) {
+                    Ok(()) => Some(heads),
+                    Err(error) => {
+                        tracing::warn!(%error, "workspace actions: a change did not merge");
+                        None
+                    }
+                };
+            }
+            Ok(None) => {}
+            Err(error) => tracing::debug!(%error, "workspace actions: a record does not read"),
         }
-        Ok(None) => {}
-        Err(error) => tracing::debug!(%error, "workspace actions: a record does not read"),
     }
     for (part, merged) in &mut mounted.parts {
         if merged.is_some() && changed.is_some_and(|changed| !changed.contains(part)) {
@@ -354,5 +363,146 @@ pub(super) fn hand_all_parts(
         }
         hold(route, mounted, state);
         handed = handed.saturating_add(1);
+    }
+}
+
+impl Worker {
+    /// The route of the mounted record `route`'s record is held in: its own,
+    /// or for a part, the record it is held beside.
+    pub(super) fn holder_of(&self, route: &DocumentRoute) -> DocumentRoute {
+        self.beside.get(route).unwrap_or(route).clone()
+    }
+
+    /// Mount the part at `route` beside the record of its app that keeps it,
+    /// mounting that record first. The holder's route.
+    pub(super) fn mount_part(
+        &mut self,
+        route: &DocumentRoute,
+        state: &WorkspaceState,
+    ) -> Result<DocumentRoute, String> {
+        if let Some(holder) = self.beside.get(route).cloned()
+            && self.mounted.contains_key(&holder)
+        {
+            self.mount_own(&holder, state)?;
+            return Ok(holder);
+        }
+        let (bytes, heads) = state.document(route)?;
+        let record = reads::document_id(&route.document)?;
+        let holders: Vec<DocumentRoute> = state
+            .documents
+            .iter()
+            .filter(|held| {
+                held.app_id == route.app_id
+                    && held.cluster_id == route.cluster_id
+                    && !is_part(&held.document)
+            })
+            .cloned()
+            .collect();
+        let mut refusals = Vec::new();
+        for holder in holders {
+            if let Err(error) = self.mount_own(&holder, state) {
+                refusals.push(error);
+                continue;
+            }
+            let Some(mounted) = self.mounted.get_mut(&holder) else {
+                continue;
+            };
+            match mounted
+                .app
+                .apply_document(&record, &DocumentMutation::Snapshot(bytes.clone()))
+            {
+                Ok(()) => {
+                    mounted.parts.insert(route.clone(), Some(heads));
+                    self.beside.insert(route.clone(), holder.clone());
+                    return Ok(holder);
+                }
+                Err(error) => refusals.push(error.to_string()),
+            }
+        }
+        Err(format!(
+            "no record of {} keeps {} beside it: {}",
+            route.app_id,
+            route.document,
+            refusals.join("; ")
+        ))
+    }
+
+    /// The record at `route` itself, mounted from what the workspace retains.
+    pub(super) fn mount_own(
+        &mut self,
+        route: &DocumentRoute,
+        state: &WorkspaceState,
+    ) -> Result<(), String> {
+        self.clock = self.clock.wrapping_add(1);
+        let clock = self.clock;
+        if !self.mounted.contains_key(route) {
+            let (bytes, heads) = state.document(route)?;
+            while self.mounted.len() >= MAX_MOUNTED {
+                let Some(oldest) = self
+                    .mounted
+                    .iter()
+                    .min_by_key(|(_, mounted)| mounted.used)
+                    .map(|(route, _)| route.clone())
+                else {
+                    break;
+                };
+                self.mounted.remove(&oldest);
+                self.beside.retain(|_, holder| *holder != oldest);
+            }
+            let app = ConfinedReplica::open(
+                &self.catalogue,
+                &route.app_id,
+                &route.cluster_id,
+                &MemberId::Person(self.member.clone()),
+                &crate::ReplicaActor::Owner,
+                Seed::Existing {
+                    record: reads::document_id(&route.document)?,
+                    changes: vec![bytes],
+                },
+            )
+            .map_err(|error| error.to_string())?;
+            let app = self.lend(app, &route.cluster_id);
+            self.mounted.insert(
+                route.clone(),
+                Mounted {
+                    app,
+                    merged: Some(heads),
+                    parts: HashMap::new(),
+                    foreign: HashSet::new(),
+                    wanted_at: None,
+                    behind: None,
+                    used: clock,
+                },
+            );
+        }
+        let mounted = self
+            .mounted
+            .get_mut(route)
+            .ok_or_else(|| "the record did not mount".to_string())?;
+        mounted.used = clock;
+        Ok(())
+    }
+
+    /// Have every replica this service holds but `writer` take up `wrote` when it is next
+    /// used: what one of them wrote is read by the others from the session's replica at
+    /// once, and its landing later is not merged again, least of all into the replica that
+    /// made it. Reading the document back after every write cost a sealed part's whole reading
+    /// per action.
+    pub(super) fn behind_all_but(&mut self, writer: &Writer, wrote: &[DocumentRoute]) {
+        let mounted = self
+            .mounted
+            .iter_mut()
+            .filter(|(holder, _)| *writer != Writer::Mounted((*holder).clone()))
+            .map(|(_, mounted)| mounted);
+        let bounded = self
+            .bounded
+            .iter_mut()
+            .filter(|(key, _)| *writer != Writer::Bounded((*key).clone()))
+            .map(|(_, replica)| &mut replica.held);
+        for held in mounted.chain(bounded) {
+            held.behind
+                .get_or_insert_with(HashSet::new)
+                .extend(wrote.iter().cloned());
+        }
     }
 }
