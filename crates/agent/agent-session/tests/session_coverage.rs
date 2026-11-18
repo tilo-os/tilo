@@ -1594,8 +1594,7 @@ async fn two_different_failures_in_one_task_are_both_repaired() {
     assert_eq!(requests.len(), 3, "a plan and two repairs");
     let second = first_turn(&requests[2]);
     assert!(
-        second.contains("no sheet `Budget`; the sheets are `Sheet1`")
-            && second.contains("Already done, and kept"),
+        second.contains("no sheet named Budget") && second.contains("Already done, and kept"),
         "the second repair is told why and what ran: {second}"
     );
     let failed = info
