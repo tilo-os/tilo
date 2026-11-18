@@ -520,6 +520,28 @@ fn write_schema(doc: &mut AutoCommit, root: &ObjId) -> Containers {
     }
 }
 
+/// The schema [`write_schema`] writes, as one value: a rich-text field made
+/// in an issue or a note is made holding it at once, not an operation and a
+/// lookup at a time. Its container maps are new objects either way, so a
+/// field made this way merges as one made by [`init`] does.
+#[must_use]
+pub fn schema() -> automerge::hydrate::Value {
+    let mut made: HashMap<String, automerge::hydrate::Value> =
+        HashMap::with_capacity(CONTAINER_KEYS.len().saturating_add(2));
+    made.insert(
+        KEY_SCHEMA.to_owned(),
+        automerge::hydrate::Value::scalar(SCHEMA_ID),
+    );
+    made.insert(
+        KEY_SCHEMA_VERSION.to_owned(),
+        automerge::hydrate::Value::scalar(SCHEMA_VERSION),
+    );
+    for key in CONTAINER_KEYS {
+        made.insert((*key).to_owned(), automerge::hydrate::Value::map());
+    }
+    automerge::hydrate::Value::Map(made.into())
+}
+
 /// Whether `actor` wrote the schema rather than the document's content: a change it authored is not
 /// a revision, and version history must not attribute one to a person.
 pub fn is_schema_genesis_actor(actor: &automerge::ActorId) -> bool {

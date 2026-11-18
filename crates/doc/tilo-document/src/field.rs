@@ -280,16 +280,20 @@ impl Model for RichText {
         Ok(Self::default())
     }
 
-    fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
-        let obj = slot.object(doc, ObjType::Map)?;
-        if tilo_doc::model::open(doc, &obj).is_err() {
+    fn store(&self, doc: &mut Doc, at: Slot<'_>) -> Result<(), ModelError> {
+        // A new value is made holding the schema at once.
+        let (obj, made) = match at.current(doc)? {
+            Some((Value::Object(ObjType::Map), obj)) => (obj, false),
+            _ => (at.make(doc, &tilo_doc::model::schema())?, true),
+        };
+        if made || tilo_doc::model::open(doc, &obj).is_err() {
             // A new value with text starts with the schema alone: its text is
             // the body, and a paragraph to type in, written and then replaced
             // at once, is operations every value made so carries for nothing.
-            if self.initial.is_some() {
-                tilo_doc::model::init(doc, &obj);
-            } else {
+            if self.initial.is_none() {
                 Self::initialize_under(doc, &obj)?;
+            } else if !made {
+                tilo_doc::model::init(doc, &obj);
             }
         }
         if let Some(markdown) = &self.initial {

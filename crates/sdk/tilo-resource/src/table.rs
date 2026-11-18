@@ -19,9 +19,11 @@ use automerge::{ObjId, ObjType, Value};
 use crate::action::{ActionCx, Refusal};
 use crate::delta::{Delta, Touch};
 use crate::items::{ItemCollection, ItemSource, ItemText};
-use crate::model::{Doc, LocatedAt as _, Model, ModelError, Slot};
+use crate::model::{Doc, Fresh, LocatedAt as _, Model, ModelError, Slot};
 use crate::path::{Edit, EditOp, OpDescription, Segment};
 use crate::resource::Place;
+
+mod fresh;
 
 /// A model type's [`Model`] functions, its type erased. Each takes the table
 /// it was reached through, which for a record carries its [`ResourceDesc`].
@@ -43,6 +45,8 @@ pub struct ModelOps {
     pub(crate) reload:
         fn(&ModelTable, &mut dyn Any, &Doc, Option<(&Value<'_>, &ObjId)>) -> Result<(), ModelError>,
     pub(crate) store: fn(&ModelTable, &dyn Any, &mut Doc, Slot<'_>) -> Result<(), ModelError>,
+    /// [`Model::fresh`].
+    pub(crate) fresh: fn(&ModelTable, &dyn Any, automerge::TextEncoding) -> Fresh,
     pub(crate) stores_as: fn(&ModelTable, &dyn Any, &dyn Any) -> bool,
     pub(crate) store_changed:
         fn(&ModelTable, &dyn Any, &dyn Any, &mut Doc, Slot<'_>, &Delta) -> Result<(), ModelError>,
@@ -433,6 +437,7 @@ impl<T: Model> TableOf<T> {
         missing: missing_of::<T>,
         reload: reload_of::<T>,
         store: store_of::<T>,
+        fresh: fresh::fresh_of::<T>,
         stores_as: stores_as_of::<T>,
         store_changed: store_changed_of::<T>,
         refresh: refresh_of::<T>,
@@ -838,6 +843,7 @@ static ATOM_STRING_OPS: ModelOps = ModelOps {
     missing: atom_missing,
     reload: atom_reload,
     store: atom_store,
+    fresh: |_, value, encoding| atom_of(value).map_or(Fresh::Store, |atom| atom.fresh(encoding)),
     stores_as: atom_stores_as,
     store_changed: atom_store_changed,
     refresh: atom_refresh,
@@ -1006,6 +1012,7 @@ pub static RESOURCE_OPS: ModelOps = ModelOps {
     missing: |table, out| missing(described(table)?, out),
     reload: |table, target, doc, slot| reload(described(table)?, target, doc, slot),
     store: |table, value, doc, slot| store(described(table)?, value, doc, slot),
+    fresh: fresh::fields_made,
     stores_as: |table, value, before| {
         table
             .record()
@@ -1065,12 +1072,12 @@ impl ModelTable {
     }
 }
 
-fn described(table: &ModelTable) -> Result<&'static ResourceDesc, ModelError> {
+pub(super) fn described(table: &ModelTable) -> Result<&'static ResourceDesc, ModelError> {
     table.record().ok_or_else(mismatch)
 }
 
 /// The value of the field at `index` of `record`.
-fn field_of<'a>(
+pub(super) fn field_of<'a>(
     record: &ResourceDesc,
     value: &'a dyn Any,
     index: usize,
@@ -1292,36 +1299,34 @@ fn reload(
 
 /// [`Fields::write_fields`](crate::Fields::write_fields) of a record.
 pub fn write_fields(
-    record: &ResourceDesc,
+    desc: &ResourceDesc,
     value: &dyn Any,
     doc: &mut Doc,
     obj: &ObjId,
 ) -> Result<(), ModelError> {
-    write_fields_leaving(record, value, doc, obj, false)
+    write_fields_leaving(desc, value, doc, obj)
 }
 
 /// [`write_fields`], leaving out a scalar field that holds what its absent
-/// key reads as ([`Model::missing`]) where its key is absent: in a map made
-/// just now (`fresh`), every such field; in one that was there, only those
-/// whose key it does not hold, which read the same without a write.
+/// key reads as ([`Model::missing`]) where the map does not hold its key: it
+/// reads the same without a write.
 fn write_fields_leaving(
-    record: &ResourceDesc,
+    desc: &ResourceDesc,
     value: &dyn Any,
     doc: &mut Doc,
     obj: &ObjId,
-    fresh: bool,
 ) -> Result<(), ModelError> {
-    let mut staged = (record.empty)();
-    let absent = missing(record, staged.as_mut())
+    let mut staged = (desc.empty)();
+    let absent = missing(desc, staged.as_mut())
         .ok()
-        .and_then(|()| (record.unwrap)(staged.as_ref()));
-    for (index, field) in record.fields.iter().enumerate() {
-        let inner = field_of(record, value, index)?;
+        .and_then(|()| (desc.unwrap)(staged.as_ref()));
+    for (index, field) in desc.fields.iter().enumerate() {
+        let inner = field_of(desc, value, index)?;
         if field.table.scalar
             && absent
-                .and_then(|absent| (record.field)(absent, index))
+                .and_then(|absent| (desc.field)(absent, index))
                 .is_some_and(|empty| (field.table.ops.stores_as)(field.table, inner, empty))
-            && (fresh || Slot::Key(obj, field.key).current(doc)?.is_none())
+            && Slot::Key(obj, field.key).current(doc)?.is_none()
         {
             continue;
         }
@@ -1331,23 +1336,26 @@ fn write_fields_leaving(
     Ok(())
 }
 
-/// [`Model::store`] of a record.
+/// [`Model::store`] of a record. One whose map is made now is made with
+/// every field that can be at once ([`fresh_fields`]): twenty fields are
+/// one batch, not twenty writes each looking up its key first.
 pub fn store(
-    record: &ResourceDesc,
+    desc: &ResourceDesc,
     value: &dyn Any,
     doc: &mut Doc,
-    slot: Slot<'_>,
+    at: Slot<'_>,
 ) -> Result<(), ModelError> {
-    let fresh = !matches!(slot.current(doc)?, Some((Value::Object(ObjType::Map), _)));
-    let obj = slot.object(doc, ObjType::Map)?;
-    write_fields_leaving(record, value, doc, &obj, fresh)
+    if let Some((Value::Object(ObjType::Map), obj)) = at.current(doc)? {
+        return write_fields_leaving(desc, value, doc, &obj);
+    }
+    fresh::store_made(desc, value, doc, at)
 }
 
 /// [`Model::stores_as`] of a record.
 #[must_use]
-pub fn stores_as(record: &ResourceDesc, value: &dyn Any, before: &dyn Any) -> bool {
-    for (index, field) in record.fields.iter().enumerate() {
-        let (Some(now), Some(was)) = ((record.field)(value, index), (record.field)(before, index))
+pub fn stores_as(desc: &ResourceDesc, value: &dyn Any, before: &dyn Any) -> bool {
+    for (index, field) in desc.fields.iter().enumerate() {
+        let (Some(now), Some(was)) = ((desc.field)(value, index), (desc.field)(before, index))
         else {
             return false;
         };
@@ -1361,16 +1369,16 @@ pub fn stores_as(record: &ResourceDesc, value: &dyn Any, before: &dyn Any) -> bo
 /// [`Fields::write_changed_fields`](crate::Fields::write_changed_fields) of
 /// a record: each field written as `write_key_changed` writes it.
 pub fn write_changed_fields(
-    record: &ResourceDesc,
+    desc: &ResourceDesc,
     value: &dyn Any,
     before: &dyn Any,
     doc: &mut Doc,
     obj: &ObjId,
     dirty: &Delta,
 ) -> Result<(), ModelError> {
-    for (index, field) in record.fields.iter().enumerate() {
-        let now = field_of(record, value, index)?;
-        let was = field_of(record, before, index)?;
+    for (index, field) in desc.fields.iter().enumerate() {
+        let now = field_of(desc, value, index)?;
+        let was = field_of(desc, before, index)?;
         write_key_changed(field.table, (now, was), doc, obj, field.key, dirty)?;
     }
     Ok(())
@@ -1401,22 +1409,22 @@ pub(crate) fn write_key_changed(
 
 /// [`Model::store_changed`] of a record.
 pub fn store_changed(
-    record: &ResourceDesc,
+    desc: &ResourceDesc,
     value: &dyn Any,
     before: &dyn Any,
     doc: &mut Doc,
-    slot: Slot<'_>,
+    at: Slot<'_>,
     dirty: &Delta,
 ) -> Result<(), ModelError> {
-    // A record whose map is gone (deleted by a change this one raced) is
+    // A value whose map is gone (deleted by a change this one raced) is
     // written whole, as a whole write would: writing only the fields that
     // changed into a map made now would leave the others missing, an item
     // no replica can read.
-    if !matches!(slot.current(doc)?, Some((Value::Object(ObjType::Map), _))) {
-        return store(record, value, doc, slot);
+    if !matches!(at.current(doc)?, Some((Value::Object(ObjType::Map), _))) {
+        return store(desc, value, doc, at);
     }
-    let obj = slot.object(doc, ObjType::Map)?;
-    write_changed_fields(record, value, before, doc, &obj, dirty)
+    let obj = at.object(doc, ObjType::Map)?;
+    write_changed_fields(desc, value, before, doc, &obj, dirty)
 }
 
 /// [`Model::refresh`] of a record.
@@ -2373,6 +2381,13 @@ pub static OPTION_OPS: ModelOps = ModelOps {
             None => slot.remove(doc),
         }
     },
+    fresh: |table, value, encoding| match table.option() {
+        Some(option) => match (option.get)(value) {
+            Some(inner) => (option.inner.ops.fresh)(option.inner, inner, encoding),
+            None => Fresh::Nothing,
+        },
+        None => Fresh::Store,
+    },
     stores_as: |table, value, before| {
         let Some(option) = table.option() else {
             return false;
@@ -2749,6 +2764,11 @@ pub static UNIT_OPS: ModelOps = ModelOps {
         let name = unit_name(table, value).ok_or_else(mismatch)?;
         slot.put_scalar(doc, automerge::ScalarValue::Str(name.into()))
     },
+    fresh: |table, value, _| {
+        unit_name(table, value).map_or(Fresh::Store, |name| {
+            Fresh::scalar(automerge::ScalarValue::Str(name.into()))
+        })
+    },
     stores_as: |table, value, before| {
         table.unit().is_some_and(|unit| {
             (unit.index)(value).is_some() && (unit.index)(value) == (unit.index)(before)
@@ -3000,6 +3020,7 @@ where
 /// The functions of every type stored as JSON text.
 pub static JSON_OPS: ModelOps = ModelOps {
     without_absent: crate::shape::kept_whole,
+    fresh: fresh::stored_after,
     to_json: |table, value| match table.json() {
         Some(json) => (json.to_value)(value),
         None => serde_json::Value::Null,
@@ -3190,6 +3211,7 @@ fn lists(table: &ModelTable) -> Result<&'static VecDesc, ModelError> {
 /// The functions of every `Vec`: a list of values.
 pub static VEC_OPS: ModelOps = ModelOps {
     without_absent: crate::shape::kept_whole,
+    fresh: fresh::stored_after,
     to_json: |table, value| {
         let (Some(list), Some(items)) = (
             table.list(),
@@ -3498,6 +3520,7 @@ fn keyed<'p>(
 /// The functions of every map of string keys: a map, one key per entry.
 pub static MAP_OPS: ModelOps = ModelOps {
     without_absent: crate::shape::kept_whole,
+    fresh: fresh::stored_after,
     to_json: |table, value| {
         let mut out = serde_json::Map::new();
         if let Some(map) = table.map()

@@ -104,6 +104,27 @@ impl ModelError {
     }
 }
 
+/// What a value writes under a key of a map made just now
+/// ([`Model::fresh`]): what can be made with that map in one batch is, so an
+/// item made whole costs the batch, not an operation and a lookup per field.
+pub enum Fresh {
+    /// Nothing: the key stays absent, as for an absent `Option`.
+    Nothing,
+    /// This value, made with the map. A text in it is a `String` field's, and
+    /// is marked as its writer's once made, as [`Model::store`] marks it.
+    Value(automerge::hydrate::Value),
+    /// Written by [`Model::store`] once the map is made.
+    Store,
+}
+
+impl Fresh {
+    /// A scalar made with the map.
+    #[must_use]
+    pub fn scalar(value: impl Into<ScalarValue>) -> Self {
+        Self::Value(automerge::hydrate::Value::Scalar(value.into()))
+    }
+}
+
 /// Where a value is written: a key of a map, an existing list element, or a
 /// new list element inserted at an index.
 #[derive(Clone, Copy, Debug)]
@@ -142,6 +163,20 @@ impl Slot<'_> {
             Slot::Insert(obj, index) => doc.insert(obj, index, value)?,
         }
         Ok(())
+    }
+
+    /// Make `value`, an object and everything in it, here at once, replacing
+    /// what was here: its id.
+    pub fn make(
+        self,
+        doc: &mut Doc,
+        value: &automerge::hydrate::Value,
+    ) -> Result<ObjId, ModelError> {
+        Ok(match self {
+            Self::Key(obj, key) => doc.batch_create_object(obj, key, value, false)?,
+            Self::Index(obj, index) => doc.batch_create_object(obj, index, value, false)?,
+            Self::Insert(obj, index) => doc.batch_create_object(obj, index, value, true)?,
+        })
     }
 
     /// The object of type `kind` in this slot, creating it (and replacing any
@@ -406,6 +441,14 @@ pub trait Model: Sized + 'static {
     /// Write `self` into `slot`, changing only what differs from what the slot
     /// already holds.
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError>;
+
+    /// What [`store`](Self::store) writes under a key of a map made just
+    /// now, for the map to be made with it at once; `encoding` is the
+    /// document's text encoding. The default stores it once the map is made.
+    fn fresh(&self, encoding: automerge::TextEncoding) -> Fresh {
+        let _ = encoding;
+        Fresh::Store
+    }
 
     /// Whether writing `self` over a slot that holds `before`, as a
     /// [`store`](Self::store) left it, would change nothing: an in-memory
@@ -1260,6 +1303,9 @@ impl Model for bool {
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         slot.put_scalar(doc, ScalarValue::Boolean(*self))
     }
+    fn fresh(&self, _: automerge::TextEncoding) -> Fresh {
+        Fresh::scalar(ScalarValue::Boolean(*self))
+    }
     #[inline(never)]
     fn stores_as(&self, before: &Self) -> bool {
         self == before
@@ -1315,6 +1361,13 @@ macro_rules! integer_model {
                     .or_else(|_| u64::try_from(*self).map(ScalarValue::Uint))
                     .map_err(|_| ModelError::invalid("integer out of range"))?;
                 slot.put_scalar(doc, value)
+            }
+            fn fresh(&self, _: automerge::TextEncoding) -> Fresh {
+                match i64::try_from(*self) {
+                    Ok(value) => Fresh::scalar(ScalarValue::Int(value)),
+                    Err(_) => u64::try_from(*self)
+                        .map_or(Fresh::Store, |value| Fresh::scalar(ScalarValue::Uint(value))),
+                }
             }
             fn stores_as(&self, before: &Self) -> bool {
                 self == before
@@ -1372,6 +1425,9 @@ impl Model for f64 {
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         slot.put_scalar(doc, ScalarValue::F64(*self))
     }
+    fn fresh(&self, _: automerge::TextEncoding) -> Fresh {
+        Fresh::scalar(ScalarValue::F64(*self))
+    }
     #[inline(never)]
     fn stores_as(&self, before: &Self) -> bool {
         self.to_bits() == before.to_bits()
@@ -1416,6 +1472,9 @@ impl Model for f32 {
     #[inline(never)]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         f64::from(*self).store(doc, slot)
+    }
+    fn fresh(&self, encoding: automerge::TextEncoding) -> Fresh {
+        f64::from(*self).fresh(encoding)
     }
     #[inline(never)]
     fn stores_as(&self, before: &Self) -> bool {
@@ -1499,6 +1558,10 @@ impl Model for String {
             splice_changed_span(doc, &text, &current, self)?;
         }
         Ok(())
+    }
+    /// Its text, marked as its writer's once made.
+    fn fresh(&self, encoding: automerge::TextEncoding) -> Fresh {
+        Fresh::Value(automerge::hydrate::Value::text(encoding, self))
     }
     #[inline(never)]
     fn stores_as(&self, before: &Self) -> bool {
@@ -1631,6 +1694,9 @@ impl Model for Atom {
     #[inline(never)]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         slot.put_scalar(doc, ScalarValue::Str(self.0.as_str().into()))
+    }
+    fn fresh(&self, _: automerge::TextEncoding) -> Fresh {
+        Fresh::scalar(ScalarValue::Str(self.0.as_str().into()))
     }
     fn collect_text(&self, out: &mut Vec<String>) {
         if !self.0.is_empty() {
@@ -1989,6 +2055,12 @@ macro_rules! json_scalar {
                 slot.put_scalar(doc, ScalarValue::Str(text.into()))
             }
 
+            fn fresh(&self, _: automerge::TextEncoding) -> Fresh {
+                serde_json::to_string(self).map_or(Fresh::Store, |text| {
+                    Fresh::scalar(ScalarValue::Str(text.into()))
+                })
+            }
+
             #[inline(never)]
             fn stores_as(&self, before: &Self) -> bool {
                 self == before
@@ -2045,6 +2117,10 @@ impl Model for tilo_app_id::AppId {
     #[inline(never)]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         slot.put_scalar(doc, ScalarValue::Str(self.as_str().to_owned().into()))
+    }
+
+    fn fresh(&self, _: automerge::TextEncoding) -> Fresh {
+        Fresh::scalar(ScalarValue::Str(self.as_str().to_owned().into()))
     }
 
     #[inline(never)]

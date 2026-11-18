@@ -111,10 +111,12 @@ pub fn content_of_clip(clip: &tilo_document::ClipBlock) -> BlockContent {
 /// A paragraph the editor shows, as an action carries it: written the way
 /// the editor stores it, then read back.
 pub fn clip_of_content(content: &BlockContent) -> tilo_document::ClipBlock {
-    use ui::automerge::{ObjType, ROOT, transaction::Transactable};
+    use ui::automerge::{ROOT, transaction::Transactable};
     let mut doc = ui::automerge::AutoCommit::new();
+    // Made holding the schema at once: the scratch text is made for every
+    // block converted.
     let clips = doc
-        .put_object(ROOT, "clip", ObjType::Map)
+        .batch_create_object(ROOT, "clip", &tilo_doc::model::schema(), false)
         .ok()
         .filter(|root| {
             tilo_document::RichText::initialize_under(&mut doc, root).is_ok()

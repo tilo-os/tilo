@@ -191,7 +191,7 @@ pub use keyed::{ById, Identified, ItemStorage, Items, Keyed};
 pub use kind::{Kinds, ResourceKind};
 pub use map::Map;
 pub use model::{
-    Atom, Doc, Fields, LocatedAt, MapSlot, Model, ModelError, Slot, VARIANT_KEY, edit_whole,
+    Atom, Doc, Fields, Fresh, LocatedAt, MapSlot, Model, ModelError, Slot, VARIANT_KEY, edit_whole,
     load_slot, read_key, read_slots, refresh_key, take_slot, write_key, write_key_changed,
 };
 pub use non_blank::{Blank, NonBlank};
