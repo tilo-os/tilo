@@ -555,6 +555,10 @@ network-agent-risk-something = do something that cannot be undone
 network-device-unlock-title = Unlock { $device }?
 network-device-unlock-detail = It is starting up and asks you for the half of its disk key that this device holds for it, for { $slot }. Compare the code above with the one on its boot screen.
 network-device-unlock-allow = Release its key
+network-device-enrol-title = Set up unlock for { $device }?
+network-device-enrol-detail = It will unlock its disk at boot with this device's help.
+network-device-enrol-unattended = It will then start without asking you again.
+network-device-enrol-allow = Set it up
 
 ## What each sheet's resource is called, keyed by its kind with separators
 ## as dashes (`power.session` is `power-session`). The label a sheet declares

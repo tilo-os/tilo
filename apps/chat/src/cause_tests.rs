@@ -530,3 +530,90 @@ fn a_cause_shows_as_what_it_is_and_never_as_words_its_person_wrote() {
     let groups = crate::model::group_messages(&rows, false);
     assert_eq!(groups.len(), 2, "the reminder starts a group of its own");
 }
+
+/// An answer longer than one message holds goes on in its agent's next message, which Chat
+/// makes of the id it derives from the full one's. That message stands where the reply does,
+/// under the message that asked, and a stop that names it stops the one turn: for the person
+/// the turn is for, and for nobody else.
+#[test]
+fn a_stop_that_names_a_following_message_of_an_answer_stops_its_turn() {
+    let mut part = Part::new();
+    let main = thread(&[AGENT]);
+    part.apply(By::BotOf(ME), ask(&main, REMINDER, "call-1"))
+        .expect("the reminder asks");
+    let id = message_id(&MemberId::person(ME), "call-1");
+    part.apply(By::AgentFor(AGENT, ME), work(&id, "taken"))
+        .expect("the agent takes the turn");
+    let agent = MemberId::agent(AGENT);
+    let reply = reply_id_at(&id, &agent, 0);
+    let next = reply_id_at(&reply, &agent, 0);
+    // The first event of a message's stream: the stream as Chat starts it, under the message's
+    // own name, with the event's number and its words.
+    let grows = |into: &Id, text: &str| {
+        let mut event =
+            serde_json::to_value(crate::agent_stream::AgentStream::start(into.as_str()))
+                .expect("a stream as Chat starts it");
+        event["sequence"] = serde_json::json!(1);
+        event["event"] = serde_json::json!({"type": "text_delta", "text": text});
+        ChatMessages::STREAM_OUTPUT.with(chat_messages::StreamOutput {
+            channel: main.clone(),
+            reply: into.to_string(),
+            name: None,
+            event,
+        })
+    };
+    part.apply(
+        By::AgentFor(AGENT, ME),
+        grows(&reply, "The first message is full"),
+    )
+    .expect("its reply grows");
+    part.apply(
+        By::AgentFor(AGENT, ME),
+        grows(&next, "and the answer goes on."),
+    )
+    .expect("its answer goes on in its next message");
+    let held = part.read();
+    let under = |message: &Id| {
+        held.messages
+            .get(message)
+            .and_then(|message| message.parent.clone())
+    };
+    assert!(
+        under(&reply).is_some() && under(&next) == under(&reply),
+        "the next message stands where the reply does, under the message that asked: {:?} and {:?}",
+        under(&next),
+        under(&reply)
+    );
+    assert_eq!(
+        summonses(&part.chat, &held).len(),
+        1,
+        "the one turn goes on"
+    );
+
+    let stop = || {
+        ChatMessages::STOP_AGENT.with(chat_messages::StopAgent {
+            message: next.clone(),
+        })
+    };
+    assert!(
+        part.apply(By::Person(ARIA), stop()).is_err(),
+        "another member does not stop it"
+    );
+    part.apply(By::Person(ME), stop())
+        .expect("the person it works for stops it by a following message of its answer");
+    let held = part.read();
+    assert_eq!(
+        summonses(&part.chat, &held),
+        Vec::new(),
+        "a stopped message asks nobody"
+    );
+    let ended = stopped(&part.chat, &held);
+    let [turn] = ended.as_slice() else {
+        panic!("its agent is told to end its work: {ended:?}");
+    };
+    assert_eq!(
+        (turn.agent.as_str(), turn.message.clone()),
+        (AGENT, id),
+        "the stop stands on the message that asked"
+    );
+}

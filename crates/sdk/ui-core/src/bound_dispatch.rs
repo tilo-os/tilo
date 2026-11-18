@@ -2732,11 +2732,7 @@ pub(crate) fn execute_resource_operation(
     {
         return Err(own_device_refusal());
     }
-    if spec.kind == tilo_actions::OperationKind::View
-        && !crate::invocation_scope::view_operation_permitted(actor, local_author, &spec.contract)
-    {
-        return Err(tilo_actions::ApiError::Unavailable { code: "private_view".into(), reason: "A member cannot move this presence's private focus or viewport; use Follow or Reveal explicitly".into() });
-    }
+    crate::invocation_scope::check_shown_here(actor, local_author, spec)?;
     let mut context = spec.history_context(resource.id.as_str(), &resource.kind, &resource.label);
     if let Some(ambient) = ambient {
         context = context.enriched_by(ambient);
@@ -3174,18 +3170,7 @@ pub(crate) fn invoke_resource_action(
                         .map_err(|_| denied(spec))?;
                     // A refused private View must not invoke a Deferred encoder.
                     // The execution guard below remains an independent boundary.
-                    if spec.kind == tilo_actions::OperationKind::View
-                        && !crate::invocation_scope::view_operation_permitted(
-                            actor,
-                            &binding.author,
-                            &spec.contract,
-                        )
-                    {
-                        return Err(tilo_actions::ApiError::Unavailable {
-                            code: "private_view".into(),
-                            reason: "A member cannot move this presence's private focus or viewport; use Follow or Reveal explicitly".into(),
-                        }.into());
-                    }
+                    crate::invocation_scope::check_shown_here(actor, &binding.author, spec)?;
                     if let Some(scope) = scope {
                         scope.capture_locus_basis(target, invocation, actor, doc);
                     }

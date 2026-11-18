@@ -1733,15 +1733,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn every_scenario_shows_an_agent_its_actions() {
-        if let Err(failures) =
-            ui::framework::testing::check_agents_are_shown_every_action::<MailShell>()
-        {
-            panic!("{failures}");
-        }
-    }
-
     tilo_test_env::scenario! {
         /// The API between the published mailbox and the window.
         fn the_window_reads_and_acts_through_its_one_api;
@@ -2342,28 +2333,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-mod reach_tests {
-    use ui::framework::ResourceApp as _;
-    use ui::framework::testing::{TestApp, unreachable_actions};
-
-    /// Every action the app publishes is reachable by address in a drive of
-    /// each of its scenarios: none is advertised yet handled only by a
-    /// click. The scenarios stage fixtures; the app someone opens acts on
-    /// this machine (its files, its processes), so it is not walked.
-    #[test]
-    fn a_drive_of_every_scenario_reaches_every_published_action() {
-        for scenario in super::MailShell::scenarios() {
-            let mut app = TestApp::<super::MailShell>::drive(scenario)
-                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
-            assert_eq!(
-                unreachable_actions(&mut app),
-                Vec::<String>::new(),
-                "{scenario}: published actions a drive cannot invoke"
-            );
-        }
-    }
-}
+ui::reach_tests!(MailShell);
 
 #[cfg(test)]
 mod own_resource_tests {

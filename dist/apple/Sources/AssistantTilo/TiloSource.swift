@@ -104,6 +104,8 @@ public final class TiloSource: AssistantSource {
     /// the device is paired again or its person signs out: the way in says why it stands there.
     private static let resetKey = "TiloLiveReset"
     private var wasReset = false
+    /// Whether the person's Tilo answers and does not let this device in (`joinStops()`).
+    private let joins = Told<Bool>(false)
 
     private var person: Person?
     /// The ask for the person's name that goes on beside the way in.
@@ -238,6 +240,10 @@ public final class TiloSource: AssistantSource {
                 for await state in engine.states() { await self?.stood(state) }
             },
             Task { [weak self] in
+                // A try that ends in the sentence of the one before changes no state.
+                for await _ in engine.triesEnded() { self?.sayReach() }
+            },
+            Task { [weak self] in
                 for await _ in engine.changes() {
                     await self?.look()
                     await self?.survey(.records)
@@ -290,6 +296,8 @@ public final class TiloSource: AssistantSource {
     public func answerPairing(goOn: Bool) async {
         await engine.answerPairing(goOn: goOn)
     }
+
+    public nonisolated func joinStops() -> AsyncStream<Bool> { joins.stream() }
 
     /// Forgets what the app keeps of the person and puts the page away. The device's key stays
     /// in its store until the app removes the store: the page has no way yet to forget its
@@ -399,11 +407,21 @@ public final class TiloSource: AssistantSource {
     /// try: its page's own word does, or the network's failure.
     private func sayReach() {
         switch engine.state {
-        case .open: reaches.set(.reachable)
-        case .refused, .failed: reaches.set(.unreachable)
+        case .open:
+            reaches.set(.reachable)
+            joins.set(false)
+        case .refused, .failed:
+            reaches.set(.unreachable)
+            // The try ended on the site's own page, which said that its join stopped: Tilo
+            // answers and does not let this device in. Said only to a device that is its
+            // person's: one that pairs stands at its way in already. While the next try is
+            // in work it holds, as what is said of reach does.
+            joins.set(person != nil && engine.joinStops)
         // Nothing is tried, so nothing is known. Where the workspace is gone nothing is tried
         // either: the way in says so, and no try at it failed.
-        case .away, .gone: reaches.set(.unknown)
+        case .away, .gone:
+            reaches.set(.unknown)
+            joins.set(false)
         // A try is in work, or the page waits for its person: nothing new is known.
         case .arriving, .asking, .pairing: break
         }

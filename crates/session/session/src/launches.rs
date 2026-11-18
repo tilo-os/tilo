@@ -55,6 +55,8 @@ struct Launch {
     /// The launch serves every workspace its connections name: an endpoint of the app's records
     /// the login runs beside the session ([`Launches::endpoint`]).
     every_workspace: bool,
+    /// The tab the shell held for the launch's window ([`Launches::held_for`]).
+    tab: Option<u64>,
 }
 
 /// One window of a running app the session is connecting: the window's own instance, and the launch
@@ -246,6 +248,7 @@ impl Launches {
                 sandboxed,
                 windowless,
                 every_workspace: false,
+                tab: None,
             },
         );
     }
@@ -343,6 +346,23 @@ impl Launches {
     pub fn workspace_of(&self, pid: u32, app: &str) -> Option<String> {
         self.ancestor(pid, |launch| launch.app == app)
             .map(|(_, launch)| launch.workspace)
+    }
+
+    /// The launch `pid` started is the one the shell held tab `tab` for: its window takes that tab,
+    /// whatever the window calls its app.
+    pub fn held_for(&self, pid: u32, tab: u64) {
+        if let Some(launch) = self.started.lock_recover().get_mut(&pid) {
+            launch.tab = Some(tab);
+        }
+    }
+
+    /// The tab the shell held for the launch `pid` is or descends from, while that launch lives:
+    /// the window of `pid` belongs to that launch however it names its app (a program whose
+    /// window says `glxgears` started from the desktop entry `kg-glxgears`).
+    #[must_use]
+    pub fn held_tab_of(&self, pid: u32) -> Option<u64> {
+        self.ancestor(pid, |launch| launch.tab.is_some())
+            .and_then(|(_, launch)| launch.tab)
     }
 
     /// The launch `pid` is or descends from, while that launch still runs: the app window a process

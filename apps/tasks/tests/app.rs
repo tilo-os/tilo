@@ -298,6 +298,48 @@ tilo_test_env::scenario! {
             "the agent acts at New issue: {locus:?} in {button:?}"
         );
     }
+
+    phase an_agent_makes_a_project_without_opening_the_persons_form;
+    // An agent never opens the person's "New project" form over their window:
+    // its call is refused. It makes the project with the tracker's own
+    // action, which refuses a call without a name and says so.
+    {
+        let mut app = open();
+        let agent = ui::tilo_actions::MemberId::agent("helper");
+        let refused = app
+            .effect_by(&agent, &tasks::TasksEffect::NewProject)
+            .expect_err("an agent does not open the form");
+        assert!(
+            matches!(&refused, ui::tilo_actions::ApiError::Unavailable { code, .. } if code == "private_view"),
+            "{refused:?}"
+        );
+        assert_eq!(dialogs(&mut app), 0, "no dialog opens for the agent");
+
+        let by_agent = || ui::tilo_actions::ActionInvoker::member(agent.clone());
+        let tracker = <tasks::Tracker as ui::tilo_resource::Resource>::KIND;
+        let unnamed = app
+            .call_by(by_agent(), tracker, "create-area", json!({}))
+            .expect_err("a project needs a name");
+        assert!(format!("{unnamed:?}").contains("name"), "{unnamed:?}");
+        app.call_by(by_agent(), tracker, "create-area", json!({ "name": "Launch" }))
+            .expect("the agent makes the project");
+        assert!(app.state().area_named("Launch").is_ok());
+        assert_eq!(dialogs(&mut app), 0, "and still no dialog");
+
+        // The person's own button opens the form.
+        app.effect(&tasks::TasksEffect::NewProject)
+            .expect("the person opens the form");
+        assert_eq!(dialogs(&mut app), 1, "the form opens for the person");
+    }
+}
+
+/// How many dialogs the window shows.
+fn dialogs(app: &mut TestApp<App>) -> usize {
+    app.harness()
+        .a11y_nodes()
+        .iter()
+        .filter(|(_, node)| node.role() == ui::accesskit::Role::Dialog && !node.is_hidden())
+        .count()
 }
 
 tilo_test_env::scenario! {

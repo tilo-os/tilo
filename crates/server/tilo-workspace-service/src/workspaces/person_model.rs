@@ -72,7 +72,8 @@ pub type ProviderFuture<'a> =
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ModelRefusal {
-    /// The person chose no model for this kind of work and has no default.
+    /// The person chose no model for this kind of work and has no default,
+    /// nor, for a kind of their main thread, a model for its other kind.
     NoModelLinked {
         /// The kind of work asked for.
         kind: Interaction,
@@ -888,10 +889,28 @@ fn named_selection<'a>(
     Some((profile, model))
 }
 
+/// The other kind of a person's main thread: their assistant answers there
+/// as a request and works there as a task, and Settings chooses one model
+/// for both with one ask. No other kind of work has such a companion.
+const fn beside_in_main_thread(kind: Interaction) -> Option<Interaction> {
+    match kind {
+        Interaction::Task => Some(Interaction::Request),
+        Interaction::Request => Some(Interaction::Task),
+        Interaction::OneShot
+        | Interaction::Subtask
+        | Interaction::Classifier
+        | Interaction::Dictation => None,
+    }
+}
+
 /// What the person whose store is `root` chose for `kind`, with its key:
 /// the model `named` names where their settings hold it
 /// ([`PersonModel::naming`]), else the model chosen for the kind, else their
-/// default provider's default model.
+/// default provider's default model, else for a kind of their main thread
+/// the model they chose for its other kind ([`beside_in_main_thread`]): a
+/// device that chooses the two with two asks leaves one of them unnamed for
+/// a moment, and a message of that moment is answered by the one model its
+/// person did choose, not told that none is linked.
 fn resolve(
     root: &Path,
     kept: &kept::Key,
@@ -928,6 +947,9 @@ fn resolve(
                 let default = profile.default_model.as_ref()?;
                 let model = profile.models.iter().find(|model| &model.id == default)?;
                 Some((profile, model))
+            })
+            .or_else(|| {
+                beside_in_main_thread(kind).and_then(|other| config.interaction_selection(other))
             })
             .ok_or(ModelRefusal::NoModelLinked { kind })?,
     };

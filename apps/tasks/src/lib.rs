@@ -550,9 +550,10 @@ fn router(cx: &ViewCx<Tracker>, nav: &Nav, window: &Window) {
     let open = nav.clone();
     let noting = window.clone();
     cx.effects(move |effect: TasksEffect, cx: &mut EffectCx<Tracker>| {
-        // The "New project" effect is the sidebar's own button, the palette's
-        // entry and an agent's call alike: the form it asks for is what this
-        // window shows, and the tracker is not touched.
+        // The "New project" effect is the sidebar's own button and the
+        // palette's entry: the form it asks for is what this window shows,
+        // and the tracker is not touched. Only the person at this screen opens
+        // it; an agent makes a project with the tracker's `create-area`.
         match effect {
             TasksEffect::NewProject => {
                 asking.set(true);

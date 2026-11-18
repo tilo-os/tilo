@@ -903,6 +903,18 @@ impl ActionContract {
         self.is_own_device() || self.is_attended()
     }
 
+    /// Whether an effect under this contract only changes what is on the
+    /// screen it is invoked on: it reads, answers nothing and asks no one (a
+    /// form it opens, a panel or a place it shows). Only the person at that
+    /// screen invokes it; for anyone else it would move their window and tell
+    /// the caller nothing.
+    pub fn only_shows(&self) -> bool {
+        self.kind == ActionKind::Read
+            && matches!(self.result, ResultSpec::None)
+            && !self.is_own_device()
+            && !self.is_attended()
+    }
+
     /// Who the action is listed for, as its tags record it. See [`Audience`].
     pub fn audience(&self) -> Audience {
         if self.tags.iter().any(|tag| tag == AGENTS_AUDIENCE_TAG) {

@@ -153,7 +153,7 @@ class Console:
         # mid-line, and taking one for a shell sends the command into
         # whatever is drawing it — at a disk-unlock prompt that then waits for
         # the command's whole deadline instead of letting the caller answer.
-        _, prompt = self.read_until(r"(?m)^login: |(?m)^[#$] ")
+        _, prompt = self.read_until(r"(?m)^login: |^[#$] ")
         if not prompt.group(0).startswith(b"login"):
             return
         user, _, password = userpass.partition(":")

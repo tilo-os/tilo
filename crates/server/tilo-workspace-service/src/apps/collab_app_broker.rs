@@ -8029,11 +8029,15 @@ impl<'a> DirectoryQuestion<'a> {
             // disclose resource-only metadata with an unknown governing kind.
             // Another read of the record (`review-restore`) discloses it the
             // same way.
-            private_view: (operation == Some(tilo_actions::OperationKind::View)
+            // An effect that only opens a form or shows a place on its
+            // publisher's screen is theirs alone, as a view is.
+            private_view: ((operation == Some(tilo_actions::OperationKind::View)
                 || operation.is_none())
                 && !contract.is_presence_view()
                 && !(operation == Some(tilo_actions::OperationKind::View)
-                    && contract.reads_resource()),
+                    && contract.reads_resource()))
+                || (operation == Some(tilo_actions::OperationKind::Effect)
+                    && contract.only_shows()),
         }
     }
 

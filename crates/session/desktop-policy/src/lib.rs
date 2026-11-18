@@ -91,6 +91,10 @@ impl KeptWindow {
 /// launched it knows.
 pub type LaunchWorkspaces = Rc<dyn Fn(u32, &str) -> Option<String>>;
 
+/// The tab the shell held for the launch the process `pid` belongs to, as the session that
+/// launched it knows: a window of that process takes it whatever it calls its app.
+pub type LaunchTabs = Rc<dyn Fn(u32) -> Option<TabId>>;
+
 /// A window the desktop gave a place since the session last read them: what a launch learns a
 /// window of its own arrived from, rather than from what the shell shows of its app.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -474,6 +478,8 @@ pub struct DesktopPolicy {
     /// The workspace each launched window belongs to, as the session that launched it knows:
     /// a window launched into a workspace that is not in front opens there, never in front.
     launched_into: Option<LaunchWorkspaces>,
+    /// The tab held for each launched window's launch ([`Self::reads_launch_tabs`]).
+    launch_tabs: Option<LaunchTabs>,
     /// The windows launched into a workspace not in front whose tab the shell has not made yet,
     /// each with where it goes ([`Self::carry_launched`]).
     to_carry: Vec<(u64, WorkspaceId)>,
@@ -541,6 +547,7 @@ impl DesktopPolicy {
             displays: Vec::new(),
             cards: cards::Placements::new(),
             launched_into: None,
+            launch_tabs: None,
             to_carry: Vec::new(),
             kept: BTreeMap::new(),
         };
@@ -574,6 +581,12 @@ impl DesktopPolicy {
     /// opens its window there.
     pub fn reads_launch_workspaces(&mut self, workspaces: LaunchWorkspaces) {
         self.launched_into = Some(workspaces);
+    }
+
+    /// Read the tab held for each window's launch from `tabs`, the session's: a window takes the
+    /// tab its own launch waits in, also when it names its app otherwise than the launch did.
+    pub fn reads_launch_tabs(&mut self, tabs: LaunchTabs) {
+        self.launch_tabs = Some(tabs);
     }
 
     /// The workspace `window` was launched into, when it is not the one in front: where its tab
@@ -1313,8 +1326,19 @@ impl DesktopPolicy {
                 Some((key.clone(), index))
             })
         });
+        // The tab held for the window's own launch, which the session knows by the process; the
+        // app's name is the link only for a window whose launch it does not know.
+        let launched = || {
+            let tab = self.launch_tabs.as_ref()?(window.pid?)?;
+            held.iter().find_map(|(key, queue)| {
+                let index = queue
+                    .iter()
+                    .position(|waiting| waiting.tab == Some(tab) && waiting.window.is_none())?;
+                Some((key.clone(), index))
+            })
+        };
         let app = window.app_id.as_deref().unwrap_or_default();
-        let (key, index) = if let Some(found) = exact {
+        let (key, index) = if let Some(found) = exact.or_else(launched) {
             found
         } else {
             let key = held

@@ -829,3 +829,34 @@ paths = ["crates/agent/agent-session/tests/workspace_actions/hosted_consent_noti
 reason = "The verb that keeps a sent request, its action-id constant and the catalogue keys the action macro reads, moved from the app with the resource: renaming them is an action-id change of its own."
 words = ["record"]
 paths = ["apps/api-tester-model/src/workspace_verbs.rs", "apps/api-tester-model/locales/en-US.ftl", "apps/api-tester-model/locales/de-DE.ftl"]
+
+[[allow]]
+reason = "iroh's NAT and packet relay: the peer network the sibling enrolment and its test reach the person's other devices through."
+words = ["relay"]
+paths = [
+    "crates/system/tilo-auth/src/sibling/enrol.rs",
+    "crates/system/tilo-auth/tests/peer_enrol.rs",
+    "crates/session/session/tests/network_unlock_enrolment.rs",
+]
+
+[[allow]]
+reason = "The network host names a peer client dials, which a peer client passes as `hosts`."
+words = ["host"]
+identifiers = ["hosts"]
+paths = ["crates/session/session/tests/network_unlock_enrolment.rs"]
+
+[[allow]]
+reason = "A test's readiness handoff between its threads, which is what mpsc's channel is."
+words = ["channel"]
+paths = ["crates/system/tilo-auth/tests/peer_enrol.rs"]
+
+[[allow]]
+reason = "The LUKS2 keyslot an enrolment adds, which cryptsetup and the header's own format name."
+words = ["slot"]
+paths = [
+    "crates/session/session/src/network.rs",
+    "crates/session/session/src/network/unlock.rs",
+    "crates/session/session/tests/network_unlock_enrolment.rs",
+    "crates/system/tilo-auth/src/sibling/enrol.rs",
+    "crates/system/tilo-auth/tests/peer_enrol.rs",
+]

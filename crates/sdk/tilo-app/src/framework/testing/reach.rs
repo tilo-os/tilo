@@ -51,7 +51,8 @@ pub fn check_scenarios_reach_every_action<A: ResourceApp>(
         };
         if !unreachable.is_empty() {
             failures.push(format!(
-                "{scenario}: published actions a drive cannot invoke: {unreachable:#?}"
+                "{scenario}: published actions a drive cannot invoke, or whose call by an \
+                 agent opens a dialog on the person's screen: {unreachable:#?}"
             ));
         }
     }
@@ -65,9 +66,11 @@ pub fn check_scenarios_reach_every_action<A: ResourceApp>(
 /// Invoke every action `app` publishes, one after another, as a headless
 /// drive's `invoke` steps do (`FrameHarness::invoke_action`: the API's own
 /// resolution, availability, confirmation and strict binding), each with
-/// `sample_arguments` and confirmed. Answers the ones the API could not
-/// address, as `resource action: why`: published yet reachable only by
-/// clicking. An action an earlier one withdrew (its row was removed) is not
+/// `sample_arguments` and confirmed: an app's own action first as an agent,
+/// then, when the agent was refused, as the person at the screen. Answers the ones the API
+/// could not address, as `resource action: why`: published yet reachable
+/// only by clicking; and the ones whose call by the agent opened a dialog or
+/// sheet over the person's window, which an agent never does. An action an earlier one withdrew (its row was removed) is not
 /// asked; one that is unavailable now, refuses the sample as arguments (a
 /// payload only another answer can build, such as a review to restore), or
 /// ran and failed at its job, was reached.
@@ -102,6 +105,9 @@ pub fn unreachable_actions_in_share<A: ResourceApp>(
     let mut ran = false;
     let surveyed = tilo_actions::api::survey(&resources);
     let mut unreachable = Vec::new();
+    let agent = tilo_actions::Actor::Member(tilo_actions::MemberId::agent("reach-agent"));
+    // The dialogs on the screen since anything last ran, counted when asked.
+    let mut shown = None;
     let mut resource_ordinals = std::collections::HashMap::new();
     let ours = surveyed.into_iter().filter(|descriptor| {
         let next = resource_ordinals.len();
@@ -121,6 +127,31 @@ pub fn unreachable_actions_in_share<A: ResourceApp>(
             continue;
         };
         let phrase = confirmation_phrase(spec, &arguments);
+        // The app's own actions; a press of one of its drawn controls is
+        // the person's button, whose destructive press asks them first.
+        let own = !tilo_actions::kind_mirrors_a_control(&descriptor.resource_kind);
+        let before = if own {
+            *shown.get_or_insert_with(|| dialogs(app))
+        } else {
+            0
+        };
+        if own
+            && app
+                .harness()
+                .invoke_action_as(&agent, &address, &arguments, true, phrase.as_deref())
+                .is_ok()
+        {
+            ran = true;
+            let after = dialogs(app);
+            shown = Some(after);
+            if after > before {
+                unreachable.push(format!(
+                    "{} {}: an agent's call opened a dialog on the person's screen",
+                    address.resource, address.action
+                ));
+            }
+            continue;
+        }
         let mut answer = app
             .harness()
             .invoke_action(&address, &arguments, true, phrase.as_deref());
@@ -139,7 +170,10 @@ pub fn unreachable_actions_in_share<A: ResourceApp>(
         match answer {
             // What it ran may have withdrawn rows the walk has yet to ask:
             // the tree is read again before it leaves one unasked.
-            Ok(_) => ran = true,
+            Ok(_) => {
+                ran = true;
+                shown = None;
+            }
             // The invocation first takes the work still pending in the
             // window, as a real input event does: an earlier action's
             // withdrawal of this row (a file it closed) may land only then,
@@ -161,6 +195,15 @@ pub fn unreachable_actions_in_share<A: ResourceApp>(
         }
     }
     unreachable
+}
+
+/// How many dialogs and sheets `app` shows now.
+fn dialogs<A: ResourceApp>(app: &mut HeadlessApp<A>) -> usize {
+    app.harness()
+        .a11y_nodes()
+        .iter()
+        .filter(|(_, node)| node.role() == ui_core::accesskit::Role::Dialog && !node.is_hidden())
+        .count()
 }
 
 /// The confirmation phrase `spec` asks for `arguments`, if any.
@@ -365,28 +408,4 @@ fn sample_number(schema: &serde_json::Value) -> serde_json::Value {
     } else {
         0.0
     })
-}
-
-/// Drive every scenario `A` stages and name the actions each publishes that
-/// an agent is never shown ([`tilo_actions::hidden_from_agents`]).
-pub fn check_agents_are_shown_every_action<A: ResourceApp>() -> Result<(), String> {
-    let mut failures = Vec::new();
-    for scenario in A::scenarios() {
-        match HeadlessApp::<A>::drive(scenario) {
-            Ok(mut app) => {
-                let hidden = tilo_actions::hidden_from_agents(&app.harness().resources());
-                if !hidden.is_empty() {
-                    failures.push(format!(
-                        "{scenario}: published actions an agent is never shown: {hidden:#?}"
-                    ));
-                }
-            }
-            Err(error) => failures.push(format!("{scenario}: {error}")),
-        }
-    }
-    if failures.is_empty() {
-        Ok(())
-    } else {
-        Err(failures.join("\n"))
-    }
 }

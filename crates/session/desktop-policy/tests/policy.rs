@@ -653,6 +653,48 @@ fn a_shell_launch_holds_the_tab_the_apps_window_takes() {
     );
 }
 
+/// A program whose window names its app otherwise than its launch did (`glxgears` from the
+/// desktop entry `kg-glxgears`) takes the tab held for its launch, which the session knows by the
+/// window's process; a window of no launch the session knows lands in a tab of its own.
+#[test]
+fn a_window_takes_the_tab_of_its_own_launch_whatever_it_calls_its_app() {
+    let (mut driver, mut policy) = mount();
+    policy
+        .handle()
+        .dispatch(ChromeEffect::OpenApp {
+            app: "kg-glxgears".into(),
+            beside: None,
+            background: None,
+            float: None,
+        })
+        .unwrap();
+    settle(&mut driver);
+    let asked = policy.take_launches();
+    let tab = asked[0]
+        .tab
+        .expect("the shell holds the tab the window takes");
+    // The session knows process 501 as one of that launch.
+    policy.reads_launch_tabs(std::rc::Rc::new(move |pid| (pid == 501).then_some(tab)));
+
+    policy
+        .map(Window {
+            pid: Some(777),
+            ..window(9, "stranger")
+        })
+        .unwrap();
+    settle(&mut driver);
+    policy
+        .map(Window {
+            pid: Some(501),
+            ..window(10, "glxgears")
+        })
+        .unwrap();
+    settle(&mut driver);
+    assert_eq!(policy.tab_of(10), Some(tab), "the launch's own tab");
+    assert_ne!(policy.tab_of(9), Some(tab));
+    assert_eq!(tabs(&policy).len(), 2, "no tab is left waiting");
+}
+
 #[test]
 fn a_conversation_opens_beside_its_sender() {
     let (mut driver, mut policy) = mount();

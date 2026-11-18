@@ -219,6 +219,8 @@ final class AssistantDrive {
         case .reachable: once("reach", .string("reachable"))
         case .unreachable: once("reach", .string("unreachable"))
         }
+        // Whether the window offers the way in where it would say that Tilo cannot be reached.
+        once("joinStops", .bool(model.joinStops))
         switch model.setup {
         case .unknown: once("setup", ["is": "unknown"])
         case .findingAssistant: once("setup", ["is": "findingAssistant"])

@@ -2,6 +2,8 @@
 //! `tilo-disk-encrypt enrol --sibling` reaches the running session on its socket, the person's root
 //! certifies the boot key, and the half that boots the disk is sealed to the person's secret-sync
 //! key and published to their other devices.
+//! A device that holds no root of the person's asks a device that does, over the peer network: that
+//! device's session asks its person on the sheet, then certifies the key the same way.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -14,16 +16,29 @@
 )]
 
 use std::io::{Read as _, Write as _};
+use std::net::Ipv4Addr;
+use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use iroh::endpoint::{Endpoint, presets};
 use tilo_compositor::OutputConfig;
 use tilo_device_identity::IdentityPaths;
+use tilo_identity::device_fleet::DeviceFleetStore;
 use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
+use tilo_network_actor::DeviceIdentity;
+use tilo_service::{Answer, Question, Questions};
 use tilo_session::Options;
+use tilo_session::platform::fabric::Continuity;
+use tilo_session::sync::{Client, Entry, OwnPresence};
 use tilo_unlock_protocol::{
-    ENROL_SOCKET, EnrolReply, EnrolRequest, Half, PROTOCOL_VERSION, SlotId, decode_frame,
-    encode_frame, frame_len,
+    ENROL_ALPN, ENROL_SOCKET, EnrolReply, EnrolRequest, Half, PROTOCOL_VERSION, SlotId,
+    decode_frame, encode_frame, frame_len,
 };
+use tilo_user_identity::DeviceCapabilities;
+
+/// The kind the sheet lists a peer's enrolment as.
+const ENROL_KIND: &str = "network.device-enrol";
 
 /// The person's identity in a directory of its own, as the desktop's own start reads it.
 fn person() -> (
@@ -120,5 +135,273 @@ fn a_boot_key_enrols_through_the_sessions_socket() {
     assert!(
         !response.cert.signature.iter().all(|byte| *byte == 0),
         "the certificate carries the root's signature"
+    );
+}
+
+/// The person's identity here, the device that holds its root, and a device
+/// that holds none of it.
+struct TwoDevices {
+    questions: Questions,
+    shell: Rc<Client>,
+    /// The person's other device, which holds the half the enrolment is
+    /// registered with.
+    phone: Rc<Client>,
+    /// The device asking, which is one of the person's and holds no root.
+    enrollee: ed25519_dalek::SigningKey,
+    session: tilo_session::Session,
+    runtime: tokio::runtime::Runtime,
+    _env: tilo_test_env::ScopedEnv,
+    _root: tempfile::TempDir,
+}
+
+impl TwoDevices {
+    fn new() -> Self {
+        let (_runtime, env, root) = person();
+        let registry = tilo_identity::registry::IdentityRegistryStore::from_env()
+            .expect("the identity registry")
+            .load_reconciled_cached()
+            .expect("the registry reads");
+        let profile = registry
+            .certified_identity()
+            .expect("this device's person is known");
+        let store = DeviceFleetStore::from_env().expect("the device fleet");
+        let now = tilo_clock::unix_now_ns();
+        let mint = || {
+            store
+                .mint_enrollment(
+                    &profile.id,
+                    DeviceCapabilities::member(),
+                    now,
+                    now.saturating_add(3_600_000_000_000),
+                    &[],
+                )
+                .expect("this device may enroll another of the person's")
+        };
+        let phone_key = ed25519_dalek::SigningKey::from_bytes(&[0x52; 32]);
+        let phone_cert = store
+            .complete_enrollment(
+                &profile.id,
+                &mint(),
+                phone_key.verifying_key().to_bytes(),
+                "The phone",
+                now,
+            )
+            .expect("the second device is enrolled");
+        let enrollee = ed25519_dalek::SigningKey::from_bytes(&[0x53; 32]);
+        store
+            .complete_enrollment(
+                &profile.id,
+                &mint(),
+                enrollee.verifying_key().to_bytes(),
+                "The laptop",
+                now,
+            )
+            .expect("the third device is enrolled");
+        let questions = Questions::new();
+        let shell = Rc::new(
+            Client::start(
+                Entry {
+                    identity: tilo_session::sync::device_identity(),
+                    own: OwnPresence::default(),
+                    hosts: Vec::new(),
+                    continuity: Continuity::default(),
+                    wake: Arc::new(|| {}),
+                    personal: None,
+                    relays: test_server::loopback(),
+                    lan: None,
+                },
+                None,
+                Some(questions.clone()),
+                Vec::new(),
+                None,
+            )
+            .expect("this device's endpoint binds"),
+        );
+        let phone = Rc::new(
+            Client::start(
+                Entry {
+                    identity: Some(DeviceIdentity::kept(phone_cert, phone_key)),
+                    own: OwnPresence {
+                        label: "The phone".into(),
+                        ..OwnPresence::default()
+                    },
+                    hosts: Vec::new(),
+                    continuity: Continuity::default(),
+                    wake: Arc::new(|| {}),
+                    personal: None,
+                    relays: test_server::loopback(),
+                    lan: None,
+                },
+                None,
+                None,
+                Vec::new(),
+                None,
+            )
+            .expect("the phone's endpoint binds"),
+        );
+        phone.connect(shell.endpoint_addr());
+        let session = crate::common::headless_on(
+            &[OutputConfig::new("HEADLESS-1", 1280, 720)],
+            Options {
+                collab: false,
+                sync: Some(Rc::clone(&shell)),
+                questions: Some(questions.clone()),
+                ..Options::default()
+            },
+        );
+        Self {
+            questions,
+            shell,
+            phone,
+            enrollee,
+            session,
+            runtime: tokio::runtime::Runtime::new().expect("a runtime"),
+            _env: env,
+            _root: root,
+        }
+    }
+
+    /// Let the session step until `done`.
+    fn carry(&mut self, mut done: impl FnMut(&Self) -> bool) {
+        tilo_test_env::wait_until("the devices' sessions carried it", || {
+            self.session
+                .step(Duration::from_millis(1))
+                .expect("the session steps");
+            self.phone.follow();
+            done(self)
+        });
+    }
+
+    /// The device holding no root enrols its boot key over the peer network,
+    /// with the person's answer `approve`.
+    fn exchange(&mut self, request: &EnrolRequest, approve: bool) -> EnrolReply {
+        let frame = encode_frame(request).expect("a frame");
+        let shell_addr = self.shell.endpoint_addr();
+        let enrollee = self.enrollee.clone();
+        let (endpoint, connection) = self.runtime.block_on(async {
+            let endpoint = Endpoint::builder(presets::Minimal)
+                .secret_key(iroh::SecretKey::from_bytes(&enrollee.to_bytes()))
+                .relay_mode(test_server::relay_mode())
+                .bind_addr((Ipv4Addr::LOCALHOST, 0))
+                .expect("a loopback address")
+                .bind()
+                .await
+                .expect("the enrolling device's endpoint binds");
+            let connection = tokio::time::timeout(
+                Duration::from_secs(20),
+                endpoint.connect(shell_addr, ENROL_ALPN),
+            )
+            .await
+            .expect("the owner's device answers")
+            .expect("the enrolling device reaches it");
+            (endpoint, connection)
+        });
+        let (mut send, mut recv) = self
+            .runtime
+            .block_on(connection.open_bi())
+            .expect("a stream");
+        self.runtime
+            .block_on(send.write_all(&frame))
+            .expect("the request is written");
+        let shown = self.questioned();
+        let answered = if approve {
+            self.questions.answer(&shown.handle, Answer::default())
+        } else {
+            self.questions.decline(&shown.handle)
+        };
+        assert!(answered, "the person answers once");
+        let reply = self.runtime.block_on(async {
+            let mut prefix = [0_u8; 4];
+            tokio::time::timeout(Duration::from_secs(20), recv.read_exact(&mut prefix))
+                .await
+                .expect("the answer comes")
+                .expect("the answer's prefix");
+            let mut body = vec![0_u8; frame_len(prefix).expect("a frame length")];
+            tokio::time::timeout(Duration::from_secs(20), recv.read_exact(&mut body))
+                .await
+                .expect("the answer comes")
+                .expect("the answer");
+            decode_frame::<EnrolReply>(&body).expect("an enrolment reply")
+        });
+        self.runtime.block_on(endpoint.close());
+        reply
+    }
+
+    /// The one enrolment question the shell's sheet lists.
+    fn questioned(&mut self) -> Question {
+        let mut found = None;
+        self.carry(|devices| {
+            found = devices
+                .questions
+                .pending()
+                .into_iter()
+                .find(|question| question.kind == ENROL_KIND);
+            found.is_some()
+        });
+        found.expect("the enrolment reached the person")
+    }
+}
+
+/// A boot key and the half this device would keep, as the enrolling command
+/// draws them.
+fn request(slot: SlotId) -> (EnrolRequest, ed25519_dalek::SigningKey) {
+    let boot_key = ed25519_dalek::SigningKey::from_bytes(&[0x77; 32]);
+    let half = Half::generate().expect("a fresh half");
+    (
+        EnrolRequest::new(&boot_key, slot, None, None, half).expect("an enrolment request"),
+        boot_key,
+    )
+}
+
+#[test]
+fn a_device_without_the_root_enrols_when_the_person_allows_it() {
+    let mut devices = TwoDevices::new();
+    let slot = SlotId {
+        volume_uuid: [0x11; 16],
+        keyslot: 3,
+    };
+    let (request, boot_key) = request(slot);
+    let reply = devices.exchange(&request, true);
+    let EnrolReply::Enrolled(response) = reply else {
+        panic!("the owner's device enrols the boot key: {reply:?}");
+    };
+    // The certificate names the device that asked, which is the key its
+    // connection was made with.
+    assert_eq!(
+        response.cert.device_public_key,
+        devices.enrollee.verifying_key().to_bytes()
+    );
+    assert_eq!(
+        response.cert.boot_public_key,
+        boot_key.verifying_key().to_bytes()
+    );
+    assert_eq!(response.cert.slot, slot);
+    response
+        .cert
+        .verify()
+        .expect("the person's root signed the boot key");
+    assert!(
+        !response.siblings.is_empty(),
+        "the person's other devices hold the half"
+    );
+    // The phone holds the half the phone's own enrolment is registered with.
+    assert_eq!(
+        response.siblings.len(),
+        1,
+        "the other device of the person's holds the half"
+    );
+}
+
+#[test]
+fn a_refused_enrolment_signs_nothing() {
+    let mut devices = TwoDevices::new();
+    let (request, _boot_key) = request(SlotId {
+        volume_uuid: [0x11; 16],
+        keyslot: 4,
+    });
+    assert_eq!(devices.exchange(&request, false), EnrolReply::Denied);
+    assert!(
+        devices.questions.pending().is_empty(),
+        "the sheet holds no answered question"
     );
 }

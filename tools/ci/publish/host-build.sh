@@ -40,7 +40,8 @@ rm -rf "$context"
 mkdir -p "$context/bin" "$context/keys/release" \
   "$context/os/containers/tilo-vm-host" "$context/os/etc/containers/registries.d" \
   "$context/os/etc/modules-load.d" \
-  "$context/os/usr/lib/bootc/install" "$context/os/usr/lib/sysusers.d" \
+  "$context/os/usr/lib/bootc/install" "$context/os/usr/lib/bootc/kargs.d" \
+  "$context/os/usr/lib/sysusers.d" \
   "$context/os/usr/lib/tmpfiles.d" "$context/os/usr/lib/systemd/system" \
   "$context/os/usr/lib/systemd/system-generators" \
   "$context/os/usr/lib/dracut/modules.d" \
@@ -51,6 +52,8 @@ cp os/containers/tilo-vm-host/hosted-jail.json "$context/os/containers/tilo-vm-h
 cp os/etc/containers/policy.json "$context/os/etc/containers/"
 cp os/etc/containers/registries.d/*.yaml "$context/os/etc/containers/registries.d/"
 cp os/usr/lib/bootc/install/40-tilo.toml "$context/os/usr/lib/bootc/install/"
+cp os/usr/lib/bootc/kargs.d/01-hardening.toml os/usr/lib/bootc/kargs.d/05-credentials.toml \
+  "$context/os/usr/lib/bootc/kargs.d/"
 cp os/usr/lib/sysusers.d/*.conf "$context/os/usr/lib/sysusers.d/"
 cp os/usr/lib/tmpfiles.d/*.conf "$context/os/usr/lib/tmpfiles.d/"
 cp os/etc/modules-load.d/tilo-hosted.conf "$context/os/etc/modules-load.d/"

@@ -168,6 +168,15 @@ the recovery key always remains (`tilo-disk-encrypt`).
     loss, while a machine whose boot chain changed, whose TPM was cleared, or
     which has no attestation key still waits for its owner. Enrolling again
     accepts a new chain; the recovery key remains the independent last resort.
+  - A machine that holds none of the person's root enrols without one: a
+    desktop that joined the identity, or a server nobody is signed in to
+    asks the person's devices over the same peer network
+    (`tilo-auth sibling enrol`). The device that holds the root puts the
+    request to its person on its own sheet, and only an approval signs the
+    boot key. A device without the root says so and the next is asked; a
+    refusal stops the ask instead of moving to another device. A machine with
+    a session signed in on it asks that session's socket first, as before, and
+    only reaches the network when the session holds no root either.
 - **The passphrase or recovery key** at the keyboard, as today.
 
 Wi-Fi-only machines need the network in early boot. The initramfs runs the

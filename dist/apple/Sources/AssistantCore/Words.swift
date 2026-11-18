@@ -86,6 +86,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     case codeFromElsewhere = "code-from-elsewhere", pairsNothing = "pairs-nothing"
     case compareCode = "compare-code", pairingSite = "pairing-site"
     case unreachable, cameraNotAllowed = "camera-not-allowed", tryAgain = "try-again", notReachable = "not-reachable"
+    case joinStops = "join-stops", signOutToPair = "sign-out-to-pair"
     // The menu bar and the menus.
     case openApp = "open-app", waitsOne = "waits-one", waitsMany = "waits-many", waitsNone = "waits-none"
     case pauseAssistant = "pause-assistant", resumeAssistant = "resume-assistant", quit, viewMenu = "view-menu"
@@ -329,6 +330,8 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .cameraNotAllowed: "Allow the camera for {app} in the system's settings to scan a code."
         case .tryAgain: "Try again"
         case .notReachable: "Tilo cannot be reached right now"
+        case .joinStops: "Tilo answers but does not let this device in: signing out here lets you pair it again."
+        case .signOutToPair: "Sign out and pair again"
         case .openApp: "Open {app}"
         case .waitsOne: "1 thing waits for you"
         case .waitsMany: "{count} things wait for you"

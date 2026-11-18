@@ -557,10 +557,14 @@ impl Session {
             crate::background::WindowPlacement::for_shell(options.shell, &desktop, strips);
         // A window opens in the workspace its process was launched into: an agent's or a service's
         // open of an app in a workspace that is not in front lands there, never in front.
+        // A window takes the tab held for the launch its process descends from, whatever it calls
+        // its app.
         let launched = std::sync::Arc::clone(&options.launches);
+        let held = std::sync::Arc::clone(&options.launches);
         desktop.with_policy(|policy| {
             policy
                 .reads_launch_workspaces(Rc::new(move |pid, app| launched.workspace_of(pid, app)));
+            policy.reads_launch_tabs(Rc::new(move |pid| held.held_tab_of(pid)));
         });
         // What each window shows: the shell offers the windows a person may
         // share from the note, and one whose app holds no record shows none.
@@ -1545,7 +1549,11 @@ impl Session {
                     Rc::new(Held::over(Arc::clone(engine), changes.clone())) as Rc<_>
                 }),
                 notices: Some(crate::notifications::RoleNotices::of(&notifications)),
-                name: crate::mentions::member_names(Rc::clone(&search)),
+                name: crate::mentions::member_names(
+                    handle.clone(),
+                    Rc::clone(&place_here),
+                    Rc::clone(&search),
+                ),
                 shown: {
                     let shell = handle.clone();
                     Rc::new(move |app: &str, item: &str| shell.shows_item(app, item))

@@ -189,11 +189,11 @@ impl Fixture {
         names
     }
 
-    fn run_entries(&self, source: Option<&str>, fail_writer: bool) -> Output {
+    fn entries_pass(&self, source: Option<&str>, fail_writer: bool) -> Output {
         self.run_deployment(source, fail_writer, false)
     }
 
-    fn run_entries_and_repair(&self) -> Output {
+    fn entries_pass_and_repair(&self) -> Output {
         self.run_deployment(None, false, true)
     }
 
@@ -468,7 +468,7 @@ tilo_test_env::scenario! {
         f.bootc_entry("entries", "bootc_fedora-44-1.conf", "old.efi");
         f.bootc_entry("entries.staged", "bootc_fedora-44-0.conf", "old.efi");
         f.bootc_entry("entries.staged", "bootc_fedora-44-1.conf", "new.efi");
-        let out = f.run_entries(None, false);
+        let out = f.entries_pass(None, false);
         assert_ok(&out);
         assert!(f.esp.join("loader/entries/bootc_fedora-44-1.conf").exists());
         assert!(
@@ -482,7 +482,7 @@ tilo_test_env::scenario! {
         // A repeated maintenance pass must not reset tries already spent.
         let spent = counted.with_file_name("bootc_fedora-44-1+2-1.conf");
         fs::rename(&counted, &spent).unwrap();
-        assert_ok(&f.run_entries(None, false));
+        assert_ok(&f.entries_pass(None, false));
         assert!(spent.exists());
     }
 
@@ -491,7 +491,7 @@ tilo_test_env::scenario! {
         let f = Fixture::new();
         f.make_uki("new.efi", &"b".repeat(128));
         f.bootc_entry("entries", "bootc_fedora-44-1.conf", "new.efi");
-        let out = f.run_entries(None, false);
+        let out = f.entries_pass(None, false);
         assert_ne!(out.status.code(), Some(0));
         assert!(
             stderr(&out).contains("no retained entry matches"),
@@ -505,7 +505,7 @@ tilo_test_env::scenario! {
                 .exists()
         );
         fs::write(f.esp.join("EFI/Linux/bootc/new.efi"), b"unreadable UKI").unwrap();
-        let out = f.run_entries(None, false);
+        let out = f.entries_pass(None, false);
         assert_ne!(out.status.code(), Some(0));
         assert!(
             stderr(&out).contains("cannot read entry identity"),
@@ -535,7 +535,7 @@ tilo_test_env::scenario! {
                 &booted,
                 &format!("composefs={}", "b".repeat(128)),
             );
-            assert_refused(&f.run_entries(None, false), "not a managed UKI entry");
+            assert_refused(&f.entries_pass(None, false), "not a managed UKI entry");
             assert_eq!(f.entries_in("entries.staged"), ["bootc_fedora-44-1.conf"]);
         }
     }
@@ -551,7 +551,7 @@ tilo_test_env::scenario! {
             &booted,
             &format!("composefs={booted}"),
         );
-        let out = f.run_entries_and_repair();
+        let out = f.entries_pass_and_repair();
         assert_ok(&out);
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(stdout.contains("is not a UKI entry"), "{stdout}");
@@ -568,7 +568,7 @@ fn finalized_filename_collision_does_not_count_old_fallback() {
     f.make_uki("new.efi", &"b".repeat(128));
     f.bootc_entry("entries", "bootc_fedora-44-0.conf", "old.efi");
     f.bootc_entry("entries", "bootc_fedora-44-1.conf", "new.efi");
-    assert_ok(&f.run_entries(None, false));
+    assert_ok(&f.entries_pass(None, false));
     assert!(f.esp.join("loader/entries/bootc_fedora-44-0.conf").exists());
     assert!(
         f.esp
@@ -584,7 +584,7 @@ fn counter_writer_failure_is_fatal() {
     f.make_uki("new.efi", &"b".repeat(128));
     f.bootc_entry("entries", "bootc_fedora-44-1.conf", "old.efi");
     f.bootc_entry("entries.staged", "bootc_fedora-44-1.conf", "new.efi");
-    let out = f.run_entries(None, true);
+    let out = f.entries_pass(None, true);
     assert_ne!(out.status.code(), Some(0));
     assert!(
         stderr(&out).contains("could not apply the boot counters"),
@@ -594,10 +594,33 @@ fn counter_writer_failure_is_fatal() {
 }
 
 #[test]
+fn the_boot_menu_editor_is_turned_off() {
+    let f = Fixture::new();
+    f.set_flavour("server");
+    let booted = "a".repeat(128);
+    f.type1_entry(
+        "entries",
+        "bootc_fedora-44-1.conf",
+        &booted,
+        &format!("composefs={booted}"),
+    );
+    let conf = f.esp.join("loader/loader.conf");
+    // bootc writes no loader.conf for kernel/initrd entries: the pass adds one.
+    assert_ok(&f.entries_pass(None, false));
+    assert_eq!(fs::read_to_string(&conf).unwrap(), "editor no\n");
+    // An editor someone turned on goes off; the rest of the file stays.
+    fs::write(&conf, "timeout 5\neditor yes\n").unwrap();
+    assert_ok(&f.entries_pass(None, false));
+    assert_eq!(fs::read_to_string(&conf).unwrap(), "timeout 5\neditor no\n");
+    // Already off: nothing is written, so a failing writer is never started.
+    assert_ok(&f.entries_pass(None, true));
+}
+
+#[test]
 fn non_composefs_keeps_bootloader_selected_entry() {
     let f = Fixture::new();
     f.bootc_entry("entries", "bootc_fedora-43-1.conf", "other.efi");
-    assert_ok(&f.run_entries(Some("/dev/mapper/root"), false));
+    assert_ok(&f.entries_pass(Some("/dev/mapper/root"), false));
     assert!(f.esp.join("loader/entries/bootc_fedora-44-1.conf").exists());
     assert!(
         f.esp
@@ -631,7 +654,7 @@ fn dev_kernel_initrd_entries_are_counted_by_their_composefs_identity() {
         &booted,
         &format!("composefs={booted}"),
     );
-    let out = f.run_entries(None, false);
+    let out = f.entries_pass(None, false);
     assert_ok(&out);
     assert_eq!(f.entries_in("entries"), ["bootc_fedora-44-1.conf"]);
     assert_eq!(
@@ -641,7 +664,7 @@ fn dev_kernel_initrd_entries_are_counted_by_their_composefs_identity() {
     let counted = f.esp.join("loader/entries.staged/bootc_fedora-44-0+3.conf");
     let spent = counted.with_file_name("bootc_fedora-44-0+2-1.conf");
     fs::rename(&counted, &spent).unwrap();
-    assert_ok(&f.run_entries(None, false));
+    assert_ok(&f.entries_pass(None, false));
     assert_eq!(
         f.entries_in("entries.staged"),
         ["bootc_fedora-44-0+2-1.conf", "bootc_fedora-44-1.conf"]
@@ -660,7 +683,7 @@ fn dev_kernel_initrd_entry_for_another_deployment_cannot_prove_the_boot() {
         &format!("composefs={other}"),
     );
     assert_refused(
-        &f.run_entries(None, false),
+        &f.entries_pass(None, false),
         "no retained entry matches the running deployment",
     );
     assert_eq!(f.entries_in("entries"), ["bootc_fedora-44-1.conf"]);
@@ -683,7 +706,7 @@ fn malformed_dev_kernel_initrd_entries_are_refused() {
         f.set_flavour("dev");
         f.type1_entry("entries", "bootc_fedora-44-1.conf", &booted, &options);
         assert_refused(
-            &f.run_entries(None, false),
+            &f.entries_pass(None, false),
             "not a managed kernel/initrd entry",
         );
         assert_eq!(f.entries_in("entries"), ["bootc_fedora-44-1.conf"]);
@@ -708,7 +731,7 @@ fn malformed_dev_kernel_initrd_entries_are_refused() {
         let path = f.esp.join("loader/entries/bootc_fedora-44-1.conf");
         fs::write(&path, entry(&body)).unwrap();
         assert_refused(
-            &f.run_entries(None, false),
+            &f.entries_pass(None, false),
             "not a managed kernel/initrd entry",
         );
         assert_eq!(f.entries_in("entries"), ["bootc_fedora-44-1.conf"]);
@@ -723,7 +746,7 @@ fn dev_image_keeps_the_managed_uki_checks() {
     f.make_uki("new.efi", &"b".repeat(128));
     f.bootc_entry("entries", "bootc_fedora-44-1.conf", "old.efi");
     f.bootc_entry("entries.staged", "bootc_fedora-44-1.conf", "new.efi");
-    assert_ok(&f.run_entries(None, false));
+    assert_ok(&f.entries_pass(None, false));
     assert_eq!(f.entries_in("entries.staged"), ["bootc_fedora-44-1+3.conf"]);
     // A uki line outside bootc's directory is still refused, not read as a
     // kernel/initrd entry.
@@ -734,7 +757,7 @@ fn dev_image_keeps_the_managed_uki_checks() {
         "title Tilo\nuki /EFI/tilo/x.efi\n",
     )
     .unwrap();
-    assert_refused(&f.run_entries(None, false), "not a managed UKI entry");
+    assert_refused(&f.entries_pass(None, false), "not a managed UKI entry");
 }
 
 #[test]
