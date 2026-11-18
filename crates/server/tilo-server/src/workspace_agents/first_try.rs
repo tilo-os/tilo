@@ -19,11 +19,6 @@ use serde_json::Value;
 
 use super::{Content, McpServer, Message, WorkspaceActionProvider};
 
-/// The most a turn is told at its start of what its workspace has, in bytes: about fifteen
-/// hundred tokens of its first request, which one look it saves pays for. It bounds what the
-/// server says unasked and nothing a turn may read: what it leaves out, a listing answers.
-pub(super) const MOST_TOLD: usize = 6_000;
-
 /// What no turn on a server has, whatever its tools' own words offer: said before a model
 /// spends an ask to be refused.
 fn not_here() -> String {
@@ -56,9 +51,9 @@ const FROM_THE_SERVER: &str =
 /// Tell the turn that begins with `messages`, its instruction and its person's message, what
 /// a server has not and what its caller has through `server`.
 pub(super) async fn tell(messages: &mut [Message], server: &McpServer<WorkspaceActionProvider>) {
-    // No clock ends this: it is the look the turn's model would ask for first, and a turn told
-    // nothing because its workspace answered slowly would ask for that look all the same.
-    let has = server.told_at_start(MOST_TOLD).await;
+    // No clock ends this and no count of bytes cuts it: it is the look the turn's model would
+    // ask for first, and a turn told nothing, or half, would ask for that look all the same.
+    let has = server.told_at_start().await;
     let mut each = messages.iter_mut();
     // What no server has is the same for every turn: it stands at the end of the instruction.
     if let Some(Content::Text { text }) = each.next().and_then(|first| first.content.first_mut()) {

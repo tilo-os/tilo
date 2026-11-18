@@ -8,8 +8,6 @@ use super::*;
 
 /// Where what a turn is told of its workspace begins, after its person's words.
 const TOLD: &str = "What you have here now";
-/// The most the person's message grows by: what a turn is told of its workspace.
-const MOST_GROWN: usize = 6_200;
 
 /// One thing a person asks for, as a model goes about it.
 #[derive(Clone)]
@@ -18,8 +16,9 @@ struct Wanted {
     words: &'static str,
     /// The app the work is in, as the listing of the apps names it.
     app: &'static str,
-    /// The action as a listing writes it, which the model must have been shown before it can
-    /// write the call; empty where the work is a read by a title the person gave.
+    /// The action as a path ends with it (`#rename`), which the model must have been shown as
+    /// one the app offers before it can write the call; empty where the work is a read by a
+    /// title the person gave.
     shown: &'static str,
     /// The kind of thing in the app that carries the action, as a listing of the app names
     /// it; empty where the app itself does.
@@ -58,6 +57,28 @@ fn told_so_far(request: &ModelRequest) -> String {
         }
     }
     told.join("\n")
+}
+
+/// Whether `told` shows `action` (`#rename`) as one `app` offers: on a line of a listing that
+/// begins with it (`#rename(title)  Rename note`), or on the app's own lines of what a turn is
+/// told at its start (`tasks: #create, #start`, or the line of a kind of thing in the app). A
+/// tool's own words that write the action in an example show it for no app.
+fn shows(told: &str, app: &str, action: &str) -> bool {
+    let whole = |line: &str| {
+        line.match_indices(action).any(|(at, _)| {
+            line.get(at.saturating_add(action.len())..)
+                .and_then(|rest| rest.chars().next())
+                .is_none_or(|next| !(next.is_ascii_alphanumeric() || next == '-'))
+        })
+    };
+    let of_a_kind = format!("({app}/");
+    told.lines().any(|line| {
+        let begins = line.trim_start();
+        let where_an_app_offers = begins.starts_with(action)
+            || line.starts_with(app)
+            || (begins.starts_with("each ") && line.contains(&of_a_kind));
+        where_an_app_offers && whole(line)
+    })
 }
 
 impl tilo_agent_session::model::PlanTurns for Learner {
@@ -100,7 +121,7 @@ impl tilo_agent_session::model::PlanTurns for Learner {
             .and_then(|line| line.trim().split("  ").next())
             .map(|name| format!("{}/{}", wanted.app, name.trim_end_matches('/')));
         let mut calls: Vec<(&str, serde_json::Value)> = Vec::new();
-        if !told.contains(wanted.shown) {
+        if !(wanted.shown.is_empty() || shows(&told, wanted.app, wanted.shown)) {
             // It was not shown the action yet: it looks, for the app, then into the app, then
             // into the first thing of the kind there. Then it gives up.
             if !told.contains(wanted.app) {
@@ -172,7 +193,7 @@ fn the_three_asks() -> [Wanted; 3] {
         Wanted {
             words: "Write a line about plums in the word processor and show it to me.",
             app: "word-processor",
-            shown: "#append-paragraph(",
+            shown: "#append-paragraph",
             kind: "word-processor.document",
             work: (
                 "tilo_do",
@@ -187,7 +208,7 @@ fn the_three_asks() -> [Wanted; 3] {
         Wanted {
             words: "Add a task to buy plums and tell me when it is there.",
             app: "tasks",
-            shown: "#create(",
+            shown: "#create",
             kind: "",
             work: (
                 "tilo_do",
@@ -317,15 +338,34 @@ async fn a_turn_told_what_it_has_asks_its_model_only_for_the_work() {
         told.starts_with("Read my note Plums"),
         "the person's words stand first: {told}"
     );
+    assert!(told.contains(TOLD), "{told}");
+    // Every action is told by its name alone, on the lines of the app that offers it; what one
+    // takes is its own listing's.
     assert!(
-        told.contains(TOLD) && told.len() <= MOST_GROWN,
-        "{} bytes told: {told}",
-        told.len()
-    );
-    assert!(
-        told.contains("word-processor") && told.contains("#append-paragraph("),
+        shows(&told, "word-processor", "#append-paragraph") && !told.contains("#append-paragraph("),
         "{told}"
     );
+    // No count of bytes cuts it: every app the turn's own listing of the apps names is told.
+    let every = serde_json::json!({"limit": 200});
+    let (apps, failed) = served.tool(&workspace, &her_agent, "tilo_ls", every).await;
+    assert!(!failed, "{apps}");
+    let listed: Vec<&str> = apps
+        .lines()
+        .filter(|line| {
+            ["running", "service", "installed"]
+                .iter()
+                .any(|state| line.ends_with(state))
+        })
+        .filter_map(|line| line.split("  ").next())
+        .collect();
+    assert!(listed.len() > 20, "{apps}");
+    for app in listed {
+        assert!(
+            told.lines().any(|line| line.starts_with(app)),
+            "{app} is listed and not told:\n{told}"
+        );
+    }
+    assert!(!told.contains(" more"), "nothing is left out: {told}");
     // The instruction is what a provider keeps and what a conversation's key is made of: it
     // is the same byte for byte in all six turns, though a task was added between them.
     assert_eq!(instructions.len(), 6, "{instructions:#?}");
@@ -482,10 +522,10 @@ async fn a_turn_held_to_reading_is_told_no_action_that_changes_anything() {
     for caller in [&free, &held] {
         let tools = tilo_mcp::McpServer::for_turn(service!(served, &workspace), caller.clone())
             .expect("a turn has its tools");
-        told.push(tools.told_at_start(6_000).await);
+        told.push(tools.told_at_start().await);
     }
     assert!(
-        told[0].contains("word-processor") && told[0].contains("#append-paragraph("),
+        told[0].contains("word-processor") && told[0].contains("#append-paragraph"),
         "an agent nothing holds is told the action that writes: {}",
         told[0]
     );
