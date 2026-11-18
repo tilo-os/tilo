@@ -8910,12 +8910,12 @@ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
 name = "lettre"
-version = "0.11.22"
+version = "0.11.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0da65617f6cb926332d039cb578aad56178da86e128db6a1b09f4c94fa5b3349"
+checksum = "f294f3d7cdb313e578acef7d7727d4e8d897e0fcd0d6d58c19959cec95073f19"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "email_address",
  "futures-io",
  "futures-util",
@@ -28129,6 +28129,7 @@ dependencies = [
  "browser",
  "browser-continuity",
  "browser-continuity-core",
+ "browser-model",
  "brush-parser",
  "btoi",
  "buffa",
@@ -28153,6 +28154,7 @@ dependencies = [
  "calloop",
  "calloop-wayland-source",
  "camera",
+ "camera-model",
  "canvas",
  "cap-fs-ext",
  "cap-primitives",
@@ -28191,6 +28193,7 @@ dependencies = [
  "clap_lex",
  "cli-shim",
  "clocks",
+ "clocks-model",
  "cloud-source",
  "cloud-source-dav",
  "cloud-source-dropbox",
@@ -28225,7 +28228,9 @@ dependencies = [
  "const-oid 0.9.6",
  "constant_time_eq",
  "contacts",
+ "contacts-model",
  "containers",
+ "containers-model",
  "convert_case 0.10.0",
  "convert_case 0.12.0",
  "cookie-factory",

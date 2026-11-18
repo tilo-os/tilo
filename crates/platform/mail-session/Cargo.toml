@@ -16,7 +16,7 @@ accounts = { path = "../../system/accounts" }
 async-imap.workspace = true
 mail-parser = "0.11.4"
 mail-builder = "0.4.4"
-lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1-rustls", "ring", "rustls-native-certs", "tokio1"] }
+lettre = { version = "0.11.24", default-features = false, features = ["smtp-transport", "tokio1-rustls", "ring", "rustls-native-certs", "tokio1"] }
 # The secured IMAP connection, opened as the sign-in probe opened it when the
 # account was added: TLS from the first byte or upgraded with STARTTLS.
 tilo-account-probe = { path = "../account-probe" }
