@@ -80,6 +80,11 @@ pub const WORKSPACES_KIND: &str = "identity.workspaces";
 /// The kind of the person's resource that holds the settings that follow
 /// them between their devices: one value per setting, under its key.
 pub const SETTINGS_KIND: &str = "identity.settings";
+/// The kind of the person's resource that holds the machines that asked to
+/// join and have not been answered yet: one entry per ask, under its id, and
+/// the answer any of their devices wrote. The storing device's session shows
+/// it from here and carries out whatever answer arrives.
+pub const ENROLLMENT_KIND: &str = "identity.enrollment";
 /// The most devices that resource names to this device: entries past it are
 /// not read, and this device adds none.
 const MAX_DEVICES: usize = 256;

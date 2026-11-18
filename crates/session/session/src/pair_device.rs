@@ -9,7 +9,7 @@
 //! the device that opens it ([`crate::certification::watch_host`]). A workspace no host on the web
 //! keeps has no link: the sheet says to add the device nearby.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -58,15 +58,10 @@ pub(crate) struct Adding {
     copied: RefCell<Option<String>>,
     /// Where the link last shown sends a new device.
     waiting: RefCell<Option<Waiting>>,
-    /// Machines that asked to join over the internet while the sheet is up, and what tells the
-    /// person of each once.
-    serving: RefCell<Option<crate::enrollment::Serving>>,
+    /// The machines that asked to join, as the person's store holds them, and
+    /// what tells the person of each once.
+    machines: RefCell<Vec<crate::enrollment::Waiting>>,
     told: RefCell<std::collections::BTreeSet<String>>,
-    /// Machines approved by pasting their own line, until the helper is done with each.
-    dialing: RefCell<Vec<std::process::Child>>,
-    /// Whether answering machines was tried for this window: a device that
-    /// cannot answer says so once, not every pass.
-    attempted: Cell<bool>,
 }
 
 impl Adding {
@@ -77,10 +72,8 @@ impl Adding {
             clipboard,
             copied: RefCell::default(),
             waiting: RefCell::default(),
-            serving: RefCell::default(),
+            machines: RefCell::default(),
             told: RefCell::default(),
-            dialing: RefCell::default(),
-            attempted: Cell::new(false),
         }
     }
 
@@ -136,79 +129,38 @@ impl Adding {
         }
     }
 
-    /// The machines waiting for the person's answer now.
+    /// The machines waiting for the person's answer now, as the person's store holds them.
     pub(crate) fn enrolling(&self) -> Vec<crate::enrollment::Waiting> {
-        self.serving
-            .borrow()
-            .as_ref()
-            .map(crate::enrollment::Serving::waiting)
-            .unwrap_or_default()
+        self.machines.borrow().clone()
+    }
+
+    /// What the person's store holds now: the asks no device answered yet.
+    pub(crate) fn holding(&self, machines: Vec<crate::enrollment::Waiting>) {
+        *self.machines.borrow_mut() = machines;
     }
 
     /// The machines waiting for the person's answer, as the sheet lists them.
     fn waiting_machines(&self) -> Vec<tilo_sheets::pair_device::WaitingMachine> {
-        self.serving
+        self.machines
             .borrow()
-            .as_ref()
-            .map(|serving| {
-                serving
-                    .waiting()
-                    .into_iter()
-                    .map(|machine| tilo_sheets::pair_device::WaitingMachine {
-                        ask: machine.ask,
-                        label: machine.label,
-                        hardware: machine.hardware,
-                        code: machine.code,
-                    })
-                    .collect()
+            .iter()
+            .map(|machine| tilo_sheets::pair_device::WaitingMachine {
+                ask: machine.ask.clone(),
+                label: machine.label.clone(),
+                hardware: machine.hardware.clone(),
+                code: machine.code.clone(),
             })
-            .unwrap_or_default()
+            .collect()
     }
 
-    /// Answer machines over the internet while the sheet is up, and stop once it is taken down:
-    /// one window at a time, as one link is.
-    pub(crate) fn serve(&self, open: bool) {
-        let mut serving = self.serving.borrow_mut();
-        if !open {
-            if serving.take().is_some() || self.attempted.replace(false) {
-                self.told.borrow_mut().clear();
-            }
-            return;
-        }
-        if serving.is_some() || self.attempted.replace(true) {
-            return;
-        }
-        let Ok(paths) = tilo_identity::device_admin::PersonPaths::from_env() else {
-            return;
-        };
-        match crate::enrollment::Serving::start(&paths.root, &paths.dir) {
-            Ok(started) => *serving = Some(started),
-            Err(error) => tracing::info!(%error, "this session answers no machines"),
-        }
-    }
-
-    /// Answer the machine whose ask this is: `approve` admits it.
-    pub(crate) fn answer(&self, ask: &str, approve: bool) {
-        if let Some(serving) = self.serving.borrow_mut().as_mut()
-            && let Err(error) = serving.answer(ask, approve)
-        {
-            tracing::warn!(%error, "a machine was not answered");
-        }
-        self.told.borrow_mut().remove(ask);
-    }
-
-    /// Let in the machine whose own `tilo://enroll?…` line the person pasted.
+    /// Let in the machine whose own `tilo://enroll?…` line the person pasted: this device dials
+    /// it and approves it there, answering as either kind of machine.
     pub(crate) fn scan(&self, link: &str) {
         let Ok(paths) = tilo_identity::device_admin::PersonPaths::from_env() else {
             return;
         };
-        match crate::enrollment::scan(link, &paths.root, &paths.dir) {
-            Ok(child) => {
-                let mut dialing = self.dialing.borrow_mut();
-                dialing.retain_mut(|child| child.try_wait().ok().flatten().is_none());
-                dialing.push(child);
-            }
-            Err(error) => tracing::warn!(%error, "a machine's link was not approved"),
+        if let Err(error) = crate::enrollment::approve_line(link, paths.root, paths.dir) {
+            tracing::warn!(%error, "a machine's link was not approved");
         }
     }
 
@@ -290,6 +242,7 @@ impl crate::Shared {
         let Some(state) = self.pair_device.as_ref() else {
             return;
         };
+        self.follow_enrolling();
         let now = ui::time::unix_now_ms();
         state.show(self.adding.device(self.pairing_place(), now));
         state.presentation().open(false);
@@ -310,27 +263,32 @@ impl crate::Shared {
     }
 
     /// Put each machine that asks to join to the person once, and take back the asks that are
-    /// gone: the sheet answers machines while it is up, and a machine that joined or left the
-    /// window takes its notification with it.
+    /// gone: what the person's store holds is what every one of their devices shows, and an ask
+    /// any of them answered leaves them all at once.
     pub(crate) fn follow_enrolling(&self) {
-        let Some(state) = self.pair_device.as_ref() else {
+        let Some(personal) = self.sync.as_ref().and_then(|sync| sync.personal()) else {
             return;
         };
-        self.adding.serve(state.presentation().is_open());
-        let waiting = self.adding.enrolling();
-        for machine in &waiting {
+        let held = crate::enrollment::held(personal.sync());
+        self.adding.holding(held.waiting.clone());
+        for machine in &held.waiting {
             if self.adding.note_told(&machine.ask) {
                 self.telling().show(&crate::enrollment::notice(machine));
             }
         }
-        for ask in self.adding.gone(&waiting) {
+        for ask in self.adding.gone(&held.waiting) {
             self.telling().withdraw(&crate::enrollment::tag(&ask));
         }
     }
 
-    /// The person answered a machine that asked to join: approving admits it.
+    /// The person answered a machine that asked to join: approving admits it. The answer is
+    /// written to their store, and whichever of their devices serves the machine carries it out.
     pub(crate) fn answer_enrolling(&self, ask: &str, approve: bool) {
-        self.adding.answer(ask, approve);
+        if let Some(personal) = self.sync.as_ref().and_then(|sync| sync.personal())
+            && let Err(error) = crate::enrollment::answer(personal.sync(), ask, approve)
+        {
+            tracing::warn!(%error, "a machine was not answered");
+        }
         self.telling().withdraw(&crate::enrollment::tag(ask));
     }
 
