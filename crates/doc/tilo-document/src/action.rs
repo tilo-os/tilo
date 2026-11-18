@@ -564,6 +564,18 @@ pub(crate) enum ActionDomain {
 }
 
 impl RichTextAction {
+    /// Whether this replaces the whole body, whatever it held: a new value
+    /// written this way needs no paragraph to start from.
+    pub(crate) fn replaces_body(&self) -> bool {
+        matches!(
+            self,
+            Self::ReplaceBody { .. }
+                | Self::ReplaceClips { .. }
+                | Self::ReplaceFormatted { .. }
+                | Self::ReplaceImported { .. }
+        )
+    }
+
     pub(crate) fn domain(&self) -> ActionDomain {
         match self {
             Self::SpliceText { .. }
@@ -1238,38 +1250,69 @@ fn apply_paste_fragment(
                 start: offset.saturating_add(mark.start),
                 end: offset.saturating_add(mark.end),
             };
-            let value = match &mark.value {
-                tilo_doc::document::MarkValue::Bool(value) => MarkVal::Bool(*value),
-                tilo_doc::document::MarkValue::Int(value) => MarkVal::Int(*value),
-                tilo_doc::document::MarkValue::Str(value) => MarkVal::Str(value.clone()),
-            };
-            add_mark_region(dm, region, &span, &mark.name, &value);
+            add_mark_region(dm, region, &span, &mark.name, &mark_val(&mark.value));
         }
         if index > 0 || adopt_first_style || cell {
             set_kind_region(dm, region, &current, &fragment.kind);
-            if let Some(level) = fragment.level {
-                set_attr_region(dm, region, &current, "level", &AttrVal::Int(level));
-            }
-            if let Some(ordered) = fragment.ordered {
-                set_attr_region(dm, region, &current, "ordered", &AttrVal::Bool(ordered));
-            }
-            if let Some(align) = &fragment.align {
-                set_attr_region(dm, region, &current, "align", &AttrVal::Str(align.clone()));
-            }
-            for (key, value) in &fragment.attrs {
-                let value = match value {
-                    crate::ClipAttr::Str(pasted) if cell && key == "table" => AttrVal::Str(
-                        tables
-                            .entry(pasted.clone())
-                            .or_insert_with(|| dm.ids.mint())
-                            .clone(),
-                    ),
-                    other => clip_attr(other),
-                };
-                set_attr_region(dm, region, &current, key, &value);
-            }
+            style_clip(dm, region, &current, fragment, &mut tables);
         }
         offset = offset.saturating_add(fragment.text.chars().count());
+    }
+}
+
+/// Give `block` the attributes of the copied block `clip`. A copied table
+/// cell names a table of this document, the same for every cell of the table
+/// it was copied from (`tables`), so a pasted table never joins one here.
+fn style_clip(
+    dm: &mut DocMut,
+    region: Region,
+    block: &str,
+    clip: &ClipBlock,
+    tables: &mut std::collections::BTreeMap<String, String>,
+) {
+    if let Some(level) = clip.level {
+        set_attr_region(dm, region, block, "level", &AttrVal::Int(level));
+    }
+    if let Some(ordered) = clip.ordered {
+        set_attr_region(dm, region, block, "ordered", &AttrVal::Bool(ordered));
+    }
+    if let Some(align) = &clip.align {
+        set_attr_region(dm, region, block, "align", &AttrVal::Str(align.clone()));
+    }
+    for (key, value) in &clip.attrs {
+        let value = match value {
+            crate::ClipAttr::Str(pasted) if clip.kind == "cell" && key == "table" => AttrVal::Str(
+                tables
+                    .entry(pasted.clone())
+                    .or_insert_with(|| dm.ids.mint())
+                    .clone(),
+            ),
+            other => clip_attr(other),
+        };
+        set_attr_region(dm, region, block, key, &value);
+    }
+}
+
+/// Write `clip` as `block`'s text and marks. An empty block gets its text
+/// too, as every paragraph does, so two people typing into it at once type
+/// into one text.
+fn write_clip_text(dm: &mut DocMut, block: &str, clip: &ClipBlock) {
+    dm.splice_text(block, 0, 0, &clip.text);
+    for mark in &clip.marks {
+        let span = Span {
+            block: block.to_owned(),
+            start: mark.start,
+            end: mark.end,
+        };
+        add_mark_region(dm, Region::Body, &span, &mark.name, &mark_val(&mark.value));
+    }
+}
+
+fn mark_val(value: &tilo_doc::document::MarkValue) -> MarkVal {
+    match value {
+        tilo_doc::document::MarkValue::Bool(value) => MarkVal::Bool(*value),
+        tilo_doc::document::MarkValue::Int(value) => MarkVal::Int(*value),
+        tilo_doc::document::MarkValue::Str(value) => MarkVal::Str(value.clone()),
     }
 }
 
@@ -1573,26 +1616,23 @@ fn apply_replace_body(dm: &mut DocMut, markdown: &str) {
     keep_a_paragraph(dm);
 }
 
+/// The body replaced by `blocks`, each written whole as it was copied: its
+/// kind, attributes, text and marks made with the block at once.
 fn apply_replace_clips(dm: &mut DocMut, blocks: &[ClipBlock]) {
     let existing = tilo_doc::model::blocks_in_order(dm.doc, dm.c);
     for id in &existing {
         dm.tombstone_block_in(Region::Body, id);
     }
-    if !blocks.is_empty() {
-        let first = dm.insert_block(None, "paragraph");
-        apply_paste_fragment(
-            dm,
-            Region::Body,
-            &SelectionTarget {
-                start_block: first.clone(),
-                start: 0,
-                end_block: first,
-                end: 0,
-            },
-            blocks,
-            true,
-        );
-    }
+    dm.bulk(|dm| {
+        let mut tables = std::collections::BTreeMap::new();
+        let mut previous: Option<String> = None;
+        for clip in blocks {
+            let block = dm.insert_block(previous.as_deref(), &clip.kind);
+            style_clip(dm, Region::Body, &block, clip, &mut tables);
+            write_clip_text(dm, &block, clip);
+            previous = Some(block);
+        }
+    });
     keep_a_paragraph(dm);
 }
 

@@ -287,10 +287,16 @@ impl Model for RichText {
             _ => (at.make(doc, &tilo_doc::model::schema())?, true),
         };
         if made || tilo_doc::model::open(doc, &obj).is_err() {
-            // A new value with text starts with the schema alone: its text is
-            // the body, and a paragraph to type in, written and then replaced
-            // at once, is operations every value made so carries for nothing.
-            if self.initial.is_none() {
+            // A new value given its body (its text, or blocks replacing
+            // whatever it holds) starts with the schema alone: a paragraph to
+            // type in, written and then replaced at once, is operations every
+            // value made so carries for nothing.
+            let given = self.initial.is_some()
+                || self
+                    .pending
+                    .first()
+                    .is_some_and(RichTextAction::replaces_body);
+            if !given {
                 Self::initialize_under(doc, &obj)?;
             } else if !made {
                 tilo_doc::model::init(doc, &obj);

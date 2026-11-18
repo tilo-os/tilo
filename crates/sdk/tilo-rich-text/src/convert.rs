@@ -108,40 +108,83 @@ pub fn content_of_clip(clip: &tilo_document::ClipBlock) -> BlockContent {
     })
 }
 
-/// A paragraph the editor shows, as an action carries it: written the way
-/// the editor stores it, then read back.
+/// A paragraph the editor shows, as an action carries it: the kind and
+/// attributes it is stored with ([`KindSpec`]), and its marks as a document
+/// holding it reads them: per name, each stretch of one value as one mark,
+/// the mark written last winning where two overlap.
 pub fn clip_of_content(content: &BlockContent) -> tilo_document::ClipBlock {
-    use ui::automerge::{ROOT, transaction::Transactable};
-    let mut doc = ui::automerge::AutoCommit::new();
-    // Made holding the schema at once: the scratch text is made for every
-    // block converted.
-    let clips = doc
-        .batch_create_object(ROOT, "clip", &tilo_doc::model::schema(), false)
-        .ok()
-        .filter(|root| {
-            tilo_document::RichText::initialize_under(&mut doc, root).is_ok()
-                && crate::fill_under(&mut doc, root, std::slice::from_ref(content)).is_ok()
-        })
-        .and_then(|root| tilo_doc::model::open(&doc, &root).ok())
-        .map(|containers| {
-            tilo_doc::model::materialize_region(&doc, &containers, tilo_doc::model::Region::Body)
-                .iter()
-                .map(clip_block)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    clips
+    use tilo_doc::document::{MarkSpan, MarkValue};
+    let spec = KindSpec::of(content);
+    let len = chars(&content.text);
+    // Per name, the value over each character.
+    let mut over: BTreeMap<&str, Vec<Option<MarkValue>>> = BTreeMap::new();
+    let mut set = |name, value: MarkValue, bytes: &std::ops::Range<usize>| {
+        let start = char_of_byte(&content.text, bytes.start);
+        let end = char_of_byte(&content.text, bytes.end);
+        let values = over.entry(name).or_insert_with(|| vec![None; len]);
+        for held in values.iter_mut().take(end).skip(start) {
+            *held = Some(value.clone());
+        }
+    };
+    for span in &content.marks {
+        let (name, value) = document_mark(&span.mark);
+        let value = match value {
+            MarkVal::Bool(value) => MarkValue::Bool(value),
+            MarkVal::Int(value) => MarkValue::Int(value),
+            MarkVal::Str(value) => MarkValue::Str(value),
+        };
+        set(name, value, &span.range);
+    }
+    for (bytes, author) in content.authors.iter().filter(|(_, a)| !a.is_empty()) {
+        set(
+            tilo_doc::schema::MARK_AUTHOR,
+            MarkValue::Str(author.clone()),
+            bytes,
+        );
+    }
+    let mut marks = Vec::new();
+    for (name, values) in over {
+        let mut at = 0;
+        while let Some(held) = values.get(at) {
+            let Some(value) = held else {
+                at = at.saturating_add(1);
+                continue;
+            };
+            let start = at;
+            while values.get(at).is_some_and(|v| v.as_ref() == Some(value)) {
+                at = at.saturating_add(1);
+            }
+            marks.push(MarkSpan {
+                start,
+                end: at,
+                name: name.to_owned(),
+                value: value.clone(),
+            });
+        }
+    }
+    marks.sort_by(|a, b| (a.start, a.end, &a.name).cmp(&(b.start, b.end, &b.name)));
+    let attrs = spec
+        .attrs
         .into_iter()
-        .next()
-        .unwrap_or_else(|| tilo_document::ClipBlock {
-            kind: "paragraph".into(),
-            text: content.text.clone(),
-            marks: Vec::new(),
-            level: None,
-            ordered: None,
-            align: None,
-            attrs: BTreeMap::new(),
+        .filter_map(|(key, value)| {
+            let value = match value? {
+                ActionAttr::Bool(value) => tilo_document::ClipAttr::Bool(value),
+                ActionAttr::Int(value) => tilo_document::ClipAttr::Int(value),
+                ActionAttr::Str(value) => tilo_document::ClipAttr::Str(value),
+                ActionAttr::Float(_) => return None,
+            };
+            Some((key.to_owned(), value))
         })
+        .collect();
+    tilo_document::ClipBlock {
+        kind: spec.kind.to_owned(),
+        text: content.text.clone(),
+        marks,
+        level: spec.level,
+        ordered: spec.ordered,
+        align: None,
+        attrs,
+    }
 }
 
 /// How an editor block is stored: the paragraph's kind with its `level` and
@@ -249,8 +292,8 @@ fn empty_runs(len: usize) -> MarkRuns {
 
 fn cover(runs: &mut MarkRuns, name: &str, value: &MarkVal, start: usize, end: usize) {
     if let Some(chars) = runs.get_mut(name) {
-        for slot in chars.iter_mut().take(end).skip(start) {
-            *slot = Some(value.clone());
+        for held in chars.iter_mut().take(end).skip(start) {
+            *held = Some(value.clone());
         }
     }
 }
@@ -401,6 +444,65 @@ mod tests {
                 "{case:?}: {:?}",
                 spec.attr_changes(&case)
             );
+        }
+    }
+
+    /// A block converted to what an action carries is the block a document
+    /// holding it reads back: its kind, attributes, text and marks.
+    #[test]
+    fn a_block_carried_is_the_block_a_document_reads_back() {
+        use ui::automerge::{ROOT, transaction::Transactable};
+        let mut marked = BlockContent::paragraph("p", "héllo wörld again");
+        marked.marks = vec![
+            MarkSpan::new(0..3, Mark::Bold),
+            MarkSpan::new(3..6, Mark::Bold),
+            MarkSpan::new(2..9, Mark::Italic),
+            MarkSpan::new(0..7, Mark::ExternalLink("https://a.example".into())),
+            MarkSpan::new(4..13, Mark::ExternalLink("https://b.example".into())),
+        ];
+        marked.authors = vec![
+            (0..7, "ada".into()),
+            (7..13, "ada".into()),
+            (13..19, "bob".into()),
+        ];
+        let mut heading = BlockContent::paragraph("h", "Title");
+        heading.kind = BlockKind::Heading(2);
+        let mut task = BlockContent::paragraph("t", "done thing");
+        task.kind = BlockKind::Checklist {
+            indent: 1,
+            done: true,
+        };
+        let mut code = BlockContent::paragraph("c", "let a = 1;");
+        code.kind = BlockKind::CodeBlock {
+            lang: Some("rust".into()),
+        };
+        code.code_group = Some("g".into());
+        for content in [
+            marked,
+            heading,
+            task,
+            code,
+            BlockContent::paragraph("e", ""),
+        ] {
+            let mut doc = ui::automerge::AutoCommit::new();
+            let root = doc
+                .batch_create_object(ROOT, "clip", &tilo_doc::model::schema(), false)
+                .unwrap();
+            tilo_document::RichText::initialize_under(&mut doc, &root).unwrap();
+            crate::fill_under(&mut doc, &root, std::slice::from_ref(&content)).unwrap();
+            let containers = tilo_doc::model::open(&doc, &root).unwrap();
+            let read = tilo_doc::model::materialize_region(
+                &doc,
+                &containers,
+                tilo_doc::model::Region::Body,
+            );
+            let mut want = clip_block(&read[0]);
+            let mut got = clip_of_content(&content);
+            for clip in [&mut want, &mut got] {
+                clip.marks
+                    .sort_by(|a, b| (a.start, &a.name).cmp(&(b.start, &b.name)));
+            }
+            assert_eq!(got, want, "{content:?}");
         }
     }
 
