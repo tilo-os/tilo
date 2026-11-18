@@ -9,28 +9,8 @@ use std::rc::Rc;
 
 use ui::prelude::*;
 
-/// The note.
-#[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct Note {
-    /// Note text
-    pub body: String,
-}
-
-impl Note {
-    /// What the resource holds: the note's text.
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
-}
-
-#[resource(
-    kind = "scratchpad.note",
-    read_content = Note::read_document
-)]
-impl Note {}
+/// The note the workspace keeps: its type and its verb live in `scratchpad-model`.
+pub use scratchpad_model::Note;
 
 const SAMPLE_NOTE: &str = "Notes for Thursday\n\nPick up the printed tickets before noon. Ask Maria whether the \
 studio is free on the 14th, and send Tomas the revised floor plan.\n\nIdeas for the launch talk: start with the \

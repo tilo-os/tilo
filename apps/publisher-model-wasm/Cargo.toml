@@ -1,0 +1,18 @@
+[package]
+name = "publisher-model-wasm"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "The App Publisher model as the WebAssembly module its package carries: the profile and its check, applied by any device holding the workspace's keys."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+publisher-model = { path = "../publisher-model" }
+tilo-model-guest = { path = "../../crates/sdk/tilo-model-guest" }
+
+[lints]
+workspace = true

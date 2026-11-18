@@ -407,7 +407,10 @@ fn invocation(step: Option<String>, mut calls: Vec<Call>, shares: &[Share]) -> I
     let newest = shares.iter().max_by_key(|share| share.last_ms);
     let first_change = shares.iter().map(|share| share.first_ms).min();
     let last_change = shares.iter().map(|share| share.last_ms).max();
-    let ended = calls.iter().all(|call| call.update.is_terminal());
+    // An invocation whose change a resource keeps has ended, whatever the log
+    // still says of the save that carries it: whoever reads the change reads
+    // it ended, never an invocation still going.
+    let ended = !shares.is_empty() || calls.iter().all(|call| call.update.is_terminal());
     // The call the caller made last names the invocation, as its answer did.
     let last = calls
         .iter()
@@ -1059,6 +1062,45 @@ mod tests {
             assert!(one.undoable && one.recorded && one.remembered);
             assert_eq!(one.records[0].app, "word-processor");
             assert_eq!(one.action.as_deref(), Some("terminal#run"));
+        }
+
+        phase a_change_a_reader_sees_is_listed_ended_between_its_call_and_its_save;
+        {
+            // The call handed its change to the session, and its answer waits
+            // until that change is saved: the resource lists the change, the
+            // answer is still pending. A reader sees both, and never `running`.
+            let shares = shares(
+                "so.tilo.word-processor",
+                "r",
+                &[change("a1", Some("s1"), "Jane Doe's agent", 100)],
+            );
+            let recorded = shares.into_iter().map(|(step, share)| (step, vec![share])).collect();
+            let saving = call(
+                "saving",
+                99,
+                InvocationUpdate::Accepted {
+                    invocation: invocation(),
+                },
+                false,
+            );
+            let listed = listing(recorded, vec![(Some("s1".into()), saving)]);
+            assert_eq!(listed.len(), 1);
+            let one = &listed[0];
+            assert_eq!(one.status, InvocationStatus::Ended, "{one:?}");
+            assert_eq!((one.changes, one.ended_ms), (1, Some(100)));
+            assert!(one.undoable && one.recorded && one.remembered, "{one:?}");
+
+            // A call whose change no resource keeps yet is still going.
+            let accepted = call(
+                "accepted",
+                200,
+                InvocationUpdate::Accepted {
+                    invocation: invocation(),
+                },
+                false,
+            );
+            let going = listing(BTreeMap::new(), vec![(None, accepted)]);
+            assert_eq!(going[0].status, InvocationStatus::Running);
         }
 
         phase a_page_reads_on_from_its_cursor;

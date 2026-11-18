@@ -81,16 +81,8 @@ impl Options {
         catalogue: impl Fn() -> AppCatalogue + Send + Sync + 'static,
         model: ModelChoice,
     ) -> Self {
-        Self::working_with(catalogue, model.make_turns())
-    }
-
-    /// A host offering `catalogue`, its agents working with the model `turns` makes.
-    pub fn working_with(
-        catalogue: impl Fn() -> AppCatalogue + Send + Sync + 'static,
-        turns: MakeTurns,
-    ) -> Self {
         Self {
-            model: turns,
+            model: model.make_turns(),
             catalogue: Some(Arc::new(catalogue)),
             ..Self::default()
         }

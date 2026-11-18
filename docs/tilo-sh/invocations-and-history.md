@@ -138,6 +138,8 @@ and what can still be taken back.
 - **whether it can still be taken back**: `undoable`, or `undo_blocked` naming whose change stands
   on top of its own.
 
+An invocation whose change a resource keeps never reads `running`.
+
 The page also says the `total`, and how many are `waiting` for you.
 
 An invocation's `id` is the id the other invocation calls take (`ws.status(id)`, its cancel and undo):
@@ -147,7 +149,8 @@ listed the same after the host restarts (`recorded`), only without an `id`: the 
 invocation's calls (`remembered`) until it restarts, or lets go of the oldest among many. Its `step`, the
 undo step its changes carry in every record's History, names it either way. One that changed nothing
 (still waiting for you, or failed before it wrote) is known from the host's memory alone, and is not
-listed after a restart.
+listed after a restart. `ws.status(id)` stays `pending` until the change is saved, a moment after the
+listing may already read it ended.
 
 A key reads the invocations in records it may read now, as it reads those records' History: of one that
 also changed a record it may not read, only the part in the records it may; one with nothing in them is

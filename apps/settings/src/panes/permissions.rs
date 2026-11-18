@@ -566,7 +566,6 @@ fn device_answers_card(cx: &ViewCx<Settings>, answers: &[DeviceAnswer]) -> Setti
                 resource: answer.resource.clone(),
             }),
         );
-        details.insert(0, what);
         body.push(row(Box::new(thing_row(
             &format!("device-answer:{}", answer.resource),
             &app_name(&answer.app),

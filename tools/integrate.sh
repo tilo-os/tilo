@@ -12,9 +12,11 @@
 #      parent is integration (integration is never rebased or rewritten); when
 #      integration already holds main, integration's head is tested as it is;
 #   2. runs `t` on that commit: every default check its change touches
-#      (`t scope`), and lint-head, which lints what integration adds - the
-#      changed packages, the crates that use what they renamed or removed, the
-#      packages as they ship and the page's wasm32 build;
+#      (`t scope`), lint-head, which lints what integration adds - the changed
+#      packages, the crates that use what they renamed or removed, the packages
+#      as they ship and the page's wasm32 build - and sdk-types, which generates
+#      the SDKs' types and docs/api/openapi.json from the tree and fails when
+#      the committed files differ from what it generates;
 #   3. when nothing fails that main does not already fail, pushes the commit to
 #      integration and to main in one atomic push. Both are fast-forwards; it
 #      never forces either. The pre-push hook lints the main side of it, which
@@ -68,7 +70,10 @@ else
   say "testing $count integration commit(s) with main ${main:0:12} merged in, as ${candidate:0:12}"
 fi
 
-# What the change touches: its default checks, and the wide lint.
+# What the change touches: its default checks, the wide lint, and sdk-types. That last one generates
+# the SDKs' types and docs/api/openapi.json from the tree and compares them with the committed
+# files: the API description it generates is compiled into the generator, so t's scope cannot see
+# the sources that change it, and a stale description makes every page built from it fail.
 if ! scope="$(t scope --rev "$candidate" --names)"; then
   say "t cannot tell what the change touches (above); nothing was pushed"
   exit 1
@@ -76,10 +81,10 @@ fi
 results="$(mktemp)"
 trap 'rm -f "$results"' EXIT
 # shellcheck disable=SC2086 # the check ids are words
-t test --rev "$candidate" lint-head $scope || true
+t test --rev "$candidate" lint-head sdk-types $scope || true
 # The same results again, as data (all cached by now), to tell what main already fails.
 # shellcheck disable=SC2086
-t test --rev "$candidate" --json lint-head $scope >"$results" 2>/dev/null || true
+t test --rev "$candidate" --json lint-head sdk-types $scope >"$results" 2>/dev/null || true
 
 # A failure main has no result for is checked on main itself: one that fails there too is main's.
 unknown="$(python3 -I - "$results" <<'EOF'

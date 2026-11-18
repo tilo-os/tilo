@@ -549,7 +549,8 @@ impl ChangeFeed for WorkspaceActionProvider {
 /// [`ModelChoice`] ([`model_of`]), or a test's script.
 pub type Model = Arc<dyn Fn() -> Option<Box<dyn PlanTurns>> + Send + Sync>;
 
-/// The [`Model`] `choice` names: its gateway or endpoint, none for a choice no model answers.
+/// The [`Model`] `choice` names: its gateway, endpoint or script, and none for Settings with no
+/// provider chosen.
 #[must_use]
 pub fn model_of(choice: ModelChoice) -> Model {
     Arc::new(move || choice.turns())

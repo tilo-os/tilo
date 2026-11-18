@@ -245,12 +245,13 @@ impl Demo {
             .iter()
             .find(|(owner, _, _)| *owner == TYPED_INTO)
             .expect("the note is open");
-        store
-            .held_resources()
-            .into_iter()
-            .flat_map(|id| store.with(&id, ui::automerge::AutoCommit::get_heads))
-            .flatten()
-            .collect()
+        let mut heads = Vec::new();
+        for id in store.held_resources() {
+            if let Some(held) = store.with(&id, ui::automerge::AutoCommit::get_heads) {
+                heads.extend(held);
+            }
+        }
+        heads
     }
 
     /// How many app windows the shell has open.

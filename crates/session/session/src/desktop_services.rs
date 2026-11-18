@@ -452,6 +452,31 @@ struct OnSessionBus<'a> {
     running: Arc<std::sync::Mutex<std::collections::BTreeMap<u32, String>>>,
 }
 
+/// The portals app `app_id` may use when it is an installed package: the ones its manifest's
+/// `[sandbox.portals]` does not deny, as its bus proxy lets it reach. `None` for an app that is
+/// no package. A package launched into a sandbox whose manifest cannot be read may use none.
+fn package_portals(app_id: &str, sandboxed: bool) -> Option<std::collections::BTreeSet<String>> {
+    use launcher::manifest::PortalPolicy;
+    match app_catalogue::apps::read_one_from_env(app_id) {
+        Ok(Some(installed)) => Some(
+            installed
+                .manifest
+                .sandbox
+                .portals
+                .into_iter()
+                .filter(|(_, policy)| *policy != PortalPolicy::Deny)
+                .map(|(name, _)| name)
+                .collect(),
+        ),
+        Ok(None) if !sandboxed => None,
+        Ok(None) => Some(std::collections::BTreeSet::new()),
+        Err(error) => {
+            tracing::warn!(%error, app_id, "the installed apps could not be read");
+            sandboxed.then(std::collections::BTreeSet::new)
+        }
+    }
+}
+
 /// The portal backend and the notifications daemon, serving on the bus `serving` names.
 async fn on_session_bus(
     serving: OnSessionBus<'_>,
@@ -474,12 +499,14 @@ async fn on_session_bus(
         return (None, None);
     };
     // The frontend vouches for the app id it forwards; the app is the one it names, in the
-    // workspace the session sees it run in.
+    // workspace the session sees it run in, and a package keeps to the portals its manifest allows.
     let named = side.clone();
     let resolver = Arc::new(move |app_id: &str, _window: Option<&str>| {
+        let sandboxed = named.sandboxed(app_id);
         Some(PortalCaller {
             workspace: named.workspace_of(app_id),
-            sandboxed: named.sandboxed(app_id),
+            sandboxed,
+            portals: package_portals(app_id, sandboxed),
             ..PortalCaller::new(app_id)
         })
     });

@@ -633,6 +633,7 @@ async fn open(
             app_id: target.app.clone(),
             workspace: Some(target.workspace.clone()),
             sandboxed: false,
+            portals: None,
         },
         call: target.channel.clone(),
         consents,

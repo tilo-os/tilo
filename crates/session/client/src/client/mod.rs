@@ -239,8 +239,8 @@ impl Client {
 
     /// Speak for the agents this device executes ([`Presence::speak_for`]), and hand the host who
     /// is here when that changed.
-    pub fn speak_for(&self, runs: &[(String, String, ShellPresence)]) {
-        if self.presence.speak_for(runs) {
+    pub fn speak_for(&self, sessions: &[(String, String, String, ShellPresence)]) {
+        if self.presence.speak_for(sessions) {
             self.touched();
         }
     }
