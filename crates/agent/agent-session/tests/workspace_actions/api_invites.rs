@@ -64,9 +64,11 @@ async fn a_backends_key_invites_a_reviewer_who_enters_with_a_key_of_their_own() 
     assert_eq!(invited["sent"], false, "{invited}");
     assert_eq!(invited["email"], "rosa@example.com", "{invited}");
     let link = invited["link"].as_str().unwrap().to_owned();
+    // The test's site is reached only from this computer, so it shelves nothing: the link
+    // carries the signed invitation itself, which opens wherever it is followed.
     assert!(
-        link.contains("/i/") && link.contains('#'),
-        "the site's short link: {link}"
+        link.contains('#') && link.contains("invite="),
+        "a link that carries its invitation: {link}"
     );
 
     // Ada's own page follows an invitation too, as a person's layout joins the
