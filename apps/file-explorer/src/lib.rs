@@ -80,6 +80,8 @@ pub mod recent;
 pub mod remote_accounts;
 #[cfg(feature = "desktop")]
 pub mod resource;
+#[cfg(feature = "desktop")]
+pub(crate) mod row_types;
 #[cfg(feature = "samples")]
 pub mod scenarios;
 
