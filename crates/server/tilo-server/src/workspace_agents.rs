@@ -2186,12 +2186,16 @@ async fn run_calls(
                 None => call_tool(server, &call.name, call.input.clone()).await,
             }
         };
+        // What it asked is logged with a refusal, so the call can be made again by hand; every
+        // call's whole answer only at debug, where what a tool showed it can be looked up.
+        let asked: String = call.input.to_string().chars().take(LOGGED_CHARS).collect();
         if is_error {
             let said: String = content.chars().take(LOGGED_CHARS).collect();
-            tracing::info!(tool = %call.name, %said, "a tool of an agent on the workspace's server was refused or failed");
+            tracing::info!(tool = %call.name, %asked, %said, "a tool of an agent on the workspace's server was refused or failed");
         } else {
             tracing::info!(tool = %call.name, "an agent on the workspace's server used a tool");
         }
+        tracing::debug!(tool = %call.name, %asked, answered = %content, "what a tool of an agent on the workspace's server answered");
         results.push(Content::ToolResult(ToolResult {
             call_id: call.id.clone(),
             content,
