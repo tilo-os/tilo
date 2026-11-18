@@ -1,5 +1,6 @@
 ## What Chat's resources say in words.
 
+chat-draft-label = Draft
 chat-person-unnamed = Someone ({ $tag })
 
 ## The resource's resources, their actions and what it does.

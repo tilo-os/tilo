@@ -425,7 +425,6 @@ chat-voice-channel-unnamed = The voice channel could not be named
 ## What the app is called in a window and in the launcher
 chat-app-title = Chat
 ## What the resources are called, and the actions on them
-chat-draft-row = Draft: { $preview }
 chat-messages-post = Post a message
 chat-messages-post-file = Post a file
 chat-messages-share-resource = Share live
