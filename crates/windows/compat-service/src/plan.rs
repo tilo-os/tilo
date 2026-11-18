@@ -252,6 +252,9 @@ impl SystemRuntimeRegistry {
                     runtime_bind("/usr/bin/wine", "/usr/bin/wine"),
                     runtime_bind("/usr/bin/wineserver", "/usr/bin/wineserver"),
                     runtime_bind("/usr/bin/wineboot", "/usr/bin/wineboot"),
+                    // Wine's locale tables, fonts and the `wine.inf` it sets a prefix up from:
+                    // without them the wine server never starts, and no program opens.
+                    runtime_bind("/usr/share/wine", "/usr/share/wine"),
                 ],
                 sandbox_entrypoint: PathBuf::from("/usr/bin/wine"),
                 environment: Vec::new(),
@@ -1382,6 +1385,11 @@ mod tests {
                                     .iter()
                                     .any(|arg| arg == TRANSLATED_HELPER)
                             );
+                            if layer == Layer::Wine {
+                                assert!(command.bwrap_argv.windows(3).any(|args| {
+                                    args == ["--ro-bind", "/usr/share/wine", "/usr/share/wine"]
+                                }));
+                            }
                         }
                     }
                 }
