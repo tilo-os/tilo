@@ -180,7 +180,7 @@ extension TiloEngine {
     /// The person's own workspace on this host, which the host makes the first time it is asked
     /// for, with this device in it: its route for `open(route:)`, and its name.
     public func ownWorkspace() async throws -> (route: String, name: String) {
-        let answer = try await ask("return globalThis.__tiloLive.own(given)", ["given": pass])
+        let answer = try await ask("return globalThis.__tiloLive.own(given)", patience: ownPatience, ["given": pass])
         guard let id = answer["id"]?.string, !id.isEmpty else { throw Problem.noAnswer }
         // A workspace of a named host is written `/@<host>/w/<id>`, the host as its origin names it.
         let host = answer["origin"]?.string.flatMap { URLComponents(string: $0) }.flatMap { parts -> String? in

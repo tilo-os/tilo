@@ -66,6 +66,7 @@ final class AsksHoldTests: XCTestCase {
     ///   `'empty'`       answered with nothing in it
     ///   `'failed'`      answered that her server failed at it: an ask it knows, this time
     ///   `'never'`       not answered at all
+    ///   `'gave-up'`     the page itself says that no answer came within its own time
     private static let page = #"""
     <!doctype html><html data-arrival="load"><title>Tilo</title><span id="status"></span><div id="semantics"></div>
     <script>
@@ -91,6 +92,7 @@ final class AsksHoldTests: XCTestCase {
         if (how === 'lost') return {invocation: 'i', state: 'accepted'};
         if (how === 'empty') return done(null);
         if (how === 'failed') return {invocation: 'i', state: 'failed', error: {code: 'write_timeout', message: 'The write did not finish in time'}};
+        if (how === 'gave-up') throw Object.assign(new Error('no answer came in time'), {code: 'unanswered'});
         if (how?.late) await new Promise(on => setTimeout(on, how.late));
         const answer = await usual();
         return how === 'unanswered' ? {invocation: 'i', state: 'accepted'} : answer;
@@ -110,6 +112,7 @@ final class AsksHoldTests: XCTestCase {
           window.asks.push('own');
           const how = next('own');
           if (how === 'never') return never();
+          if (how?.late) await new Promise(on => setTimeout(on, how.late));
           return how === 'empty' ? {} : {id: 'own-7', name: 'Mine', origin: 'https://tilo.example:8443'};
         },
         invoke: (target, argument) => {
@@ -137,7 +140,19 @@ final class AsksHoldTests: XCTestCase {
                 return done(window.linked
                   ? {providers: [{id: 'anthropic', name: 'Anthropic', protocol: 'anthropic', endpoint: 'https://api.anthropic.com', configured: true,
                       models: [{id: 'm-1', label: 'Model one'}], defaultModel: 'm-1'}], defaultProvider: 'anthropic', assignments: []}
-                  : {providers: [], defaultProvider: null, assignments: []});
+                  : {providers: window.preset ? [window.preset] : [], defaultProvider: null, assignments: window.chosen ?? []});
+              // A provider she links: added by its name, then its key, then its models are asked for.
+              case 'tilo.models add-preset':
+                window.preset = {id: argument.preset, name: 'Anthropic', protocol: argument.preset, endpoint: 'https://api.anthropic.com',
+                  configured: false, models: []};
+                return done(window.preset);
+              case 'tilo.models set-key': window.preset.configured = true; return done(window.preset);
+              case 'tilo.models refresh-models':
+                window.preset.models = [{id: 'm-1', label: 'Model one'}];
+                return done({provider: window.preset});
+              case 'tilo.models set-assignments':
+                window.chosen = (window.chosen ?? []).concat(argument.kinds.map(kind => ({kind, provider: argument.provider, model: argument.model})));
+                return done({providers: [window.preset], defaultProvider: null, assignments: window.chosen});
               // What her server keeps beside the conversation (`window.beside`): her logins, what
               // it learned, what is important to her, and what comes at a time.
               case 'tilo.vault list': return done({items: window.beside?.items ?? []});
@@ -512,7 +527,8 @@ final class AsksHoldTests: XCTestCase {
 
     func testWhereHerServerNeverSaysWhichWorkspaceIsHerOwnTheDeviceStillGetsInAndTheAskIsMadeAgain() async throws {
         try await start(livesInOwn: true)
-        source.engine.askPatience = .milliseconds(400)
+        // This ask has a bound of its own, longer than any other's: her server makes the workspace then.
+        source.engine.ownPatience = .milliseconds(400)
         try await enter("window.agents = []; window.plan = {own: ['never']}", own: true)
         try await signedIn()
         try await until("nothing more stands in the way") { self.setups.last == .ready }
@@ -817,6 +833,50 @@ final class AsksHoldTests: XCTestCase {
         let stands = await pageStands()
         XCTAssertTrue(stands, "the page of the new sign-in was put away for the last ask of the sign-out before it")
         if case .arriving = source.engine.state {} else { XCTFail("the engine is not on its way in") }
+    }
+
+    /// As on a busy site at a first start: her server makes her own workspace the first time it
+    /// is asked which one that is, and the page follows the making for longer than any other ask.
+    func testWhichWorkspaceIsHerOwnMayTakeLongerThanAnyOtherAskAndIsAskedOnce() async throws {
+        try await start(livesInOwn: true)
+        source.engine.askPatience = .milliseconds(300)
+        try await enter("window.agents = []; window.plan = {own: [{late: 1200}]}", own: true)
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        XCTAssertFalse(saidNoAssistant, "a sentence was said on the way")
+        let asks = try await asked("own")
+        XCTAssertEqual(asks, 1, "the ask was ended before her server answered, and made a second time")
+        let kept = try await agentsKept()
+        XCTAssertEqual(kept, #"[["assistant",true]]"#)
+    }
+
+    /// As Tilo's page after thirty seconds without an answer of her server: it says so itself.
+    func testThePagesOwnWordThatNoAnswerCameIsNoRefusalOfHerServersAndTheAskIsMadeAgain() async throws {
+        try await start()
+        try await enter("window.agents = [kept('reed', {name: 'Reed'})]; window.plan = {'chat read': ['gave-up']}")
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        XCTAssertFalse(saidNoAssistant, "the page's word that no answer came was said to her as her server's refusal")
+        let made = try await asked("chat create-agent")
+        XCTAssertEqual(made, 0)
+    }
+
+    /// Linking a provider is four asks and choosing a model two: each has the whole bound to itself.
+    func testLinkingAProviderAndChoosingAModelGoThroughWhereTheirAsksTogetherTakeLongerThanOneAsksBound() async throws {
+        try await start(Self.assistant)
+        source.engine.askPatience = .seconds(1)
+        try await enter("window.linked = false")
+        try await signedIn()
+        try await until("the provider step is offered") { if case .needsProvider = self.setups.last { true } else { false } }
+        let slow = "[{late: 600}]"
+        try await inPage("""
+            window.plan = {'tilo.models list': \(slow), 'tilo.models add-preset': \(slow), 'tilo.models set-key': \(slow),
+              'tilo.models refresh-models': \(slow), 'tilo.models set-assignments': [{late: 600}, {late: 600}]}
+            """)
+        // A made-up key, typed as into the protected field.
+        let offered = try await source.link("anthropic", key: Secret("made-up-and-typed-into-the-protected-field"))
+        XCTAssertEqual(offered.map(\.name), ["Model one"])
+        try await source.choose("anthropic/m-1", for: .request)
+        try await source.choose("anthropic/m-1", for: .task)
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
     }
 }
 #endif
