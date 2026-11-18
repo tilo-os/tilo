@@ -171,6 +171,7 @@ operate it. Companion to `docs/security/design-rationale.md`.
   (`dev-set-<fingerprint>-<arch>`, written once like the published tag, unsigned),
   and the images copy whichever the registry holds by digest (`image-rpms-<arch>`);
   an OS image build of an unchanged tree is then a copy, not another resolution.
+  A branch may not write there: it reads the published set, or builds its own.
   Builds that install from the published set call
   `os/dev/resolve-rpm-snapshot.sh --arch <arch>`, which looks up that tag and
   verifies signature, provenance and the image's own architecture before printing
