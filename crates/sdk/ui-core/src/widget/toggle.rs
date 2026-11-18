@@ -28,6 +28,8 @@ pub struct Toggle {
     label_style: TextStyle,
     /// The switch's width at the theme's scale, as the last layout read it.
     track_width: f32,
+    /// Between a labelled switch's words and the switch, from the theme.
+    label_gap: f32,
     drawn_track: Rect,
     motion: Option<crate::tokens::EffectiveMotion>,
     slop: f64,
@@ -96,6 +98,7 @@ impl Toggle {
             label: None,
             label_style: crate::tokens::typography::stock().style(crate::tokens::TextRole::Body),
             track_width: TRACK_WIDTH,
+            label_gap: crate::tokens::spacing::RhythmScale::BASE.sibling,
             drawn_track: Rect::ZERO,
             motion: None,
             slop: f64::from(crate::tokens::Metrics::BASE.click_slop),
@@ -259,9 +262,6 @@ const KNOB_EDGE_GAP: f64 = 2.0;
 /// disabled dimming, so the knob still says where the switch stands (a knob
 /// dimmed as far as its track leaves no contrast to read it by).
 const LOCKED_KNOB_ALPHA: f32 = 0.72;
-/// Between a labelled switch's words and the switch.
-const LABEL_GAP: f32 = 12.0;
-
 /// The pill's rect inside a layout target: centred, never stretched, at
 /// the theme's size.
 fn track_rect(target: Rect, theme: &Theme) -> Rect {
@@ -735,6 +735,7 @@ impl Widget for Toggle {
         let target = self.control.interaction.minimum_target();
         self.label_style = theme.tokens.typography.style(crate::tokens::TextRole::Body);
         self.track_width = track_w;
+        self.label_gap = theme.tokens.spacing.rhythm.sibling;
         let size = if self.label.is_some() {
             Size {
                 width: taffy::Dimension::percent(1.0),
@@ -776,7 +777,7 @@ impl Widget for Toggle {
                 height: known_dimensions.height.unwrap_or(target),
             };
         };
-        let lead = track + LABEL_GAP;
+        let lead = track + self.label_gap;
         let available = known_dimensions.width.or(match available_space.width {
             taffy::AvailableSpace::Definite(width) => Some(width),
             taffy::AvailableSpace::MinContent => Some(lead),
@@ -844,7 +845,7 @@ impl Widget for Toggle {
         if let Some(label) = self.label.as_ref() {
             let label = widget_text(label);
             let rect = self.control.rect;
-            let max_width = (track.x0 - f64::from(LABEL_GAP) - rect.x0).max(0.0);
+            let max_width = (track.x0 - f64::from(self.label_gap) - rect.x0).max(0.0);
             let (_, height) =
                 text_renderer.measure_style(&label, Some(max_width as f32), &self.label_style);
             let y = rect.y0 + ((rect.height() - f64::from(height)) / 2.0).max(0.0);

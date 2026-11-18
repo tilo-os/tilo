@@ -223,10 +223,5 @@ pub fn line(view: &View) -> String {
 
 /// The name a view calls an app by, as a line names it: `tasks` is "Tasks".
 fn spoken(app: &str) -> String {
-    let spaced = app.replace('_', " ");
-    let mut letters = spaced.chars();
-    match letters.next() {
-        Some(first) => first.to_uppercase().chain(letters).collect(),
-        None => spaced,
-    }
+    ui::format::capitalize_first(&app.replace('_', " "))
 }
