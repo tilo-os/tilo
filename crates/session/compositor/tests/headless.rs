@@ -23,6 +23,8 @@ mod idle_inhibit;
 mod ime;
 #[path = "headless/liveness.rs"]
 mod liveness;
+#[path = "headless/lock_keyboard.rs"]
+mod lock_keyboard;
 #[path = "headless/pacing.rs"]
 mod pacing;
 #[path = "headless/pictures.rs"]

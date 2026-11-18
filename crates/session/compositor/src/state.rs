@@ -1091,6 +1091,7 @@ impl State {
         at: Instant,
     ) {
         self.sync_keyboard_owner();
+        self.keyboard_grab_follows_lock();
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
         };

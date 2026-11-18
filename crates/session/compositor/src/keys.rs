@@ -185,7 +185,8 @@ impl State {
             }
             (false, owner @ Owner::Surface(_)) => {
                 if let Owner::Surface(back) = std::mem::take(owner) {
-                    keyboard.set_focus(self, back.filter(WlSurface::is_alive), serial);
+                    let back = self.lock_keeps_keyboard(back.filter(WlSurface::is_alive));
+                    keyboard.set_focus(self, back, serial);
                 }
             }
             _ => {}
@@ -195,6 +196,9 @@ impl State {
     /// Give `focus` the keyboard among the clients; while a surface holds it, that is
     /// where it goes back to.
     pub(crate) fn set_keyboard_focus(&mut self, focus: Option<WlSurface>, serial: Serial) {
+        // While the session is locked the keyboard is the lock screen's: a window that maps, asks
+        // to be activated or is focused behind the lock never takes it from what unlocks.
+        let focus = self.lock_keeps_keyboard(focus);
         if let Owner::Surface(back) = &mut self.surface_keys.owner {
             *back = focus;
         } else if let Some(keyboard) = self.seat.get_keyboard() {

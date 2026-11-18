@@ -17,6 +17,7 @@ use smithay::backend::renderer::{ImportAll, ImportMem, Renderer};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::wayland::input_method::InputMethodSeat as _;
 use smithay::reexports::wayland_server::{Client, DisplayHandle, Resource as _};
 use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER, Scale, Size};
 use smithay::wayland::session_lock::{
@@ -37,6 +38,9 @@ pub(crate) struct Lock {
     /// Whether the session itself asked for the lock this client holds: that lock is the session's,
     /// and a client that goes away leaves it in place for the session to show again.
     by_session: bool,
+    /// The session locked while a grab held the keyboard, and took it: the input method's grab is
+    /// given back once the session is unlocked.
+    grab_taken: bool,
     surfaces: Vec<(Output, LockSurface)>,
 }
 
@@ -54,6 +58,7 @@ impl Lock {
             pending: None,
             locked: false,
             by_session: false,
+            grab_taken: false,
             surfaces: Vec::new(),
         }
     }
@@ -78,6 +83,47 @@ impl State {
                 .x11_surface()
                 .is_some_and(smithay::xwayland::X11Surface::is_fullscreen)
         })
+    }
+
+    /// While the session is locked no grab holds the keyboard: an input method composing when the
+    /// lock came, or a popup's grab, would hear what the person types on the lock screen (their
+    /// password among it), and the lock screen would hear nothing. The input method has its grab
+    /// back once the session is unlocked, while it still holds one.
+    pub(crate) fn keyboard_grab_follows_lock(&mut self) {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        if self.locked() {
+            if keyboard.is_grabbed() {
+                keyboard.unset_grab(self);
+                self.lock.grab_taken = true;
+            }
+        } else if std::mem::take(&mut self.lock.grab_taken) {
+            let input_method = self.seat.input_method().clone();
+            input_method.restore_keyboard_grab(self, &keyboard);
+        }
+    }
+
+    /// Where the keyboard may go while the session is locked: `focus` when it is the lock
+    /// screen's, else the lock screen's newest surface, or nothing while no lock client shows one
+    /// (the session's own view of the lock then holds the keys). Unlocked, wherever `focus` is.
+    pub(crate) fn lock_keeps_keyboard(&self, focus: Option<WlSurface>) -> Option<WlSurface> {
+        if !self.locked() {
+            return focus;
+        }
+        let of_lock = |surface: &WlSurface| {
+            self.lock
+                .surfaces
+                .iter()
+                .any(|(_, lock)| lock.wl_surface() == surface)
+        };
+        if focus.as_ref().is_some_and(of_lock) {
+            return focus;
+        }
+        self.lock
+            .surfaces
+            .last()
+            .map(|(_, lock)| lock.wl_surface().clone())
     }
 
     /// Whether the lock client has drawn: a buffer is on the surface the outputs show, so what they

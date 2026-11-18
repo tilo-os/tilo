@@ -364,7 +364,10 @@ impl State {
     /// keyboard grabbed, so every key reaches the method first, and the surface hears only what the
     /// method leaves for it (`State::handle_ime_key`).
     pub(crate) fn composing(&self) -> Option<usize> {
-        if self.text_input.reinjected || !self.seat.input_method().keyboard_grabbed() {
+        if self.text_input.reinjected
+            || self.locked()
+            || !self.seat.input_method().keyboard_grabbed()
+        {
             return None;
         }
         self.text_input.surface_field.map(|served| served.surface)
