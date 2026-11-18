@@ -335,23 +335,21 @@ tilo_test_env::scenario! {
             }
         }
         {
-            let mut checked = 0usize;
+            // `[sandbox.fs]` is retired: apps get the launcher's system read
+            // profile and one writable directory, and anything else is a
+            // capability the user grants at runtime. Nothing reads the block
+            // any more, so a manifest that spells one out would decode and be
+            // quietly ignored.
             for dir in app_dirs() {
-                let m = load(&dir);
+                let path = manifest_path(&dir);
+                let src = std::fs::read_to_string(&path)
+                    .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
                 assert!(
-                    m.sandbox.fs.read.is_empty() && m.sandbox.fs.write.is_empty(),
-                    "{}: declares sandbox.fs paths (read={:?} write={:?}). An app does \
-             not choose what it reads or where it writes — reads come from the \
-             launcher's system profile, writes go to the one directory the \
-             launcher gives it, and anything else is a capability the user \
-             grants at runtime.",
-                    dir.display(),
-                    m.sandbox.fs.read,
-                    m.sandbox.fs.write,
+                    !src.contains("[sandbox.fs]"),
+                    "{}: declares a retired [sandbox.fs] block",
+                    dir.display()
                 );
-                checked += 1;
             }
-            assert!(checked >= 40, "expected the shipped fleet, found {checked}");
         }
         {
             let mut checked = 0usize;

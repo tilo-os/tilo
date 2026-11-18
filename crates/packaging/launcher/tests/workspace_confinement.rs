@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use launcher::appdir;
 use launcher::manifest::ManifestView;
-use launcher::run::{RunError, RunOptions, run_with_captured};
+use launcher::run::{RunOptions, run_with_captured};
 
 use crate::support::{bwrap, isolated_options, manifest, workspacetest_payload};
 
@@ -707,46 +707,6 @@ tilo_test_env::scenario! {
             assert!(
                 ok.starts_with("WROTE "),
                 "the app's own directory must be writable: {ok}"
-            );
-        }
-        {
-            let data = DataHome::new();
-
-            let victim = data.path.join("so.tilo.totp");
-            for (field, entry) in [
-                ("write", "~"),
-                ("write", "/"),
-                ("write", "~/.ssh"),
-                ("write", "~/../../etc"),
-                ("write", &victim.display().to_string() as &str),
-                ("read", "/etc/shadow"),
-            ] {
-                let mut m = manifest(PACKAGE, "bin/workspacetest", "off");
-                match field {
-                    "write" => m.sandbox.fs.write.push(entry.to_string()),
-                    _ => m.sandbox.fs.read.push(entry.to_string()),
-                }
-                let opts = RunOptions {
-                    no_services: true,
-                    bwrap_bin: Some(bwrap()),
-                    ..isolated_options(&data.path)
-                };
-                let err = run_with_captured(&m, workspacetest_payload(), &opts)
-                    .err()
-                    .unwrap_or_else(|| panic!("{field} = {entry:?} must be refused"));
-                assert!(
-                    matches!(err, RunError::FsPolicy(_)),
-                    "{field} = {entry:?} produced {err} rather than a policy refusal"
-                );
-                let text = err.to_string();
-                assert!(
-                    text.contains(PACKAGE) && text.contains(entry),
-                    "the refusal must name the package and the entry: {text}"
-                );
-            }
-            assert!(
-                !victim.exists(),
-                "a refused launch must not have created the path it named"
             );
         }
     }

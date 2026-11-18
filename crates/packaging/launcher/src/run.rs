@@ -36,8 +36,6 @@ pub mod tilolang_process;
 pub enum RunError {
     #[error(transparent)]
     Manifest(#[from] crate::manifest::ManifestReadError),
-    #[error("refusing to launch: {0}")]
-    FsPolicy(#[from] crate::manifest::FsPolicyViolation),
     #[error(
         "refusing to launch `{package}`: could not create its directory at {path} ({source}). \
          An app with nowhere to write loses the user's work on exit, so this is a refusal \
@@ -3073,9 +3071,6 @@ pub(crate) fn run_with_context(
     validate_launch_mode(manifest, opts)?;
     validate_interfaces(manifest)?;
 
-    // 0.
-    crate::manifest::enforce_fs_policy(manifest)?;
-
     // Hold the payload and runtime trees before they are looked at, until the sandbox that mounts them
     // has exited: an update or collection meanwhile leaves them alone (`crate::lease`).
     let _leases = crate::lease::LaunchLeases::take(manifest, payload_root, opts)?;
@@ -3922,7 +3917,6 @@ fn run_with_capture_spawn<T>(
     // one enforced route is a route beside it.
     validate_launch_mode(manifest, opts)?;
     validate_interfaces(manifest)?;
-    crate::manifest::enforce_fs_policy(manifest)?;
 
     // Seccomp baseline resolved identically to `run_with` — two paths reaching different conclusions
     // would make capture a way around the filter.
@@ -5001,24 +4995,6 @@ mod app_dir_tests {
                 let other = resolve_person_dir(&manifest("so.tilo.other"), &opts_at(data.path(), None))
                     .expect("another app");
                 assert_ne!(a, other, "an app keeps only its own records of the person");
-            }
-            {
-                let data = tempfile::tempdir().expect("tempdir");
-
-                let mut m = manifest("so.tilo.fixture");
-                let victim = data.path().join("so.tilo.totp");
-                m.sandbox.fs.write.push(victim.display().to_string());
-                let refused = run_with(&m, Path::new("/nonexistent"), &opts_at(data.path(), None));
-
-                let err = refused.expect_err("a manifest naming a write path must be refused");
-                assert!(
-                    matches!(err, RunError::FsPolicy(_)),
-                    "expected a policy refusal, got: {err}"
-                );
-                assert!(
-                    !victim.exists(),
-                    "the launcher must not create a path a package named"
-                );
             }
         }
 

@@ -676,13 +676,6 @@ pub struct Sandbox {
     pub seccomp: String,
     /// Landlock strictness — `strict` | `lax` | `off`.
     pub landlock: String,
-    /// `[sandbox.fs]` — **retired**; decoded only so a manifest that
-    /// still carries one can be refused by name
-    /// (`validate::ManifestError::FsWriteDeclared`/`FsReadDeclared`)
-    /// instead of an opaque serde "unknown field" error. See
-    /// `crate::validate` for the replacement.
-    #[serde(default, skip_serializing_if = "SandboxFs::is_empty")]
-    pub fs: SandboxFs,
     /// `[sandbox.net]` block — egress policy.
     pub net: SandboxNet,
     /// `[sandbox.portals]` table — policy per freedesktop portal name
@@ -694,31 +687,6 @@ pub struct Sandbox {
     pub portals: std::collections::BTreeMap<String, PortalPolicy>,
     #[serde(default)]
     pub services: std::collections::BTreeMap<String, ServiceReq>,
-}
-
-/// A path pattern in the retired [sandbox.fs] block — stored raw, never expanded, only quoted back in the refusal.
-pub type PathPattern = String;
-
-/// `[sandbox.fs]` — **retired**. It used to let the packager declare
-/// file-access paths that the launcher bound directly — letting the
-/// sandboxed package write its own policy (`write = ["/"]` was valid
-/// and would launch). The fields survive only so a manifest still
-/// carrying them is refused with its own words quoted back; nothing
-/// reads them to build a sandbox.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SandboxFs {
-    /// Read-only path patterns. Any entry is a validation failure.
-    #[serde(default)]
-    pub read: Vec<PathPattern>,
-    #[serde(default)]
-    pub write: Vec<PathPattern>,
-}
-
-impl SandboxFs {
-    /// Whether the package declared no paths — the only shape that validates and is re-encoded.
-    pub fn is_empty(&self) -> bool {
-        self.read.is_empty() && self.write.is_empty()
-    }
 }
 
 /// `[sandbox.net]` — egress policy. `mode` is one of

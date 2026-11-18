@@ -966,9 +966,6 @@ mod tests {
                     mode: net_mode.to_string(),
                     hosts: Vec::new(),
                 },
-                // A manifest names no path here — one that did would be refused before reaching this
-                // builder; see `manifest::enforce_fs_policy`.
-                fs: crate::manifest::Fs::default(),
                 services: BTreeMap::new(),
                 portals: BTreeMap::new(),
                 ..Default::default()
@@ -1358,24 +1355,6 @@ mod tests {
                         "profile entry {entry} missing from argv: {argv:?}"
                     );
                 }
-                // A manifest that still carries `fs` fields changes nothing — the builder doesn't read
-                // them.
-                let mut hostile = mk_manifest("off");
-                hostile.sandbox.fs.write.push("/".to_string());
-                hostile.sandbox.fs.read.push("/home/alice/.ssh".to_string());
-                let hostile_argv = build_bwrap_argv(
-                    &hostile,
-                    Path::new("/host/pkg"),
-                    None,
-                    &[],
-                    None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
-                assert_eq!(
-                    argv, hostile_argv,
-                    "a manifest naming paths must produce byte-identical argv to one that names none"
-                );
                 // The payload mount stays a hard `--ro-bind`: a package whose own payload is missing
                 // genuinely cannot run.
                 assert!(
@@ -2436,8 +2415,6 @@ mod tests {
                         && w[2] == "/var/workspace/books"),
                     "a Write capability must produce a read-write bind: {argv:?}"
                 );
-                // Scoped to the granted path: the manifest's own `fs.read` declarations legitimately emit
-                // read-only binds of their own.
                 for (flag, src, _dst) in bind_triples(&argv) {
                     if src == "/var/workspace/books" {
                         assert!(
@@ -2692,15 +2669,6 @@ mod tests {
                 assert!(
                     grants_drm(false, &granted),
                     "a user-granted node must be narrowed too"
-                );
-
-                // Only the `gpu` capability counts.
-                let mut hostile = mk_manifest("off");
-                hostile.sandbox.fs.write.push("/dev/dri".to_string());
-                assert_eq!(
-                    crate::gpu::granted(&hostile, &none, true),
-                    crate::gpu::granted(&mk_manifest("off"), &none, true),
-                    "a manifest entry must not change the GPU decision"
                 );
             }
         }
