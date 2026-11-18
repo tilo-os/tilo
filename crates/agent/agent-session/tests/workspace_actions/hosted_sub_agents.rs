@@ -68,6 +68,23 @@ fn said(conversation: &str, text: &str, cause: Option<serde_json::Value>) -> ser
     said
 }
 
+/// What a call of Chat's `stream-output` says to put `text` at the end of `reply` in
+/// `conversation`: where, which reply, and the piece. The piece names no stream, so Chat
+/// itself would refuse it as no piece at all, in other words than whoever serves the turn
+/// refuses a call: a call that was let through to Chat shows in its answer's words.
+fn grown(conversation: &str, reply: &str, text: &str) -> serde_json::Value {
+    let mut grown = said(conversation, "", None);
+    if let Some(grown) = grown.as_object_mut() {
+        grown.remove("text");
+        grown.insert("reply".to_owned(), serde_json::json!(reply));
+        grown.insert(
+            "event".to_owned(),
+            serde_json::json!({"sequence": 1, "event": {"type": "text_delta", "text": text}}),
+        );
+    }
+    grown
+}
+
 /// The conversation `message` is in, as Chat names it.
 fn conversation_id(message: &Kept) -> &Id {
     &message.channel
@@ -1095,6 +1112,7 @@ async fn a_sub_agent_writes_only_into_its_own_conversation() {
     // Every write of Chat's, as Chat itself states them, aimed at the main thread and at the
     // message in it.
     let [answer, question, words] = ui::tilo_workspace_agent::sub::OWN_WRITES;
+    let grows = ui::tilo_workspace_agent::sub::OWN_GROWTH;
     let of_messages = writes_of::<chat::parts::ChatPart>();
     let of_chat = writes_of::<chat::chat::Chat>();
     assert!(
@@ -1150,6 +1168,17 @@ async fn a_sub_agent_writes_only_into_its_own_conversation() {
     }
     for verb in REFUSED_BESIDE {
         attempts.push((verb.to_owned(), format!("chat#{verb}"), elsewhere.clone()));
+    }
+    // What its model writes while it writes goes into the reply its own turn answers, and
+    // nowhere in the main thread: not into its starter's reply there, and not as a message
+    // Chat would make of a reply it does not hold yet.
+    let starters = reply_id(&secret, &MemberId::agent(SCOUT));
+    for reply in [starters.as_str(), "m_reply_from_below"] {
+        attempts.push((
+            grows.to_owned(),
+            format!("chat/Messages#{grows}"),
+            grown(thread.as_str(), reply, "from below"),
+        ));
     }
 
     // And once its starter was told how its job ended, which the server writes for it under
@@ -1304,6 +1333,11 @@ async fn a_sub_agent_writes_only_into_its_own_conversation() {
             format!("chat/Messages#{question}"),
             asked_under,
         ),
+        (
+            "what its model writes, into a reply that is not its turn's",
+            format!("chat/Messages#{grows}"),
+            grown(own.as_str(), "m_reply_made_up", "Look at this."),
+        ),
     ];
     let mut asked_own = said(own.as_str(), "Shall I also tidy the drafts?", None);
     asked_own["answers"] =
@@ -1392,3 +1426,7 @@ mod turn_ends;
 /// A reply grows while its model writes it.
 #[path = "hosted_reply_grows.rs"]
 mod reply_grows;
+
+/// A model call its provider refuses for a moment is asked again, with the turn's work kept.
+#[path = "hosted_turn_asks_again.rs"]
+mod asks_again;

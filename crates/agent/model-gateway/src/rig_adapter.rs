@@ -242,7 +242,11 @@ impl GatewayHttp {
             .timeout(budget)
             .headers(headers.clone())
             .json(body);
-        let response = outgoing.send().await.map_err(|error| {
+        let sent = self
+            .signs
+            .or_silence(outgoing.send(), "no response headers")
+            .await?;
+        let response = sent.map_err(|error| {
             // Content-free: what failed, never the URL or the error's text.
             eprintln!(
                 "tilo-model-gateway: provider transport failed model={} cause={}",
@@ -465,8 +469,9 @@ impl HttpClientExt for GatewayHttp {
             let (done, receiver) = tokio::sync::oneshot::channel();
             let protocol = self.profile.protocol;
             let signs = Arc::clone(&self.signs);
+            let failure = Arc::clone(&self.failure);
             let task = tokio::spawn(async move {
-                let result = drain_stream(response, protocol, send, &signs).await;
+                let result = drain_stream(response, protocol, send, &signs, &failure).await;
                 let _ = done.send(result);
             });
             *self.stream_end.lock().await = Some(StreamDrain { receiver, task });
@@ -484,15 +489,27 @@ async fn drain_stream(
     protocol: ProviderProtocol,
     send: tokio::sync::mpsc::Sender<Bytes>,
     signs: &Signs,
+    failure: &Mutex<Option<ProviderFailure>>,
 ) -> Result<(), String> {
     let mut tail = SseTail::default();
     let mut utf8 = Vec::new();
     let mut read = 0usize;
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|_| "provider stream failed")?
-    {
+    loop {
+        let came = match signs.or_silence(response.chunk(), "no byte").await {
+            Ok(came) => came,
+            Err(silent) => {
+                // The call ends as let go for silence, whatever its decoder
+                // makes of a stream that stops here.
+                let why = silent.why.clone();
+                *failure
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(silent);
+                return Err(why);
+            }
+        };
+        let Some(chunk) = came.map_err(|_| "provider stream failed")? else {
+            break;
+        };
         signs.event_came();
         read = read.saturating_add(chunk.len());
         if read > MAX_STREAM_BYTES {

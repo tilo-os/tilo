@@ -535,8 +535,12 @@ fn the_move_hint_covers_no_windows_content_its_own_included() {
     }
     let bar = row.focused_bar.expect("fixture: a bar to take");
     let in_room = room.is_some_and(|room| room.contains_rect(painted));
+    // The pill stands in the bar's free ground, between the title and the buttons, whole inside
+    // it: clear of every control beside it, which the loop above proves, and over no window's
+    // content.
+    let in_handle = row.bar_room.is_some_and(|room| room.contains_rect(painted));
     assert!(
-        in_room || painted.inflate(16.0, 16.0).contains(bar.center()),
+        in_room || in_handle || painted.inflate(16.0, 16.0).contains(bar.center()),
         "the hint stands beside its bar {bar:?} or in the bar's room: {painted:?}"
     );
 }

@@ -957,21 +957,29 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     ) -> Result<Option<Level>, String> {
         let root = self.level(provider, "", levels).await?;
         let mut revision = root.revision.clone();
-        // A name the app's own level carries exactly is answered there. The
-        // containers hold the record's items, and asking each of them for a
-        // name it is not (the record's own name, most often) lists every item
-        // the record holds.
-        let mut exact = root
+        // A name the app's own level carries exactly is answered there: its id
+        // first, then its label. The containers hold the resource's items,
+        // and asking each of them for a name it is not (the resource's own
+        // name, most often) lists every item it holds.
+        let by_id: Vec<&Node> = root
             .children
             .iter()
-            .filter(|node| node.answers_to(name) == Some(0));
-        if let (Some(only), None) = (exact.next(), exact.next()) {
-            return Ok(Some(Level {
-                own: Vec::new(),
-                children: vec![only.clone()],
-                revision,
-                pages: std::sync::Arc::default(),
-            }));
+            .filter(|node| node.names_id(name))
+            .collect();
+        let by_label: Vec<&Node> = root
+            .children
+            .iter()
+            .filter(|node| node.answers_to(name) == Some(0))
+            .collect();
+        for named in [by_id, by_label] {
+            if let [only] = named.as_slice() {
+                return Ok(Some(Level {
+                    own: Vec::new(),
+                    children: vec![(**only).clone()],
+                    revision,
+                    pages: std::sync::Arc::default(),
+                }));
+            }
         }
         let mut pool = root.children.clone();
         for container in root
@@ -1024,6 +1032,14 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             Some(_) => None,
         };
         if let Some(among) = asked {
+            // What the app answered is the resource the segment names: one
+            // whose id it is, before any label, else one its label names
+            // exactly. Either costs the answer, not a read of the level.
+            let mut named = among.children.iter().filter(|node| node.names_id(segment));
+            if let (Some(only), None) = (named.next(), named.next()) {
+                let only = only.clone();
+                return Ok((only, among));
+            }
             let mut named = among
                 .children
                 .iter()

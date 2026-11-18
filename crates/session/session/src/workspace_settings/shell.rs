@@ -1062,7 +1062,6 @@ fn permissions(
                     label,
                 })
                 .collect(),
-            default_expiry: domain::DEFAULT_LIFETIME.to_owned(),
             grant: t("workspace-settings-grant"),
         },
         sections,

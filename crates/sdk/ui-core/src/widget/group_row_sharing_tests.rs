@@ -73,7 +73,7 @@ tilo_test_env::scenario! {
             row.insert_group(opened, 1);
             assert!(row.share_with_neighbour(200));
             assert!(
-                matches!(row.groups[0].width(), WindowWidth::Fraction(_)),
+                matches!(row.groups[0].width(), WindowWidth::Share(_)),
                 "fixture: two thirds and the newcomer do not fit, so both take half"
             );
             let _ = row.groups[0].take_pending_width_change();
@@ -81,15 +81,10 @@ tilo_test_env::scenario! {
             assert!(row.remove_group_by_id(200));
             relayout_strip(&mut row, 1280.0);
             relayout_strip(&mut row, 1280.0);
-            assert_eq!(
-                row.groups[0].width(),
-                WindowWidth::Normal,
-                "the half it took to share comes back to the default"
-            );
-            assert_eq!(
-                row.groups[0].take_pending_width_change(),
-                Some(WindowWidth::Normal),
-                "and the host saves the default, not the fraction it resolves to"
+            assert!(
+                matches!(row.groups[0].width(), WindowWidth::Share(_)),
+                "the half it took to share is the shell's, not a width the person chose: {:?}",
+                row.groups[0].width()
             );
             assert!(
                 (span_width(&row, 0) - 1216.0).abs() < 0.5,
@@ -103,6 +98,61 @@ tilo_test_env::scenario! {
             relayout_strip(&mut row, 1440.0);
             assert!((span_width(&row, 0) - 688.0).abs() < 0.5);
         }
+    }
+
+    phase a_window_carried_alone_to_a_strip_takes_it_like_one_left_alone;
+    {
+        // Two paths leave a window alone on a strip, and both must take it:
+        // the neighbour closing beside it (the phases above), and the window
+        // itself carried to a strip of its own. A share is the shell's
+        // width, not the person's, so a rebuilt window — one a move makes
+        // anew — takes the strip at it just as one left alone in place does.
+        let display = 1280.0;
+        let usable = display - 2.0 * STRIP_EDGE_GUTTER_PX;
+        let half = crate::widget::permille_for_px((usable - 8.0) / 2.0, usable);
+
+        // In place: the share the two took, with the neighbour gone.
+        let mut in_place = lone_window_on(display);
+        let mut opened = make_group(200, &[2]);
+        opened.start_spawn_animation();
+        in_place.insert_group(opened, 1);
+        assert!(in_place.share_with_neighbour(200));
+        assert!(
+            in_place.groups[0].width().permille().abs_diff(half) <= 1,
+            "fixture: the pair share the strip in half: {:?}",
+            in_place.groups[0].width()
+        );
+        let _ = in_place.groups[0].take_pending_width_change();
+        assert!(in_place.remove_group_by_id(200));
+        relayout_strip(&mut in_place, display);
+        relayout_strip(&mut in_place, display);
+
+        // Carried: the same shared width, rebuilt as a move builds a window
+        // on the strip it lands on.
+        let mut carried = GroupRow::new(vec![make_group(100, &[1])]);
+        let mut group = carried.groups.remove(0);
+        group.set_width(WindowWidth::Share(half));
+        carried.insert_group(group, 0);
+        carried.set_leading_inset(STRIP_EDGE_GUTTER_PX);
+        carried.set_output_spans(&[OutputSpan {
+            x: 0.0,
+            width: display,
+            usable,
+        }]);
+        relayout_strip(&mut carried, display);
+        relayout_strip(&mut carried, display);
+
+        let alone_in_place = span_width(&in_place, 0);
+        let alone_carried = span_width(&carried, 0);
+        assert!(
+            (alone_in_place - usable).abs() < 0.5,
+            "left alone in place, it takes the strip: {alone_in_place}"
+        );
+        assert!(
+            (alone_carried - alone_in_place).abs() < 0.5,
+            "carried alone to a strip, it takes it the same width: \
+             {alone_carried} beside {alone_in_place}"
+        );
     }
 
     phase a_window_that_opens_beside_another_is_placed_whole_on_screen_with_it;

@@ -42,6 +42,9 @@ import WebKit
 ///   {"do": "stop"}                                    stop the answer that is being written
 ///   {"do": "saw", "item": "…"}                        as opening a piece from its notification does
 ///   {"do": "press", "item": "…", "offer": "…"}        as a press on a button under a piece's notice
+///   {"do": "show-live", "item": "…"}                  as the place of a piece's live thing does when it comes to
+///                                                    the front: it says whether the thing loaded
+///   {"do": "live-text", "item": "…"}                  what a live document of the word processor reads as now
 ///   {"do": "models"}   {"do": "state"}   {"do": "quit"}
 /// Of each reply that grew it says, once its writing has ended, when it drew the first change
 /// of its words and when the last, in milliseconds, and how many it drew ("grew"): what a
@@ -500,6 +503,38 @@ final class AssistantDrive {
             } catch {
                 AssistantDrive.say(["pressed": false, "why": "unreachable"])
             }
+        case "show-live":
+            // As the place of a live thing in a message does when it comes to the front.
+            guard let item = step["item"]?.string else { AssistantDrive.say(["error": "show-live takes item"]); return }
+            guard let thing = live(of: item) else { AssistantDrive.say(["liveShown": ["state": "none"]]); return }
+            let asked = Date()
+            await source.stage.bring(thing)
+            var said: [String: JSON] = ["reference": .string(thing.reference),
+                                        "ms": .number((Date().timeIntervalSince(asked) * 1000).rounded())]
+            switch source.stage.state(of: thing) {
+            case .live: said["state"] = "live"
+            case .loading: said["state"] = "loading"
+            case .asleep: said["state"] = "asleep"
+            case .offline: said["state"] = "offline"
+            case .failed(let why):
+                said["state"] = "failed"
+                said["why"] = .string(why)
+                switch source.stage.troubles[thing.id] {
+                case .notOffered: said["trouble"] = "notOffered"
+                case .notShown: said["trouble"] = "notShown"
+                case nil: break
+                }
+            }
+            AssistantDrive.say(["liveShown": .object(said)])
+        case "live-text":
+            guard let item = step["item"]?.string else { AssistantDrive.say(["error": "live-text takes item"]); return }
+            guard let thing = live(of: item) else { AssistantDrive.say(["liveText": ["held": false]]); return }
+            do {
+                let read = try await source.engine.invoke("read-text", on: "word-processor.document", [:], in: thing.id)
+                AssistantDrive.say(["liveText": ["held": true, "text": read["output"]?["value"]?["content"]?["markdown"] ?? .null]])
+            } catch {
+                AssistantDrive.say(["liveText": ["held": true, "text": .null, "why": .string("\(error)")]])
+            }
         case "state":
             report(everything: true)
         case "quit":
@@ -508,6 +543,14 @@ final class AssistantDrive {
         default:
             AssistantDrive.say(["error": .string("no step \(what)")])
         }
+    }
+
+    /// The live thing that stands for the piece `item` of the main chat, as the stage takes it.
+    private func live(of item: String) -> TiloLive.LiveThing? {
+        guard let piece = model.conversation(.main).items.first(where: { $0.id.value == item }),
+              case .message(let message) = piece.content, let thing = message.live.first
+        else { return nil }
+        return TiloLive.LiveThing(id: thing.id.value, title: thing.title, reference: thing.reference)
     }
 
     private static func say(_ line: JSON) {

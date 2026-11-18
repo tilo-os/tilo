@@ -88,6 +88,11 @@ const MESSAGES: &str = "chat.messages";
 /// a message is in.
 pub const OWN_WRITES: [&str; 3] = ["record-work", "ask", "post"];
 
+/// What a sub-agent's turn writes besides, into its answer: the words its model writes, as
+/// they come, so that its person reads along. Whoever serves its turn takes it only for the
+/// reply that turn answers, in its own conversation.
+pub const OWN_GROWTH: &str = "stream-output";
+
 /// The actions on the workspace's agents a sub-agent's turn keeps: those of its own team. The
 /// list itself guards them, and refuses a sub-agent every other
 /// ([`WorkspaceAgents::not_by_sub_agent`]).
@@ -102,9 +107,10 @@ const OWN_TEAM: [&str; 4] = [
 ];
 
 /// The rules that keep a sub-agent from reading upward in `workspace`, and from writing
-/// there: no read of anything Chat keeps, and no action of Chat's but its [`OWN_WRITES`] and
-/// what steers its own team. The refusal is more specific than the workspace-wide allow every
-/// agent's turn starts from, so it holds whatever else the turn carries.
+/// there: no read of anything Chat keeps, and no action of Chat's but its [`OWN_WRITES`],
+/// its [`OWN_GROWTH`] and what steers its own team. The refusal is more specific than the
+/// workspace-wide allow every agent's turn starts from, so it holds whatever else the turn
+/// carries.
 #[must_use]
 pub fn one_way(workspace: &str) -> Vec<Rule> {
     let chat = TreePath::workspace(workspace).app(OWNER);
@@ -126,6 +132,7 @@ pub fn one_way(workspace: &str) -> Vec<Rule> {
     ];
     for (kind, items, kept) in [
         (MESSAGES, "messages", &OWN_WRITES[..]),
+        (MESSAGES, "messages", &[OWN_GROWTH][..]),
         (crate::KIND, "agents", &OWN_TEAM[..]),
     ] {
         // An action on one item of a collection is decided under the collection's own kind,

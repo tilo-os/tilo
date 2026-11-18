@@ -30,6 +30,8 @@ mod workspace;
 mod wrapper;
 
 #[cfg(test)]
+mod sweep;
+#[cfg(test)]
 mod tests;
 
 use ui::written_view::{MakeWrittenView, Shown, WrittenView};

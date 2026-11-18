@@ -66,6 +66,9 @@ pub(super) struct PartType {
     pub(super) read: ReadPart,
     /// The state `doc` holds, read as a part.
     pub(super) state: fn(&AutoCommit) -> Option<State>,
+    /// The item `id` of a part's state, built alone: what a path naming one
+    /// costs, however many items the part holds ([`Resource::child`]).
+    pub(super) child: fn(&dyn Any, &str) -> Option<tilo_actions::ResourceSpec>,
     /// View state of the parts held: a `LocalState<Parts<P>>`.
     pub(super) new_view: fn() -> Box<dyn Any>,
     /// Set what [`Self::new_view`] made to the parts [`Self::typed`] read.
@@ -157,6 +160,7 @@ impl<P: Chained> Of<P> {
         initialize: initialize::<P>,
         read: read_part::<P>,
         state: state::<P>,
+        child: child::<P>,
         new_view: new_view::<P>,
         set_view: set_view::<P>,
         typed: typed::<P>,
@@ -295,6 +299,11 @@ fn state<P: Chained>(doc: &AutoCommit) -> Option<Rc<dyn Any>> {
             None
         }
     }
+}
+
+fn child<P: Chained>(state: &dyn Any, id: &str) -> Option<tilo_actions::ResourceSpec> {
+    let state: &<P as Resource>::State = state.downcast_ref()?;
+    P::child(state, id)
 }
 
 fn new_view<P: Chained>() -> Box<dyn Any> {

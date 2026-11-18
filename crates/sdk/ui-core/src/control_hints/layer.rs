@@ -280,16 +280,18 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
                 // The control itself, when every side of it is content: a window's
                 // drag bar has the window under it, so the card stands on the bar
                 // it teaches rather than somewhere else on screen. It is the pill a
-                // bar holds, centred on the handle and inside the handle's height, so
-                // it covers neither the window's body under the handle nor what is
-                // above it; a handle too short for it shows no hint.
+                // bar holds, whole inside the handle — its height and its width —
+                // so it covers neither the window's body under the handle, nor
+                // what is above it, nor the bar's controls beside the handle: a
+                // handle too small for it shows no hint rather than a pill spilling
+                // over the title's neighbours' buttons.
                 let spare = look.area.inset(-AREA_MARGIN);
                 let at = spot.at?.intersect(spare);
                 let (w, h) = card::size(&contents, text, theme, true);
-                if h > at.height() || w > spare.width() {
+                if h > at.height() || w > at.width() {
                     return None;
                 }
-                let x = (at.center().x - w / 2.0).clamp(spare.x0, spare.x1 - w);
+                let x = (at.center().x - w / 2.0).clamp(at.x0, at.x1 - w);
                 let y = at.center().y - h / 2.0;
                 Some((Rect::new(x, y, x + w, y + h), None, true))
             };

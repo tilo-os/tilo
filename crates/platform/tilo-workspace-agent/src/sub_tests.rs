@@ -696,7 +696,7 @@ fn decided(agent: &str, rules: &[Rule], node: &TreePath, kind: ActionKind) -> An
 }
 
 /// Chat's actions on its messages that a sub-agent's turn is refused wherever they aim.
-const REFUSED_OF_MESSAGES: [&str; 19] = [
+const REFUSED_OF_MESSAGES: [&str; 18] = [
     "post-file",
     "share-resource",
     "share-window",
@@ -715,7 +715,6 @@ const REFUSED_OF_MESSAGES: [&str; 19] = [
     "ask-agent",
     "stop-agent",
     "carry-counts",
-    "stream-output",
 ];
 
 /// The actions on the workspace's agents a sub-agent's turn keeps, and some it is refused.
@@ -801,7 +800,10 @@ fn writes_only_its_own(agent: &str, rules: &[Rule]) {
             );
         }
     }
-    for own in crate::sub::OWN_WRITES {
+    for own in crate::sub::OWN_WRITES
+        .into_iter()
+        .chain([crate::sub::OWN_GROWTH])
+    {
         for node in of(own) {
             assert_eq!(
                 decided(agent, rules, &node, ActionKind::Undoable),

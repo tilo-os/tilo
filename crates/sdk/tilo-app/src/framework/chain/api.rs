@@ -37,6 +37,10 @@ impl ResourceApi for ChainState {
         ChainState::search(self)
     }
 
+    fn items_named(&self, name: &str) -> Vec<tilo_actions::ResourceSpec> {
+        ChainState::items_named(self, name)
+    }
+
     fn read(&self, payload: &[u8]) -> Result<serde_json::Value, String> {
         ChainState::read(self, payload)
     }

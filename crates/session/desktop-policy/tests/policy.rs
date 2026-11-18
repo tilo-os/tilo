@@ -720,9 +720,11 @@ fn a_conversation_opens_beside_its_sender() {
         "the sender and the conversation stand side by side: {widths:?}"
     );
     assert!(
-        widths
-            .iter()
-            .all(|width| matches!(width, tilo_desktop_model::WindowWidth::Fraction(_))),
+        widths.iter().all(|width| matches!(
+            width,
+            tilo_desktop_model::WindowWidth::Share(_)
+                | tilo_desktop_model::WindowWidth::Fraction(_)
+        )),
         "the two share the strip, so the sender keeps what the person was reading in view: {widths:?}"
     );
 

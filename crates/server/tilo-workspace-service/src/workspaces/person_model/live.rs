@@ -54,6 +54,7 @@ impl ModelProvider for GatewayProvider {
                         request: call.request,
                         timeout,
                         private_addresses: call.private_addresses,
+                        quiet: call.quiet,
                     },
                     events,
                 )

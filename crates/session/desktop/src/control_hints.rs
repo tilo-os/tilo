@@ -469,11 +469,16 @@ fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
         .filter(|_| matches!(spec.gesture, Gesture::ResizeEdge));
     // A window's drag bar has its own body under it and another window beside
     // it, so it has no clear side at all: its hint stands on the handle it
-    // teaches. A drag spot that is not on screen has nothing to point at.
+    // teaches, in the widest stretch of bar the drag takes there — between the
+    // tabs and the buttons — whole inside it, so it never covers the window's
+    // controls beside the title. The title grab is the spot the person points
+    // at; the room the drag takes around it is what the pill must fit. A drag
+    // spot that is not on screen has nothing to point at.
     let at = match spec.gesture {
         Gesture::MoveWindow => {
             let bar = row.hovered_bar.or(row.focused_bar)?;
-            let shown = bar.intersect(frame.area);
+            let room = row.bar_room.unwrap_or(bar);
+            let shown = room.intersect(frame.area);
             (!shown.is_zero_area()).then_some(shown)
         }
         _ => None,
@@ -520,6 +525,7 @@ mod tests {
                 beyond: (false, true),
                 hovered_bar: None,
                 focused_bar: Some(Rect::new(100.0, 48.0, 700.0, 84.0)),
+                bar_room: Some(Rect::new(100.0, 48.0, 700.0, 84.0)),
                 focused_edge: Some((
                     Line::new((700.0, 96.0), (700.0, 880.0)),
                     WindowEdge::Trailing,
@@ -694,6 +700,7 @@ mod tests {
         {
             let mut frame = frame();
             frame.row.focused_bar = None;
+            frame.row.bar_room = None;
             frame.row.focused_edge = None;
             frame.row.beyond = (false, false);
             for gesture in [Gesture::MoveWindow, Gesture::ResizeEdge, Gesture::PanView] {

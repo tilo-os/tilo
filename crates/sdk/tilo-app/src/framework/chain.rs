@@ -79,6 +79,7 @@ use super::resources::ResourceApi;
 mod api;
 mod dispatching;
 mod listing;
+mod named;
 mod part;
 mod place;
 mod reading;
