@@ -36,6 +36,9 @@ use tilo_user_identity::DeviceCert;
 pub struct PackagedAction<'a> {
     /// The app's id, as its package and its resources name it.
     pub app: &'a str,
+    /// The resource kind the action is for: the app's model serves every
+    /// resource the app declares, and routes the action by this.
+    pub kind: &'a str,
     /// The resource's document id: `""` for what the app keeps per workspace.
     pub document: &'a str,
     /// The `.tapp` the workspace keeps for that app version.
@@ -157,6 +160,7 @@ impl Workspaces {
         workspace: &str,
         governor: &DeviceCert,
         app: &str,
+        kind: &str,
         document: &str,
         package: &[u8],
     ) -> Result<bool, CollaborationError> {
@@ -193,6 +197,7 @@ impl Workspaces {
             model
                 .ask(&Request {
                     op: Op::Initialize,
+                    kind,
                     id: document,
                     home: workspace,
                     bytes: &[],
@@ -260,6 +265,7 @@ impl Workspaces {
     ) -> Result<serde_json::Value, CollaborationError> {
         let PackagedAction {
             app,
+            kind,
             document,
             package,
             action,
@@ -309,6 +315,7 @@ impl Workspaces {
             model
                 .ask(&Request {
                     op: Op::Apply,
+                    kind,
                     id: document,
                     home: workspace,
                     bytes: &bytes,

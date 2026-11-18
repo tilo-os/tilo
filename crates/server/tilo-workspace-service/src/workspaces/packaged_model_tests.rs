@@ -17,6 +17,10 @@ use tilo_resource::Resource as _;
 /// The app the test installs, which the server does not have compiled in.
 const TASKS: &str = "so.tilo.tasks";
 
+/// The resource kind of the app's tracker, which its module routes requests
+/// to.
+const TRACKER: &str = "tasks.tracker";
+
 /// The invocation's origin clock, milliseconds since the Unix epoch.
 const NOW_MS: i64 = 1_760_000_000_000;
 
@@ -24,15 +28,15 @@ const NOW_MS: i64 = 1_760_000_000_000;
 /// decided against.
 const TASKS_SURFACE: &[u8] = include_bytes!("../../../../../apps/tasks/surface.toml");
 
-/// The Tasks model module, built for wasm32 by `tilo-app model` beside the app
-/// (`apps/tasks-model-wasm`). A tree keeps no built module, so the check that
+/// The app's model module, built for wasm32 by `tilo-app model` beside the app
+/// (`apps/<app>-model-wasm`). A tree keeps no built module, so the check that
 /// exercises this test needs `app-models`, whose outputs land under the target
 /// directory; `t outputs app-models` fetches them for a test taken here.
 #[expect(
     clippy::expect_used,
     reason = "a module the app-models check did not build is a test failure"
 )]
-fn tasks_model() -> Vec<u8> {
+fn model_module(app: &str) -> Vec<u8> {
     let directory = std::env::var_os("TILO_APP_MODELS").map_or_else(
         || {
             Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -41,7 +45,7 @@ fn tasks_model() -> Vec<u8> {
         },
         PathBuf::from,
     );
-    let module = directory.join("tasks").join(tilo_app_package::MODEL_MODULE);
+    let module = directory.join(app).join(tilo_app_package::MODEL_MODULE);
     let asked = format!(
         "reading {}; build it with `t outputs app-models`",
         module.display()
@@ -111,11 +115,11 @@ async fn a_server_applies_an_installed_apps_action_from_its_package() {
     let server = test_host(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     let created = workspaces.create("Packaged model").await.unwrap();
-    let model = tasks_model();
+    let model = model_module("tasks");
     let package = package(TASKS, Some(&model));
     assert!(
         workspaces
-            .prepare_packaged_application(&created.workspace, &cert, TASKS, "", &package)
+            .prepare_packaged_application(&created.workspace, &cert, TASKS, TRACKER, "", &package)
             .await
             .unwrap(),
         "the server makes the app's resource from its package"
@@ -131,6 +135,7 @@ async fn a_server_applies_an_installed_apps_action_from_its_package() {
             &cert,
             PackagedAction {
                 app: TASKS,
+                kind: TRACKER,
                 document: "",
                 package: &package,
                 action: "create-area",
@@ -166,10 +171,11 @@ async fn a_server_applies_an_installed_apps_action_from_its_package() {
     );
     // Another holder of the resource replays the invocation with the same
     // module: the change it writes is the change the server published.
-    let model = Model::compile(&tasks_model()).unwrap();
+    let model = Model::compile(&model_module("tasks")).unwrap();
     let replayed = model
         .ask(&Request {
             op: Op::Apply,
+            kind: TRACKER,
             id: "",
             home: &created.workspace,
             bytes: &base,
@@ -205,11 +211,89 @@ async fn a_package_without_a_model_applies_nothing() {
     let created = workspaces.create("No model").await.unwrap();
     let package = package(TASKS, None);
     let refused = workspaces
-        .prepare_packaged_application(&created.workspace, &cert, TASKS, "", &package)
+        .prepare_packaged_application(&created.workspace, &cert, TASKS, TRACKER, "", &package)
         .await;
     assert!(
         refused.is_err(),
         "a package with no model module installs no resource"
     );
     server.shutdown().await;
+}
+
+/// One module serves every resource its app declares, told apart by the kind
+/// each request names: Tube's library and its watch history come from the same
+/// bytes, and each kind's own verbs answer it.
+#[test]
+#[ignore = "reads the model module the app-models check built (t test test-packaged-model)"]
+fn one_module_serves_every_resource_of_its_app() {
+    const LIBRARY: &str = "tube.library";
+    const HISTORY: &str = "tube.watch-history";
+    let model = Model::compile(&model_module("tube")).unwrap();
+    let member = hex::encode([7_u8; 32]);
+    let ask = |op: Op, kind: &str, bytes: &[u8], action: &str, arguments| {
+        model
+            .ask(&Request {
+                op,
+                kind,
+                id: "",
+                home: "a workspace",
+                bytes,
+                member: &member,
+                acting: None,
+                action,
+                arguments,
+                now: NOW_MS,
+            })
+            .unwrap()
+    };
+    let genesis = |kind: &str| {
+        ask(Op::Initialize, kind, &[], "", serde_json::Map::new())
+            .document
+            .expect("the module made the resource's genesis")
+    };
+    let library = automerge::AutoCommit::load(&genesis(LIBRARY)).unwrap();
+    tube_model::Library::read(&library).expect("the library's own code reads its genesis");
+    let history_document = genesis(HISTORY);
+    let mut history = automerge::AutoCommit::load(&history_document).unwrap();
+    tube_model::WatchHistory::read(&history)
+        .expect("the watch history's own code reads its genesis");
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("video".into(), serde_json::Value::from("a video"));
+    arguments.insert("position_ms".into(), serde_json::Value::from(5_u64));
+    arguments.insert("duration_ms".into(), serde_json::Value::from(600_000_u64));
+    let played = ask(
+        Op::Apply,
+        HISTORY,
+        &history_document,
+        tube_model::WatchHistory::PROGRESS.id(),
+        arguments,
+    );
+    tilo_automerge::ApplyIncoming::load_incoming(
+        &mut history,
+        &played.changes.expect("the module wrote the change"),
+    )
+    .unwrap();
+    assert!(
+        tube_model::WatchHistory::read(&history)
+            .unwrap()
+            .positions
+            .contains_key("a video"),
+        "the request naming the watch history ran that resource's verb"
+    );
+    let refused = model.ask(&Request {
+        op: Op::Initialize,
+        kind: "tube.nothing",
+        id: "",
+        home: "a workspace",
+        bytes: &[],
+        member: &member,
+        acting: None,
+        action: "",
+        arguments: serde_json::Map::new(),
+        now: NOW_MS,
+    });
+    assert!(
+        refused.is_err(),
+        "the module refuses a request for a kind it does not serve"
+    );
 }

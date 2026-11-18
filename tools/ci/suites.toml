@@ -1276,7 +1276,8 @@ inputs = [
   "os/usr/share/tilo/system-interfaces.toml",
   # A check runs inside the test environment, as cargo's runner starts every test.
   "tools/with-test-environment.sh",
-  # The web target embeds the wasm-opt argument list the pages build with.
+  # The web target and an app's model module embed the wasm-opt argument list
+  # the modules are built with.
   "tools/web/wasm-opt-flags",
 ]
 # The record-kinds tests read the sources of the local crates the apps depend on, the
@@ -1295,6 +1296,8 @@ readers = [
   # Android packaging copies the standalone font catalog out of the SDK.
   "crates/dev/tilo-app-cli/src/android.rs",
   "crates/dev/tilo-app-cli/src/targets/web.rs",
+  # The model module embeds the wasm-opt argument list ("tools/web/wasm-opt-flags").
+  "crates/dev/tilo-app-cli/src/model_wasm.rs",
   "crates/dev/tilo-app-cli/src/resource_kinds.rs",
   # Workspace certification's compute-package test reads real manifests.
   "crates/dev/tilo-app-cli/src/main.rs",
