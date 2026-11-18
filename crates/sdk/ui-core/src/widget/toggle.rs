@@ -255,6 +255,10 @@ const TRACK_HEIGHT: f32 = 24.0;
 /// track height and this gap, so a host painting a taller face keeps the
 /// same proportions.
 const KNOB_EDGE_GAP: f64 = 2.0;
+/// How much of a locked switch's knob shows: far brighter than the track's
+/// disabled dimming, so the knob still says where the switch stands (a knob
+/// dimmed as far as its track leaves no contrast to read it by).
+const LOCKED_KNOB_ALPHA: f32 = 0.72;
 /// Between a labelled switch's words and the switch.
 const LABEL_GAP: f32 = 12.0;
 
@@ -627,6 +631,12 @@ impl Toggle {
             None,
             &track_shape,
         );
+        // Only the track dims as far as a disabled control does: the knob takes a much lighter
+        // dimming, so a switch nobody here can flip still shows where it stands instead of
+        // dissolving into its own track.
+        if dim {
+            scene.pop_layer();
+        }
         // Knob radius follows the track: 10 px inside the 24 px default.
         let kr = (radius - KNOB_EDGE_GAP).max(1.0);
         let cy = face.rect.y0 + face.rect.height() / 2.0;
@@ -639,12 +649,22 @@ impl Toggle {
             knob if knob <= 0.0 => off_x,
             knob => off_x + (on_x - off_x) * knob,
         };
+        let knob = Circle::new(Point::new(cx, cy), kr);
+        if dim {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                LOCKED_KNOB_ALPHA,
+                transform,
+                &knob,
+            );
+        }
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
             colors.knob,
             None,
-            &Circle::new(Point::new(cx, cy), kr),
+            &knob,
         );
         if let Some(ring) = colors.knob_edge {
             scene.stroke(
@@ -1091,13 +1111,28 @@ mod tests {
                         None,
                         &pill_shape,
                     );
+                    // Only the track rides the disabled layer: the knob keeps its own, much
+                    // lighter dimming so it still says where the switch stands.
+                    if !enabled {
+                        expected.pop_layer();
+                    }
                     let knob_x = if on { pill.x1 - 12.0 } else { pill.x0 + 12.0 };
+                    let knob = Circle::new(Point::new(knob_x, 46.0), 10.0);
+                    if !enabled {
+                        expected.push_layer(
+                            vello::peniko::Fill::NonZero,
+                            vello::peniko::BlendMode::default(),
+                            LOCKED_KNOB_ALPHA,
+                            Affine::IDENTITY,
+                            &knob,
+                        );
+                    }
                     expected.fill(
                         vello::peniko::Fill::NonZero,
                         Affine::IDENTITY,
                         colors.knob,
                         None,
-                        &Circle::new(Point::new(knob_x, 46.0), 10.0),
+                        &knob,
                     );
                     if let Some(ring) = colors.knob_edge {
                         expected.stroke(
@@ -1168,6 +1203,21 @@ mod tests {
                     "a switch nobody here can flip is not painted in the on colour"
                 );
                 assert_ne!(locked.track, off.track, "and still reads as on");
+                // Only the track lies under the disabled layer: the knob keeps its own, much
+                // lighter dimming, and what a person sees still clears the contrast floor.
+                let ground = theme.tokens.colors.surfaces.content;
+                let dimmed_track = crate::tokens::colors::mix8(
+                    locked.track,
+                    ground,
+                    1.0 - crate::widget::DISABLED_ALPHA,
+                );
+                let dimmed_knob =
+                    crate::tokens::colors::mix8(locked.knob, ground, 1.0 - LOCKED_KNOB_ALPHA);
+                let ratio = crate::a11y::contrast_ratio(dimmed_knob, dimmed_track);
+                assert!(
+                    ratio >= crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+                    "a locked switch's knob is only {ratio:.2}:1 against its dimmed track"
+                );
             }
 
             // Case `toggle_knob_is_white_on_and_a_raised_object_off_in_light`.

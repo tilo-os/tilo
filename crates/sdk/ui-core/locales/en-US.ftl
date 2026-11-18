@@ -955,6 +955,7 @@ time-field-remove = Remove time
 # A form's person field: what it reads as with nobody picked, and the entry that picks you.
 person-field-none = No one
 person-field-me = Me
+person-field-search = Search people
 
 # The menu a secondary click or a long press opens on editable words.
 text-menu-cut = Cut

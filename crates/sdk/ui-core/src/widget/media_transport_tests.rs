@@ -390,7 +390,7 @@ fn the_knob_at_either_end_clears_the_times() {
     let mut m = Metrics::of(&Theme::dark());
     m.time = 32.0;
     let reach = crate::widget::SliderFace::overhang();
-    for width in [360.0, 900.0, 1400.0] {
+    for width in [360.0, 900.0, 1400.0, 3440.0] {
         let (form, rects, _) = layout(&playing(), &handed(&actions()), &m, width);
         let scrub = rects[SCRUBBER];
         assert!(
@@ -402,6 +402,158 @@ fn the_knob_at_either_end_clears_the_times() {
             scrub.x1 + reach <= rects[TOTAL].x0 - m.related + 0.5,
             "{form:?} at {width}: the knob at the end ({scrub:?}) clears {:?}",
             rects[TOTAL]
+        );
+    }
+}
+
+/// At every width a window may be, each control the band shows stands inside it,
+/// and the scrubber keeps a usable track between the times.
+#[test]
+fn the_band_fits_every_window_width() {
+    let mut m = Metrics::of(&Theme::dark());
+    m.time = 32.0;
+    let names = [
+        "art",
+        "song",
+        "like",
+        "lyrics",
+        "shuffle",
+        "previous",
+        "play",
+        "next",
+        "repeat",
+        "elapsed",
+        "scrubber",
+        "total",
+        "queue",
+        "mute",
+        "volume",
+        "more",
+        "volume-menu",
+    ];
+    for width in [320.0, 390.0, 480.0, 768.0, 1280.0, 1920.0, 3440.0] {
+        let (form, rects, height) = layout(&playing(), &handed(&actions()), &m, width);
+        for (index, rect) in rects.iter().enumerate() {
+            if rect.area() <= 0.0 {
+                continue;
+            }
+            assert!(
+                rect.x0 >= -0.5 && rect.x1 <= width + 0.5,
+                "{form:?} at {width}: {} at ({:.0}, {:.0})..({:.0}, {:.0}) leaves the band",
+                names[index],
+                rect.x0,
+                rect.y0,
+                rect.x1,
+                rect.y1
+            );
+            assert!(
+                rect.y0 >= -0.5 && rect.y1 <= height + 0.5,
+                "{form:?} at {width}: {} at ({:.0}, {:.0})..({:.0}, {:.0}) leaves the band's {height:.0} height",
+                names[index],
+                rect.x0,
+                rect.y0,
+                rect.x1,
+                rect.y1
+            );
+        }
+    }
+}
+
+/// Every box the band draws stands inside its parent's: at an ultrawide window nothing spills
+/// past the band's edge.
+#[test]
+fn an_ultrawide_band_keeps_every_box_inside_it() {
+    fn spill(node: &crate::headless::InspectionNode, out: &mut Vec<String>) {
+        let [x, y, w, h] = node.rect;
+        for child in &node.children {
+            let [cx, cy, cw, ch] = child.rect;
+            if cw > 0.0 && ch > 0.0 {
+                let inside = cx >= x - 0.5
+                    && cy >= y - 0.5
+                    && cx + cw <= x + w + 0.5
+                    && cy + ch <= y + h + 0.5;
+                if !inside {
+                    out.push(format!(
+                        "{} {:?} at ({cx:.0}, {cy:.0}) {cw:.0}×{ch:.0} outside {x:.0},{y:.0} {w:.0}×{h:.0}",
+                        child.widget, child.test_id
+                    ));
+                }
+            }
+            spill(child, out);
+        }
+    }
+    for width in [1280u32, 3440] {
+        let (h, _feed) = banded(playing(), width);
+        let snapshot = h.inspection();
+        let Some(transport) = snapshot
+            .root
+            .nodes()
+            .into_iter()
+            .find(|node| node.widget == "MediaTransport")
+        else {
+            panic!("the band holds a transport at {width}");
+        };
+        let mut out = Vec::new();
+        spill(transport, &mut out);
+        assert!(out.is_empty(), "at {width}:\n{}", out.join("\n"));
+    }
+}
+
+/// The component a view builds for `ui.MediaTransport` hands the window the band's
+/// manual region: its controls are placed by the band's own policy, never by a plain flow.
+#[test]
+fn a_declared_transport_hands_the_window_its_bands_layout() {
+    use crate::widget::{DeclaredTransport, TransportTriggers};
+    let triggers = TransportTriggers {
+        play_pause: None,
+        previous: None,
+        next: None,
+        shuffle: None,
+        repeat: None,
+        like: None,
+        mute: None,
+        seek: None,
+        volume: None,
+        lyrics: None,
+        queue: None,
+        open: None,
+    };
+    let transport = DeclaredTransport::new(playing(), triggers);
+    assert!(
+        crate::widget::Widget::manual_layout_policy(&transport).is_some(),
+        "the band's region reaches the window through the component"
+    );
+    let mut visited = 0;
+    let walked = crate::widget::Widget::for_each_layout_child(&transport, &mut |_| visited += 1);
+    assert!(
+        walked && visited == 1,
+        "the band itself is the layout child"
+    );
+
+    let (width, height) = (900u32, 300u32);
+    let mut h = FrameHarness::new(State::new(), Box::new(transport), (width, height));
+    for _ in 0..3 {
+        h.relayout_at((width, height)).expect("layout settles");
+    }
+    let snapshot = h.inspection();
+    let Some(band) = snapshot
+        .root
+        .nodes()
+        .into_iter()
+        .find(|node| node.widget == "MediaTransport")
+    else {
+        panic!("the band is laid out");
+    };
+    let [x, y, w, hgt] = band.rect;
+    for node in band.nodes() {
+        let [cx, cy, cw, ch] = node.rect;
+        if cw <= 0.0 || ch <= 0.0 {
+            continue;
+        }
+        assert!(
+            cx >= x - 0.5 && cy >= y - 0.5 && cx + cw <= x + w + 0.5 && cy + ch <= y + hgt + 0.5,
+            "{} at ({cx:.0}, {cy:.0}) {cw:.0}×{ch:.0} leaves the band at ({x:.0}, {y:.0}) {w:.0}×{hgt:.0}",
+            node.widget
         );
     }
 }

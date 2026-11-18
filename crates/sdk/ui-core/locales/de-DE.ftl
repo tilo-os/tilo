@@ -950,6 +950,7 @@ time-field-remove = Zeit entfernen
 
 person-field-none = Niemand
 person-field-me = Ich
+person-field-search = Personen suchen
 
 # Das Menü, das ein Rechtsklick oder langes Drücken auf bearbeitbarem Text öffnet.
 text-menu-cut = Ausschneiden
