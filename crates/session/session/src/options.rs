@@ -215,29 +215,11 @@ pub enum AppSocket {
     #[default]
     Off,
     /// On the socket the launcher hands an app for its session
-    /// (`launcher::services::collab_socket`), which is also what tells the launcher to bind one.
+    /// (`launcher::services::collab_socket`), in the session's runtime directory: every app the
+    /// session starts, its windows and its agents reach it there, whatever machine it draws on.
     Launcher,
-    /// On a socket of the session's own, in its private directory under the runtime directory
-    /// (`tilo_paths::login::session_dir`): the session that draws in a window of another desktop
-    /// serves its apps there, and leaves that desktop's own socket to its desktop.
-    Own,
     /// On `path` : a session started for a test, which leaves the machine's own socket alone.
     At(std::path::PathBuf),
-}
-
-impl AppSocket {
-    /// What a session on `machine` serves its apps on: the socket the launcher hands them when it
-    /// owns the machine, and a socket of its own when it runs in a window of another desktop, whose
-    /// socket is not its to take. Every surface app it starts reads its resources there — its lock
-    /// screen above all, which unlocks the session through them.
-    #[must_use]
-    pub const fn for_machine(machine: Machine) -> Self {
-        if machine.is_owned() {
-            Self::Launcher
-        } else {
-            Self::Own
-        }
-    }
 }
 
 /// The default for [`Options::session_actions`]: a session that owns no machine (a test, a
@@ -448,19 +430,5 @@ impl Default for Options {
             windows: compat_service::Assembly::system(),
             drives: None,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{AppSocket, Machine};
-
-    /// A session in a window of another desktop serves its apps on a socket of its own, never on
-    /// the one the desktop it draws in serves: that one is the other session's, and the apps of
-    /// this one — its lock screen above all — read their resources on this one.
-    #[test]
-    fn a_session_serves_its_apps_where_they_reach_it() {
-        assert_eq!(AppSocket::for_machine(Machine::Owned), AppSocket::Launcher);
-        assert_eq!(AppSocket::for_machine(Machine::Window), AppSocket::Own);
     }
 }
