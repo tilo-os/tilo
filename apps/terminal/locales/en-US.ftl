@@ -114,4 +114,4 @@ terminal-commands-output-cut = Earlier output not shown
 terminal-commands-stop = Stop
 terminal-commands-send = Enter
 terminal-commands-placeholder = Type a command
-terminal-commands-on-a-computer = This session's shell is on someone's computer. Its commands show here; type into it there.
+terminal-commands-on-a-computer = This session's shell is on someone else's computer. Its output arrives here; type into it there.
