@@ -44,7 +44,11 @@ fn a_mention_in_a_message_is_found_in_the_record_the_workspace_sent() {
     let found = ui::mentions::in_resource(&part);
     assert_eq!(found.len(), 1, "{found:#?}");
     assert_eq!(found[0].person, ui::tilo_resource::MemberId::person(BO));
-    assert_eq!(found[0].by.as_deref(), Some(ADA), "{found:#?}");
+    assert_eq!(
+        found[0].by,
+        Some(ui::tilo_resource::MemberId::person(ADA)),
+        "{found:#?}"
+    );
     assert_eq!(found[0].channel.as_deref(), Some(id("c_chat").as_str()));
     assert_eq!(
         found[0].item,
@@ -91,7 +95,7 @@ fn a_direct_message_is_news_for_the_person_it_is_addressed_to() {
     let found = ui::mentions::in_resource(&part);
     assert_eq!(found.len(), 1, "{found:#?}");
     assert_eq!(found[0].person, ui::tilo_resource::MemberId::person(BO));
-    assert_eq!(found[0].by.as_deref(), Some(ADA));
+    assert_eq!(found[0].by, Some(ui::tilo_resource::MemberId::person(ADA)));
     assert_eq!(found[0].excerpt, "Have a look at this plan");
 }
 

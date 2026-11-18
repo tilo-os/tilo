@@ -2,11 +2,13 @@
 //! medium, a rescue system or alongside the system a machine already has.
 //!
 //! `tilo machine add` makes an install plan ([`install_profile_model::plan`])
-//! and mints the single-use, expiring enrollment token it goes with. The plan
-//! is kept in this computer's store of the person's; the token is written to a
-//! file whose path, never the token, the installer commands name. Every choice
-//! given here is made; every one left out is open, and the machine asks one of
-//! the person's devices to answer it against the machine's real hardware.
+//! through [`install_plan::Choices`], the same structure the installer's own
+//! window fills in, and mints the single-use, expiring enrollment token it
+//! goes with. The plan is kept in this computer's store of the person's; the
+//! token is written to a file whose path, never the token, the installer
+//! commands name. Every choice given here is made; every one left out is open,
+//! and the machine asks one of the person's devices to answer it against the
+//! machine's real hardware.
 //!
 //! The plan is secret-free: it names the token by its nonce and expiry, so the
 //! document can travel through the person's devices, a log or an action's
@@ -16,18 +18,14 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
 use clap::Subcommand;
-use install_profile_model::plan::{self, DiskRule, Holding, Network, Plan, Token};
+use install_profile_model::plan::{self, DiskRule, Holding, Network, Plan};
 use tilo_device_identity::IdentityPaths;
-use tilo_device_identity::persist::{read_device_cert, read_public_key, read_signing_key};
-use tilo_user_identity::{DeviceCapabilities, encode_enrollment_token, mint_enrollment_token};
 
 use crate::identity;
 
-/// How long a machine's token stays valid: a medium may sit on a shelf a day.
-const TOKEN_LIFETIME_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
 /// Where the person's devices serve the installer, unless `--installer-url`
 /// names another site.
-const INSTALLER_URL: &str = "https://tilo.sh";
+const INSTALLER_URL: &str = install_plan::INSTALLER_URL;
 
 #[derive(Subcommand)]
 pub enum MachineCmd {
@@ -104,7 +102,7 @@ pub struct AddArgs {
 
 pub fn serve(cmd: MachineCmd) -> Result<std::process::ExitCode> {
     match cmd {
-        MachineCmd::Add(add) => plan_and_mint(*add),
+        MachineCmd::Add(add) => plan_and_mint(&add),
         MachineCmd::List => list(),
         MachineCmd::Show {
             plan,
@@ -113,19 +111,7 @@ pub fn serve(cmd: MachineCmd) -> Result<std::process::ExitCode> {
     }
 }
 
-/// The choices [`AddArgs`] made, with `None` for one it left open.
-struct Choices {
-    destination: String,
-    name: String,
-    network: Network,
-    disk: DiskRule,
-    unlock: String,
-    updates: String,
-    hosting: Vec<Holding>,
-    open: Vec<&'static str>,
-}
-
-fn choices(add: AddArgs) -> Result<Choices> {
+fn choices(add: &AddArgs) -> Result<install_plan::Choices> {
     let destination = match add.os.trim() {
         "server" => "tilo-server",
         "os" | "desktop" => "tilo-os",
@@ -170,113 +156,41 @@ fn choices(add: AddArgs) -> Result<Choices> {
     if add.no_workspaces && !hosting.is_empty() {
         bail!("--no-workspaces and --hold answer the same choice twice");
     }
-    let mut open = Vec::new();
-    if disk.is_none() {
-        open.push("disk");
-    }
-    if network.is_none() {
-        open.push("network");
-    }
-    if unlock.is_none() {
-        open.push("unlock");
-    }
-    if updates.is_none() {
-        open.push("updates");
-    }
-    if add.name.is_none() {
-        open.push("name");
-    }
-    if destination == "tilo-server" && hosting.is_empty() && !add.no_workspaces {
-        open.push("hosting");
-    }
-    Ok(Choices {
+    let hosting = if destination == "tilo-server" && hosting.is_empty() && !add.no_workspaces {
+        None
+    } else {
+        Some(hosting)
+    };
+    Ok(install_plan::Choices {
         destination: destination.to_owned(),
-        name: add.name.unwrap_or_default().trim().to_owned(),
-        network: network.unwrap_or_default(),
-        disk: disk.unwrap_or_default(),
-        unlock: unlock.unwrap_or_default(),
-        updates: updates.unwrap_or_default(),
+        name: add.name.clone(),
+        network,
+        disk,
+        unlock,
+        updates,
         hosting,
-        open,
     })
 }
 
-fn plan_and_mint(add: AddArgs) -> Result<std::process::ExitCode> {
-    let token_file = add.token_file.clone();
-    let installer_url = add.installer_url.clone();
+fn plan_and_mint(add: &AddArgs) -> Result<std::process::ExitCode> {
     let choices = choices(add)?;
+    let requested_token_file = add.token_file.clone();
     let dir = identity::dir()?;
     let paths = IdentityPaths::under(&dir);
-    let user = read_public_key(&paths.user_pubkey)
-        .context("this computer holds no identity; start `tilo login` first")?;
-    let device = read_signing_key(&paths.device_privkey)
-        .context("this computer holds no device key; start `tilo login` first")?;
-    let cert = read_device_cert(&paths.device_cert_for_user(&user))
-        .or_else(|_| read_device_cert(&paths.device_cert))
-        .context("this computer holds no certificate for its device")?;
-    if !cert.capabilities.can_admit_devices {
-        bail!("this device may not admit another device; plan it from one of your own devices");
-    }
-    let (token, nonce, expires_at_ns) = mint(&dir, user, &device)?;
-    let plan = Plan {
-        schema: plan::SCHEMA,
-        plan: hex::encode(rand::random::<[u8; 16]>()),
-        revision: 1,
-        destination: choices.destination,
-        name: choices.name,
-        network: choices.network,
-        disk: choices.disk,
-        unlock: choices.unlock,
-        updates: choices.updates,
-        hosting: choices.hosting,
-        open: choices.open.iter().map(|name| (*name).to_owned()).collect(),
-        token: Token {
-            nonce,
-            expires_at_ns,
-        },
-    };
-    // Whatever is built here has to be a plan the machine can read, so one
-    // rule checks it, not two.
-    let plan: Plan = serde_json::from_value(serde_json::to_value(&plan)?)
-        .context("that plan cannot be used as written")?;
-    let plans = plans_dir(&dir);
-    std::fs::create_dir_all(&plans).with_context(|| format!("cannot make {}", plans.display()))?;
-    let plan_file = plans.join(format!("{}.json", plan.plan));
-    write_private(&plan_file, &serde_json::to_vec_pretty(&plan)?)?;
-    let token_file = token_file.unwrap_or_else(|| plans.join(format!("{}.token", plan.plan)));
-    write_private(&token_file, token.as_bytes())?;
+    let home_peers = tilo_server_protocol::home_peer_registry_path(&dir);
+    let (token, named) = install_plan::mint(&paths, &home_peers).map_err(anyhow::Error::msg)?;
+    let plan = choices
+        .plan(&install_plan::new_id(), named)
+        .map_err(anyhow::Error::msg)?;
+    let stored = install_plan::store(&dir, &plan, &token, requested_token_file.as_deref())
+        .map_err(anyhow::Error::msg)?;
     println!("plan {} ({})", plan.plan, display_name(&plan));
-    println!("kept {}", plan_file.display());
-    Ok(print_how_it_reaches(&plan, &token_file, &installer_url))
-}
-
-/// Mint the machine's token from this device, and name it by its nonce and
-/// expiry: the only parts of it a plan keeps.
-fn mint(
-    dir: &Path,
-    user: [u8; 32],
-    device: &ed25519_dalek::SigningKey,
-) -> Result<(String, String, u64)> {
-    let now_ns =
-        tilo_clock::try_unix_now_ns().context("this computer cannot say what time it is")?;
-    let expires_at_ns = now_ns
-        .checked_add(TOKEN_LIFETIME_NS)
-        .context("the token's expiry is out of range")?;
-    let nonce = rand::random::<[u8; 16]>();
-    let dial = crate::server::dial_peers(dir, user);
-    let token = mint_enrollment_token(
-        user,
-        DeviceCapabilities::member(),
-        now_ns,
-        expires_at_ns,
-        nonce,
-        dial,
-        device,
-    )
-    .map_err(|error| anyhow::anyhow!("cannot mint the machine's token: {error}"))?;
-    let encoded = encode_enrollment_token(&token)
-        .map_err(|error| anyhow::anyhow!("cannot encode the machine's token: {error}"))?;
-    Ok((encoded, hex::encode(nonce), expires_at_ns))
+    println!("kept {}", stored.plan_file.display());
+    Ok(print_how_it_reaches(
+        &plan,
+        &stored.token_file,
+        &add.installer_url,
+    ))
 }
 
 /// Print how the plan reaches its machine: the token's path is named, never
@@ -310,29 +224,12 @@ fn print_how_it_reaches(
 
 fn list() -> Result<std::process::ExitCode> {
     let dir = identity::dir()?;
-    let plans = plans_dir(&dir);
-    let mut found = Vec::new();
-    match std::fs::read_dir(&plans) {
-        Ok(entries) => {
-            for entry in entries {
-                let path = entry?.path();
-                if path
-                    .extension()
-                    .is_some_and(|extension| extension == "json")
-                {
-                    found.push(path);
-                }
-            }
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error).context("this computer's plans cannot be read"),
-    }
-    found.sort();
+    let found = install_plan::plan_files(&dir).context("this computer's plans cannot be read")?;
     if found.is_empty() {
         bail!("this computer knows no planned machine; `tilo machine add --name nas` makes one");
     }
     for path in found {
-        match read_plan(&path) {
+        match install_plan::read(&path) {
             Ok(plan) => println!(
                 "{}\t{}\t{}\t{}",
                 plan.plan,
@@ -340,7 +237,7 @@ fn list() -> Result<std::process::ExitCode> {
                 plan.destination,
                 if plan.complete() { "complete" } else { "open" }
             ),
-            Err(error) => println!("{}\tunreadable: {error}", path.display()),
+            Err(error) => println!("{error}"),
         }
     }
     Ok(std::process::ExitCode::SUCCESS)
@@ -352,9 +249,10 @@ fn show(plan_id: &str, installer_url: &str) -> Result<std::process::ExitCode> {
     if plan_id.len() != 32 || !plan_id.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
         bail!("a plan is named by its 32-character id; `tilo machine list` prints them");
     }
-    let plan = read_plan(&plans_dir(&dir).join(format!("{plan_id}.json")))?;
+    let plan = install_plan::read(&install_plan::plans_dir(&dir).join(format!("{plan_id}.json")))
+        .map_err(anyhow::Error::msg)?;
     println!("{}", serde_json::to_string_pretty(&plan)?);
-    let token_file = plans_dir(&dir).join(format!("{plan_id}.token"));
+    let token_file = install_plan::plans_dir(&dir).join(format!("{plan_id}.token"));
     let commands = plan::commands(
         &plan,
         installer_url.trim_end_matches('/'),
@@ -398,38 +296,6 @@ fn open_or<T>(text: &str, parse: impl FnOnce(&str) -> Result<T>) -> Result<Optio
         return Ok(None);
     }
     parse(text.trim()).map(Some)
-}
-
-fn plans_dir(dir: &Path) -> PathBuf {
-    dir.join("install-plans")
-}
-
-fn read_plan(path: &Path) -> Result<Plan> {
-    let bytes = std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
-    serde_json::from_slice(&bytes).with_context(|| format!("{} is not a plan", path.display()))
-}
-
-/// Write `bytes` to `path`, readable and writable only by this account.
-fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
-    use std::io::Write as _;
-    let mut file = private_file(path)?;
-    file.write_all(bytes)
-        .with_context(|| format!("cannot write {}", path.display()))?;
-    file.sync_all()
-        .with_context(|| format!("cannot write {}", path.display()))
-}
-
-fn private_file(path: &Path) -> Result<std::fs::File> {
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
-    }
-    options
-        .open(path)
-        .with_context(|| format!("cannot make {}", path.display()))
 }
 
 fn architecture() -> &'static str {

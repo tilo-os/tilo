@@ -69,6 +69,50 @@ promote_target_uki() {\n''' + body + '\n}\npromote_target_uki "$FIXTURE_ESP"\n'
                 self.assertNotEqual(second.returncode, 0)
                 self.assertIn('already contains', second.stderr)
 
+    def test_server_destination_creates_no_login_account(self):
+        firstboot = (BACKEND.parent / 'tilo-firstboot-user').read_text()
+        with self.subTest(phase="purpose_server_refuses_an_account_credential"):
+            self.assertIn('if [ "$PURPOSE_VAL" = server ]; then\n  SERVER_DESTINATION=1', SOURCE)
+            self.assertIn("--password-hash cannot seed a Tilo Server", SOURCE)
+            self.assertIn("takes no --user", SOURCE)
+            self.assertIn("takes no --full-name", SOURCE)
+            self.assertIn("a Tilo Server takes no prepared desktop setup", SOURCE)
+        with self.subTest(phase="the_installed_image_must_be_the_server_image"):
+            guard = ('elif [ "$INSTALLED_FLAVOUR" = server ]; then\n'
+                     '  die "the Tilo Server image has no login account; select the server destination to install it"')
+            self.assertIn(guard, SOURCE)
+            self.assertIn('/usr/lib/tilo/image-flavour', SOURCE)
+            self.assertLess(SOURCE.index('INSTALLED_FLAVOUR="$(cat'),
+                            SOURCE.index('stage_installed_firstboot_runtime / '),
+                            'the image decides before anything account-shaped is written')
+        with self.subTest(phase="no_credential_seed_or_login_session_is_written"):
+            self.assertIn('if [ "$SERVER_DESTINATION" -eq 0 ]; then\n'
+                          '  stage_installed_firstboot_runtime / "$DEPLOY_ETC"', SOURCE)
+            # The shipped greeter config replaces the live installer's in both
+            # cases; only a desktop target gets the one-boot account session.
+            self.assertNotIn('if [ "$SERVER_DESTINATION" -eq 0 ]; then\n'
+                             '  install -d -m 0755 "$DEPLOY_ETC/greetd"', SOURCE)
+            self.assertIn('install -m 0644 /usr/share/tilo/greetd-config.toml "$GREETD_CONFIG_TMP"\n'
+                          'if [ "$SERVER_DESTINATION" -eq 0 ]; then', SOURCE)
+            self.assertNotIn('firstboot-autologin-pending', SOURCE.split(
+                'install -m 0644 /usr/share/tilo/greetd-config.toml "$GREETD_CONFIG_TMP"', 1)[0])
+            self.assertIn('rm -f "$DEPLOY_ETC/tilo/install-user.conf"', SOURCE)
+            # The server's store belongs to the image's own service account.
+            self.assertIn('[ "$SERVER_DESTINATION" -eq 0 ] || STORE_OWNER=tilo-server', SOURCE)
+        with self.subTest(phase="one_startup_secret_is_the_server_whole_secret"):
+            self.assertIn('the Tilo Server\'s startup secret must be the one secret supplied on stdin',
+                          SOURCE)
+            self.assertIn('$SERVER_DESTINATION" -eq 0 ] && [ "$PASSWORD_IS_HASH" -eq 0 ]',
+                          SOURCE)
+        with self.subTest(phase="firstboot_refuses_a_seed_on_the_server_image"):
+            self.assertIn('if [ "$(cat "${TILO_IMAGE_FLAVOUR_FILE:-/usr/lib/tilo/image-flavour}" 2>/dev/null || true)" = server ]; then',
+                          firstboot)
+            self.assertIn('the Tilo Server image has no login account; refusing $CONF', firstboot)
+            self.assertLess(
+                firstboot.index('= server ]; then'),
+                firstboot.index('[ -e "$CONF" ] || [ -L "$CONF" ] || exit 0'),
+                'the server guard comes before the seed is consumed')
+
     def test_target_etc_discovery(self):
         with self.subTest(phase="composefs_mutable_etc_discovery"):
             body = SOURCE.split('find_deploy_etc() {', 1)[1].split('\n}\n', 1)[0]

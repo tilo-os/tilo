@@ -74,7 +74,6 @@ tilo_test_env::scenario! {
     // default list.
     {
         use crate::providers::happening::{Happening, PersonHere, WorkspaceHere};
-        use crate::providers::people::{People, PersonEntry};
         let here = WorkspaceHere {
             workspace: "workspace".into(),
             name: "Studio".into(),
@@ -100,14 +99,6 @@ tilo_test_env::scenario! {
         });
         data.sources
             .push(Held::new(Happening::new(false, vec![here])));
-        data.sources.push(Held::new(People::new(
-            "workspace",
-            vec![PersonEntry {
-                id: "mara".into(),
-                name: "Mara Lind".into(),
-                activity: Some("Sheets".into()),
-            }],
-        )));
         let mut search = DesktopSearch::new();
         search.open(data);
         settled(&mut search);
@@ -133,7 +124,7 @@ tilo_test_env::scenario! {
         }
         assert_eq!(
             groups,
-            ["Happening now", "People", "Recent", "Apps", "Windows"]
+            ["Happening now", "Recent", "Apps", "Windows"]
         );
         assert!(
             entries.iter().all(|entry| entry.label != "Leave workspace"),

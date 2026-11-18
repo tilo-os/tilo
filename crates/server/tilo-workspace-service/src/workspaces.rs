@@ -148,6 +148,7 @@ pub use sealed_documents::fixtures as sealed_fixtures;
 mod desktop_document;
 #[cfg(test)]
 mod naming_tests;
+pub mod servers;
 mod shares;
 #[cfg(test)]
 pub(crate) mod tests;

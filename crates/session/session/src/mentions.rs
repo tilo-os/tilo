@@ -28,6 +28,12 @@ const LOOK_EVERY_MS: u64 = 750;
 /// How long a mention's notice stays on screen: what the person was told, not a demand.
 const NOTICE_SECONDS: u64 = 8;
 
+/// What a member is called.
+pub type Names = Rc<dyn Fn(&ui::MemberId) -> String>;
+
+/// Whether a window on screen shows an item of an app, by the app and the item's address.
+pub type OnScreen = Rc<dyn Fn(&str, &str) -> bool>;
+
 /// What one look at a record changed: notices to show, and the tags of those whose mention is
 /// gone.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -58,6 +64,66 @@ pub struct Look<'a> {
     /// How a reference in its text reads for the person told: what a notice's excerpt says of it
     /// ([`ui::mentions::reading_nothing`] where nobody here can tell what they hold).
     pub read: ui::mentions::Reader<'a>,
+    /// Whether a window on screen shows an item of an app, by the app and the item's address
+    /// ([`Given::shown`]).
+    pub shown: &'a dyn Fn(&str, &str) -> bool,
+}
+
+impl Look<'_> {
+    /// Whether a window on screen shows the item at `anchor`, or the conversation `channel` it was
+    /// said in: the person sees there what a notice of it would tell.
+    fn on_screen(&self, anchor: &str, channel: Option<&str>) -> bool {
+        let conversation = channel.filter(|_| !self.kind.is_empty()).map(|channel| {
+            tilo_resource::items::item_resource_id_in(
+                self.kind,
+                ui::mentions::CHANNELS,
+                &tilo_resource::Id::from_raw(channel),
+            )
+        });
+        [anchor, conversation.as_deref().unwrap_or_default()]
+            .into_iter()
+            .any(|anchor| !anchor.is_empty() && (self.shown)(self.app, anchor))
+    }
+
+    /// What a notice of `mention` says: who wrote to the person, or who mentioned them and where.
+    fn title(
+        &self,
+        mention: &ui::mentions::Mention,
+        name: &dyn Fn(&ui::MemberId) -> String,
+    ) -> String {
+        let who = mention
+            .by
+            .as_ref()
+            .map_or_else(|| crate::i18n::t("mention-notice-someone"), name);
+        let channel = mention.channel.as_deref().and_then(|channel| {
+            self.tree
+                .and_then(|tree| ui::mentions::channel_name(tree, channel))
+        });
+        let direct = mention
+            .channel
+            .as_deref()
+            .is_some_and(|channel| ui::MemberId::direct_conversation_members(channel).is_some());
+        match (channel, &mention.title) {
+            _ if direct => {
+                crate::i18n::t_args("mention-notice-direct", &[("name", who.as_str().into())])
+            }
+            (Some(channel), _) => crate::i18n::t_args(
+                "mention-notice-channel",
+                &[
+                    ("name", who.as_str().into()),
+                    ("channel", channel.as_str().into()),
+                ],
+            ),
+            (None, Some(title)) => crate::i18n::t_args(
+                "mention-notice-title",
+                &[
+                    ("name", who.as_str().into()),
+                    ("place", title.as_str().into()),
+                ],
+            ),
+            (None, None) => crate::i18n::t_args("mention-notice", &[("name", who.as_str().into())]),
+        }
+    }
 }
 
 /// What this device told, and what must not be told again.
@@ -91,16 +157,15 @@ impl Held {
         &mut self,
         look: &Look<'_>,
         me: &BTreeSet<ui::MemberId>,
-        name: &dyn Fn(&str) -> String,
+        name: &dyn Fn(&ui::MemberId) -> String,
     ) -> Told {
         let route = look.record.to_owned();
-        let mut live_tags: BTreeMap<String, Notice> = BTreeMap::new();
+        // Each live mention's notice, and whether the person sees what it is in already.
+        let mut live_tags: BTreeMap<String, (Notice, bool)> = BTreeMap::new();
         for mention in ui::mentions::in_resource_for(look.doc, look.read) {
+            // What the person wrote themselves, on any of their devices, is no news to them.
             if !me.contains(&mention.person)
-                || mention.by.as_ref().is_some_and(|by| {
-                    me.iter()
-                        .any(|member| member.person_id() == Some(by.as_str()))
-                })
+                || mention.by.as_ref().is_some_and(|by| me.contains(by))
             {
                 continue;
             }
@@ -132,55 +197,21 @@ impl Held {
             if live_tags.contains_key(&tag) {
                 continue;
             }
-            let who = mention
-                .by
-                .as_deref()
-                .map_or_else(|| crate::i18n::t("mention-notice-someone"), name);
-            let channel = mention.channel.as_deref().and_then(|channel| {
-                look.tree
-                    .and_then(|tree| ui::mentions::channel_name(tree, channel))
-            });
-            let direct = mention.channel.as_deref().is_some_and(|channel| {
-                ui::MemberId::direct_conversation_members(channel).is_some()
-            });
-            let title = match (channel, &mention.title) {
-                _ if direct => {
-                    crate::i18n::t_args("mention-notice-direct", &[("name", who.as_str().into())])
-                }
-                (Some(channel), _) => crate::i18n::t_args(
-                    "mention-notice-channel",
-                    &[
-                        ("name", who.as_str().into()),
-                        ("channel", channel.as_str().into()),
-                    ],
-                ),
-                (None, Some(title)) => crate::i18n::t_args(
-                    "mention-notice-title",
-                    &[
-                        ("name", who.as_str().into()),
-                        ("place", title.as_str().into()),
-                    ],
-                ),
-                (None, None) => {
-                    crate::i18n::t_args("mention-notice", &[("name", who.as_str().into())])
-                }
-            };
-            live_tags.insert(
-                tag.clone(),
-                Notice::opens(
-                    tilo_desktop_search::names::app_name(look.app),
-                    title,
-                    mention.excerpt,
-                    place,
-                )
-                .tagged(tag)
-                .choosing(vec![(
-                    OPEN_ACTION.to_owned(),
-                    crate::i18n::t("mention-notice-open"),
-                )])
-                // News, not a demand: it leaves the banner by itself and the centre keeps it.
-                .staying(Some(ui::time::Duration::from_secs(NOTICE_SECONDS))),
-            );
+            let seen = look.on_screen(&place.anchor, mention.channel.as_deref());
+            let notice = Notice::opens(
+                tilo_desktop_search::names::app_name(look.app),
+                look.title(&mention, name),
+                mention.excerpt,
+                place,
+            )
+            .tagged(tag.clone())
+            .choosing(vec![(
+                OPEN_ACTION.to_owned(),
+                crate::i18n::t("mention-notice-open"),
+            )])
+            // News, not a demand: it leaves the banner by itself and the centre keeps it.
+            .staying(Some(ui::time::Duration::from_secs(NOTICE_SECONDS)));
+            live_tags.insert(tag, (notice, seen));
         }
         let told = self.told.entry((look.app.to_owned(), route)).or_default();
         let withdraw: Vec<String> = told
@@ -191,11 +222,12 @@ impl Held {
         for tag in &withdraw {
             told.remove(tag);
         }
+        // What the person sees as it arrives counts as told: it is not told once they look away.
         let show = live_tags
             .into_iter()
             .filter(|(tag, _)| told.insert(tag.clone()))
-            .map(|(_, notice)| notice)
-            .filter(|_| !look.quiet)
+            .filter(|(_, (_, seen))| !look.quiet && !seen)
+            .map(|(_, (notice, _))| notice)
             .collect();
         Told { show, withdraw }
     }
@@ -275,7 +307,10 @@ pub struct Given {
     /// The person's notifications, as the host shows them.
     pub notices: Option<Rc<dyn Notices>>,
     /// What this host calls a member.
-    pub name: Rc<dyn Fn(&str) -> String>,
+    pub name: Names,
+    /// Whether a window on screen shows an item of an app: a mention there is seen as it arrives,
+    /// and no notice tells it again.
+    pub shown: OnScreen,
     /// What draws a frame when a notice told the person something.
     pub wake: Option<tilo_service::Wake>,
 }
@@ -285,7 +320,8 @@ struct Inner {
     store: Option<Store>,
     records: Option<Rc<dyn Records>>,
     notices: Option<Rc<dyn Notices>>,
-    name: Rc<dyn Fn(&str) -> String>,
+    name: Names,
+    shown: OnScreen,
     wake: Option<tilo_service::Wake>,
     held: RefCell<Held>,
     lease: RefCell<Option<durable_store::Lease>>,
@@ -307,6 +343,7 @@ impl Mentions {
             records,
             notices,
             name,
+            shown,
             wake,
         } = given;
         let mut held = Held::default();
@@ -323,6 +360,7 @@ impl Mentions {
             records,
             notices,
             name,
+            shown,
             wake,
             held: RefCell::new(held),
             lease: RefCell::default(),
@@ -405,6 +443,7 @@ impl Mentions {
                     // Nobody here can tell what the person holds of what a text refers to: an
                     // excerpt names no resource, never a title they may not read.
                     read: &ui::mentions::reading_nothing,
+                    shown: &*self.0.shown,
                 },
                 &self.0.me,
                 &*self.0.name,
@@ -464,6 +503,7 @@ impl Mentions {
                 tree,
                 quiet: true,
                 read: &ui::mentions::reading_nothing,
+                shown: &*self.0.shown,
             },
             &self.0.me,
             &*self.0.name,
@@ -564,6 +604,18 @@ impl Mentions {
             tracing::warn!(%error, "the mentions told are not written");
         }
     }
+}
+
+/// What the session calls a member in a notice: as search and the send box name them, from the
+/// one list of who is in a workspace.
+#[cfg(target_os = "linux")]
+pub(crate) fn member_names(search: Rc<crate::search::SessionSearch>) -> Names {
+    Rc::new(move |who: &ui::MemberId| {
+        search
+            .member_name(who)
+            .filter(|name| ui::presence::shown_name(name).is_some())
+            .unwrap_or_else(|| ui::presence::unnamed_label(who))
+    })
 }
 
 /// What this device told before it started, as its store kept it.

@@ -5168,6 +5168,7 @@ version = "0.1.0"
 dependencies = [
  "bounded-command",
  "firewall",
+ "firewall-model",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -5180,6 +5181,18 @@ dependencies = [
  "tilo-vello",
  "tilo-winit",
  "tracing",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
+name = "firewall-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-resource",
+ "tilo-test-env",
  "uuid",
  "workspace-hack",
 ]
@@ -6742,6 +6755,7 @@ version = "0.1.0"
 dependencies = [
  "hex",
  "hex-editor",
+ "hex-editor-model",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -6753,6 +6767,20 @@ dependencies = [
  "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
+ "workspace-hack",
+]
+
+[[package]]
+name = "hex-editor-model"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "tilo-actions",
+ "tilo-automerge-fork",
+ "tilo-resource",
+ "tilo-test-env",
  "workspace-hack",
 ]
 
@@ -7573,6 +7601,7 @@ dependencies = [
  "fs-native",
  "hex",
  "imager-backend",
+ "install-plan",
  "install-profile-model",
  "launcher",
  "libc",
@@ -7862,6 +7891,23 @@ dependencies = [
  "tilo-test-env",
  "toml 1.0.6+spec-1.1.0",
  "workspace-hack",
+]
+
+[[package]]
+name = "install-plan"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek 3.0.0",
+ "hex",
+ "install-profile-model",
+ "rand 0.10.3",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-clock",
+ "tilo-device-identity",
+ "tilo-server-protocol",
+ "tilo-user-identity",
 ]
 
 [[package]]
@@ -18305,6 +18351,7 @@ dependencies = [
  "futures-util",
  "hex",
  "http-body-util",
+ "install-plan",
  "install-profile-model",
  "iroh",
  "iroh-base",
@@ -23330,6 +23377,7 @@ dependencies = [
  "hex",
  "hyper",
  "hyper-util",
+ "install-profile-model",
  "iroh",
  "iroh-base",
  "key-group",

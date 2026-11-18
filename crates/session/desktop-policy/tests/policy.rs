@@ -938,6 +938,7 @@ fn a_stopped_app_leaves_a_notice_that_asks_for_it_again() {
             asked,
             "Probe",
             tilo_desktop_surface::outcome::Closed::Crashed,
+            None,
         )
         .unwrap();
     settle(&mut driver);
@@ -977,6 +978,60 @@ fn a_stopped_app_leaves_a_notice_that_asks_for_it_again() {
     assert!(
         reopened[0].tab.is_some(),
         "the window that comes takes the tab the answer stands in"
+    );
+}
+
+/// An app that stopped working says so in the tab its window was in, between the same
+/// neighbours, whether its window went away before the end was known or not.
+#[test]
+fn a_stopped_app_says_so_where_its_window_was() {
+    let (mut driver, mut policy) = mount();
+    map(&mut driver, &mut policy, 31, "org.example.Left");
+    map(&mut driver, &mut policy, 32, "org.example.Probe");
+    map(&mut driver, &mut policy, 33, "org.example.Right");
+    let before: Vec<u64> = tabs(&policy).iter().map(|(tab, _)| *tab).collect();
+    let tab = policy.tab_of(32).expect("the window's tab");
+
+    policy.unmap(32);
+    settle(&mut driver);
+    policy
+        .stopped(
+            "org.example.Probe",
+            "Probe",
+            tilo_desktop_surface::outcome::Closed::Crashed,
+            Some(tab),
+        )
+        .unwrap();
+    settle(&mut driver);
+    let after: Vec<u64> = tabs(&policy).iter().map(|(tab, _)| *tab).collect();
+    assert_eq!(after, before, "the tab is back where it was");
+    let texts = ui::a11y::texts(driver.root_widget());
+    assert!(
+        texts
+            .iter()
+            .any(|text| text.starts_with("Probe stopped working")),
+        "{texts:?}"
+    );
+
+    // An end known while the window is still there takes its tab at once; the window leaving
+    // after does not close it.
+    let other = policy.tab_of(33).expect("the other window's tab");
+    policy
+        .stopped(
+            "org.example.Right",
+            "Right",
+            tilo_desktop_surface::outcome::Closed::Crashed,
+            Some(other),
+        )
+        .unwrap();
+    policy.unmap(33);
+    settle(&mut driver);
+    assert_eq!(
+        tabs(&policy)
+            .iter()
+            .map(|(tab, _)| *tab)
+            .collect::<Vec<_>>(),
+        before
     );
 }
 

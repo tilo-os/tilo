@@ -546,6 +546,9 @@ public struct SecretRequest: Identifiable, Equatable, Sendable {
         case kept
         /// The person did not give it.
         case declined
+        /// It was typed and kept, and where it belongs did not take it: what their server said of
+        /// that, in its words.
+        case refused(String)
     }
 }
 

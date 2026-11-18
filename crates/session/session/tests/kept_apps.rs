@@ -446,6 +446,39 @@ fn a_kept_app_stays_through_an_in_place_restart_in_its_tabs_and_a_logout_ends_it
 /// The command line the session starts an app that is not Tilo's with is one the real launcher
 /// takes: asked to plan the launch rather than make it, the launcher names the app the session
 /// asked for. A launcher that answers to another command opens no such app at all.
+/// A keeper killed takes its app with it: the person is told the app stopped working, in the tab
+/// its window was in, and nothing else opens.
+#[test]
+fn an_app_whose_keeper_stops_says_so_in_its_own_tab() {
+    let _settled = ui::motion::testing::settled();
+    let rig = Rig::new(&["Only"]);
+    let mut pass = rig.desktop(false);
+    rig.launch(&pass);
+    let placed = shown_and_told(&rig, &mut pass, &["Only"]);
+    let tab = placed[0].1;
+    let (_, pid, _) = rig.kept();
+    signal(parent_of(pid), libc::SIGKILL);
+    tilo_test_env::exited("the app of a keeper that is gone", pid);
+    until(&mut pass.session, "its tab says it stopped", |session| {
+        matches!(
+            tile_of(session, tab),
+            Some(TileContent::AppPlaceholder { .. })
+        )
+    });
+    for _ in 0..100 {
+        pass.session.step(Duration::from_millis(1)).expect("step");
+    }
+    assert_eq!(
+        tabs(&pass.session)
+            .into_iter()
+            .map(|(other, _)| other)
+            .collect::<Vec<_>>(),
+        [tab],
+        "the notice stands where the window was, and no other tab opens"
+    );
+    pass.end(Teardown::Logout);
+}
+
 #[test]
 fn the_launcher_takes_the_command_line_the_session_starts_an_app_with() {
     let _settled = ui::motion::testing::settled();

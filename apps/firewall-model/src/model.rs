@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{self, Collection, Id, JsonSchema, Model, ModelError, Refusal, Set};
+use tilo_resource::{self, Collection, Id, JsonSchema, Model, ModelError, Refusal, Set};
 use uuid::Uuid;
 
 pub type RuleId = Uuid;
@@ -55,6 +55,22 @@ impl ZoneKind {
     /// Resolve a firewalld zone name back to a [`ZoneKind`].
     pub fn from_name(name: &str) -> Option<ZoneKind> {
         ZoneKind::ALL.iter().copied().find(|z| z.name() == name)
+    }
+
+    /// The zone as places and search show it, in words every device reads the
+    /// same, with the acronym kept.
+    pub fn title(self) -> &'static str {
+        match self {
+            ZoneKind::Drop => "Drop",
+            ZoneKind::Block => "Block",
+            ZoneKind::Public => "Public",
+            ZoneKind::External => "External",
+            ZoneKind::Dmz => "DMZ",
+            ZoneKind::Work => "Work",
+            ZoneKind::Home => "Home",
+            ZoneKind::Internal => "Internal",
+            ZoneKind::Trusted => "Trusted",
+        }
     }
 
     /// The message that names this zone as people read it: sentence case, with the acronym
@@ -247,10 +263,7 @@ impl Matcher {
     pub fn title(&self) -> String {
         match self {
             Matcher::Service(s) => ServiceCatalog::name_of(s).to_string(),
-            Matcher::Port { port, .. } => crate::locales::CATALOG.t_args(
-                "firewall-rule-port-title",
-                &[("port", ui::i18n::ArgValue::Text(port.clone()))],
-            ),
+            Matcher::Port { port, .. } => format!("Port {port}"),
         }
     }
 
@@ -468,7 +481,7 @@ pub fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError
             "no firewall migration from {from}"
         )));
     }
-    for (_, zone) in map_values(doc, &ui::automerge::ROOT, "zones")? {
+    for (_, zone) in map_values(doc, &tilo_resource::__private::ROOT, "zones")? {
         for rule in collection_items(doc, &zone, "rules")? {
             retype_json::<Matcher>(doc, &rule, "matcher")?;
             retype_variant_fields::<Matcher>(doc, &rule, "matcher")?;

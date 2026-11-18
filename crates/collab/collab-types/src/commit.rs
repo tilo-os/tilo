@@ -12,7 +12,7 @@
 //! document frame carries the commit inside its signed payload
 //! ([`WorkspaceCommit::frame`]), so the device signature over that payload
 //! signs the commit, and a receiver reads it off the envelope that delivered
-//! the part ([`WorkspaceCommit::of_envelope`]).
+//! the part ([`WorkspaceCommit::of_envelope_payload`]).
 //!
 //! The commit groups; it does not describe. Every change it names carries the
 //! action that made it in its own history entry ([`tilo_actions::ActionContext`]):
@@ -62,7 +62,6 @@ pub struct CommitGroup {
     /// The run's id, shared by every change it made.
     pub id: String,
     /// Its label, as history names it, when it has one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     /// Its kind (`agent-run`, `task-run`, `command-run`, …).
     pub kind: String,
@@ -135,9 +134,6 @@ pub struct WorkspaceCommit {
 /// Why a commit cannot be read or built.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum CommitError {
-    /// The value did not encode.
-    #[error("workspace commit does not encode: {0}")]
-    Encode(String),
     /// The bytes are not a commit.
     #[error("workspace commit does not decode: {0}")]
     Decode(String),
@@ -420,20 +416,6 @@ impl WorkspaceCommit {
         Ok(framed)
     }
 
-    /// The commit the signed envelope whose payload is `cleartext` carries,
-    /// when it carries one, and the document frame inside it.
-    ///
-    /// The commit travels inside the envelope's signed payload, so the
-    /// device signature over that payload is the commit's signature. A commit
-    /// naming another device than the envelope's author is refused.
-    ///
-    /// # Errors
-    /// [`CommitError`] for bytes that are not a framed payload, a commit that
-    /// does not check, or a commit authored by another device.
-    pub fn of_envelope(envelope: &SignedOp) -> Result<Option<Self>, CommitError> {
-        Self::of_envelope_payload(envelope, &envelope.payload)
-    }
-
     /// The commit carried inside `cleartext`, the payload `envelope` signs once
     /// it is opened: a sealed route's plaintext, or an unsealed envelope's
     /// payload. `None` when the payload carries none.
@@ -604,7 +586,8 @@ mod tests {
             Some(uuid::Uuid::from_u128(9)),
             Some(CommitGroup {
                 id: "run-1".to_owned(),
-                label: Some("Rename the task".to_owned()),
+                // An agent session asked nothing has no label.
+                label: None,
                 kind: "agent-session".to_owned(),
             }),
             vec![part("tasks", "a", 1), part("tasks", "b", 2)],
@@ -1068,18 +1051,18 @@ mod tests {
             let commit = two_part();
             let framed = commit.frame(b"frame").unwrap();
             assert_eq!(
-                WorkspaceCommit::of_envelope(&envelope(framed.clone(), [7; 32]))
+                WorkspaceCommit::of_envelope_payload(&envelope(vec![], [7; 32]), &framed)
                     .unwrap()
                     .as_ref(),
                 Some(&commit)
             );
             assert_eq!(
-                WorkspaceCommit::of_envelope(&envelope(framed, [8; 32])),
+                WorkspaceCommit::of_envelope_payload(&envelope(vec![], [8; 32]), &framed),
                 Err(CommitError::ForeignDevice),
                 "another device's signature signs nothing of this action"
             );
             assert_eq!(
-                WorkspaceCommit::of_envelope(&envelope(b"frame".to_vec(), [7; 32])).unwrap(),
+                WorkspaceCommit::of_envelope_payload(&envelope(vec![], [7; 32]), b"frame").unwrap(),
                 None
             );
             assert_eq!(
@@ -1106,7 +1089,7 @@ mod tests {
             let cleartext = commit.frame(b"frame").unwrap();
             let sealed = envelope(b"ciphertext".to_vec(), [7; 32]);
             assert_eq!(
-                WorkspaceCommit::of_envelope(&sealed).unwrap(),
+                WorkspaceCommit::of_envelope_payload(&sealed, &sealed.payload).unwrap(),
                 None,
                 "the sealed payload says nothing to a reader without the keys"
             );

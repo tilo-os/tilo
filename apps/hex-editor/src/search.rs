@@ -13,22 +13,7 @@ pub const MAX_RETAINED_MATCHES: usize = 10_000;
 
 /// A hex query like `de ad`, `deadbeef` or `DE-AD` as bytes; whitespace and `-`, `:`,
 /// `,` are ignored.
-pub fn parse_hex_query(query: &str) -> Option<Vec<u8>> {
-    let cleaned: String = query
-        .chars()
-        .filter(|c| !c.is_whitespace() && !matches!(c, '-' | ':' | ',' | '_'))
-        .collect();
-    if cleaned.is_empty() || !cleaned.len().is_multiple_of(2) {
-        return None;
-    }
-    let mut out = Vec::with_capacity(cleaned.len() / 2);
-    for pair in cleaned.as_bytes().chunks_exact(2) {
-        let hi = (*pair.first()? as char).to_digit(16)?;
-        let lo = (*pair.get(1)? as char).to_digit(16)?;
-        out.push(((hi << 4) | lo) as u8);
-    }
-    Some(out)
-}
+pub use hex_editor_model::buffer::parse_hex_query;
 
 pub fn needle(query: &str, kind: SearchKind) -> Option<Vec<u8>> {
     match kind {

@@ -69,6 +69,20 @@ fi
 
 CONF=/etc/tilo/install-user.conf
 FULL_NAME_CONF=/etc/tilo/install-user-full-name
+# A Tilo Server is managed from the person's other devices and has no local
+# login; its identity comes from enrollment. Its image says so, and a
+# credential seed reaching it from anywhere else is refused rather than
+# turned into an account nobody asked for.
+if [ "$(cat "${TILO_IMAGE_FLAVOUR_FILE:-/usr/lib/tilo/image-flavour}" 2>/dev/null || true)" = server ]; then
+  if [ -e "$CONF" ] || [ -L "$CONF" ]; then
+    echo "tilo-firstboot-user: the Tilo Server image has no login account; refusing $CONF" >&2
+    shred -u -- "$CONF" 2>/dev/null || rm -f -- "$CONF"
+    exit 1
+  fi
+  [ ! -e "$FULL_NAME_CONF" ] && [ ! -L "$FULL_NAME_CONF" ] \
+    || { rm -f -- "$FULL_NAME_CONF"; exit 1; }
+  exit 0
+fi
 [ -e "$CONF" ] || [ -L "$CONF" ] || exit 0
 
 valid_seed_file() {

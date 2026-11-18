@@ -199,9 +199,26 @@ impl Banners {
         // Banners start where the windows' content does, below their bars,
         // as the shell's own notification centre does.
         let clear_top = (self.shell.content_top() - f64::from(y)).max(0.0);
+        // A window floating over the shell is one the person keeps in front: a banner never
+        // covers it, its bar or what it shows.
+        let (left, top) = (f64::from(x), f64::from(y));
+        let window_bars = self
+            .shell
+            .float_covers()
+            .into_iter()
+            .map(|(_, cover)| {
+                Rect::new(
+                    cover.x0 - left,
+                    cover.y0 - top,
+                    cover.x1 - left,
+                    cover.y1 - top,
+                )
+            })
+            .collect();
         self.link.place(tilo_notification_banners::Placement {
             viewport: under_bar(display.rect),
             clear_top,
+            window_bars,
             others: self
                 .outputs
                 .iter()
@@ -211,7 +228,6 @@ impl Banners {
                     viewport: under_bar(output.rect),
                 })
                 .collect(),
-            ..tilo_notification_banners::Placement::default()
         });
         self.publish_stack();
     }

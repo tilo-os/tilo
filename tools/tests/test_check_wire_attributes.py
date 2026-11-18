@@ -235,6 +235,15 @@ pub fn read_bundle(bytes: &[u8]) -> Bundle {
         self.assertEqual(len(found), 1, found)
         self.assertIn("Held.name", found[0])
 
+    def test_a_canonical_read_as_self_names_its_impl_type(self):
+        source = STORED.format(attribute='#[serde(skip_serializing_if = "Option::is_none")]').replace(
+            "pub fn read(bytes: &[u8]) -> Held {\n    postcard::from_bytes::<Held>",
+            "impl Held { pub fn read(bytes: &[u8]) -> Self {\n    from_canonical_bytes::<Self>",
+        ) + "}\n"
+        found = self.judged(source)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("Held.name", found[0])
+
     def test_a_call_that_lets_the_type_be_inferred_names_nothing(self):
         source = STORED.format(attribute='#[serde(skip_serializing_if = "Option::is_none")]').replace(
             "postcard::from_bytes::<Held>(bytes).unwrap()",

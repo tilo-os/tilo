@@ -25,6 +25,18 @@ pub fn guest_label() -> String {
     "Guest".to_owned()
 }
 
+/// What `user` is called while nobody named them: a person is a guest, never their key; an agent
+/// or a bot goes by its id.
+#[must_use]
+pub fn unnamed_label(user: &crate::permissions::MemberId) -> String {
+    match user {
+        crate::permissions::MemberId::Person(_) => guest_label(),
+        crate::permissions::MemberId::Agent(id) | crate::permissions::MemberId::Bot(id) => {
+            id.clone()
+        }
+    }
+}
+
 /// `name` where it is a name to show: not blank, and not the hex of a key, which is how a
 /// person is known before they named themselves and is never read as their name.
 #[must_use]

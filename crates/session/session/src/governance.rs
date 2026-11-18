@@ -119,6 +119,17 @@ impl crate::Shared {
         if self.membership_fed.borrow().as_ref() == Some(&fed) {
             return;
         }
+        // Who can be found in each workspace, as its governance names them.
+        self.search.set_members(
+            fed.1
+                .iter()
+                .filter_map(|workspace| {
+                    let workspace = workspace.to_string();
+                    let people = engine.people(&workspace).ok()?;
+                    Some((workspace, people))
+                })
+                .collect(),
+        );
         *self.membership_fed.borrow_mut() = Some(fed);
         let session = Session(&self.handle);
         let projected = session.edit(&mut |workspaces| {

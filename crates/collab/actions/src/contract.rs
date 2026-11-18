@@ -556,10 +556,11 @@ pub enum ResultSpec {
 read_through_json_value!(ResultSpec);
 
 /// The fields a write adds beside the answer it declared: the ids it minted
-/// (`minted`) and each item it made, with the item's id and the address it is
-/// published under (`made`). What a create answers its caller, whether or not
-/// its action declares a result.
-pub const MADE_FIELDS: [&str; 2] = ["made", "minted"];
+/// (`minted`), each item it made, with the item's id and the address it is
+/// published under (`made`), and the text it wrote (`wrote`,
+/// [`crate::ActionOutput::wrote`]). What a write answers its caller, whether or
+/// not its action declares a result.
+pub const MADE_FIELDS: [&str; 3] = ["made", "minted", "wrote"];
 
 impl crate::ActionOutput {
     /// The answer the action declared, without what a write adds beside it

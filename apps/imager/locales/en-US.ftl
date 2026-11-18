@@ -437,7 +437,7 @@ installer-native-full-os-body = Install alongside Windows without a USB drive. Y
 
 installer-preview-another-title = On another computer
 
-installer-preview-another-body = Make a USB installer to take to another computer. You’ll need a USB drive you can erase; the other computer must be able to start from it.
+installer-preview-another-body = Make an install plan and carry it to that computer. Nothing is written on that computer unless you approve it there or on your devices.
 
 installer-preview-target-heading = Which computer will run Tilo?
 
@@ -1005,10 +1005,6 @@ installer-preview-storage-heading = Choose space for Tilo
 
 installer-preview-storage-intro = Keep your current system and install Tilo alongside it.
 
-installer-preview-usb-heading = Prepare a USB installer
-
-installer-preview-usb-intro = Use it to start Tilo on your other computer.
-
 installer-preview-desktop-heading = Add Tilo as a desktop
 
 installer-preview-desktop-intro = Keep your existing Linux system.
@@ -1017,7 +1013,162 @@ installer-preview-storage-usb-fallback-heading = Install Tilo from USB
 
 installer-preview-storage-usb-fallback-intro = Direct installation is not available in this build. Use a USB drive to install Tilo on this computer.
 
-installer-preview-storage-another = Choose a USB drive next. Its contents will be erased when you confirm the write.
+installer-preview-plan-os-heading = Which system does it get?
+
+installer-preview-os-title = Tilo OS
+
+installer-preview-os-body = Tilo with its desktop and apps. Its login password is set on that computer at first start.
+
+installer-preview-server-title = Tilo Server
+
+installer-preview-server-body = No desktop and no login password. It holds your workspaces and is managed from your other devices.
+
+installer-preview-disk-heading = Which drive does it install to?
+
+installer-preview-disk-intro = The plan names a rule. The computer's own drives decide which one it matches, and you answer it on your devices when it matches none or several.
+
+installer-preview-disk-largest-title = The largest drive that is not the boot drive
+
+installer-preview-disk-largest-body = Checked against the computer's own drives when it installs.
+
+installer-preview-disk-empty-title = A drive without data
+
+installer-preview-disk-empty-body = Checked against the computer's own drives when it installs.
+
+installer-preview-disk-only-title = The only drive that is not the boot drive
+
+installer-preview-disk-only-body = Checked against the computer's own drives when it installs.
+
+installer-preview-disk-open-title = Ask when it installs
+
+installer-preview-disk-open-body = You choose from the drives the computer reports, before anything is written.
+
+installer-preview-method-heading = How does the plan reach it?
+
+installer-preview-method-intro = The medium and the commands carry the plan and one single-use code. The code expires after 24 hours; the plan can change afterwards.
+
+installer-preview-delivery-heading = Where it goes
+
+installer-preview-usb-title = A USB drive
+
+installer-preview-usb-body = Write the installer to a drive you can erase, then start that computer from it.
+
+installer-preview-netboot-title = A rescue or netboot system
+
+installer-preview-netboot-body = Give it one command once it is running; it installs over the network.
+
+installer-preview-alongside-title = Alongside its Linux
+
+installer-preview-alongside-body = Give the Linux already on it one command. That system stays and starts first.
+
+installer-preview-name-heading = Its name
+
+installer-preview-name-use-body = The name you entered on the setup pages.
+
+installer-preview-name-open-title = Ask when it installs
+
+installer-preview-name-open-body = You name it when it installs, on it or on your devices.
+
+installer-preview-network-heading = Network
+
+installer-preview-network-dhcp-title = Automatic (DHCP)
+
+installer-preview-network-dhcp-body = It takes its addresses from the network it joins.
+
+installer-preview-network-open-title = Ask when it installs
+
+installer-preview-network-open-body = Set on the computer when automatic configuration does not work.
+
+installer-preview-unlock-heading = Unlocking it after a restart
+
+installer-preview-unlock-tpm-title = Its own hardware protection
+
+installer-preview-unlock-tpm-body = The drive unlocks from the computer's own protection; nobody types a password at the machine.
+
+installer-preview-unlock-owner-device-title = One of your devices
+
+installer-preview-unlock-owner-device-body = It asks an approved device of yours to unlock.
+
+installer-preview-unlock-passphrase-title = A passphrase
+
+installer-preview-unlock-passphrase-body = Someone at the machine types the passphrase.
+
+installer-preview-unlock-open-title = Ask when it installs
+
+installer-preview-unlock-open-body = You choose from the methods its hardware supports.
+
+installer-preview-updates-heading = Updates it follows
+
+installer-preview-updates-stable-title = Stable releases
+
+installer-preview-updates-stable-body = It updates when a release is tested and announced.
+
+installer-preview-updates-dev-title = Development releases
+
+installer-preview-updates-dev-body = It updates with the newest changes, which may break.
+
+installer-preview-updates-open-title = Ask when it installs
+
+installer-preview-updates-open-body = You choose before it joins.
+
+installer-preview-hosting-heading = Workspaces it holds
+
+installer-preview-hosting-none-title = None for now
+
+installer-preview-hosting-none-body = You add workspaces from your Servers entry once it has installed.
+
+installer-preview-hosting-open-title = Ask after it installs
+
+installer-preview-hosting-open-body = You choose which workspaces it holds, and whether it keeps encrypted copies only or takes their work, from your Servers entry.
+
+
+installer-plan-heading = The plan
+
+installer-plan-token = Carry this single-use code to the computer: { $token }
+
+installer-plan-expiry = The code works for { $hours } more hours. If the medium is lost, only this code is exposed, and it expires.
+
+installer-plan-carry-usb = Write the installer to a drive you can erase, and keep the code with it:
+
+installer-plan-carry-netboot = In a rescue or netboot system on that computer, enter:
+
+installer-plan-carry-alongside = In the Linux already on that computer, enter:
+
+installer-plan-open-heading = What the computer still asks
+
+installer-plan-answer-name = Its name: asked when it installs.
+
+installer-plan-answer-network = Its network: automatic, or set on the computer when that fails.
+
+installer-plan-answer-disk = The drive it installs to: chosen from the drives it reports, before anything is written.
+
+installer-plan-answer-disk-drive = The drive it installs to: { $model }, { $size }.
+
+installer-plan-answer-disk-open = The drive it installs to stays open: { $reason }
+
+installer-plan-answer-unlock = Unlocking: chosen from the methods its hardware supports.
+
+installer-plan-answer-updates = Updates: chosen before it joins.
+
+installer-plan-answer-hosting = The workspaces it holds: chosen from your Servers entry.
+
+installer-plan-answer-other = Answered when it installs.
+
+installer-plan-unavailable = This computer cannot plan a machine. Sign in on one of your devices with tilo login, then try again.
+
+installer-plan-waiting-heading = Computers waiting to install
+
+installer-plan-waiting-intro = These plans have a single-use code that has not been used yet. Each opens what it still asks when its computer starts.
+
+installer-plan-waiting-summary = { $os }, code expires in { $hours } hours.
+
+installer-plan-waiting-unnamed = A computer without a name
+
+installer-plan-waiting-everything-answered = Every choice is made; it installs without asking.
+
+installer-plan-make = Make the plan
+
+installer-plan-make-and-medium = Make the plan and choose a USB drive
 
 installer-preview-review-heading = Review your setup
 
@@ -2168,6 +2319,11 @@ installer-options-heading = Installation options
 installer-recovery-tools = Need files from this computer, or removing an alongside Tilo install? Press Ctrl+Alt+F2 for recovery tools; Ctrl+Alt+F1 returns here.
 installer-account-create = Create your account
 installer-account-secure = Secure your account
+installer-account-server-title = Protect this server's disk
+installer-account-server-note = There is no sign-in on this machine. It joins your identity on first start, and you manage it from your other devices.
+installer-account-server-secret = Disk unlock secret
+installer-account-server-secret-note = Needed whenever the server restarts. Keep the recovery key somewhere safe.
+installer-account-server-secret-confirm = Type the disk unlock secret again
 installer-region-measured = The location is measured from the start of the selected disk. Existing partitions between free regions remain untouched.
 installer-region-choose = Choose the exact unallocated region for Tilo
 installer-disk-protected = This disk is hardware or policy write-protected.
@@ -2533,6 +2689,7 @@ imager-download-sentence-handoff-failed = The verified download is kept; the ins
 
 ## What the wizard reports about the target it was given
 installer-status-install-start = Starting the install to { $disk } for user { $user } ({ $filesystem }).
+installer-status-install-start-server = Starting the install to { $disk } ({ $filesystem }).
 installer-blocked-no-such-disk = No disk { $device } is listed; refresh the list.
 installer-error-unknown-filesystem = Unknown filesystem: { $filesystem }
 installer-keyboard-map-name = { $layout } keyboard layout

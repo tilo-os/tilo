@@ -86,6 +86,14 @@ impl StatePeer {
                     continue;
                 }
                 let covered = rows.get(&route_key).ok_or("missing published coverage")?;
+                // Only the device a route's coverage row names writes its
+                // receipt: another holder of the document publishes its own
+                // change to it, but a receipt of its own would carry its
+                // own commit's generation, and the two holders' receipts
+                // for one route would each read as the other's regression.
+                if covered.author != key.device_public_key() {
+                    continue;
+                }
                 receipts.insert(
                     route_key,
                     crate::durability::DurableReceipt::new(covered.clone(), generation)?,

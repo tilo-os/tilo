@@ -401,6 +401,13 @@ public final class TiloEngine: NSObject {
         view.callAsyncJavaScript("globalThis.__tiloLive?.rest()", arguments: [:], in: nil, in: .page, completionHandler: nil)
     }
 
+    /// What a live thing draws now, as its mount in the page says it: its frames, the size its
+    /// content asks for and the names its semantics hold. For a check that has no eyes, never
+    /// for a person.
+    public func drawn(live id: String) async throws -> JSON {
+        try await ask("return globalThis.__tiloLive.drawn(id)", ["id": id])
+    }
+
     /// Take a live thing down. Its record stays what it is.
     public func close(live id: String) async {
         _ = try? await view.callAsyncJavaScript("return globalThis.__tiloLive?.close(id)", arguments: ["id": id],

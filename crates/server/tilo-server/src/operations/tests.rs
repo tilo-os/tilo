@@ -1,14 +1,14 @@
 //! A stand-in for the root helper proves each operation on the real path:
 //! the daemon writes its request where the helper reads it, waits for the
-//! answer a stale one is never taken for, and keeps what it did.
+//! answer a stale one is never taken for, and answers what it did.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use tilo_server_protocol::transport::{ServerAnswer, ServerOperation};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
-use super::{CONTROL_REQUEST, HISTORY, MAX_LOG_LINES, operate_within, parse_answer, valid_service};
+use super::{CONTROL_REQUEST, MAX_LOG_LINES, operate_within, parse_answer, valid_service};
 
 fn own() -> DeviceCert {
     DeviceCert {
@@ -122,29 +122,6 @@ async fn every_mutation_reaches_the_helper_and_is_kept() {
     assert_eq!(reboot.operation, "reboot");
     let rollback = ask(ServerOperation::Rollback).await;
     assert!(!rollback.done);
-
-    // Every one of them is in the history the next `Status` reads back.
-    let status = ask(ServerOperation::Status).await;
-    let ServerAnswer::Status(status) = status.answer else {
-        panic!("status answers with the server");
-    };
-    let asked = status
-        .history
-        .iter()
-        .map(|entry| entry.operation.as_str())
-        .collect::<Vec<_>>();
-    for verb in [
-        "restart",
-        "update",
-        "pause-updates",
-        "resume-updates",
-        "logs",
-        "reboot",
-        "rollback",
-    ] {
-        assert!(asked.contains(&verb), "{asked:?} lacks {verb}");
-    }
-    assert!(state_root.join(HISTORY).exists());
 }
 
 #[tokio::test]
@@ -253,24 +230,4 @@ fn the_status_says_which_way_this_boots_volume_opened() {
         None,
         "a file that is not one says nothing"
     );
-}
-
-#[test]
-fn history_keeps_the_newest() {
-    let temp = tempfile::tempdir().unwrap();
-    let state_root: PathBuf = temp.path().to_path_buf();
-    for index in 0..(super::HISTORY_KEPT + 5) {
-        super::keep(
-            &state_root,
-            &tilo_server_protocol::transport::ServerOperationResult {
-                operation: format!("op{index}"),
-                done: true,
-                summary: "did it".into(),
-                answer: ServerAnswer::Nothing,
-            },
-        );
-    }
-    let kept = super::history(&state_root);
-    assert_eq!(kept.len(), super::HISTORY_KEPT);
-    assert_eq!(kept[0].operation, format!("op{}", super::HISTORY_KEPT + 4));
 }

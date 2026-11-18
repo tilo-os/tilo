@@ -9,6 +9,10 @@ use crate::resource::DocumentId;
 
 use tilo_actions::MemberId;
 
+/// The collection of the conversations items are said in: what a mention's `channel` names an
+/// item of.
+pub const CHANNELS: &str = "channels";
+
 /// The mark a mention's run carries, valued with the member's id ([`tilo_reference::Embed`]).
 pub const MARK: &str = "mention";
 
@@ -50,7 +54,7 @@ pub struct Mention {
     /// The member named.
     pub person: MemberId,
     /// Who wrote it, when the record says: the run's author mark, or the item's author.
-    pub by: Option<String>,
+    pub by: Option<MemberId>,
     /// The item it was written in, as the record's top-level collection keeps it: its field and id.
     pub item: Option<(String, String)>,
     /// The paragraph it is in (a note's block), when its text has an id.
@@ -261,8 +265,7 @@ impl Walk<'_> {
                 .filter(|other| other.name() == tilo_resource::text::AUTHOR_MARK)
                 .filter(|other| (other.start..other.end).contains(&mark.start))
                 .find_map(|other| match other.value() {
-                    ScalarValue::Str(author) => MemberId::of_actor_bytes(author.as_bytes())
-                        .map(|member| member.id().to_owned()),
+                    ScalarValue::Str(author) => MemberId::of_actor_bytes(author.as_bytes()),
                     _ => None,
                 });
             let block = path
@@ -297,7 +300,7 @@ impl Walk<'_> {
         };
         for member in members
             .into_iter()
-            .filter(|member| author.as_deref() != Some(member.id()))
+            .filter(|member| author.as_ref() != Some(member))
         {
             self.push(member, None, None, excerpt.clone(), cx);
         }
@@ -372,14 +375,17 @@ impl Walk<'_> {
     fn push(
         &mut self,
         person: MemberId,
-        by: Option<String>,
+        by: Option<MemberId>,
         block: Option<String>,
         excerpt: String,
         cx: &Context,
     ) {
         let item = cx.item_obj.as_ref();
         let by = by.or_else(|| {
-            item.and_then(|item| self.author(item).or_else(|| self.string(item, "creator")))
+            item.and_then(|item| {
+                self.author(item)
+                    .or_else(|| MemberId::parsed_person(&self.string(item, "creator")?))
+            })
         });
         let title = item.and_then(|item| {
             self.string(item, "title")
@@ -433,12 +439,10 @@ impl Walk<'_> {
         Some(obj)
     }
 
-    /// Who wrote the item `obj`: the id of the member its `author` holds.
-    fn author(&self, obj: &ObjId) -> Option<String> {
+    /// Who wrote the item `obj`: the member its `author` holds.
+    fn author(&self, obj: &ObjId) -> Option<MemberId> {
         let author = self.string(obj, "author")?;
-        serde_json::from_str::<crate::permissions::MemberId>(&author)
-            .ok()
-            .map(|member| member.id().to_owned())
+        serde_json::from_str(&author).ok()
     }
 
     fn string(&self, obj: &ObjId, key: &str) -> Option<String> {
@@ -504,7 +508,7 @@ pub fn channel_name(tree: &AutoCommit, id: &str) -> Option<String> {
         read: &reading_nothing,
         unshared: String::new(),
     };
-    let channel = walk.object_at(&["channels".to_owned(), id.to_owned(), ITEM_VALUE.to_owned()])?;
+    let channel = walk.object_at(&[CHANNELS.to_owned(), id.to_owned(), ITEM_VALUE.to_owned()])?;
     walk.string(&channel, "name")
         .filter(|name| !name.is_empty())
         .map(|name| format!("#{name}"))

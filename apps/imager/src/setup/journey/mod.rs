@@ -25,6 +25,9 @@ mod goldenpath_tests;
 mod handoff_tests;
 #[cfg(target_os = "linux")]
 mod live_inventory;
+mod machine;
+#[cfg(test)]
+mod machine_tests;
 #[cfg(all(test, target_os = "linux"))]
 pub(super) mod main_story_tests;
 mod migration_selection;
@@ -668,9 +671,19 @@ pub fn view(cx: &mut ViewCx<Imager>) -> ui::widget::Element {
 
 struct OriginalAvatar(Option<String>);
 
+/// The plan an "on another computer" preparation made, the computers this
+/// person already planned, and why a plan could not be made.
+#[derive(Default)]
+struct Machine {
+    created: Option<machine::Created>,
+    waiting: Vec<machine::Waiting>,
+    error: Option<&'static str>,
+}
+
 pub struct InstallerPreview {
     windows: windows::Preparation,
     journey: Journey,
+    machine: Machine,
     linux: bool,
     capabilities: capabilities::GuidedCapabilities,
     commands: Commands,
@@ -820,6 +833,7 @@ impl Default for InstallerPreview {
             source_handoff: None,
             source_state: None,
             journey,
+            machine: Machine::default(),
             linux: cfg!(target_os = "linux"),
             commands: Rc::default(),
             composed: None,
@@ -1503,6 +1517,10 @@ impl InstallerPreview {
                 self.source_state = None;
                 self.media_preparation = prepared_media::Controller::default();
             }
+            // A changed choice makes a new plan; the one already made no
+            // longer says what the person decided.
+            self.machine.created = None;
+            self.machine.error = None;
         }
         match effect {
             InstallerPreviewEffect::ReadPreview => return Ok(()),
@@ -2323,7 +2341,8 @@ impl InstallerPreview {
                     && (page == Page::Storage
                         || (self.live
                             && page == Page::Destination
-                            && !self.has_storage_decision()))
+                            && (self.journey.destination == Some(Destination::Another)
+                                || !self.has_storage_decision())))
                     && self.journey.destination_edit_changed();
                 if renew_destination {
                     self.invalidate_migration_preparation();
@@ -2582,6 +2601,15 @@ impl InstallerPreview {
                         Err(error) => return Err(error),
                     }
                 }
+                if self.journey.destination == Some(Destination::Another)
+                    && self.journey.plan.delivery != machine::Delivery::Usb
+                {
+                    self.make_plan()?;
+                    self.journey.next()?;
+                    self.error = None;
+                    self.dirty = true;
+                    return Ok(());
+                }
                 #[cfg(target_os = "linux")]
                 {
                     if let Some(reason) = self.media_preparation.review_reason() {
@@ -2589,6 +2617,9 @@ impl InstallerPreview {
                     }
                     if !self.usb_backend_available() {
                         return Err("installer-preview-storage-unavailable");
+                    }
+                    if self.journey.destination == Some(Destination::Another) {
+                        self.make_plan()?;
                     }
                     if self.sensitive_handoff_deferred()
                         && self.journey.destination != Some(Destination::Another)
@@ -4645,6 +4676,16 @@ impl InstallerPreview {
     }
 
     fn review_device_row(&self) -> ListRow {
+        if self.journey.destination == Some(Destination::Another) && self.journey.plan.name_open {
+            return self
+                .review_selection_row(
+                    "devices",
+                    "machine",
+                    t("installer-preview-name-open-title"),
+                    t("installer-preview-name-open-body"),
+                )
+                .icon(Icon::Monitor);
+        }
         if self.device_label_locked() {
             ListRow::new("installer.review.devices", self.journey.device_name.clone())
                 .secondary(t(
@@ -4701,8 +4742,170 @@ impl InstallerPreview {
         }
     }
 
+    /// One of the plan's choices as the review shows it: what the row is
+    /// about, and the value it takes, or that the computer answers it when it
+    /// installs.
+    fn plan_review_row(
+        &self,
+        id: &str,
+        section: &str,
+        label: &str,
+        chosen: Option<&str>,
+        open: &str,
+    ) -> ListRow {
+        let value = chosen.unwrap_or(open);
+        self.review_selection_row(
+            id,
+            section,
+            t(&format!("installer-preview-{label}-heading")),
+            t(&format!("installer-preview-{value}-title")),
+        )
+    }
+
+    /// What the plan decides for the other computer, in the values it takes.
+    fn plan_review_rows(&self) -> ui::widget::Column {
+        use machine::{Disks, Hosting, Unlock, Updates};
+        let plan = &self.journey.plan;
+        let mut rows = page::related();
+        let os = plan.os();
+        rows = rows.push(Box::new(
+            self.plan_review_row(
+                "plan-os",
+                "destination",
+                "plan-os",
+                Some(os.key()),
+                os.key(),
+            )
+            .icon(Icon::Monitor),
+        ));
+        let disk = plan.disk.map(|disk| match disk {
+            Disks::Largest => "disk-largest",
+            Disks::Empty => "disk-empty",
+            Disks::Only => "disk-only",
+        });
+        rows = rows.push(Box::new(
+            self.plan_review_row("plan-disk", "storage", "disk", disk, "disk-open")
+                .icon(Icon::HardDrive),
+        ));
+        let unlock = plan.unlock.map(|unlock| match unlock {
+            Unlock::Hardware => "unlock-tpm",
+            Unlock::OwnerDevice => "unlock-owner-device",
+            Unlock::Passphrase => "unlock-passphrase",
+        });
+        let updates = plan.updates.map(|updates| match updates {
+            Updates::Stable => "updates-stable",
+            Updates::Development => "updates-dev",
+        });
+        let hosting = (plan.hosting == Some(Hosting::HoldsNone)).then_some("hosting-none");
+        for (id, label, chosen, open, icon) in [
+            (
+                "plan-network",
+                "network",
+                plan.network.map(|_| "network-dhcp"),
+                "network-open",
+                Icon::EthernetPort,
+            ),
+            ("plan-unlock", "unlock", unlock, "unlock-open", Icon::Lock),
+            (
+                "plan-updates",
+                "updates",
+                updates,
+                "updates-open",
+                Icon::Refresh,
+            ),
+        ] {
+            rows = rows.push(Box::new(
+                self.plan_review_row(id, "machine", label, chosen, open)
+                    .icon(icon),
+            ));
+        }
+        if plan.os() == machine::Os::TiloServer {
+            rows = rows.push(Box::new(
+                self.plan_review_row(
+                    "plan-hosting",
+                    "machine",
+                    "hosting",
+                    hosting,
+                    "hosting-open",
+                )
+                .icon(Icon::Layers),
+            ));
+        }
+        let delivery = plan.delivery.key();
+        rows = rows.push(Box::new(
+            self.plan_review_row(
+                "plan-delivery",
+                "machine",
+                "delivery",
+                Some(delivery),
+                delivery,
+            )
+            .icon(match plan.delivery {
+                machine::Delivery::Usb => Icon::Usb,
+                machine::Delivery::Netboot => Icon::Terminal,
+                machine::Delivery::Alongside => Icon::Disc3,
+            }),
+        ));
+        rows
+    }
+
+    fn make_plan(&mut self) -> Result<(), &'static str> {
+        if self.machine.created.is_some() {
+            return Ok(());
+        }
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(created) = machine::create(
+                &self.journey.plan,
+                &self.journey.device_name,
+                install_plan::INSTALLER_URL,
+            ) {
+                self.machine.created = Some(created);
+                self.machine.error = None;
+                return Ok(());
+            }
+        }
+        self.machine.error = Some("installer-plan-unavailable");
+        Err("installer-plan-unavailable")
+    }
+
+    fn machine_status(&self) -> serde_json::Value {
+        let created = self.machine.created.as_ref().map(|created| {
+            serde_json::json!({
+                "plan": created.plan.plan,
+                "destination": created.plan.destination,
+                "open": created.plan.open_choices(),
+                "token_file": created.token_file.display().to_string(),
+                "expires_at_ns": created.plan.token.expires_at_ns,
+                "medium": created.commands.medium,
+                "netboot": created.commands.netboot,
+                "alongside": created.commands.alongside,
+            })
+        });
+        serde_json::json!({
+            "created": created,
+            "error": self.machine.error,
+            "waiting": self.machine.waiting.iter().map(|waiting| serde_json::json!({
+                "plan": waiting.plan,
+                "name": waiting.name,
+                "destination": waiting.destination,
+                "expires_in_hours": waiting.expires_in_hours,
+                "questions": waiting.questions.iter()
+                    .map(|question| serde_json::json!({
+                        "choice": question.choice,
+                        "text": question.text,
+                    }))
+                    .collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
+        })
+    }
+
     fn has_storage_decision(&self) -> bool {
-        self.journey.destination == Some(Destination::Computer) && self.direct_route_enabled()
+        match self.journey.destination {
+            Some(Destination::Another) => true,
+            Some(Destination::Computer) => self.direct_route_enabled(),
+            _ => false,
+        }
     }
 
     fn advance_journey(&mut self) -> Result<(), &'static str> {
@@ -4783,17 +4986,12 @@ impl InstallerPreview {
     }
 
     fn choice(&self, key: &str, selected: bool) -> Card {
-        let choice = key.strip_prefix("purpose-").unwrap_or(key).to_string();
-        let icon = match key {
-            "computer" | "purpose-computer" | "purpose-server" => Icon::Monitor,
-            "another" => Icon::Usb,
-            "desktop" | "device" | "current" => Icon::MonitorSmartphone,
-            "migrate" => Icon::Folder,
-            "fresh" => Icon::Sparkles,
-            "new" => Icon::User,
-            "existing" => Icon::Users,
-            _ => Icon::Shield,
-        };
+        self.option_card(key, selected, true)
+    }
+
+    /// `key` as a choice of this page that the person confirms and continues
+    /// from, or one this page takes now ([`Self::select`]).
+    fn option_card(&self, key: &str, selected: bool, continues: bool) -> Card {
         let title = t(&format!("installer-preview-{key}-title"));
         let description = if key == "computer" && self.live && self.windows.enabled {
             t(if self.direct_route_enabled() {
@@ -4811,6 +5009,39 @@ impl InstallerPreview {
             t("installer-pairing-helper-unavailable")
         } else {
             t(&format!("installer-preview-{key}-body"))
+        };
+        self.labelled_option(key, title, description, selected, continues)
+    }
+
+    /// One option with words of its own: a value the person typed, or a name
+    /// the catalogue cannot spell ahead of time.
+    fn labelled_option(
+        &self,
+        key: &str,
+        title: String,
+        description: String,
+        selected: bool,
+        continues: bool,
+    ) -> Card {
+        let choice = key.strip_prefix("purpose-").unwrap_or(key).to_string();
+        let icon = match key {
+            "computer" | "purpose-computer" | "purpose-server" | "os" | "server" => Icon::Monitor,
+            "another" => Icon::Usb,
+            "desktop" | "device" | "current" => Icon::MonitorSmartphone,
+            "migrate" => Icon::Folder,
+            "fresh" => Icon::Sparkles,
+            "new" => Icon::User,
+            "existing" => Icon::Users,
+            "disk-empty" | "disk-largest" | "disk-only" => Icon::HardDrive,
+            "disk-open" => Icon::ScanLine,
+            _ if key.starts_with("usb") => Icon::Usb,
+            _ if key.starts_with("netboot") => Icon::Terminal,
+            _ if key.starts_with("alongside") => Icon::Disc3,
+            _ if key.starts_with("unlock") => Icon::Lock,
+            _ if key.starts_with("updates") => Icon::Refresh,
+            _ if key.starts_with("network") => Icon::EthernetPort,
+            _ if key.starts_with("hosting") => Icon::Layers,
+            _ => Icon::Shield,
         };
         let copy = page::related()
             .push(Box::new(Text::new(&title).with_role(TextRole::Title)))
@@ -4832,12 +5063,30 @@ impl InstallerPreview {
         let card = Card::new(Box::new(contents))
             .with_accessible_name(format!("{title}. {description}"))
             .selected(selected);
-        match self.actions.as_ref().and_then(|actions| {
-            actions.effect(&InstallerPreviewEffect::ChooseAndContinuePreview { choice })
-        }) {
+        let effect = if continues {
+            InstallerPreviewEffect::ChooseAndContinuePreview { choice }
+        } else {
+            InstallerPreviewEffect::ChoosePreview { choice }
+        };
+        match self
+            .actions
+            .as_ref()
+            .and_then(|actions| actions.effect(&effect))
+        {
             Some(binding) => card.on_action(format!("installer.choice.{key}"), binding),
             None => card,
         }
+    }
+
+    /// `key` as one of this page's choices, taken now: this page keeps
+    /// showing while the person sets the rest.
+    fn select(&self, key: &str, selected: bool) -> Card {
+        self.option_card(key, selected, false)
+    }
+
+    /// `key` as one of this page's choices, taken now, with words of its own.
+    fn select_named(&self, key: &str, title: String, description: String, selected: bool) -> Card {
+        self.labelled_option(key, title, description, selected, false)
     }
 
     fn track_password_focus(&mut self) -> bool {
@@ -5072,6 +5321,7 @@ impl InstallerPreview {
             "prepared_installation": self.guided_host_available(),
         });
         status["windows_preparation"] = self.windows.projection();
+        status["machine"] = self.machine_status();
         status["target"] = self.target.projection();
         status["windows_review"] = self.windows_review_projection();
         status["accounts"] = self.accounts.projection();
@@ -5184,6 +5434,10 @@ impl InstallerPreview {
             return;
         }
         self.live = true;
+        #[cfg(target_os = "linux")]
+        {
+            self.machine.waiting = machine::waiting(install_plan::INSTALLER_URL);
+        }
         if imager_backend::prepared_identity::require_supported().is_ok() {
             let _ = self.restart.inspect();
         }
@@ -5210,6 +5464,13 @@ impl InstallerPreview {
         self.journey.migrate = Some(true);
         self.journey.identity = Some(Identity::New);
         self.journey.page = scenarios::page(&mut self.journey, scenario);
+        if scenario == "installer-plan-ready" {
+            self.journey.device_name = "cupboard".into();
+            self.machine.created = Some(machine::example());
+        }
+        if scenario == "installer-plan-waiting" {
+            self.machine.waiting = machine::examples();
+        }
         if self.journey.destination == Some(Destination::Desktop) {
             self.journey.categories[0] = false;
             self.journey.categories[1] = false;
@@ -5977,6 +6238,12 @@ mod tests {
             app.effect(&InstallerPreviewEffect::ContinuePreview)
                 .unwrap();
         }
+        // The path to another computer chooses its drive and how the plan
+        // reaches it before the review.
+        while matches!(status(app)["page"].as_str(), Some("storage" | "method")) {
+            app.effect(&InstallerPreviewEffect::ContinuePreview)
+                .unwrap();
+        }
     }
     fn wait_for_restart_idle(app: &mut TestApp<ImagerShell>) {
         let deadline = tilo_test_env::hang_deadline();
@@ -6010,6 +6277,21 @@ mod tests {
             preview.dirty = true;
         })
         .unwrap();
+    }
+    /// Continue through the pages an "on another computer" plan still has
+    /// before the review.
+    fn to_review(app: &mut TestApp<ImagerShell>) {
+        for _ in 0..3 {
+            match status(app)["page"].as_str() {
+                Some("review") => return,
+                Some("storage" | "method") => {
+                    app.effect(&InstallerPreviewEffect::ContinuePreview)
+                        .unwrap();
+                }
+                other => unreachable!("the review is not after {other:?}"),
+            }
+        }
+        unreachable!("the review stays out of reach");
     }
     fn password(app: &mut TestApp<ImagerShell>) {
         #[cfg(unix)]
@@ -6894,6 +7176,11 @@ mod tests {
                 assert_eq!(snapshot["portable_preparation"]["prepared"], true);
                 break;
             }
+            if matches!(snapshot["page"].as_str(), Some("storage" | "method")) {
+                app.effect(&InstallerPreviewEffect::ContinuePreview)
+                    .unwrap();
+                continue;
+            }
             assert!(
                 std::time::Instant::now() < deadline,
                 "retained account checkpoint unfinished: {snapshot}"
@@ -6918,7 +7205,7 @@ mod tests {
                 .validate()
                 .unwrap();
             assert!(preview.accounts.has_prepared_connections());
-            assert!(!preview.journey.history.contains(&Page::Storage));
+            assert!(preview.journey.history.contains(&Page::Method));
             assert!(visual_tests::control(preview, "installer.prepare-usb").is_some());
         })
         .unwrap();
@@ -9305,7 +9592,10 @@ mod tests {
         loop {
             let snapshot = status(&mut app);
             if snapshot["portable_preparation"]["prepared"] == true {
-                assert_eq!(snapshot["page"], "review");
+                if matches!(snapshot["page"].as_str(), Some("storage" | "method")) {
+                    to_review(&mut app);
+                }
+                assert_eq!(status(&mut app)["page"], "review");
                 assert_eq!(snapshot["migration_preparation"]["prepared"], false);
                 app.with_widget::<InstallerPreview, _>(|preview| {
                     let source = preview.portable_source.reviewed_handle().unwrap();
@@ -9948,10 +10238,12 @@ mod tests {
             assert_eq!(status(&mut app)["page"], "review");
             assert_eq!(status(&mut app)["destination"], destination);
             assert_eq!(status(&mut app)["prepared_identity"]["public_key"], key);
-            app.with_widget::<InstallerPreview, _>(|preview| {
-                assert!(!preview.journey.history.contains(&Page::Storage));
-            })
-            .unwrap();
+            if destination == "computer" {
+                app.with_widget::<InstallerPreview, _>(|preview| {
+                    assert!(!preview.journey.history.contains(&Page::Storage));
+                })
+                .unwrap();
+            }
         }
         let bindings = app
             .with_widget::<InstallerPreview, _>(|preview| {
@@ -10100,6 +10392,7 @@ mod tests {
             .unwrap();
         assert_eq!(status(&mut app)["page"], "purpose");
         choose(&mut app, "computer");
+        to_review(&mut app);
         assert_eq!(status(&mut app)["page"], "review");
         app.settle();
         let identity = app
@@ -10281,6 +10574,7 @@ mod tests {
             .unwrap();
         assert_eq!(status(&mut app)["page"], "purpose");
         choose(&mut app, "computer");
+        to_review(&mut app);
         assert_eq!(status(&mut app)["page"], "review");
         let original_name = status(&mut app)["device_name"].clone();
         app.settle();
@@ -10392,8 +10686,9 @@ mod tests {
                 .unwrap();
             assert_eq!(status(&mut app)["page"], "purpose");
             choose(&mut app, "computer");
-            app.effect(&InstallerPreviewEffect::ContinuePreview)
-                .unwrap();
+            if matches!(status(&mut app)["page"].as_str(), Some("storage" | "method")) {
+                to_review(&mut app);
+            }
             let original = status(&mut app);
             assert_eq!(original["page"], "review");
             app.settle();
@@ -11041,8 +11336,10 @@ mod tests {
                 .unwrap();
             assert_eq!(status(&mut app)["page"], "purpose");
             choose(&mut app, "computer");
-            if status(&mut app)["page"] == "storage" {
-                assert!(catalog_availability(&mut app, "set-storage-size").is_available());
+            while matches!(status(&mut app)["page"].as_str(), Some("storage" | "method")) {
+                if status(&mut app)["page"] == "storage" {
+                    assert!(catalog_availability(&mut app, "set-storage-size").is_available());
+                }
                 app.effect(&InstallerPreviewEffect::ContinuePreview)
                     .unwrap();
             }
@@ -11363,6 +11660,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     fn assert_live_route_skips_empty_storage(app: &mut TestApp<ImagerShell>, choice: &str) {
+        let plans_another = choice == "another";
         app.effect(&InstallerPreviewEffect::EditPreview {
             section: "destination".into(),
         })
@@ -11370,7 +11668,9 @@ mod tests {
         choose_destination_and_name_target(app, choice);
         assert_eq!(status(app)["page"], "review");
         app.with_widget::<InstallerPreview, _>(|preview| {
-            assert!(!preview.journey.history.contains(&Page::Storage));
+            if !plans_another {
+                assert!(!preview.journey.history.contains(&Page::Storage));
+            }
             assert!(preview.personal.prepared_handle().is_some());
             assert!(!preview.journey.password.is_empty());
             assert!(!preview.media_preparation.busy());
@@ -11380,23 +11680,23 @@ mod tests {
             .with_widget::<InstallerPreview, _>(|preview| !preview.journey.password.is_empty())
             .unwrap();
         app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
+        let before_review = if !retained {
+            Page::Devices
+        } else if plans_another {
+            Page::Method
+        } else {
+            Page::Purpose
+        };
         assert_eq!(
             status(app)["page"],
-            if retained { "purpose" } else { "devices" },
+            before_review.key(),
             "Back follows the reviewed trail and never an empty Storage page"
         );
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
         assert_eq!(status(app)["page"], "review");
         app.with_widget::<InstallerPreview, _>(|preview| {
-            assert_eq!(
-                preview.journey.history.last(),
-                Some(if retained {
-                    &Page::Purpose
-                } else {
-                    &Page::Devices
-                })
-            );
+            assert_eq!(preview.journey.history.last(), Some(&before_review));
         })
         .unwrap();
     }
@@ -11656,6 +11956,9 @@ mod tests {
             let page = match *scenario {
                 "installer-belongings-details" => "belongings",
                 "installer-desktop-connect" => "connect",
+                "installer-plan-os" | "installer-plan-waiting" => "destination",
+                "installer-plan-review" => "review",
+                "installer-plan-ready" => "ready",
                 other => other.strip_prefix("installer-").unwrap(),
             };
             let heading = if page == "accounts" {

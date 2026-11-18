@@ -125,6 +125,8 @@ pub struct InstallOptions {
     pub expected_partitions: Vec<PartitionExtent>,
     /// Root filesystem: `btrfs` (default), `ext4`, or `xfs`.
     pub filesystem: String,
+    /// The destination OS: `computer` (Tilo Desktop) or `server` (Tilo Server,
+    /// which has no login account; its identity comes from enrollment).
     pub purpose: String,
     pub device_label: String,
     pub prepared_setup: Option<install_profile_model::PreparedSetupExpectation>,
@@ -164,6 +166,10 @@ pub struct InstallOptions {
 }
 
 pub const MEDIA_CODECS_EXTENSION: &str = "media-codecs";
+
+/// The destination that installs the Tilo Server image: no login account, and
+/// the machine's identity comes from enrollment.
+pub const SERVER_PURPOSE: &str = "server";
 
 impl Default for InstallOptions {
     fn default() -> Self {
@@ -284,11 +290,12 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
     if opts.online_accounts.is_some() {
         cmd.arg("--account-operation").arg(&opts.account_operation);
     }
-    cmd.arg("--disk")
-        .arg(disk)
-        .arg("--user")
-        .arg(user)
-        .arg("--filesystem")
+    cmd.arg("--disk").arg(disk);
+    // A Tilo Server has no login account, so it takes no account name.
+    if opts.purpose != SERVER_PURPOSE {
+        cmd.arg("--user").arg(user);
+    }
+    cmd.arg("--filesystem")
         .arg(&opts.filesystem)
         .arg("--hostname")
         .arg(&opts.hostname);
@@ -640,6 +647,11 @@ pub fn run_install<F: FnMut(String)>(
         return Err(std::io::Error::other("invalid selected-account operation"));
     }
     if opts.password_is_hash {
+        if opts.purpose == SERVER_PURPOSE {
+            return Err(std::io::Error::other(
+                "a Tilo Server has no login account to seed",
+            ));
+        }
         if password.is_empty() {
             return Err(std::io::Error::other("missing account password hash"));
         }
@@ -1443,6 +1455,39 @@ mod tests {
                 let error = run_install("/dev/vdb", "ada", "$6$salt$AAAA", &opts, |_| {}).unwrap_err();
                 assert!(error.to_string().contains("password hash"), "{error}");
             }
+        }
+
+        phase a_server_destination_takes_no_account_and_no_credential_hash;
+        {
+            let server = InstallOptions {
+                purpose: SERVER_PURPOSE.into(),
+                ..InstallOptions::default()
+            };
+            let args: Vec<String> = install_command("/dev/vda", "", &server)
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect();
+            assert!(
+                !args.iter().any(|arg| arg == "--user"),
+                "a server has no login account to name: {args:?}"
+            );
+            assert!(args.iter().any(|arg| arg == "--purpose"), "{args:?}");
+            let computer: Vec<String> = install_command("/dev/vda", "ada", &InstallOptions::default())
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect();
+            assert!(computer.iter().any(|arg| arg == "--user"), "{computer:?}");
+
+            let hashed = InstallOptions {
+                purpose: SERVER_PURPOSE.into(),
+                password_is_hash: true,
+                ..InstallOptions::default()
+            };
+            let error = run_install("/dev/vdb", "", "$6$salt$AAAA", &hashed, |_| {}).unwrap_err();
+            assert!(
+                error.to_string().contains("no login account"),
+                "{error}"
+            );
         }
     }
 }

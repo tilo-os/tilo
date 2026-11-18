@@ -15,6 +15,7 @@ pub enum Page {
     Belongings,
     Accounts,
     Storage,
+    Method,
     Review,
     Ready,
 }
@@ -34,6 +35,7 @@ impl Page {
             Self::Belongings => "belongings",
             Self::Accounts => "accounts",
             Self::Storage => "storage",
+            Self::Method => "method",
             Self::Review => "review",
             Self::Ready => "ready",
         }
@@ -72,6 +74,7 @@ pub enum ReviewSection {
     Devices,
     Purpose,
     Belongings,
+    Machine,
 }
 
 impl ReviewSection {
@@ -84,6 +87,7 @@ impl ReviewSection {
             Self::Devices => "devices",
             Self::Purpose => "purpose",
             Self::Belongings => "belongings",
+            Self::Machine => "machine",
         }
     }
 }
@@ -99,6 +103,9 @@ struct ReviewEdit {
 pub struct Journey {
     pub page: Page,
     pub destination: Option<Destination>,
+    /// The plan another computer is installed from, when a plan is what this
+    /// setup makes.
+    pub plan: super::machine::Choices,
     pub migrate: Option<bool>,
     pub identity: Option<Identity>,
     pub name: String,
@@ -120,6 +127,7 @@ impl Journey {
         Self {
             page: Page::Destination,
             destination: None,
+            plan: super::machine::Choices::default(),
             migrate: None,
             identity: None,
             name,
@@ -153,6 +161,7 @@ impl Journey {
             purpose: self.purpose.clone(),
             deferred: self.password.is_empty(),
             target: None,
+            plan: super::draft::PlanDraft::from(&self.plan),
         }
     }
 
@@ -182,6 +191,7 @@ impl Journey {
             .clone_from(&choices.excluded_flatpak_apps);
         self.device_name.clone_from(&choices.device_label);
         self.purpose.clone_from(&choices.purpose);
+        self.plan = choices.plan.choices();
         self.identity = Some(if kind == IdentityKind::New {
             Identity::New
         } else {
@@ -220,6 +230,14 @@ impl Journey {
 
     pub fn choose(&mut self, choice: &str, linux: bool) -> Result<(), &'static str> {
         if self.page == Page::Destination {
+            if self.destination == Some(Destination::Another) && matches!(choice, "os" | "server") {
+                self.plan.os = Some(if choice == "os" {
+                    super::machine::Os::TiloOs
+                } else {
+                    super::machine::Os::TiloServer
+                });
+                return Ok(());
+            }
             let destination = match choice {
                 "computer" => Destination::Computer,
                 "another" => Destination::Another,
@@ -237,7 +255,52 @@ impl Journey {
             }
             return Ok(());
         }
+        if matches!(self.page, Page::Storage | Page::Method)
+            && self.destination != Some(Destination::Another)
+        {
+            return Err("installer-preview-invalid-choice");
+        }
         match (self.page, choice) {
+            (Page::Storage, "disk-largest") => {
+                self.plan.disk = Some(super::machine::Disks::Largest);
+            }
+            (Page::Storage, "disk-empty") => self.plan.disk = Some(super::machine::Disks::Empty),
+            (Page::Storage, "disk-only") => self.plan.disk = Some(super::machine::Disks::Only),
+            (Page::Storage, "disk-open") => self.plan.disk = None,
+            (Page::Method, "usb") => self.plan.delivery = super::machine::Delivery::Usb,
+            (Page::Method, "netboot") => self.plan.delivery = super::machine::Delivery::Netboot,
+            (Page::Method, "alongside") => {
+                self.plan.delivery = super::machine::Delivery::Alongside;
+            }
+            (Page::Method, "name-use") => self.plan.name_open = false,
+            (Page::Method, "name-open") => self.plan.name_open = true,
+            (Page::Method, "network-dhcp") => {
+                self.plan.network = Some(super::machine::Networks::Automatic);
+            }
+            (Page::Method, "network-open") => self.plan.network = None,
+            (Page::Method, "unlock-tpm") => {
+                self.plan.unlock = Some(super::machine::Unlock::Hardware);
+            }
+            (Page::Method, "unlock-owner-device") => {
+                self.plan.unlock = Some(super::machine::Unlock::OwnerDevice);
+            }
+            (Page::Method, "unlock-passphrase") => {
+                self.plan.unlock = Some(super::machine::Unlock::Passphrase);
+            }
+            (Page::Method, "unlock-open") => self.plan.unlock = None,
+            (Page::Method, "updates-stable") => {
+                self.plan.updates = Some(super::machine::Updates::Stable);
+            }
+            (Page::Method, "updates-dev") => {
+                self.plan.updates = Some(super::machine::Updates::Development);
+            }
+            (Page::Method, "updates-open") => self.plan.updates = None,
+            (Page::Method, "hosting-none") => {
+                self.plan.hosting = Some(super::machine::Hosting::HoldsNone);
+            }
+            (Page::Method, "hosting-open") => {
+                self.plan.hosting = Some(super::machine::Hosting::Open);
+            }
             (Page::Purpose, "computer" | "server") => self.purpose = choice.into(),
             (Page::Migration, "migrate") => self.migrate = Some(true),
             (Page::Migration, "fresh") => self.migrate = Some(false),
@@ -304,6 +367,8 @@ impl Journey {
             Page::Purpose | Page::Devices if self.migrate == Some(true) => Page::Belongings,
             Page::Belongings if self.categories[2] => Page::Accounts,
             Page::Devices | Page::Purpose | Page::Belongings | Page::Accounts => Page::Storage,
+            Page::Storage if self.destination == Some(Destination::Another) => Page::Method,
+            Page::Method if self.destination == Some(Destination::Another) => Page::Review,
             Page::Storage => Page::Review,
             Page::Review => {
                 self.password.clear();
@@ -320,12 +385,19 @@ impl Journey {
                 {
                     Page::Target
                 }
+                (_, Page::Storage)
+                    if self.page == Page::Storage
+                        && self.destination == Some(Destination::Another) =>
+                {
+                    Page::Method
+                }
                 (ReviewSection::Destination, Page::Destination | Page::Target) => Page::Storage,
                 (ReviewSection::Profile, Page::Profile)
                 | (ReviewSection::Password, Page::Password)
                 | (ReviewSection::Identity | ReviewSection::Devices, Page::Devices)
                 | (ReviewSection::Purpose, Page::Purpose)
                 | (ReviewSection::Destination, Page::Storage)
+                | (ReviewSection::Machine, Page::Storage | Page::Method)
                 | (ReviewSection::Belongings, Page::Belongings) => Page::Review,
                 (ReviewSection::Belongings, Page::Migration) => {
                     if self.migrate == Some(true) {
@@ -358,6 +430,9 @@ impl Journey {
                 }
             }
             self.history.push(Page::Storage);
+            if self.destination == Some(Destination::Another) {
+                self.history.push(Page::Method);
+            }
             self.page = next;
             return Ok(());
         }
@@ -411,6 +486,12 @@ impl Journey {
             "storage" if self.destination == Some(Destination::Computer) => {
                 (ReviewSection::Destination, Page::Storage)
             }
+            "storage" if self.destination == Some(Destination::Another) => {
+                (ReviewSection::Machine, Page::Storage)
+            }
+            "machine" if self.destination == Some(Destination::Another) => {
+                (ReviewSection::Machine, Page::Method)
+            }
             "profile" if self.identity == Some(Identity::New) => {
                 (ReviewSection::Profile, Page::Profile)
             }
@@ -463,7 +544,7 @@ impl Journey {
             || self.editing.as_ref().is_some_and(|edit| {
                 matches!(
                     edit.section,
-                    ReviewSection::Devices | ReviewSection::Purpose
+                    ReviewSection::Devices | ReviewSection::Purpose | ReviewSection::Machine
                 )
             })
     }
@@ -507,6 +588,7 @@ impl Journey {
                 || matches!(
                     (edit.section, self.page),
                     (ReviewSection::Destination, Page::Storage)
+                        | (ReviewSection::Machine, Page::Storage | Page::Method)
                         | (ReviewSection::Profile, Page::Profile)
                         | (
                             ReviewSection::Identity | ReviewSection::Devices,
@@ -566,6 +648,17 @@ impl Journey {
             "selected_count": self.selected_count(),
             "transfer": self.transfer,
             "editing": self.editing.as_ref().map(|edit| edit.section.key()),
+            "plan": {
+                "os": self.plan.os.map(super::machine::Os::key),
+                "name_open": self.plan.name_open,
+                "disk": self.plan.disk.map(super::machine::Disks::key),
+                "network": self.plan.network.map(super::machine::Networks::key),
+                "unlock": self.plan.unlock.map(super::machine::Unlock::key),
+                "updates": self.plan.updates.map(super::machine::Updates::key),
+                "hosting": self.plan.hosting.map(super::machine::Hosting::key),
+                "delivery": self.plan.delivery.key(),
+                "open": self.plan.open(),
+            },
         })
     }
 }

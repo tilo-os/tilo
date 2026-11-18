@@ -36,6 +36,22 @@ impl DesktopHandle {
         self.shared.borrow().shown_tabs.tiles()
     }
 
+    /// Whether a window the shell draws shows `item` of `app` in the tab in front, as of the last
+    /// layout: the window it opened on ([`tilo_desktop_model::Tab::view`]) stands on screen, so
+    /// what lands in the item is before the person.
+    #[must_use]
+    pub fn shows_item(&self, app: &str, item: &str) -> bool {
+        let shown = self.shown_tabs();
+        self.read(|tree| {
+            tree.tabs().any(|tab| {
+                tab.view == item
+                    && shown.iter().any(|(id, _)| *id == tab.id)
+                    && tilo_desktop_model::apps::canonical_app_id(&tab.tile)
+                        .is_some_and(|id| tilo_desktop_model::apps::app_ids_match(&id, app))
+            })
+        })
+    }
+
     /// The top of the drawn windows' content, in the surface's coordinates,
     /// as of the last layout: where the transients pinned into the display's
     /// top-right corner start, below the windows' bars. Zero with no window.
@@ -100,6 +116,8 @@ struct ShownTab {
     /// The window's bar where it stands over that content: a window covering its display shows it
     /// there while the person reaches for the bar over the display.
     bar_over_content: Option<Rect>,
+    /// Whether the window floats over the shell rather than laid out in its strip.
+    floated: bool,
 }
 
 /// What one strip holds, window by window, as the last layout left it.
@@ -131,6 +149,7 @@ impl ShownTabs {
                         window: group.get_rect(),
                         content: group.content_rect_for_tab(tab),
                         bar_over_content: group.bar_over_content_rect(),
+                        floated: row.is_floating(group.id),
                     }
                 })
                 .collect(),
@@ -192,11 +211,14 @@ impl ShownTabs {
             .collect()
     }
 
-    /// The top of the highest window's content: where banners start, below the windows' bars, which
-    /// pinned to the strip's top would cover their own controls.
+    /// The top of the strips' windows' content: where banners start, below the windows' bars, which
+    /// pinned to the strip's top would cover their own controls. A floating window stands lower,
+    /// and banners keep clear of it whole ([`DesktopHandle::float_covers`]) rather than start
+    /// under its bar, over what it shows.
     pub(super) fn content_top(&self) -> f64 {
         self.0
             .iter()
+            .filter(|shown| !shown.floated)
             .filter_map(|shown| shown.content)
             .map(|content| content.y0)
             .fold(0.0, f64::max)

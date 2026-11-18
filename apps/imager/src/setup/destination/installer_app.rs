@@ -45,7 +45,7 @@ use crate::setup::destination::seg_choice::seg_choice;
 use crate::setup::destination::status_log::status_log;
 use imager_backend::destination::backend::{InstallBackend, SystemBackend};
 use imager_backend::destination::disks::{Disk, GuidedAlongsidePlan};
-use imager_backend::destination::install::{InstallOptions, PowerAction};
+use imager_backend::destination::install::{InstallOptions, PowerAction, SERVER_PURPOSE};
 use imager_backend::destination::layouts;
 use imager_backend::destination::network::{
     Connection, ConnectivityState, InstallerNetwork, NetworkPhase,
@@ -356,6 +356,7 @@ pub fn validate_step(
     selected_disk: Option<usize>,
     username: &str,
     hostname: &str,
+    purpose: &str,
 ) -> Result<(), String> {
     match step {
         Step::Disk => {
@@ -365,6 +366,9 @@ pub fn validate_step(
                 Err("Select a disk to continue".to_string())
             }
         }
+        // A Tilo Server has no login account; the step only collects the disk
+        // secret, which `validate_account_details` checks.
+        Step::Account if purpose == SERVER_PURPOSE => Ok(()),
         Step::Account => {
             if username.is_empty() {
                 Err("Enter a username".to_string())
@@ -1292,7 +1296,23 @@ impl InstallerApp {
         self.erase_confirmation_seen = value;
     }
 
+    /// Whether this medium installs the Tilo Server image, which has no login
+    /// account: the account step then collects only the disk's unlock secret.
+    fn server_destination(&self) -> bool {
+        self.purpose == SERVER_PURPOSE
+    }
+
     fn validate_account_details(&self) -> Result<(), String> {
+        if self.server_destination() {
+            if self.startup_secret().is_empty() {
+                return Err("Enter the disk's unlock secret".into());
+            }
+            return validate_startup_secret_for(
+                &self.startup_secret(),
+                self.startup_secret_is_pin(),
+            )
+            .map_err(str::to_string);
+        }
         if !valid_full_name(local_text(&self.full_name).trim()) {
             return Err(
                 "Use at most 100 characters for the name, without colons or control characters"
@@ -1428,7 +1448,10 @@ impl InstallerApp {
     }
 
     fn next_setup_step(&self) -> Option<Step> {
-        let account_ready = self.step == Step::Disk
+        // A server supplies no account, so a profile that names one does not
+        // let the installer skip the step that collects its disk secret.
+        let account_ready = !self.server_destination()
+            && self.step == Step::Disk
             && self
                 .profile_completion
                 .is_some_and(ProfileCompletion::identity_complete)
@@ -1500,6 +1523,7 @@ impl InstallerApp {
             self.selected_disk,
             &local_text(&self.username),
             &local_text(&self.hostname),
+            &self.purpose,
         ) {
             Ok(()) => {
                 if let Err(message) = self.validate_current_step_details() {
@@ -1665,19 +1689,36 @@ impl InstallerApp {
             self.set_status(message);
             return;
         }
-        let user = local_text(&self.username);
-        let password = secret_copy(&self.password);
-        let confirmation = secret_copy(&self.password_confirmation);
+        // A Tilo Server has no account password: the one secret is the disk's,
+        // and it travels as the account line so the backend writes no user.
+        let server = self.server_destination();
+        let user = if server {
+            String::new()
+        } else {
+            local_text(&self.username)
+        };
+        let password = if server {
+            self.startup_secret()
+        } else {
+            secret_copy(&self.password)
+        };
+        let confirmation = if server {
+            password.clone()
+        } else {
+            secret_copy(&self.password_confirmation)
+        };
         if let Err(message) = validate_passwords(&password, &confirmation) {
             self.set_status(&message);
             return;
         }
-        if secret_copy(&self.disk_password).as_str() == password.as_str() {
+        if !server && secret_copy(&self.disk_password).as_str() == password.as_str() {
             self.set_status("Choose a disk secret different from the account password");
             return;
         }
         let mut opts = self.install_options();
-        if self.prepare_live_accounts(&mut opts, &user).is_err() {
+        // A server has no account (and therefore no desktop account) to hand
+        // selected online accounts to; the backend refuses that transport.
+        if !server && self.prepare_live_accounts(&mut opts, &user).is_err() {
             self.set_status("Could not prepare your connected accounts; retry before installing");
             return;
         }
@@ -1690,14 +1731,24 @@ impl InstallerApp {
         self.reset_viewport();
         self.install_state = InstallState::Running;
         self.install_launched = true;
-        self.status_lines = vec![crate::setup::strings::t_args(
-            "installer-status-install-start",
-            &[
-                ("disk", ArgValue::Text(disk.clone())),
-                ("user", ArgValue::Text(user.clone())),
-                ("filesystem", ArgValue::Text(opts.filesystem.clone())),
-            ],
-        )];
+        self.status_lines = vec![if server {
+            crate::setup::strings::t_args(
+                "installer-status-install-start-server",
+                &[
+                    ("disk", ArgValue::Text(disk.clone())),
+                    ("filesystem", ArgValue::Text(opts.filesystem.clone())),
+                ],
+            )
+        } else {
+            crate::setup::strings::t_args(
+                "installer-status-install-start",
+                &[
+                    ("disk", ArgValue::Text(disk.clone())),
+                    ("user", ArgValue::Text(user.clone())),
+                    ("filesystem", ArgValue::Text(opts.filesystem.clone())),
+                ],
+            )
+        }];
         self.recovery_key = None;
         self.recovery_key_copied = false;
         self.recovery_key_copy = ui::CopyWatch::default();
@@ -2419,15 +2470,25 @@ impl InstallerApp {
         let identity_complete = self
             .profile_completion
             .is_some_and(ProfileCompletion::identity_complete);
+        let server = self.server_destination();
         children.push(Box::new(
-            Text::new(&if identity_complete {
+            Text::new(&if server {
+                crate::setup::strings::t("installer-account-server-title")
+            } else if identity_complete {
                 crate::setup::strings::t("installer-account-secure")
             } else {
                 crate::setup::strings::t("installer-account-create")
             })
             .with_role(TextRole::Title),
         ));
-        if self.profile_completion.is_none() || !completion.full_name.is_complete() {
+        if server {
+            children.push(Box::new(
+                Text::new(&crate::setup::strings::t("installer-account-server-note"))
+                    .with_role(TextRole::Body)
+                    .with_color(dim),
+            ));
+        }
+        if !server && (self.profile_completion.is_none() || !completion.full_name.is_complete()) {
             children.push(Box::new(
                 Text::new(&crate::setup::strings::t("installer-account-name"))
                     .with_role(TextRole::Body),
@@ -2443,7 +2504,7 @@ impl InstallerApp {
                     .with_color(dim),
             ));
         }
-        if self.profile_completion.is_none() || !completion.username.is_complete() {
+        if !server && (self.profile_completion.is_none() || !completion.username.is_complete()) {
             children.push(Box::new(
                 Text::new(&crate::setup::strings::t("installer-account-username"))
                     .with_role(TextRole::Body),
@@ -2460,50 +2521,49 @@ impl InstallerApp {
             ));
         }
         let tpm_pin = self.startup_secret_is_pin();
+        // A server's one secret unlocks its disk; it is not a login password,
+        // so the labels say what it is for.
+        let (secret, secret_note, secret_confirm) = if server {
+            (
+                "installer-account-server-secret",
+                "installer-account-server-secret-note",
+                "installer-account-server-secret-confirm",
+            )
+        } else if tpm_pin {
+            (
+                "installer-account-pin",
+                "installer-account-pin-note",
+                "installer-account-pin-confirm",
+            )
+        } else {
+            (
+                "installer-account-password",
+                "installer-account-password-note",
+                "installer-account-password-confirm",
+            )
+        };
         children.push(Box::new(
-            Text::new(&crate::setup::strings::t(if tpm_pin {
-                "installer-account-pin"
-            } else {
-                "installer-account-password"
-            }))
-            .with_role(TextRole::Body),
+            Text::new(&crate::setup::strings::t(secret)).with_role(TextRole::Body),
         ));
         children.push(Box::new(
             TextInput::new(Vec::new())
                 .with_id("installer.password")
-                .with_accessible_name(crate::setup::strings::t(if tpm_pin {
-                    "installer-account-pin"
-                } else {
-                    "installer-account-password"
-                }))
+                .with_accessible_name(crate::setup::strings::t(secret))
                 .with_external_buffer(Arc::clone(&self.password))
                 .with_secret(true),
         ));
         children.push(Box::new(
-            Text::new(&crate::setup::strings::t(if tpm_pin {
-                "installer-account-pin-note"
-            } else {
-                "installer-account-password-note"
-            }))
-            .with_role(TextRole::Caption)
-            .with_color(dim),
+            Text::new(&crate::setup::strings::t(secret_note))
+                .with_role(TextRole::Caption)
+                .with_color(dim),
         ));
         children.push(Box::new(
-            Text::new(&crate::setup::strings::t(if tpm_pin {
-                "installer-account-pin-confirm"
-            } else {
-                "installer-account-password-confirm"
-            }))
-            .with_role(TextRole::Body),
+            Text::new(&crate::setup::strings::t(secret_confirm)).with_role(TextRole::Body),
         ));
         children.push(Box::new(
             TextInput::new(Vec::new())
                 .with_id("installer.password_confirm")
-                .with_accessible_name(crate::setup::strings::t(if tpm_pin {
-                    "installer-account-pin-confirm"
-                } else {
-                    "installer-account-password-confirm"
-                }))
+                .with_accessible_name(crate::setup::strings::t(secret_confirm))
                 .with_external_buffer(Arc::clone(&self.password_confirmation))
                 .with_secret(true),
         ));

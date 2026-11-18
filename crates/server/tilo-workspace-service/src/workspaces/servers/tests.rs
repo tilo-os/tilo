@@ -1,3 +1,5 @@
+mod asked;
+
 use super::*;
 
 use super::device::{DHCP, STATIC};
@@ -20,28 +22,28 @@ fn endpoint() -> String {
 }
 
 fn enrolled() -> Replica<Servers> {
-    let mut record = Replica::<Servers>::new();
-    record
+    let mut replica = Replica::<Servers>::new();
+    replica
         .apply(Servers::ENROLL_SERVER.with((
             device().as_str().to_owned(),
             "Attic".into(),
             endpoint(),
         )))
         .unwrap();
-    record
+    replica
 }
 
-/// The record answers a read with what each server is set to, so an agent or
-/// a script with no window open reads a person's servers as any record.
+/// The replica answers a read with what each server is set to, so an agent or
+/// a script with no window open reads a person's servers as any replica.
 #[test]
-fn the_record_answers_a_read_with_what_each_server_is_set_to() {
+fn the_document_answers_a_read_with_what_each_server_is_set_to() {
     use tilo_resource::Resource as _;
     const { assert!(<Servers as tilo_resource::Resource>::READABLE) };
-    let mut record = enrolled();
-    record
+    let mut replica = enrolled();
+    replica
         .apply(Servers::SET_UPDATES.with((device(), "stable".into())))
         .unwrap();
-    let read = Servers::read_content(&record.state().unwrap(), record.doc(), None).unwrap();
+    let read = Servers::read_content(&replica.state().unwrap(), replica.doc(), None).unwrap();
     let said = read.to_string();
     assert!(read.is_object(), "{said}");
     assert!(said.contains("Attic"), "the server's name is read: {said}");
@@ -50,23 +52,23 @@ fn the_record_answers_a_read_with_what_each_server_is_set_to() {
 
 #[test]
 fn a_servers_configuration_is_typed_actions_with_history() {
-    let mut record = enrolled();
-    record
+    let mut replica = enrolled();
+    replica
         .apply(Servers::HOLD_WORKSPACE.with((device(), WORKSPACE.into(), KEY_HOLDER.into())))
         .unwrap();
-    record
+    replica
         .apply(Servers::SET_APPETITE.with((device(), 500, true, 2)))
         .unwrap();
-    record
+    replica
         .apply(Servers::SET_UPDATES.with((device(), "stable".into())))
         .unwrap();
-    record
+    replica
         .apply(Servers::SET_MAINTENANCE_WINDOW.with((device(), 180, 60)))
         .unwrap();
-    record
+    replica
         .apply(Servers::SET_UNLOCK_POLICY.with((device(), "tpm".into())))
         .unwrap();
-    let state = record.state().unwrap();
+    let state = replica.state().unwrap();
     let server = state.active(&[7; 32]).unwrap();
     assert_eq!(server.label, "Attic");
     assert_eq!(server.holding(WORKSPACE), Some(KEY_HOLDER));
@@ -80,13 +82,17 @@ fn a_servers_configuration_is_typed_actions_with_history() {
         (180, 60)
     );
     assert_eq!(server.unlock, "tpm");
-    assert_eq!(record.log().len(), 6, "each change is one entry of history");
+    assert_eq!(
+        replica.log().len(),
+        6,
+        "each change is one entry of history"
+    );
 
-    record
+    replica
         .apply(Servers::HOLD_WORKSPACE.with((device(), WORKSPACE.into(), STORE.into())))
         .unwrap();
     assert_eq!(
-        record
+        replica
             .state()
             .unwrap()
             .active(&[7; 32])
@@ -94,11 +100,11 @@ fn a_servers_configuration_is_typed_actions_with_history() {
             .holding(WORKSPACE),
         Some(STORE)
     );
-    record
+    replica
         .apply(Servers::RELEASE_WORKSPACE.with((device(), WORKSPACE.into())))
         .unwrap();
     assert_eq!(
-        record
+        replica
             .state()
             .unwrap()
             .active(&[7; 32])
@@ -109,8 +115,8 @@ fn a_servers_configuration_is_typed_actions_with_history() {
 }
 
 #[test]
-fn a_change_the_record_cannot_mean_is_refused() {
-    let mut record = enrolled();
+fn a_change_the_document_cannot_mean_is_refused() {
+    let mut replica = enrolled();
     for refused in [
         Servers::HOLD_WORKSPACE.with((device(), "not-a-workspace".into(), STORE.into())),
         Servers::HOLD_WORKSPACE.with((device(), WORKSPACE.into(), "owner".into())),
@@ -163,9 +169,9 @@ fn a_change_the_record_cannot_mean_is_refused() {
             String::new(),
         )),
     ] {
-        assert!(record.apply(refused).is_err());
+        assert!(replica.apply(refused).is_err());
     }
-    assert_eq!(record.log().len(), 1, "nothing refused is history");
+    assert_eq!(replica.log().len(), 1, "nothing refused is history");
 }
 
 /// The machine an entry configures: three drives, a bond of two interfaces, a
@@ -338,22 +344,24 @@ fn a_machine_keeps_what_it_boots_from_and_a_drive_is_erased_only_when_named() {
 
 #[test]
 fn a_retired_server_holds_nothing_and_is_not_taken_in_again() {
-    let mut record = enrolled();
-    record
+    let mut replica = enrolled();
+    replica
         .apply(Servers::HOLD_WORKSPACE.with((device(), WORKSPACE.into(), STORE.into())))
         .unwrap();
-    record.apply(Servers::RETIRE_SERVER.with(device())).unwrap();
-    assert!(record.state().unwrap().active(&[7; 32]).is_none());
-    record
+    replica
+        .apply(Servers::RETIRE_SERVER.with(device()))
+        .unwrap();
+    assert!(replica.state().unwrap().active(&[7; 32]).is_none());
+    replica
         .apply(Servers::ENROLL_SERVER.with((
             device().as_str().to_owned(),
             "Attic again".into(),
             endpoint(),
         )))
         .unwrap();
-    assert!(record.state().unwrap().active(&[7; 32]).is_none());
+    assert!(replica.state().unwrap().active(&[7; 32]).is_none());
     assert!(
-        record
+        replica
             .apply(Servers::HOLD_WORKSPACE.with((device(), WORKSPACE.into(), STORE.into())))
             .is_err()
     );

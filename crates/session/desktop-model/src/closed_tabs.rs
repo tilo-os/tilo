@@ -175,13 +175,26 @@ impl Workspace {
         focused_strip: Option<StripId>,
         app: Option<&str>,
     ) -> Option<Reopened> {
-        let of_app = |entry: &ClosedTab| {
+        self.reopen_closed_where(focused_strip, |entry| {
             app.is_none_or(|app| {
                 canonical_app_id(&entry.tab.tile).is_some_and(|id| app_ids_match(id.as_str(), app))
             })
-        };
+        })
+    }
+
+    /// Put the closed window `tab` back where it was, as [`Self::reopen_closed`] does: a window
+    /// whose app stopped working takes its place again to say so.
+    pub fn reopen_closed_tab(&mut self, tab: TabId) -> Option<Reopened> {
+        self.reopen_closed_where(None, |entry| entry.tab.id == tab)
+    }
+
+    fn reopen_closed_where(
+        &mut self,
+        focused_strip: Option<StripId>,
+        pick: impl Fn(&ClosedTab) -> bool,
+    ) -> Option<Reopened> {
         loop {
-            let entry = self.closed_tabs.take_newest(of_app)?;
+            let entry = self.closed_tabs.take_newest(&pick)?;
             let tab = entry.tab.id;
             if self.holds(tab) {
                 continue;

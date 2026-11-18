@@ -7,8 +7,25 @@
 [[allow]]
 reason = "The dialer's name for the network host it reaches, which the glossary keeps as a network host name."
 words = ["host"]
-identifiers = ["Host", "host"]
+identifiers = ["Host", "host", "connect_to_pinned_host"]
 paths = ["crates/system/tilo-cli/src/server.rs"]
+
+[[allow]]
+reason = "The workspace service's own names for the device a test runs workspaces on: its fixture (`Hosted`) and that fixture's `host` field, the signed holder address's `host` field, and the pinned-dial call that reaches it."
+words = ["host"]
+identifiers = ["Hosted", "host", "connect_to_pinned_host"]
+paths = [
+    "crates/server/tilo-server/tests/servers_operations.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/servers.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/servers/tests.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/servers/tests/asked.rs",
+]
+
+[[allow]]
+reason = "The published-write envelope's own `record` field, the id of the document a write is of, which this device now also sends for its own writes."
+words = ["record"]
+identifiers = ["record"]
+paths = ["crates/server/tilo-workspace-service/src/workspaces.rs"]
 
 [[allow]]
 reason = "systemd's runtime directory, its own name."
@@ -97,6 +114,7 @@ paths = [
     "crates/server/tilo-server/src/web_cli.rs",
     "crates/server/tilo-server/src/servers/device.rs",
     "crates/server/tilo-server/src/web/mod.rs",
+    "crates/session/install-plan/src/lib.rs",
     "crates/server/tilo-workspace-service/Cargo.toml",
     "crates/platform/tilo-net-p2p/src/lib.rs",
     "crates/session/client/src/session.rs",
@@ -390,6 +408,12 @@ paths = ["tools/perf/tapp-size-budget/raises/*", "tools/perf/runtime-size-budget
 reason = "The push lint and the integration script start cargo, rustfmt, t and Git: a run there is one of those processes, and Python's subprocess.run names it."
 words = ["run"]
 paths = ["tools/integrate.sh", "tools/ci/pre_push_lint.py", "tools/ci/check-changed-rustfmt.sh", "tools/tests/test_pre_push_lint.py", "tools/tests/test_changed_rustfmt.py"]
+
+[[allow]]
+reason = "The installer backend's entry point starts the privileged tilo-install process and feeds it its secrets through stdin."
+words = ["run"]
+identifiers = ["run_install"]
+paths = ["crates/platform/imager-backend/src/destination/install.rs"]
 
 [[allow]]
 reason = "t's own key for the commands a check starts, and the `run` subcommands of cargo and nextest it names."

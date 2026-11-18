@@ -197,6 +197,15 @@ pub(crate) fn work_takes(
     own: &DeviceCert,
     request: &HostWorkspaceRequest,
 ) -> bool {
+    // A person's Servers workspace is theirs: every one of their devices holds
+    // it, whatever work that device takes.
+    if request.workspace_id.to_string()
+        == tilo_server_protocol::servers::admin_workspace_id(&own.user_public_key)
+        && owners(request)
+            .is_ok_and(|owners| owners.iter().all(|owner| *owner == own.user_public_key))
+    {
+        return true;
+    }
     let mut whose = Whose::of_roots(caller.user_public_key, own.user_public_key);
     whose.workspace = Some(request.workspace_id);
     work.from.admits(&whose)
