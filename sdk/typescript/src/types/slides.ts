@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.slides@a568e642f85c914e";
+export const SURFACE = "so.tilo.slides@9f8475f74f853a02";
 
 /** One of "surface", "accent", "deep". */
 export type Background = "surface" | "accent" | "deep";

@@ -6,6 +6,7 @@ format = 2
 kind = "tube.library"
 label = "Tube"
 version = 1
+shows = ["filter-search", "show-screen", "toggle-sidebar"]
 fields = [
   { path = "likes", type = { set = "text" } },
   { path = "queue", type = { set = "text" } },

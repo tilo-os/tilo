@@ -187,6 +187,19 @@ pub fn primary_kind(app_id: &str) -> Option<String> {
         .map(|surface| surface.kind.clone())
 }
 
+/// Whether `action` of `app_id` shows something in a window of the app, on
+/// whatever resource it is invoked, as its surface declares
+/// ([`tilo_actions::surface::Surface::shows`]). False when this process holds
+/// no surface for it.
+#[must_use]
+pub fn shows(app_id: &str, action: &str) -> bool {
+    surface_of(app_id).is_some_and(|file| {
+        file.resources
+            .iter()
+            .any(|surface| surface.shows.iter().any(|shown| shown == action))
+    })
+}
+
 /// The person-record kinds `app_id`'s surface declares (its
 /// `ResourceApp::PERSON_RESOURCES`): the records it may keep in, or read from,
 /// the person's own workspace. Empty when this process holds no surface for

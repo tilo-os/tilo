@@ -6,6 +6,7 @@ format = 2
 kind = "video-player.library"
 label = "Video Player"
 version = 1
+shows = ["close", "hide-library", "jump-to-annotation", "jump-to-chapter", "jump-to-end", "open-formats", "picture-in-picture", "restart", "reveal", "seek", "seek-by", "select-audio-track", "select-subtitles", "set-autoplay", "set-loop", "set-playback-rate", "set-volume", "show-library", "subtitles-off", "toggle-fullscreen", "toggle-mute", "toggle-playback"]
 fields = [
   { path = "playlists", type = { collection = { named = "Playlist" } }, stored = "collection" },
   { path = "playlists.*.name", type = "text", label = true },

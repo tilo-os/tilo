@@ -6,6 +6,7 @@ format = 2
 kind = "feeds.library"
 label = "Feeds"
 version = 3
+shows = ["new-folder-form", "reveal-tag"]
 fields = [
   { path = "folders", type = { collection = { named = "Folder" } }, stored = "collection" },
   { path = "folders.*.name", type = "text", label = true },

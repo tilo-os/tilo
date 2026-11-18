@@ -6,6 +6,7 @@ format = 2
 kind = "browser.application"
 label = "Browser"
 version = 1
+shows = ["clear-library-filter", "delete-address", "edit-address", "set-library-filter", "show-bookmarks", "show-download", "show-downloads", "show-extensions", "show-history", "show-page", "show-personal-bookmark-folder", "show-settings"]
 fields = [
   { path = "bookmarks", type = { collection = { named = "Bookmark" } }, stored = "collection" },
   { path = "bookmarks.*.url", type = "text", readonly = true },

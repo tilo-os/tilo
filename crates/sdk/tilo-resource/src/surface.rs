@@ -161,6 +161,7 @@ fn surface_in(vocabulary: &crate::Vocabulary, version: u32) -> Surface {
         verbs,
         fields,
         types: types.into_types(),
+        shows: Vec::new(),
     }
 }
 
@@ -215,6 +216,7 @@ pub fn reading_surface<R: crate::JsonSchema, E: crate::Effect>(kind: &str, label
         verbs,
         fields,
         types: declared,
+        shows: Vec::new(),
     }
 }
 
@@ -237,6 +239,20 @@ pub fn effect_verb(decl: &crate::EffectDecl, types: &mut TypeSet) -> VerbSurface
         writes: vec!["record".to_owned()],
         field: None,
     }
+}
+
+/// The ids of an app's effects that show something in its window
+/// (`#[effect(view)]`): what its surface declares it [`Surface::shows`].
+#[must_use]
+pub fn view_effects(rows: &[crate::effect::EffectRow]) -> Vec<String> {
+    let mut shows: Vec<String> = rows
+        .iter()
+        .filter(|row| row.kind == tilo_actions::OperationKind::View)
+        .map(|row| row.id.to_owned())
+        .collect();
+    shows.sort();
+    shows.dedup();
+    shows
 }
 
 /// An app's effects as actions a caller of another language reads: every one

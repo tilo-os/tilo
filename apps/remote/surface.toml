@@ -6,6 +6,7 @@ format = 2
 kind = "remote.connection-list"
 label = "Remote connections"
 version = 1
+shows = ["edit-connection", "new", "show-connections"]
 fields = [
   { path = "connections", type = { collection = { named = "Connection" } }, stored = "collection" },
   { path = "connections.*.name", type = "text", label = true },

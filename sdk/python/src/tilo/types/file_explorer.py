@@ -128,7 +128,7 @@ ForgetArgs = TypedDict("ForgetArgs", {
 
 class Folder(Resource):
     """Folder — `files.folder`."""
-    __surface__ = "so.tilo.file-explorer@0a6b39435b30c1be"
+    __surface__ = "so.tilo.file-explorer@d93c18922e3b20c1"
     places: list[Entry[Bookmark]]
 
     def add_bookmark(self,
@@ -350,7 +350,7 @@ class Folder(Resource):
 
 class Tree(Resource):
     """Files — `files.tree`."""
-    __surface__ = "so.tilo.file-explorer@0a6b39435b30c1be"
+    __surface__ = "so.tilo.file-explorer@d93c18922e3b20c1"
     def new_folder(self,
         *,
         parent: str,
@@ -436,7 +436,7 @@ class Tree(Resource):
 
 class Recent(Resource):
     """Recent files — `files.recent`."""
-    __surface__ = "so.tilo.file-explorer@0a6b39435b30c1be"
+    __surface__ = "so.tilo.file-explorer@d93c18922e3b20c1"
     devices: dict[str, Any]
 
     def note(self,

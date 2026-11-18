@@ -222,7 +222,7 @@ WriteNoteArgs = TypedDict("WriteNoteArgs", {
 
 class Notebook(Resource):
     """Notebook — `notes.notebook`."""
-    __surface__ = "so.tilo.notes@09fa5db73bd6ae3d"
+    __surface__ = "so.tilo.notes@e91fd2294d98e9f5"
     tags: list[Entry[Tag]]
 
     def new_tag(self, *, name: str) -> None:
@@ -261,7 +261,7 @@ class Notebook(Resource):
 
 class Pages(Resource):
     """Notes — `notes.pages`."""
-    __surface__ = "so.tilo.notes@09fa5db73bd6ae3d"
+    __surface__ = "so.tilo.notes@e91fd2294d98e9f5"
     pages: list[Entry[Page]]
     @property
     def images(self) -> dict[str, Any]:

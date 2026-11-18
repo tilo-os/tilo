@@ -6,6 +6,7 @@ format = 2
 kind = "music.library"
 label = "Music"
 version = 2
+shows = ["browse-genre", "open", "open-album", "open-artist", "toggle-like", "toggle-like-playing"]
 fields = [
   { path = "recommendations", type = { named = "Preferences" }, stored = "record" },
   { path = "recommendations.likes", type = "bool" },

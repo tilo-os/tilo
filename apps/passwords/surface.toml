@@ -6,6 +6,7 @@ format = 2
 kind = "passwords.vault"
 label = "Password vault"
 version = 1
+shows = ["hide", "show-access"]
 
 [[resources.verbs]]
 id = "deny-access"

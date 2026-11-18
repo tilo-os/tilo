@@ -30,7 +30,7 @@ ShowEverythingArgs = TypedDict("ShowEverythingArgs", {
 
 class View(Resource):
     """Agent sessions shown — `console.view`."""
-    __surface__ = "so.tilo.console@f68df16f5e71128e"
+    __surface__ = "so.tilo.console@e3c41227510079ff"
     agent: str
     # the app's `workspace` field is the SDK's own `workspace`: read it with
     # `fields["workspace"]`.

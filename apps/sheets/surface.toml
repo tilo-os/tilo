@@ -6,6 +6,7 @@ format = 2
 kind = "sheets.workbook"
 label = "Workbook"
 version = 3
+shows = ["commands", "go-to-cell", "open", "toggle-formula-view"]
 fields = [
   { path = "sheets", type = { collection = { named = "Sheet" } }, stored = "collection" },
   { path = "sheets.*.name", type = "text", label = true },

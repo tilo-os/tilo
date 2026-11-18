@@ -115,7 +115,7 @@ StoodArgs = TypedDict("StoodArgs", {
 
 class Library(Resource):
     """Video Player — `video-player.library`."""
-    __surface__ = "so.tilo.video-player@4f05d77ea6c7a710"
+    __surface__ = "so.tilo.video-player@1932567c11289a24"
     playlists: list[Entry[Playlist]]
     items: list[Entry[PlaylistItem]]
     annotations: list[Entry[TimestampAnnotation]]
@@ -227,7 +227,7 @@ class Library(Resource):
 
 class Recent(Resource):
     """Recent videos — `video-player.recent`."""
-    __surface__ = "so.tilo.video-player@4f05d77ea6c7a710"
+    __surface__ = "so.tilo.video-player@1932567c11289a24"
     devices: dict[str, Any]
 
     def keep(self,

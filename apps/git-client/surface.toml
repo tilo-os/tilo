@@ -6,6 +6,7 @@ format = 2
 kind = "git_client.repo"
 label = "Repository"
 version = 1
+shows = ["open-change", "open-commit", "read-change", "show-branches", "show-changes", "show-history"]
 fields = [
   { path = "repository", type = "text" },
   { path = "shared", type = "any", readonly = true },

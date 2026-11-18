@@ -2891,6 +2891,7 @@ fn report_surface(
 /// Publish the app's read effects on `surface`: its resource's verbs take
 /// them, each with its parameters and the value it answers with, and the
 /// records and enums that value names join the surface's types.
+/// Its view effects are what the surface says it shows.
 fn add_effect_verbs(
     surface: &mut tilo_resource::Surface,
     rows: &[tilo_resource::effect::EffectRow],
@@ -2939,6 +2940,7 @@ fn add_effect_verbs(
         .collect();
     surface.types.extend(kept);
     surface.verbs.extend(verbs);
+    surface.shows = tilo_resource::surface::view_effects(rows);
 }
 
 /// Collects the controls bound to something the resource does not publish

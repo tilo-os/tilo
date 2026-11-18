@@ -6,6 +6,7 @@ format = 2
 kind = "chat.workspace"
 label = "Chat"
 version = 1
+shows = ["open-agent", "open-category", "open-channel", "open-direct-conversation", "reveal-message", "reveal-message-range", "show-agent-reasoning", "show-view", "toggle-category"]
 fields = [
   { path = "categories", type = { collection = { named = "Category" } }, readonly = true, stored = "collection" },
   { path = "categories.*.name", type = "text", label = true, readonly = true },

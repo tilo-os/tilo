@@ -399,7 +399,7 @@ SetStrokesArgs = TypedDict("SetStrokesArgs", {
 
 class Document(Resource):
     """PDF — `pdf.document`."""
-    __surface__ = "so.tilo.pdf-viewer@b8426dff6d7c0444"
+    __surface__ = "so.tilo.pdf-viewer@f7a099e9e6b08a4f"
     @property
     def source(self) -> Any:
         """Read only."""
@@ -683,7 +683,7 @@ class Document(Resource):
 
 class SignatureProfile(Resource):
     """Signature — `pdf.signature-profile`."""
-    __surface__ = "so.tilo.pdf-viewer@b8426dff6d7c0444"
+    __surface__ = "so.tilo.pdf-viewer@f7a099e9e6b08a4f"
     signer: str
     strokes: list[Stroke]
 

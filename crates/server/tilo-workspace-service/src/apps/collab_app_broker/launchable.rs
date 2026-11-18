@@ -525,6 +525,17 @@ mod tests {
         }
     }
 
+    /// A view the app publishes on a row of its own for one person, as Chat
+    /// does for the conversation with them.
+    fn open_person() -> PublishedAction {
+        PublishedAction {
+            resource: "files.person:ada".into(),
+            resource_kind: "files.person".into(),
+            operation_kind: tilo_actions::OperationKind::View,
+            ..action("open-person", tilo_actions::ConfirmationPolicy::None)
+        }
+    }
+
     /// The `open-link` every framework app publishes: a view, taking the link to show.
     fn open_link() -> PublishedAction {
         let mut open = action(
@@ -791,7 +802,7 @@ mod tests {
         state: &Arc<AppBrokerState>,
         peer_id: u64,
     ) -> (Streams, Arc<Mutex<Vec<String>>>) {
-        let (streams, launches, _) = app_comes_up_placed(state, peer_id);
+        let (streams, launches, _) = app_comes_up_placed_publishing(state, peer_id, Vec::new());
         (streams, launches)
     }
 
@@ -804,6 +815,15 @@ mod tests {
     fn app_comes_up_placed(
         state: &Arc<AppBrokerState>,
         peer_id: u64,
+    ) -> (Streams, Arc<Mutex<Vec<String>>>, Places) {
+        app_comes_up_placed_publishing(state, peer_id, Vec::new())
+    }
+
+    /// [`app_comes_up_placed`], its window also publishing `also`.
+    fn app_comes_up_placed_publishing(
+        state: &Arc<AppBrokerState>,
+        peer_id: u64,
+        also: Vec<PublishedAction>,
     ) -> (Streams, Arc<Mutex<Vec<String>>>, Places) {
         let (streams, stream) = std::sync::mpsc::channel();
         let launches = Arc::new(Mutex::new(Vec::new()));
@@ -826,6 +846,7 @@ mod tests {
                     .expect("subscribers")
                     .insert(peer_id, tx);
                 let mut up = surface(peer_id, &workspace.id().to_string());
+                up.actions.extend(also.iter().cloned());
                 if let Some(record) = record {
                     up.route.document_id = record.to_owned();
                 }
@@ -1695,7 +1716,7 @@ mod tests {
         {
             let (state, workspace) = broker(&workspace());
             let launches = app_comes_up_later(&state);
-            let (mut windowless, asked) = app_runs_windowless(&state, 9);
+            let (mut windowless, asked) = app_starts_windowless(&state, 9);
             let owner = Caller::local_person("owner").in_workspace(&workspace);
             let target = tilo_actions::remote::application_action_target(
                 &workspace,
@@ -1771,7 +1792,7 @@ mod tests {
         {
             let (state, workspace) = broker(&workspace());
             let launches = app_comes_up_later(&state);
-            let (mut windowless, _) = app_runs_windowless(&state, 9);
+            let (mut windowless, _) = app_starts_windowless(&state, 9);
             let alias = format!(
                 "{}5de7eba4-60d5-41f3-bd8a-2c4e5d8d9dd2:464da94a-e962-41ee-b1bf-498c32006984:{}",
                 tilo_actions::BOUND_RESOURCE_PREFIX,
@@ -1841,7 +1862,7 @@ mod tests {
         // no window, even one that publishes it, and launches a window instead.
         {
             let (state, workspace) = broker(&workspace());
-            let (mut windowless, _) = app_runs_windowless(&state, 9);
+            let (mut windowless, _) = app_starts_windowless(&state, 9);
             let owner = Caller::local_person("owner").in_workspace(&workspace);
             let shows_nothing = tilo_actions::remote::application_action_target(
                 &workspace,
@@ -1914,7 +1935,7 @@ mod tests {
     /// The host runs `APP` with no window when asked: it comes up as
     /// `peer_id`, marked as having no window, publishes `surface(peer_id)`
     /// plus an `open`, and opens its invocation stream. Each ask is recorded.
-    fn app_runs_windowless(state: &Arc<AppBrokerState>, peer_id: u64) -> Windowless {
+    fn app_starts_windowless(state: &Arc<AppBrokerState>, peer_id: u64) -> Windowless {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let asked = Arc::new(Mutex::new(Vec::new()));
         let recorded = Arc::clone(&asked);
@@ -2018,7 +2039,7 @@ mod tests {
         {
             let (state, workspace) = broker(&workspace());
             let launches = app_comes_up_later(&state);
-            let (_windowless, asked) = app_runs_windowless(&state, 9);
+            let (_windowless, asked) = app_starts_windowless(&state, 9);
             let owner = Caller::local_person("owner").in_workspace(&workspace);
 
             let receipt = start(&state, &owner, &workspace).expect("started");
@@ -2056,7 +2077,7 @@ mod tests {
         // An app the host runs no windowless instance of launches as before.
         {
             let (state, workspace) = broker(&workspace());
-            let (_, asked) = app_runs_windowless(&state, 9);
+            let (_, asked) = app_starts_windowless(&state, 9);
             let (streams, launches) = app_comes_up_as(&state, 8);
             state
                 .launchable
@@ -2542,6 +2563,40 @@ mod tests {
                 ),
                 other => panic!("expected a timeout, got {other:?}"),
             }
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_view_the_surface_declares_opens_a_closed_app_with_a_window;
+
+        phase a_row_view_launches_the_app_windowed_and_its_window_answers;
+        // An action the app's surface says it shows, asked on a row the app
+        // publishes only once it is open (Chat's conversation with one
+        // person), launches the closed app with a window: no instance without
+        // one is started for it, and the window answers.
+        {
+            collab_types::app_surface::register_package(
+                APP,
+                b"[[resources]]\nkind = \"files.app\"\nlabel = \"Files\"\nversion = 1\nshows = [\"open-person\"]\n",
+            );
+            let (state, workspace) = broker(&workspace());
+            let (_windowless, asked) = app_starts_windowless(&state, 9);
+            let (came_up, launches, _) = app_comes_up_placed_publishing(&state, 8, vec![open_person()]);
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
+            let target = tilo_actions::remote::application_action_target(
+                &workspace,
+                APP,
+                "files.person:ada",
+                "open-person",
+            );
+
+            invoke_with(&state, &owner, &target.provider, &target.address, InvokeArgument::None, None)
+                .expect("answered by the window it launched");
+            assert_eq!(*launches.lock().expect("launches"), [APP], "launched with a window");
+            assert!(asked.lock().expect("asked").is_empty(), "nothing ran without a window");
+            let mut window = came_up.try_recv().expect("the window came up");
+            let delivered = window.try_recv().expect("the window took it");
+            assert_eq!(delivered.action, "open-person");
         }
     }
 

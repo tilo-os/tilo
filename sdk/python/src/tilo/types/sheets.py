@@ -250,7 +250,7 @@ DeleteCommentArgs = TypedDict("DeleteCommentArgs", {
 
 class Workbook(Resource):
     """Workbook — `sheets.workbook`."""
-    __surface__ = "so.tilo.sheets@752f6346ae9b3383"
+    __surface__ = "so.tilo.sheets@0e9368353ac364bc"
     sheets: list[Entry[Sheet]]
     comments: list[Entry[Comment]]
     settings: DocSettings

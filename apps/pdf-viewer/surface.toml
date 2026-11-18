@@ -6,6 +6,7 @@ format = 2
 kind = "pdf.document"
 label = "PDF"
 version = 4
+shows = ["find", "fit-page", "fit-width", "go-to", "go-to-match", "mark-highlight", "mark-strikeout", "mark-underline", "next-page", "previous-page", "select-all", "set-marker-colour", "toggle-pages", "toggle-sidebar", "use-tool", "zoom-in", "zoom-out"]
 fields = [
   { path = "source", type = "any", readonly = true },
   { path = "source_name", type = "text", readonly = true },

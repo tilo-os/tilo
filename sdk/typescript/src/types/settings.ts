@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.settings@cf796b4970963810";
+export const SURFACE = "so.tilo.settings@dbc28696ef8962e7";
 
 /** One of "none", "grayscale", "inverted", "grayscale_inverted". */
 export type ColorFilter = "none" | "grayscale" | "inverted" | "grayscale_inverted";

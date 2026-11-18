@@ -160,7 +160,7 @@ ForgetFeedArgs = TypedDict("ForgetFeedArgs", {
 
 class Library(Resource):
     """Feeds — `feeds.library`."""
-    __surface__ = "so.tilo.feeds@dcc6478737966c0a"
+    __surface__ = "so.tilo.feeds@76e15e7c0d655457"
     folders: list[Entry[Folder]]
     feeds: list[Entry[Feed]]
 
@@ -258,7 +258,7 @@ class Library(Resource):
 
 class Articles(Resource):
     """Articles — `feeds.articles`."""
-    __surface__ = "so.tilo.feeds@dcc6478737966c0a"
+    __surface__ = "so.tilo.feeds@76e15e7c0d655457"
     articles: list[Entry[Article]]
     @property
     def read_through(self) -> dict[str, int]:

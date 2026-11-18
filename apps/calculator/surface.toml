@@ -6,6 +6,7 @@ format = 2
 kind = "calculator.document"
 label = "Calculator"
 version = 1
+shows = ["open", "recall", "show-calculator", "show-convert", "show-graph2d", "show-graph3d", "toggle-panel", "use-degrees", "use-radians"]
 fields = [
   { path = "history", type = { collection = { named = "HistoryEntry" } }, readonly = true, stored = "collection" },
   { path = "history.*.expr", type = "text", label = true },

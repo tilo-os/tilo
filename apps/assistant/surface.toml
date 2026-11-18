@@ -6,4 +6,5 @@ format = 2
 kind = "assistant.window"
 label = "Assistant window"
 version = 1
+shows = ["view-main-chat", "view-sub-agent", "view-supervision"]
 

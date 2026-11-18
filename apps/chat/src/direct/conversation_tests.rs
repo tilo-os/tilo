@@ -22,6 +22,26 @@ fn registered_person_effect_ids_match_the_native_broker_protocol() {
     assert_eq!(ChatEffect::SEND_DIRECT_MESSAGE.id, "send-direct-message");
 }
 
+/// Opening the conversation with a person shows it, on the row Chat publishes for them only once
+/// it is open: the surface the package ships says so, so a closed Chat asked for it starts with a
+/// window.
+#[test]
+fn the_surface_says_opening_a_conversation_with_a_person_shows_it() {
+    use crate::effects::ChatEffect;
+
+    // Named under an id of its own: the surface this process holds for Chat stays as it was.
+    let app = "so.tilo.chat.shipped-surface";
+    ui::app_surface::register_package(app, include_bytes!("../../surface.toml"));
+    assert!(ui::app_surface::shows(
+        app,
+        ChatEffect::OPEN_DIRECT_CONVERSATION.id
+    ));
+    assert!(!ui::app_surface::shows(
+        app,
+        ChatEffect::SEND_DIRECT_MESSAGE.id
+    ));
+}
+
 tilo_test_env::scenario! {
     /// The id of a direct conversation.
     /// Each case was a test of its own, on a fixture of its own; a failure

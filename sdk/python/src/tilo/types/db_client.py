@@ -72,7 +72,7 @@ RemoveQueryArgs = TypedDict("RemoveQueryArgs", {
 
 class Workspace(Resource):
     """Database — `db-client.workspace`."""
-    __surface__ = "so.tilo.db-client@ff2837e66ce4dd02"
+    __surface__ = "so.tilo.db-client@2cf0df7278c3e582"
     connections: list[Entry[SavedConnection]]
     saved_queries: list[Entry[SavedQuery]]
     sql: str

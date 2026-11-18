@@ -2201,10 +2201,9 @@ impl AppBrokerState {
             }
             // An action that shows nothing runs in an instance of the app
             // with no window, where the host runs one: it publishes, and the
-            // wait below delivers to it. Only an `open` launches a window.
+            // wait below delivers to it. Only one that shows launches a window.
             if !launched
                 && !shows
-                && address.action != APPLICATION_OPEN_ACTION
                 && let Some(start) = self.run_windowless(app_id, &workspace_id)?
             {
                 starting = Some(start);

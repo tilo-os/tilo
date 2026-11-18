@@ -6,6 +6,7 @@ format = 2
 kind = "windows.manager"
 label = "Windows manager"
 version = 1
+shows = ["read-app", "show"]
 fields = [
   { path = "routes", type = { map = { named = "Route" } } },
 ]

@@ -6,6 +6,7 @@ format = 2
 kind = "canvas.artwork"
 label = "Artwork"
 version = 2
+shows = ["inspect", "media", "use-brush", "use-colour", "use-pigment"]
 fields = [
   { path = "title", type = "text", label = true },
   { path = "width", type = "float" },

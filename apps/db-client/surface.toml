@@ -6,6 +6,7 @@ format = 2
 kind = "db-client.workspace"
 label = "Database"
 version = 1
+shows = ["focus-database", "focus-schema", "new-connection", "read-result", "show-result"]
 fields = [
   { path = "connections", type = { collection = { named = "SavedConnection" } }, stored = "collection" },
   { path = "connections.*.name", type = "text", label = true },

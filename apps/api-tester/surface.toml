@@ -6,6 +6,7 @@ format = 2
 kind = "api-tester.workspace"
 label = "API workspace"
 version = 1
+shows = ["environment-menu", "pick-environment", "rename-collection", "request-menu"]
 fields = [
   { path = "collections", type = { collection = { named = "SavedCollection" } }, stored = "collection" },
   { path = "collections.*.name", type = "text", label = true },

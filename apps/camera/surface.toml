@@ -6,6 +6,7 @@ format = 2
 kind = "camera"
 label = "Camera"
 version = 1
+shows = ["crop-page", "open-camera", "open-document", "open-scanner", "open-settings", "use-lens", "use-mode"]
 fields = [
   { path = "scans", type = { list = { named = "ScanEntry" } }, readonly = true },
   { path = "recent", type = { option = { named = "SharedCapture" } }, readonly = true, stored = "record" },

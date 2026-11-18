@@ -6,6 +6,7 @@ format = 2
 kind = "files.folder"
 label = "Folder"
 version = 1
+shows = ["account-details", "availability", "back", "browse-cloud", "cancel-cloud", "clear-selection", "forget-recent", "forward", "go-to", "grid", "history", "import-cloud", "keyboard-shortcuts", "list", "more-cloud", "move-favorite", "open-account", "open-drive", "open-folder", "open-item", "open-trash", "properties", "read-entry", "reauthenticate", "recent", "remove-favorite", "retry-cloud", "reveal", "reveal-cloud", "reveal-recent", "select-all", "select-cloud", "select-entries", "selected-entries", "send-nearby", "sort-ascending", "sort-descending", "sort-modified", "sort-name", "sort-size", "sort-type", "toggle-hidden", "up", "zoom-in", "zoom-out"]
 fields = [
   { path = "places", type = { collection = { named = "Bookmark" } }, stored = "collection" },
   { path = "places.*.place", type = "text", readonly = true },
