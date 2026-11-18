@@ -101,15 +101,21 @@ struct Pane {
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.publisher.key")]
 pub enum KeyEffect {
+    #[effect(kind = "outside")]
     #[effect(privileged, label = "publisher-create-key")]
     CreateKey,
+    #[effect(kind = "outside")]
     CopyProof,
+    #[effect(kind = "outside")]
     #[effect(job, attended, privileged, label = "publisher-copy-secret")]
     CopySecret,
+    #[effect(kind = "outside")]
     #[effect(job, attended, privileged)]
     ExportKey,
+    #[effect(kind = "outside")]
     #[effect(job)]
     ApplyForNamespaces,
+    #[effect(kind = "outside")]
     #[effect(job)]
     CheckStatus,
 }

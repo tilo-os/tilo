@@ -62,6 +62,7 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&SpeakersArea> {
 #[effect(operation = "settings.effect")]
 pub enum SpeakerEffect {
     /// Save a speaker set; the other devices are asked to join.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     CreateSpeakerSet {
         #[param("The set's name")]
@@ -70,6 +71,7 @@ pub enum SpeakerEffect {
         members: Vec<SpeakerMemberSpec>,
     },
     /// Play a short sound on one output, to tell which speaker it is.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     IdentifySpeaker {
         #[param("The device the output is on")]
@@ -79,6 +81,7 @@ pub enum SpeakerEffect {
     },
     /// Measure a set with the offered microphones: the one at `listening`
     /// (where the person sits), and every other except `excluded`.
+    #[effect(kind = "outside")]
     #[effect(job, row, returns)]
     CalibrateSpeakerSet {
         #[param("The speaker set's id")]
@@ -89,30 +92,35 @@ pub enum SpeakerEffect {
         listening: Option<String>,
     },
     /// Stop measuring a set.
+    #[effect(kind = "outside")]
     #[effect(job, row, returns)]
     CancelCalibration {
         #[param("The speaker set's id")]
         group: String,
     },
     /// Apply a measured proposal.
+    #[effect(kind = "outside")]
     #[effect(job, row, returns)]
     ApplyCalibration {
         #[param("The speaker set's id")]
         group: String,
     },
     /// Go back to how the set sounded before the last calibration.
+    #[effect(kind = "outside")]
     #[effect(job, row, returns)]
     RevertCalibration {
         #[param("The speaker set's id")]
         group: String,
     },
     /// Discard a measured proposal.
+    #[effect(kind = "outside")]
     #[effect(job, row, returns)]
     DismissCalibration {
         #[param("The speaker set's id")]
         group: String,
     },
     /// Delete a speaker set; its devices play on their own again.
+    #[effect(kind = "outside")]
     #[effect(job, row, destructive, returns)]
     DeleteSpeakerSet {
         #[param("The speaker set's id")]

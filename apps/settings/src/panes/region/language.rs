@@ -34,6 +34,7 @@ pub fn area(app: &SettingsApp) -> Option<&LanguageArea> {
 pub enum LanguageEffect {
     /// Show the desktop in a language, installing its language pack first
     /// when the repositories offer one; "device" follows the device's.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
     ChooseLanguage {
         #[param("The language by a tag of it (de, de-DE) or as Region & formats names it")]

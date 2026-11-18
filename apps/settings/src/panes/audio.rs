@@ -107,17 +107,21 @@ fn event_sound(event: SystemSoundEvent) -> ui::tilo_resource::Path<AudioPrefs, b
 #[effect(operation = "settings.effect")]
 pub enum AudioEffect {
     /// Set the output volume, from 0 to 1.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
     #[effect(keywords = "volume, loudness, sound level")]
     SetOutputVolume { volume: f64 },
     /// Mute or unmute the output.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
     #[effect(keywords = "mute, silence, sound off")]
     SetOutputMuted { muted: bool },
     /// Set the microphone level, from 0 to 1.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
     SetInputVolume { volume: f64 },
     /// Play sound through another output device.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
     #[effect(keywords = "speakers, headphones, audio output, sound output")]
     SelectOutput {
@@ -126,12 +130,14 @@ pub enum AudioEffect {
     },
     /// Play everything through one of the person's speaker sets, as
     /// through any other output.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
     SelectSpeakerSet {
         #[param("The speaker set's id")]
         group: String,
     },
     /// Record from another input device.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
     #[effect(keywords = "microphone, mic, audio input")]
     SelectInput {
@@ -139,6 +145,7 @@ pub enum AudioEffect {
         device: String,
     },
     /// Use another profile of an audio device (high fidelity, headset…).
+    #[effect(kind = "outside")]
     #[effect(row, job, idempotent)]
     SetDeviceProfile {
         #[param("The device's node id")]
@@ -148,6 +155,7 @@ pub enum AudioEffect {
     },
     /// Play one app's stream through a device, or `Default` to follow the
     /// system's.
+    #[effect(kind = "outside")]
     #[effect(row, job, idempotent)]
     RouteStream {
         #[param("The stream's node id")]
@@ -156,16 +164,20 @@ pub enum AudioEffect {
         device: String,
     },
     /// Set one app's volume, from 0 to 1.
+    #[effect(kind = "outside")]
     #[effect(row, job, idempotent)]
     SetStreamVolume { stream: u32, volume: f64 },
     /// Mute or unmute one app.
+    #[effect(kind = "outside")]
     #[effect(row, job, idempotent)]
     SetStreamMuted { stream: u32, muted: bool },
+    #[effect(kind = "outside")]
     TestSpeaker {
         #[param("left or right", choices = ["left", "right"])]
         channel: String,
     },
     /// Show the microphone's level for a few seconds, or stop showing it.
+    #[effect(kind = "outside")]
     #[effect(label = "sound-mic-test")]
     ToggleMicrophoneTest,
 }

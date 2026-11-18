@@ -141,17 +141,20 @@ impl Workspace {
 #[effect(operation = "db_client.effects")]
 pub enum DbEffect {
     /// Execute SQL
+    #[effect(kind = "outside")]
     #[effect(job, cancellable, destructive)]
     Query {
         #[param("SQL query")]
         sql: String,
     },
     /// Connect
+    #[effect(kind = "outside")]
     #[effect(row, job, idempotent, item = connections)]
     Connect {
         #[param("The saved connection")]
         connection: String,
     },
+    #[effect(kind = "outside")]
     #[effect(row, job, destructive, item = saved_queries)]
     Run {
         #[param("The saved query")]
@@ -164,6 +167,7 @@ pub enum DbEffect {
     FocusDatabase { connection: Uuid },
     #[effect(view, row)]
     FocusSchema { connection: Uuid, schema: String },
+    #[effect(kind = "outside")]
     #[effect(row, job, idempotent)]
     Browse {
         connection: Uuid,
@@ -175,15 +179,20 @@ pub enum DbEffect {
     /// Read query result
     #[effect(view, row, returns)]
     ReadResult { connection: Uuid, generation: usize },
+    #[effect(kind = "outside")]
     #[effect(attended, row, job)]
     ExportCsv { connection: Uuid, generation: usize },
+    #[effect(kind = "outside")]
     #[effect(row, job)]
     Begin { connection: Uuid },
+    #[effect(kind = "outside")]
     #[effect(row, job, destructive)]
     Commit { connection: Uuid },
+    #[effect(kind = "outside")]
     #[effect(row, job, destructive)]
     Rollback { connection: Uuid },
     /// Execute a historical query
+    #[effect(kind = "outside")]
     #[effect(row, job, destructive)]
     Rerun { connection: Uuid, generation: usize },
 }

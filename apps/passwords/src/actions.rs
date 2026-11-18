@@ -15,23 +15,20 @@ pub const ITEM_PREFIX: &str = "passwords:item:";
 pub enum PasswordsEffect {
     #[effect(view, idempotent, kind = "read", label = "passwords-show-access")]
     ShowAccess,
+    #[effect(kind = "outside")]
     #[effect(destructive, idempotent, label = "passwords-revoke-access")]
-    RevokeAccess {
-        grant: String,
-    },
+    RevokeAccess { grant: String },
+    #[effect(kind = "outside")]
     #[effect(attended, privileged, label = "passwords-approve-access")]
-    ApproveAccess {
-        proposal: String,
-        lifetime: String,
-    },
+    ApproveAccess { proposal: String, lifetime: String },
     #[effect(idempotent, attended, kind = "read", label = "passwords-deny-access")]
-    DenyAccess {
-        proposal: String,
-    },
+    DenyAccess { proposal: String },
     #[effect(screen)]
     Add,
+    #[effect(kind = "outside")]
     Save,
     /// The password is a secret parameter: it is never shown, logged or listed.
+    #[effect(kind = "outside")]
     SaveLogin {
         #[param("What the login is called")]
         name: String,
@@ -46,7 +43,9 @@ pub enum PasswordsEffect {
     ListLogins,
     #[effect(screen)]
     Cancel,
+    #[effect(kind = "outside")]
     Generate,
+    #[effect(kind = "outside")]
     Edit {
         #[param("Opaque id of the vault item")]
         item: String,
@@ -83,11 +82,13 @@ pub enum PasswordsEffect {
         #[param("Opaque id of the vault item")]
         item: String,
     },
+    #[effect(kind = "outside")]
     #[effect(destructive)]
     Delete {
         #[param("Opaque id of the vault item")]
         item: String,
     },
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
     Favorite {
         #[param("Opaque id of the vault item")]
@@ -95,8 +96,10 @@ pub enum PasswordsEffect {
         #[param("Whether the item is a favorite")]
         favorite: bool,
     },
+    #[effect(kind = "outside")]
     #[effect(attended)]
     Import,
+    #[effect(kind = "outside")]
     #[effect(attended)]
     Export,
     #[effect(screen)]

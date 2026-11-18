@@ -53,6 +53,7 @@ pub enum WindowsEffect {
     InstallPrivateCapsule,
     #[effect(row, job, privileged, kind = "outside")]
     InstallWindowsAppliance,
+    #[effect(kind = "outside")]
     #[effect(row, job)]
     Launch {
         #[param("The application's id")]

@@ -51,6 +51,7 @@ fn personal(apps: &DefaultApps) -> PersonalDefaults {
 #[effect(operation = "settings.effect")]
 pub enum DefaultAppsEffect {
     /// Open a kind of file or link with an installed app.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
     #[effect(keywords = "default app, open with, file association")]
     SetDefaultApp {
@@ -60,6 +61,7 @@ pub enum DefaultAppsEffect {
         app: String,
     },
     /// Open the workspace's own app defaults in Workspace Settings.
+    #[effect(kind = "outside")]
     #[effect(job)]
     OpenWorkspaceDefaults,
 }

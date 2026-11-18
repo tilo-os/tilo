@@ -15,18 +15,22 @@ use crate::schedule::{ClocksOnDevices, DeviceChoices};
 #[effect(operation = "clocks.effects")]
 pub enum ClocksEffect {
     /// Open this alarm on this device.
+    #[effect(kind = "outside")]
     OpenAlarm {
         #[param("The alarm's id")]
         alarm: String,
     },
     /// Show a section of Clocks on this device.
+    #[effect(kind = "outside")]
     Show {
         #[param("world, alarms, timers or stopwatch")]
         section: String,
     },
     /// Dismiss the due alarm or timer notice on this device.
+    #[effect(kind = "outside")]
     DismissNotice,
     /// Ring this device's alarm again after a few minutes.
+    #[effect(kind = "outside")]
     SnoozeAlarm {
         #[param("The alarm's id")]
         alarm: String,
@@ -34,6 +38,7 @@ pub enum ClocksEffect {
         minutes: u32,
     },
     /// Float a timer above other windows.
+    #[effect(kind = "outside")]
     FloatTimer {
         #[param("The timer's id")]
         timer: String,
@@ -41,6 +46,7 @@ pub enum ClocksEffect {
         floating: bool,
     },
     /// Float the stopwatch above other windows.
+    #[effect(kind = "outside")]
     FloatStopwatch {
         #[param("Float it")]
         floating: bool,

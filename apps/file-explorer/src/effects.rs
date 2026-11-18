@@ -60,6 +60,7 @@ pub enum FilesEffect {
     #[effect(tag = SELECTION)]
     CopySelection,
     /// Cut selection.
+    #[effect(kind = "outside")]
     #[effect(job)]
     #[effect(icon = "scissors")]
     #[effect(tag = SELECTION)]
@@ -70,9 +71,11 @@ pub enum FilesEffect {
     #[effect(audience = "agents")]
     ClipboardStatus,
     /// Recover interrupted clipboard transfers.
+    #[effect(kind = "outside")]
     #[effect(job, cancellable, returns)]
     #[effect(icon = "rotate-ccw")]
     RecoverClipboardTransfers,
+    #[effect(kind = "outside")]
     #[effect(job, cancellable)]
     #[effect(icon = "clipboard-paste")]
     #[effect(label = "files-menu-paste")]
@@ -196,6 +199,7 @@ pub enum FilesEffect {
     #[effect(icon = "square-terminal")]
     #[effect(label = "files-menu-open-terminal")]
     OpenTerminal,
+    #[effect(kind = "outside")]
     #[effect(destructive)]
     #[effect(keywords = "empty bin, empty recycle bin, clear trash")]
     #[effect(icon = "trash-2")]
@@ -235,6 +239,7 @@ pub enum FilesEffect {
         entry: String,
     },
     /// New file from template.
+    #[effect(kind = "outside")]
     #[effect(row)]
     #[effect(keywords = "new file, create file, empty file")]
     #[effect(icon = "file-plus")]
@@ -288,11 +293,13 @@ pub enum FilesEffect {
     #[effect(icon = "folder-open")]
     RevealCloud,
     /// Create an independent editable copy of a converted native document.
+    #[effect(kind = "outside")]
     #[effect(row)]
     ImportConverted {
         #[param("The converted entry's published row id")]
         entry: String,
     },
+    #[effect(kind = "outside")]
     #[effect(row, job)]
     #[effect(label = "files-import-once")]
     ImportOnce {
@@ -301,6 +308,7 @@ pub enum FilesEffect {
         #[param("Absolute path of an existing local destination folder")]
         folder: AbsolutePath,
     },
+    #[effect(kind = "outside")]
     #[effect(row, job)]
     #[effect(icon = "copy")]
     #[effect(label = "files-action-copy-to-folder")]
@@ -317,6 +325,7 @@ pub enum FilesEffect {
         #[param("The entry's row id")]
         entry: String,
     },
+    #[effect(kind = "outside")]
     #[effect(row, job)]
     #[effect(icon = "scissors")]
     #[effect(label = "files-menu-cut")]
@@ -324,6 +333,7 @@ pub enum FilesEffect {
         #[param("The entry's row id")]
         entry: String,
     },
+    #[effect(kind = "outside")]
     #[effect(row, job, cancellable)]
     #[effect(icon = "rotate-ccw")]
     #[effect(label = "files-menu-restore")]
@@ -331,6 +341,7 @@ pub enum FilesEffect {
         #[param("The Trash entry's row id")]
         entry: String,
     },
+    #[effect(kind = "outside")]
     #[effect(row, destructive)]
     #[effect(keywords = "delete forever, remove permanently, shred")]
     #[effect(icon = "trash-2")]
@@ -360,24 +371,28 @@ pub enum FilesEffect {
         #[param("The entry's row id")]
         entry: String,
     },
+    #[effect(kind = "outside")]
     #[effect(row)]
     #[effect(label = "files-keep-offline")]
     KeepOffline {
         #[param("The entry's row id")]
         entry: String,
     },
+    #[effect(kind = "outside")]
     #[effect(row)]
     #[effect(label = "files-use-automatic-storage")]
     AutomaticStorage {
         #[param("The entry's row id")]
         entry: String,
     },
+    #[effect(kind = "outside")]
     #[effect(row)]
     #[effect(label = "files-free-local-space")]
     FreeLocalSpace {
         #[param("The entry's row id")]
         entry: String,
     },
+    #[effect(kind = "outside")]
     #[effect(row)]
     #[effect(label = "files-retry-download")]
     RetryDownload {
@@ -411,6 +426,7 @@ pub enum FilesEffect {
         port: u16,
     },
     /// Open the shell's invite sheet on the workspace the entry is in, where a
+    #[effect(kind = "outside")]
     #[effect(row, job)]
     #[effect(keywords = "share, invite, send link, share file")]
     #[effect(icon = "user-plus")]
@@ -419,6 +435,7 @@ pub enum FilesEffect {
         entry: String,
     },
     /// Save an incoming transfer.
+    #[effect(kind = "outside")]
     #[effect(row, privileged)]
     AcceptNearby {
         #[param("The incoming transfer")]
@@ -427,6 +444,7 @@ pub enum FilesEffect {
         destination: NearbyDestinationHandle,
     },
     /// Decline an incoming transfer and discard its retained partial bytes.
+    #[effect(kind = "outside")]
     #[effect(row, destructive)]
     DeclineNearby {
         #[param("The incoming transfer")]
@@ -445,6 +463,7 @@ pub enum FilesEffect {
         transfer: NearbyTransferHandle,
     },
     /// Cancel a transfer.
+    #[effect(kind = "outside")]
     #[effect(row)]
     CancelNearby {
         #[param("The running transfer")]
@@ -476,6 +495,7 @@ pub enum FilesEffect {
         #[param("The drive's id, as its row names it")]
         drive: String,
     },
+    #[effect(kind = "outside")]
     #[effect(row)]
     #[effect(label = "files-menu-uninstall")]
     UninstallApp {

@@ -20,6 +20,7 @@ pub enum JournalEffect {
         #[param("Follow new entries; omit to toggle")]
         enabled: Option<bool>,
     },
+    #[effect(kind = "outside")]
     #[effect(attended, job)]
     ExportFilteredJsonl,
     #[effect(screen)]

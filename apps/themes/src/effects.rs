@@ -9,6 +9,7 @@ const MAX_THEME_BYTES: usize = 1_048_576;
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "themes.effect")]
 pub enum ThemesEffect {
+    #[effect(kind = "outside")]
     #[effect(job, cancellable, own_device)]
     ApplyTheme {
         #[param("Id of the preset or written theme")]
@@ -19,6 +20,7 @@ pub enum ThemesEffect {
         #[param("Id of the preset or written theme")]
         theme: String,
     },
+    #[effect(kind = "outside")]
     #[effect(attended, job, cancellable, label = "themes-import")]
     Import,
     #[effect(view)]

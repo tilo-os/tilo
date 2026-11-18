@@ -18,8 +18,10 @@ pub const BACKUPS_OPERATION_TYPE: &str = "backups.operation";
 #[derive(Clone, Debug, PartialEq, Eq, ui::framework::Effect)]
 #[effect(operation = "backups.operation")]
 pub enum BackupsEffect {
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     BackupNow,
+    #[effect(kind = "outside")]
     #[effect(attended, job)]
     Setup,
     #[effect(job, returns, kind = "read")]
@@ -27,6 +29,7 @@ pub enum BackupsEffect {
         #[param("Id of the stored snapshot")]
         snapshot_id: String,
     },
+    #[effect(kind = "outside")]
     #[effect(attended, job, returns)]
     RestoreSnapshot {
         #[param("Id of the stored snapshot")]

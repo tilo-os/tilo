@@ -39,6 +39,7 @@ pub enum CodeEditorEffect {
     /// Opens a file Code can reach: one it was handed or one in its open
     /// project. Any other file is opened from Files (its `open-with` with
     /// Code Editor), which hands the file to Code.
+    #[effect(kind = "outside")]
     #[effect(job, cancellable)]
     #[effect(icon = "folder-open")]
     OpenFile {
@@ -46,6 +47,7 @@ pub enum CodeEditorEffect {
         path: Option<ui::tilo_resource::AbsolutePath>,
     },
     /// Open project folder.
+    #[effect(kind = "outside")]
     #[effect(job, cancellable)]
     #[effect(keywords = "open project, open workspace folder")]
     #[effect(icon = "folder-open")]
@@ -54,9 +56,11 @@ pub enum CodeEditorEffect {
         path: Option<ui::tilo_resource::AbsolutePath>,
     },
     /// New untitled file.
+    #[effect(kind = "outside")]
     #[effect(icon = "file-plus")]
     NewBuffer,
     /// Save file.
+    #[effect(kind = "outside")]
     #[effect(job, cancellable, destructive)]
     #[effect(keywords = "write file, save changes")]
     #[effect(icon = "hard-drive")]
@@ -67,19 +71,23 @@ pub enum CodeEditorEffect {
         path: Option<ui::tilo_resource::AbsolutePath>,
     },
     /// Save as.
+    #[effect(kind = "outside")]
     #[effect(attended, job, cancellable)]
     #[effect(icon = "hard-drive")]
     SaveAs,
     /// Save all files.
+    #[effect(kind = "outside")]
     #[effect(icon = "hard-drive")]
     SaveAll,
     /// Format file.
     ///
     /// Reformats the active file as its language's formatter does, as one
     /// edit.
+    #[effect(kind = "outside")]
     #[effect(icon = "wand-sparkles")]
     FormatFile,
     /// Revert file to saved.
+    #[effect(kind = "outside")]
     #[effect(icon = "rotate-ccw")]
     RevertFile,
     /// Find in file.
@@ -88,6 +96,7 @@ pub enum CodeEditorEffect {
     #[effect(icon = "search")]
     Find,
     /// Replace in file.
+    #[effect(kind = "outside")]
     #[effect(keywords = "find and replace, search and replace, substitute")]
     #[effect(icon = "type")]
     Replace,
@@ -105,18 +114,23 @@ pub enum CodeEditorEffect {
         value: Option<String>,
     },
     /// Duplicate line.
+    #[effect(kind = "outside")]
     #[effect(icon = "copy")]
     DuplicateLine,
     /// Move line up.
+    #[effect(kind = "outside")]
     #[effect(icon = "arrow-up")]
     MoveLineUp,
     /// Move line down.
+    #[effect(kind = "outside")]
     #[effect(icon = "arrow-down")]
     MoveLineDown,
     /// Delete line.
+    #[effect(kind = "outside")]
     #[effect(icon = "delete")]
     DeleteLine,
     /// Toggle line comment.
+    #[effect(kind = "outside")]
     #[effect(icon = "slash")]
     #[effect(tag = CARET)]
     ToggleComment,

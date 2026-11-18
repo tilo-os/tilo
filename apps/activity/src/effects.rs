@@ -17,11 +17,13 @@ pub enum ActivityEffect {
         #[param("Id of the change the selection ends at")]
         to: String,
     },
+    #[effect(kind = "outside")]
     #[effect(label = "activity-morning-refresh")]
     RefreshSource {
         #[param("Key of the morning source")]
         key: String,
     },
+    #[effect(kind = "outside")]
     RemoveSource {
         #[param("Key of the morning source")]
         key: String,

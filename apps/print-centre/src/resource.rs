@@ -17,8 +17,10 @@ pub use print_centre_model::{
 pub enum PrintCentreEffect {
     #[effect(screen)]
     Refresh,
+    #[effect(kind = "outside")]
     #[effect(job)]
     FindPrinters,
+    #[effect(kind = "outside")]
     #[effect(job)]
     AddPrinter {
         #[param("The found printer's address")]
@@ -38,6 +40,7 @@ pub enum PrintCentreEffect {
     PrintDocument,
     #[effect(view)]
     ScanDocument,
+    #[effect(kind = "outside")]
     #[effect(destructive)]
     NewScannedDocument,
     #[effect(view)]
@@ -45,28 +48,33 @@ pub enum PrintCentreEffect {
         #[param("The printer's queue name")]
         printer: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job)]
     SetDefaultPrinter {
         #[param("The printer's queue name")]
         printer: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job)]
     #[effect(label = "print-centre-pause-printer")]
     PausePrinter {
         #[param("The printer's queue name")]
         printer: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job)]
     #[effect(label = "print-centre-resume-printer")]
     ResumePrinter {
         #[param("The printer's queue name")]
         printer: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job)]
     CancelDocument {
         #[param("The print job's id")]
         job: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job)]
     #[effect(label = "print-centre-print-again")]
     RetryDocument {
@@ -96,6 +104,7 @@ pub enum PrintCentreEffect {
         #[param("The value the printer reported")]
         value: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job)]
     SendToPrinter,
     #[effect(view)]
@@ -105,6 +114,7 @@ pub enum PrintCentreEffect {
         #[param("The scanner's device name")]
         scanner: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job)]
     #[effect(label = "print-centre-scan-page")]
     ScanPage,
@@ -115,16 +125,25 @@ pub enum PrintCentreEffect {
     PreviousScanPage,
     #[effect(view)]
     NextScanPage,
+    #[effect(kind = "outside")]
     MoveScanPageEarlier,
+    #[effect(kind = "outside")]
     MoveScanPageLater,
+    #[effect(kind = "outside")]
     RemoveScanPage,
+    #[effect(kind = "outside")]
     RotateScanPage,
+    #[effect(kind = "outside")]
     CropScanPage,
+    #[effect(kind = "outside")]
     #[effect(job)]
     RecognizeText,
+    #[effect(kind = "outside")]
     CopyRecognizedText,
+    #[effect(kind = "outside")]
     #[effect(attended, job)]
     SaveScannedPage,
+    #[effect(kind = "outside")]
     #[effect(attended, job)]
     SaveScannedDocument,
 }

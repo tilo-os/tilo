@@ -52,8 +52,10 @@ pub enum StoreEffect {
         #[param("Optional app identity whose catalogue details to inspect")]
         app: Option<String>,
     },
+    #[effect(kind = "outside")]
     #[effect(job)]
     Refresh,
+    #[effect(kind = "outside")]
     #[effect(job)]
     UpdateAll,
     #[effect(screen)]
@@ -72,12 +74,14 @@ pub enum StoreEffect {
     ///
     /// The app then appears nowhere in the Store or in search, and cannot be
     /// opened or installed from them. Only you can unblock it.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
     #[effect(label = "store-block-button")]
     BlockApp {
         #[param("App identity (for example com.example.Game)")]
         app: String,
     },
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
     UnblockApp {
         #[param("App identity")]
@@ -107,6 +111,7 @@ pub enum StoreEffect {
         #[param("Optional enabled repository name; omit only when its offer is unambiguous")]
         registry: Option<String>,
     },
+    #[effect(kind = "outside")]
     #[effect(job)]
     InstallRuntime {
         #[param("Reviewed runtime package identity")]
@@ -122,6 +127,7 @@ pub enum StoreEffect {
     /// Review a local Tilo package.
     ///
     /// Opening a package installs nothing. Its identity must match a verified repository offer or an existing trusted local attestation.
+    #[effect(kind = "outside")]
     #[effect(job)]
     ImportPackage {
         #[param("Absolute, sandbox-readable .tapp path; omit to choose a file")]
@@ -131,6 +137,7 @@ pub enum StoreEffect {
         #[param("Optional handed file length; bytes are independently bounded and verified")]
         reported_size: Option<u64>,
     },
+    #[effect(kind = "outside")]
     #[effect(job)]
     #[effect(label = "store-package-install")]
     InstallImportedPackage {
@@ -152,6 +159,7 @@ pub enum StoreEffect {
     ShowRemotes,
     #[effect(screen)]
     ShowTrust,
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
     OpenLink {
         #[param("Web address (http or https)")]
@@ -160,47 +168,55 @@ pub enum StoreEffect {
     /// Open.
     ///
     /// A Tilo app is fetched when it is not on this device yet.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     #[effect(label = "store-action-open")]
     OpenApp {
         #[param("App identity")]
         app: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job)]
     #[effect(label = "store-action-update")]
     Update {
         #[param("App identity")]
         app: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job)]
     Pin {
         #[param("App identity")]
         app: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job)]
     #[effect(label = "store-action-release")]
     Unpin {
         #[param("App identity")]
         app: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job)]
     #[effect(label = "store-action-install")]
     FlatpakInstall {
         #[param("App identity")]
         app: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job)]
     #[effect(label = "store-action-update")]
     FlatpakUpdate {
         #[param("App identity")]
         app: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job)]
     #[effect(label = "store-action-open")]
     FlatpakOpen {
         #[param("App identity")]
         app: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job)]
     #[effect(label = "store-flatpak-unavailable")]
     FlatpakSetup {
@@ -211,14 +227,17 @@ pub enum StoreEffect {
     ///
     /// Bots run in workspaces, not on this device; this stays unavailable
     /// until a workspace offers its install-bot action to you.
+    #[effect(kind = "outside")]
     #[effect(job)]
     AddBot {
         #[param("Bot identity")]
         app: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job)]
     RefreshRemotes,
     /// Add Flatpak remote.
+    #[effect(kind = "outside")]
     #[effect(job)]
     AddRemote {
         #[param("Unique remote name")]
@@ -226,12 +245,14 @@ pub enum StoreEffect {
         #[param("HTTPS repository URL")]
         url: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job)]
     #[effect(label = "store-remote-enable")]
     EnableRemote {
         #[param("Account repository identity")]
         remote: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job)]
     #[effect(label = "store-remote-disable")]
     DisableRemote {
@@ -239,6 +260,7 @@ pub enum StoreEffect {
         remote: String,
     },
     /// Remove remote.
+    #[effect(kind = "outside")]
     #[effect(job, destructive)]
     RemoveRemote {
         #[param("Remote name")]
@@ -251,6 +273,7 @@ pub enum StoreEffect {
         #[param("Prepare an appeal instead of a report")]
         appeal: bool,
     },
+    #[effect(kind = "outside")]
     #[effect(job, sensitive)]
     SubmitReport {
         #[param("App identity of the report")]
@@ -258,12 +281,14 @@ pub enum StoreEffect {
         #[param("Exact operation JSON returned by prepare-moderation")]
         operation: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job)]
     #[effect(label = "store-report-refresh")]
     RefreshStatus {
         #[param("App identity of the report")]
         app: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job, sensitive)]
     #[effect(label = "store-report-appeal")]
     Appeal {
@@ -272,6 +297,7 @@ pub enum StoreEffect {
         #[param("Exact operation JSON returned by prepare-moderation")]
         operation: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job)]
     #[effect(label = "store-report-export")]
     ExportEvidence {

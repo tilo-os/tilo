@@ -80,32 +80,40 @@ pub(crate) fn automatic_brightness(cx: &ViewCx<DisplayPrefs>) -> Item {
 #[effect(operation = "settings.effect")]
 pub enum DisplayEffect {
     /// The built-in panel's brightness, from 0 to 1.
+    #[effect(kind = "outside")]
     #[effect(returns, idempotent)]
     SetBrightness { brightness: f64 },
     /// An external monitor's brightness, from 0 to 1.
+    #[effect(kind = "outside")]
     #[effect(returns, row, idempotent)]
     SetMonitorBrightness { display: String, brightness: f64 },
     /// Use a display, or turn it off. Staged until applied.
+    #[effect(kind = "outside")]
     #[effect(returns, row, idempotent)]
     UseDisplay { display: String, on: bool },
     /// Make a display the one panels and new windows open on.
+    #[effect(kind = "outside")]
     #[effect(returns, row, idempotent)]
     SetPrimaryDisplay { display: String },
     /// A display's scale. Staged until applied.
+    #[effect(kind = "outside")]
     #[effect(returns, row, idempotent)]
     #[effect(keywords = "scaling, zoom, text size, dpi")]
     SetOutputScale { display: String, scale: String },
     /// Place a display beside another: `Right of …`, `Left of …`, `Above …`,
     /// `Below …`. Staged until applied.
+    #[effect(kind = "outside")]
     #[effect(returns, row)]
     PlaceDisplay { display: String, position: String },
     /// Put a display's top-left corner at a point of the desktop, as
     /// dragging it does. Staged until applied.
+    #[effect(kind = "outside")]
     #[effect(returns, row)]
     MoveDisplay { display: String, x: i32, y: i32 },
     /// Place a device's screens in the person's shared layout by where one of them goes: where
     /// they meet another device's screens is where the pointer crosses between the two, and a
     /// device placed apart from the others is out of its reach.
+    #[effect(kind = "outside")]
     #[effect(returns, row)]
     MoveDeviceDisplay {
         display: String,
@@ -118,27 +126,34 @@ pub enum DisplayEffect {
     InspectSharedDisplays,
     /// Show another display's picture, or extend the workspace. Staged
     /// until applied.
+    #[effect(kind = "outside")]
     #[effect(returns, row)]
     MirrorDisplay { display: String, mirror: String },
     /// A display's resolution and refresh rate. Staged until applied.
+    #[effect(kind = "outside")]
     #[effect(returns, row, idempotent)]
     #[effect(keywords = "resolution, refresh rate, hz, screen size")]
     SetDisplayMode { display: String, mode: String },
     /// A display's rotation. Staged until applied.
+    #[effect(kind = "outside")]
     #[effect(returns, row, idempotent)]
     #[effect(keywords = "rotate screen, portrait, landscape, orientation")]
     RotateDisplay { display: String, rotation: String },
     /// High dynamic range on a display that offers it. Staged until applied.
+    #[effect(kind = "outside")]
     #[effect(returns, row, idempotent)]
     SetHdr { display: String, on: bool },
     /// How bright SDR content is while a display runs in HDR, from 0 to 1.
+    #[effect(kind = "outside")]
     #[effect(returns, row, idempotent)]
     SetSdrBrightness { display: String, brightness: f64 },
     /// Variable refresh rate on a display that offers it. Staged until
     /// applied.
+    #[effect(kind = "outside")]
     #[effect(returns, row, idempotent)]
     SetVrr { display: String, on: bool },
     /// A display's colour profile, or `System default`. Staged until applied.
+    #[effect(kind = "outside")]
     #[effect(returns, row, idempotent)]
     SetColorProfile { display: String, profile: String },
     // The five below ask the device's display service when the displays
@@ -149,18 +164,23 @@ pub enum DisplayEffect {
     #[effect(job, returns, own_device, idempotent, kind = "read")]
     InspectDisplayConfiguration,
     /// Show each display's number and name on it for a few seconds.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     IdentifyDisplays,
     /// Preview the staged placement; it is kept only when confirmed.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     ApplyDisplayChanges,
     /// Keep the placement being previewed.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     KeepDisplayChanges,
     /// Go back to the placement before the preview.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     RevertDisplayChanges,
     /// Ask again before keeping display changes from a layout tool.
+    #[effect(kind = "outside")]
     #[effect(returns, row, label = "display-tools-forget")]
     ForgetDisplayTool {
         #[param("The tool's executable")]

@@ -48,41 +48,49 @@ pub enum ContainersEffect {
         #[param("Container id")]
         container: String,
     },
+    #[effect(kind = "outside")]
     #[effect(row, idempotent, privileged)]
     Start {
         #[param("Container id")]
         container: String,
     },
+    #[effect(kind = "outside")]
     #[effect(row, idempotent, privileged)]
     Stop {
         #[param("Container id")]
         container: String,
     },
+    #[effect(kind = "outside")]
     #[effect(row, privileged)]
     Restart {
         #[param("Container id")]
         container: String,
     },
+    #[effect(kind = "outside")]
     #[effect(row, idempotent, privileged)]
     Pause {
         #[param("Container id")]
         container: String,
     },
+    #[effect(kind = "outside")]
     #[effect(row, idempotent, privileged)]
     Unpause {
         #[param("Container id")]
         container: String,
     },
+    #[effect(kind = "outside")]
     #[effect(row, destructive)]
     RemoveContainer {
         #[param("Container id")]
         container: String,
     },
+    #[effect(kind = "outside")]
     #[effect(row, privileged)]
     Shell {
         #[param("Container id")]
         container: String,
     },
+    #[effect(kind = "outside")]
     #[effect(row, idempotent)]
     PullImage {
         #[param("Image reference")]
@@ -93,6 +101,7 @@ pub enum ContainersEffect {
         #[param("Image reference")]
         image: String,
     },
+    #[effect(kind = "outside")]
     #[effect(row, destructive)]
     RemoveImage {
         #[param("Image reference")]
@@ -105,6 +114,7 @@ pub enum ContainersEffect {
         #[param("Image reference")]
         image: String,
     },
+    #[effect(kind = "outside")]
     #[effect(row, destructive)]
     RemoveVolume {
         #[param("Volume name")]
@@ -117,6 +127,7 @@ pub enum ContainersEffect {
         #[param("Volume name")]
         volume: String,
     },
+    #[effect(kind = "outside")]
     #[effect(row, privileged)]
     EnterDistrobox {
         #[param("Distrobox name")]

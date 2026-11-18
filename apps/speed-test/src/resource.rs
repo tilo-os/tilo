@@ -95,8 +95,10 @@ impl SpeedTest {
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.speed-test.run")]
 pub enum SpeedEffect {
+    #[effect(kind = "outside")]
     #[effect(job, cancellable, own_device)]
     Start,
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Stop,
 }

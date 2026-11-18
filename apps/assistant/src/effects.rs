@@ -17,10 +17,12 @@ pub enum AssistantEffect {
     },
     #[effect(view)]
     ViewSupervision,
+    #[effect(kind = "outside")]
     #[effect(job)]
     StartSubAgent {
         #[param("The job, in the person's own words")]
         job: String,
     },
+    #[effect(kind = "outside")]
     OpenModelSettings,
 }

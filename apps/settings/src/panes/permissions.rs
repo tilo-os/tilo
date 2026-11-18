@@ -46,9 +46,11 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&PermissionsArea> 
 #[effect(operation = "settings.effect")]
 pub enum PermissionsEffect {
     /// Open the privacy settings of the workspace that owns the grants.
+    #[effect(kind = "outside")]
     #[effect(job)]
     OpenWorkspacePrivacy,
     /// Let an application use the saved passwords and keys again, or stop it.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
     SetSecretsAccess {
         #[param("The application identity the secret store recorded")]
@@ -57,12 +59,14 @@ pub enum PermissionsEffect {
         allowed: bool,
     },
     /// Remove an application's saved secrets and its resource.
+    #[effect(kind = "outside")]
     #[effect(job)]
     ForgetSecrets {
         #[param("The application identity the secret store recorded")]
         app: String,
     },
     /// Take back an answer the person gave an app about a device of theirs.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
     RevokeDeviceAnswer {
         #[param("The answer, as the session publishes it")]

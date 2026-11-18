@@ -39,15 +39,18 @@ use crate::proposal::Proposal;
 #[effect(operation = "shortcuts.effects")]
 pub enum ShortcutEffects {
     /// Reload shortcuts.
+    #[effect(kind = "outside")]
     #[effect(job)]
     Refresh,
     /// Save shortcut.
+    #[effect(kind = "outside")]
     #[effect(job)]
     Save {
         #[param("Id of the draft to save")]
         draft: String,
     },
     /// Run shortcut.
+    #[effect(kind = "outside")]
     #[effect(job)]
     Run {
         #[param("Id of the saved shortcut")]
@@ -56,12 +59,14 @@ pub enum ShortcutEffects {
         inputs: Option<Map<String, Value>>,
     },
     /// Delete shortcut.
+    #[effect(kind = "outside")]
     #[effect(job, destructive)]
     Delete {
         #[param("Id of the saved shortcut")]
         shortcut: String,
     },
     /// Draft a shortcut with the agent.
+    #[effect(kind = "outside")]
     #[effect(job)]
     Describe {
         #[param("What the shortcut should do, in your words")]
@@ -69,6 +74,7 @@ pub enum ShortcutEffects {
     },
     /// Say what the last run of a shortcut should do differently, and have
     /// the agent propose the change.
+    #[effect(kind = "outside")]
     #[effect(job)]
     Refine {
         #[param("The shortcut program as it is, as JSON")]

@@ -63,6 +63,7 @@ pub enum MessagesEffect {
         account: String,
         group: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job, sensitive, returns, label = "messages-group-send")]
     SendGroupText {
         service: String,
@@ -73,6 +74,7 @@ pub enum MessagesEffect {
         #[param(secret)]
         text: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job, destructive, label = "messages-group-add")]
     AddGroupMember {
         service: String,
@@ -83,6 +85,7 @@ pub enum MessagesEffect {
         person: String,
         choice: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job, destructive, label = "messages-group-remove")]
     RemoveGroupMember {
         service: String,
@@ -92,6 +95,7 @@ pub enum MessagesEffect {
         operation: String,
         member: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job, destructive, label = "messages-group-leave")]
     LeaveGroup {
         service: String,
@@ -106,6 +110,7 @@ pub enum MessagesEffect {
     OpenAccountSetup,
     #[effect(view, idempotent)]
     SelectSetupAccount { service: String, account: String },
+    #[effect(kind = "outside")]
     #[effect(
         attended,
         job,
@@ -115,12 +120,14 @@ pub enum MessagesEffect {
         label = "messages-start-link"
     )]
     BeginLink { service: String, account: String },
+    #[effect(kind = "outside")]
     #[effect(job, sensitive, cancellable, returns, label = "messages-finish-link")]
     CompleteLink {
         service: String,
         account: String,
         attempt: String,
     },
+    #[effect(kind = "outside")]
     #[effect(
         attended,
         job,
@@ -130,6 +137,7 @@ pub enum MessagesEffect {
         label = "messages-first-account-prepare"
     )]
     BeginFirstEnrollment { service: String },
+    #[effect(kind = "outside")]
     #[effect(
         attended,
         job,
@@ -140,14 +148,17 @@ pub enum MessagesEffect {
         label = "messages-first-sms"
     )]
     ListSmsSims,
+    #[effect(kind = "outside")]
     #[effect(job, sensitive, cancellable, returns, label = "messages-select-sim")]
     SelectSmsSim { selection: String },
+    #[effect(kind = "outside")]
     #[effect(job, sensitive, cancellable, returns, label = "messages-finish-link")]
     CompleteFirstEnrollment {
         service: String,
         account: String,
         attempt: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job, sensitive, cancellable, returns, label = "messages-first-confirm")]
     ReviewFirstEnrollment {
         service: String,
@@ -191,6 +202,7 @@ pub enum MessagesEffect {
     Back,
     /// This resources an address-book decision; the adapter must separately verify current
     /// provider identity before I/O.
+    #[effect(kind = "outside")]
     #[effect(destructive)]
     ConfirmAccount { person: String, choice: String },
     #[effect(kind = "read", returns, idempotent, audience = "agents")]
@@ -205,6 +217,7 @@ pub enum MessagesEffect {
         #[param("The conversation; every one when omitted")]
         conversation: Option<String>,
     },
+    #[effect(kind = "outside")]
     #[effect(job, sensitive, returns)]
     Send {
         choice: String,

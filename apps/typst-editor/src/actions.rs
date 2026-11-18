@@ -19,24 +19,29 @@ pub const LIVE_EXTRA_RESOURCE_LIMIT: usize = 32;
 #[effect(operation = "typst.effect")]
 pub enum TypstEffect {
     /// Recompile.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
     Compile,
     /// Save Typst file.
+    #[effect(kind = "outside")]
     #[effect(job, cancellable, risk = "file_risk")]
     Save {
         #[param("Absolute path to write it to; omit to save in place or choose")]
         path: Option<ui::tilo_resource::AbsolutePath>,
     },
     /// Save Typst file somewhere else, chosen now.
+    #[effect(kind = "outside")]
     #[effect(job, cancellable)]
     SaveAs,
     /// Open Typst file.
+    #[effect(kind = "outside")]
     #[effect(job, cancellable)]
     OpenFile {
         #[param("Absolute path of the file; omit to choose one")]
         path: Option<ui::tilo_resource::AbsolutePath>,
     },
     /// Export PDF.
+    #[effect(kind = "outside")]
     #[effect(job, cancellable, risk = "file_risk")]
     ExportPdf {
         #[param("Absolute path to write the PDF to; omit to choose")]

@@ -34,36 +34,43 @@ pub enum DisksEffect {
         #[param("The tab to show", choices = ["overview", "smart", "partitions"])]
         tab: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job, label = "disks-action-mount")]
     Mount {
         #[param("Kernel name of the partition")]
         device: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job, label = "disks-action-unmount")]
     Unmount {
         #[param("Kernel name of the partition")]
         device: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job, destructive, returns)]
     Format {
         #[param("Kernel name of the drive or partition to erase")]
         device: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job, returns, label = "disks-action-benchmark")]
     Benchmark {
         #[param("Kernel name of the drive or partition")]
         device: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job, label = "disks-action-eject")]
     Eject {
         #[param("Kernel name of the removable drive")]
         device: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job, returns, label = "disks-open-in-files")]
     OpenFolder {
         #[param("Kernel name of the mounted partition")]
         device: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     DiskUsage {
         #[param("Kernel name of the mounted partition")]

@@ -47,6 +47,7 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&UsersArea> {
 #[effect(operation = "settings.effect")]
 pub enum UsersEffect {
     /// Create a login account, with the password typed into the form.
+    #[effect(kind = "outside")]
     #[effect(job)]
     CreateUser {
         #[param("The login name")]
@@ -55,6 +56,7 @@ pub enum UsersEffect {
         full_name: String,
     },
     /// Make an account an administrator, or a standard account.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent)]
     SetAdministrator {
         #[param("The account's login name")]
@@ -63,6 +65,7 @@ pub enum UsersEffect {
         admin: bool,
     },
     /// Sign an account in without its password when the device starts.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent)]
     SetAutomaticLogin {
         #[param("The account's login name")]
@@ -70,6 +73,7 @@ pub enum UsersEffect {
         on: bool,
     },
     /// Remove an account, keeping its files or removing them too.
+    #[effect(kind = "outside")]
     #[effect(job, row, destructive)]
     RemoveUser {
         #[param("The account's login name")]
@@ -78,18 +82,21 @@ pub enum UsersEffect {
         keep_files: bool,
     },
     /// Sign new apps in as one of the person's identities.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent)]
     UseIdentity {
         #[param("The identity's id")]
         identity: String,
     },
     /// Remove an identity from this device.
+    #[effect(kind = "outside")]
     #[effect(job, row, destructive, label = "settings-users-identity-remove")]
     RemoveIdentity {
         #[param("The identity's id")]
         identity: String,
     },
     /// Move an identity's key from a plain file into protected storage.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent)]
     ProtectIdentity {
         #[param("The identity's id")]

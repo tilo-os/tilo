@@ -474,6 +474,7 @@ pub enum InputEffect {
         page: Option<u32>,
     },
     /// Set the compose key.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
     #[effect(keywords = "compose, accents, special characters")]
     SetComposeKey {
@@ -481,6 +482,7 @@ pub enum InputEffect {
         key: String,
     },
     /// Set what the Caps Lock key does.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
     #[effect(keywords = "caps lock key, remap caps lock")]
     SetCapsLock {
@@ -488,6 +490,7 @@ pub enum InputEffect {
         behaviour: String,
     },
     /// Type with one of the active input sources.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
     SetActiveSource {
         #[param("The source's id, such as `us` or `de`")]
@@ -500,83 +503,83 @@ pub enum InputEffect {
     #[effect(returns, idempotent, kind = "read")]
     InspectKeyboardSources,
     /// Choose the discovered keyboard assignment to inspect and edit.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
-    SelectKeyboardScope {
-        scope: String,
-    },
+    SelectKeyboardScope { scope: String },
     /// Select a configured source without changing what the keyboard types.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
-    SelectConfiguredSource {
-        source: String,
-    },
+    SelectConfiguredSource { source: String },
     /// Show or hide the selected source options.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
-    SetSourceOptionsVisible {
-        visible: bool,
-    },
+    SetSourceOptionsVisible { visible: bool },
     /// Show or hide key and modifier-level inspection.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
-    SetSourceInspectionVisible {
-        visible: bool,
-    },
+    SetSourceInspectionVisible { visible: bool },
     /// Open the separate installed-source picker.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
     OpenSourcePicker,
     /// Return to configured sources without adding anything.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
     CloseSourcePicker,
     /// Preview an installed source in the Add screen.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
-    ChooseSourceToAdd {
-        source: String,
-    },
+    ChooseSourceToAdd { source: String },
     /// Add the previewed source without changing the active source.
+    #[effect(kind = "outside")]
     #[effect(job)]
     ConfirmSourceToAdd,
+    #[effect(kind = "outside")]
     ReorderSource {
         source: String,
         target: String,
         after: bool,
     },
     /// Inspect any installed XKB layout without changing what the keyboard types.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
-    PreviewLayout {
-        source: String,
-    },
+    PreviewLayout { source: String },
     /// Show the actual focused keyboard group and modifier state.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
     ShowLiveKeyboardMap,
     /// Inspect XKB levels 5–8 when the selected layout supplies them.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
-    SetPreviewExtraLevels {
-        on: bool,
-    },
+    SetPreviewExtraLevels { on: bool },
     /// Inspect one of the compiled native modifier levels without applying it.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
-    SetPreviewLevel {
-        level: String,
-    },
+    SetPreviewLevel { level: String },
     /// Read a physical key’s complete legends without applying a layout.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
-    InspectKeyboardKey {
-        key: String,
-    },
+    InspectKeyboardKey { key: String },
     /// Choose an explicit physical model for the preview and keyboard.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
     SetKeyboardModel {
         #[param("The physical model", choices = ["pc104", "pc105", "jp106", "kr106"])]
         model: String,
     },
     /// Type with the inspected layout, adding it when space is available.
+    #[effect(kind = "outside")]
     #[effect(job)]
     ApplyPreview,
     /// Add an installed input source and type with it.
+    #[effect(kind = "outside")]
     #[effect(job)]
     AddSource {
         #[param("The source's id, such as `us` or `de`")]
         source: String,
     },
     /// Replace one input source by another, in place.
+    #[effect(kind = "outside")]
     #[effect(job)]
     ReplaceSource {
         #[param("The source to replace")]
@@ -584,18 +587,22 @@ pub enum InputEffect {
         #[param("The source's id, such as `us` or `de`")]
         source: String,
     },
+    #[effect(kind = "outside")]
     MoveSourceUp {
         #[param("The source's id")]
         source: String,
     },
+    #[effect(kind = "outside")]
     MoveSourceDown {
         #[param("The source's id")]
         source: String,
     },
+    #[effect(kind = "outside")]
     RemoveSource {
         #[param("The source's id")]
         source: String,
     },
+    #[effect(kind = "outside")]
     AddDictionaryWord {
         #[param("The spelling, including its intended capitalization")]
         word: String,
@@ -604,6 +611,7 @@ pub enum InputEffect {
         #[param("The dictionary revision being edited")]
         revision: u64,
     },
+    #[effect(kind = "outside")]
     EditDictionaryWord {
         old_word: String,
         old_language: String,
@@ -611,15 +619,16 @@ pub enum InputEffect {
         language: String,
         revision: u64,
     },
+    #[effect(kind = "outside")]
     RemoveDictionaryWord {
         word: String,
         language: String,
         revision: u64,
     },
-    ResetDictionary {
-        revision: u64,
-    },
+    #[effect(kind = "outside")]
+    ResetDictionary { revision: u64 },
     /// Map a drawing tablet onto one display, or the whole desktop.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
     SetTabletOutput {
         #[param("The tablet's device id")]

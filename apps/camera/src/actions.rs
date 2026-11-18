@@ -69,47 +69,55 @@ pub enum CameraEffect {
     /// Set resolution
     ///
     /// The resolution this device's cameras capture at.
+    #[effect(kind = "outside")]
     #[effect(label = "camera-settings-resolution")]
     SetResolution {
         #[param("Resolution", choices = ["12mp", "4k", "1080p", "720p"])]
         resolution: String,
     },
     /// Set photo format
+    #[effect(kind = "outside")]
     #[effect(label = "camera-settings-photo-format")]
     SetPhotoFormat {
         #[param("Photo format", choices = ["jpeg", "png"])]
         format: String,
     },
     /// Set self-timer
+    #[effect(kind = "outside")]
     #[effect(label = "camera-settings-timer")]
     SetTimer {
         #[param("Seconds before the shutter", choices = ["0", "3", "10"])]
         seconds: String,
     },
     /// Show composition grid
+    #[effect(kind = "outside")]
     #[effect(label = "camera-a11y-composition-grid")]
     SetGrid {
         #[param("Whether the grid is shown")]
         on: bool,
     },
     /// Show level guide
+    #[effect(kind = "outside")]
     #[effect(label = "camera-settings-level")]
     SetLevel {
         #[param("Whether the level guide is shown")]
         on: bool,
     },
     /// Mirror front camera
+    #[effect(kind = "outside")]
     #[effect(label = "camera-settings-mirror")]
     SetMirrorFront {
         #[param("Whether front-camera photos are mirrored")]
         on: bool,
     },
     /// Tag photo location
+    #[effect(kind = "outside")]
     SetGeotag {
         #[param("Whether photos record where they were taken")]
         on: bool,
     },
     /// Use HDR
+    #[effect(kind = "outside")]
     #[effect(label = "camera-settings-hdr")]
     SetHdr {
         #[param("Whether photos use HDR")]
@@ -118,6 +126,7 @@ pub enum CameraEffect {
     /// Set default lens
     ///
     /// The lens this device's Camera opens with.
+    #[effect(kind = "outside")]
     SetDefaultLens {
         #[param("Lens", choices = ["back", "front", "wide"])]
         lens: String,
@@ -125,6 +134,7 @@ pub enum CameraEffect {
     /// Capture photo
     ///
     /// Saves the current frame and answers once the photo is registered.
+    #[effect(kind = "outside")]
     #[effect(row, job, cancellable)]
     #[effect(label = "camera-a11y-take-photo")]
     Capture,
@@ -132,19 +142,23 @@ pub enum CameraEffect {
     ///
     /// Starts a clip, or stops the one recording and answers once it is
     /// saved and registered.
+    #[effect(kind = "outside")]
     #[effect(row, job, cancellable)]
     #[effect(label = "camera-a11y-start-recording")]
     Record,
     /// Refresh cameras
     ///
     /// Drops a stale camera session and looks for cameras again.
+    #[effect(kind = "outside")]
     #[effect(row, idempotent)]
     RetryCamera,
     /// Open camera privacy settings
+    #[effect(kind = "outside")]
     #[effect(row)]
     #[effect(label = "camera-a11y-camera-privacy")]
     OpenCameraPrivacy,
     /// Use camera
+    #[effect(kind = "outside")]
     #[effect(row)]
     UseCamera {
         #[param("The camera's device node, as discovered on this device")]
@@ -154,12 +168,14 @@ pub enum CameraEffect {
     ///
     /// Asks for an image with the file chooser and decodes the QR code or
     /// barcode in it, without importing the image.
+    #[effect(kind = "outside")]
     #[effect(attended, row, job)]
     ImportImage,
     /// Choose a document scan setting
     ///
     /// The scanner, resolution, color, paper source or text language the
     /// next page scans with, by its place in that setting's list.
+    #[effect(kind = "outside")]
     ChooseScanSetting {
         #[param("Setting", choices = SCAN_SETTINGS.iter().copied())]
         setting: String,
@@ -167,20 +183,25 @@ pub enum CameraEffect {
         choice: String,
     },
     /// Capture document page
+    #[effect(kind = "outside")]
     #[effect(row, job, cancellable)]
     CapturePage,
     /// Rotate selected page
+    #[effect(kind = "outside")]
     #[effect(row)]
     RotatePage,
     /// Recognize text on selected page
+    #[effect(kind = "outside")]
     #[effect(row, job, cancellable)]
     RecognizeText,
     /// Copy recognized text
+    #[effect(kind = "outside")]
     #[effect(row)]
     CopyText,
     /// Export searchable PDF
     ///
     /// Asks where to save the scanned pages as one searchable PDF.
+    #[effect(kind = "outside")]
     #[effect(attended, row, job)]
     ExportPdf,
     /// Crop selected page
@@ -192,12 +213,15 @@ pub enum CameraEffect {
     #[effect(view)]
     CropPage,
     /// Move selected page earlier
+    #[effect(kind = "outside")]
     #[effect(row)]
     MovePageEarlier,
     /// Move selected page later
+    #[effect(kind = "outside")]
     #[effect(row)]
     MovePageLater,
     /// Remove selected page
+    #[effect(kind = "outside")]
     #[effect(row)]
     RemovePage,
 }
