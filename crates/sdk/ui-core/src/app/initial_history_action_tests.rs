@@ -999,14 +999,12 @@ fn accepted_delivery_is_refused_after_its_document_is_replaced() {
     fixture.thread.join().unwrap();
 }
 
-/// An invocation whose document never becomes current while it waits (the
-/// app's owner busy elsewhere, its newer capture still unapplied) fails with
-/// why, and nothing runs; collaboration goes on, so the next invocation, once
-/// the document is current, runs. A caller is always answered: a message is
-/// delivered or reported as failed, never left accepted with every later one
-/// hanging behind it.
+/// An invocation whose document is not current while it arrives (the app's
+/// owner busy elsewhere, its newer capture still unapplied) waits for it, as
+/// long as that takes, with collaboration going on, and runs once it is. No
+/// clock fails it while its document catches up.
 #[test]
-fn an_invocation_whose_document_never_becomes_current_fails_and_the_next_runs() {
+fn an_invocation_waits_for_its_document_to_become_current() {
     let calls = Rc::new(Cell::new(0));
     let mut history = automerge::AutoCommit::new();
     history
@@ -1049,35 +1047,26 @@ fn an_invocation_whose_document_never_becomes_current_fails_and_the_next_runs() 
         std::thread::yield_now();
     }
     (fixture.invoke)(31, uuid::Uuid::from_u128(31));
-    while (fixture.updates)().is_empty() && app.collaboration.manager.is_connected() {
+    while (fixture.received)() == 0 {
         app.pump_collab_presence();
         assert!(crate::time::now() < deadline);
         std::thread::yield_now();
     }
+    for _ in 0..64 {
+        app.pump_collab_presence();
+        std::thread::yield_now();
+    }
+    assert!(app.collaboration.manager.is_connected());
     assert!(
-        app.collaboration.manager.is_connected(),
-        "an invocation that never reached the app is answered, not a reason to stop collaborating"
+        (fixture.updates)().is_empty(),
+        "nothing answers it while it waits"
     );
-    let updates = (fixture.updates)();
-    let [
-        (
-            31,
-            tilo_actions::InvocationUpdate::Failed {
-                invocation: failed,
-                error,
-            },
-        ),
-    ] = updates.as_slice()
-    else {
-        panic!("expected the invocation's failure, got {updates:?}");
-    };
-    assert_eq!(failed.0, uuid::Uuid::from_u128(31));
-    assert_eq!(error.code, "action_not_delivered");
-    assert!(error.retryable, "nothing ran, so asking again is safe");
-    assert_eq!(calls.get(), 0, "the failed invocation never ran");
-    // The document becomes current; the next invocation runs.
+    assert_eq!(
+        calls.get(),
+        0,
+        "it does not run before its document is current"
+    );
     release.send(()).unwrap();
-    (fixture.invoke)(32, uuid::Uuid::from_u128(32));
     while calls.get() == 0 {
         app.pump_collab_presence();
         assert!(app.collaboration.manager.is_connected());

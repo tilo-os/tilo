@@ -129,8 +129,12 @@ impl<'a, 'b> ProcessWindows<'a, 'b> {
         self.bars.push(bar);
         // The app ran with no window until now: the window serves what it
         // served, so it goes, and the process is a windowed one from here.
-        for unshown in self.windows.iter().filter(|handler| handler.windowless) {
-            unshown.closing.set(true);
+        // It goes as a window closes: it takes no more invocations and
+        // answers the ones it was handed first.
+        for unshown in self.windows.iter_mut().filter(|handler| handler.windowless) {
+            if unshown.app.admit_native_close_request() {
+                unshown.closing.set(true);
+            }
         }
     }
 }

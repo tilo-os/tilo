@@ -64,7 +64,7 @@ fn publication_hold_waits(state: &BridgeState) -> usize {
 /// route not publishable since `before` ([`publication_hold_waits`]):
 /// the mutation is held until the route changes. Read after
 /// the mutation was queued, the count may already hold its one wait,
-/// which then sleeps to its deadline without counting again.
+/// which then sleeps until the route changes without counting again.
 #[cfg(test)]
 fn wait_held_at_publication(state: &BridgeState, before: usize) {
     tilo_test_env::wait_until(
@@ -3314,7 +3314,7 @@ fn committed_queued_publication_retains_payload_and_credits_until_released() {
 
 #[test]
 #[cfg(unix)]
-fn committed_queued_publication_deadline_is_terminal() {
+fn committed_queued_publication_on_a_failed_route_is_terminal() {
     queued_publication_terminal_case(false);
 }
 
@@ -3324,7 +3324,7 @@ fn committed_queued_publication_invalidation_is_terminal() {
     queued_publication_terminal_case(true);
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, test))]
 fn queued_publication_terminal_case(invalidate: bool) {
     let captures = Arc::new(std::sync::Mutex::new(Captures::default()));
     let (observed, release) = captures.lock().unwrap().hold_document();
@@ -3342,12 +3342,20 @@ fn queued_publication_terminal_case(invalidate: bool) {
         .document_reads
         .close_for_test(&manager.primary_route().unwrap().route.channel_id());
     let receipt = manager.begin_document_publication_barrier().unwrap();
+    let before = publication_hold_waits(&state);
     release.send(Ok(())).unwrap();
     tilo_test_env::wait_until("`captures.lock().unwrap().signed_ops.len() == 1`", || {
         captures.lock().unwrap().signed_ops.len() == 1
     });
+    // No clock ends the wait: the publication holds until the route changes.
+    wait_held_at_publication(&state, before);
+    assert_eq!(receipt.try_complete(), Ok(None));
     if invalidate {
         state.fail_closed("actual test worker invalidation");
+    } else {
+        state
+            .document_reads
+            .fail_for_test(&ready, "the route's first read was refused");
     }
     let error = receipt
         .wait(Some(tilo_test_env::hang_deadline()))
@@ -3369,15 +3377,15 @@ fn queued_publication_terminal_case(invalidate: bool) {
     thread.join().unwrap();
 }
 
-/// A record's route that does not open in time for its changes (a
-/// person's second device waits for another of theirs to hand it the
-/// keys of their own drafts) holds back that record alone: the barrier
+/// A document beside the app's own that has not reached this device (a
+/// person's second device waits for another of theirs to hand it their own
+/// drafts) holds back that document alone: the barrier
 /// says its change did not go, the app and its other routes stay
 /// published, and the owner hears it should send the record whole once
 /// the route opens. It used to stop the app's whole collaboration.
 #[test]
 #[cfg(unix)]
-fn a_record_route_not_open_in_time_holds_back_only_that_record() {
+fn a_document_not_here_holds_back_only_itself() {
     let (fd, captures, thread) = stand_up_fake_broker(FakeBroker::default());
     let workspace = Uuid::new_v4();
     let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "so.tilo.chat", workspace);
@@ -3397,10 +3405,13 @@ fn a_record_route_not_open_in_time_holds_back_only_that_record() {
     eventually("the drafts route to join", || {
         manager.document_route_publishable(&drafts)
     });
-    // Its committed history is still to be read: the route is closed.
-    let _closed = broker_state(&manager)
+    // It has still to reach this device: the route is closed.
+    let closed = broker_state(&manager)
         .document_reads
         .close_for_test(&drafts.channel_id());
+    broker_state(&manager)
+        .document_reads
+        .not_here_for_test(&closed);
     assert!(
         manager
             .try_send_to_route(
@@ -4008,18 +4019,64 @@ async fn native_invocation_delivery_turn_rejects_original_generation_retirement(
     assert!(!state.document_reads.publishable("original-route"));
 }
 
-#[tokio::test]
-async fn native_invocation_delivery_turn_timeout_preserves_unapplied_original_ownership() {
+/// A route takes invocations only once it is current: until the owner merged
+/// its first committed read, the broker keeps them for an instance that can
+/// answer, and none reaches this one.
+#[test]
+#[cfg(unix)]
+fn a_route_takes_invocations_only_once_current() {
+    let fixture = native_history_invocation_fixture(automerge::AutoCommit::new().save());
+    let mut manager = fixture.manager;
+    (fixture.invoke)(5, Uuid::from_u128(5));
+    let mut read = None;
+    tilo_test_env::wait_until("the route's first read", || {
+        read = read.take().or_else(|| {
+            manager.poll().into_iter().find_map(|event| match event {
+                CollabEvent::CommittedDocument { read, .. } => Some(read),
+                _ => None,
+            })
+        });
+        read.is_some()
+    });
+    // The join asked for every other stream already; give the shovel turns.
+    thread::sleep(Duration::from_millis(50));
+    assert_eq!(
+        (fixture.received)(),
+        0,
+        "no invocation before the route is current"
+    );
+    read.unwrap().applied();
+    tilo_test_env::wait_until("the held invocation to arrive", || {
+        manager
+            .poll()
+            .iter()
+            .any(|event| matches!(event, CollabEvent::Invocation { id: 5, .. }))
+    });
+    drop(manager);
+    fixture.thread.join().unwrap();
+}
+
+/// An invocation waits for its document's read to catch up for as long as that
+/// takes, keeping the route's ownership; it fails, saying why, only once the
+/// route will not become current.
+#[tokio::test(start_paused = true)]
+async fn native_invocation_delivery_turn_waits_until_the_route_fails() {
     let state = BridgeState::new();
     let original = state.document_reads.close_for_test("original-route");
-    let result = native_invocation_delivery_turn("original-route", &state).await;
-    assert_eq!(
-        result.unwrap_err(),
-        "original invocation capture did not become current"
+    let wait = native_invocation_delivery_turn("original-route", &state);
+    tokio::pin!(wait);
+    assert!(
+        tokio::time::timeout(Duration::from_secs(60), wait.as_mut())
+            .await
+            .is_err(),
+        "a read still catching up is waited for, however long it takes"
     );
     assert!(state.document_reads.current("original-route", &original));
-    assert!(!original.load(Ordering::Acquire));
-    assert!(!state.document_reads.publishable("original-route"));
+    state
+        .document_reads
+        .join_failed("original-route", "the first read was refused".into());
+    let error = wait.await.unwrap_err();
+    assert!(error.contains("the first read was refused"), "{error}");
 }
 
 include!("native_fixtures.rs");

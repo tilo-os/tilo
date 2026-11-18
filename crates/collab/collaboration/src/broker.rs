@@ -83,7 +83,7 @@ use inbound_document::{
     DecryptFailure, UndeliveredDocument, decrypt_document_payload, signed_document_event,
 };
 
-use crate::time::{Duration, Instant};
+use crate::time::Duration;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use runtime_portal::RawFd;
 use std::pin::Pin;
@@ -1111,15 +1111,15 @@ pub(crate) struct BridgeState {
     /// actions still waiting for the rest of them: what the app applies as
     /// one action, and what history reads.
     commits: Arc<std::sync::Mutex<crate::commits::Commits>>,
-    /// Why each route whose last join failed failed, by channel: a route
+    /// Why each route whose last join failed failed, by route key: a route
     /// that never joined says so instead of staying unready without a word.
     route_join_failures: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
     /// The record routes whose queued changes were let go since their owner
     /// last asked ([`CollabTransport::take_unpublished_route`]).
     unpublished_routes: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
-    /// The kind each joined route's record holds, by channel: a change that
-    /// arrives on a route awaiting its first join re-joins it naming the kind
-    /// the owner opened the record with.
+    /// The kind each joined route's document holds, by route key: a change
+    /// that arrives on a route awaiting its first join re-joins it naming the
+    /// kind the owner opened the document with.
     route_resource_types: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
     healthy: Arc<AtomicBool>,
     publication_failure: Arc<std::sync::Mutex<Option<DocumentPublicationError>>>,
@@ -3983,7 +3983,7 @@ async fn drive_shovel(
             SdkCommand::Hello(hello) => {
                 // A route already joining beside this loop (the record this
                 // window prepared) joins once: a second join of the same
-                // channel replaces the committed read the first one staged,
+                // route replaces the committed read the first one staged,
                 // and leaves the owner with a route it cannot publish on.
                 // So this announcement joins nothing and takes the route as
                 // the primary one when that join ends.
@@ -4511,7 +4511,7 @@ struct SdkRoute {
     committed: bool,
 }
 
-/// What publishing a route's document takes: its channel and its keys,
+/// What publishing a route's document takes: its broker connection and its keys,
 /// shared with the connection's [`DocumentQueue`].
 #[derive(Clone)]
 struct DocumentRoute {
@@ -4663,22 +4663,21 @@ async fn publish_document(
     inbound_tx: &InboundBridge,
     role: RouteRole,
 ) -> bool {
-    match wait_for_document_publication(route, &inbound_tx.state).await {
+    match wait_for_document_publication(route, &inbound_tx.state, role).await {
         PublicationWait::Open => {}
         PublicationWait::Stopped => return false,
-        // A record's route can wait on another device (its keys come
-        // from one that holds them): only that record waits, and its
-        // owner sends it whole once the route opens.
-        PublicationWait::Late if role == RouteRole::Record => {
+        // A document beside the app's own can wait on another device (it,
+        // or its keys, come from one that holds them): only that document
+        // waits, and its owner sends it whole once the route opens.
+        PublicationWait::HeldBack(why) => {
+            tracing::warn!(%why, "collab: a document's route is not open to publish to");
             inbound_tx.state.route_unpublished(route.spec.channel_id());
             return false;
         }
-        PublicationWait::Late => {
-            inbound_tx.state.publication_failed(
-                "queued document publication",
-                "hydration did not become current before deadline",
-                true,
-            );
+        PublicationWait::Never(why) => {
+            inbound_tx
+                .state
+                .publication_failed("queued document publication", why, true);
             return false;
         }
     }
@@ -5020,14 +5019,22 @@ async fn spawn_context_stream(
     }
 }
 
+/// The delivery turns of an accepted invocation's document owner routes,
+/// held until the owner takes it, so no read withdraws what it runs against.
 #[derive(Debug)]
 struct NativeInvocationTurn {
     permits: Vec<tokio::sync::OwnedSemaphorePermit>,
-    deadline: Instant,
 }
 
-// Use the existing three-second native publication hydration bound. The
-// accepted invocation stays on its original stream task, without another queue.
+/// Wait until every document owner route of `key` is current, and take their
+/// delivery turns. The route took this invocation only once it was current
+/// ([`take_invocations_once_current`]); a read catching up since is waited
+/// for, as long as it takes. It fails, saying why, only when the document
+/// was replaced or one of its routes will not become current.
+#[allow(
+    clippy::future_not_send,
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
+)]
 async fn native_invocation_delivery_turn(
     key: &str,
     state: &BridgeState,
@@ -5035,53 +5042,45 @@ async fn native_invocation_delivery_turn(
     let Some(generation) = state.document_reads.delivery_generation(key) else {
         return Ok(None);
     };
-    let deadline = crate::time::now() + Duration::from_secs(3);
     loop {
         // Enabled before the checks: a change between them still wakes it.
         let changed = state.document_reads.reader_wake();
+        let owners = state.document_reads.document_owner_routes(key);
+        if let Some(why) = owners
+            .iter()
+            .find_map(|owner| state.document_reads.unreadable(owner))
+        {
+            return Err(format!("the action's document cannot be read: {why}"));
+        }
         if !state.is_healthy() || !state.document_reads.current(key, &generation) {
             return Err("original invocation document ownership was retired".into());
         }
-        if crate::time::now() >= deadline {
-            return Err("original invocation capture did not become current".into());
-        }
-        let mut turns = Vec::new();
-        let owners = state.document_reads.document_owner_routes(key);
+        let mut permits = Vec::new();
         for owner in &owners {
             let semaphore = state.document_reads.delivery_turn(owner)?;
-            let remaining = deadline.saturating_duration_since(crate::time::now());
-            let turn = tokio::time::timeout(remaining, semaphore.acquire_owned())
-                .await
-                .map_err(|_| "original invocation capture did not become current")?
-                .map_err(|_| "original invocation delivery turn closed")?;
-            turns.push(turn);
+            permits.push(
+                semaphore
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| "original invocation delivery turn closed")?,
+            );
         }
         if !state.is_healthy() || !state.document_reads.current(key, &generation) {
             return Err("original invocation document ownership was retired".into());
-        }
-        if crate::time::now() >= deadline {
-            return Err("original invocation capture did not become current".into());
         }
         if state.document_reads.document_owner_routes(key) == owners
             && owners
                 .iter()
                 .all(|owner| state.document_reads.publishable(owner))
         {
-            return Ok(Some(NativeInvocationTurn {
-                permits: turns,
-                deadline,
-            }));
+            return Ok(Some(NativeInvocationTurn { permits }));
         }
-        drop(turns);
-        let remaining = deadline.saturating_duration_since(crate::time::now());
-        if remaining.is_zero() {
-            return Err("original invocation capture did not become current".into());
-        }
-        let _ = tokio::time::timeout(remaining, changed).await;
+        drop(permits);
+        changed.await;
     }
 }
 
-// This existing host verb rechecks the original channel's current read
+// This existing host verb rechecks the original route's current read
 // ownership and exact pending job. A waited delivery cannot reuse stale authority.
 #[allow(
     clippy::future_not_send,
@@ -5118,7 +5117,7 @@ async fn recheck_native_invocation(
 }
 
 /// The code an invocation fails with when the app never took it: its document
-/// did not become current for it to run against.
+/// was replaced, or cannot be read for it to run against.
 pub(crate) const UNDELIVERED_INVOCATION: &str = "action_not_delivered";
 
 /// Answer `invocation`, which the app never took (`why`), with its failure:
@@ -5231,6 +5230,38 @@ impl Drop for OpenInvocationFeed {
     }
 }
 
+/// Take `spec`'s invocations once its route is current: its history read
+/// and merged, so the app can publish what an action changes. Until then the
+/// broker holds each invocation for an instance that can answer it, this one
+/// once it is current, rather than handing it to one that cannot. A route
+/// that will not become current takes none, and says why.
+fn take_invocations_once_current(
+    channel: runtime_collab::ChannelHandle,
+    spec: RouteSpec,
+    inbound_tx: InboundBridge,
+) {
+    tokio::task::spawn_local(async move {
+        let key = spec.channel_id();
+        let state = &inbound_tx.state;
+        loop {
+            // Enabled before the checks: a change between them still wakes it.
+            let changed = state.document_reads.reader_wake();
+            if !state.is_healthy() || state.invocation_feeds.lock_recover().stopping {
+                return;
+            }
+            if state.document_reads.publishable(&key) {
+                break;
+            }
+            if let Some(why) = state.document_reads.unreadable(&key) {
+                tracing::warn!(route = %key, %why, "collab: this route takes no invocations");
+                return;
+            }
+            changed.await;
+        }
+        spawn_invocation_stream(&channel, &spec, &inbound_tx).await;
+    });
+}
+
 async fn spawn_invocation_stream(
     channel: &runtime_collab::ChannelHandle,
     spec: &RouteSpec,
@@ -5275,15 +5306,10 @@ async fn spawn_invocation_stream(
                         }
                     },
                 };
-                if let Some(turn) = &turn {
-                    match tokio::time::timeout_at(
-                        tokio::time::Instant::from_std(turn.deadline),
-                        recheck_native_invocation(&cancellation_channel, &invocation),
-                    )
-                    .await
-                    {
-                        Ok(Ok(true)) if crate::time::now() < turn.deadline => {}
-                        Ok(Ok(false)) => continue,
+                if turn.is_some() {
+                    match recheck_native_invocation(&cancellation_channel, &invocation).await {
+                        Ok(true) => {}
+                        Ok(false) => continue,
                         result => {
                             tx.state
                                 .fail_closed("native invocation authority; outcome unknown");
@@ -5812,8 +5838,11 @@ async fn spawn_presence_stream(
 /// How a queued document's wait for its route ended.
 enum PublicationWait {
     Open,
-    /// The route did not open in time.
-    Late,
+    /// A document beside the app's own is held back: its route will not
+    /// open now (why), and its owner sends it whole once it does.
+    HeldBack(String),
+    /// The app's own route will not become current (why).
+    Never(String),
     /// The bridge stopped meanwhile; the failure is recorded.
     Stopped,
 }
@@ -5828,8 +5857,12 @@ enum RouteRole {
 }
 
 /// Keep the accepted request and its queue byte reservation on the worker
-/// stack while hydration catches up. No later barrier or command can overtake
-/// it. Hydration runs independently on this same LocalSet.
+/// stack while the route's read catches up, as long as that takes. No later
+/// barrier or command can overtake it. Reads run independently on this same
+/// LocalSet. The wait ends early only when the route will not become current,
+/// or the document beside the app's own has not reached this device, which may
+/// take as long as the device holding it stays away. The app's own document
+/// is waited for even then: nothing of the app publishes before it.
 #[allow(
     clippy::future_not_send,
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
@@ -5837,8 +5870,8 @@ enum RouteRole {
 async fn wait_for_document_publication(
     route: &DocumentRoute,
     state: &BridgeState,
+    role: RouteRole,
 ) -> PublicationWait {
-    let deadline = tilo_rt::timer_now() + Duration::from_secs(3);
     let key = route.spec.channel_id();
     loop {
         // Enabled before the checks: a change between them still wakes it.
@@ -5851,16 +5884,21 @@ async fn wait_for_document_publication(
             );
             return PublicationWait::Stopped;
         }
-        // The deadline is final, even when readiness changes concurrently.
-        if tilo_rt::timer_now() >= deadline {
-            return PublicationWait::Late;
-        }
         if state.document_reads.publishable(&key) {
             return PublicationWait::Open;
         }
+        let beside = role != RouteRole::App;
+        match state.document_reads.unreadable(&key) {
+            Some(why) if beside => return PublicationWait::HeldBack(why),
+            Some(why) => return PublicationWait::Never(why),
+            None => {}
+        }
+        if let Some(why) = state.document_reads.not_here(&key).filter(|_| beside) {
+            return PublicationWait::HeldBack(why.to_owned());
+        }
         #[cfg(test)]
         state.publication_hold_waits.fetch_add(1, Ordering::AcqRel);
-        let _ = tokio::time::timeout_at(deadline, changed).await;
+        changed.await;
     }
 }
 
