@@ -87,7 +87,9 @@ pub fn runs_key(person: &Actor) -> StateKey {
 /// agent. A change of their own is never marked: they made it and so have seen it.
 #[must_use]
 pub fn is_marked(version: &Version, person: &Actor) -> bool {
-    version.who.as_ref() != Some(person)
+    // A resource's making is not a change of anyone's: it came to be, and nothing is caught up
+    // on by its arriving.
+    version.action != crate::store::CREATE_ACTION && version.who.as_ref() != Some(person)
 }
 
 /// Which of `versions` (oldest first) `person` has not seen, oldest first: those after their
@@ -185,6 +187,21 @@ mod tests {
             suggested_by: None,
             gesture: None,
         }
+    }
+
+    #[test]
+    fn what_a_resource_was_made_by_is_not_a_change_to_catch_up_on() {
+        let ada = person("ada");
+        let made = Version {
+            action: crate::store::CREATE_ACTION.to_owned(),
+            who: None,
+            ..version(ada.clone(), "2026-10-30T09:00:00Z", "c1", false)
+        };
+        assert!(!is_marked(&made, &ada), "a making marks nothing");
+        assert!(is_marked(
+            &version(person("ben"), "2026-10-30T09:01:00Z", "c2", false),
+            &ada
+        ));
     }
 
     tilo_test_env::scenario! {

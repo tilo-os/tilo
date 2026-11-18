@@ -109,7 +109,7 @@ impl FrameHarness {
     /// Read whether the app's frame holds the window's bar in a header row of its own, from the frame
     /// just laid out: a row that draws one takes the bar, and the window's controls stand at its
     /// trailing end.
-    fn refresh_row_holds(&mut self) {
+    pub(super) fn refresh_row_holds(&mut self) {
         let holds = crate::widget::window_header::content_bar(self.root.as_ref()).is_some();
         if holds == self.row_holds {
             return;
@@ -126,7 +126,7 @@ impl FrameHarness {
     /// The window's bar as the frame offers it to the content's header row: the width the window's
     /// furniture takes at its trailing end ([`crate::widget::merged_row_width`]), shown now, listing
     /// nothing else.
-    fn window_bar_offer(&self) -> WindowBar {
+    pub(super) fn window_bar_offer(&self) -> WindowBar {
         WindowBar {
             controls_width: crate::widget::merged_row_width_in(f64::from(self.viewport.0)),
             lists_actions: false,

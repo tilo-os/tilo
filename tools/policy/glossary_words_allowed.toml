@@ -504,3 +504,9 @@ reason = "The server fixture's own device, as the shared API fixture names its f
 words = ["host"]
 identifiers = ["host"]
 paths = ["crates/agent/agent-session/tests/workspace_actions/key_writes.rs"]
+
+[[allow]]
+reason = "The frame's own API for the row of an app's window parts, whose name the toolkit keeps."
+words = ["host"]
+paths = ["crates/sdk/ui-core/src/headless/part_row.rs"]
+identifiers = ["host_window_parts", "hosts_window_parts"]

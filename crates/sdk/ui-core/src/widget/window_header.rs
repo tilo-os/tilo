@@ -419,6 +419,12 @@ fn is_window_frame(widget: &dyn Widget) -> bool {
         .is_some_and(|any| any.is::<crate::widget::WindowFrame>())
 }
 
+/// Whether the app's frame draws a header row of its own (a shell's), which is the window's top:
+/// a window of parts above it would be a second bar.
+pub(crate) fn draws_a_header_row(root: &dyn Widget) -> bool {
+    root_header_row(root).is_some_and(|row| row.header_row_height() > 0.0)
+}
+
 pub(crate) fn root_header_row(root: &dyn Widget) -> Option<&dyn WindowHeader> {
     if let Some(row) = super::capability::capability::<dyn WindowHeader>(root) {
         return Some(row);

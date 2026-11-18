@@ -99,16 +99,36 @@ impl FrameHarness {
         // row to its own window.
         self.host_bar_window();
         let _running = self.running();
-        self.part_row = Some(Box::new(HostedParts {
-            row: PartRow::new(),
-            inset: 0.0,
-            revision: crate::window_toolbar::revision().wrapping_sub(1),
-        }));
         if let Some(history) = &mut self.history {
             history.remove_fallback_bar();
             history.set_open_button(false);
             history.set_window_presents(true);
         }
+        // A window shows one bar. The app's own header row is offered the window's bar first: a
+        // row that takes it draws the window's bar itself (a shell's own row, with its actions),
+        // and no row of the frame's stands over it.
+        let bar = self.window_bar_offer();
+        crate::widget::window_header::offer_root_header_bar(self.root.as_mut(), Some(bar));
+        let frame = self.content_viewport(self.viewport);
+        if let Err(error) = self.resize(frame) {
+            tracing::warn!(%error, "window parts: the frame under the bar did not lay out");
+        }
+        self.refresh_row_holds();
+        // A window shows one bar: an app whose own header row draws it — its shell's — is the
+        // window's top, and the frame keeps no row of parts above it.
+        if self.row_holds_bar()
+            || crate::widget::window_header::draws_a_header_row(self.root.as_ref())
+        {
+            self.invalidate_layout_tree();
+            self.relayout();
+            return;
+        }
+        // A frame whose row does not draw the bar keeps the app's parts in a row of its own.
+        self.part_row = Some(Box::new(HostedParts {
+            row: PartRow::new(),
+            inset: 0.0,
+            revision: crate::window_toolbar::revision().wrapping_sub(1),
+        }));
         self.invalidate_layout_tree();
         self.relayout();
     }
@@ -548,6 +568,31 @@ mod tests {
         harness.host_window_parts();
         harness.relayout();
         (harness, heard)
+    }
+
+    /// The app whose own header row draws the window's top takes no row of parts above it, so
+    /// the window shows one bar.
+    #[test]
+    fn a_header_row_that_holds_the_bar_takes_the_row_of_parts_with_it() {
+        use crate::widget::NavShell;
+        let shell = NavShell::new()
+            .content_kind(crate::widget::ContentKind::Page)
+            .sidebar(Box::new(crate::widget::Button::new("one", "One")))
+            .content(Box::new(crate::widget::Button::new("two", "Two")))
+            .sidebar_header("Places", Vec::new())
+            .content_header("A page", Vec::new());
+        let mut harness = FrameHarness::for_root(
+            crate::State::new(),
+            shell,
+            (900, 600),
+            crate::theme::Theme::dark().with_reduce_motion(true),
+        );
+        harness.host_window_parts();
+        harness.relayout();
+        assert!(
+            !harness.hosts_window_parts(),
+            "no row of parts stands over the header row the shell draws"
+        );
     }
 
     fn part(harness: &FrameHarness, target: &str) -> Option<crate::a11y::AccessNode> {

@@ -99,6 +99,10 @@ pub type ShownBy = dyn Fn(&str, &str) -> String;
 
 pub struct Core {
     me: Weak<Core>,
+    /// Whether what commits now is part of making a resource (`Runtime::set_creating`): the
+    /// change reads as the document's making — nobody made it, it came to be — and no mark
+    /// catches anyone up on it.
+    pub creating: std::cell::Cell<bool>,
     pub engine: Engine,
     pub registry: RefCell<Registry>,
     pub frames: RefCell<Frames>,
@@ -289,6 +293,7 @@ impl Core {
         engine.watch_costs(Rc::clone(&costs));
         let core = Rc::new_cyclic(|me| Self {
             me: me.clone(),
+            creating: std::cell::Cell::new(false),
             engine,
             registry: RefCell::new(Registry::default()),
             frames: RefCell::new(Frames::default()),
