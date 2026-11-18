@@ -142,6 +142,7 @@ view composer(typed: State<Text>, pointed: State<List<Int>>, seen: State<List<In
                     .then(asked_on_canvas(shell))
                 on cancel: set(typed, "").then(set(pointed, []))
             }
+            model_choice()
             ui.Button(
                 "Send",
                 icon: .send,
@@ -167,6 +168,30 @@ view composer(typed: State<Text>, pointed: State<List<Int>>, seen: State<List<In
                     .then(set(typed, ""))
                     .then(set(pointed, []))
                     .then(asked_on_canvas(shell))
+            }
+        }
+    }
+}
+
+/// The model the agent answers with, beside the line the person types on: its name, and every
+/// model of the providers the person lets agents use, to answer with another. It is the one
+/// choice Settings keeps (`settings.agent_models`): what is picked here is the model there.
+view model_choice() {
+    let m = settings.agent_models
+    if m.in_use.model_label != "" {
+        ui.MenuButton(m.in_use.model_label, icon: .sparkles, role: .plain) {
+            for p in m.providers {
+                if p.enabled {
+                    for each in p.models {
+                        ui.MenuItem(
+                            if m.providers.len() > 1 {
+                                "{each.label} · {p.label}"
+                            } else { each.label },
+                        ) {
+                            on choose: settings.use_model(m, p.id, each.id)
+                        }
+                    }
+                }
             }
         }
     }

@@ -886,6 +886,8 @@ d-s7yqm7cb = Canvas
     .w-ask-or-find-anything = Ask or find anything
     .w-send = Send
 
+d-vi5fveaq = Model choice
+
 d-kzhftbrb = Canvas place
 
 d-t3cux3yd = Framed place
