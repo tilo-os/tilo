@@ -327,7 +327,7 @@ fn storage_naming(
     workspace: WorkspaceId,
     kept: &[[u8; 32]],
 ) -> crate::owner::stored::NativeAuthorityStorage {
-    let entry: Vec<u8> = include_str!("../../golden/owner-workspace-document/v5.hex")
+    let entry: Vec<u8> = include_str!("../../golden/owner-workspace-document/v6.hex")
         .split_whitespace()
         .map(|byte| u8::from_str_radix(byte, 16).unwrap())
         .collect();

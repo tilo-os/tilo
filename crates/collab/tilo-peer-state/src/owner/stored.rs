@@ -9,7 +9,7 @@ pub(crate) mod format;
 
 /// The layout of a workspace's entry this build writes ([`StoredWorkspace`]):
 /// the workspace named once, by its id.
-pub(crate) const WORKSPACE_VERSION: u32 = 5;
+pub(crate) const WORKSPACE_VERSION: u32 = 6;
 
 /// Native-only state-file envelope. Its fields cannot be authored by UI callers.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -112,10 +112,8 @@ pub(crate) struct StoredWorkspace {
     pub effect_history_root: Option<[u8; 32]>,
     /// The invitations this device issued for the workspace, the challenges it is
     /// answering and the joins it admitted: what another device's join is
-    /// decided against, held by every key holder that answers one. Stored
-    /// under the name version 5's entries give it; an entry that names it as
-    /// the code does reads too, because builds wrote that for a while.
-    #[serde(default, rename = "join_ledger", alias = "join_log")]
+    /// decided against, held by every key holder that answers one.
+    #[serde(default, rename = "join_ledger")]
     pub join_log: crate::join_log::JoinLog,
     /// The join admissions committed here, by the digest of their binding:
     /// the workspace delta that carried each one is published under its receipt.
