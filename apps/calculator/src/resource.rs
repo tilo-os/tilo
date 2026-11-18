@@ -1,142 +1,18 @@
-//! Calculator as a resource: the evaluated history and the saved graphs are the
-//! [`Calculator`] model; mode, expression and cameras are the window's.
+//! Calculator's window: the sample it stages, the published rows its history and graphs
+//! offer, and the captures it declares. The resource and its verbs are `calculator-model`'s.
 
 use ui::framework::{Fixture, LiveRow, ResourceApp, ResourceSelection, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 use ui::tilo_resource::items::item_resource_id;
-use ui::tilo_resource::{self, ActionCx, Collection, Id, Invoke, Model, Refusal, resource};
+use ui::tilo_resource::{Id, Invoke};
 use ui::widget::Element;
 
-use crate::actions::{CalculatorEffect, GraphKind, HISTORY_CAP};
-use crate::model::{CalcModel, HistoryEntry, PlotFn};
+use crate::actions::CalculatorEffect;
+use crate::model::{CalcModel, GraphKind, HistoryEntry, PlotFn};
+
+pub use calculator_model::Calculator;
 
 ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
-
-/// The evaluated history, newest first, and the saved graphs, each row with its
-/// stable id. A formula merges per character; visibility is written whole.
-#[derive(Model, Clone, Debug, Default, PartialEq)]
-pub struct Calculator {
-    /// History
-    ///
-    /// Only evaluating a calculation adds to it.
-    #[model(readonly)]
-    pub history: Collection<HistoryEntry>,
-    /// Functions
-    pub funcs: Collection<PlotFn>,
-    /// Surfaces
-    pub surfaces: Collection<PlotFn>,
-}
-
-impl Calculator {
-    pub fn graphs(&self, kind: GraphKind) -> &Collection<PlotFn> {
-        match kind {
-            GraphKind::Curve2d => &self.funcs,
-            GraphKind::Surface3d => &self.surfaces,
-        }
-    }
-
-    fn graphs_mut(&mut self, kind: GraphKind) -> &mut Collection<PlotFn> {
-        match kind {
-            GraphKind::Curve2d => &mut self.funcs,
-            GraphKind::Surface3d => &mut self.surfaces,
-        }
-    }
-
-    pub fn graph_id(&self, kind: GraphKind, index: usize) -> Option<&Id> {
-        self.graphs(kind).ids().nth(index)
-    }
-
-    fn add(&mut self, kind: GraphKind, id: Id, formula: &str) {
-        self.graphs_mut(kind).push(
-            id,
-            PlotFn {
-                expr: formula.trim().to_owned(),
-                visible: true,
-            },
-        );
-    }
-
-    fn remove(&mut self, kind: GraphKind, row: &Id) -> Result<(), Refusal> {
-        self.graphs_mut(kind)
-            .remove(row)
-            .map(drop)
-            .ok_or_else(|| Refusal::new("no such formula"))
-    }
-}
-
-impl Calculator {
-    /// Answers through [`fields`](tilo_resource::read::fields), so a caller with
-    /// no window open reads the resource as it reads any app's.
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
-}
-
-#[resource(
-    kind = "calculator.document",
-    read_content = Calculator::read_document
-)]
-impl Calculator {
-    /// Keeps the newest [`HISTORY_CAP`].
-    #[action]
-    pub fn commit_history(
-        &mut self,
-        cx: &mut ActionCx,
-        #[param("Calculation")] expr: String,
-        #[param("Result")] result: String,
-    ) {
-        self.history
-            .insert(0, cx.id(), HistoryEntry { expr, result });
-        let overflow: Vec<Id> = self.history.ids().skip(HISTORY_CAP).cloned().collect();
-        for id in overflow {
-            self.history.remove(&id);
-        }
-    }
-
-    #[action(destructive, item = history)]
-    pub fn delete_history_entry(&mut self, entry: &Id) -> Result<(), Refusal> {
-        self.history
-            .remove(entry)
-            .map(drop)
-            .ok_or_else(|| Refusal::new("no such calculation"))
-    }
-
-    #[action(destructive)]
-    pub fn clear_history(&mut self) -> Result<(), Refusal> {
-        if self.history.is_empty() {
-            return Err(Refusal::new("the history is empty"));
-        }
-        self.history = Collection::default();
-        Ok(())
-    }
-
-    /// Add a 2D y = f(x) curve.
-    #[action]
-    pub fn add_function(&mut self, cx: &mut ActionCx, #[param("Formula")] formula: String) {
-        self.add(GraphKind::Curve2d, cx.id(), &formula);
-    }
-
-    /// Add a 3D z = f(x, y) surface.
-    #[action]
-    pub fn add_surface(&mut self, cx: &mut ActionCx, #[param("Formula")] formula: String) {
-        self.add(GraphKind::Surface3d, cx.id(), &formula);
-    }
-
-    /// Remove a function from the graph.
-    #[action(destructive, item = funcs)]
-    pub fn delete_function(&mut self, function: &Id) -> Result<(), Refusal> {
-        self.remove(GraphKind::Curve2d, function)
-    }
-
-    /// Remove a surface from the graph.
-    #[action(destructive, item = surfaces)]
-    pub fn delete_surface(&mut self, surface: &Id) -> Result<(), Refusal> {
-        self.remove(GraphKind::Surface3d, surface)
-    }
-}
 
 pub fn history_entry_id(id: &Id) -> String {
     item_resource_id::<Calculator>("history", id)
@@ -294,6 +170,7 @@ fn scenario_edits(model: &CalcModel) -> Vec<Invoke<Calculator>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::HISTORY_CAP;
     use ui::prelude::TestApp;
     use ui::tilo_resource::{Edit, Replica, Resource as _};
 

@@ -110,6 +110,7 @@ members = [
     "apps/backups-model",
     "apps/browser",
     "apps/calculator",
+    "apps/calculator-model",
     "apps/calendar",
     "apps/camera",
     "apps/chat",

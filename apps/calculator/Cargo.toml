@@ -28,6 +28,8 @@ android = []
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+# The resource the app draws: its types, verbs and typed action arguments.
+calculator-model = { path = "../calculator-model" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
