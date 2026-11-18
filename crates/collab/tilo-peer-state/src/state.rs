@@ -76,6 +76,7 @@ mod workspace_delta;
 mod workspace_effects;
 mod workspace_membership;
 mod workspace_refusals;
+pub use workspace_refusals::ChangeRefused;
 mod workspace_shortcuts;
 pub use local_outbox::Reseal;
 mod governed_coverage;

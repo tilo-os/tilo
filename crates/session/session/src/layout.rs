@@ -1188,7 +1188,7 @@ impl Layouts {
                         held.undo = None;
                     });
                     self.say(
-                        &error,
+                        &error.to_string(),
                         "the workspace's layout was not published",
                         workspace_id,
                     );
@@ -1770,7 +1770,7 @@ impl Layouts {
                     held.undo = None;
                 });
                 self.say(
-                    &error,
+                    &error.to_string(),
                     "the workspace's layout was not published",
                     workspace_id,
                 );
@@ -2342,7 +2342,11 @@ mod tests {
             held.writing = Some(Going::View(Box::new(Publishing {
                 writing: crate::engine_write::Writing::write(
                     std::sync::Arc::new(|| {}) as tilo_service::Wake,
-                    async { Err("the test writes nothing".to_owned()) },
+                    async {
+                        Err(tilo_peer_state::owner::WriteRefusal::Refused(
+                            "the test writes nothing".to_owned(),
+                        ))
+                    },
                 ),
                 candidate: automerge::AutoCommit::new(),
                 replaced: None,
@@ -2592,7 +2596,9 @@ mod tests {
             held.writing = Some(Going::View(Box::new(Publishing {
                 writing: crate::engine_write::Writing::write(wake, async {
                     let _ = answered.await;
-                    Err("refused".to_owned())
+                    Err(tilo_peer_state::owner::WriteRefusal::Refused(
+                        "refused".to_owned(),
+                    ))
                 }),
                 candidate: automerge::AutoCommit::new(),
                 replaced: None,

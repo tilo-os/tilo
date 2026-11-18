@@ -181,6 +181,11 @@ impl Task {
             }) == Ok(false)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one route's frames sealed, signed and committed, read top to bottom, with what a \
+                  refusal of them says"
+    )]
     pub(super) async fn commit_frames(
         &mut self,
         route: &DocumentRoute,
@@ -268,6 +273,20 @@ impl Task {
                     "the workspace refused a write of this device for good");
                 self.fail("write-refused", error.clone());
                 return Some(Err(error));
+            }
+            // The workspace's rules refused the change here, before it went. Its author reads it
+            // where a server's refusal of a change is read: the same typed refusal of the same
+            // route and changes, and why.
+            Err(WriteRefusal::ChangeRefused(refused)) => {
+                tracing::debug!(app = %route.app_id, document = %route.document, %refused,
+                    "the workspace refused a write of this device before it went");
+                self.reports.emit(&crate::Event::Refused {
+                    route: route.clone(),
+                    changes: refused.changes.clone(),
+                    refusal: refused.refusal.clone(),
+                });
+                self.fail("write-refused", refused.reason.clone());
+                return Some(Err(refused.to_string()));
             }
         };
         if committed.is_empty() {

@@ -12,6 +12,9 @@ pub enum NotAdmitted {
     Waiting(MissingPrerequisite),
     /// The record does not take the write, and never will: the reason.
     Refused(String),
+    /// The workspace's rules refused the change before it went: the document it writes, the
+    /// changes it carries and why, as a server's refusal of a change names them.
+    ChangeRefused(Box<crate::ChangeRefused>),
 }
 
 impl std::fmt::Display for NotAdmitted {
@@ -19,7 +22,20 @@ impl std::fmt::Display for NotAdmitted {
         match self {
             Self::Waiting(prerequisite) => write!(f, "the write waits for {prerequisite}"),
             Self::Refused(reason) => f.write_str(reason),
+            Self::ChangeRefused(refused) => f.write_str(&refused.reason),
         }
+    }
+}
+
+impl From<String> for NotAdmitted {
+    fn from(reason: String) -> Self {
+        Self::Refused(reason)
+    }
+}
+
+impl From<&str> for NotAdmitted {
+    fn from(reason: &str) -> Self {
+        Self::Refused(reason.to_owned())
     }
 }
 
@@ -240,14 +256,14 @@ impl StatePeer {
     pub fn admit_new_local_document(
         &mut self,
         app: &str,
-        record: &str,
+        document: &str,
         envelope: SignedOp,
         now: SystemTime,
     ) -> Result<(), NotAdmitted> {
         // The evidence is the entry this admission writes, found by its key:
         // comparing the index with a copy of it from before made every write
         // cost every entry the index held since it last settled.
-        let evidence = DocumentAdmission::from_op(&self.core.workspace, app, record, &envelope)
+        let evidence = DocumentAdmission::from_op(&self.core.workspace, app, document, &envelope)
             .map_err(|error| NotAdmitted::Refused(error.to_string()))?;
         // A compaction takes the number of the last write of its author it
         // folds, so that number is held already; what is new is the compaction
@@ -256,9 +272,7 @@ impl StatePeer {
         let held = !compaction
             && (self.core.exact_admissions.get(&evidence.key).is_some()
                 || self.core.exact_admissions.covers(&evidence.key));
-        let report = self
-            .admit_local(app, record, envelope, now)
-            .map_err(NotAdmitted::Refused)?;
+        let report = self.admit_local(app, document, envelope, now)?;
         let outcome = &report.summary;
         if outcome.duplicate {
             return Err(NotAdmitted::Refused(
