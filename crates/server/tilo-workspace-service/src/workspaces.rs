@@ -1175,6 +1175,8 @@ impl Workspaces {
         );
         let store =
             LinkStore::open(store, Appetite::StoreAll).map_err(|error| error.to_string())?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let models = Arc::new(person_model::Models::new());
         let this = Self {
             inner: Arc::new(WorkspacesInner {
                 #[cfg(test)]
@@ -1198,13 +1200,11 @@ impl Workspaces {
                 document_writes: tokio::sync::broadcast::channel(256).0,
                 person_settings_moved: tokio::sync::watch::channel(0).0,
                 #[cfg(not(target_arch = "wasm32"))]
-                models: Arc::new(person_model::Models::new()),
+                models: Arc::clone(&models),
                 #[cfg(not(target_arch = "wasm32"))]
-                mail_session: std::sync::RwLock::new(Arc::new(
-                    tilo_mail_session::LiveMailSession::default(),
-                )),
+                mail_session: std::sync::RwLock::new(Arc::new(models.mail_session())),
                 #[cfg(not(target_arch = "wasm32"))]
-                vault_uses: hosted_use::Uses::default(),
+                vault_uses: hosted_use::Uses::proving_within(models.mail_reach()),
                 #[cfg(not(target_arch = "wasm32"))]
                 mail_watches: mail_watch::MailWatches::default(),
                 #[cfg(not(target_arch = "wasm32"))]

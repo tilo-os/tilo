@@ -401,6 +401,13 @@ filter = 'package(tilo-agent-session) and binary(it) and test(workspace_actions:
 success-output = "final"
 slow-timeout = { period = "60s", terminate-after = 60 }
 
+# What a device receives of an answer of four hundred words while its model writes it: how
+# many changes they come in, when the first and the last arrive, how many bytes a change adds
+# to what the device keeps. Printed on a pass too, so the numbers show in every log.
+[[profile.default.overrides]]
+filter = 'package(tilo-agent-session) and binary(it) and test(workspace_actions::hosted_agent_turns::asks::sub_agents::reply_times::)'
+success-output = "final"
+
 [[profile.default.overrides]]
 filter = '(package(notes) and binary(it) and (test(scenarios::) or test(capture_runtime::)))'
 threads-required = 16

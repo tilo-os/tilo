@@ -37,6 +37,7 @@ struct Reply {
 /// not upgrade a connection that has to, or presented a certificate `tls`
 /// does not trust.
 async fn secured_to(
+    to: &crate::imap::Reach,
     named: &str,
     port: u16,
     tls: Arc<rustls::ClientConfig>,
@@ -45,7 +46,7 @@ async fn secured_to(
     let server_name = rustls::pki_types::ServerName::try_from(named.to_owned())
         .map_err(|_| "invalid SMTP server name".to_string())?;
     let connector = tokio_rustls::TlsConnector::from(tls);
-    let tcp = crate::imap::reach(named, port, step).await?;
+    let tcp = crate::imap::reach(to, named, port, step).await?;
     let secured = |tcp| async {
         timeout(step, connector.connect(server_name.clone(), tcp))
             .await
@@ -83,12 +84,13 @@ async fn secured_to(
 /// # Errors
 /// As [`secured_to`].
 pub(crate) async fn greets(
+    to: &crate::imap::Reach,
     named: &str,
     port: u16,
     tls: Arc<rustls::ClientConfig>,
     step: Duration,
 ) -> Result<(), String> {
-    let (mut server, _) = secured_to(named, port, tls, step).await?;
+    let (mut server, _) = secured_to(to, named, port, tls, step).await?;
     let _ = ask(&mut server, "QUIT", step).await;
     Ok(())
 }
@@ -101,6 +103,7 @@ pub(crate) async fn greets(
 /// not upgrade a connection that has to, presented a certificate `tls` does
 /// not trust, offers no password sign-in, or rejected the credential.
 pub(crate) async fn sign_in(
+    to: &crate::imap::Reach,
     named: &str,
     port: u16,
     user: &str,
@@ -108,7 +111,7 @@ pub(crate) async fn sign_in(
     tls: Arc<rustls::ClientConfig>,
     step: Duration,
 ) -> Result<(), String> {
-    let (mut server, offered) = secured_to(named, port, tls, step).await?;
+    let (mut server, offered) = secured_to(to, named, port, tls, step).await?;
     let offers = |mechanism: &str| {
         offered.iter().any(|line| {
             let mut words = line.split([' ', '=']);

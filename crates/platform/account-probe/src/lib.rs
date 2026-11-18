@@ -69,16 +69,33 @@ impl LiveAccountTester {
     /// sends it. A TCP accept alone is deliberately not success: it says
     /// nothing about the saved credential or whether this is a mail
     /// endpoint.
-    fn email(account: &accounts::Account, secret: &accounts::Secret) -> Result<String, String> {
+    fn email(
+        reach: &imap::Reach,
+        account: &accounts::Account,
+        secret: &accounts::Secret,
+    ) -> Result<String, String> {
         // Without the system's authorities every server's certificate would be refused and
         // the server blamed: say which file this program lacks instead.
         if let Some(lacks) = tilo_net::lacks_authorities() {
             return Err(lacks);
         }
-        Self::email_with_roots(account, secret, tilo_net::system_roots())
+        Self::proved(reach, account, secret, tilo_net::system_roots())
     }
 
+    /// [`Self::email`]'s proof as a device makes it, trusting `roots` alone.
+    #[cfg(test)]
     fn email_with_roots(
+        account: &accounts::Account,
+        secret: &accounts::Secret,
+        roots: rustls::RootCertStore,
+    ) -> Result<String, String> {
+        Self::proved(&imap::Reach::any(), account, secret, roots)
+    }
+
+    /// [`Self::email`]'s proof, trusting `roots`: every connection of it is
+    /// made within `reach`.
+    fn proved(
+        reach: &imap::Reach,
         account: &accounts::Account,
         secret: &accounts::Secret,
         roots: rustls::RootCertStore,
@@ -136,6 +153,7 @@ impl LiveAccountTester {
             .map_err(|_| "could not start the IMAP probe".to_string())?;
         runtime.block_on(async {
             let client = imap::open(
+                reach,
                 host,
                 port,
                 security,
@@ -159,6 +177,7 @@ impl LiveAccountTester {
             // An account that reads mail and cannot send any is found out
             // here, not at its person's first message.
             smtp::sign_in(
+                reach,
                 smtp_host,
                 smtp_port,
                 user,
@@ -263,7 +282,7 @@ impl AccountTester for LiveAccountTester {
         secret: &accounts::Secret,
     ) -> Result<String, String> {
         match account.type_id.as_str() {
-            "email" => Self::email(account, secret),
+            "email" => Self::email(&imap::Reach::any(), account, secret),
             "caldav" => {
                 let configured = account
                     .config
@@ -289,10 +308,10 @@ impl AccountTester for LiveAccountTester {
 }
 
 /// [`LiveAccountTester`] that also works out an address's mail servers over the network
-/// ([`mail_servers::find`]). Only a person's server asks that, so an app that proves sign-ins
-/// takes [`LiveAccountTester`] and carries no DNS resolver.
-#[derive(Default)]
-pub struct FindingAccountTester;
+/// ([`mail_servers::find`]), with the connections it makes for a mail account going only where
+/// its reach lets them ([`imap::Reach::public_unless`]). Only a person's server asks that, so an
+/// app that proves sign-ins takes [`LiveAccountTester`] and carries no DNS resolver.
+pub struct FindingAccountTester(pub imap::Reach);
 
 impl AccountTester for FindingAccountTester {
     fn discover_calendars(
@@ -308,7 +327,10 @@ impl AccountTester for FindingAccountTester {
         address: &str,
         allowed: &dyn Fn(&str) -> bool,
     ) -> Result<mail_servers::MailServers, String> {
-        mail_servers::find(address, &mail_servers::Live::new(allowed))
+        mail_servers::find(
+            address,
+            &mail_servers::Live::new(allowed).within(self.0.clone()),
+        )
     }
 
     fn test(
@@ -316,7 +338,13 @@ impl AccountTester for FindingAccountTester {
         account: &accounts::Account,
         secret: &accounts::Secret,
     ) -> Result<String, String> {
-        LiveAccountTester.test(account, secret)
+        // A mail account's sign-in is proved over connections within this
+        // reach; the other kinds go out as the device's tester sends them.
+        if account.type_id.as_str() == "email" {
+            LiveAccountTester::email(&self.0, account, secret)
+        } else {
+            LiveAccountTester.test(account, secret)
+        }
     }
 }
 

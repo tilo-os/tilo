@@ -252,6 +252,9 @@ pub struct LiveMailSession {
     kept: Mutex<HashMap<String, Kept>>,
     /// How the watches this starts pace themselves.
     pace: WatchPace,
+    /// Where its connections may go ([`Self::reaching`]); any address where
+    /// nothing was said, as on the device that keeps its person's accounts.
+    reach: Option<tilo_account_probe::imap::Reach>,
 }
 
 /// A signed-in session between two requests, and when its server last
@@ -292,7 +295,16 @@ impl LiveMailSession {
             runtime: OnceLock::new(),
             kept: Mutex::default(),
             pace: WatchPace::default(),
+            reach: None,
         }
+    }
+
+    /// The same sessions, every connection of theirs made only within
+    /// `reach`: what a server asks for, whose people name its mail servers.
+    #[must_use]
+    pub fn reaching(mut self, reach: tilo_account_probe::imap::Reach) -> Self {
+        self.reach = Some(reach);
+        self
     }
 
     /// The same sessions, their watches paced by `pace`.
@@ -370,7 +382,15 @@ impl MailSession for LiveMailSession {
     ) -> Result<SentMail, String> {
         self.block(async {
             let mime = write_leaving(sending, files, invitation)?;
-            send_message(account, secret, sending, &mime, &self.smtp_trust).await?;
+            send_message(
+                self.reach.as_ref(),
+                account,
+                secret,
+                sending,
+                &mime,
+                &self.smtp_trust,
+            )
+            .await?;
             // The message left. Its copy is told apart from that: a server
             // that will not take one does not unsend the message.
             let unfiled = self
@@ -405,6 +425,7 @@ impl MailSession for LiveMailSession {
     ) -> Result<Watching, String> {
         let inbox = Inbox {
             tls: self.tls.clone(),
+            reach: self.reach.clone(),
             account: account.clone(),
             secret: secret.clone(),
             pace: self.pace,
@@ -510,18 +531,19 @@ impl LiveMailSession {
         account: &accounts::Account,
         secret: &accounts::Secret,
     ) -> Result<ImapSession, String> {
-        sign_in(self.tls.clone(), account, secret).await
+        sign_in(self.tls.clone(), self.reach.as_ref(), account, secret).await
     }
 }
 
 /// Open the account's connection, secured as its settings say, and sign in.
 async fn sign_in(
     tls: Option<Arc<rustls::ClientConfig>>,
+    reach: Option<&tilo_account_probe::imap::Reach>,
     account: &accounts::Account,
     secret: &accounts::Secret,
 ) -> Result<ImapSession, String> {
-    let host = field(account, "imap_host")
-        .filter(|host| !host.trim().is_empty())
+    let named = field(account, "imap_host")
+        .filter(|named| !named.trim().is_empty())
         .ok_or_else(|| "account has no IMAP server".to_string())?;
     let port = port_of(account, "imap_port", 993);
     let user = field(account, "username")
@@ -543,8 +565,12 @@ async fn sign_in(
     // account was added: TLS from the first byte, or upgraded with
     // STARTTLS before the sign-in is sent.
     let security = accounts::email::imap_security_of(&account.config);
+    let reach = reach
+        .cloned()
+        .unwrap_or_else(tilo_account_probe::imap::Reach::any);
     let client =
-        tilo_account_probe::imap::open(&host, port, security, config, NETWORK_TIMEOUT).await?;
+        tilo_account_probe::imap::open(&reach, &named, port, security, config, NETWORK_TIMEOUT)
+            .await?;
     timeout(NETWORK_TIMEOUT, client.login(user, password))
         .await
         .map_err(|_| "IMAP server did not answer before the timeout".to_string())?
@@ -1268,6 +1294,7 @@ fn message_id_search(mime: &[u8]) -> Option<String> {
 /// Hand the message `mime` holds, written from `sending`, to the account's
 /// server.
 async fn send_message(
+    reach: Option<&tilo_account_probe::imap::Reach>,
     account: &accounts::Account,
     secret: &accounts::Secret,
     sending: &Leaving,
@@ -1279,7 +1306,7 @@ async fn send_message(
     use lettre::transport::smtp::client::TlsParameters;
     use lettre::{AsyncSmtpTransport, Tokio1Executor};
 
-    let host = field(account, "smtp_host")
+    let named = field(account, "smtp_host")
         .filter(|host| !host.trim().is_empty())
         .ok_or_else(|| "account has no SMTP server".to_string())?;
     let port = port_of(account, "smtp_port", 465);
@@ -1290,7 +1317,17 @@ async fn send_message(
         return Err("account has no saved password".into());
     }
     let envelope = sending.envelope()?;
-    let mut builder = TlsParameters::builder(host.clone());
+    // The server's name is looked up once, within what this session reaches,
+    // and the transport is handed the address that answered: it looks nothing
+    // up itself, and the certificate is still checked against the name.
+    let reach = reach
+        .cloned()
+        .unwrap_or_else(tilo_account_probe::imap::Reach::any);
+    let answered = tilo_account_probe::imap::reach(&reach, &named, port, NETWORK_TIMEOUT)
+        .await?
+        .peer_addr()
+        .map_err(|_| "the SMTP server's address could not be read".to_string())?;
+    let mut builder = TlsParameters::builder(named.clone());
     for certificate in trust {
         let certificate =
             lettre::transport::smtp::client::Certificate::from_der(certificate.to_vec())
@@ -1304,13 +1341,14 @@ async fn send_message(
         465 => lettre::transport::smtp::client::Tls::Wrapper(params),
         _ => lettre::transport::smtp::client::Tls::Required(params),
     };
-    let transport = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(host)
-        .port(port)
-        .tls(tls)
-        .credentials(Credentials::new(user, secret.password.clone()))
-        .authentication(vec![Mechanism::Login, Mechanism::Plain])
-        .timeout(Some(NETWORK_TIMEOUT))
-        .build();
+    let transport =
+        AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(answered.ip().to_string())
+            .port(port)
+            .tls(tls)
+            .credentials(Credentials::new(user, secret.password.clone()))
+            .authentication(vec![Mechanism::Login, Mechanism::Plain])
+            .timeout(Some(NETWORK_TIMEOUT))
+            .build();
     timeout(NETWORK_TIMEOUT, transport.send_raw(&envelope, mime))
         .await
         .map_err(|_| "SMTP server did not answer before the timeout".to_string())?
@@ -1458,6 +1496,7 @@ fn draft_addresses(list: &str) -> Vec<(String, String)> {
 /// One account's inbox, as a watch reaches it.
 struct Inbox {
     tls: Option<Arc<rustls::ClientConfig>>,
+    reach: Option<tilo_account_probe::imap::Reach>,
     account: accounts::Account,
     secret: accounts::Secret,
     pace: WatchPace,
@@ -1489,7 +1528,13 @@ impl Inbox {
         wait: &mut Duration,
     ) -> Result<std::convert::Infallible, String> {
         let unanswered = || "IMAP server did not answer before the timeout".to_string();
-        let mut session = sign_in(self.tls.clone(), &self.account, &self.secret).await?;
+        let mut session = sign_in(
+            self.tls.clone(),
+            self.reach.as_ref(),
+            &self.account,
+            &self.secret,
+        )
+        .await?;
         let tells = timeout(NETWORK_TIMEOUT, session.capabilities())
             .await
             .map_err(|_| unanswered())?
@@ -1603,6 +1648,58 @@ mod tests {
     /// The envelope `sending` leaves in, as its send reads it.
     fn envelope(sending: &SendMail) -> Result<lettre::address::Envelope, String> {
         Leaving::read(sending.clone())?.envelope()
+    }
+
+    /// Sessions that reach the public internet alone connect to nothing of
+    /// this machine, to read or to send: an account whose servers are named
+    /// `localhost` is refused in the words of the judge of addresses, and a
+    /// listener here counts nobody.
+    #[test]
+    fn a_session_on_the_public_internet_connects_to_nothing_of_this_machine() {
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let connections = || std::iter::from_fn(|| listener.accept().ok()).count();
+        let mut account = accounts::Account::new("ada@example.test", accounts::email::TYPE_ID);
+        account.config = serde_json::json!({
+            "email": "ada@example.test",
+            "imap_host": "localhost",
+            "imap_port": port,
+            "smtp_host": "localhost",
+            "smtp_port": port,
+        });
+        let secret = accounts::Secret::password("a made-up password");
+        let inside = "localhost answers with an address of this machine or its network";
+        let session =
+            LiveMailSession::default().reaching(tilo_account_probe::imap::Reach::public());
+
+        let asking = FetchMail {
+            account: "ada@example.test".into(),
+            folder: "inbox".into(),
+            ..FetchMail::default()
+        };
+        let read = session
+            .fetch(&account, &secret, &asking)
+            .map(drop)
+            .unwrap_err();
+        assert!(read.contains(inside), "{read}");
+        assert_eq!(connections(), 0, "nothing is connected to, to read");
+
+        let leaving = Leaving::read(SendMail {
+            account: "ada@example.test".into(),
+            from_address: "ada@example.test".into(),
+            to: "Bob <bob@example.test>".into(),
+            subject: "Hello".into(),
+            body: "Hi".into(),
+            ..SendMail::default()
+        })
+        .unwrap();
+        let sent = session
+            .send(&account, &secret, &leaving, &[], None)
+            .map(drop)
+            .unwrap_err();
+        assert!(sent.contains(inside), "{sent}");
+        assert_eq!(connections(), 0, "nothing is connected to, to send");
     }
 
     /// A folder is found by its special-use mark before its name, and a

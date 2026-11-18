@@ -355,7 +355,7 @@ impl Default for Uses {
         Self {
             calls: web_call::AllowedOnce::default(),
             prover: std::sync::RwLock::new(std::sync::Arc::new(
-                tilo_account_probe::FindingAccountTester,
+                tilo_account_probe::FindingAccountTester(tilo_account_probe::imap::Reach::any()),
             )),
             asks: Mutex::default(),
             once: Mutex::default(),
@@ -363,6 +363,19 @@ impl Default for Uses {
             connects: Mutex::default(),
             #[cfg(feature = "agents")]
             mail_connects: Mutex::default(),
+        }
+    }
+}
+
+impl Uses {
+    /// The uses of a server: an account's sign-in is proved over connections
+    /// that go only where `reach` lets them.
+    pub(super) fn proving_within(reach: tilo_account_probe::imap::Reach) -> Self {
+        Self {
+            prover: std::sync::RwLock::new(std::sync::Arc::new(
+                tilo_account_probe::FindingAccountTester(reach),
+            )),
+            ..Self::default()
         }
     }
 }

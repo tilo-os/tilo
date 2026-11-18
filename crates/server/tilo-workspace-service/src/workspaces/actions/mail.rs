@@ -266,13 +266,14 @@ fn connect_params() -> Vec<ActionParam> {
         ),
         said(
             "incomingServer",
-            "The name of the server its mail is read from (IMAP): only after this call answered \
+            "The name of the server its mail is read from (IMAP), with its port after a colon \
+             where that is not 993, as imap.example.org:1993: only after this call answered \
              that none was found and your person told you.",
         ),
         said(
             "outgoingServer",
-            "The name of the server its mail is handed to (SMTP): only together with \
-             incomingServer.",
+            "The name of the server its mail is handed to (SMTP), with its port after a colon \
+             where that is not 465: only together with incomingServer.",
         ),
     ]
 }
