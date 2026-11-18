@@ -41,6 +41,14 @@ pub mod tree;
 #[cfg(unix)]
 pub mod x11_authority;
 
+/// What a file's length and change time came to, where it is there: a follower reads it again only
+/// when one of them moves.
+#[must_use]
+pub fn stamp(path: &std::path::Path) -> Option<(u64, Option<std::time::SystemTime>)> {
+    let metadata = std::fs::metadata(path).ok()?;
+    Some((metadata.len(), metadata.modified().ok()))
+}
+
 /// Whether the native path itself names a regular file, without following a symlink.
 pub fn is_regular_file(path: &std::path::Path) -> std::io::Result<bool> {
     std::fs::symlink_metadata(path).map(|metadata| metadata.is_file())
