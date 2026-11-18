@@ -22,6 +22,8 @@ public struct ConversationView: View {
 
     public var body: some View {
         let conversation = model.conversation(chat)
+        // The reply its model is writing now: the newest piece, while an answer is being written.
+        let written = conversation.isAnswering ? conversation.items.last?.id : nil
         let rows = conversation.rows(in: chat, wording)
         let ready = chat == .main ? model.tasks(.readyForReview).count : 0
         // What came while the person was away stands at the top of the stretch that came since.
@@ -85,6 +87,7 @@ public struct ConversationView: View {
                 }
             }
         }
+        .environment(\.writtenPiece, written)
     }
 
     private var liveAgent: SubAgent? {
@@ -160,12 +163,13 @@ private struct Replies: View {
 private struct PieceView: View {
     let item: Item
     let picturedSecret: String
+    @Environment(\.writtenPiece) private var writtenPiece
     @Environment(AssistantModel.self) private var model
 
     var body: some View {
         switch item.content {
         case .message(let message):
-            MessageView(message: message)
+            MessageView(message: message, isWritten: item.id == writtenPiece)
         case .report(let line):
             Bubble { MarkdownText(text: line) }
         case .reminder(let words):
@@ -217,6 +221,8 @@ private struct SaidByPerson: ViewModifier {
 /// Words from the person, the assistant or the main agent, with what came with them.
 private struct MessageView: View {
     let message: Message
+    /// Whether its model is writing it now.
+    var isWritten = false
     @Environment(AssistantModel.self) private var model
     /// The file a press on its tag fetched, shown by the system's own viewer.
     @State private var shown: URL?
@@ -228,7 +234,8 @@ private struct MessageView: View {
                     // An address alone is shown as what it is, letter by letter.
                     Text(message.text).font(.tiloMono(12.5))
                 } else {
-                    MarkdownText(text: message.text)
+                    // What a person wrote stands as they wrote it; a reply that is being written is read as it will stand.
+                    MarkdownText(text: message.text, isWritten: isWritten && message.author != .person)
                 }
             }
             #if os(macOS)
@@ -271,4 +278,9 @@ private struct MessageView: View {
         let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
         return !text.contains(" ") && !text.contains("\n") && (text.hasPrefix("https://") || text.hasPrefix("http://"))
     }
+}
+
+extension EnvironmentValues {
+    /// The piece whose reply is being written now, in the conversation a view stands in.
+    @Entry var writtenPiece: Item.ID?
 }
