@@ -35,7 +35,7 @@ use tilo_server_client::Host;
 use tilo_server_protocol::agents::{
     AGENTS_PROVIDER, AgentsStatus, STATUS_ACTION, SUPERVISOR_RESOURCE,
 };
-use tilo_session_client::remote::Heard;
+use tilo_session_actions::Heard;
 
 use super::hosted::Hosted;
 use crate::support::{Device, WORKSPACE, admitted_to, ready, start_peer};

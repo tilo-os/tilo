@@ -27,7 +27,7 @@ use tilo_actions::remote::{
     ReceiptStatus,
 };
 use tilo_desktop_model::WorkspaceId;
-use tilo_mcp::enter::Entered;
+use tilo_device_mcp::enter::Entered;
 use tilo_peer_state::{PersonalStore, PersonalSync};
 use tilo_runtime::key_sessions::{KeySessions, SessionHost, Sessions};
 use tilo_runtime::personal_devices::PersonalDevices;

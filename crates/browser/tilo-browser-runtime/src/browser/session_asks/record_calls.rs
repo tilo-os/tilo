@@ -15,7 +15,7 @@ use tilo_actions::remote::{
     InvocationState, InvokeRequest, Pending,
 };
 use tilo_server_protocol::WorkspaceId;
-use tilo_session_client::remote::SessionActions;
+use tilo_session_actions::SessionActions;
 
 /// The workspace's host as this page reaches it now. The page's session with its host comes and
 /// goes, so the host's action API is looked up for every request.

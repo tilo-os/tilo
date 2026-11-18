@@ -464,7 +464,7 @@ paths = ["apps/tl/gallery/locales/en-US.ftl", "apps/tl/gallery/media.tl"]
 [[allow]]
 reason = "Tokio's oneshot channel: the pipe between the task that sends a call and the task that answers it."
 words = ["channel"]
-paths = ["crates/runtime/tilo-mcp/src/devices.rs"]
+paths = ["crates/runtime/device-mcp/src/lib.rs"]
 
 [[allow]]
 reason = "The helper that drives a test phase's async body on a current-thread runtime."

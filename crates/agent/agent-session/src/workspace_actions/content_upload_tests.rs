@@ -9,7 +9,7 @@ use tilo_actions::remote::{
     MAX_CONTENT_FRAME_BYTES, Pending,
 };
 use tilo_content::ContentStore;
-use tilo_session_client::remote::upload::{self, PutSteps, UploadError};
+use tilo_session_actions::upload::{self, PutSteps, UploadError};
 
 use super::StorePuts;
 

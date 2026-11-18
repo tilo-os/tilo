@@ -4,7 +4,7 @@
 
 use std::time::SystemTime;
 
-use tilo_mcp::devices::{PersonsDevices, Refusal};
+use tilo_device_mcp::{PersonsDevices, Refusal};
 use tilo_peer_state::{PersonalStore, PersonalSync};
 use tilo_user_identity::{DeviceCert, RevocationList};
 

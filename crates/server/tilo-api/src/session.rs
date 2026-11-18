@@ -152,7 +152,7 @@ type Labels = tilo_server_session::workspaces::WorkspaceLabels;
 /// A session in a workspace one of the person's devices hosts, entered at
 /// that device's MCP server: the device serves the whole session, its people
 /// and its windows included, and shows the agent there itself.
-struct OnDevice(tilo_mcp::enter::Entered);
+struct OnDevice(tilo_device_mcp::enter::Entered);
 
 /// One workspace's session, once whoever entered it holds it: a lock per
 /// workspace, so entering one does not hold another's requests.
@@ -543,9 +543,13 @@ impl Session {
             .endpoint()
             .await
             .map_err(|error| error.to_string())?;
-        let on_device =
-            tilo_mcp::enter::enter(&endpoint, &connection.entering_key(), workspace, &address)
-                .await?;
+        let on_device = tilo_device_mcp::enter::enter(
+            &endpoint,
+            &connection.entering_key(),
+            workspace,
+            &address,
+        )
+        .await?;
         let session = Arc::new(OnDevice(on_device));
         *entered = Some(Arc::clone(&session));
         drop(entered);

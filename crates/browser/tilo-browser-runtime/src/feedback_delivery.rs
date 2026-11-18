@@ -18,7 +18,7 @@ use tilo_feedback_transport::{
 };
 use tilo_server_protocol::WorkspaceId;
 use tilo_session::sync::{Cmd, Event, Outbox};
-use tilo_session_client::remote::Heard;
+use tilo_session_actions::Heard;
 use tilo_session_client::{Events, Link};
 use tilo_user_identity::DeviceCert;
 

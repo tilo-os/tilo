@@ -7,7 +7,7 @@ use super::own_agent::{listed_resources, notes_resource};
 use super::*;
 use serde_json::{Value, json};
 use tilo_mcp::McpServer;
-use tilo_session_client::remote::SessionActions;
+use tilo_session_actions::SessionActions;
 
 const NOTES: &str = "so.tilo.notes";
 

@@ -228,7 +228,7 @@ pub enum Event {
     },
     /// A remote-action frame another device of the workspace addressed to this one, or word that
     /// one this device sent could not be delivered.
-    Remote(crate::remote::Heard),
+    Remote(tilo_session_actions::Heard),
     /// A piece of content `ws`'s records reference, which `from` sent this device alone: a
     /// postcard-encoded `NeighbourMsg::DocumentContentPiece`.
     DocumentContent {

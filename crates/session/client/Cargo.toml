@@ -41,6 +41,8 @@ tilo-server-client = { path = "../../server/tilo-server-client" }
 tilo-server-session = { path = "../../server/tilo-server-session" }
 # The action host another device of a workspace is, reached through the session.
 tilo-actions = { path = "../../collab/actions" }
+# Another device's actions, asked through this session.
+tilo-session-actions = { path = "../session-actions" }
 # Sorts without a copy of std's sort per call site, which kept the web desktop's start module large.
 tilo-sort = { path = "../../platform/tilo-sort" }
 # The signed hint a workspace's governance keeps of its host's address.

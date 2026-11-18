@@ -101,7 +101,7 @@ pub struct Standalone {
     _personal_router: iroh::protocol::Router,
     /// The MCP servers of the person's other devices, dialed from this
     /// runtime's endpoint as the device its store certifies.
-    other_devices: Arc<tilo_mcp::devices::OtherDevices>,
+    other_devices: Arc<tilo_device_mcp::OtherDevices>,
     /// The apps installed for this profile: what each publishes, before it
     /// runs here.
     apps: Arc<apps::Apps>,
@@ -556,7 +556,7 @@ impl RuntimeServices for Standalone {
         )))
     }
 
-    fn other_devices(&self) -> Option<Arc<tilo_mcp::devices::OtherDevices>> {
+    fn other_devices(&self) -> Option<Arc<tilo_device_mcp::OtherDevices>> {
         Some(Arc::clone(&self.other_devices))
     }
 }
@@ -1139,8 +1139,8 @@ fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
 
 /// The MCP servers of the person's other devices, dialed from `joined`'s
 /// endpoint as the device the person's store `personal` certifies.
-fn other_devices(joined: &Joined, personal: &PersonalSync) -> Arc<tilo_mcp::devices::OtherDevices> {
-    Arc::new(tilo_mcp::devices::OtherDevices::new(
+fn other_devices(joined: &Joined, personal: &PersonalSync) -> Arc<tilo_device_mcp::OtherDevices> {
+    Arc::new(tilo_device_mcp::OtherDevices::new(
         joined.endpoint(),
         Arc::new(PersonalDevices::new(personal.clone())),
         tilo_rt::app().handle().clone(),

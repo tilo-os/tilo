@@ -29,7 +29,7 @@ pub use tilo_mcp::McpServer;
 mod carried;
 mod compact;
 pub use carried::{Carried, carried};
-pub use tilo_session_client::remote::SessionActions;
+pub use tilo_session_actions::SessionActions;
 
 /// How long the server may take to list its tools or answer one call.
 pub const TOOL_TIME: Duration = Duration::from_secs(120);

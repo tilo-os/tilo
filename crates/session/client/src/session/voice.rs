@@ -3,8 +3,8 @@
 //! tracks of the page's own live session ([`super::live_session`]).
 
 use super::{Envelope, ServerClient, Task};
-use crate::remote::NOT_CONNECTED;
 use tilo_server_protocol::WorkspaceId;
+use tilo_session_actions::NOT_CONNECTED;
 
 impl Task {
     pub(super) fn voice_calls(

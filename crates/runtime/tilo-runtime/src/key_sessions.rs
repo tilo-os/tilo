@@ -24,7 +24,7 @@ use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::app_serving::AppActionServer;
 
 use collab_types::WorkspaceId;
-use tilo_mcp::devices::PersonsDevices;
+use tilo_device_mcp::PersonsDevices;
 
 /// The most sessions one device keeps for its person's keys at once.
 const MAX_SESSIONS: usize = 256;
@@ -114,7 +114,7 @@ impl KeySessions {
             .is_some_and(|scope| !scope.reaches(&workspace))
         {
             return Err(ActionCallError::Refused {
-                reason: tilo_mcp::devices::Refusal::OutOfScope.reason(),
+                reason: tilo_device_mcp::Refusal::OutOfScope.reason(),
             });
         }
         let mut open = self.open.lock_recover();

@@ -22,7 +22,7 @@ use fs_protocol::tree::{FILES_APP, ROOT_ID, Tree};
 use serde_json::json;
 use tilo_fs::tree_document::document_id as tree_document;
 use tilo_mcp::McpServer;
-use tilo_session_client::remote::SessionActions;
+use tilo_session_actions::SessionActions;
 
 /// The tree the workspace's host keeps, as the records its members read: the
 /// tree's own record and each chunk it lists.

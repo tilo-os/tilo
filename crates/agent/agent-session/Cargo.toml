@@ -169,6 +169,7 @@ discord = { path = "../../../apps/discord" }
 
 
 [dev-dependencies]
+tilo-session-actions = { path = "../../session/session-actions" }
 # What a test puts in the workspace in pieces, as a page sends it.
 base64.workspace = true
 # Documents the tests write and read back as a Word or Markdown file.

@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use tilo_actions::remote::{person_accounts, person_models, person_telling, person_vault};
 use tilo_desktop_surface::session::DesktopSession;
-use tilo_session_client::remote::SessionActions;
+use tilo_session_actions::SessionActions;
 
 /// Answer the person's accounts, models, vault and tellings asks of the
 /// desktop `session` through `actions`.

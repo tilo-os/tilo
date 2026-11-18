@@ -710,8 +710,8 @@ impl Connection {
 
     /// The key as the shared way into a workspace takes it.
     #[must_use]
-    pub fn entering_key(&self) -> tilo_mcp::enter::Key {
-        tilo_mcp::enter::Key {
+    pub fn entering_key(&self) -> tilo_device_mcp::enter::Key {
+        tilo_device_mcp::enter::Key {
             key: self.key.key().clone(),
             cert: self.key.cert().clone(),
         }

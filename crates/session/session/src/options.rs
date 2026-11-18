@@ -293,7 +293,7 @@ pub(crate) fn start_collaboration(
     let devices = personal.as_ref().map(|personal| {
         std::sync::Arc::new(tilo_runtime::personal_devices::PersonalDevices::new(
             personal.sync().clone(),
-        )) as std::sync::Arc<dyn tilo_mcp::devices::PersonsDevices>
+        )) as std::sync::Arc<dyn tilo_device_mcp::PersonsDevices>
     });
     if let Some(personal) = &personal {
         beside.push(personal.protocol());
@@ -336,7 +336,7 @@ pub(crate) fn start_collaboration(
                 sync.attach_personal(personal);
             }
             if let (Some(devices), Some(endpoint)) = (devices, sync.endpoint()) {
-                device_agents.attach(tilo_mcp::devices::OtherDevices::new(
+                device_agents.attach(tilo_device_mcp::OtherDevices::new(
                     endpoint,
                     devices,
                     tilo_rt::app().handle().clone(),

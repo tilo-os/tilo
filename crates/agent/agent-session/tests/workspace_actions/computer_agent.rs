@@ -4,7 +4,7 @@
 //! Agents tab shows it, and what its person bounds it to there holds its next call.
 use super::*;
 use tilo_mcp::McpServer;
-use tilo_session_client::remote::SessionActions;
+use tilo_session_actions::SessionActions;
 use ui::tilo_resource::Id;
 use ui::tilo_workspace_agent::{Agent, WorkspaceAgents};
 

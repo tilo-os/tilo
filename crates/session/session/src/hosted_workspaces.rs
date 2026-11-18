@@ -29,9 +29,9 @@ use tilo_desktop_model::WorkspaceId;
 use tilo_identity::device_admin;
 use tilo_lock::MutexRecover as _;
 use tilo_server_session::workspaces::PersonalList;
+use tilo_session_actions::SessionActions;
 use tilo_session_client::PeerConfig;
 use tilo_session_client::device::Device;
-use tilo_session_client::remote::SessionActions;
 use tilo_session_client::{Cmd, Outbox as _};
 
 use crate::engine::Engine;

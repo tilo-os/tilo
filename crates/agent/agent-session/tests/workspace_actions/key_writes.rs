@@ -87,7 +87,7 @@ async fn a_keys_writes_land_in_every_part_and_chunk_the_workspace_keeps() {
 }
 
 async fn a_keys_writes_land() {
-    let on_server = api_on_server(ISSUER).await;
+    let on_server = Box::pin(api_on_server(ISSUER)).await;
     let api = Arc::clone(&on_server.api);
     let (root, token) = person(&on_server, "Ada").await;
     assert_ne!(
@@ -265,7 +265,7 @@ fn holds(tree: &fs_protocol::tree::Tree, dir: &str, name: &str) -> bool {
 
 /// What `server`'s tool `name` answers with `arguments`, which must succeed.
 async fn did(
-    server: &tilo_mcp::McpServer<tilo_session_client::remote::SessionActions>,
+    server: &tilo_mcp::McpServer<tilo_session_actions::SessionActions>,
     name: &str,
     arguments: Value,
 ) -> String {
@@ -311,7 +311,7 @@ async fn a_computers_agent_moves_things_in_through_a_server() {
 }
 
 async fn a_computers_agent_moves_things_in() {
-    let on_server = api_on_server(ISSUER).await;
+    let on_server = Box::pin(api_on_server(ISSUER)).await;
     let api = Arc::clone(&on_server.api);
     let (root, token) = person(&on_server, "Ada").await;
     let key = Key { api: &api, token };
@@ -333,7 +333,7 @@ async fn a_computers_agent_moves_things_in() {
     let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Your agent").await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let server = tilo_mcp::McpServer::new(
-        tilo_session_client::remote::SessionActions::new(
+        tilo_session_actions::SessionActions::new(
             &agent.peer,
             agent.workspace,
             on_server.host.cert.device_public_key,
@@ -541,7 +541,7 @@ async fn comments_kept(on_server: &OnServer, workspace: &str) -> usize {
 /// a group that answers ok and changes nothing loses a customer's data.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_imported_tree_sent_as_import_then_move_groups_is_kept_nested() {
-    let on_server = api_on_server(ISSUER).await;
+    let on_server = Box::pin(api_on_server(ISSUER)).await;
     let api = Arc::clone(&on_server.api);
     let (_root, token) = person(&on_server, "Ada").await;
     let key = Key { api: &api, token };
@@ -602,9 +602,7 @@ async fn an_imported_tree_sent_as_import_then_move_groups_is_kept_nested() {
     // collection, as the moves named.
     let mut expected = vec![(collection.clone(), None)];
     for (index, page) in docs.iter().enumerate() {
-        let parent = if index == 0 {
-            Some(collection.clone())
-        } else if index % 2 == 0 {
+        let parent = if index % 2 == 0 {
             Some(collection.clone())
         } else if index % 3 == 0 {
             Some(docs[0].clone())
@@ -639,9 +637,9 @@ async fn an_imported_tree_sent_as_import_then_move_groups_is_kept_nested() {
 /// the agent calls.
 async fn agent_on_a_server() -> (
     OnServer,
-    tilo_mcp::McpServer<tilo_session_client::remote::SessionActions>,
+    tilo_mcp::McpServer<tilo_session_actions::SessionActions>,
 ) {
-    let on_server = api_on_server(ISSUER).await;
+    let on_server = Box::pin(api_on_server(ISSUER)).await;
     let api = Arc::clone(&on_server.api);
     let (root, token) = person(&on_server, "Ada").await;
     let key = Key { api: &api, token };
@@ -661,7 +659,7 @@ async fn agent_on_a_server() -> (
     let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Your agent").await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let server = tilo_mcp::McpServer::new(
-        tilo_session_client::remote::SessionActions::new(
+        tilo_session_actions::SessionActions::new(
             &agent.peer,
             agent.workspace,
             on_server.host.cert.device_public_key,
@@ -678,7 +676,7 @@ async fn agent_on_a_server() -> (
 /// with the same title are told apart by a readable name the path takes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_imported_notebook_lists_as_the_tree_it_is() {
-    let (_on_server, server) = agent_on_a_server().await;
+    let (_on_server, server) = Box::pin(agent_on_a_server()).await;
     did(&server, "tilo_do", json!({"path": "notes#open"})).await;
     let make = |title: &str| json!({"path": "notes#new-note", "args": {"title": title}});
     let tilo = page_in(&did(&server, "tilo_do", make("Tilo")).await);

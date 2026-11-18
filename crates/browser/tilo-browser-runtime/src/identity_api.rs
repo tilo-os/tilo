@@ -42,7 +42,7 @@ use tilo_server_session::workspaces::{
     HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, LIST_PERSONAL, PERSONAL_DEVICE_NAME,
 };
 #[cfg(target_arch = "wasm32")]
-use tilo_session_client::remote::SessionActions;
+use tilo_session_actions::SessionActions;
 
 #[cfg(target_arch = "wasm32")]
 use crate::mcp_server::{Revoked, Revoking};

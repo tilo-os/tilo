@@ -192,7 +192,7 @@ where
         let page = match self
             .host
             .query(&self.caller, query)
-            .wait_timeout(tilo_session_client::remote::REPLY_DEADLINE)
+            .wait_timeout(tilo_session_actions::REPLY_DEADLINE)
         {
             Ok(Some(Ok(page))) => page,
             Ok(Some(Err(error))) => {

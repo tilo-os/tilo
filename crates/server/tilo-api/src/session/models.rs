@@ -36,7 +36,7 @@ pub enum Written {
 
 /// An ask the server admitted, to follow ([`Self::follow`]).
 pub struct ModelAsk {
-    actions: tilo_session_client::remote::SessionActions,
+    actions: tilo_session_actions::SessionActions,
     caller: Caller,
     invocation: InvocationId,
 }
