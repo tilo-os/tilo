@@ -300,7 +300,21 @@ the server, and `setUpEvent` sets up what comes at a time. A secret goes to the 
 the question is answered with the item's reference: the conversation holds nothing else of
 it. Where the page says which workspace is the person's own, the app goes there, because
 that is where the assistant lives. What Tilo cannot do from an app yet is refused with a
-sentence: tasks, files, pausing the assistant, a password manager, connections.
+sentence: tasks, files, pausing the assistant, a password manager.
+
+**A service by its address.** The person gives their assistant a service's address. Their
+server looks at it and asks them in their conversation whether to connect it: a question that
+keeps the service's card beside its words (`tilo.connections`, `propose`). The app draws that
+question as the card (`AssistantTilo/Connections.swift`). "Not now" is their no and
+"Authenticate" their yes, both Chat's own answer, and the yes is what adds the service on
+their server. Where the service wants a sign-in, the app begins it as the person on this
+device and opens the service's own page in the system's sign-in sheet
+(`ASWebAuthenticationSession`), which comes back to an address in a scheme of the app's own
+(`SignInReturn`). Nothing of a sign-in is typed into the app; what the sheet comes back with
+goes to the person's server as what a protected field holds, and to nobody else. The card
+keeps no state of its own: it stands by the question and by the person's connections as
+their server lists them, which the app asks on the way in, after its own calls, and once
+more when a card says their server added a service that the list as last read does not hold.
 
 **Which agent is the assistant, and the first time.** When its device gets in, the app asks
 the workspace's server, as the person on this device, which agents the workspace keeps

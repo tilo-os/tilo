@@ -129,6 +129,9 @@ public final class TiloSource: AssistantSource {
     /// devices), and their host (the agents it runs, so the assistant). They are two lists.
     private var learnedInChat: [Supervision.Learned] = []
     private var learnedOnHost: [Supervision.Learned] = []
+    /// The person's connections as their server last listed them, and what was asked of it for
+    /// a card in a conversation (Connections.swift).
+    var connected = Connected()
     /// What marks a fact the host keeps, in the name the frame hands back to forget it.
     private static let onHost = "host:"
 
@@ -278,6 +281,7 @@ public final class TiloSource: AssistantSource {
         keepsNothingLearned = false
         learnedInChat = []
         learnedOnHost = []
+        connected = Connected()
         toldByMessage = [:]
         toldPieces = [:]
         toldOffered = [:]
@@ -1272,6 +1276,13 @@ public final class TiloSource: AssistantSource {
                     id: .init(message.id), text: message.text, name: TiloSource.placeName(detail?["belongsTo"]?[0]?.string ?? ""),
                     state: state)))
             }
+            // A service their assistant proposes to connect is its card (Connections.swift).
+            if let asked = TiloSource.connectionAsk(of: message) {
+                let (offer, askAgain) = connected.card(asked, of: message.id, text: message.text, site: TiloSource.placeName(asked.address))
+                // Their server added it on an answer given elsewhere: its list is asked once more.
+                if askAgain { Task { [weak self] in await self?.survey(.server) } }
+                return Item(id: id, at: message.at, .connection(offer))
+            }
             let choices = (question["answers"]?.array ?? []).enumerated().compactMap { index, answer -> Choice? in
                 guard let name = answer["id"]?.string else { return nil }
                 let label = answer["label"]?.string ?? ""
@@ -1395,12 +1406,117 @@ public final class TiloSource: AssistantSource {
         try await answer(request.value, "declined", detail: nil)
     }
 
-    public func authenticate(_ offer: ConnectionOffer.ID) async throws -> URL? {
-        throw SourceProblem.refused("Tilo keeps no connections to sign in to yet")
+    /// What a message asks about a service its person may connect, where it asks that: the
+    /// card their server keeps beside the question's words.
+    private static func connectionAsk(of message: ChatMessage) -> ConnectionAsk? {
+        guard let question = message.fields["question"], !question.isNull, variant(question["kind"]) == "action" else { return nil }
+        return ConnectionAsk(detail: detail(of: question), answered: variant(question["answered"]?["answer"]),
+                             outcome: variant(question["outcome"]?["outcome"]), why: question["outcome"]?["detail"]?.string ?? "",
+                             withdrawn: !(question["withdrawn"]?.isNull ?? true))
     }
 
+    private func connectionAsk(_ offer: ConnectionOffer.ID) async throws -> ConnectionAsk {
+        guard let asked = try await engine.chatMessage(offer.value).flatMap(TiloSource.connectionAsk(of:)) else {
+            throw TiloEngine.Problem.refused(code: "gone", reason: "This question is no longer there")
+        }
+        return asked
+    }
+
+    /// The person's own yes to a service their assistant proposes: Chat's answer to the
+    /// question, on which their server adds what it looked at when it asked. Where the service
+    /// wants a sign-in, the page it happens on is answered: the service's own, for the
+    /// system's sign-in sheet. Nothing of a sign-in is typed into this app, and nothing of it
+    /// reaches the conversation or the assistant.
+    public func authenticate(_ offer: ConnectionOffer.ID) async throws -> URL? {
+        var page: URL?
+        var failure: (any Error)?
+        // The press reads their server's list itself: no card asks for it meanwhile.
+        connected.press(offer.value, begins: true)
+        do {
+            try await taken { page = try await self.connect(offer) }
+        } catch {
+            failure = error
+        }
+        // However it ended, their server's list says how the service stands now.
+        await survey(.server)
+        connected.press(offer.value, begins: false)
+        if let failure { throw failure }
+        return page
+    }
+
+    /// Their yes, then their server's word that it added the service, then the page of its
+    /// sign-in where it wants one. Nil where nothing is to be signed in to.
+    private func connect(_ offer: ConnectionOffer.ID) async throws -> URL? {
+        var asked = try await connectionAsk(offer)
+        if asked.waits { try await answer(offer.value, "allow", detail: nil) }
+        // Their server carries their yes out and says so on the question, which is read again
+        // until it does: for as long as `connected.patience`, and no longer.
+        let patient = ContinuousClock.now + connected.patience
+        while !asked.added {
+            if asked.failed {
+                throw TiloEngine.Problem.refused(code: "failed", reason: asked.why.isEmpty ? "Tilo could not connect this service" : asked.why)
+            }
+            if asked.withdrawn || (asked.answered != nil && asked.answered != "allow") {
+                throw TiloEngine.Problem.refused(code: "settled", reason: "This question no longer waits for an answer")
+            }
+            guard ContinuousClock.now < patient else {
+                throw TiloEngine.Problem.refused(code: "not-yet", reason: "Tilo has not connected this service yet. Try again in a moment.")
+            }
+            try await Task.sleep(for: .milliseconds(250))
+            asked = try await connectionAsk(offer)
+        }
+        guard let kept = try await engine.connections().first(where: { $0.address == asked.address }) else {
+            throw TiloEngine.Problem.refused(code: "gone", reason: "This service is no longer among your connections")
+        }
+        guard kept.needsSignIn else { return nil }
+        let page = try await engine.beginSignIn(to: kept.id, returnTo: SignInReturn.address)
+        connected.signingIn[offer] = kept.id
+        return page
+    }
+
+    /// The person signed in at the service's own page, and the system's sign-in sheet came
+    /// back with this address. It opens the sign-in once: it goes into the one call that
+    /// carries it to their server, as what a protected field holds, and is kept nowhere here.
+    public func signedIn(_ offer: ConnectionOffer.ID, at returned: URL) async throws {
+        guard let connection = connected.signingIn.removeValue(forKey: offer) else {
+            throw SourceProblem.refused("No sign-in was begun from this card")
+        }
+        var failure: (any Error)?
+        do {
+            try await taken { try await self.engine.finishSignIn(to: connection, returned: Protected(returned.absoluteString)) }
+        } catch {
+            failure = error
+        }
+        await survey(.server)
+        if let failure { throw failure }
+    }
+
+    /// The person will not connect this service now: Chat's answer to the question, on which
+    /// their server adds nothing. Where they had said yes and then left the sign-in, the
+    /// service their server added on that yes is taken out again, as their own act. One that
+    /// was ever signed in to is never removed from a card.
     public func decline(_ offer: ConnectionOffer.ID) async throws {
-        throw SourceProblem.refused("Tilo keeps no connections to sign in to yet")
+        var read: ConnectionAsk?
+        try await taken { read = try await self.connectionAsk(offer) }
+        guard let asked = read else { return }
+        if asked.waits { return try await answer(offer.value, "deny", detail: nil) }
+        guard asked.added else { throw SourceProblem.refused("This question no longer waits for an answer") }
+        connected.signingIn[offer] = nil
+        var failure: (any Error)?
+        do {
+            try await taken {
+                guard let kept = try await self.engine.connections().first(where: { $0.address == asked.address }),
+                      kept.state == "needs-sign-in"
+                else { return }
+                try await self.engine.removeConnection(kept.id)
+                // The list that is read next no longer holds it: the card says so then.
+                self.connected.readAgain(for: offer.value)
+            }
+        } catch {
+            failure = error
+        }
+        await survey(.server)
+        if let failure { throw failure }
     }
 
     public func file(of attachment: Attachment.ID) async throws -> URL {
@@ -1724,6 +1840,12 @@ public final class TiloSource: AssistantSource {
                     threshold: event["every"]?.number.map { Int($0) }, note: nil,
                     actsAlone: !(event["permits"]?.array ?? []).isEmpty, isOn: event["on"]?.bool ?? true)
             })
+        }
+        // The services they connected by their address: how each one's card in a conversation
+        // stands (Connections.swift).
+        let awaited = connected.awaited
+        if let listed = await answered(&unanswered, { try await self.engine.connections() }), connected.heard(listed, for: awaited) {
+            await look()
         }
         return unanswered
     }

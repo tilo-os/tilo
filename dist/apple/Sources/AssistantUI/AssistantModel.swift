@@ -372,6 +372,13 @@ public final class AssistantModel {
         Task { await self.call { try await self.source.decline(offer) } }
     }
 
+    /// The person signed in on the page `authenticate` answered, and their browser came back
+    /// to this address. Says whether Tilo took it.
+    @discardableResult
+    public func signedIn(_ offer: ConnectionOffer.ID, at returned: URL) async -> Bool {
+        await call { try await self.source.signedIn(offer, at: returned) }
+    }
+
     public func file(of attachment: Attachment.ID) async -> URL? {
         var file: URL?
         await call { file = try await self.source.file(of: attachment) }

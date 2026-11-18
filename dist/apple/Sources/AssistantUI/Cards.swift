@@ -1,4 +1,5 @@
 import AssistantCore
+import AuthenticationServices
 import SwiftUI
 
 // The pieces of a conversation that are more than words: a secret it needs, a service that
@@ -294,23 +295,20 @@ struct ModelCard: View {
     }
 }
 
-/// A service the person named by its address, which wants a sign-in.
+/// A service the person named by its address: its name as it gives it, what it offers, and
+/// the person's yes and no. Where it wants a sign-in, the yes goes on to the service's own page.
 struct ConnectionCard: View {
     let offer: ConnectionOffer
     @Environment(AssistantModel.self) private var model
-    @Environment(\.openURL) private var openURL
+    @Environment(\.webAuthenticationSession) private var signInSheet
 
     var body: some View {
         Bubble { MarkdownText(text: offer.text) }
-        CardBox(name: offer.name, note: offer.commands.map { AssistantWords.commandsAfter.said(["count": String($0)]) } ?? "") {
+        CardBox(name: offer.name, note: offer.note) {
             switch offer.state {
             case .waiting:
                 Flow(spacing: 8, lineSpacing: 8) {
-                    Button(AssistantWords.authenticate.said) {
-                        Task {
-                            if let page = await model.authenticate(offer.id) { openURL(page) }
-                        }
-                    }
+                    Button(offer.yes) { Task { await authenticate() } }
                     .buttonStyle(BoxButtonStyle(isMain: true))
                     Button(AssistantWords.notNow.said) { model.decline(offer.id) }.buttonStyle(BoxButtonStyle())
                 }
@@ -320,6 +318,18 @@ struct ConnectionCard: View {
                 Settled(words: AssistantWords.notConnected.said, good: false)
             }
         }
+    }
+
+    /// The person's yes. Where the service wants a sign-in, its own page opens in the system's
+    /// sign-in sheet: nothing of the sign-in is typed into this app, and the address the sheet
+    /// comes back with goes to the person's Tilo and nowhere else. A sheet the person closes
+    /// leaves the card as it stands.
+    private func authenticate() async {
+        guard let page = await model.authenticate(offer.id) else { return }
+        guard let returned = try? await signInSheet.authenticate(using: page, callback: .customScheme(SignInReturn.scheme),
+                                                                 additionalHeaderFields: [:])
+        else { return }
+        await model.signedIn(offer.id, at: returned)
     }
 }
 
