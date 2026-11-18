@@ -419,6 +419,7 @@ impl Worker {
         }
         let routes: HashSet<DocumentRoute> =
             self.handed.values().flatten().map(Written::route).collect();
+        self.wrote.extend(routes.iter().cloned());
         let (outcome, mut unsaved) = match self.saving(workspace_id) {
             Saving::Saved => return (outcome, None),
             Saving::Failed(reason) => (Err(Outcome::Failed(unsaved_failure(reason))), None),

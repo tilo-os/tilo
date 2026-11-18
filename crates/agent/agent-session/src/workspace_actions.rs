@@ -1182,6 +1182,9 @@ struct Worker {
     /// workspace and tree name ([`tree_put::KeptTree`]): the next takes in
     /// only what changed since.
     trees: HashMap<(WorkspaceId, String), tree_put::KeptTree>,
+    /// The documents the request being served wrote to ([`publish::Worker::saved`]):
+    /// what its answer's link opens ([`share::Worker::changed_link`]).
+    wrote: HashSet<DocumentRoute>,
 }
 
 /// The API's answer for an action it has nothing by that address.
@@ -1332,6 +1335,7 @@ impl Worker {
             notes_failures: HashMap::new(),
             notes_followed: HashMap::new(),
             trees: HashMap::new(),
+            wrote: HashSet::new(),
             named: HashMap::new(),
             unmounted: HashMap::new(),
             save_grace: publish::SAVE_GRACE,
@@ -2184,6 +2188,7 @@ impl Worker {
             return receipt;
         }
         let everything = timing_start();
+        self.wrote.clear();
         let (outcome, unsaved) = match self.invoke_or_ask(workspace_id, &caller, &request) {
             Ok(ran) => ran,
             Err(receipt) => {
@@ -2193,8 +2198,8 @@ impl Worker {
         };
         timing_done("action.total", everything);
         log_outcome(&request.target, &outcome);
-        if let Ok((output, _)) = &outcome {
-            let link = self.changed_link(workspace_id, &caller, &request, output);
+        if outcome.is_ok() {
+            let link = self.changed_link(workspace_id, &caller, &request);
             if let Some(entry) = self.log().entries.get_mut(&invocation) {
                 entry.link = link;
             }

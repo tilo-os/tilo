@@ -70,6 +70,17 @@ impl KeptTree {
     }
 }
 
+/// What a document of a workspace's tree did since a request read it.
+enum Since {
+    /// The workspace holds no such document.
+    Missing,
+    /// It is where it was read.
+    Unchanged,
+    /// The changes after what was read (the document whole where nothing
+    /// was), with the heads it is at now.
+    Changed(Vec<u8>, Vec<[u8; 32]>),
+}
+
 /// What a `files` open names of the file it puts into the workspace.
 pub(super) struct Putting {
     /// Its `tilo.content:<hash>` reference.
@@ -410,54 +421,51 @@ impl Worker {
             refused(format!("the workspace's tree does not read: {error}"))
         };
         let index = Self::tree_route(workspace);
-        let Some(changed) = self.changed_here(workspace_id, &index, true, heads.get(&0))? else {
-            return Ok(None);
-        };
-        if let Some((bytes, at)) = changed {
-            tree.take_documents(vec![(0, bytes)]).map_err(unreadable)?;
-            heads.insert(0, at);
+        match self.since(workspace_id, &index, true, heads.get(&0))? {
+            Since::Missing => return Ok(None),
+            Since::Unchanged => {}
+            Since::Changed(bytes, at) => {
+                tree.take_documents(vec![(0, bytes)]).map_err(unreadable)?;
+                heads.insert(0, at);
+            }
         }
-        let mut changes = Vec::new();
+        let mut taken = Vec::new();
         for chunk in tree.listed_chunks() {
             let route = Self::tree_chunk_route(workspace, chunk);
-            if let Some(Some((bytes, at))) =
-                self.changed_here(workspace_id, &route, false, heads.get(&chunk))?
+            if let Since::Changed(bytes, at) =
+                self.since(workspace_id, &route, false, heads.get(&chunk))?
             {
-                changes.push((chunk, bytes));
+                taken.push((chunk, bytes));
                 heads.insert(chunk, at);
             }
         }
-        if !changes.is_empty() {
-            tree.take_documents(changes).map_err(unreadable)?;
+        if !taken.is_empty() {
+            tree.take_documents(taken).map_err(unreadable)?;
         }
         Ok(Some((tree, heads)))
     }
 
-    /// What changed of the document at `route` since `since`: `None` when
-    /// the workspace holds no such document, `Some(None)` when it is still
-    /// there, and otherwise the changes after it (the document whole where
-    /// `since` is none) with the heads it is at.
+    /// What changed of the document at `route` since the heads `since`.
     #[allow(
         clippy::result_large_err,
         reason = "the outcome is what the request is answered with"
     )]
-    fn changed_here(
+    fn since(
         &mut self,
         workspace_id: WorkspaceId,
         route: &DocumentRoute,
         act: bool,
         since: Option<&Vec<[u8; 32]>>,
-    ) -> Result<Option<Option<(Vec<u8>, Vec<[u8; 32]>)>>, Outcome> {
+    ) -> Result<Since, Outcome> {
         let held = self.refreshed_for(workspace_id, route, act)?;
         match held.update(route, since.map(Vec::as_slice)) {
             Ok(Some((
                 DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes),
                 at,
-            ))) => Ok(Some(Some((bytes, at)))),
-            // Unchanged since it was read.
-            Ok(None) if since.is_some() => Ok(Some(None)),
-            Ok(None) | Err(_) if !self.held_or_owed(workspace_id, route)? => Ok(None),
-            Ok(None) => Ok(Some(None)),
+            ))) => Ok(Since::Changed(bytes, at)),
+            Ok(None) if since.is_some() => Ok(Since::Unchanged),
+            Ok(None) | Err(_) if !self.held_or_owed(workspace_id, route)? => Ok(Since::Missing),
+            Ok(None) => Ok(Since::Unchanged),
             Err(why) => Err(Outcome::Rejected(ActionCallError::Unavailable {
                 reason: why,
             })),
@@ -556,8 +564,8 @@ impl Worker {
         ),
         Outcome,
     > {
-        use tilo_actions::ActionOutput;
         use fs_protocol::file_action::verbs;
+        use tilo_actions::ActionOutput;
         if !self.may_on_tree(
             workspace_id,
             caller,
