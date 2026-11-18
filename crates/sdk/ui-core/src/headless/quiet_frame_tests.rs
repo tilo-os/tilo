@@ -316,11 +316,6 @@ const QUIET_ENTRY_POINTS: &[QuietEntry] = &[
     },
     QuietEntry {
         file: "headless.rs",
-        entry: "invoke_action",
-        why: "hands the person's author to `invoke_action_as`, which invalidates.",
-    },
-    QuietEntry {
-        file: "headless.rs",
         entry: "poll_frame",
         why: "runs the frame itself, invalidating first when its deadline came due.",
     },
