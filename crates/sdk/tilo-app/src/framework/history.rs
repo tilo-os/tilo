@@ -107,26 +107,52 @@ pub(crate) fn result(
 }
 
 /// The parts of the chains a window's views opened, as its History lists them with the window's
-/// document.
-pub(crate) struct ChainHistory(pub(crate) std::rc::Weak<super::settings::ViewStorage>);
+/// document: `storage` holds the chains, `preview` draws a part's version in the window's view, and
+/// `record` is the window's record, beside which a chain may be kept.
+pub(crate) struct ChainHistory {
+    pub(crate) storage: std::rc::Weak<super::settings::ViewStorage>,
+    pub(crate) preview: super::preview::PartPreview,
+    pub(crate) record: Option<ui_core::resource::DocumentId>,
+}
 
 impl ui_core::history_mode::HistoryParts for ChainHistory {
     fn heads(&self) -> Vec<ChangeHash> {
-        self.0
+        self.storage
             .upgrade()
             .map(|storage| {
                 storage
                     .read_chain_parts(&ui_core::automerge::transaction::Transactable::base_heads)
-                    .concat()
+                    .into_iter()
+                    .flat_map(|(_, heads)| heads)
+                    .collect()
             })
             .unwrap_or_default()
     }
 
-    fn documents(&self) -> Vec<AutoCommit> {
-        self.0
+    fn documents(&self) -> Vec<(ui_core::history_mode::HistoryPart, AutoCommit)> {
+        self.storage
             .upgrade()
             .map(|storage| storage.read_chain_parts(&AutoCommit::clone))
             .unwrap_or_default()
+    }
+
+    fn preview(
+        &self,
+        version: ui_core::history_mode::PartVersion<'_>,
+    ) -> Result<Box<dyn ui_core::history_mode::HistoryPreview>, String> {
+        let storage = self.storage.upgrade().ok_or("the window closed")?;
+        let past = storage.past_part(&version)?;
+        (self.preview)(past, self.record.clone(), version)
+    }
+
+    fn restore(
+        &self,
+        part: &ui_core::history_mode::HistoryPart,
+        heads: &[ChangeHash],
+        author: &tilo_resource::MemberId,
+    ) -> Result<(), String> {
+        let storage = self.storage.upgrade().ok_or("the window closed")?;
+        storage.restore_chain_part(part, heads, author)
     }
 }
 

@@ -1327,3 +1327,35 @@ fn history_entries_render_as_the_apps_sentences() {
         ]
     );
 }
+
+/// History lists the messages' changes, kept in the mailbox's parts, with the mailbox's own: a page
+/// of the newest, and the rest a page at a time.
+#[test]
+fn history_lists_the_messages_changes_a_page_at_a_time() {
+    ui::i18n::I18nManager::init("en-US");
+    let mut app = TestApp::<MailShell>::new().unwrap();
+    app.chain_invoke(&MessageStates::INGEST.with(message_states::Ingest {
+        messages: vec![IngestBaseline {
+            folder: Some("inbox".into()),
+            ..IngestBaseline::register_only("m1")
+        }],
+    }))
+    .unwrap();
+    app.settle();
+    let messages = messages_at(&mut app);
+    for at_step in 0..=ui::history_mode::HISTORY_PAGE {
+        app.call_on(
+            &messages,
+            "field-edit",
+            serde_json::json!({ "edit": at("m1").starred.set(at_step % 2 == 0) }),
+        )
+        .unwrap();
+    }
+    app.settle();
+    let harness = app.harness();
+    harness.open_history().expect("History opens");
+    assert!(harness.targets().contains_key("activity_timeline"));
+    assert!(harness.targets().contains_key("history-earlier"));
+    harness.click_named("history-earlier").unwrap();
+    assert!(!harness.targets().contains_key("history-earlier"));
+}

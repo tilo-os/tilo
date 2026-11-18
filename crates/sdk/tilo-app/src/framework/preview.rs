@@ -18,7 +18,7 @@ use ui_core::history_mode::restore::{
 };
 use ui_core::history_mode::{
     FrozenRootPreview, HistoricalGap, HistoricalSupport, HistoryDefinition, HistoryPresentation,
-    HistoryPreview, HistoryScopeDefinition, PreviewInput, PreviewView,
+    HistoryPreview, HistoryScopeDefinition, PartVersion, PreviewInput, PreviewView,
 };
 use ui_core::vello::kurbo::Rect;
 
@@ -325,9 +325,48 @@ fn past_root<A: ResourceApp>(doc: &AutoCommit) -> Result<ResourceRoot, String> {
     let reader = Reader::<A::Resource>::read(doc).map_err(|error| error.to_string())?;
     Ok(build_root::<A>(
         reader,
-        Editing::ReadOnly,
+        Editing::ReadOnly(Box::new(super::scenario::Run::past())),
         AppStorage::for_app(super::app::hooks::<A>().id()),
         super::settings::Hosted::default(),
+    ))
+}
+
+/// What draws a part's version in a window of its app ([`part_preview`]).
+pub(crate) type PartPreview = fn(
+    super::chain::PastPart,
+    Option<ui_core::resource::DocumentId>,
+    PartVersion<'_>,
+) -> Result<Box<dyn HistoryPreview>, String>;
+
+/// `A`'s window over its document as it is now, its chain's parts read from `past`, the item the
+/// selected changes changed shown: what History shows of a version of a part. `record` is the
+/// window's record, beside which the chain may be kept.
+pub(crate) fn part_preview<A: ResourceApp>(
+    past: super::chain::PastPart,
+    record: Option<ui_core::resource::DocumentId>,
+    version: PartVersion<'_>,
+) -> Result<Box<dyn HistoryPreview>, String> {
+    let own = version.own.clone();
+    let reader = Reader::<A::Resource>::read(&own).map_err(|error| error.to_string())?;
+    let run = super::scenario::Run::past().launched(super::scenario::Launched {
+        record,
+        reveal: std::cell::RefCell::new(past.changed),
+        ..super::scenario::Launched::default()
+    });
+    let root = build_root::<A>(
+        reader,
+        Editing::ReadOnly(Box::new(run)),
+        AppStorage::for_app(super::app::hooks::<A>().id()),
+        super::settings::Hosted {
+            records: Some((past.store, past.me, None)),
+            ..super::settings::Hosted::default()
+        },
+    );
+    Ok(open_preview(
+        root,
+        own,
+        <A::Resource as Resource>::LABEL,
+        version.view,
     ))
 }
 
@@ -585,7 +624,7 @@ mod tests {
             let frozen = AutoCommit::load(&bytes).unwrap();
             let root = build_root::<PageApp>(
                 Reader::read(&frozen).unwrap(),
-                Editing::ReadOnly,
+                Editing::ReadOnly(Box::new(crate::framework::scenario::Run::past())),
                 AppStorage::for_app(PageApp::ID),
                 crate::framework::settings::Hosted::default(),
             );

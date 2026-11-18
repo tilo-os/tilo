@@ -1491,7 +1491,7 @@ impl HistoryHost {
             let choosing = selected != self.selected && !selected.is_empty();
             let shown = choosing && controller.select(document, &selected).is_ok();
             if choosing && !shown {
-                // A change of a document kept beside this one has no version of this one to show.
+                // Changes found in no document listed here have no version to show.
                 self.commands.borrow_mut().push_back(Command::Now);
             }
             if shown {
@@ -1917,21 +1917,33 @@ impl HistoryHost {
     /// Whether the selected changes can be taken back on their own: a document's own changes, not a
     /// file's versions or an outside effect.
     fn offers_change_restore(&self) -> bool {
-        matches!(
-            self.source(),
-            HistorySourceRegistration::HostDocument { .. }
-                | HistorySourceRegistration::OwnedDocument { .. }
-        ) && self
-            .selected_entries()
-            .any(crate::widget::HistoryEntry::is_revertible)
+        !self.part_selected()
+            && matches!(
+                self.source(),
+                HistorySourceRegistration::HostDocument { .. }
+                    | HistorySourceRegistration::OwnedDocument { .. }
+            )
+            && self
+                .selected_entries()
+                .any(crate::widget::HistoryEntry::is_revertible)
     }
 
     fn offers_naming(&self) -> bool {
-        matches!(
-            self.source(),
-            HistorySourceRegistration::HostDocument { .. }
-                | HistorySourceRegistration::OwnedDocument { .. }
-        ) && self.selected_entries().any(|entry| !entry.is_genesis())
+        !self.part_selected()
+            && matches!(
+                self.source(),
+                HistorySourceRegistration::HostDocument { .. }
+                    | HistorySourceRegistration::OwnedDocument { .. }
+            )
+            && self.selected_entries().any(|entry| !entry.is_genesis())
+    }
+
+    /// Whether the selected changes are a part's, which is restored whole: a part's changes are
+    /// neither taken back one by one nor named.
+    fn part_selected(&self) -> bool {
+        self.controller
+            .as_ref()
+            .is_some_and(|controller| controller.selected_part().is_some())
     }
 
     /// The oldest and newest selected change: the run a name covers.

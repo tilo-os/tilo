@@ -281,18 +281,151 @@ impl super::Chains {
     pub(crate) fn read_parts<T>(
         &self,
         read: &dyn Fn(&ui_core::automerge::AutoCommit) -> T,
-    ) -> Vec<T> {
-        let held: Vec<std::rc::Rc<super::ChainState>> =
-            self.held.borrow().values().cloned().collect();
+    ) -> Vec<(ui_core::history_mode::HistoryPart, T)> {
+        let held: Vec<Rc<super::ChainState>> = self.held.borrow().values().cloned().collect();
         let mut read_parts = Vec::new();
         for chain in &held {
             let core = &chain.core;
             for index in core.parts.borrow().keys() {
-                read_parts.extend(core.workspace.store.read(&core.chain.part(*index), read));
+                let part = ui_core::history_mode::HistoryPart {
+                    chain: core.chain.as_str().to_owned(),
+                    index: *index,
+                };
+                read_parts.extend(
+                    core.workspace
+                        .store
+                        .read(&core.chain.part(*index), read)
+                        .map(|read| (part, read)),
+                );
             }
         }
         read_parts
     }
+
+    /// The chain the part belongs to, while it is held.
+    fn holding(&self, part: &ui_core::history_mode::HistoryPart) -> Option<Rc<super::ChainState>> {
+        self.held
+            .borrow()
+            .values()
+            .find(|chain| chain.core.chain.as_str() == part.chain)
+            .cloned()
+    }
+
+    /// The chain's parts as they are now, but `version.part` as it was at `version.heads`, in a store
+    /// of their own; with who reads them and the item the selected changes changed, by its address.
+    ///
+    /// # Errors
+    /// The part's chain is not held, or the part did not read at that version.
+    pub(crate) fn past_part(
+        &self,
+        version: &ui_core::history_mode::PartVersion<'_>,
+    ) -> Result<PastPart, String> {
+        let chain = self
+            .holding(version.part)
+            .ok_or("the part's chain is not open")?;
+        let core = &chain.core;
+        let store = ui_core::resource::ResourceStore::in_memory();
+        let mut changed = None;
+        let indices: Vec<u64> = core.parts.borrow().keys().copied().collect();
+        for index in indices {
+            let Some(mut doc) = core.workspace.store.read(
+                &core.chain.part(index),
+                ui_core::automerge::AutoCommit::clone,
+            ) else {
+                continue;
+            };
+            if index == version.part.index {
+                changed = changed_item(&mut doc, version, core.part.kind);
+                doc = doc
+                    .fork_at(version.heads)
+                    .map_err(|error| error.to_string())?;
+            }
+            let checkout = core.checkout(index);
+            store.open_resource(&checkout);
+            store
+                .with(&checkout.id, |held| *held = doc)
+                .ok_or("the part's version could not be held")?;
+        }
+        Ok(PastPart {
+            store,
+            me: core.workspace.me.clone(),
+            changed,
+        })
+    }
+
+    /// Write `part` back as it was at `heads`, by `author`, through the part's history.
+    ///
+    /// # Errors
+    /// The part's chain is not held, or the part refused.
+    pub(crate) fn restore_part(
+        &self,
+        part: &ui_core::history_mode::HistoryPart,
+        heads: &[ui_core::automerge::ChangeHash],
+        author: &tilo_resource::MemberId,
+    ) -> Result<(), String> {
+        let chain = self.holding(part).ok_or("the part's chain is not open")?;
+        let edit = super::PartEdit {
+            part: part.index,
+            edit: super::super::history::HistoryEdit::Restore {
+                version: super::super::history::version_name(heads),
+                ids: None,
+            },
+        };
+        let action = tilo_actions::EncodedAction {
+            type_id: super::super::history::PART_EDIT_TYPE.to_owned(),
+            payload: serde_json::to_vec(&edit).map_err(|error| error.to_string())?,
+        };
+        super::super::resources::ResourceApi::apply_encoded(
+            &*chain,
+            &action,
+            &tilo_actions::ActionInvoker::member(author.clone()),
+        )?;
+        let _ = chain.refresh();
+        Ok(())
+    }
+}
+
+/// A part's version beside the chain's other parts as they are now ([`super::Chains::past_part`]).
+pub(crate) struct PastPart {
+    pub(crate) store: ui_core::resource::ResourceStore,
+    pub(crate) me: tilo_resource::MemberId,
+    /// The address of the item the selected changes changed.
+    pub(crate) changed: Option<String>,
+}
+
+/// The address of the first item of `kind` the changes between `version.before` and
+/// `version.after` reach: a field of the part's root and the item's id under it.
+fn changed_item(
+    doc: &mut ui_core::automerge::AutoCommit,
+    version: &ui_core::history_mode::PartVersion<'_>,
+    kind: &str,
+) -> Option<String> {
+    use ui_core::automerge::{PatchAction, Prop};
+    doc.diff(version.before, version.after)
+        .into_iter()
+        .find_map(|patch| {
+            let mut keys = patch
+                .path
+                .iter()
+                .map(|(_, prop)| prop.clone())
+                .collect::<Vec<_>>();
+            match patch.action {
+                PatchAction::PutMap { key, .. } | PatchAction::DeleteMap { key } => {
+                    keys.push(Prop::Map(key));
+                }
+                _ => {}
+            }
+            match keys.as_slice() {
+                [Prop::Map(field), Prop::Map(item), ..] => {
+                    Some(tilo_resource::items::item_resource_id_in(
+                        kind,
+                        field,
+                        &tilo_resource::Id::from_raw(item.clone()),
+                    ))
+                }
+                _ => None,
+            }
+        })
 }
 
 impl ChainState {

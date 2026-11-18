@@ -87,6 +87,7 @@ mod shares;
 use super::made::Made;
 use dispatching::detached_dispatch;
 pub(crate) use dispatching::dispatching;
+pub(crate) use reading::PastPart;
 use listing::{Listing, Page};
 use part::{HeldPart, PartType, live_of};
 use reading::{ChainRead, offer_nested_reads, parse_read_cursor, read_cursor, read_spec};
@@ -1664,6 +1665,11 @@ impl ChainState {
 
     pub(crate) fn id(&self) -> &str {
         &self.core.id
+    }
+
+    /// Who reads and writes the parts here.
+    pub(crate) fn reader(&self) -> &tilo_resource::MemberId {
+        &self.core.workspace.me
     }
 
     fn part(&self) -> &'static PartType {

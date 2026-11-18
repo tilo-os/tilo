@@ -246,7 +246,7 @@ impl<R: Resource> ResourceEnv<R> {
         let state = self
             .storage
             .chain::<P>(record.as_ref(), move || live.get())?;
-        self.chain_of(state)
+        Some(self.chain_of(state))
     }
 
     /// The chain of `P` kept beside the record `beside` rather than beside
@@ -261,16 +261,14 @@ impl<R: Resource> ResourceEnv<R> {
         let state = self
             .storage
             .chain_beside::<P>(beside.id(), move || live.get())?;
-        self.chain_of(state)
+        Some(self.chain_of(state))
     }
 
     /// The chain held by its state, with the dispatcher that applies its
     /// actions as the window's person.
-    fn chain_of<P: super::Chained>(
-        &self,
-        state: Rc<super::chain::ChainState>,
-    ) -> Option<super::Chain<P>> {
-        let me = self.dispatch.me()?.clone();
+    fn chain_of<P: super::Chained>(&self, state: Rc<super::chain::ChainState>) -> super::Chain<P> {
+        // A past version is read as the person whose store holds its parts.
+        let me = self.dispatch.me().unwrap_or_else(|| state.reader()).clone();
         // A role that may only view the workspace views the parts too; a
         // member's own record (Mail's) is theirs to write, so its window's
         // dispatcher is not read-only.
@@ -279,7 +277,7 @@ impl<R: Resource> ResourceEnv<R> {
             self.dispatch
                 .for_workspace_resource::<P>(state.id(), read_only, apply, group)
         });
-        Some(super::Chain::new(state, dispatch))
+        super::Chain::new(state, dispatch)
     }
 
     /// The children of `C` this record lists ([`Children`](super::Children)):
