@@ -124,8 +124,6 @@ const IDLE: Duration = Duration::from_secs(60);
 const READINGS: usize = 3;
 /// How long one model turn may take.
 const TURN_TIME: Duration = Duration::from_secs(180);
-/// The most tokens one model answer may take.
-const ANSWER_TOKENS: u32 = 4096;
 /// The longest a tool's answer the model is shown, in bytes.
 const MOST_RESULT_BYTES: usize = 24 * 1024;
 /// How long one of the agent's tools may take before the model is told it did not answer.
@@ -2356,7 +2354,8 @@ async fn work(
             messages: messages.clone(),
             tools: tools.clone(),
             tool_choice: ToolChoice::Auto,
-            max_output_tokens: ANSWER_TOKENS,
+            // Nothing of the server's bounds an answer: its model's own maximum holds.
+            max_output_tokens: ModelRequest::NO_OUTPUT_BOUND,
         };
         let response = match ask_model(&turns, request, format!("{key}:{round}"), reply).await {
             Ok(response) => response,

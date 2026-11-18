@@ -831,6 +831,43 @@ fn first_instructions<T>(
     responses
 }
 
+/// How many output tokens a request asks of `model` at `profile`, where its caller asked
+/// for `asked`. Nothing of the gateway's bounds an answer. What holds is the least of what
+/// the caller named, the limit the person set for the model themselves and the model's own
+/// maximum as its provider's list publishes it, never above its context. None where none of
+/// them exists: a provider whose protocol takes a request without an allowance then holds
+/// the answer to its own maximum. Anthropic's protocol takes no such request. There the
+/// client's table of Anthropic's own models gives the published maximum, and only a model
+/// that table does not know is sent a stand-in, which the log says.
+fn allowance(profile: &ProviderProfile, model: &str, asked: Option<u64>) -> Option<u64> {
+    let listed = profile.models.iter().find(|listed| listed.id == model);
+    let theirs = listed
+        .and_then(|listed| listed.request_limits.as_ref())
+        .map(|limits| u64::from(limits.max_output_tokens));
+    let published = listed.and_then(|listed| {
+        let most = listed.max_output_tokens?;
+        let fits = listed
+            .context_window
+            .map_or(most, |context| most.min(context));
+        Some(u64::from(fits))
+    });
+    let held = [asked, theirs, published].into_iter().flatten().min();
+    if held.is_some()
+        || profile.protocol != ProviderProtocol::Anthropic
+        || anthropic::ANTHROPIC.default_max_tokens(model).is_some()
+    {
+        return held;
+    }
+    let stand_in = agent_provider_config::ModelDescriptor::DEFAULT_OUTPUT_TOKENS;
+    eprintln!(
+        "tilo-model-gateway: output allowance stand_in={stand_in} profile={} model={}: nobody \
+         published this model's maximum and Anthropic's protocol takes no request without one",
+        log_token(&profile.id),
+        log_token(model),
+    );
+    Some(u64::from(stand_in))
+}
+
 async fn execute(
     mut transport: GatewayHttp,
     secret: Option<&str>,
@@ -864,6 +901,7 @@ async fn execute(
         // ask again, as it is for every model.
         request.tool_choice = Some(message::ToolChoice::Auto);
     }
+    request.max_tokens = allowance(&transport.profile, &transport.model, request.max_tokens);
     let api_responses = bind_history(&transport, &mut request);
     let result = async {
         let model = transport.model.clone();
@@ -1089,7 +1127,10 @@ pub(super) fn neutral_request(
 ) -> Result<CompletionRequest, ModelError> {
     let mut result = CompletionRequest::new("gateway request");
     result.chat_history.clear();
-    result.max_tokens = Some(u64::from(request.max_output_tokens));
+    // A caller that sets no bound of its own names no allowance: what the provider is
+    // asked for is decided where it and its model are known ([`allowance`]).
+    result.max_tokens = (request.max_output_tokens != neutral::ModelRequest::NO_OUTPUT_BOUND)
+        .then(|| u64::from(request.max_output_tokens));
     result.tool_choice = Some(tool_choice(request.tool_choice));
     let name = |name: String| {
         message::ToolName::new(name)

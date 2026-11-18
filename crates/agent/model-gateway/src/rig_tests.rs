@@ -313,3 +313,47 @@ async fn rig_wires_reach_custom_endpoints_without_changing_gateway_policy() {
         }
     }
 }
+
+/// A request whose caller set no bound names no allowance. What a model is asked for is the
+/// least of what the caller named, what its person set for it and what its provider's list
+/// publishes; a stand-in only on Anthropic's protocol, for a model nobody published.
+#[test]
+fn an_allowance_is_the_callers_the_persons_or_the_models_own() {
+    let mut whole = request();
+    whole.max_output_tokens = neutral::ModelRequest::NO_OUTPUT_BOUND;
+    assert_eq!(neutral_request(whole).unwrap().max_tokens, None);
+    assert_eq!(neutral_request(request()).unwrap().max_tokens, Some(256));
+
+    let mut profile = ProviderProfile {
+        models: vec![agent_provider_config::ModelDescriptor::new("house-model-7")],
+        ..ProviderProfile::default()
+    };
+    let asked = |profile: &ProviderProfile, asked| allowance(profile, "house-model-7", asked);
+    assert_eq!(asked(&profile, None), None);
+    assert_eq!(allowance(&profile, "another-model", Some(256)), Some(256));
+    profile.protocol = ProviderProtocol::Anthropic;
+    assert_eq!(
+        asked(&profile, None),
+        Some(u64::from(
+            agent_provider_config::ModelDescriptor::DEFAULT_OUTPUT_TOKENS
+        ))
+    );
+    assert_eq!(
+        allowance(&profile, "claude-opus-4-8", None),
+        None,
+        "the client's own table publishes this model's maximum"
+    );
+    profile.models[0].max_output_tokens = Some(65_536);
+    assert_eq!(asked(&profile, None), Some(65_536));
+    assert_eq!(asked(&profile, Some(256)), Some(256));
+    assert_eq!(asked(&profile, Some(100_000)), Some(65_536));
+    profile.models[0].request_limits = Some(agent_provider_config::ModelRequestLimits {
+        max_output_tokens: 8_000,
+        runtime_context_tokens: None,
+        plan_timeout_ms: None,
+    });
+    assert_eq!(asked(&profile, None), Some(8_000));
+    profile.models[0].request_limits = None;
+    profile.models[0].context_window = Some(2_000);
+    assert_eq!(asked(&profile, None), Some(2_000));
+}
