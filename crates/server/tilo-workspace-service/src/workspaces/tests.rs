@@ -9,8 +9,8 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 pub(crate) use super::fixtures::{
-    admit_view_reader, entry_join, governor, governor_with, restricted_until, signed_pre_admission,
-    test_host, test_host_with_grants,
+    admit_view_reader, device_cert, entry_join, governor, governor_with, restricted_until,
+    signed_pre_admission, test_host, test_host_with_grants,
 };
 
 pub(crate) mod admission_cost;
@@ -49,20 +49,11 @@ async fn a_pre_admission_for_one_person_issues_an_invitation_only_they_can_redee
 
 /// A person's device certificate, as a guest's browser makes one.
 pub(crate) fn guest_device() -> (SigningKey, DeviceCert) {
-    let root = SigningKey::from_bytes(&rand::random());
-    let key = SigningKey::from_bytes(&rand::random());
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: "guest".into(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, &root).unwrap();
-    (key, cert)
+    device_cert(
+        &SigningKey::from_bytes(&rand::random()),
+        "guest",
+        DeviceCapabilities::member(),
+    )
 }
 
 #[tokio::test]
