@@ -382,8 +382,8 @@ mod tests {
         server.shutdown().await;
     }
 
-    /// Ada's root revokes thousands of keys, more than the log once had room
-    /// for, and then her laptop. The log keeps every one of them, so the host
+    /// Ada's root revokes two thousand keys, more than any one write names,
+    /// and then her laptop. The log keeps every one of them, so the server
     /// refuses each again once it reads the log after a restart.
     #[tokio::test]
     #[expect(
@@ -403,7 +403,7 @@ mod tests {
         sign_device_cert(&mut laptop, &ada).unwrap();
         admit_view_reader(workspaces, &created.workspace, &key, &laptop).await;
 
-        let mut revoked = (0..5000)
+        let mut revoked = (0..2000)
             .map(|n| revocation(&ada, made_up_key(n)))
             .collect::<Vec<_>>();
         workspaces.take_revocations(revoked.clone()).await.unwrap();

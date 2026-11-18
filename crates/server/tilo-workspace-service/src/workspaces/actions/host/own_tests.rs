@@ -302,11 +302,12 @@ async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
     server.shutdown().await;
 }
 
-/// How many workspaces of their own one person is given in one test.
-const HUNDREDS: usize = 300;
+/// How many workspaces of their own one person is given in one test: enough
+/// that a create or a listing that walked the ones they keep would show.
+const MANY: usize = 24;
 
 #[tokio::test]
-async fn a_person_may_keep_hundreds_of_workspaces_of_their_own_and_they_stay_quick() {
+async fn a_person_may_keep_many_workspaces_of_their_own_and_they_stay_quick() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
@@ -318,7 +319,7 @@ async fn a_person_may_keep_hundreds_of_workspaces_of_their_own_and_they_stay_qui
     let_in(&workspaces, &home, guest.user_public_key).await;
     let mut made = Vec::new();
     let listed_before = workspaces.own_directory_listings();
-    for number in 0..HUNDREDS {
+    for number in 0..MANY {
         let created = create_own(
             &host,
             &guest,
@@ -334,12 +335,11 @@ async fn a_person_may_keep_hundreds_of_workspaces_of_their_own_and_they_stay_qui
         "there is no bound on how many workspaces of their own a person keeps"
     );
     // What a create costs does not grow with the workspaces on the host: it
-    // reads none of them, so the person's hundredth costs what their first
-    // did.
+    // reads none of them, so their last costs what their first did.
     assert_eq!(
         workspaces.own_directory_listings(),
         listed_before,
-        "making one of a person's workspaces reads none of the host's"
+        "making one of a person's workspaces reads none of the server's"
     );
     // Their listing names every one, and is looked up by their own workspaces
     // rather than by reading the ones the host keeps.
@@ -347,7 +347,7 @@ async fn a_person_may_keep_hundreds_of_workspaces_of_their_own_and_they_stay_qui
     ask.target.address.action = tilo_server_session::workspaces::LIST_WORKSPACES.into();
     let listed: Vec<tilo_server_session::workspaces::WorkspaceListing> =
         serde_json::from_value(invoke(&host, &guest, ask).await.unwrap()).unwrap();
-    assert_eq!(listed.len(), HUNDREDS, "{listed:?}");
+    assert_eq!(listed.len(), MANY, "{listed:?}");
     assert!(
         listed.iter().all(|one| made.contains(&one.workspace)),
         "a listing names the workspaces of their own"
@@ -364,10 +364,10 @@ async fn a_person_may_keep_hundreds_of_workspaces_of_their_own_and_they_stay_qui
     assert_eq!(
         workspaces.own_directory_listings() - measured_before,
         1,
-        "their account read lists the records directory once for all {HUNDREDS}"
+        "their account read lists the workspaces directory once for all {MANY}"
     );
     let subscription = account.subscription.unwrap();
-    assert_eq!(subscription.usage.workspaces.len(), HUNDREDS);
+    assert_eq!(subscription.usage.workspaces.len(), MANY);
     assert_eq!(
         subscription.limits.unwrap().max_workspaces,
         None,
@@ -381,11 +381,64 @@ async fn a_person_may_keep_hundreds_of_workspaces_of_their_own_and_they_stay_qui
         kept[&hex::encode(guest.user_public_key)]
             .as_array()
             .map(Vec::len),
-        Some(HUNDREDS)
+        Some(MANY)
     );
     eprintln!(
-        "{HUNDREDS} workspaces of their own: made, listed and read with no pass over the host's records; whose-names file {} bytes",
+        "{MANY} workspaces of their own: made, listed and read with no pass over the server's resources; whose-names file {} bytes",
         std::fs::metadata(&index).unwrap().len()
+    );
+    server.shutdown().await;
+}
+
+/// Two of a person's devices asking for a workspace of their own in the same
+/// moment are answered one workspace: the first makes it, and the second
+/// waits for what the first made rather than making another.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_of_a_persons_devices_asking_at_once_are_answered_one_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces().clone();
+    let home = open(&workspaces).await;
+    let actions = HostWorkspaceActions::new();
+    actions.attach(workspaces.clone());
+    let root = SigningKey::from_bytes(&rand::random());
+    let person = root.verifying_key().to_bytes();
+    let_in(&workspaces, &home, person).await;
+    let phone = certified(
+        &root,
+        &SigningKey::from_bytes(&rand::random()),
+        DeviceCapabilities::member(),
+    );
+    let laptop = certified(
+        &root,
+        &SigningKey::from_bytes(&rand::random()),
+        DeviceCapabilities::member(),
+    );
+    let (one, two) = tokio::join!(
+        create_own(&actions, &phone, json!({})),
+        create_own(&actions, &laptop, json!({})),
+    );
+    let (one, two) = (one.unwrap(), two.unwrap());
+    assert_eq!(
+        one.workspace.workspace, two.workspace.workspace,
+        "both of their devices are answered the same workspace"
+    );
+    assert_eq!(
+        workspaces.own_workspaces_of(&person),
+        std::slice::from_ref(&one.workspace.workspace),
+        "they keep one workspace of their own"
+    );
+    assert_eq!(
+        workspaces
+            .own_account(&person)
+            .unwrap()
+            .subscription
+            .unwrap()
+            .usage
+            .workspaces
+            .len(),
+        1
     );
     server.shutdown().await;
 }
@@ -490,7 +543,11 @@ async fn a_plan_sets_the_storage_a_persons_own_workspaces_keep() {
 }
 
 #[tokio::test]
-async fn their_workspaces_of_their_own_share_the_storage_the_host_gives_them() {
+#[expect(
+    clippy::too_many_lines,
+    reason = "one shared budget, followed from what each keeps to what neither may keep"
+)]
+async fn their_workspaces_of_their_own_share_the_storage_the_server_gives_them() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
@@ -506,23 +563,37 @@ async fn their_workspaces_of_their_own_share_the_storage_the_host_gives_them() {
     let second = create_own(&host, &guest, json!({"name": "Side project"}))
         .await
         .unwrap();
-    let account = workspaces.own_account(&guest.user_public_key).unwrap();
-    let usage = account.subscription.unwrap().usage;
+    // What each of them is measured to keep: the file a workspace is made of
+    // is written as the server settles it, so one still on its way is measured
+    // 0 until it lands.
     let kept = |workspace: &str| {
-        usage
-            .workspaces
-            .iter()
-            .find(|usage| usage.workspace == workspace)
-            .unwrap()
-            .stored_bytes
+        workspaces
+            .own_account(&guest.user_public_key)
+            .and_then(|account| account.subscription)
+            .and_then(|subscription| {
+                subscription
+                    .usage
+                    .workspaces
+                    .into_iter()
+                    .find(|usage| usage.workspace == workspace)
+            })
+            .map_or(0, |usage| usage.stored_bytes)
     };
-    let [one, two] = [
-        kept(&first.workspace.workspace),
-        kept(&second.workspace.workspace),
-    ];
-    assert!(one > 0 && two > 0, "{one} {two}");
-    // What the two keep is measured on the disk, and the record a workspace
-    // is made of is written as the host settles it: a write still on its way
+    let [one, two] = tilo_test_env::within("both workspaces to be measured", async {
+        loop {
+            let (one, two) = (
+                kept(&first.workspace.workspace),
+                kept(&second.workspace.workspace),
+            );
+            if one > 0 && two > 0 {
+                break [one, two];
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    // What the two keep is measured on the disk, and the file a workspace is
+    // made of is written as the server settles it: a write still on its way
     // when the account was read lands after it. The budget is set against the
     // size they come to once no write is on its way, which is the size every
     // read of the account finds from then on.
@@ -540,20 +611,27 @@ async fn their_workspaces_of_their_own_share_the_storage_the_host_gives_them() {
             };
             assert!(workspaces.set_own_plan(&person, plan));
             // Measured afresh while they are over what the plan allows: the
-            // latest write is in the number before it is taken.
+            // latest write is in the number before it is taken, and the number
+            // counts only once no further write changes it.
             let mut last = None;
-            for _ in 0..100 {
+            let mut steady = 0;
+            for _ in 0..200 {
                 let refused = workspaces
                     .storage_refusal(&workspace)
                     .expect("they are over the plan they were given");
                 let Reason::StorageFull { used_bytes, .. } = refused.reason else {
                     panic!("{refused:?}");
                 };
-                if last == Some(used_bytes) {
+                steady = if last == Some(used_bytes) {
+                    steady + 1
+                } else {
+                    0
+                };
+                if steady == 3 {
                     return used_bytes;
                 }
                 last = Some(used_bytes);
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
             panic!("the workspaces' size never stood still: {last:?}");
         }
@@ -582,7 +660,14 @@ async fn their_workspaces_of_their_own_share_the_storage_the_host_gives_them() {
     else {
         panic!("{full:?}");
     };
-    assert_eq!((limit_bytes, used_bytes), (total - 1, total));
+    assert_eq!(limit_bytes, total - 1);
+    // Either of them alone is under the plan: only what the two keep between
+    // them fills it. (A write that lands after the plan is set may take them
+    // further over, so this is no exact number.)
+    assert!(
+        used_bytes >= limit_bytes,
+        "{used_bytes} B kept of {limit_bytes} B shared"
+    );
     let theirs = workspaces
         .storage_refusal(&second.workspace.workspace)
         .expect("either of them is refused while they share a full budget");

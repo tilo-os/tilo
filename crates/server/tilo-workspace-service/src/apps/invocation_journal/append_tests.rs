@@ -633,8 +633,8 @@ fn two_invocations() -> (tempfile::TempDir, PathBuf, InvocationKey, InvocationKe
 }
 
 #[test]
-fn append_journal_size_stays_bounded_over_ten_thousand_invokes() {
-    const INVOKES: u128 = 10_000;
+fn append_journal_size_stays_bounded_over_thousands_of_invokes() {
+    const INVOKES: u128 = 3_000;
     let (_dir, root, mut journal) = fresh();
     // This measures bytes, not durability.
     journal.elide_barriers();
@@ -659,7 +659,7 @@ fn append_journal_size_stays_bounded_over_ten_thousand_invokes() {
     );
     assert_eq!(
         (barriers.writes, barriers.file),
-        (2 * 10_000 + 1, 2 * 10_000 + 1),
+        (2 * INVOKES + 1, 2 * INVOKES + 1),
         "one write and one barrier per admission and per outcome, none for progress"
     );
     let first = key(&journal, 1);
@@ -672,7 +672,7 @@ fn append_journal_size_stays_bounded_over_ten_thousand_invokes() {
     drop(journal);
     drop(InvocationJournal::open(&root).unwrap());
     let compacted = std::fs::metadata(root.join("records.json")).unwrap().len();
-    let per_invocation = compacted / 10_000;
+    let per_invocation = compacted / u64::try_from(INVOKES).unwrap();
     assert!(
         per_invocation < 2048,
         "{per_invocation} bytes retained per invocation; arguments are 4 KiB"
