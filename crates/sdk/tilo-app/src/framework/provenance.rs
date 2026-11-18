@@ -9,7 +9,7 @@ use ui_core::peniko::Color;
 use tilo_resource::{MemberId, Origin};
 use ui_core::i18n::ArgValue;
 use ui_core::tokens::{PresenceHue, Rhythm, TextRole};
-use ui_core::widget::{Chip, ChipLead, Container, Element, Link, Row, Text};
+use ui_core::widget::{Chip, Container, Element, Link, Row, Text};
 
 use super::people::{Actor, People};
 
@@ -115,11 +115,20 @@ impl Provenance {
     pub fn row(&self, id: &str) -> Element {
         let (red, green, blue) = ui_core::presence::identity_rgb(self.hue);
         let colour = Color::from_rgb8(red, green, blue);
-        let mut chip = Chip::new(self.name.clone()).with_id(format!("{id}-author"));
-        chip = match &self.actor {
-            Some(actor) if actor.agent() => chip.with_lead(ChipLead::Agent(colour)),
-            _ => chip.with_face(self.name.clone(), colour),
-        };
+        let who = self.actor.as_ref().map_or_else(
+            || {
+                Actor {
+                    member: None,
+                    name: self.name.clone(),
+                    hue: self.hue,
+                }
+                .person()
+            },
+            Actor::person,
+        );
+        let chip = Chip::new(self.name.clone())
+            .with_id(format!("{id}-author"))
+            .with_face(who, colour);
         let mut row = Row::new()
             .no_wrap()
             .with_rhythm(Rhythm::Related)

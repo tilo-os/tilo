@@ -371,8 +371,11 @@ fn an_agents_answer_reads_by_the_name_the_member_list_gives_it() {
         .person
         .as_ref()
         .expect("the row wears the agent's face");
-    assert!(face.agent, "an agent's face, never a person's");
-    assert_eq!(face.identity, "notes");
+    assert_eq!(
+        face.who,
+        MemberId::agent("notes").into(),
+        "an agent's face, never a person's"
+    );
     assert_eq!(
         face.colour,
         Some(app.identity_colour(&MemberId::agent("notes")))

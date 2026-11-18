@@ -42,7 +42,11 @@ impl TopBarChrome {
             .enumerate()
             .filter_map(|(drawn, &index)| {
                 let name = self.face_names.get(index)?;
-                let name = if self.face_agents.get(index).copied().unwrap_or(false) {
+                let name = if self
+                    .face_members
+                    .get(index)
+                    .is_some_and(|member| !member.is_person())
+                {
                     t_args("topbar-face-agent", &[("name", name.as_str().into())])
                 } else {
                     name.clone()

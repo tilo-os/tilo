@@ -875,14 +875,16 @@ impl ProfileCard {
 
     /// Someone else's face, name and how and where they are here, side by side.
     fn other_header(model: &ProfileModel, other: &OtherPerson) -> Row {
-        let mut avatar = Avatar::person(&model.name, &model.identity).size(AvatarSize::Large);
+        // An agent wears its mark, as on every surface: never a person's face.
+        let member = if other.agent.is_some() {
+            tilo_action_policy::MemberId::agent(model.identity.clone())
+        } else {
+            tilo_action_policy::MemberId::person(model.identity.clone())
+        };
+        let mut avatar = Avatar::of(ui::component::Person::new(member, model.name.clone()))
+            .size(AvatarSize::Large);
         if let Some(colour) = model.colour {
             avatar = avatar.with_presence(colour);
-        }
-        // An agent's face is square with the agent mark (its colour is its client's hue, as the
-        // host gives it): never a person's.
-        if other.agent.is_some() {
-            avatar = avatar.agent();
         }
         let mut who = Column::new()
             .with_no_padding()

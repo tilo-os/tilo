@@ -283,10 +283,9 @@ fn paint_avatar(
     // The one face people have everywhere: one initial (or the agent mark) in a ring of their
     // colour, dimmed while idle, ringed while in a call.
     let face = ui::presence::Face {
-        is_agent: member.row.is_agent,
         dimmed: member.row.availability.dims(),
         in_call: member.row.call.is_some().then_some(1.0),
-        ..ui::presence::Face::new(&member.row.label, &member.row.id, member.row.color)
+        ..ui::presence::Face::member(&member.row.label, &member.row.member, member.row.color)
     };
     face.paint(
         &mut ui::paint::PaintCtx::new(scene, transform, text, theme),

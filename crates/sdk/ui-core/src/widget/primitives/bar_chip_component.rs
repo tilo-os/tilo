@@ -47,16 +47,11 @@ pub struct BarChipProps {
 }
 
 impl BarChipProps {
-    fn faces(&self) -> Vec<Face<'_>> {
+    fn faces(&self, theme: &Theme) -> Vec<Face<'_>> {
+        let palette = &theme.tokens.colors.presence;
         self.who
             .iter()
-            .map(|who| {
-                Face::new(
-                    &who.name,
-                    who.identity.id(),
-                    crate::presence::identity_colour(who.identity.id()),
-                )
-            })
+            .map(|who| Face::of(who, palette.hue(who.hue)))
             .collect()
     }
 }
@@ -176,7 +171,7 @@ impl Widget for BarChip {
         text: &mut TextRenderer,
     ) -> bool {
         let theme = Theme::default();
-        let faces = self.props.faces();
+        let faces = self.props.faces(&theme);
         let width = crate::num::f32_of_f64(self.face(&theme, &faces).width(text, &theme));
         let Ok(style) = taffy.style(node) else {
             return false;
@@ -215,7 +210,7 @@ impl Widget for BarChip {
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
         }
-        let faces = self.props.faces();
+        let faces = self.props.faces(theme);
         let ground = theme.tokens.colors.surfaces.base;
         let _ = self.face(theme, &faces).paint(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),

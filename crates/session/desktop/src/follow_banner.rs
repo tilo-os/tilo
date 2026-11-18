@@ -436,8 +436,7 @@ fn paint_contents(
     let face = face_side(theme, chip.height());
     let label_style = theme.text(TextRole::Label).with_weight(TextWeight::Medium);
     let (_, label_h) = ctx.text.measure_style(label, None, &label_style);
-    let mut their_face = ui::presence::Face::new(&row.label, &row.id, row.color);
-    their_face.is_agent = row.is_agent;
+    let their_face = ui::presence::Face::member(&row.label, &row.member, row.color);
     ui::presence::FaceStack {
         side: face - 6.0,
         ..ui::presence::FaceStack::BAR

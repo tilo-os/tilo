@@ -225,6 +225,7 @@ impl ListRow {
             super::FactAvatar {
                 name,
                 identity,
+                who: avatar.who,
                 image: None,
                 square: avatar.square,
                 glyph: avatar.glyph,

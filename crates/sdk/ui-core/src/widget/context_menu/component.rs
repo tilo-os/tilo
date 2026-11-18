@@ -196,11 +196,7 @@ fn face(
         return crate::widget::Button::new(key, "")
             .with_accessible_name(&label)
             .tooltip(label)
-            .with_avatar(
-                only.clone(),
-                only.clone(),
-                crate::tokens::PresenceHue::of_identity(only),
-            )
+            .with_avatar(crate::component::Person::named(only.clone()))
             .role(role.unwrap_or(ButtonRole::Plain));
     }
     if !faces.is_empty() {

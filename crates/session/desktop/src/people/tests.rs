@@ -19,8 +19,7 @@ fn row(id: &str, label: &str) -> RosterRow {
         label: label.into(),
         initial: label.chars().next().unwrap_or('?'),
         color: Color::from_rgb8(0x25, 0x63, 0xeb),
-        is_agent: false,
-        is_bot: false,
+        member: tilo_action_policy::MemberId::person(id),
         role: None,
         activity: Some(format!("Viewing {label}'s notes")),
         working_in: None,
@@ -128,7 +127,7 @@ tilo_test_env::scenario! {
     // the person can reach at a phone's width.
     {
         let mut agent = row("claude", "Claude Code");
-        agent.is_agent = true;
+        agent.member = tilo_action_policy::MemberId::agent("claude");
         let rows = vec![row("ada", "Ada"), agent];
         let mut overlay = PeopleOverlay::default();
         paint_in(&mut overlay, &rows, None, Rect::new(0.0, 0.0, 390.0, 844.0));
@@ -179,7 +178,7 @@ tilo_test_env::scenario! {
     // its name alone leaves a person watching it no knowing whether it works or idles.
     {
         let mut agent = row("claude", "Claude Code");
-        agent.is_agent = true;
+        agent.member = tilo_action_policy::MemberId::agent("claude");
         agent.activity = None;
         agent.working_in = Some((7, "Launch notes".into()));
         agent.status = Some(RosterStatus {
@@ -230,7 +229,7 @@ tilo_test_env::scenario! {
     // Launch notes in…" even on a wide panel.
     {
         let mut agent = row("claude", "Claude Code");
-        agent.is_agent = true;
+        agent.member = tilo_action_policy::MemberId::agent("claude");
         agent.activity = None;
         let doing = "Reading Launch notes in Notes";
         agent.status = Some(RosterStatus {
@@ -300,7 +299,7 @@ tilo_test_env::scenario! {
     // the window it works in instead, and pressing that line brings the window forward.
     {
         let mut agent = row("claude", "Claude Code");
-        agent.is_agent = true;
+        agent.member = tilo_action_policy::MemberId::agent("claude");
         agent.working_in = Some((7, "Lounge notes".into()));
         let rows = vec![row("ada", "Ada"), agent];
         let screens = [("ada".to_owned(), Some(screen("Notes")))];
@@ -409,7 +408,7 @@ tilo_test_env::scenario! {
     // it has one, the record's name alone where it has none.
     {
         let mut agent = row("cc", "Claude Code");
-        agent.is_agent = true;
+        agent.member = tilo_action_policy::MemberId::agent("claude");
         agent.working_in = Some((7, "Lounge notes".into()));
         assert_eq!(working_in_line(&agent), ("Lounge notes".into(), None));
         agent.status = Some(RosterStatus {
@@ -450,7 +449,7 @@ tilo_test_env::scenario! {
         };
         let rows = roster_rows(&desktop, "local");
         let agent = rows.iter().find(|row| row.id == "claude").unwrap();
-        assert!(agent.is_agent);
+        assert!(agent.is_agent());
         assert!(agent.followable, "the agent can be followed");
     }
 }
@@ -571,9 +570,9 @@ tilo_test_env::scenario! {
 
         let rows = roster_rows(&desktop, "local");
         let bot = rows.iter().find(|row| row.id == device).unwrap();
-        assert!(bot.is_bot && bot.is_agent, "a bot is software, tagged Bot");
+        assert!(bot.member.is_bot() && bot.is_agent(), "a bot is software, tagged Bot");
         let ada = rows.iter().find(|row| row.id == "ada").unwrap();
-        assert!(!ada.is_bot && !ada.is_agent);
+        assert!(!ada.member.is_bot() && !ada.is_agent());
     }
 
     phase agent_classification_uses_stable_identity_not_display_label;
@@ -606,7 +605,7 @@ tilo_test_env::scenario! {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].label, "Release Notes Agent");
         assert!(
-            rows[0].is_agent,
+            rows[0].is_agent(),
             "a renamed agent must never appear as a person"
         );
     }
@@ -717,7 +716,7 @@ tilo_test_env::scenario! {
         };
 
         let rows = roster_rows(&desktop, "local");
-        let agent = rows.iter().find(|row| row.is_agent).expect("the agent");
+        let agent = rows.iter().find(|row| row.is_agent()).expect("the agent");
         assert_eq!(
             agent.activity, None,
             "software's work line already names the window it works in"
@@ -800,7 +799,7 @@ tilo_test_env::scenario! {
     // People, then agents, each with Follow on its row and Wave for people; Invite at the bottom; a press on a row's controls is that control's, on its body opens what they changed.
     {
         let mut agent = row("scribe", "Release Notes Agent");
-        agent.is_agent = true;
+        agent.member = tilo_action_policy::MemberId::agent("claude");
         let mut ada = row("ada", "Ada");
         ada.recent = vec![RecentChange {
             text: "Rewrote the intro and two headings".into(),

@@ -517,7 +517,7 @@ impl ChatApp {
         let cy = header.center().y;
         let face_rect = Rect::new(end - face, cy - face / 2.0, end, cy + face / 2.0);
         let name = self.user_name(&m.author);
-        AvatarFace::new(&name, m.author.id())
+        AvatarFace::member(&name, &m.author)
             .presence(self.identity_colour(&m.author))
             .paint(paint, face_rect);
         if !(share.open && self.sharer_here(&m.author)) {

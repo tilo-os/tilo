@@ -84,8 +84,8 @@ pub struct Person {
     pub id: String,
     pub label: String,
     pub color: Color,
-    /// Software, not a person: the agent mark instead of an initial.
-    pub is_agent: bool,
+    /// Who they are, which picks their face ([`ui::presence::Face::member`]).
+    pub member: tilo_action_policy::MemberId,
 }
 
 /// One strip of the active workspace, as the switcher lists it.
@@ -148,7 +148,7 @@ impl SwitcherModel {
                         id: row.id,
                         label: row.label,
                         color: row.color,
-                        is_agent: row.is_agent,
+                        member: row.member,
                     },
                 ))
             })
@@ -1581,10 +1581,7 @@ fn draw_people(cx: &mut DrawCx<'_>, people: &[Person], x_end: f64, cy: f64) -> f
     let faces: Vec<ui::presence::Face<'_>> = people
         .iter()
         .take(shown)
-        .map(|person| ui::presence::Face {
-            is_agent: person.is_agent,
-            ..ui::presence::Face::new(&person.label, &person.id, person.color)
-        })
+        .map(|person| ui::presence::Face::member(&person.label, &person.member, person.color))
         .collect();
     let ground = ui::widget::floating_surface::card_ground(cx.theme);
     let mut paint = ui::paint::PaintCtx::new(cx.scene, cx.transform, cx.text, cx.theme);

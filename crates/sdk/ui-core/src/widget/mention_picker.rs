@@ -15,7 +15,7 @@ use crate::search::FieldWeight;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::PresenceHue;
-use crate::widget::autocomplete::{Suggestion, SuggestionList, SuggestionPerson};
+use crate::widget::autocomplete::{Suggestion, SuggestionList};
 use collab_types::{Member, MemberId};
 
 /// Someone a field can mention: a member of the workspace.
@@ -407,11 +407,12 @@ fn suggestion_with_value(candidate: &MentionCandidate, value: String) -> Suggest
         MemberId::Agent(_) => Some(widget_text("widget-mention-agent")),
         MemberId::Bot(_) => Some(widget_text("widget-mention-bot")),
     };
-    let row = Suggestion::labelled(value, candidate.name.clone()).with_person(SuggestionPerson {
-        identity: candidate.id.clone().into(),
-        hue: candidate.hue,
-        agent: !candidate.id.is_person(),
-    });
+    let row =
+        Suggestion::labelled(value, candidate.name.clone()).with_person(crate::component::Person {
+            identity: candidate.id.clone().into(),
+            name: candidate.name.clone(),
+            hue: candidate.hue,
+        });
     match detail {
         Some(detail) => row.with_detail(detail),
         None => row,

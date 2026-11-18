@@ -99,18 +99,16 @@ pub enum TiloMark {
     Face(TiloFace),
 }
 
-/// A face a row wears, in the shape and colour presence gives it: an agent's rounded square in
-/// its client's hue, so software never reads as a person at any scale.
+/// An agent's face a row wears, as presence draws it: its mark in its client's hue, so software
+/// never reads as a person at any scale.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TiloFace {
-    /// What it is called: the name its initials, or its mark, stand for.
+    /// What it is called.
     pub name: String,
     /// Its stable id, which picks the hue when it wears no colour of its own.
     pub identity: String,
     /// The colour it wears, as presence's identity colours carry it.
     pub colour: (u8, u8, u8),
-    /// Software, not a person: the rounded square and the agent mark.
-    pub is_agent: bool,
 }
 
 /// An irreversible control's question, asked on its row: what the person loses, and the answer
@@ -289,7 +287,6 @@ fn agent_row(grant: &mcp_server::Grant) -> TiloItem {
             name: grant.agent.clone(),
             identity: grant.id.clone(),
             colour: ui::presence::identity_rgb(hue),
-            is_agent: true,
         })),
         title: grant.agent.clone(),
         facts,

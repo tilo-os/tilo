@@ -11,14 +11,13 @@ use vello::peniko::{Color, Fill};
 use crate::paint::PaintCtx;
 use crate::widget::AvatarFace;
 
-/// One person's face in a stack.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// One member's face in a stack.
+#[derive(Clone, Copy, Debug)]
 pub struct Face<'a> {
-    pub name: &'a str,
-    /// Their stable id: picks their picture and, without a colour, their hue.
-    pub identity: &'a str,
+    /// The face itself, as every surface draws this member ([`AvatarFace::of`]).
+    pub avatar: AvatarFace<'a>,
+    /// The ring's colour, and the face's.
     pub colour: Color,
-    pub is_agent: bool,
     /// Idle or away: the face dims.
     pub dimmed: bool,
     /// In a voice channel: a soft ring breathes around the face, at this
@@ -31,11 +30,33 @@ pub struct Face<'a> {
 impl<'a> Face<'a> {
     #[must_use]
     pub fn new(name: &'a str, identity: &'a str, colour: Color) -> Self {
+        Self::wearing(AvatarFace::new(name, identity), colour)
+    }
+
+    /// `who`'s face ([`AvatarFace::of`]), ringed in `colour`.
+    #[must_use]
+    pub fn of(who: &'a crate::component::Person, colour: Color) -> Self {
+        Self::wearing(AvatarFace::of(who), colour)
+    }
+
+    /// `member`'s face ([`AvatarFace::member`]), called `name`, ringed in `colour`.
+    #[must_use]
+    pub fn member(name: &'a str, member: &'a tilo_actions::MemberId, colour: Color) -> Self {
+        Self::wearing(AvatarFace::member(name, member), colour)
+    }
+
+    /// Software, not a person: the agent's mark ([`AvatarFace::agent`]), for a stack that knows
+    /// only whether its member is one.
+    #[must_use]
+    pub fn agent(mut self) -> Self {
+        self.avatar = self.avatar.agent();
+        self
+    }
+
+    fn wearing(avatar: AvatarFace<'a>, colour: Color) -> Self {
         Self {
-            name,
-            identity,
+            avatar: avatar.presence(colour),
             colour,
-            is_agent: false,
             dimmed: false,
             in_call: None,
             scale: 1.0,
@@ -233,7 +254,7 @@ impl Face<'_> {
 /// The shape a face's rings follow, `reach` past its disc: a circle for a person, and for an agent
 /// the rounded square its mark is, so software never reads as a person at any scale.
 fn outline(face: &Face<'_>, rect: Rect, corner: f64, reach: f64) -> vello::kurbo::BezPath {
-    if face.is_agent {
+    if face.avatar.is_square() {
         RoundedRect::from_rect(rect.inflate(reach, reach), corner + reach).to_path(0.1)
     } else {
         Circle::new(rect.center(), rect.width() / 2.0 + reach).to_path(0.1)
@@ -279,27 +300,14 @@ fn paint_face(ctx: &mut PaintCtx<'_>, rect: Rect, face: &Face<'_>, ground: Color
         None,
         &around(GAP + RING / 2.0),
     );
-    if face.is_agent {
-        crate::agent_identity::draw_agent_identity_mark(
-            ctx.scene,
-            transform,
-            rect,
-            colour,
-            ctx.theme,
-            crate::agent_identity::AgentIdentityStyle::Solid,
-        );
+    // The same face as everywhere this member is shown, so nobody reads as "ED" to themselves
+    // and "E" to everyone else, and an agent wears its mark on the bar as in chat.
+    let avatar = if face.dimmed {
+        face.avatar.idle_on(ground)
     } else {
-        // The same initials as everywhere this person is shown
-        // (`initials_for_name`), so nobody reads as "ED" to themselves and
-        // "E" to everyone else, and two "Eager …" visitors stay apart.
-        let avatar = AvatarFace::new(face.name, face.identity).presence(face.colour);
-        let avatar = if face.dimmed {
-            avatar.idle_on(ground)
-        } else {
-            avatar
-        };
-        avatar.paint(ctx, rect);
-    }
+        face.avatar
+    };
+    avatar.paint(ctx, rect);
 }
 
 #[cfg(test)]

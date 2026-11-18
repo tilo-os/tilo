@@ -1362,7 +1362,7 @@ tilo_test_env::scenario! {
             "rows",
             vec![
                 NavItem::new("talk", "talk").unread(true),
-                NavItem::new("dana", "Dana").person("u_dana", Some(colour), true),
+                NavItem::new("dana", "Dana").person(tilo_actions::MemberId::person("u_dana"), Some(colour), true),
             ],
         )]);
         let h = harness(list, Theme::dark());
@@ -1394,7 +1394,7 @@ tilo_test_env::scenario! {
             "rows",
             vec![
                 NavItem::new("dana", "Dana Reyes (via Discord)")
-                    .person("discord:7", Some(colour), false)
+                    .person(tilo_actions::MemberId::person("dana"), Some(colour), false)
                     .person_face("Dana Reyes", None),
             ],
         )]);
