@@ -3675,6 +3675,7 @@ name = "db-client"
 version = "0.1.0"
 dependencies = [
  "db-client",
+ "db-client-model",
  "hex",
  "jiff",
  "mysql",
@@ -3691,6 +3692,17 @@ dependencies = [
  "tilo-vello",
  "tilo-winit",
  "tracing",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
+name = "db-client-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-resource",
  "uuid",
  "workspace-hack",
 ]

@@ -21,8 +21,8 @@ use winit::keyboard::{Key, NamedKey};
 use crate::link::{ConnectionRow, Dialog, Intent, Link, ViewModel};
 use crate::model::{DatabaseSchema, QueryResult, TableInfo};
 use crate::navigator::Navigator;
-use crate::record::{SavedConnection, Workspace as Record, id_of, uuid_of};
 use crate::resource::DbEffect;
+use crate::saved::{SavedConnection, Workspace as SharedData, id_of, uuid_of};
 use crate::session::{MainTab, RunStatus, Session};
 use crate::workspace::Workspace;
 use ui::icons::Icon;
@@ -82,7 +82,7 @@ pub struct DbClientApp {
     shell: NavShell,
     store: Shared,
     /// The workspace as the document holds it; `None` outside the framework.
-    live: Option<Live<Record>>,
+    live: Option<Live<SharedData>>,
     presented: Option<(u64, u64)>,
 }
 
@@ -94,7 +94,7 @@ pub(crate) struct Store {
     link: Link,
     session: Session,
     /// Where every change of the record goes, one undo step each.
-    actions: Option<Dispatcher<Record>>,
+    actions: Option<Dispatcher<SharedData>>,
     /// This device's keyring for connection passwords: the document names the profile, the
     /// password stays here.
     secrets: Option<ui::secrets::SecretStore>,
@@ -108,7 +108,7 @@ pub(crate) struct Store {
     /// The result row the person chose, and the result generation it belongs to.
     selected_row: Option<usize>,
     selected_generation: usize,
-    record: Rc<Record>,
+    synced: Rc<SharedData>,
     export_rx: Option<ui::portal::PortalChannel>,
     export_snapshot: Option<crate::model::QueryResult>,
     dialog: Option<Dialog>,
@@ -136,7 +136,7 @@ impl DbClientApp {
         Self::build(Session::new(), None)
     }
 
-    pub(crate) fn with_actions(actions: &ui::framework::Actions<Record>) -> Self {
+    pub(crate) fn with_actions(actions: &ui::framework::Actions<SharedData>) -> Self {
         Self::build(Session::new(), Some(actions))
     }
 
@@ -146,7 +146,7 @@ impl DbClientApp {
         Self::build(Session::with_sample(), None)
     }
 
-    fn build(session: Session, actions: Option<&ui::framework::Actions<Record>>) -> Self {
+    fn build(session: Session, actions: Option<&ui::framework::Actions<SharedData>>) -> Self {
         let link = Link::new();
         // The bar's search narrows the tables; its views are the workspace's tabs.
         let shell = NavShell::new()
@@ -165,7 +165,7 @@ impl DbClientApp {
             copy: ui::CopyWatch::default(),
             selected_row: None,
             selected_generation: 0,
-            record: Rc::default(),
+            synced: Rc::default(),
             export_rx: None,
             export_snapshot: None,
             dialog: None,
@@ -683,10 +683,10 @@ impl Store {
     /// member's concurrent typing survives. A view-only member's buffer stays as
     /// it is.
     fn replace_editor_sql(&self, sql: &str) {
-        self.submit(Record::paths().sql.replace(sql));
+        self.submit(SharedData::paths().sql.replace(sql));
     }
 
-    fn submit(&self, submit: impl Submit<Record>) {
+    fn submit(&self, submit: impl Submit<SharedData>) {
         if let Some(actions) = &self.actions {
             actions.submit(submit);
         }
@@ -712,7 +712,7 @@ impl Store {
     fn open_item(&mut self, id: Uuid) {
         if let Some(index) = self.session.connections.iter().position(|c| c.id == id) {
             self.connect(index);
-        } else if let Some(sql) = self.record.saved_query(id).map(|saved| saved.sql.clone()) {
+        } else if let Some(sql) = self.synced.saved_query(id).map(|saved| saved.sql.clone()) {
             self.replace_editor_sql(&sql);
             self.show_tab(MainTab::Query);
         }
@@ -720,8 +720,8 @@ impl Store {
 
     /// Show the saved connections the record holds, and open the one the local user just
     /// added.
-    pub(crate) fn adopt_resource_state(&mut self, state: &Rc<Record>) {
-        self.record = Rc::clone(state);
+    pub(crate) fn adopt_resource_state(&mut self, state: &Rc<SharedData>) {
+        self.synced = Rc::clone(state);
         let connections = state.profiles();
         let same = connections.len() == self.session.connections.len()
             && connections
@@ -762,7 +762,7 @@ impl Store {
     }
 
     /// Attach the dispatcher, this device's keyring, and in a capture the sample catalog.
-    fn attach_framework(&mut self, cx: &ViewCx<Record>) {
+    fn attach_framework(&mut self, cx: &ViewCx<SharedData>) {
         let dispatcher = cx.dispatcher();
         self.link.attach_sql_edits(dispatcher.clone());
         self.actions = Some(dispatcher);
@@ -849,8 +849,8 @@ impl Store {
     /// keyring, and open it once it lands.
     fn save_connection(&mut self, profile: crate::model::ConnectionProfile) {
         let id = profile.id;
-        let at = self.record.connections.len();
-        self.submit(Record::paths().connections.insert_as(
+        let at = self.synced.connections.len();
+        self.submit(SharedData::paths().connections.insert_as(
             &id_of(id),
             at,
             &SavedConnection::of(&profile),
@@ -1242,7 +1242,7 @@ impl DbClientApp {
 
 /// The window as the view lays it out: it shows the workspace the document holds, answers
 /// the effects, publishes the catalog and stages a capture's scenario.
-pub(crate) fn window(cx: &ViewCx<Record>, mut window: DbClientApp) -> Element {
+pub(crate) fn window(cx: &ViewCx<SharedData>, mut window: DbClientApp) -> Element {
     window.live = Some(cx.live().clone());
     window.state().attach_framework(cx);
     let store = Rc::clone(&window.store);
@@ -1309,11 +1309,13 @@ impl Store {
 /// A workspace document whose SQL buffer holds the starter query.
 #[cfg(test)]
 pub(crate) fn sample_document() -> AutoCommit {
-    let mut replica = ui::tilo_resource::Replica::<Record>::new();
+    let mut replica = ui::tilo_resource::Replica::<SharedData>::new();
     replica
         .apply(
             ui::tilo_resource::Invoke::edit(
-                &Record::paths().sql.replace(crate::sample::DEFAULT_QUERY),
+                &SharedData::paths()
+                    .sql
+                    .replace(crate::sample::DEFAULT_QUERY),
             )
             .expect("the starter query is an edit"),
         )
@@ -1334,8 +1336,8 @@ mod editor_sql_tests {
     use ui::tilo_actions::entry::Did;
 
     use crate::model::{ConnectionProfile, Engine};
-    use crate::record::{Workspace as Record, adding};
     use crate::resource::DbClientShell;
+    use crate::saved::{Workspace as SharedData, adding};
 
     fn sql(app: &TestApp<DbClientShell>) -> String {
         app.state().sql
@@ -1405,7 +1407,7 @@ mod editor_sql_tests {
         assert_eq!(sql(&app), "SELECT 1");
         app.call(
             "field-edit",
-            serde_json::json!({ "edit": Record::paths().sql.replace("SELECT 2") }),
+            serde_json::json!({ "edit": SharedData::paths().sql.replace("SELECT 2") }),
         )
         .unwrap();
         assert_eq!(sql(&app), "SELECT 2");
@@ -1438,10 +1440,10 @@ mod editor_sql_tests {
         app.harness().type_text("WITH");
         assert_eq!(sql(&app), "WITH 1");
         app.merge_peer_edit(|doc| {
-            ui::framework::testing::dispatcher::<Record>("so.tilo.db-client")
+            ui::framework::testing::dispatcher::<SharedData>("so.tilo.db-client")
                 .submit_now(
                     &mut ui::widget::Edits::lend(doc),
-                    Record::paths().sql.splice(6, 0, " AS t"),
+                    SharedData::paths().sql.splice(6, 0, " AS t"),
                 )
                 .unwrap();
         });
@@ -1499,7 +1501,7 @@ impl Store {
             DbEffect::Query { sql } => self.run_on_open(&sql)?,
             DbEffect::Run { query } => {
                 let sql = self
-                    .record
+                    .synced
                     .saved_query(uuid_of(&ui::tilo_resource::Id::from_raw(query)))
                     .map(|saved| saved.sql.clone())
                     .ok_or_else(|| "the saved query is no longer available".to_string())?;
@@ -1592,7 +1594,7 @@ impl Store {
         self.session.run_query(sql);
         Ok(())
     }
-    fn answer_effect(&mut self, effect: DbEffect, cx: &mut EffectCx<Record>) -> EffectAnswer {
+    fn answer_effect(&mut self, effect: DbEffect, cx: &mut EffectCx<SharedData>) -> EffectAnswer {
         if let DbEffect::ReadResult {
             connection,
             generation,
@@ -1648,7 +1650,7 @@ impl Store {
 mod tests {
     use super::*;
 
-    use crate::record::adding;
+    use crate::saved::adding;
     use automerge::ROOT;
     use ui::headless::FrameHarness;
     use ui::theme::Theme;
@@ -1687,10 +1689,10 @@ mod tests {
     /// Put `sql` in the shared buffer, as a member writing it does:
     /// without the framework dispatcher the editor only shows the text.
     fn write_sql(harness: &mut FrameHarness, sql: &str) {
-        ui::framework::testing::dispatcher::<Record>("so.tilo.db-client")
+        ui::framework::testing::dispatcher::<SharedData>("so.tilo.db-client")
             .submit_now(
                 &mut ui::widget::Edits::lend(&mut harness.state_mut().doc),
-                Record::paths().sql.replace(sql),
+                SharedData::paths().sql.replace(sql),
             )
             .unwrap();
         harness.relayout();
@@ -1905,7 +1907,7 @@ mod tests {
             );
             assert_eq!(
                 app(&harness).link.sql(),
-                <Record as ui::tilo_resource::Resource>::read(&harness.state().doc)
+                <SharedData as ui::tilo_resource::Resource>::read(&harness.state().doc)
                     .unwrap()
                     .sql
             );
@@ -2110,10 +2112,10 @@ mod tests {
 
         let mut listed = ConnectionProfile::new("Prod", Engine::Postgres);
         listed.id = id;
-        let mut workspace = Record::default();
+        let mut workspace = SharedData::default();
         workspace.connections.push(
-            crate::record::id_of(id),
-            crate::record::SavedConnection::of(&listed),
+            crate::saved::id_of(id),
+            crate::saved::SavedConnection::of(&listed),
         );
         app.state().adopt_resource_state(&Rc::new(workspace));
         assert!(
@@ -2126,7 +2128,7 @@ mod tests {
             "and the views are told about it"
         );
         app.state()
-            .adopt_resource_state(&Rc::new(Record::default()));
+            .adopt_resource_state(&Rc::new(SharedData::default()));
         assert!(
             !secret.present_blocking(),
             "removing it forgets the password"
@@ -2159,7 +2161,7 @@ mod tests {
         let mut app = TestApp::<crate::resource::DbClientShell>::new().unwrap();
         let profile = ConnectionProfile::new("Team DB", Engine::MySql);
         app.merge_peer_edit(|doc| {
-            ui::framework::testing::dispatcher::<Record>("so.tilo.db-client")
+            ui::framework::testing::dispatcher::<SharedData>("so.tilo.db-client")
                 .submit_now(&mut ui::widget::Edits::lend(doc), adding(&profile, 0))
                 .unwrap();
         });
@@ -2226,7 +2228,7 @@ mod tests {
 
         app.invoke(
             ui::tilo_resource::Invoke::edit(
-                &Record::paths().sql.replace("SELECT value FROM proof"),
+                &SharedData::paths().sql.replace("SELECT value FROM proof"),
             )
             .unwrap(),
         )
@@ -2243,9 +2245,9 @@ mod tests {
         );
         let connection = state.profiles()[0].id;
 
-        let item = ui::tilo_resource::items::item_resource_id::<Record>(
+        let item = ui::tilo_resource::items::item_resource_id::<SharedData>(
             "connections",
-            &crate::record::id_of(connection),
+            &crate::saved::id_of(connection),
         );
         app.call_on(&item, "connect", serde_json::json!({}))
             .unwrap();
@@ -2299,9 +2301,9 @@ mod tests {
             let mut profile = ConnectionProfile::new("Query worker", Engine::Sqlite);
             profile.file_path = database.to_string_lossy().into_owned();
             app.invoke(adding(&profile, 0)).unwrap();
-            let item = ui::tilo_resource::items::item_resource_id::<Record>(
+            let item = ui::tilo_resource::items::item_resource_id::<SharedData>(
                 "connections",
-                &crate::record::id_of(profile.id),
+                &crate::saved::id_of(profile.id),
             );
             app.call_on(&item, "connect", serde_json::json!({}))
                 .unwrap();

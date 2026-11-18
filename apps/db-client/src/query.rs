@@ -19,9 +19,9 @@ use winit::event::WindowEvent;
 use crate::i18n::t;
 use crate::link::Link;
 use crate::model::QueryResult;
-use crate::record::Workspace as Record;
 use crate::results::{CaptionLine, ResultsTable, fill_remaining_height};
 use crate::sample;
+use crate::saved::Workspace as SharedData;
 use crate::session::RunStatus;
 
 /// The editor over the shared SQL buffer: it shows the text the document
@@ -29,7 +29,7 @@ use crate::session::RunStatus;
 /// dispatcher ([`TextControl`]). Until that dispatcher is attached it only
 /// shows the text.
 pub struct EditorPane {
-    text: TextControl<CodeEditor, Record>,
+    text: TextControl<CodeEditor, SharedData>,
     /// Whether `text` edits through the dispatcher yet.
     attached: bool,
     link: Link,
@@ -44,7 +44,7 @@ impl EditorPane {
             .with_id("sql-editor");
         editor.set_focused(true);
         Self {
-            text: TextControl::view_only_at(editor, Record::paths().sql),
+            text: TextControl::view_only_at(editor, SharedData::paths().sql),
             attached: false,
             link: link.clone(),
         }
@@ -57,13 +57,13 @@ impl EditorPane {
 }
 
 impl ui::widget::Decorator for EditorPane {
-    type Inner = TextControl<CodeEditor, Record>;
+    type Inner = TextControl<CodeEditor, SharedData>;
 
-    fn inner(&self) -> &TextControl<CodeEditor, Record> {
+    fn inner(&self) -> &TextControl<CodeEditor, SharedData> {
         &self.text
     }
 
-    fn inner_mut(&mut self) -> &mut TextControl<CodeEditor, Record> {
+    fn inner_mut(&mut self) -> &mut TextControl<CodeEditor, SharedData> {
         &mut self.text
     }
 
@@ -107,7 +107,7 @@ struct StarterQueries {
 }
 
 impl StarterQueries {
-    fn new(actions: Option<&Actions<Record>>) -> Self {
+    fn new(actions: Option<&Actions<SharedData>>) -> Self {
         let names: Vec<String> = sample::starter_queries()
             .iter()
             .map(|(name, _)| (*name).to_owned())
@@ -120,7 +120,7 @@ impl StarterQueries {
             .with_placeholder(&t("db-starter-queries"));
         if let Some(actions) = actions
             && let Some(pick) =
-                actions.edit_binding_with(Record::paths().sql, move |path, name: String| {
+                actions.edit_binding_with(SharedData::paths().sql, move |path, name: String| {
                     let (_, sql) = sample::starter_queries()
                         .iter()
                         .find(|(candidate, _)| *candidate == name)
@@ -167,7 +167,7 @@ impl ui::widget::Decorator for StarterQueries {
 }
 
 /// The starter queries. Run is the window bar's.
-fn toolbar(actions: Option<&Actions<Record>>) -> Row {
+fn toolbar(actions: Option<&Actions<SharedData>>) -> Row {
     Row::new()
         .no_wrap()
         .push(Box::new(StarterQueries::new(actions)))
@@ -280,7 +280,7 @@ impl ui::widget::Decorator for ResultsPane {
 }
 
 /// The whole tab: the toolbar over the editor and its result.
-pub fn query_pane(link: &Link, actions: Option<&Actions<Record>>) -> Element {
+pub fn query_pane(link: &Link, actions: Option<&Actions<SharedData>>) -> Element {
     Box::new(
         Column::new()
             .with_no_padding()

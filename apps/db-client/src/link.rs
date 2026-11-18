@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::record::Workspace as Record;
+use crate::saved::Workspace as SharedData;
 use ui::framework::Dispatcher;
 use uuid::Uuid;
 
@@ -131,7 +131,7 @@ struct Inner {
     /// The editor's text, mirrored by the workspace so the controller can run
     sql: String,
     /// Where the editor submits its edits of the shared SQL, once the
-    sql_edits: Option<Dispatcher<Record>>,
+    sql_edits: Option<Dispatcher<SharedData>>,
 }
 
 #[derive(Clone, Default)]
@@ -174,12 +174,12 @@ impl Link {
     }
 
     /// Hand the editor the dispatcher its edits of the SQL go through.
-    pub fn attach_sql_edits(&self, dispatcher: Dispatcher<Record>) {
+    pub fn attach_sql_edits(&self, dispatcher: Dispatcher<SharedData>) {
         self.inner.borrow_mut().sql_edits = Some(dispatcher);
     }
 
     /// The dispatcher the editor's edits go through, once attached.
-    pub fn sql_edits(&self) -> Option<Dispatcher<Record>> {
+    pub fn sql_edits(&self) -> Option<Dispatcher<SharedData>> {
         self.inner.borrow().sql_edits.clone()
     }
 }

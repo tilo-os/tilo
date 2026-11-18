@@ -1,12 +1,12 @@
-//! What the shared workspace stores: saved connections, saved queries and the SQL buffer.
-//! `#[derive(Model)]` is the storage contract. A connection's password is never stored
-//! here: it stays in each device's keyring, so the record carries the shape of a team's
-//! databases without a secret.
+//! What the shared workspace stores: saved connections, saved queries and the
+//! SQL buffer. `#[derive(Model)]` is the storage contract. A connection's
+//! password is never stored here: it stays in each device's keyring, so the
+//! resource carries the shape of a team's databases without a secret.
 
-use ui::tilo_resource::{self, Atom, Collection, Id, Model};
+use tilo_resource::{Atom, Collection, Id, Model};
 use uuid::Uuid;
 
-use crate::model::{ConnectionProfile, Engine};
+use crate::profile::{ConnectionProfile, Engine};
 
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq)]
 pub struct SavedConnection {
@@ -28,6 +28,7 @@ pub struct SavedConnection {
 }
 
 impl SavedConnection {
+    #[must_use]
     pub fn of(profile: &ConnectionProfile) -> Self {
         Self {
             name: profile.name.clone(),
@@ -40,6 +41,7 @@ impl SavedConnection {
         }
     }
 
+    #[must_use]
     pub fn profile(&self, id: &Id) -> ConnectionProfile {
         ConnectionProfile {
             id: uuid_of(id),
@@ -78,6 +80,7 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    #[must_use]
     pub fn profiles(&self) -> Vec<ConnectionProfile> {
         self.connections
             .iter()
@@ -85,6 +88,7 @@ impl Workspace {
             .collect()
     }
 
+    #[must_use]
     pub fn connection_id(&self, connection: Uuid) -> Option<Id> {
         self.connections
             .ids()
@@ -92,6 +96,7 @@ impl Workspace {
             .cloned()
     }
 
+    #[must_use]
     pub fn saved_query(&self, query: Uuid) -> Option<&SavedQuery> {
         self.saved_queries
             .iter()
@@ -102,6 +107,7 @@ impl Workspace {
 
 /// The UUID the window knows the item `id` by, or one derived from an id minted
 /// otherwise.
+#[must_use]
 pub fn uuid_of(id: &Id) -> Uuid {
     Uuid::parse_str(id.as_str()).unwrap_or_else(|_| {
         let half = |salt: u8| {
@@ -116,57 +122,7 @@ pub fn uuid_of(id: &Id) -> Uuid {
 }
 
 /// The id of the item the window knows as `uuid`.
+#[must_use]
 pub fn id_of(uuid: Uuid) -> Id {
     Id::from_raw(uuid.to_string())
-}
-
-/// Adding `profile` as the saved connection at `at`, under the id the
-/// window knows it by.
-#[cfg(test)]
-pub(crate) fn adding(
-    profile: &ConnectionProfile,
-    at: usize,
-) -> ui::tilo_resource::Invoke<Workspace> {
-    ui::tilo_resource::Invoke::edit(&Workspace::paths().connections.insert_as(
-        &id_of(profile.id),
-        at,
-        &SavedConnection::of(profile),
-    ))
-    .expect("a connection is an edit")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A profile goes through the record without its password, and an id
-    /// that is not a UUID still names one item.
-    #[test]
-    fn a_profile_round_trips_without_its_password() {
-        let mut profile = ConnectionProfile::new("Analytics", Engine::Postgres);
-        profile.host = "db.internal".into();
-        profile.port = 6543;
-        profile.database = "analytics".into();
-        profile.user = "reader".into();
-        profile.password = "s3cret".into();
-        let id = id_of(profile.id);
-        let back = SavedConnection::of(&profile).profile(&id);
-        assert_eq!(back.id, profile.id);
-        assert_eq!(
-            (
-                back.name.as_str(),
-                back.host.as_str(),
-                back.port,
-                back.user.as_str()
-            ),
-            ("Analytics", "db.internal", 6543, "reader")
-        );
-        assert!(
-            back.password.is_empty(),
-            "the password is not in the record"
-        );
-        let foreign = Id::from_raw("conn-1");
-        assert_eq!(uuid_of(&foreign), uuid_of(&foreign));
-        assert_ne!(uuid_of(&foreign), uuid_of(&Id::from_raw("conn-2")));
-    }
 }

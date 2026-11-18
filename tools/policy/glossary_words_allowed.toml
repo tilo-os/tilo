@@ -727,3 +727,13 @@ paths = ["crates/server/tilo-server/src/enroll.rs"]
 reason = "A test's readiness handoff between two threads, which is what mpsc's channel is."
 words = ["channel"]
 paths = ["crates/server/tilo-server/src/enroll_transport_tests.rs"]
+
+[[allow]]
+reason = "The Database app's effect that executes a query on a server: its variant, its label and its key say run, as the app offers them."
+words = ["run"]
+paths = ["apps/db-client-model/*"]
+
+[[allow]]
+reason = "The network host a connection profile reaches, which the glossary keeps as a network host name."
+words = ["host"]
+paths = ["apps/db-client-model/*"]
