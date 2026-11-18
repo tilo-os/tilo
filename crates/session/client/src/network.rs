@@ -56,6 +56,53 @@ pub fn answer<T>() -> (Answer<T>, Receipt<T>) {
     oneshot::channel()
 }
 
+/// What writes this device's session still keeps wait for ([`Outbox::kept_of`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Waits {
+    /// Their workspace's keys: they are not sealed yet.
+    Keys,
+    /// The document they change: the first of them is a change, and this device holds nothing
+    /// of the document.
+    Document,
+    /// What the workspace has not admitted on this device yet, in its replica's words.
+    Prerequisite(String),
+    /// Their document's history to be compacted: it is full.
+    History,
+    /// This device's signature.
+    Signature,
+    /// Their turn: they are held with their keys and not committed to this device's replica yet.
+    Commit,
+    /// Their holder's answer: they are committed here, and their holder has not said it holds
+    /// them.
+    Holder,
+}
+
+impl std::fmt::Display for Waits {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Keys => "its workspace's keys",
+            Self::Document => "the document it changes, which is not here",
+            Self::Prerequisite(what) => what,
+            Self::History => "its document's history to be compacted",
+            Self::Signature => "this device's signature",
+            Self::Commit => "its turn to be committed here",
+            Self::Holder => "its holder's answer",
+        })
+    }
+}
+
+/// The writes of this device to one document that its session still keeps: not durable at their
+/// holder yet ([`Outbox::kept_of`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Kept {
+    /// The document they were written to.
+    pub route: DocumentRoute,
+    /// What they wait for.
+    pub waits: Waits,
+    /// How long they have waited for it.
+    pub age: std::time::Duration,
+}
+
 /// Where a client says what it says to the peer network.
 pub trait Outbox: std::fmt::Debug + collab_types::signer::MaybeSendSync {
     /// Say `command` to the peer network.
@@ -109,6 +156,19 @@ pub trait Outbox: std::fmt::Debug + collab_types::signer::MaybeSendSync {
     fn barrier_of(&self, workspaces: &[Topic]) -> Result<Receipt<Result<(), String>>, Closed> {
         let (answer, receipt) = answer();
         self.send(Cmd::BarrierOf(workspaces.to_vec(), answer))?;
+        Ok(receipt)
+    }
+
+    /// What this device's session still keeps of what it wrote to `workspaces`, a document each,
+    /// with what its writes wait for and for how long: none once every write to them is durable
+    /// at its holder. Whoever finds a write unconfirmed ([`Self::barrier_of`]) reads here why,
+    /// instead of only that it is.
+    ///
+    /// # Errors
+    /// The transport is gone.
+    fn kept_of(&self, workspaces: &[Topic]) -> Result<Receipt<Vec<Kept>>, Closed> {
+        let (answer, receipt) = answer();
+        self.send(Cmd::KeptOf(workspaces.to_vec(), answer))?;
         Ok(receipt)
     }
 
@@ -419,6 +479,9 @@ pub enum Cmd {
     /// Answer once every write said before this to one of these workspaces is durable at its
     /// holder ([`Outbox::barrier_of`]).
     BarrierOf(Vec<Topic>, Answer<Result<(), String>>),
+    /// Answer what this session still keeps of what it wrote to these workspaces, and what each
+    /// document's writes wait for ([`Outbox::kept_of`]).
+    KeptOf(Vec<Topic>, Answer<Vec<Kept>>),
     /// Say these frames on the presence track of the workspace on the topic.
     Presence(Topic, Vec<collab_types::presence::Presence>),
     /// The host's word for a run it executes, on the workspace on the topic.
