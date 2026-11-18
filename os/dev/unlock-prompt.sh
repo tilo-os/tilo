@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Answer an installed guest's disk-unlock prompt from outside the guest.
 #
-#   ./os/dev/unlock-prompt.sh SECRET
+#   ./os/dev/unlock-prompt.sh [SECRET]
+#
+# Without an argument the secret comes from TILO_UNLOCK_SECRET, which is how a
+# harness passes it without it appearing on a command line.
 #
 # A VM whose installed root is LUKS2 stops in its initramfs until a secret is
 # typed. Nothing is reachable over the network at that point, so the only input
@@ -18,8 +21,8 @@
 #
 # Its two variables come from the harness, as for every vm.sh action.
 set -euo pipefail
-secret=${1:?usage: unlock-prompt.sh SECRET}
-[ -n "$secret" ] || { echo 'unlock-prompt: empty secret' >&2; exit 2; }
+secret=${1:-${TILO_UNLOCK_SECRET:-}}
+[ -n "$secret" ] || { echo 'unlock-prompt: no secret (argument or TILO_UNLOCK_SECRET)' >&2; exit 2; }
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 printf '%s' "$secret" | "$here/vm.sh" type - >/dev/null 2>&1 || exit 1
 "$here/vm.sh" keys ret >/dev/null 2>&1 || true
