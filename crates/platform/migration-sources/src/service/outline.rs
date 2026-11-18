@@ -66,16 +66,21 @@ struct Source {
 
 fn read(server: &str, key: &str) -> Result<Source, ServiceError> {
     let collections = listed(server, key, "collections.list", &json!({}))?;
-    let mut documents = BTreeMap::new();
-    for collection in &collections {
-        let id = text(collection, "id");
-        let listed = listed(
+    let ids: Vec<&str> = collections
+        .iter()
+        .map(|collection| text(collection, "id"))
+        .collect();
+    let listed_documents = http::each(&ids, |id| {
+        listed(
             server,
             key,
             "documents.list",
             &json!({ "collectionId": id }),
-        )?;
-        documents.insert(id.to_owned(), parents_first(listed));
+        )
+    });
+    let mut documents = BTreeMap::new();
+    for (id, answer) in ids.iter().zip(listed_documents) {
+        documents.insert((*id).to_owned(), parents_first(answer?));
     }
     Ok(Source {
         collections,
@@ -193,6 +198,29 @@ pub fn pages(
         .filter(|group| group.chosen)
         .map(|group| group.key.as_str())
         .collect();
+    // The pictures the chosen pages show are fetched at once: what a page shows costs a share
+    // of the requests in flight rather than a round trip of its own.
+    let destinations: Vec<&str> = source
+        .documents
+        .values()
+        .flatten()
+        .filter(|document| chosen.contains(text(document, "id")))
+        .flat_map(|document| picture_destinations(text(document, "text")))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let fetched = http::each(&destinations, |destination| {
+        http::picture(destination, server, key, Key::Bearer).map(|bytes| Picture {
+            digest: blake3::hash(&bytes).to_hex().to_string(),
+            bytes,
+        })
+    });
+    let kept: HashMap<&str, Picture> = destinations
+        .iter()
+        .copied()
+        .zip(fetched)
+        .filter_map(|(destination, picture)| Some((destination, picture?)))
+        .collect();
     let mut found = BTreeSet::new();
     let mut not_reviewed = 0;
     let mut pages = Vec::new();
@@ -226,7 +254,7 @@ pub fn pages(
                 continue;
             }
             found.insert(document_id.to_owned());
-            let (markdown, pictures) = rewrite(text(document, "text"), server, key, &titles);
+            let (markdown, pictures) = rewrite(text(document, "text"), server, &kept, &titles);
             pages.push(IncomingPage {
                 source: "outline".into(),
                 key: document_id.to_owned(),
@@ -258,13 +286,13 @@ pub fn pages(
     })
 }
 
-/// `markdown` with every picture it shows kept as `asset:<digest>`, every link to another
-/// Outline document as that document's `[[title]]`, and every other link on the Outline host
-/// made absolute so it still leads there.
+/// `markdown` with every picture it shows kept as `asset:<digest>` (its bytes from `kept`, by
+/// destination), every link to another Outline document as that document's `[[title]]`, and
+/// every other link on the Outline host made absolute so it still leads there.
 pub fn rewrite(
     markdown: &str,
     server: &str,
-    key: &str,
+    kept: &HashMap<&str, Picture>,
     titles: &HashMap<String, String>,
 ) -> (String, Vec<Picture>) {
     let mut pictures: Vec<Picture> = Vec::new();
@@ -281,20 +309,13 @@ pub fn rewrite(
         output.push_str(part(rest, 0, start));
         let label = part(rest, open + 1, text_end);
         let target = part(rest, destination_start, end).trim();
-        let destination = target
-            .split_once(char::is_whitespace)
-            .map_or(target, |(destination, _)| destination)
-            .trim_matches(['<', '>']);
+        let destination = linkage(target);
         if picture {
-            if let Some(bytes) = http::picture(destination, server, key, Key::Bearer) {
-                let digest = blake3::hash(&bytes).to_hex().to_string();
-                if !pictures.iter().any(|kept| kept.digest == digest) {
-                    pictures.push(Picture {
-                        digest: digest.clone(),
-                        bytes,
-                    });
+            if let Some(image) = kept.get(destination) {
+                if !pictures.iter().any(|kept| kept.digest == image.digest) {
+                    pictures.push(image.clone());
                 }
-                output.push_str(&format!("![{label}](asset:{digest})"));
+                output.push_str(&format!("![{label}](asset:{})", image.digest));
             } else {
                 output.push_str(&format!("![{label}]({})", absolute(destination, server)));
             }
@@ -308,6 +329,35 @@ pub fn rewrite(
     }
     output.push_str(rest);
     (output, pictures)
+}
+
+/// Every picture `markdown` shows, as the destinations it points at.
+fn picture_destinations(markdown: &str) -> Vec<&str> {
+    let mut destinations: Vec<&str> = Vec::new();
+    let mut rest = markdown;
+    while let Some(open) = rest.find('[') {
+        let picture = open > 0 && rest.as_bytes().get(open - 1) == Some(&b'!');
+        let Some((_text_end, destination_start, end)) = link_at(rest, open) else {
+            rest = part(rest, open + 1, rest.len());
+            continue;
+        };
+        if picture {
+            let destination = linkage(part(rest, destination_start, end).trim());
+            if !destinations.contains(&destination) {
+                destinations.push(destination);
+            }
+        }
+        rest = part(rest, end + 1, rest.len());
+    }
+    destinations
+}
+
+/// The destination of `[text](target)` from its trimmed target: what is before any title.
+fn linkage(target: &str) -> &str {
+    target
+        .split_once(char::is_whitespace)
+        .map_or(target, |(destination, _)| destination)
+        .trim_matches(['<', '>'])
 }
 
 /// `text` from byte `from` to byte `to`, both found at ASCII delimiters.

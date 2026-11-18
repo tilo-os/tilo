@@ -40,7 +40,22 @@ query TiloMigration($after: String) {
       parent { id }
       relations { nodes { type relatedIssue { id } } }
       inverseRelations { nodes { type issue { id } } }
-      comments(first: 100) { nodes { body createdAt updatedAt url user { name email } } }
+      comments(first: 100) {
+        pageInfo { hasNextPage endCursor }
+        nodes { body createdAt updatedAt url user { name email } }
+      }
+    }
+  }
+}
+";
+
+/// One issue's comments past the first page the issues query brings.
+const COMMENTS: &str = r"
+query TiloMigrationComments($id: String!, $after: String) {
+  issue(id: $id) {
+    comments(first: 100, after: $after) {
+      pageInfo { hasNextPage endCursor }
+      nodes { body createdAt updatedAt url user { name email } }
     }
   }
 }
@@ -168,7 +183,8 @@ pub fn issues(
     chosen: &BTreeSet<String>,
     cancel: &AtomicBool,
 ) -> Result<Issues, ServiceError> {
-    let source = all_issues(server, key, Some(cancel))?;
+    let mut source = all_issues(server, key, Some(cancel))?;
+    fill_comments(server, key, &mut source, chosen, cancel)?;
     let reviewed_teams: BTreeSet<&str> = source
         .iter()
         .filter(|issue| chosen.contains(text(issue, "id")))
@@ -206,6 +222,95 @@ pub fn issues(
         not_reviewed,
         gone,
     })
+}
+
+/// The comments past the first page of the issues query, appended to every chosen issue that has
+/// more: all such issues are asked at once, and one issue's further pages one after another.
+fn fill_comments(
+    server: &str,
+    key: &str,
+    issues: &mut [Value],
+    chosen: &BTreeSet<String>,
+    cancel: &AtomicBool,
+) -> Result<(), ServiceError> {
+    let overfull: Vec<(usize, Value)> = issues
+        .iter()
+        .enumerate()
+        .filter(|(_, issue)| chosen.contains(text(issue, "id")))
+        .filter(|(_, issue)| {
+            issue
+                .pointer("/comments/pageInfo/hasNextPage")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .map(|(at, issue)| (at, issue.clone()))
+        .collect();
+    let more = http::each(&overfull, |(_, issue)| {
+        further_comments(server, key, issue, cancel)
+    });
+    for ((at, _), answer) in overfull.iter().zip(more) {
+        for comment in answer? {
+            if let Some(nodes) = issues[*at]
+                .pointer_mut("/comments/nodes")
+                .and_then(Value::as_array_mut)
+            {
+                nodes.push(comment);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn further_comments(
+    server: &str,
+    key: &str,
+    issue: &Value,
+    cancel: &AtomicBool,
+) -> Result<Vec<Value>, ServiceError> {
+    let id = text(issue, "id");
+    let mut cursor = issue
+        .pointer("/comments/pageInfo/endCursor")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let mut seen = BTreeSet::new();
+    let mut comments = Vec::new();
+    loop {
+        let Some(after) = cursor.take() else {
+            return Ok(comments);
+        };
+        if cancel.load(Ordering::Relaxed) {
+            return Err(ServiceError::Cancelled);
+        }
+        // A connection that hands back a cursor it already gave ends here rather than twice.
+        if !seen.insert(after.clone()) {
+            return Ok(comments);
+        }
+        let answer = query(
+            server,
+            key,
+            &json!({ "query": COMMENTS, "variables": { "id": id, "after": after } }),
+        )?;
+        let connection = answer
+            .pointer("/data/issue/comments")
+            .ok_or_else(|| ServiceError::Unavailable("Linear answered without comments".into()))?;
+        comments.extend(
+            connection
+                .get("nodes")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+        );
+        let more = connection
+            .pointer("/pageInfo/hasNextPage")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if more {
+            cursor = connection
+                .pointer("/pageInfo/endCursor")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+        }
+    }
 }
 
 fn parents_first(issues: Vec<IncomingIssue>) -> Vec<IncomingIssue> {
@@ -416,4 +521,79 @@ fn status(kind: Option<&str>) -> &'static str {
 
 fn text<'a>(value: &'a Value, name: &str) -> &'a str {
     value.get(name).and_then(Value::as_str).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicBool;
+
+    use super::*;
+
+    /// An issue whose comments go past the one page the issues query brings: the next page is
+    /// asked for it alone, and its comments arrive after the first page's.
+    #[test]
+    fn an_issues_comments_past_one_page_come_with_it() {
+        let server = test_http::Responder::handle(|request| {
+            let body = request.body_text();
+            let answer = if body.contains("TiloMigrationComments") {
+                json!({ "data": { "issue": { "comments": {
+                    "pageInfo": { "hasNextPage": false, "endCursor": Value::Null },
+                    "nodes": [comment("The second page")],
+                } } } })
+            } else {
+                json!({ "data": { "issues": {
+                    "pageInfo": { "hasNextPage": false, "endCursor": Value::Null },
+                    "nodes": [json!({
+                        "id": "issue-1",
+                        "identifier": "ENG-1",
+                        "title": "An issue",
+                        "description": "",
+                        "url": "https://tracker.example/acme/issue/ENG-1",
+                        "createdAt": "2024-01-01T00:00:00Z",
+                        "updatedAt": "2024-01-01T00:00:00Z",
+                        "team": { "id": "team-1", "key": "ENG", "name": "Engineering" },
+                        "state": { "name": "Todo", "type": "unstarted" },
+                        "comments": {
+                            "pageInfo": { "hasNextPage": true, "endCursor": "cursor-1" },
+                            "nodes": [comment("The first page")],
+                        },
+                    })],
+                } } })
+            };
+            Some(
+                test_http::Reply::status(200)
+                    .header("content-type", "application/json")
+                    .body(answer.to_string()),
+            )
+        });
+        let chosen: BTreeSet<String> = ["issue-1".to_owned()].into();
+        let fetched =
+            issues(&server.url(), "key", &chosen, &AtomicBool::new(false)).expect("Linear answers");
+        assert_eq!(fetched.issues.len(), 1);
+        let comments: Vec<&str> = fetched.issues[0]
+            .comments
+            .iter()
+            .map(|comment| comment.text.as_str())
+            .collect();
+        assert_eq!(comments, ["The first page", "The second page"]);
+        let asked = server.drain_requests();
+        assert_eq!(
+            asked
+                .iter()
+                .filter(|request| request.body_text().contains("TiloMigrationComments"))
+                .count(),
+            1,
+            "one further page is one request for one issue"
+        );
+    }
+
+    fn comment(body: &str) -> Value {
+        json!({
+            "body": body,
+            "createdAt": "2024-01-02T00:00:00Z",
+            "updatedAt": "2024-01-02T00:00:00Z",
+            "url": "https://tracker.example/acme/issue/ENG-1#comment",
+            "user": { "name": "Someone", "email": "someone@example.com" },
+        })
+    }
 }
