@@ -678,7 +678,16 @@ async fn after_a_restart_a_turn_left_begun_is_not_started_over_and_one_only_take
     assert_eq!(turns.len(), 1, "{turns:?}");
     dies_at(&dying, &workspace, &turns[0], &asked, 2).await;
     drop(dying);
-    let part = conversation_part(&workspaces, &workspace).await;
+    // The note of a look reaches the reply once the look has answered, and no tool waits for
+    // it: the reply shows the step a moment after its model was asked.
+    let deadline = tilo_test_env::hang_deadline();
+    let part = loop {
+        let part = conversation_part(&workspaces, &workspace).await;
+        if chat::summons::left_begun(&part, first.as_str(), SCOUT, 0) || Instant::now() > deadline {
+            break part;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
     assert!(
         chat::summons::left_begun(&part, first.as_str(), SCOUT, 0),
         "its record shows a step taken and no end"

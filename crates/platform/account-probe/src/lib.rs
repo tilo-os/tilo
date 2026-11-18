@@ -16,6 +16,7 @@ use tilo_dav::{Credentials, DavClient, Depth, StatusCode, props};
 use tokio::time::timeout;
 
 pub mod imap;
+pub mod mail_servers;
 mod smtp;
 
 pub trait AccountTester: Send + Sync {
@@ -26,6 +27,17 @@ pub trait AccountTester: Send + Sync {
         _secret: &accounts::Secret,
     ) -> Result<Vec<tilo_dav::discovery::CalendarCollection>, String> {
         Err("Calendar discovery is unavailable".into())
+    }
+
+    /// Work out where the mail of `address` lives, from the address alone
+    /// ([`mail_servers::find`]). `allowed` says whether a server of that name may be
+    /// asked anything. Test doubles must opt in explicitly.
+    fn find_mail_servers(
+        &self,
+        _address: &str,
+        _allowed: &dyn Fn(&str) -> bool,
+    ) -> Result<mail_servers::MailServers, String> {
+        Err("Mail server discovery is unavailable".into())
     }
 
     fn test(
@@ -201,6 +213,14 @@ impl LiveAccountTester {
 }
 
 impl AccountTester for LiveAccountTester {
+    fn find_mail_servers(
+        &self,
+        address: &str,
+        allowed: &dyn Fn(&str) -> bool,
+    ) -> Result<mail_servers::MailServers, String> {
+        mail_servers::find(address, &mail_servers::Live::new(allowed))
+    }
+
     fn discover_calendars(
         &self,
         account: &accounts::Account,
@@ -286,7 +306,7 @@ mod tests {
 
     /// An IMAP server that is TLS from the first byte, with the identity
     /// `server`. Answers the `LOGIN` it was sent.
-    fn imap_server(
+    pub(crate) fn imap_server(
         server: rustls::ServerConfig,
         greeting: &'static str,
         login_reply: &'static str,
@@ -323,7 +343,7 @@ mod tests {
     }
 
     /// A test server's TLS identity, and the roots that trust exactly it.
-    fn server_tls() -> (rustls::ServerConfig, rustls::RootCertStore) {
+    pub(crate) fn server_tls() -> (rustls::ServerConfig, rustls::RootCertStore) {
         let certified =
             rcgen::generate_simple_self_signed(vec!["localhost".into()]).expect("test certificate");
         let cert_der = certified.cert.der().clone();
@@ -407,14 +427,14 @@ mod tests {
     /// How a test SMTP server answers: whether it offers the upgrade, the
     /// sign-ins it offers once secure, and whether it takes the credential.
     #[derive(Clone, Copy)]
-    struct Smtp {
+    pub(crate) struct Smtp {
         upgrades: bool,
         mechanisms: &'static str,
         accepts: bool,
     }
 
     impl Smtp {
-        const ACCEPTS: Self = Self {
+        pub(crate) const ACCEPTS: Self = Self {
             upgrades: true,
             mechanisms: "PLAIN LOGIN",
             accepts: true,
@@ -422,14 +442,14 @@ mod tests {
     }
 
     /// Every line an SMTP server was sent: in the clear, and once secure.
-    struct SmtpSaid {
+    pub(crate) struct SmtpSaid {
         clear: Vec<String>,
         secure: Vec<String>,
     }
 
     /// An SMTP server on a port that starts in the clear, as a submission
     /// port does, with the identity `server`.
-    fn smtp_server(
+    pub(crate) fn smtp_server(
         server: rustls::ServerConfig,
         serving: Smtp,
     ) -> (u16, std::thread::JoinHandle<SmtpSaid>) {
@@ -525,7 +545,7 @@ mod tests {
     }
 
     /// A port of this machine nothing listens on.
-    fn closed_port() -> u16 {
+    pub(crate) fn closed_port() -> u16 {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
         listener.local_addr().expect("listener address").port()
     }

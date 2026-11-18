@@ -82,6 +82,7 @@ mod issue_work;
 mod learned;
 mod mail;
 mod skills;
+mod steps;
 mod sub_agents;
 mod summary;
 mod team;
@@ -132,6 +133,9 @@ const WRITE_WAIT: Duration = Duration::from_secs(30);
 /// The tool a turn in a conversation answers with a view through: Chat's own
 /// `answer-with-view`, on the reply to the turn's ask.
 const ANSWER_WITH_VIEW: &str = "answer_with_view";
+
+/// Chat's action that keeps on a reply what its agent says of its work.
+const KEEP_WORK: &str = "record-work";
 
 /// The provider serving one workspace's actions as an [`ActionProvider`]: what the agent's
 /// tools run on, and what its replies are written through.
@@ -257,14 +261,21 @@ impl WorkspaceActionProvider {
     }
 
     fn serve(&self, caller: &Caller, message: RemoteActionMessage) -> Pending<RemoteActionMessage> {
-        self.actions
+        // What a tool call asks of the workspace's action service is counted for its step.
+        let asking = steps::asking(&message);
+        let answer = self
+            .actions
             .serve(self.workspace, caller, message)
             .unwrap_or_else(|| {
                 Pending::ready(RemoteActionMessage::CatalogueResponse {
                     correlation: 0,
                     result: Err(unavailable()),
                 })
-            })
+            });
+        match asking {
+            Some(asking) => asking.answered(answer),
+            None => answer,
+        }
     }
 }
 
@@ -389,11 +400,14 @@ impl ActionProvider for WorkspaceActionProvider {
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
         // What a provider of the turn's own took is no invocation of the workspace's: how it
         // ended is kept here.
-        self.ended
+        let state = self
+            .ended
             .as_ref()
             .and_then(|ended| ended.of(id))
             .or_else(|| self.actions.observe(caller, id))
-            .or_else(|| self.answered.of(caller, id))
+            .or_else(|| self.answered.of(caller, id));
+        steps::looked(id, state.as_ref());
+        state
     }
 
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
@@ -1806,6 +1820,49 @@ impl Reply {
         }
     }
 
+    /// Tell the person what the agent is doing now, and wait for nothing: the note is handed
+    /// to the workspace's action service, which takes a workspace's requests in the order
+    /// they came. So it stands on the reply before whatever the turn writes there next, and
+    /// no tool waits until Chat has taken it. Whether the turn has a reply that takes notes.
+    fn notes(&self, did: &str) -> bool {
+        let Ask::Message { part, message, .. } = &self.ask else {
+            return false;
+        };
+        let route = DocumentRoute {
+            app_id: CHAT.to_owned(),
+            cluster_id: self.workspace.clone(),
+            document: part.clone(),
+        };
+        let mut arguments = Map::new();
+        arguments.insert("message".into(), json!(message));
+        arguments.insert("work".into(), json!({"state": "doing", "did": did}));
+        let resource = format!("{}/messages/{message}", chat::parts::ChatPart::KIND);
+        let request = invocation_of(
+            target_named(&route, &resource, KEEP_WORK),
+            InvokeArgument::Json(arguments),
+        );
+        let workspace = self.workspace.clone();
+        self.provider
+            .invoke(&self.caller, request)
+            .then(move |receipt| {
+                let refused = match receipt {
+                    Some(Ok(receipt)) => match receipt.status {
+                        ReceiptStatus::Failed { error } => Some(error.message),
+                        ReceiptStatus::Rejected { error } => Some(error.to_string()),
+                        ReceiptStatus::Accepted
+                        | ReceiptStatus::Completed { .. }
+                        | ReceiptStatus::Cancelled { .. } => None,
+                    },
+                    Some(Err(error)) => Some(error.to_string()),
+                    None => Some("the workspace's action service let go of it".to_owned()),
+                };
+                if let Some(error) = refused {
+                    tracing::warn!(%workspace, %error, "the reply of an agent on the workspace's server did not take its note");
+                }
+            });
+        true
+    }
+
     /// Leave this ask for what its person wrote next: its reply says the answer follows below.
     /// A reply that holds what its model wrote keeps that, and ends there.
     async fn went_on(&self) {
@@ -1963,7 +2020,7 @@ impl Reply {
             &self.caller,
             &route,
             &resource,
-            "record-work",
+            KEEP_WORK,
             arguments,
         )
         .await
@@ -2128,14 +2185,34 @@ pub async fn invoke_named(
     action: &str,
     arguments: Map<String, Value>,
 ) -> Result<Value, String> {
-    let target = RemoteActionTarget {
+    let target = target_named(route, resource, action);
+    invoke_at(provider, caller, target, InvokeArgument::Json(arguments)).await
+}
+
+/// `action` on `resource` of what is kept at `route`, as what an invocation names.
+fn target_named(route: &DocumentRoute, resource: &str, action: &str) -> RemoteActionTarget {
+    RemoteActionTarget {
         provider: record_provider(route),
         address: ActionAddress {
             resource: resource.to_owned(),
             action: action.to_owned(),
         },
-    };
-    invoke_at(provider, caller, target, InvokeArgument::Json(arguments)).await
+    }
+}
+
+/// What asks for `target` with `argument`: an invocation of its own.
+fn invocation_of(target: RemoteActionTarget, argument: InvokeArgument) -> InvokeRequest {
+    InvokeRequest {
+        invocation: InvocationId::new(),
+        target,
+        argument,
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+    }
 }
 
 /// Invoke `target` with `argument` as `caller`, and wait for it to end.
@@ -2148,17 +2225,7 @@ async fn invoke_at(
     target: RemoteActionTarget,
     argument: InvokeArgument,
 ) -> Result<Value, String> {
-    let request = InvokeRequest {
-        invocation: InvocationId::new(),
-        target,
-        argument,
-        context: None,
-        confirmation: None,
-        revision: None,
-        on_behalf_of: None,
-        wait_ms: None,
-        appearance: None,
-    };
+    let request = invocation_of(target, argument);
     let (provider, caller) = (provider.clone(), caller.clone());
     tokio::task::spawn_blocking(move || {
         let invocation = request.invocation;
@@ -2425,21 +2492,58 @@ async fn run_calls(
     keeping: Option<&learned::Keeping>,
 ) -> Option<Message> {
     let mut results = Vec::new();
-    for call in calls {
+    let of = calls.len();
+    // Which of the turn's tools only read, by its server's own word of each.
+    let reads = steps::reads(server).await;
+    // Whether the turn's answer is a reply that says what the turn is doing.
+    let noting_reply = matches!(reply.ask, Ask::Message { .. });
+    // The tool of the call before, and the read whose note has not gone to the reply yet.
+    let mut noted: Option<String> = None;
+    let mut unsaid: Option<String> = None;
+    for (nth, call) in calls.into_iter().enumerate() {
         if going.stopped() {
             return None;
         }
-        reply.doing(&call.name).await;
+        // The note of a step holds no tool back ([`Reply::notes`]). Calls of one tool that
+        // follow each other are noted once. A tool that only reads is noted when the calls of
+        // its answer are done, the newest read alone: the service takes every tool's requests
+        // before a note's write, and the note is written while the model reads the results.
+        // Any other tool is noted before it begins: its person reads what is being done while
+        // it is done, and whoever finds the turn unfinished reads that it may have changed
+        // something.
+        let noting = if !noting_reply {
+            steps::Note::Nowhere
+        } else if noted.as_deref() == Some(call.name.as_str()) {
+            steps::Note::Same
+        } else if reads.contains(&call.name) {
+            steps::Note::After
+        } else {
+            steps::Note::Before
+        };
+        // What the step costs is said in the log when it ends ([`steps`]).
+        let mut step = steps::Step::begin(&call.name, (nth, of), noting);
+        if noting == steps::Note::Before {
+            unsaid = None;
+            step.notes(|| reply.notes(&call.name));
+        }
         // What the turn keeps about its keeper is carried out here; every other
         // tool is the agent tools'.
-        let (content, is_error) = if call.name == ANSWER_WITH_VIEW {
-            Box::pin(reply.view(&call.input)).await
-        } else {
-            match learned::call(keeping, &call.name, &call.input).await {
-                Some(answered) => answered,
-                None => call_tool(server, &call.name, call.input.clone()).await,
+        let (content, is_error) = Box::pin(step.carried_out(async {
+            if call.name == ANSWER_WITH_VIEW {
+                Box::pin(reply.view(&call.input)).await
+            } else {
+                match learned::call(keeping, &call.name, &call.input).await {
+                    Some(answered) => answered,
+                    None => call_tool(server, &call.name, call.input.clone()).await,
+                }
             }
-        };
+        }))
+        .await;
+        if noting == steps::Note::After {
+            unsaid = Some(call.name.clone());
+        }
+        noted = Some(call.name.clone());
+        step.say(content.len(), is_error);
         // What it asked is logged with a refusal, so the call can be made again by hand; every
         // call's whole answer only at debug, where what a tool showed it can be looked up.
         let asked: String = call.input.to_string().chars().take(LOGGED_CHARS).collect();
@@ -2455,6 +2559,9 @@ async fn run_calls(
             content,
             is_error,
         }));
+    }
+    if let Some(read) = unsaid {
+        reply.notes(&read);
     }
     Some(Message {
         role: Role::Tool,
