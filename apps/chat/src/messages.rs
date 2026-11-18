@@ -1273,88 +1273,86 @@ impl Chained for ChatPart {
     }
 
     fn part_for(action: &Self::Action, parts: &[(u64, Rc<Self>)]) -> Option<Result<u64, String>> {
-        Some((|| {
-            use chat_part::{
-                AnswerWithView, Ask, AskAgent, DeliverMessage, EditMessage, Post, PostView,
-                RecordWork, RewriteView, StreamOutput,
-            };
-            let holding = |message: &Id| {
-                parts
-                    .iter()
-                    .rev()
-                    .find(|(_, part)| part.messages.contains(message))
-                    .map(|(index, _)| *index)
-                    .ok_or_else(|| "there is no such message".to_owned())
-            };
-            let new = || {
-                Ok(parts.last().map_or(0, |(head, part)| {
-                    parts::post_part(*head, part.messages.len(), part.text_bytes())
-                }))
-            };
-            match &action.operation {
-                // A reply goes to its parent's part, beside the message it
-                // answers.
-                ChatPartAction::Post(Post {
-                    message:
-                        NewMessage {
-                            parent: Some(parent),
-                            ..
-                        },
-                })
-                | ChatPartAction::Ask(Ask {
-                    parent: Some(parent),
-                    ..
-                })
-                | ChatPartAction::PostView(PostView {
-                    parent: Some(parent),
-                    ..
-                }) => holding(parent),
-                // A delivery made before is where it was put; it changes nothing.
-                ChatPartAction::DeliverMessage(DeliverMessage {
-                    channel,
-                    author,
-                    body,
-                    ts: Some(ts),
-                }) => holding(&crate::transcript::delivered_id(channel, author, *ts, body))
-                    .or_else(|_| new()),
-                // An ask made before is where it was put: asking again under
-                // its key changes nothing.
-                ChatPartAction::AskAgent(AskAgent { channel, cause, .. }) => parts
-                    .iter()
-                    .rev()
-                    .find(|(_, part)| {
-                        part.messages.iter().any(|(_, held)| {
-                            held.channel == *channel
-                                && held
-                                    .cause
-                                    .as_ref()
-                                    .is_some_and(|before| before.key.0 == cause.key)
-                        })
+        use chat_part::{
+            AnswerWithView, Ask, AskAgent, DeliverMessage, EditMessage, Post, PostView, RecordWork,
+            RewriteView, StreamOutput,
+        };
+        let holding = |message: &Id| {
+            parts
+                .iter()
+                .rev()
+                .find(|(_, part)| part.messages.contains(message))
+                .map(|(index, _)| *index)
+                .ok_or_else(|| "there is no such message".to_owned())
+        };
+        let new = || {
+            Ok(parts.last().map_or(0, |(head, part)| {
+                parts::post_part(*head, part.messages.len(), part.text_bytes())
+            }))
+        };
+        Some(match &action.operation {
+            // A reply goes to its parent's part, beside the message it
+            // answers.
+            ChatPartAction::Post(Post {
+                message:
+                    NewMessage {
+                        parent: Some(parent),
+                        ..
+                    },
+            })
+            | ChatPartAction::Ask(Ask {
+                parent: Some(parent),
+                ..
+            })
+            | ChatPartAction::PostView(PostView {
+                parent: Some(parent),
+                ..
+            }) => holding(parent),
+            // A delivery made before is where it was put; it changes nothing.
+            ChatPartAction::DeliverMessage(DeliverMessage {
+                channel,
+                author,
+                body,
+                ts: Some(ts),
+            }) => holding(&crate::transcript::delivered_id(channel, author, *ts, body))
+                .or_else(|_| new()),
+            // An ask made before is where it was put: asking again under
+            // its key changes nothing.
+            ChatPartAction::AskAgent(AskAgent { channel, cause, .. }) => parts
+                .iter()
+                .rev()
+                .find(|(_, part)| {
+                    part.messages.iter().any(|(_, held)| {
+                        held.channel == *channel
+                            && held
+                                .cause
+                                .as_ref()
+                                .is_some_and(|before| before.key.0 == cause.key)
                     })
-                    .map_or_else(new, |(index, _)| Ok(*index)),
-                ChatPartAction::Post(_)
-                | ChatPartAction::Ask(_)
-                | ChatPartAction::DeliverMessage(_)
-                | ChatPartAction::PostFile(_)
-                | ChatPartAction::ShareResource(_)
-                | ChatPartAction::ShareWindow(_)
-                | ChatPartAction::PostView(_) => new(),
-                // A reply being streamed stays where it started.
-                ChatPartAction::StreamOutput(StreamOutput { reply, .. }) => {
-                    holding(&Id::from_raw(reply.clone())).or_else(|_| new())
-                }
-                ChatPartAction::RecordWork(RecordWork { message, .. })
-                | ChatPartAction::EditMessage(EditMessage { message, .. })
-                | ChatPartAction::AnswerWithView(AnswerWithView { message, .. })
-                | ChatPartAction::RewriteView(RewriteView { message, .. }) => holding(message),
-                other => match Self::item_of(other) {
-                    Some(message) => holding(&message),
-                    // A field edit of the part (a message inserted whole, as
-                    // a scenario stages one) goes to the head.
-                    None => Ok(parts.last().map_or(0, |(head, _)| *head)),
-                },
+                })
+                .map_or_else(new, |(index, _)| Ok(*index)),
+            ChatPartAction::Post(_)
+            | ChatPartAction::Ask(_)
+            | ChatPartAction::DeliverMessage(_)
+            | ChatPartAction::PostFile(_)
+            | ChatPartAction::ShareResource(_)
+            | ChatPartAction::ShareWindow(_)
+            | ChatPartAction::PostView(_) => new(),
+            // A reply being streamed stays where it started.
+            ChatPartAction::StreamOutput(StreamOutput { reply, .. }) => {
+                holding(&Id::from_raw(reply.clone())).or_else(|_| new())
             }
-        })())
+            ChatPartAction::RecordWork(RecordWork { message, .. })
+            | ChatPartAction::EditMessage(EditMessage { message, .. })
+            | ChatPartAction::AnswerWithView(AnswerWithView { message, .. })
+            | ChatPartAction::RewriteView(RewriteView { message, .. }) => holding(message),
+            other => match Self::item_of(other) {
+                Some(message) => holding(&message),
+                // A field edit of the part (a message inserted whole, as
+                // a scenario stages one) goes to the head.
+                None => Ok(parts.last().map_or(0, |(head, _)| *head)),
+            },
+        })
     }
 
     fn prepare(
