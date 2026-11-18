@@ -295,7 +295,7 @@ x86_64 = 1179648
 aarch64 = 1179648
 
 [apps."so.tilo.tube"]
-x86_64 = 1966080
+x86_64 = 2097152
 aarch64 = 1900544
 
 [apps."so.tilo.typst-editor"]

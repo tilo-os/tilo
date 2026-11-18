@@ -47,7 +47,5 @@ x86_64 = 65536
 x86_64 = 393216
 [apps."so.tilo.totp"]
 x86_64 = 196608
-[apps."so.tilo.tube"]
-x86_64 = 262144
 [apps."so.tilo.windows"]
 x86_64 = 131072
