@@ -350,6 +350,7 @@ fn session_task(
         answering: Vec::new(),
         replays: BTreeSet::new(),
         held_barriers: Vec::new(),
+        unheard_refusals: BTreeMap::new(),
         admission_since: None,
         delivered: BTreeMap::new(),
         received: BTreeSet::new(),
@@ -537,7 +538,11 @@ struct Task {
     /// Barriers called while frames were held, with the routes those frames
     /// are held on: each waits for them to enter the outbox, then for the
     /// outbox as it stands then, in the workspaces it was asked for.
-    held_barriers: Vec<(BTreeSet<DocumentRoute>, Completion, outbound::Scope)>,
+    held_barriers: Vec<outbound::Held>,
+    /// Why the workspace refused writes of each route that no barrier waited for when they were
+    /// let go: they left the device before the barrier that asks after them was called, and that
+    /// barrier completes with the refusal rather than as saved.
+    unheard_refusals: BTreeMap<DocumentRoute, String>,
     /// When the workspaces not yet admitted were subscribed (ms since the epoch).
     admission_since: Option<u64>,
     /// Retained entry ids of every document delivered or published per

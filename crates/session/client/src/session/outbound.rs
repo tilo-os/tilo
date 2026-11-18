@@ -30,6 +30,10 @@ pub(super) type Scope = Option<BTreeSet<WorkspaceId>>;
 /// answers for.
 pub(super) type Owed = (BTreeSet<[u8; 32]>, Option<String>, Completion, Scope);
 
+/// A barrier called while frames were held: the routes they are held on, where its outcome goes,
+/// and the workspaces it answers for.
+pub(super) type Held = (BTreeSet<DocumentRoute>, Completion, Scope);
+
 /// Whether `route` is of a workspace `scope` answers for.
 fn within(scope: Option<&BTreeSet<WorkspaceId>>, route: &DocumentRoute) -> bool {
     scope.is_none_or(|workspaces| {
@@ -369,7 +373,21 @@ impl Task {
             .filter(|route| within(scope.as_ref(), route))
             .cloned()
             .collect();
-        if held.is_empty() {
+        // A write the workspace refused before this barrier was called is one it asks after: it
+        // was said before, and it will never be saved.
+        let unheard: Vec<DocumentRoute> = self
+            .unheard_refusals
+            .keys()
+            .filter(|route| within(scope.as_ref(), route))
+            .cloned()
+            .collect();
+        let refused = unheard
+            .iter()
+            .filter_map(|route| self.unheard_refusals.remove(route))
+            .next_back();
+        if let Some(refused) = refused {
+            let _ = done.send(Err(refused));
+        } else if held.is_empty() {
             self.await_ownership(done, None, scope);
         } else {
             self.held_barriers.push((held, done, scope));
@@ -432,16 +450,38 @@ impl Task {
 
     /// Move each held barrier whose routes hold nothing any more on to the
     /// outbox, which now carries what those routes held; one waiting on a
-    /// route whose writes were `refused` for good completes with why.
+    /// route whose writes were `refused` for good completes with why at once.
+    /// A refusal no held barrier waits for is kept
+    /// for the next barrier called on its workspace ([`Self::barrier`]): the
+    /// write it refused was said before that barrier, and it is never saved.
     pub(super) fn release_barriers(&mut self, refused: &BTreeMap<DocumentRoute, String>) {
+        for (route, why) in refused {
+            if !self
+                .held_barriers
+                .iter()
+                .any(|(routes, ..)| routes.contains(route))
+            {
+                self.unheard_refusals.insert(route.clone(), why.clone());
+            }
+        }
+        // A barrier waiting on a refused route is answered with the refusal at once: whatever
+        // else it waits for, it can no longer complete as saved.
+        let (heard, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.held_barriers)
+            .into_iter()
+            .partition(|(routes, ..)| routes.iter().any(|route| refused.contains_key(route)));
+        self.held_barriers = waiting;
+        for (routes, done, _) in heard {
+            if let Some(why) = routes.iter().find_map(|route| refused.get(route)) {
+                let _ = done.send(Err(why.clone()));
+            }
+        }
         let held = self.engine.held_writes().lock().clone();
         let (waiting, released): (Vec<_>, Vec<_>) = std::mem::take(&mut self.held_barriers)
             .into_iter()
             .partition(|(routes, ..)| routes.iter().any(|route| held.contains_key(route)));
         self.held_barriers = waiting;
-        for (routes, done, scope) in released {
-            let why = routes.iter().find_map(|route| refused.get(route)).cloned();
-            self.await_ownership(done, why, scope);
+        for (_, done, scope) in released {
+            self.await_ownership(done, None, scope);
         }
     }
 
@@ -535,6 +575,10 @@ impl Task {
             ..
         } in answered
         {
+            let route = match &withdrawn {
+                Some(crate::Event::Refused { route, .. }) => Some(route.clone()),
+                _ => None,
+            };
             if let Some(refused) = withdrawn {
                 // The refused write left this device's replica: whoever reads it reads it again.
                 self.engine.arrivals().landed();
@@ -544,18 +588,29 @@ impl Task {
             // fine, and saying so keeps the app connected. What the host said is
             // what the person is owed, so it travels with the refusal.
             let refusal = outcome.err().map(|refusal| refusal_text(&refusal));
+            let mut heard = false;
             let (waiting, done): (Vec<_>, Vec<_>) = std::mem::take(&mut self.barriers)
                 .into_iter()
                 .map(|(mut owed, mut refused, complete, scope)| {
-                    if owed.remove(&id) && refused.is_none() {
-                        refused.clone_from(&refusal);
+                    if owed.remove(&id) {
+                        heard = true;
+                        if refused.is_none() {
+                            refused.clone_from(&refusal);
+                        }
                     }
                     (owed, refused, complete, scope)
                 })
-                .partition(|(owed, ..)| !owed.is_empty());
+                // One that heard a refusal is answered at once: it can no longer complete as
+                // saved, whatever else it waits for.
+                .partition(|(owed, refused, ..)| !owed.is_empty() && refused.is_none());
             self.barriers = waiting;
             for (_, refused, complete, _) in done {
                 let _ = complete.send(refused.map_or(Ok(()), Err));
+            }
+            // Answered before anyone asked after it: the next barrier on its workspace hears it
+            // ([`Self::barrier`]), as one of a write the workspace refused before it was sent.
+            if !heard && let (Some(route), Some(refusal)) = (route, refusal) {
+                self.unheard_refusals.insert(route, refusal);
             }
         }
         // Counted once the answers took their writes off the barriers: a write that left ownership

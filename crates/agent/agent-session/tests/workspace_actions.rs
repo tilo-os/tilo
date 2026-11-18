@@ -89,6 +89,9 @@ mod chat_restart;
 #[path = "workspace_actions/delete_workspace.rs"]
 mod delete_workspace;
 #[cfg(test)]
+#[path = "workspace_actions/device_writes.rs"]
+mod device_writes;
+#[cfg(test)]
 #[path = "workspace_actions/encrypted_resource.rs"]
 mod encrypted_resource;
 #[cfg(test)]
