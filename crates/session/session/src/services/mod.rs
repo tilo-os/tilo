@@ -18,9 +18,9 @@
 //! so a gap is read here rather than found by an app whose service is
 //! missing.
 //!
-//! The test below derives what clients dial from the code that dials it —
-//! the launcher's own `socket_for` sites and the services every app's
-//! manifest declares — and fails when one has no row here.
+//! The test below pairs the table with what clients dial — the names the launcher hands an app
+//! ([`launcher::services::HANDED_SERVICES`]) and the services every app's manifest declares — and
+//! fails when one has no row here.
 
 use std::sync::Arc;
 use std::sync::mpsc;
@@ -782,93 +782,19 @@ mod data_usage {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeSet;
 
     use super::{Owner, Reach, Service, TABLE};
 
-    /// The launcher's sources that route a client to a service, and the protocol crates whose
-    /// constants name one it routes.
-    const SOURCES: &[(&str, &str)] = &[
-        (
-            "packaging/launcher/src/services.rs",
-            include_str!("../../../../../crates/packaging/launcher/src/services.rs"),
-        ),
-        (
-            "packaging/launcher/src/main.rs",
-            include_str!("../../../../../crates/packaging/launcher/src/main.rs"),
-        ),
-        (
-            "packaging/launcher/src/system_stats.rs",
-            include_str!("../../../../../crates/packaging/launcher/src/system_stats.rs"),
-        ),
-        (
-            "system/system-stats/src/protocol.rs",
-            include_str!("../../../../../crates/system/system-stats/src/protocol.rs"),
-        ),
-        (
-            "platform/tilo-render-protocol/src/broker.rs",
-            include_str!("../../../../../crates/platform/tilo-render-protocol/src/broker.rs"),
-        ),
-    ];
-
-    /// The names every `const NAME: &str = "…"` of the sources defines, by the constant's name: two
-    /// protocol crates may both call their service name `SERVICE` , and a call site names both.
-    fn constants() -> BTreeMap<String, BTreeSet<String>> {
-        let mut constants: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        for (_, source) in SOURCES {
-            for line in source.lines() {
-                let line = line.trim();
-                let Some(rest) = line
-                    .strip_prefix("pub const ")
-                    .or_else(|| line.strip_prefix("const "))
-                else {
-                    continue;
-                };
-                let Some((name, value)) = rest.split_once(": &str = ") else {
-                    continue;
-                };
-                let value = value.trim_end_matches(';').trim();
-                let Some(value) = value.strip_prefix('"').and_then(|v| v.strip_suffix('"')) else {
-                    continue;
-                };
-                constants
-                    .entry(name.trim().to_owned())
-                    .or_default()
-                    .insert(value.to_owned());
-            }
-        }
-        constants
-    }
-
-    /// The names a source dials with `socket_for` : its own argument when it is a literal, and
-    /// every name the constant it names is defined as otherwise. A bare identifier is a name that
-    /// came from somewhere else (a manifest's declaration, handed in by the loop), which
-    /// [`declared`] reads.
-    fn dialled(source: &str, constants: &BTreeMap<String, BTreeSet<String>>) -> Vec<String> {
-        let mut names = Vec::new();
-        let mut rest = source;
-        while let Some((_, after)) = rest.split_once("socket_for(") {
-            rest = after;
-            let Some(argument) = rest.split(')').next() else {
-                break;
-            };
-            let argument = argument.trim();
-            if let Some(literal) = argument.strip_prefix('"') {
-                if let Some(name) = literal.split('"').next() {
-                    names.push(name.to_owned());
-                }
-                continue;
-            }
-            let bare = argument
-                .rsplit("::")
-                .next()
-                .unwrap_or(argument)
-                .trim_matches(|c: char| !c.is_alphanumeric() && c != '_');
-            if let Some(resolved) = constants.get(bare) {
-                names.extend(resolved.iter().cloned());
-            }
-        }
-        names
+    /// The names a client in this tree dials: what the launcher hands an app at its launch
+    /// ([`launcher::services::HANDED_SERVICES`]), and what every app's manifest declares.
+    fn dialled_by_clients() -> BTreeSet<String> {
+        let mut dialled: BTreeSet<String> = launcher::services::HANDED_SERVICES
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect();
+        dialled.extend(declared());
+        dialled
     }
 
     /// The names under `[sandbox.services]` of every app's manifest.
@@ -921,25 +847,13 @@ mod tests {
         names
     }
 
-    /// The names a client in this tree dials: what the launcher hands at a launch, and what every
-    /// app declares.
-    fn dialled_by_clients() -> BTreeSet<String> {
-        let constants = constants();
-        let mut dialled: BTreeSet<String> = SOURCES
-            .iter()
-            .flat_map(|(_, source)| dialled(source, &constants))
-            .collect();
-        dialled.extend(declared());
-        dialled
-    }
-
     tilo_test_env::scenario! {
         fn the_table_of_services_has_one_row_for_everything_dialled_or_started;
 
         phase every_service_a_client_dials_has_a_row;
         // A service a client dials is never silently absent from this session: every name the launcher
-        // routes or an app declares has a row saying who serves it, or why nothing does. A service
-        // this module owns is started by `start` , whose match over `Service` is exhaustive.
+        // hands an app or an app declares has a row saying who serves it, or why nothing does. A
+        // service this module owns is started by `start` , whose match over `Service` is exhaustive.
         {
             let missing: Vec<String> = dialled_by_clients()
                 .into_iter()

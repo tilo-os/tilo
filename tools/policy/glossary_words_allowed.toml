@@ -105,6 +105,11 @@ words = ["space"]
 identifiers = ["AvailableSpace"]
 
 [[allow]]
+reason = "The constant the launcher names the app-process socket by: the service an app is handed, not Tilo's word for a machine."
+words = ["host"]
+identifiers = ["APP_HOST_SERVICE"]
+
+[[allow]]
 reason = "An email's subject line."
 words = ["subject"]
 paths = [
