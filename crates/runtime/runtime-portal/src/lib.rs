@@ -23,6 +23,8 @@ pub mod local_socket;
 #[cfg(unix)]
 pub mod message;
 pub mod origin_connector;
+/// Typed messages on a packet socket, with the descriptors they name beside them.
+pub mod packet;
 pub mod pending_connection;
 pub mod process_binding;
 #[cfg(unix)]

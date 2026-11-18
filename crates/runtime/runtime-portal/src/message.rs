@@ -14,7 +14,7 @@ use std::os::fd::{BorrowedFd, OwnedFd};
 pub const MAX_MESSAGE: usize = 1024;
 
 #[cfg(unix)]
-const MAX_FDS: usize = 5;
+pub const MAX_FDS: usize = 5;
 
 /// `fields` as one message: NUL-separated, so no field may contain a NUL.
 pub fn encode(fields: &[&[u8]]) -> io::Result<Vec<u8>> {
@@ -34,8 +34,17 @@ pub fn decode(message: &[u8]) -> Vec<&[u8]> {
 
 #[cfg(unix)]
 pub fn send(socket: BorrowedFd<'_>, fields: &[&[u8]], fds: &[BorrowedFd<'_>]) -> io::Result<()> {
+    send_bytes(socket, &encode(fields)?, fds)
+}
+
+/// `message` as one message, as it is, with `fds` beside it.
+#[cfg(unix)]
+pub fn send_bytes(
+    socket: BorrowedFd<'_>,
+    message: &[u8],
+    fds: &[BorrowedFd<'_>],
+) -> io::Result<()> {
     use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags, sendmsg};
-    let message = encode(fields)?;
     let mut space = [std::mem::MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(MAX_FDS))];
     let mut control = SendAncillaryBuffer::new(&mut space);
     if fds.len() > MAX_FDS
@@ -50,7 +59,7 @@ pub fn send(socket: BorrowedFd<'_>, fields: &[&[u8]], fds: &[BorrowedFd<'_>]) ->
     let flags = SendFlags::NOSIGNAL;
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     let flags = SendFlags::empty();
-    let sent = sendmsg(socket, &[io::IoSlice::new(&message)], &mut control, flags)?;
+    let sent = sendmsg(socket, &[io::IoSlice::new(message)], &mut control, flags)?;
     if sent == message.len() {
         Ok(())
     } else {
@@ -63,6 +72,17 @@ pub fn receive(
     socket: BorrowedFd<'_>,
     buffer: &mut [u8],
 ) -> io::Result<Option<(usize, Vec<OwnedFd>)>> {
+    receive_waiting(socket, buffer, true)
+}
+
+/// [`receive`], or, when `wait` is false, [`io::ErrorKind::WouldBlock`] at once
+/// when no message is waiting.
+#[cfg(unix)]
+pub fn receive_waiting(
+    socket: BorrowedFd<'_>,
+    buffer: &mut [u8],
+    wait: bool,
+) -> io::Result<Option<(usize, Vec<OwnedFd>)>> {
     use rustix::net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, ReturnFlags, recvmsg};
     let mut space = [std::mem::MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(MAX_FDS))];
     let mut control = RecvAncillaryBuffer::new(&mut space);
@@ -72,6 +92,11 @@ pub fn receive(
     let flags = RecvFlags::CMSG_CLOEXEC;
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     let flags = RecvFlags::empty();
+    let flags = if wait {
+        flags
+    } else {
+        flags | RecvFlags::DONTWAIT
+    };
     let received = loop {
         match recvmsg(
             socket,
