@@ -420,22 +420,22 @@ pub fn installer_image(destination: &str) -> &'static str {
     }
 }
 
-/// What a person does once the plan exists: the medium to make, and the
-/// commands a rescue system or a Linux system already on the machine is given.
+/// What a person does once the plan exists: the medium to make, and what a
+/// rescue system or a Linux system already on the machine is given.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Commands {
     /// The installer image to write to a removable drive.
     pub medium: String,
-    /// The command a rescue or netboot system is given.
+    /// What a rescue or netboot system is given.
     pub netboot: String,
-    /// The command a Linux system already on the machine is given to
-    /// install alongside it.
+    /// What a Linux system already on the machine is given to install
+    /// alongside it.
     pub alongside: String,
 }
 
-/// The commands that carry `plan` to its machine. `installer_url` is where the
-/// release's installer is served; `token_file` is the file the minted token
-/// was written to, never the token itself.
+/// What carries `plan` to its machine. `installer_url` is where the release's
+/// installer is served; `token_file` is the file the minted token was written
+/// to, never the token itself.
 #[must_use]
 pub fn commands(
     plan: &Plan,
@@ -450,11 +450,11 @@ pub fn commands(
             plan = plan.plan,
         ),
         netboot: format!(
-            "curl -fsSL {installer_url} | sh -s -- --plan {plan} --token-file {token_file}",
+            "in a rescue or netboot system, {installer_url} installs with plan {plan} and the token in {token_file}",
             plan = plan.plan,
         ),
         alongside: format!(
-            "sudo {image} --plan {plan} --token-file {token_file}",
+            "on the machine's own Linux, {image} installs alongside it with plan {plan} and the token in {token_file}",
             plan = plan.plan,
         ),
     }
