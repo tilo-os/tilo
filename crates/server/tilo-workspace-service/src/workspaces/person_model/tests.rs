@@ -887,3 +887,110 @@ async fn calls_at_once_are_each_counted_on_the_day() {
     let after = model.answer(&asking("One more"), soon(), &mut |_| {}).await;
     assert_eq!(after.unwrap().spent_today_micros, Some((CALLS + 1) * 1_000));
 }
+
+/// A person's settings under `root`: one provider with its key and two
+/// models, the first chosen for each of `kinds`, the second their default
+/// where `default` says so.
+fn chose(root: &Path, kinds: &[Interaction], default: bool) {
+    let mut config = provider_config(root);
+    config.profiles.push(ProviderProfile {
+        id: "made-up".into(),
+        label: "Made-up models".into(),
+        protocol: ProviderProtocol::OpenAiCompatible,
+        endpoint: "https://models.example.com/v1".into(),
+        models: vec![
+            ModelDescriptor::new("made-up-main"),
+            ModelDescriptor::new("made-up-default"),
+        ],
+        default_model: default.then(|| "made-up-default".to_owned()),
+        ..ProviderProfile::default()
+    });
+    if default {
+        config.default_profile = Some("made-up".into());
+    }
+    for kind in kinds {
+        let chosen = agent_provider_config::AgentModel {
+            profile: "made-up".into(),
+            model: "made-up-main".into(),
+        };
+        config.set_interaction_model(*kind, Some(chosen)).unwrap();
+    }
+    save_provider_config(root, &config).unwrap();
+    crate::workspaces::person_settings::set_key(
+        root,
+        tilo_actions::remote::person_models::SetKey {
+            provider: "made-up".into(),
+            key: "sk-made-up-for-this-test".into(),
+        },
+    )
+    .unwrap();
+}
+
+/// The model `kind` of work is answered by under `root`, or why by none.
+fn answered_by(root: &Path, kind: Interaction) -> Result<String, ModelRefusal> {
+    resolve(
+        root,
+        &kept::Key::default(),
+        (kind, None),
+        false,
+        &NoProvider,
+    )
+    .map(|resolved| resolved.model.id)
+}
+
+/// A person's main thread is one choice kept as two kinds: what answers
+/// there and what works there. Chosen for one of them only, as a device that
+/// chooses them with two asks leaves it between the two, and with no
+/// default, that model answers the other kind as well. No other kind of work
+/// is answered by it, the main thread is answered by no other work's model,
+/// and a default answers before the other kind does.
+#[test]
+fn one_kind_of_the_main_thread_answers_for_its_other_kind_and_for_no_other_work() {
+    const OTHER_WORK: [Interaction; 4] = [
+        Interaction::OneShot,
+        Interaction::Subtask,
+        Interaction::Classifier,
+        Interaction::Dictation,
+    ];
+    let main = "made-up-main".to_owned();
+    for (chosen, other) in [
+        (Interaction::Request, Interaction::Task),
+        (Interaction::Task, Interaction::Request),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        chose(dir.path(), &[chosen], false);
+        assert_eq!(answered_by(dir.path(), chosen), Ok(main.clone()));
+        assert_eq!(
+            answered_by(dir.path(), other),
+            Ok(main.clone()),
+            "chosen for {chosen}, {other} is answered by it"
+        );
+        for kind in OTHER_WORK {
+            assert_eq!(
+                answered_by(dir.path(), kind),
+                Err(ModelRefusal::NoModelLinked { kind }),
+                "chosen for {chosen}"
+            );
+        }
+    }
+
+    // A model chosen for other work is not the main thread's.
+    let dir = tempfile::tempdir().unwrap();
+    chose(dir.path(), &[Interaction::Subtask], false);
+    for kind in [Interaction::Request, Interaction::Task] {
+        assert_eq!(
+            answered_by(dir.path(), kind),
+            Err(ModelRefusal::NoModelLinked { kind })
+        );
+    }
+
+    // A person with a default is answered as before: their default answers
+    // the kind they chose nothing for.
+    let dir = tempfile::tempdir().unwrap();
+    chose(dir.path(), &[Interaction::Request], true);
+    assert_eq!(answered_by(dir.path(), Interaction::Request), Ok(main));
+    assert_eq!(
+        answered_by(dir.path(), Interaction::Task),
+        Ok("made-up-default".to_owned())
+    );
+}
